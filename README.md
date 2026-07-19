@@ -17,8 +17,13 @@ evidence behind them is in [research notes](docs/003-research-notes.md).
 ## Building & running
 
 Everything is self-contained on Windows — no WSL, no external imaging tools.
-Prerequisites: [rustup](https://rustup.rs) (GNU host toolchain) and
-[QEMU](https://www.qemu.org/) (`winget install SoftwareFreedomConservancy.QEMU`).
+Prerequisites: [rustup](https://rustup.rs) (GNU host toolchain:
+`rustup-init -y --default-host x86_64-pc-windows-gnu`, no Visual Studio
+needed) and [QEMU](https://www.qemu.org/)
+(`winget install SoftwareFreedomConservancy.QEMU`). Open a fresh terminal
+after installing rustup so `cargo` is on PATH; the pinned toolchain and
+`x86_64-unknown-none` target install automatically on first build via
+`rust-toolchain.toml`.
 
 ```
 cargo xtask build    # compile the kernel (x86_64-unknown-none)
