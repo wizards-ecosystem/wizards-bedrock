@@ -1,0 +1,9 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+anyhow = "1"
+fatfs = { version = "0.3", default-features = false, features = ["std", "alloc"] }
+fscommon = "0.1"
