@@ -573,9 +573,15 @@ D-22 gating the build, a floating channel means CI can go red because a
 toolchain shipped, not because a commit did — and a reproducible OS build is
 worth more than automatic updates. Bump deliberately.
 
-**Consequences.** `rust-mingw` is listed explicitly in `components`: the host
-is `x86_64-pc-windows-gnu` and the minimal profile is not obliged to include
-it. Verify with `rustup component list --installed` after any toolchain change.
+**Consequences.** `components` lists only `rustfmt` and `clippy`. `rust-mingw`
+was listed too at first, on the theory that the minimal profile might drop a
+component the windows-gnu host needs to link — but naming it breaks CI outright,
+because it does not exist for a Linux host and rustup resolves `components`
+against whatever host it is running on. It is unnecessary anyway: rustup
+installs it as part of the windows-gnu host toolchain regardless of profile
+(verified with `rustup component list --installed` after the pin landed).
+Anything host-specific belongs in the workflow or the README, never in
+`rust-toolchain.toml`, which every host reads.
 
 ---
 

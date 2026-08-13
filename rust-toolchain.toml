@@ -4,7 +4,8 @@
 # a commit. Bump deliberately — see D-24 in docs/004-decision-log.md.
 channel = "1.97.1"
 profile = "minimal"
-# rust-mingw is listed explicitly because the host is x86_64-pc-windows-gnu and
-# linking fails without it; the minimal profile is not required to include it.
-components = ["rustfmt", "clippy", "rust-mingw"]
+# rust-mingw is deliberately absent: it is required on the windows-gnu host but
+# does not exist for other hosts, and naming it here breaks Linux CI. rustup
+# installs it as part of the windows-gnu host toolchain regardless of profile.
+components = ["rustfmt", "clippy"]
 targets = ["x86_64-unknown-none"]
