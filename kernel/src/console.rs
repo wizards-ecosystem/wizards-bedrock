@@ -8,7 +8,7 @@ use core::fmt;
 use noto_sans_mono_bitmap::{
     FontWeight, RasterHeight, RasterizedChar, get_raster, get_raster_width,
 };
-use wost::boot::Framebuffer;
+use wost::boot::{Framebuffer, FramebufferInfo};
 
 use crate::theme::Palette;
 
@@ -28,10 +28,9 @@ const FALLBACK_GLYPH: char = '?';
 #[derive(Debug)]
 pub(crate) struct Console {
     framebuffer: Framebuffer,
+    geometry: FramebufferInfo,
     glyph_width: usize,
     line_height: usize,
-    width: usize,
-    height: usize,
     cursor_x: usize,
     cursor_y: usize,
     palette: Palette,
@@ -40,13 +39,11 @@ pub(crate) struct Console {
 impl Console {
     /// Take over `framebuffer` and clear it to `palette`.
     pub(crate) fn new(framebuffer: Framebuffer, palette: Palette) -> Self {
-        let info = framebuffer.info();
         let mut console = Self {
+            geometry: framebuffer.info(),
             framebuffer,
             glyph_width: get_raster_width(FONT_WEIGHT, FONT_HEIGHT),
             line_height: FONT_HEIGHT.val() + LINE_GAP,
-            width: info.width,
-            height: info.height,
             cursor_x: MARGIN,
             cursor_y: MARGIN,
             palette,
@@ -80,7 +77,7 @@ impl Console {
             self.newline();
             return;
         }
-        if self.cursor_x + self.glyph_width + MARGIN > self.width {
+        if self.cursor_x + self.glyph_width + MARGIN > self.geometry.width {
             self.newline();
         }
         let Some(raster) = raster_for(character) else {
@@ -102,7 +99,7 @@ impl Console {
     fn newline(&mut self) {
         self.cursor_x = MARGIN;
         self.cursor_y += self.line_height;
-        if self.cursor_y + self.line_height + MARGIN > self.height {
+        if self.cursor_y + self.line_height + MARGIN > self.geometry.height {
             self.scroll();
         }
     }

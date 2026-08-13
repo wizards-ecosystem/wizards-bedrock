@@ -28,28 +28,29 @@ fn kernel_main(boot: BootInfo) -> ! {
     let serial = dev::init_uart();
     info!("The Wizard's OS awakens.");
 
+    match boot.framebuffer {
+        Ok(framebuffer) => dev::init_console(framebuffer),
+        Err(reason) => warn!("framebuffer: {reason}"),
+    }
+
+    // Checked only once both consoles are up, so that a machine with neither a
+    // serial cable nor a supported bootloader still shows why it stopped.
     assert!(
         boot.base_revision_supported,
         "bootloader rejected our Limine base revision"
     );
     info!("limine: base revision supported");
 
-    match boot.framebuffer {
-        Ok(framebuffer) => {
-            dev::init_console(framebuffer);
-            dev::with_console(|console| {
-                for line in banner::LINES {
-                    console.write_line(line);
-                }
-                // The one message that cannot go to the log it is about.
-                if let Err(reason) = serial {
-                    console.write_line("");
-                    let _ = writeln!(console, "  no serial log: {reason}");
-                }
-            });
+    dev::with_console(|console| {
+        for line in banner::LINES {
+            console.write_line(line);
         }
-        Err(reason) => warn!("framebuffer: {reason}"),
-    }
+        // The one message that cannot go to the log it is about.
+        if let Err(reason) = serial {
+            console.write_line("");
+            let _ = writeln!(console, "  no serial log: {reason}");
+        }
+    });
 
     info!("kernel: entering idle loop");
     cpu::halt_forever();

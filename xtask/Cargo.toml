@@ -1,5 +1,6 @@
 [package]
 name = "xtask"
+description = "Build orchestrator: pure-Rust disk imaging, QEMU and VMware runners, the CI gate."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

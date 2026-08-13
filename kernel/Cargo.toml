@@ -1,5 +1,6 @@
 [package]
 name = "wizard-kernel"
+description = "The Wizard's OS kernel: no_std, higher-half, no hand-written `unsafe`."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
