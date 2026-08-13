@@ -1,0 +1,17 @@
+{
+  // rust-analyzer defaults to `cargo check --workspace --all-targets`, which
+  // cannot work here: the kernel crates only build for x86_64-unknown-none and
+  // xtask only for the host, and stable cargo has no per-package target. Left
+  // at the default, the editor reports phantom errors across the whole kernel.
+  // `cargo xtask check` runs the right command for each half.
+  "rust-analyzer.check.overrideCommand": [
+    "cargo",
+    "xtask",
+    "check",
+    "--message-format=json-diagnostic-rendered-ansi"
+  ],
+  "rust-analyzer.cargo.allTargets": false,
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true
+}

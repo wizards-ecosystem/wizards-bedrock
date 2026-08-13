@@ -65,6 +65,10 @@ nightly). Bare cargo commands are therefore scoped to the host half by
 kernel would link without `code-model=kernel` — a broken higher-half image
 with no build error. Pass lint flags after `--` instead.
 
+For the same reason, `.vscode/settings.json` points rust-analyzer at
+`cargo xtask check`. Without it the editor checks the kernel for the host
+triple and reports phantom errors across every kernel file.
+
 ## Layout
 
 ```
