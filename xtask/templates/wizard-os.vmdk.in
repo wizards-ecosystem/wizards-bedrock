@@ -1,0 +1,17 @@
+# Disk DescriptorFile
+version=1
+encoding="windows-1252"
+CID=fffffffe
+parentCID=ffffffff
+createType="monolithicFlat"
+
+# Extent description
+RW {{SECTORS}} FLAT "{{FLAT_NAME}}" 0
+
+# The Disk Data Base
+#DDB
+ddb.adapterType = "lsilogic"
+ddb.geometry.cylinders = "{{CYLINDERS}}"
+ddb.geometry.heads = "{{HEADS}}"
+ddb.geometry.sectors = "{{SECTORS_PER_TRACK}}"
+ddb.virtualHWVersion = "19"

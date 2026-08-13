@@ -1,0 +1,4 @@
+# SHA-256 of every vendored binary in this directory, in sha256sum format.
+# Verified by `cargo xtask verify-vendor` and by the xtask test suite.
+# Regenerate deliberately when updating Limine; see README.md here.
+91ef81c1f95c4ac8bf77c4393a0b2fcd2628550827d7abf89a43194400e17a85 *BOOTX64.EFI
