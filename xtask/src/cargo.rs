@@ -61,14 +61,17 @@ pub fn package_args(packages: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// Compile the kernel, returning the ELF it produced.
-pub fn build_kernel(paths: &Paths, profile: Profile) -> Result<PathBuf> {
+/// Compile the kernel with `features` enabled, returning the ELF it produced.
+pub fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -> Result<PathBuf> {
     println!("[xtask] building kernel ({})", profile.directory());
 
     let mut args = vec!["build".to_string()];
     args.extend(package_args(&[paths::KERNEL_PACKAGE]));
     args.extend(["--target".to_string(), paths::KERNEL_TARGET.to_string()]);
     args.extend(profile.flags().iter().map(|flag| (*flag).to_string()));
+    if !features.is_empty() {
+        args.extend(["--features".to_string(), features.join(",")]);
+    }
     run(paths.root(), "kernel build", &args)?;
 
     let elf = paths.kernel_elf(profile);

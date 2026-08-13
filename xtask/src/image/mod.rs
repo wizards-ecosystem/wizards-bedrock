@@ -17,9 +17,10 @@ use fscommon::{BufStream, StreamSlice};
 use crate::cargo::{self, Profile};
 use crate::paths::{self, Paths};
 
-/// Compile the kernel and assemble a bootable image around it.
-pub fn build(paths: &Paths, profile: Profile) -> Result<PathBuf> {
-    let kernel = cargo::build_kernel(paths, profile)?;
+/// Compile the kernel with `features` enabled and assemble a bootable image
+/// around it.
+pub fn build(paths: &Paths, profile: Profile, features: &[&str]) -> Result<PathBuf> {
+    let kernel = cargo::build_kernel(paths, profile, features)?;
     let image = paths.image();
 
     std::fs::create_dir_all(paths.target_dir())

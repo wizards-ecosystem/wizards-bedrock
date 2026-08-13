@@ -15,6 +15,8 @@ mod console;
 mod dev;
 mod log;
 mod panic;
+#[cfg(feature = "selftest")]
+mod selftest;
 mod theme;
 
 use core::fmt::Write;
@@ -52,6 +54,9 @@ fn kernel_main(boot: BootInfo) -> ! {
         }
     });
 
+    #[cfg(feature = "selftest")]
+    selftest::run(serial);
+
     info!("kernel: entering idle loop");
-    cpu::halt_forever();
+    cpu::halt_forever()
 }

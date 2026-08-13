@@ -27,8 +27,9 @@ CHECK TASKS:
     clippy            cargo clippy, host and kernel targets
     fmt               format the workspace
     test              run the host test suite
+    test-boot         boot a self-test kernel in QEMU and require its verdict
     verify-vendor     check vendored binaries against boot/limine/CHECKSUMS
-    ci                fmt --check, clippy, test, verify-vendor, build, image
+    ci                every check above, in the order that fails fastest
 
 HOUSEKEEPING:
     clean             remove build output
@@ -73,6 +74,8 @@ pub enum Task {
     Fmt(FmtMode),
     /// Run the host tests.
     Test,
+    /// Boot a self-test kernel under QEMU and require its verdict.
+    TestBoot(Profile),
     /// Check vendored binaries against their recorded digests.
     VerifyVendor,
     /// Everything CI runs.
@@ -158,6 +161,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
             FmtMode::Write
         })),
         "test" => Ok(Task::Test),
+        "test-boot" => Ok(Task::TestBoot(profile)),
         "verify-vendor" => Ok(Task::VerifyVendor),
         "ci" => Ok(Task::Ci),
         "clean" => Ok(Task::Clean(if all {

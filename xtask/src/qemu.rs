@@ -3,6 +3,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
@@ -119,6 +120,75 @@ pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
 fn drive(spec: &str) -> [String; 2] {
     ["-drive".to_string(), spec.to_string()]
 }
+
+/// Cargo feature that compiles the kernel's boot-time self-checks in.
+pub const SELFTEST_FEATURE: &str = "selftest";
+
+/// QEMU exits with `(value << 1) | 1`, so the kernel's 0x10 arrives as 33 and
+/// its 0x11 as 35. Kept in step with `kernel/src/arch/x86_64/debug_exit.rs`.
+const SELFTEST_PASSED: i32 = 33;
+const SELFTEST_FAILED: i32 = 35;
+
+/// Boot `image` headless, wait for the kernel's verdict, and report it.
+///
+/// A kernel that neither passes nor fails within `timeout` is a hang, which is
+/// itself a failure — so the emulator is killed rather than left running.
+pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()> {
+    let qemu_dir = locate()?;
+    let code = firmware(&qemu_dir, CODE_FIRMWARE)?;
+    let vars_template = firmware(&qemu_dir, VARS_FIRMWARE)?;
+    let vars = paths.efi_vars();
+    std::fs::copy(&vars_template, &vars)
+        .with_context(|| format!("copying {} to {}", vars_template.display(), vars.display()))?;
+
+    let emulator = qemu_dir.join(exe_name("qemu-system-x86_64"));
+    println!("[xtask] booting the self-test kernel");
+
+    let mut child = Command::new(&emulator)
+        .args(["-machine", "q35", "-cpu", "qemu64", "-m", "512M"])
+        .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
+        .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
+        .args(drive(&format!(
+            "if=pflash,format=raw,readonly=on,file={}",
+            code.display()
+        )))
+        .args(drive(&format!(
+            "if=pflash,format=raw,file={}",
+            vars.display()
+        )))
+        .args(drive(&format!("format=raw,file={}", image.display())))
+        .spawn()
+        .with_context(|| format!("could not launch {}", emulator.display()))?;
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait().context("waiting for QEMU")? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            bail!(
+                "self-test did not finish within {} seconds",
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    };
+
+    match status.code() {
+        Some(SELFTEST_PASSED) => {
+            println!("[xtask] self-test passed");
+            Ok(())
+        }
+        Some(SELFTEST_FAILED) => bail!("self-test reported failures — see the log above"),
+        Some(other) => bail!("QEMU exited with {other}; the kernel never reported a verdict"),
+        None => bail!("QEMU was terminated by a signal"),
+    }
+}
+
+/// How often to check whether QEMU has exited. Short enough that a passing run
+/// is not padded noticeably, long enough not to spin.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 #[cfg(test)]
 mod tests {

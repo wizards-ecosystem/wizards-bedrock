@@ -52,6 +52,12 @@ impl Console {
         console
     }
 
+    /// Geometry of the framebuffer being drawn on.
+    #[cfg(feature = "selftest")]
+    pub(crate) const fn geometry(&self) -> FramebufferInfo {
+        self.geometry
+    }
+
     /// Adopt `palette`, clear the screen, and home the cursor.
     pub(crate) fn reset(&mut self, palette: Palette) {
         self.palette = palette;

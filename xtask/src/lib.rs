@@ -29,20 +29,21 @@ pub fn run(task: Task) -> Result<()> {
             println!("{}", cli::HELP);
             Ok(())
         }
-        Task::Build(profile) => cargo::build_kernel(&paths, profile).map(drop),
-        Task::Image(profile) => image::build(&paths, profile).map(drop),
+        Task::Build(profile) => cargo::build_kernel(&paths, profile, &[]).map(drop),
+        Task::Image(profile) => image::build(&paths, profile, &[]).map(drop),
         Task::Run { profile, qemu_args } => {
-            let image = image::build(&paths, profile)?;
+            let image = image::build(&paths, profile, &[])?;
             qemu::run(&paths, &image, &qemu_args)
         }
         Task::Vmware(profile) => {
-            let image = image::build(&paths, profile)?;
+            let image = image::build(&paths, profile, &[])?;
             vmware::generate(&paths, &image)
         }
         Task::Check { message_format } => tasks::check(&paths, message_format.as_deref()),
         Task::Clippy => tasks::clippy(&paths),
         Task::Fmt(mode) => tasks::fmt(&paths, mode),
         Task::Test => tasks::test(&paths),
+        Task::TestBoot(profile) => tasks::test_boot(&paths, profile),
         Task::VerifyVendor => vendor::verify(&paths),
         Task::Ci => tasks::ci(&paths),
         Task::Clean(scope) => tasks::clean(&paths, scope),

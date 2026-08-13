@@ -52,6 +52,13 @@ pub(crate) fn with_console(f: impl FnOnce(&mut Console)) {
     }
 }
 
+/// Geometry of the framebuffer console, if one came up.
+#[cfg(feature = "selftest")]
+pub(crate) fn console_geometry() -> Option<wost::boot::FramebufferInfo> {
+    let guard = CONSOLE.lock();
+    guard.as_ref().map(Console::geometry)
+}
+
 /// Reclaim both device locks on the terminal panic path.
 pub(crate) fn force_unlock(token: &PanicToken) {
     UART.force_unlock(token);

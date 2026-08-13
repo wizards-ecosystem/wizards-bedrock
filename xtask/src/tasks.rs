@@ -4,12 +4,14 @@
 //! cross-compiled ones — reading both lists from [`crate::paths`], so a local
 //! run and a CI run cannot drift apart.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 
 use crate::cargo::{self, Profile};
 use crate::cli::{CleanScope, FmtMode};
 use crate::paths::{self, Paths};
-use crate::{image, vendor};
+use crate::{image, qemu, vendor};
 
 /// Type-check every crate.
 pub fn check(paths: &Paths, message_format: Option<&str>) -> Result<()> {
@@ -51,13 +53,27 @@ pub fn test(paths: &Paths) -> Result<()> {
     cargo::run(paths.root(), "tests", &args)
 }
 
-/// Everything CI runs, in the order that fails fastest.
+/// Boot a self-test kernel under QEMU and require its verdict.
+///
+/// This is the only automated check that exercises the kernel on a machine
+/// rather than as arithmetic on the host.
+pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
+    let image = image::build(paths, profile, &[qemu::SELFTEST_FEATURE])?;
+    qemu::run_selftest(paths, &image, SELFTEST_TIMEOUT)
+}
+
+/// Generous enough for a cold QEMU start on a loaded machine; short enough that
+/// a hung kernel is reported rather than waited on.
+const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Everything the gate runs, in the order that fails fastest.
 pub fn ci(paths: &Paths) -> Result<()> {
     fmt(paths, FmtMode::Check)?;
     clippy(paths)?;
     test(paths)?;
     vendor::verify(paths)?;
-    image::build(paths, Profile::Release)?;
+    test_boot(paths, Profile::Release)?;
+    image::build(paths, Profile::Release, &[])?;
     println!("[xtask] ci passed");
     Ok(())
 }
