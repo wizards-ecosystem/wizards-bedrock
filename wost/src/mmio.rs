@@ -1,0 +1,126 @@
+//! Memory-mapped I/O regions.
+//!
+//! An [`MmioRegion`] is constructed once from a mapping the caller vouches for,
+//! then hands out bounds- and alignment-checked volatile accesses in safe code.
+//! Every access returns a [`Result`]: a driver bug becomes an error value, not
+//! a stray write into whatever follows the device.
+
+/// Why an [`MmioRegion`] access was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmioError {
+    /// The access would extend past the end of the region.
+    OutOfBounds {
+        /// Byte offset the access started at.
+        offset: usize,
+        /// Length of the access in bytes.
+        len: usize,
+        /// Size of the region in bytes.
+        region_len: usize,
+    },
+    /// The offset is not aligned for an access of this width.
+    Misaligned {
+        /// Byte offset the access started at.
+        offset: usize,
+        /// Alignment the access required.
+        align: usize,
+    },
+}
+
+/// A region of device memory, accessed with volatile writes.
+pub struct MmioRegion {
+    base: *mut u8,
+    len: usize,
+}
+
+// SAFETY: `MmioRegion` is a base pointer plus a length, and every access goes
+// through `&mut self`. Moving that pair to another CPU is sound provided the
+// mapping is global, which `new`'s contract requires.
+unsafe impl Send for MmioRegion {}
+
+impl MmioRegion {
+    /// Wrap `len` bytes of device memory at `base`.
+    ///
+    /// # Safety
+    ///
+    /// `base` must be a globally valid, 4-byte-aligned mapping of at least
+    /// `len` bytes that stays live for as long as this region, and no other
+    /// code may access that memory while this region exists.
+    pub const unsafe fn new(base: *mut u8, len: usize) -> Self {
+        Self { base, len }
+    }
+
+    /// Size of the region in bytes.
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the region covers no bytes.
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Write one 32-bit word at `offset`.
+    pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
+        self.check(offset, WORD)?;
+        // SAFETY: `check` confirmed the word is in bounds and 4-byte aligned.
+        unsafe { self.write_word_unchecked(offset, value) };
+        Ok(())
+    }
+
+    /// Read one 32-bit word at `offset`.
+    pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
+        self.check(offset, WORD)?;
+        // SAFETY: `check` confirmed the word is inside the region, so the
+        // result stays within the mapping `new`'s contract promised.
+        let word = unsafe { self.base.add(offset) }.cast::<u32>();
+        // SAFETY: `check` confirmed `offset` is 4-byte aligned, so `word` is
+        // aligned, and the mapping is valid for reads.
+        Ok(unsafe { word.read_volatile() })
+    }
+
+    /// Write `count` copies of a 32-bit word starting at `offset`.
+    pub fn fill_u32(&mut self, offset: usize, count: usize, value: u32) -> Result<(), MmioError> {
+        self.check(offset, count.saturating_mul(WORD))?;
+        for index in 0..count {
+            // SAFETY: `check` confirmed the whole span is in bounds and the
+            // start is 4-byte aligned, so every word within it is too.
+            unsafe { self.write_word_unchecked(offset + index * WORD, value) };
+        }
+        Ok(())
+    }
+
+    /// Confirm that a `len`-byte access at `offset` is in bounds and aligned.
+    fn check(&self, offset: usize, len: usize) -> Result<(), MmioError> {
+        if !offset.is_multiple_of(WORD) {
+            return Err(MmioError::Misaligned {
+                offset,
+                align: WORD,
+            });
+        }
+        let out_of_bounds = MmioError::OutOfBounds {
+            offset,
+            len,
+            region_len: self.len,
+        };
+        match offset.checked_add(len) {
+            Some(end) if end <= self.len => Ok(()),
+            _ => Err(out_of_bounds),
+        }
+    }
+
+    /// # Safety
+    ///
+    /// `offset` must be 4-byte aligned and `offset + 4` must be within the
+    /// region — that is, [`Self::check`] must have accepted it.
+    unsafe fn write_word_unchecked(&mut self, offset: usize, value: u32) {
+        // SAFETY: the caller guarantees `offset` is inside the region, so the
+        // result stays within the mapping `new`'s contract promised.
+        let word = unsafe { self.base.add(offset) }.cast::<u32>();
+        // SAFETY: the caller guarantees `offset` is 4-byte aligned, so `word` is
+        // aligned, and the mapping is valid for writes.
+        unsafe { word.write_volatile(value) };
+    }
+}
+
+/// Bytes in the only access width this region supports.
+const WORD: usize = size_of::<u32>();
