@@ -49,11 +49,8 @@ jobs:
 
       # QEMU and VMware are not exercised here; booting is verified locally
       # per D-18. This proves the image assembles on a non-Windows host.
+      #
+      # The image is not uploaded as an artifact: it is 64 MiB per push against
+      # a 500 MB account quota, and `cargo xtask image` reproduces it locally.
       - name: Build disk image
         run: cargo xtask image
-
-      - uses: actions/upload-artifact@v5
-        with:
-          name: wizard-os-image
-          path: target/wizard-os.img
-          retention-days: 7
