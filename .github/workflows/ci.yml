@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Never set RUSTFLAGS here. It replaces the [target.x86_64-unknown-none]
+  # rustflags in .cargo/config.toml, and the kernel would link without
+  # code-model=kernel — a broken higher-half image with no build error.
+  # Lint flags go after `--` on the cargo command line instead.
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the version and installs the components and
+      # the x86_64-unknown-none target on first use.
+      - name: Show toolchain
+        run: rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: kernel-target
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (host)
+        run: cargo clippy --package xtask -- -D warnings
+
+      - name: Clippy (kernel target)
+        run: cargo kclippy -- -D warnings
+
+      - name: Test
+        run: cargo test --package xtask
+
+      - name: Verify vendored binaries
+        run: cargo xtask verify-vendor
+
+      - name: Build kernel
+        run: cargo kbuild
+
+      # QEMU and VMware are not exercised here; booting is verified locally
+      # per D-18. This proves the image assembles on a non-Windows host.
+      - name: Build disk image
+        run: cargo xtask image
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wizard-os-image
+          path: target/wizard-os.img
+          retention-days: 7
