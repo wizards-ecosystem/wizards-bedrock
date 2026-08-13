@@ -74,21 +74,32 @@ impl Framebuffer {
 
     /// Copy `rows` of pixels from `from_y` up to `to_y`.
     ///
-    /// Used by the console to scroll; rows exposed at the bottom are left
-    /// untouched for the caller to clear.
+    /// Pixels move as raw words rather than through [`Rgb`], so nothing is lost
+    /// on a display whose channels are narrower than eight bits. Rows exposed
+    /// at the bottom are left for the caller to clear.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `to_y > from_y`. Source and destination may overlap, but only
+    /// upward: copying down would read rows this call had already overwritten.
     pub fn copy_rows(&mut self, from_y: usize, to_y: usize, rows: usize) {
+        assert!(to_y <= from_y, "copy_rows moves rows upward only");
+
+        let FramebufferInfo {
+            width,
+            pitch,
+            bytes_per_pixel,
+            ..
+        } = self.info;
         for row in 0..rows {
-            for x in 0..self.info.width {
-                let colour = self.read_pixel(x, from_y + row);
-                self.write_pixel(x, to_y + row, colour);
+            for column in 0..width {
+                let from = pixel::offset(column, from_y + row, pitch, bytes_per_pixel);
+                let to = pixel::offset(column, to_y + row, pitch, bytes_per_pixel);
+                if let Ok(word) = self.region.read_u32(from) {
+                    let _ = self.region.write_u32(to, word);
+                }
             }
         }
-    }
-
-    fn read_pixel(&self, x: usize, y: usize) -> Rgb {
-        let offset = pixel::offset(x, y, self.info.pitch, self.info.bytes_per_pixel);
-        let word = self.region.read_u32(offset).unwrap_or(0);
-        self.info.format.unpack(word)
     }
 }
 
@@ -104,6 +115,12 @@ pub enum FramebufferError {
     UnsupportedMemoryModel,
     /// Only 32 bits per pixel is implemented.
     UnsupportedBpp(u16),
+    /// The mapping does not start on a 4-byte boundary, so 32-bit pixel writes
+    /// would be misaligned.
+    MisalignedAddress,
+    /// The row pitch is not a multiple of four bytes, so every row after the
+    /// first would be misaligned.
+    MisalignedPitch(usize),
 }
 
 impl fmt::Display for FramebufferError {
@@ -113,6 +130,10 @@ impl fmt::Display for FramebufferError {
             Self::NoFramebuffer => f.write_str("bootloader listed no framebuffers"),
             Self::UnsupportedMemoryModel => f.write_str("framebuffer is not direct RGB"),
             Self::UnsupportedBpp(bpp) => write!(f, "unsupported depth: {bpp} bits per pixel"),
+            Self::MisalignedAddress => f.write_str("framebuffer is not 4-byte aligned"),
+            Self::MisalignedPitch(pitch) => {
+                write!(f, "row pitch of {pitch} bytes is not a multiple of four")
+            }
         }
     }
 }

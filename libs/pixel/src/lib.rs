@@ -70,27 +70,6 @@ impl Channel {
         };
         scaled << self.shift
     }
-
-    /// Recover an 8-bit intensity from a packed word.
-    ///
-    /// Exact for 8-bit channels; for narrower ones the low bits are lost, which
-    /// is why a scrolled console can only be as faithful as its display depth.
-    pub const fn decode(self, word: u32) -> u8 {
-        if self.size == 0 {
-            return 0;
-        }
-        let mask = if self.size >= 32 {
-            u32::MAX
-        } else {
-            (1 << self.size) - 1
-        };
-        let raw = (word >> self.shift) & mask;
-        if self.size >= 8 {
-            raw as u8
-        } else {
-            (raw << (8 - self.size)) as u8
-        }
-    }
 }
 
 /// How a framebuffer packs colour channels into a word.
@@ -115,15 +94,6 @@ impl PixelFormat {
         self.red.encode(colour.red)
             | self.green.encode(colour.green)
             | self.blue.encode(colour.blue)
-    }
-
-    /// Recover a colour from a framebuffer word.
-    pub const fn unpack(self, word: u32) -> Rgb {
-        Rgb {
-            red: self.red.decode(word),
-            green: self.green.decode(word),
-            blue: self.blue.decode(word),
-        }
     }
 }
 
@@ -182,16 +152,6 @@ mod tests {
     }
 
     #[test]
-    fn eight_bit_channels_round_trip_exactly() {
-        for format in [rgb888(), bgr888()] {
-            for hex in [0x00_00_00, 0x0B_10_21, 0xE8_D5_A3, 0xFF_FF_FF] {
-                let colour = Rgb::from_hex(hex);
-                assert_eq!(format.unpack(format.pack(colour)), colour);
-            }
-        }
-    }
-
-    #[test]
     fn narrow_channels_stay_within_their_bits() {
         let packed = rgb565().pack(Rgb::from_hex(0xFF_FF_FF));
         assert_eq!(packed, 0xFFFF);
@@ -202,7 +162,6 @@ mod tests {
     fn a_zero_width_channel_contributes_nothing() {
         let format = PixelFormat::new(Channel::new(0, 0), Channel::new(0, 8), Channel::new(8, 8));
         assert_eq!(format.pack(Rgb::from_hex(0xFF_00_00)), 0);
-        assert_eq!(format.unpack(u32::MAX).red, 0);
     }
 
     #[test]
