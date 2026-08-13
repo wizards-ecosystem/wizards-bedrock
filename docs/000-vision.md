@@ -42,7 +42,8 @@ reference — not followed linearly). Docs are numbered in creation order.
 ## Roadmap (phases)
 
 0. **Forge** — toolchain, workspace, boot to first light ✅ (2026-07-18)
-1. First light polish — logging, panic handling, framebuffer console
+1. First light polish — logging, panic handling, framebuffer console;
+   framekernel split into `wost` + `kernel` ✅ (2026-08-12)
 2. CPU fundamentals — GDT, IDT, exceptions, APIC timer, keyboard;
    security baseline on (NX, W^X, SMEP/SMAP/UMIP)
 3. Memory — physical frame allocator, paging, kernel heap, memory objects

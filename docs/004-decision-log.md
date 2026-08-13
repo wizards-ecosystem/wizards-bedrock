@@ -392,8 +392,12 @@ install.
 
 ## D-17 Toolchain pins and workarounds — Status: Accepted (revisit periodically)
 
-- **Rust stable** (1.97.x), pinned via `rust-toolchain.toml` with the
-  `x86_64-unknown-none` target.
+- **Rust 1.97.1**, pinned exactly via `rust-toolchain.toml`
+  (`profile = "minimal"`, `rustfmt`/`clippy`/`rust-mingw`, the
+  `x86_64-unknown-none` target).
+  *Corrected 2026-08-12: this bullet previously read "stable (1.97.x), pinned"
+  while the file actually said `channel = "stable"` — a floating channel. See
+  D-24.*
 - **`limine` crate = 0.5.0 exactly**: 0.6.x requires nightly
   (`ptr_metadata`). 0.5's base revision 3 is confirmed working against
   the vendored Limine v10 binary (verified by boot on QEMU + VMware).
@@ -454,6 +458,144 @@ workloads are a claim we make.
 
 ---
 
+## D-21 The framekernel crate split lands now, not later — Status: Accepted (2026-08-12)
+
+**Context.** D-13 committed to Asterinas-style framekernel discipline: all
+`unsafe` confined to a privileged framework crate, every other kernel crate
+safe. The Asterinas authors' explicit lesson is that safe MMIO/DMA
+abstractions must be designed in from day one, not retrofitted. At the end
+of Phase 0 the kernel was 242 lines with `unsafe` spread across two peer
+driver modules, no framework crate, and no `// SAFETY:` comment anywhere.
+
+**Options.** (a) Defer the split until there is more kernel to split.
+(b) Impose the layering as module structure inside one crate, so the boundary
+is convention. (c) Create `wost/` now, while the whole kernel is 242 lines.
+
+**Decision.** (c). `wost/` owns boot handoff, port I/O, MMIO, CPU control,
+locking and the panic token. `kernel/` carries `#![deny(unsafe_code)]` and has
+no hand-written `unsafe` at all: the UART driver, console, logging, and panic
+reporting are ordinary safe Rust over `wost`'s abstractions. `BootInfo` and
+`Framebuffer` remove `limine` from the kernel's dependency list entirely.
+
+**Rationale.** This is the cheapest the migration will ever be, and doing it
+later means retrofitting exactly the abstractions the research says cannot be
+retrofitted. The split immediately paid for itself: `MmioRegion`'s bounds
+check is what makes a non-32-bpp framebuffer a typed error instead of an
+out-of-bounds write, and `port::claim`'s registry turns "no other driver owns
+these ports" from a comment into a checked fact.
+
+**Consequences.**
+
+- **`kernel/` uses `deny(unsafe_code)`, not `forbid`, amending D-13.**
+  `wost::entry!` expands `#[allow(unsafe_code)]` glue into the binary crate,
+  and `forbid` cannot be lifted by an `allow` anywhere, including in a macro
+  expansion — rustc rejects it outright. Future service crates (scheduler,
+  VFS, drivers) have no entry glue and keep `forbid`.
+- **The entry glue expands in the binary crate, not in `wost`.** `#[used]`
+  statics inside an rlib can be dropped wholesale by the linker: nothing
+  references the archive member holding them, so `#[used]` never gets a chance
+  to protect it (rust-lang/rust#47384). Every `-rt` crate in the ecosystem
+  expands entry glue in the binary for this reason. `linker.ld` and `build.rs`
+  stay in `kernel/` too — a build script's `rustc-link-arg` does not propagate
+  to dependents, so a `wost/build.rs` emitting `-T linker.ld` would silently do
+  nothing.
+- `ENTRY(kmain)` is unchanged; the macro still emits a symbol named `kmain`.
+- Verified 2026-08-12 on QEMU: identical serial banner, framebuffer background
+  byte-identical at `0x0B1021`, panic screen and double-panic guard exercised,
+  scrolling verified over 60 lines.
+
+---
+
+## D-22 Lint, test, and CI policy — Status: Accepted (2026-08-12)
+
+**Decision.** A `[workspace.lints]` table all kernel crates opt into:
+`unsafe_op_in_unsafe_fn`, `unused_must_use` denied; `missing_docs`,
+`unreachable_pub` at warn; and from clippy's allow-by-default `restriction`
+group, `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`, and
+`missing_safety_doc` denied. `clippy::missing_docs_in_private_items` is
+deliberately **not** enabled. `cargo xtask ci` is the single gate, and
+`.github/workflows/ci.yml` runs the same steps on Linux.
+
+**Rationale.** `undocumented_unsafe_blocks` is what mechanically forces a
+`// SAFETY:` on every unsafe operation, and its companion keeps each comment
+covering exactly one operation. Together they turn D-13's discipline from an
+aspiration into a build failure. The excluded lint is the one that would
+demand a doc comment on every private helper, which is noise; the policy is
+"prose where it carries a safety obligation, nowhere else"
+(`005-code-conventions.md`).
+
+**Consequences.** Cargo forbids mixing `[lints] workspace = true` with local
+lint tables in the same manifest, so per-crate escalation goes in source
+attributes — `#![deny(unsafe_code)]` sits at the top of `kernel/src/main.rs`,
+where a reader meets it in the first five lines. `xtask` opts out of the
+workspace lints entirely. Automated tests exist for host-side logic only; the
+reasoning and the path forward are in `005-code-conventions.md`.
+
+---
+
+## D-23 xtask is a library with a thin binary — Status: Accepted (2026-08-12)
+
+**Context.** `xtask/src/main.rs` had grown to 254 lines in one file, with
+hardcoded paths, twelve fallible calls carrying no context, and no tests. The
+one arithmetic defect it contained — a truncating cylinder division that
+declared a VMDK geometry 1.25 MiB smaller than its extent — was invisible
+precisely because nothing could exercise it.
+
+**Decision.** Split into `lib.rs` plus modules (`cli`, `paths`, `cargo`,
+`tasks`, `image/{mbr,esp}`, `qemu`, `vmware`, `vendor`, `sha256`) with a
+~15-line `main.rs`. Pure byte-layout and arithmetic live in functions that
+take values and return values, tested in-module. Package names, target triple,
+and profile are constants in `paths`, and every path is derived from them.
+Argument parsing is hand-rolled — twelve tasks and six flags are a testable
+`match`, not a reason to take `clap` and three transitive crates.
+
+**Consequences.** 42 host tests, including a byte-exact MBR assertion and a
+regression test for the cylinder rounding. `CARGO_TARGET_DIR` is honoured and
+`--debug` builds now find their artifact. `std::env::consts::EXE_SUFFIX` and
+`QEMU`/`QEMU_DIR` overrides replace the hardcoded `.exe` and install path, so
+the image step runs on Linux CI. New tasks: `check`, `clippy`, `fmt`, `test`,
+`verify-vendor`, `ci`, `clean`. **A bare `cargo xtask` is now an error printing
+usage** — the old default silently booted a virtual machine whenever a task
+name was mistyped.
+
+---
+
+## D-24 The toolchain pin is exact — Status: Accepted (2026-08-12)
+
+**Context.** D-17 recorded the toolchain as "pinned (1.97.x)" while
+`rust-toolchain.toml` actually said `channel = "stable"`.
+
+**Decision.** `channel = "1.97.1"`, `profile = "minimal"`. D-17's bullet is
+corrected in place.
+
+**Rationale.** Clippy gains lints every six weeks. With the lint policy of
+D-22 gating the build, a floating channel means CI can go red because a
+toolchain shipped, not because a commit did — and a reproducible OS build is
+worth more than automatic updates. Bump deliberately.
+
+**Consequences.** `rust-mingw` is listed explicitly in `components`: the host
+is `x86_64-pc-windows-gnu` and the minimal profile is not obliged to include
+it. Verify with `rustup component list --installed` after any toolchain change.
+
+---
+
+## D-25 Vendored binaries are checksum-pinned — Status: Accepted (2026-08-12)
+
+**Context.** `boot/limine/BOOTX64.EFI` is a 300 KB prebuilt binary from
+another project, recorded with provenance and a fetch date but no digest, and
+referencing a rolling `v10.x-binary` branch. An update was unverifiable.
+
+**Decision.** `boot/limine/CHECKSUMS` records a SHA-256 in `sha256sum` format,
+checked by `cargo xtask verify-vendor`, by `cargo xtask ci`, and by an
+integration test so that tampering fails `cargo test` too. The hash function
+is ~90 lines in `xtask/src/sha256.rs`, verified against the NIST vectors —
+cheaper than a dependency for one call site.
+
+**Consequences.** Updating Limine is now a two-line diff a reviewer can
+actually check. Every future vendored artifact gets the same treatment.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap
@@ -461,3 +603,4 @@ workloads are a claim we make.
 - `002-architecture.md` — the native architecture (D-06..D-15)
 - `003-research-notes.md` — evidence tiers and citations behind
   Verified statuses
+- `005-code-conventions.md` — how the code is written (D-21, D-22, D-23)
