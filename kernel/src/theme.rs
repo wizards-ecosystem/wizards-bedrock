@@ -5,11 +5,24 @@
 
 use wost::boot::Rgb;
 
-/// Deep midnight blue.
-pub(crate) const BACKGROUND: Rgb = Rgb::from_hex(0x0B_10_21);
+/// A background and the text drawn on it.
+///
+/// The pair travels together so the two colours cannot be passed the wrong way
+/// round — they are both `Rgb`, and the compiler would not notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Palette {
+    pub(crate) background: Rgb,
+    pub(crate) foreground: Rgb,
+}
 
-/// Parchment gold.
-pub(crate) const FOREGROUND: Rgb = Rgb::from_hex(0xE8_D5_A3);
+/// Parchment gold on deep midnight blue.
+pub(crate) const NORMAL: Palette = Palette {
+    background: Rgb::from_hex(0x0B_10_21),
+    foreground: Rgb::from_hex(0xE8_D5_A3),
+};
 
-/// Dried blood, for the panic screen.
-pub(crate) const PANIC_BACKGROUND: Rgb = Rgb::from_hex(0x3A_08_0C);
+/// The same text on dried blood, for the panic screen.
+pub(crate) const PANIC: Palette = Palette {
+    background: Rgb::from_hex(0x3A_08_0C),
+    foreground: NORMAL.foreground,
+};

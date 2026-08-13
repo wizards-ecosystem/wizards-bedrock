@@ -152,6 +152,7 @@ impl PortValue for u32 {
 }
 
 /// Exclusive access to a single I/O port.
+#[derive(Debug)]
 pub struct Port<T: PortValue> {
     number: u16,
     value: PhantomData<T>,
@@ -195,6 +196,7 @@ impl<T: PortValue> Port<T> {
 ///
 /// Register offsets are checked against `N`, so a driver indexes its registers
 /// by name without being able to walk off the end into another device.
+#[derive(Debug)]
 pub struct PortBlock<const N: usize> {
     base: u16,
 }

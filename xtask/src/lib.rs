@@ -41,10 +41,10 @@ pub fn run(task: Task) -> Result<()> {
         }
         Task::Check { message_format } => tasks::check(&paths, message_format.as_deref()),
         Task::Clippy => tasks::clippy(&paths),
-        Task::Fmt { check } => tasks::fmt(&paths, check),
+        Task::Fmt(mode) => tasks::fmt(&paths, mode),
         Task::Test => tasks::test(&paths),
         Task::VerifyVendor => vendor::verify(&paths),
         Task::Ci => tasks::ci(&paths),
-        Task::Clean { all } => tasks::clean(&paths, all),
+        Task::Clean(scope) => tasks::clean(&paths, scope),
     }
 }

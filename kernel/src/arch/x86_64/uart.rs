@@ -75,7 +75,19 @@ pub(crate) enum UartError {
     NotPresent,
 }
 
+impl fmt::Display for UartError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PortsUnavailable => f.write_str("its ports are already claimed"),
+            Self::NotPresent => f.write_str("no controller answered the loopback probe"),
+        }
+    }
+}
+
+impl core::error::Error for UartError {}
+
 /// A 16550-compatible serial controller.
+#[derive(Debug)]
 pub(crate) struct Uart {
     registers: PortBlock<REGISTER_COUNT>,
 }

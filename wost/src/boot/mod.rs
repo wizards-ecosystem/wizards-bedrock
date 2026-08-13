@@ -31,6 +31,7 @@ pub struct FramebufferInfo {
 }
 
 /// A linear framebuffer the bootloader has already mapped for us.
+#[derive(Debug)]
 pub struct Framebuffer {
     region: MmioRegion,
     info: FramebufferInfo,
@@ -93,6 +94,7 @@ impl Framebuffer {
 
 /// Why the kernel has no usable framebuffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FramebufferError {
     /// The bootloader ignored the framebuffer request.
     NoResponse,
@@ -115,7 +117,10 @@ impl fmt::Display for FramebufferError {
     }
 }
 
+impl core::error::Error for FramebufferError {}
+
 /// Everything the bootloader handed the kernel.
+#[derive(Debug)]
 pub struct BootInfo {
     /// Whether the bootloader honoured the base revision the kernel asked for.
     pub base_revision_supported: bool,

@@ -5,8 +5,11 @@
 //! Every access returns a [`Result`]: a driver bug becomes an error value, not
 //! a stray write into whatever follows the device.
 
+use core::fmt;
+
 /// Why an [`MmioRegion`] access was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MmioError {
     /// The access would extend past the end of the region.
     OutOfBounds {
@@ -26,7 +29,28 @@ pub enum MmioError {
     },
 }
 
+impl fmt::Display for MmioError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::OutOfBounds {
+                offset,
+                len,
+                region_len,
+            } => write!(
+                f,
+                "access of {len} bytes at offset {offset} leaves a {region_len}-byte region"
+            ),
+            Self::Misaligned { offset, align } => {
+                write!(f, "offset {offset} is not {align}-byte aligned")
+            }
+        }
+    }
+}
+
+impl core::error::Error for MmioError {}
+
 /// A region of device memory, accessed with volatile writes.
+#[derive(Debug)]
 pub struct MmioRegion {
     base: *mut u8,
     len: usize,

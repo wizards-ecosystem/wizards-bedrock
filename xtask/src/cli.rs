@@ -70,10 +70,7 @@ pub enum Task {
     /// Lint every crate.
     Clippy,
     /// Format the workspace.
-    Fmt {
-        /// Report unformatted files instead of rewriting them.
-        check: bool,
-    },
+    Fmt(FmtMode),
     /// Run the host tests.
     Test,
     /// Check vendored binaries against their recorded digests.
@@ -81,10 +78,27 @@ pub enum Task {
     /// Everything CI runs.
     Ci,
     /// Remove build output.
-    Clean {
-        /// Also remove the generated `vm/` directory.
-        all: bool,
-    },
+    Clean(CleanScope),
+}
+
+/// Whether `fmt` rewrites files or just reports on them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FmtMode {
+    /// Reformat the workspace in place.
+    #[default]
+    Write,
+    /// Leave files alone and fail if any is unformatted.
+    Check,
+}
+
+/// How much `clean` removes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CleanScope {
+    /// Cargo's build output only.
+    #[default]
+    Build,
+    /// Build output and the generated `vm/` directory, VMware state included.
+    Everything,
 }
 
 /// Parse the arguments after the task separator.
@@ -138,11 +152,19 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         "vmware" => Ok(Task::Vmware(profile)),
         "check" => Ok(Task::Check { message_format }),
         "clippy" => Ok(Task::Clippy),
-        "fmt" => Ok(Task::Fmt { check }),
+        "fmt" => Ok(Task::Fmt(if check {
+            FmtMode::Check
+        } else {
+            FmtMode::Write
+        })),
         "test" => Ok(Task::Test),
         "verify-vendor" => Ok(Task::VerifyVendor),
         "ci" => Ok(Task::Ci),
-        "clean" => Ok(Task::Clean { all }),
+        "clean" => Ok(Task::Clean(if all {
+            CleanScope::Everything
+        } else {
+            CleanScope::Build
+        })),
         other => bail!("unknown task `{other}`"),
     }
 }
@@ -216,12 +238,16 @@ mod tests {
     fn task_specific_flags_reach_their_task() {
         assert_eq!(
             parse_args(&["fmt", "--check"]).unwrap(),
-            Task::Fmt { check: true }
+            Task::Fmt(FmtMode::Check)
         );
-        assert_eq!(parse_args(&["fmt"]).unwrap(), Task::Fmt { check: false });
+        assert_eq!(parse_args(&["fmt"]).unwrap(), Task::Fmt(FmtMode::Write));
         assert_eq!(
             parse_args(&["clean", "--all"]).unwrap(),
-            Task::Clean { all: true }
+            Task::Clean(CleanScope::Everything)
+        );
+        assert_eq!(
+            parse_args(&["clean"]).unwrap(),
+            Task::Clean(CleanScope::Build)
         );
         assert_eq!(
             parse_args(&["check", "--message-format=json"]).unwrap(),

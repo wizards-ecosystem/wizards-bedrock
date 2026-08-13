@@ -7,6 +7,7 @@
 use anyhow::{Context, Result};
 
 use crate::cargo::{self, Profile};
+use crate::cli::{CleanScope, FmtMode};
 use crate::paths::{self, Paths};
 use crate::{image, vendor};
 
@@ -34,9 +35,9 @@ pub fn clippy(paths: &Paths) -> Result<()> {
 }
 
 /// Format the workspace, or report what is unformatted.
-pub fn fmt(paths: &Paths, check: bool) -> Result<()> {
+pub fn fmt(paths: &Paths, mode: FmtMode) -> Result<()> {
     let mut args = vec!["fmt".to_string(), "--all".to_string()];
-    if check {
+    if mode == FmtMode::Check {
         args.extend(["--".to_string(), "--check".to_string()]);
     }
     cargo::run(paths.root(), "formatting", &args)
@@ -52,7 +53,7 @@ pub fn test(paths: &Paths) -> Result<()> {
 
 /// Everything CI runs, in the order that fails fastest.
 pub fn ci(paths: &Paths) -> Result<()> {
-    fmt(paths, true)?;
+    fmt(paths, FmtMode::Check)?;
     clippy(paths)?;
     test(paths)?;
     vendor::verify(paths)?;
@@ -62,9 +63,9 @@ pub fn ci(paths: &Paths) -> Result<()> {
 }
 
 /// Remove build output.
-pub fn clean(paths: &Paths, all: bool) -> Result<()> {
+pub fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
     cargo::run(paths.root(), "clean", ["clean"])?;
-    if all {
+    if scope == CleanScope::Everything {
         let vm_dir = paths.vm_dir();
         if vm_dir.exists() {
             std::fs::remove_dir_all(&vm_dir)

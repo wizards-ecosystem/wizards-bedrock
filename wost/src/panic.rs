@@ -17,6 +17,7 @@ static PANICKING: AtomicBool = AtomicBool::new(false);
 /// single caller for the life of the boot. Holding one means the code this CPU
 /// interrupted can never resume, which is what makes
 /// [`SpinLock::force_unlock`](crate::sync::SpinLock::force_unlock) sound.
+#[derive(Debug)]
 pub struct PanicToken(());
 
 /// Begin the terminal panic path.

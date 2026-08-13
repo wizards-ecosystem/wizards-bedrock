@@ -17,6 +17,8 @@ mod log;
 mod panic;
 mod theme;
 
+use core::fmt::Write;
+
 use wost::arch::current::cpu;
 use wost::boot::BootInfo;
 
@@ -40,9 +42,9 @@ fn kernel_main(boot: BootInfo) -> ! {
                     console.write_line(line);
                 }
                 // The one message that cannot go to the log it is about.
-                if !serial {
+                if let Err(reason) = serial {
                     console.write_line("");
-                    console.write_line("  no serial console found — diagnostics are lost");
+                    let _ = writeln!(console, "  no serial log: {reason}");
                 }
             });
         }

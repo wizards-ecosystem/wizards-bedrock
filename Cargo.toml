@@ -42,6 +42,7 @@ fscommon = "0.1"
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"
+missing_debug_implementations = "warn"
 unused_must_use = "deny"
 unreachable_pub = "warn"
 

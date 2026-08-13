@@ -21,7 +21,7 @@ fn panic(info: &PanicInfo<'_>) -> ! {
     error!("KERNEL PANIC: {info}");
 
     dev::with_console(|console| {
-        console.reset(theme::PANIC_BACKGROUND, theme::FOREGROUND);
+        console.reset(theme::PANIC);
         console.write_line("");
         console.write_line("  KERNEL PANIC");
         console.write_line("");

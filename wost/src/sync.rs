@@ -1,6 +1,7 @@
 //! Synchronisation primitives.
 
 use core::cell::UnsafeCell;
+use core::fmt;
 use core::hint::spin_loop;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -73,9 +74,28 @@ impl<T> SpinLock<T> {
     }
 }
 
+impl<T: fmt::Debug> fmt::Debug for SpinLock<T> {
+    /// Never blocks: a `Debug` impl that could spin would hang the one context
+    /// most likely to be printing it, the panic handler.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut out = f.debug_struct("SpinLock");
+        match self.try_lock() {
+            Some(guard) => out.field("value", &*guard),
+            None => out.field("value", &format_args!("<locked>")),
+        }
+        .finish()
+    }
+}
+
 /// Exclusive access to a [`SpinLock`]'s value, released on drop.
 pub struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
+}
+
+impl<T: fmt::Debug> fmt::Debug for SpinLockGuard<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
 }
 
 impl<T> Deref for SpinLockGuard<'_, T> {

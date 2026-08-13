@@ -8,9 +8,9 @@ use core::fmt;
 use noto_sans_mono_bitmap::{
     FontWeight, RasterHeight, RasterizedChar, get_raster, get_raster_width,
 };
-use wost::boot::{Framebuffer, Rgb};
+use wost::boot::Framebuffer;
 
-use crate::theme;
+use crate::theme::Palette;
 
 const FONT_HEIGHT: RasterHeight = RasterHeight::Size16;
 const FONT_WEIGHT: FontWeight = FontWeight::Regular;
@@ -25,6 +25,7 @@ const LINE_GAP: usize = 2;
 const FALLBACK_GLYPH: char = '?';
 
 /// A monospaced text console over a linear framebuffer.
+#[derive(Debug)]
 pub(crate) struct Console {
     framebuffer: Framebuffer,
     glyph_width: usize,
@@ -33,13 +34,12 @@ pub(crate) struct Console {
     height: usize,
     cursor_x: usize,
     cursor_y: usize,
-    background: Rgb,
-    foreground: Rgb,
+    palette: Palette,
 }
 
 impl Console {
-    /// Take over `framebuffer` and clear it to the default palette.
-    pub(crate) fn new(framebuffer: Framebuffer) -> Self {
+    /// Take over `framebuffer` and clear it to `palette`.
+    pub(crate) fn new(framebuffer: Framebuffer, palette: Palette) -> Self {
         let info = framebuffer.info();
         let mut console = Self {
             framebuffer,
@@ -49,18 +49,16 @@ impl Console {
             height: info.height,
             cursor_x: MARGIN,
             cursor_y: MARGIN,
-            background: theme::BACKGROUND,
-            foreground: theme::FOREGROUND,
+            palette,
         };
-        console.reset(theme::BACKGROUND, theme::FOREGROUND);
+        console.reset(palette);
         console
     }
 
-    /// Adopt a new palette, clear the screen, and home the cursor.
-    pub(crate) fn reset(&mut self, background: Rgb, foreground: Rgb) {
-        self.background = background;
-        self.foreground = foreground;
-        self.framebuffer.fill(background);
+    /// Adopt `palette`, clear the screen, and home the cursor.
+    pub(crate) fn reset(&mut self, palette: Palette) {
+        self.palette = palette;
+        self.framebuffer.fill(palette.background);
         self.cursor_x = MARGIN;
         self.cursor_y = MARGIN;
     }
@@ -90,7 +88,10 @@ impl Console {
         };
         for (row, intensities) in raster.raster().iter().enumerate() {
             for (column, &intensity) in intensities.iter().enumerate() {
-                let colour = self.background.blend(self.foreground, intensity);
+                let colour = self
+                    .palette
+                    .background
+                    .blend(self.palette.foreground, intensity);
                 self.framebuffer
                     .write_pixel(self.cursor_x + column, self.cursor_y + row, colour);
             }
@@ -113,7 +114,7 @@ impl Console {
         self.framebuffer.copy_rows(MARGIN + shift, MARGIN, retained);
         self.cursor_y -= shift;
         self.framebuffer
-            .fill_rows(self.cursor_y, shift, self.background);
+            .fill_rows(self.cursor_y, shift, self.palette.background);
     }
 }
 
