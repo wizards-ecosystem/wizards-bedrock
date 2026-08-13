@@ -1,0 +1,10 @@
+[package]
+name = "pixel"
+description = "Colour and framebuffer address arithmetic. Pure logic, host-testable."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

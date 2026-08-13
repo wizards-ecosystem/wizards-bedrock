@@ -1,4 +1,10 @@
 [toolchain]
-channel = "stable"
+# Pinned exactly rather than "stable": clippy gains lints every six weeks, and a
+# floating channel means CI can go red from a toolchain release rather than from
+# a commit. Bump deliberately — see D-24 in docs/004-decision-log.md.
+channel = "1.97.1"
+profile = "minimal"
+# rust-mingw is listed explicitly because the host is x86_64-pc-windows-gnu and
+# linking fails without it; the minimal profile is not required to include it.
+components = ["rustfmt", "clippy", "rust-mingw"]
 targets = ["x86_64-unknown-none"]
-components = ["rustfmt", "clippy"]

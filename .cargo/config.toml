@@ -1,5 +1,18 @@
+# WARNING: never set the RUSTFLAGS environment variable when building this repo.
+# RUSTFLAGS *replaces* the [target.x86_64-unknown-none] rustflags below, so the
+# kernel would link without code-model=kernel — a broken higher-half image with
+# no build error. Pass lint flags after `--` instead:
+#     cargo kclippy -- -D warnings
+
 [alias]
 xtask = "run --package xtask --"
+
+# The cross-compiled half of the workspace. Bare `cargo check`/`clippy`/`test`
+# cover the host half via `default-members` in Cargo.toml. No --all-targets here:
+# the kernel crates have no host test or bench targets and never will.
+kcheck = "check --package wost --package wizard-kernel --target x86_64-unknown-none"
+kclippy = "clippy --package wost --package wizard-kernel --target x86_64-unknown-none"
+kbuild = "build --package wizard-kernel --target x86_64-unknown-none --release"
 
 [target.x86_64-unknown-none]
 rustflags = [

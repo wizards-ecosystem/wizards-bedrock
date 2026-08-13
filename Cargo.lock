@@ -68,11 +68,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f102c477fd4ec864c149803bf606ecc23bc9329602ec0f99073a728abf454abc"
 
 [[package]]
+name = "pixel"
+version = "0.1.0"
+
+[[package]]
 name = "wizard-kernel"
 version = "0.1.0"
 dependencies = [
- "limine",
  "noto-sans-mono-bitmap",
+ "wost",
+]
+
+[[package]]
+name = "wost"
+version = "0.1.0"
+dependencies = [
+ "limine",
+ "pixel",
 ]
 
 [[package]]

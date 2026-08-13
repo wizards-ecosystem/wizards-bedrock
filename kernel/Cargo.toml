@@ -1,13 +1,10 @@
 [package]
 name = "wizard-kernel"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
-# 0.6.x requires nightly (ptr_metadata); 0.5 (base revision 3) builds on stable.
-limine = "=0.5.0"
-noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = [
-    "regular",
-    "size_16",
-    "unicode-basic-latin",
-] }
+noto-sans-mono-bitmap.workspace = true
+wost = { path = "../wost" }

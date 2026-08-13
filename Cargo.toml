@@ -1,18 +1,66 @@
 [workspace]
-resolver = "2"
-members = ["kernel", "xtask"]
+# A virtual manifest inherits no edition, so the resolver must be stated
+# explicitly or cargo falls back to resolver 1. Resolver 3 is the edition-2024
+# default and honours `rust-version` when picking dependency versions.
+resolver = "3"
+members = ["kernel", "libs/pixel", "wost", "xtask"]
+
+# The kernel crates only build for x86_64-unknown-none and xtask only builds for
+# the host, and stable cargo cannot express per-package targets
+# (`package.forced-target` is nightly). So bare root commands (`cargo test`,
+# `cargo clippy`) are scoped to the host half, and the cross half is reached
+# through the aliases in .cargo/config.toml. `cargo xtask ci` runs both.
+default-members = ["libs/pixel", "xtask"]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
+rust-version = "1.97"
 license = "MIT"
-repository = ""
 
-# Kernel must never silently pull in std-dependent code; each crate opts into
-# its own dependencies explicitly.
+[workspace.dependencies]
+# Our own no_std libraries: pure logic, host-testable.
+pixel = { path = "libs/pixel" }
+
+# Kernel side (no_std). 0.6.x of limine requires nightly (ptr_metadata);
+# 0.5 (base revision 3) builds on stable.
+limine = "=0.5.0"
+noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = [
+    "regular",
+    "size_16",
+    "unicode-basic-latin",
+] }
+
+# Host side (xtask). fatfs drops default features to avoid chrono, whose Windows
+# bindings need dlltool.exe — absent from the GNU toolchain we build with.
+anyhow = "1"
+fatfs = { version = "0.3", default-features = false, features = ["std", "alloc"] }
+fscommon = "0.1"
+
+# Members opt in with `[lints] workspace = true`. Cargo rejects mixing that with
+# sibling lint tables in the same manifest, so per-crate escalation lives in
+# source attributes instead — see `#![deny(unsafe_code)]` in kernel/src/main.rs.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+unused_must_use = "deny"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# These three are the mechanical backstop for the framekernel discipline:
+# every unsafe operation is documented, one operation per block, and every
+# `pub unsafe fn` states its contract. `missing_docs_in_private_items` is
+# deliberately absent — it manufactures comment noise.
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+missing_safety_doc = "deny"
 
 [profile.release]
 panic = "abort"
 lto = true
+# Debug info costs nothing at runtime (no PT_LOAD segment) and makes objdump/nm
+# triage of a hung kernel possible.
+debug = true
 
 [profile.dev]
 panic = "abort"
