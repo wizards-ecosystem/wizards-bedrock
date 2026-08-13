@@ -114,8 +114,5 @@ deliberate choice to keep Phase 1 finishable, not an oversight.
   lldb, gdb-multiarch via a future decision)
 - Limine crate 0.6.x when its nightly requirement lands on stable, or if
   we move to nightly for other reasons
-- A `cargo xtask test-boot` smoke test: a `selftest` feature makes the kernel
-  assert, print, and exit QEMU through `isa-debug-exit`, which is an ordinary
-  port write and needs no nightly. This is the only way to get interrupts,
-  paging, and context switching under automated test — worth building during
-  Phase 2 (`005-code-conventions.md`)
+- Grow `kernel/src/selftest.rs` as Phase 2 lands: the harness exists (D-28), so
+  every new subsystem that touches hardware should arrive with its check

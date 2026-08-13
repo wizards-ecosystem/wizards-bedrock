@@ -154,6 +154,19 @@ the message reads as "while doing X" when chained. No `unwrap`.
 
 ## Tests
 
+**Every change lands with the check that proves it.** There are exactly two
+places a check can go, and which one is a property of the code, not a
+preference:
+
+| The thing under test | Where it goes | How it runs |
+|---|---|---|
+| Arithmetic, bit layout, parsing — no hardware | a `libs/` crate | `cargo test` |
+| Anything needing a real machine | `kernel/src/selftest.rs` | `cargo xtask test-boot` |
+
+If a check fits neither, that is usually a sign the logic should be split so
+that the interesting half fits the first row. `libs/pixel` exists because the
+framebuffer's arithmetic was worth testing and its hardware access was not.
+
 `cargo test -p wizard-kernel` will never work: a `#![no_std] #![no_main]`
 binary cannot host the `test` harness, and in-QEMU `#[test_case]` runners need
 nightly's `custom_test_frameworks`, which D-01 rules out. So:
@@ -173,8 +186,16 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   `Paths::new` takes everything explicitly, `Paths::discover` reads env and
   delegates. `std::env::set_var` is `unsafe` in edition 2024 and unsound across
   test threads, so tests never touch the environment.
-- Hardware behaviour is verified by booting: `cargo xtask run` for the loop,
-  a VMware boot as every phase's definition of done (D-18).
+- On-machine checks live in `kernel/src/selftest.rs`, compiled only under the
+  `selftest` feature and run by `cargo xtask test-boot`, which boots the kernel
+  headless and reads its verdict from QEMU's exit code (D-28). Keep each check
+  small, named as the property it asserts, and free of side effects on the
+  running kernel — they execute against a live machine, not a fixture.
+- A check that cannot fail is worth nothing. When adding one, break it once and
+  confirm the harness goes red before trusting it green.
+- Hardware behaviour is *also* verified by eye: `cargo xtask run` for the loop,
+  a VMware boot as every phase's definition of done (D-18). The self-test
+  catches regressions; the eye catches things nobody thought to assert.
 
 ## Building
 
