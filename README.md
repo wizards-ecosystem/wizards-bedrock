@@ -44,7 +44,7 @@ override that.
 cargo xtask ci       # the gate: fmt --check, clippy, tests, vendor digests, image
 ```
 
-`ci` is exactly what [CI](.github/workflows/ci.yml) runs. Individual pieces:
+`ci` is the only gate — there is no hosted CI (D-26). Individual pieces:
 `cargo xtask fmt`, `cargo xtask clippy`, `cargo xtask test`,
 `cargo xtask verify-vendor`, `cargo xtask clean [--all]`.
 

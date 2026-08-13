@@ -513,8 +513,9 @@ these ports" from a comment into a checked fact.
 `unreachable_pub` at warn; and from clippy's allow-by-default `restriction`
 group, `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`, and
 `missing_safety_doc` denied. `clippy::missing_docs_in_private_items` is
-deliberately **not** enabled. `cargo xtask ci` is the single gate, and
-`.github/workflows/ci.yml` runs the same steps on Linux.
+deliberately **not** enabled. `cargo xtask ci` is the single gate.
+*(A GitHub Actions workflow ran the same steps on Linux for a day; removed by
+D-26.)*
 
 **Rationale.** `undocumented_unsafe_blocks` is what mechanically forces a
 `// SAFETY:` on every unsafe operation, and its companion keeps each comment
@@ -553,7 +554,7 @@ Argument parsing is hand-rolled — twelve tasks and six flags are a testable
 regression test for the cylinder rounding. `CARGO_TARGET_DIR` is honoured and
 `--debug` builds now find their artifact. `std::env::consts::EXE_SUFFIX` and
 `QEMU`/`QEMU_DIR` overrides replace the hardcoded `.exe` and install path, so
-the image step runs on Linux CI. New tasks: `check`, `clippy`, `fmt`, `test`,
+the tooling is not Windows-only. New tasks: `check`, `clippy`, `fmt`, `test`,
 `verify-vendor`, `ci`, `clean`. **A bare `cargo xtask` is now an error printing
 usage** — the old default silently booted a virtual machine whenever a task
 name was mistyped.
@@ -599,6 +600,61 @@ cheaper than a dependency for one call site.
 
 **Consequences.** Updating Limine is now a two-line diff a reviewer can
 actually check. Every future vendored artifact gets the same treatment.
+
+---
+
+## D-26 No hosted CI; the local gate is the gate — Status: Accepted (2026-08-12)
+
+**Context.** A GitHub Actions workflow ran `fmt --check`, clippy, tests, the
+vendor digests, and an image build on Linux for every push.
+
+**Decision.** Removed. `cargo xtask ci` is the only gate.
+
+**Rationale.** This is a single-developer project on a single machine, and the
+workflow ran exactly the steps `cargo xtask ci` already runs locally in about
+twenty seconds — before the push rather than after it. On a private repository
+it also consumes a metered minute allowance to tell one person something they
+already knew. Branch protection is rejected for the same reason: with no second
+author there is no review to enforce, only a barrier to `git push`.
+
+**Consequences.** Nothing now proves the build works on a non-Windows host. That
+guarantee was real — it is why `xtask` uses `EXE_SUFFIX` and `QEMU_DIR` instead
+of hardcoding `.exe` and a Program Files path — so the portability *code* stays,
+untested. Revisit the moment a second person contributes, or if this is ever
+built on Linux in earnest; the deleted workflow is recoverable from history.
+
+---
+
+## D-27 The Rust API Guidelines are the house style — Status: Accepted (2026-08-12)
+
+**Context.** `005-code-conventions.md` was written from the project's own
+experience. Before building out subsystems on top of it, it was worth checking
+against the established sources rather than inventing a local dialect.
+
+**Decision.** Adopt the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
+as the default standard, and the [Rust for Linux coding
+guidelines](https://docs.kernel.org/rust/coding-guidelines.html) where they are
+more specific about kernel work — chiefly the `// SAFETY:` / `# Safety`
+distinction and the rule against repeating a namespace inside an identifier.
+`005` now cites the specific checklist items it turns into rules.
+
+**Rationale.** These are the conventions a Rust programmer already has in their
+head. Matching them means the code reads correctly to someone who has never
+seen this project, and disagreements have an external referee rather than being
+a matter of taste.
+
+**Consequences.** Four guideline violations were found and fixed in the existing
+code: `missing_debug_implementations` added to the lint table and `Debug`
+implemented across `wost` (C-DEBUG); `Display` and `core::error::Error` on every
+error type (C-GOOD-ERR); `bool` parameters replaced with named types —
+`FmtMode`, `CleanScope`, and a `Palette` that stops two same-typed `Rgb`
+arguments being passed the wrong way round (C-CUSTOM-TYPE); and `#[non_exhaustive]`
+on the error enums (C-STRUCT-PRIVATE's future-proofing rationale).
+
+Two guidelines are explicitly **not** adopted, with reasons recorded in `005`:
+C-EXAMPLE (a rustdoc example on every item) because `no_std` cross-compiled
+crates cannot run doctests, and Rust for Linux's one-import-per-line layout
+because it contradicts the `rustfmt` defaults this project formats with.
 
 ---
 

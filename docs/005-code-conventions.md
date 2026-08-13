@@ -3,6 +3,13 @@
 How this repository is written. Adopted 2026-08-12 alongside the framekernel
 crate split (D-21); the lint policy behind it is D-22.
 
+The default standard is the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/),
+with the [Rust for Linux coding guidelines](https://docs.kernel.org/rust/coding-guidelines.html)
+taking precedence where they are more specific about kernel work (D-27). This
+doc records only what those leave open, what this project decides differently,
+and the checklist items worth calling out. `C-XXX` references below point at the
+API Guidelines checklist.
+
 The rule underneath all of these: **the compiler enforces what it can, and the
 rest is written down here.** Where a convention could be a lint, it is one.
 
@@ -65,11 +72,24 @@ with no entry glue use `forbid`.
 - Constants replace literals. A bare `0xC7` in a driver is a defect; a
   `fifo_control::ENABLE | fifo_control::CLEAR_RECEIVE | …` is the same byte
   and says what it means.
-- Group related constants in a small private module (`register`, `line_status`)
-  rather than prefixing names.
+- **Never repeat a namespace inside an identifier** (Rust for Linux). The module
+  path already carries it: `register::LINE_STATUS`, not `UART_REGISTER_LINE_STATUS`.
+  Group related constants in a small private module rather than prefixing names.
+- Casing per RFC 430, and `as_` / `to_` / `into_` used with their standard
+  meanings (C-CASE, C-CONV).
+- Consistent word order across an API (C-WORD-ORDER): verb then noun, and the
+  same verb for the same operation — `write_pixel` / `read_pixel`,
+  `fill_rows` / `copy_rows`, `write_u32` / `read_u32`.
+- **Arguments convey meaning through types, not `bool`** (C-CUSTOM-TYPE).
+  `fmt(paths, true)` says nothing; `fmt(paths, FmtMode::Check)` says everything.
+  This applies hardest to two adjacent parameters of the same type — hence
+  `Palette` rather than a `(background, foreground)` pair the compiler would
+  happily let you swap.
 - Imports in three blocks, blank-line separated: `core`/`std`, external crates,
   then `crate`. This is convention, not configuration — rustfmt's
   `group_imports` is nightly-only and stable `cargo fmt` ignores it silently.
+  Rust for Linux's one-item-per-line import layout is **not** adopted: it
+  contradicts the rustfmt defaults this project formats with.
 
 ## Comments
 
@@ -85,9 +105,18 @@ Exactly two kinds of prose are mandatory, and both are enforced:
 - `# Safety` on every `pub unsafe fn`, stating the caller's obligation
   (`clippy::missing_safety_doc`).
 
+The distinction matters and is easy to blur (Rust for Linux): a `# Safety`
+section states the *precondition a caller must meet*; a `// SAFETY:` comment
+states *why this particular call meets it*. One is a contract, the other is
+evidence.
+
 Beyond that: `//!` on every module saying what it is for and what it assumes;
-`///` on public items (`missing_docs`, at warn). `missing_docs_in_private_items`
-is deliberately **not** enabled — it manufactures noise on every helper.
+`///` on public items, whose first line is a single sentence saying what the
+item does (`missing_docs`, at warn); `# Panics` on anything that can panic
+(C-FAILURE). `missing_docs_in_private_items` is deliberately **not** enabled —
+it manufactures noise on every helper. C-EXAMPLE (a rustdoc example on every
+item) is **not** adopted either: these crates are `no_std` and cross-compiled,
+so doctests cannot run and unrunnable examples rot.
 
 The comments worth writing are the ones recording a decision that the code
 cannot show: why the divisor is 1, why the entry glue expands in the binary
@@ -106,7 +135,19 @@ crate, why a non-zero QEMU exit is not an error.
 - Make total what can be made total. Glyph lookup falls back rather than
   unwrapping; a pixel outside the visible area is clipped rather than checked
   by the caller.
-- Device errors are typed enums with a `Display` impl, not strings.
+- Error types are enums, never strings, and they are **well-behaved**
+  (C-GOOD-ERR): `Debug`, `Display`, and `core::error::Error`, which is available
+  in `core` since Rust 1.81 and needs no crate. `Display` writes a lowercase
+  clause with no trailing period, so it reads correctly inside a sentence —
+  `"no serial log: no controller answered the loopback probe"`.
+- Error enums carry `#[non_exhaustive]`. A new variant is then not a breaking
+  change, and every `match` on one is written to survive growth.
+- **Types implement the common traits eagerly** (C-COMMON-TRAITS, C-DEBUG):
+  `Debug` on everything public, enforced by `missing_debug_implementations`, plus
+  `Clone`/`Copy`/`PartialEq`/`Eq` on plain data. `Debug` matters more here than
+  in most Rust: serial output is the only debugger there is. A `Debug` impl must
+  never block — `SpinLock`'s uses `try_lock` and prints `<locked>` rather than
+  spinning, because the context most likely to print one is the panic handler.
 
 **xtask:** `anyhow` with `.context(...)` on **every** fallible call, phrased so
 the message reads as "while doing X" when chained. No `unwrap`.
@@ -137,7 +178,7 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
 
 ## Building
 
-`cargo xtask ci` is the gate; it runs exactly what CI runs. The mechanics —
+`cargo xtask ci` is the gate, and the only one (D-26). The mechanics —
 why `cargo build --workspace` cannot work, the `k*` aliases that reach the
 kernel crates, and why `RUSTFLAGS` must never be set here — are in the README's
 Development section rather than repeated.
@@ -149,4 +190,27 @@ Two conventions that belong with the code rather than the README:
   `cargo metadata` to see it.
 - Anything host-specific stays out of `rust-toolchain.toml`. Every host reads
   that file, and rustup resolves `components` against whichever one it is
-  running on — naming a Windows-only component there breaks Linux CI (D-24).
+  running on — naming a Windows-only component breaks every other host (D-24).
+
+## Sources
+
+- [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) — the
+  default standard; `C-XXX` above are its
+  [checklist](https://rust-lang.github.io/api-guidelines/checklist.html) items.
+- [Rust for Linux coding guidelines](https://docs.kernel.org/rust/coding-guidelines.html)
+  — the `// SAFETY:` / `# Safety` distinction, the doc-comment first-sentence
+  rule, and the ban on repeating a namespace inside an identifier.
+- [Asterinas OSTD](https://asterinas.github.io/book/ostd/) — the privileged
+  framework this project's `wost` follows: a ~10k-line minimal core whose safe
+  APIs cover memory, tasks, user space, interrupts, timers, drivers, boot, and
+  synchronisation. Its stated posture on soundness — argue the high-level design
+  and rely on review rather than waiting for formal verification — is the one
+  taken here.
+- [Oxide's Hubris](https://github.com/oxidecomputer/hubris) — precedent for
+  `xtask` over bare cargo in a multi-target embedded build, and for its driver
+  naming (`SYSTEM-DEVICE` libraries, `SYSTEM-DEVICE-server` binaries) worth
+  copying when `drv/` crates arrive.
+- [`rust-osdev/volatile`](https://github.com/rust-osdev/volatile) — the design
+  argument behind `MmioRegion`: declare a region safe to access with a specific
+  set of operations and give it a type, rather than casting raw pointers at the
+  point of use.
