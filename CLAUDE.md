@@ -20,11 +20,9 @@ get wrong:
 ## Commands
 
 `cargo xtask ci` is the gate — run it before claiming work is done. `cargo
-xtask help` lists every task.
-
-`cargo build --workspace` does not work on stable; use `cargo kcheck`,
-`cargo kclippy`, `cargo kbuild` for the kernel crates. Never set `RUSTFLAGS` —
-it silently replaces the kernel's link flags. Both are explained in the README.
+xtask help` lists every task. The README's Development section covers the two
+non-obvious rules (`cargo build --workspace` cannot work here; never set
+`RUSTFLAGS`) — read it before reaching for a bare cargo command.
 
 Hardware behaviour is verified by booting, not by tests: `cargo xtask run`
 for QEMU, and a VMware boot as every phase's definition of done (D-18).

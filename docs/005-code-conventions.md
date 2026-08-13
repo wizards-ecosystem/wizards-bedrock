@@ -21,6 +21,15 @@ function touches no hardware and holds no raw pointer, it does not belong in
 `wost`; it belongs in `kernel/` or, better, in a `libs/` crate where it can be
 unit-tested on the host.
 
+**No speculative API.** Do not add an operation because a subsystem will
+plausibly want it later. This matters most in `wost`, where an unused
+`pub unsafe fn` carries a safety contract nobody can check — `enable_interrupts`
+was written and then removed for exactly this reason: its contract has to talk
+about an IDT, and until one exists the contract is a guess. Write it alongside
+its first caller, when the obligation is real and testable. The exception is
+completing a primitive that is incoherent in halves: `PortValue` covers 8, 16,
+and 32 bits because a sealed trait with one impl is not an abstraction.
+
 **What `wost` owes its callers:** every abstraction it exports must make the
 unsafe operation underneath it *checkable*, not merely *wrapped*.
 `MmioRegion` bounds- and alignment-checks. `port::claim` records ownership in a
@@ -128,16 +137,16 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
 
 ## Building
 
-`cargo xtask ci` is the gate; it runs what CI runs. `cargo build --workspace`
-does **not** work and cannot on stable — the kernel crates only build for
-`x86_64-unknown-none` and `xtask` only for the host, and `package.forced-target`
-is nightly. Bare cargo commands are scoped to the host half by
-`default-members`; `cargo kcheck` / `kclippy` / `kbuild` reach the other half.
+`cargo xtask ci` is the gate; it runs exactly what CI runs. The mechanics —
+why `cargo build --workspace` cannot work, the `k*` aliases that reach the
+kernel crates, and why `RUSTFLAGS` must never be set here — are in the README's
+Development section rather than repeated.
 
-Never set the `RUSTFLAGS` environment variable in this repo: it replaces the
-`[target.x86_64-unknown-none]` rustflags and silently produces a kernel without
-`code-model=kernel`. Pass lint flags after `--`.
+Two conventions that belong with the code rather than the README:
 
-Set `CARGO_TARGET_DIR` if you want artifacts elsewhere; `build.target-dir` in a
-cargo config is not honoured by xtask, which would need to parse `cargo metadata`
-to see it.
+- Set `CARGO_TARGET_DIR` if you want artifacts elsewhere. `build.target-dir` in
+  a cargo config is **not** honoured by xtask, which would have to parse
+  `cargo metadata` to see it.
+- Anything host-specific stays out of `rust-toolchain.toml`. Every host reads
+  that file, and rustup resolves `components` against whichever one it is
+  running on — naming a Windows-only component there breaks Linux CI (D-24).

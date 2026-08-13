@@ -49,16 +49,6 @@ impl MmioRegion {
         Self { base, len }
     }
 
-    /// Size of the region in bytes.
-    pub const fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Whether the region covers no bytes.
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
     /// Write one 32-bit word at `offset`.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
         self.check(offset, WORD)?;

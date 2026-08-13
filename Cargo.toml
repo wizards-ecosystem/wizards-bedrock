@@ -5,11 +5,9 @@
 resolver = "3"
 members = ["kernel", "libs/pixel", "wost", "xtask"]
 
-# The kernel crates only build for x86_64-unknown-none and xtask only builds for
-# the host, and stable cargo cannot express per-package targets
-# (`package.forced-target` is nightly). So bare root commands (`cargo test`,
-# `cargo clippy`) are scoped to the host half, and the cross half is reached
-# through the aliases in .cargo/config.toml. `cargo xtask ci` runs both.
+# Bare root commands are scoped to the half that builds for the host; the
+# kernel crates are reached through the aliases in .cargo/config.toml, and
+# `cargo xtask ci` runs both. See the README's Development section for why.
 default-members = ["libs/pixel", "xtask"]
 
 [workspace.package]
