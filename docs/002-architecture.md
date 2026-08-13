@@ -60,6 +60,12 @@ for evidence and citations behind the choices marked ★.
    performance, and its authors' verified lesson is that safe MMIO/DMA
    abstractions must be designed in from day one, not retrofitted.
 
+   *Implemented 2026-08-12 (D-21). One amendment learned in the doing: the
+   kernel **binary** carries `#![deny(unsafe_code)]`, not `forbid`, because
+   `wost::entry!` expands its boot glue there and `forbid` cannot be lifted by
+   an `allow` even inside a macro expansion. Library crates, which have no entry
+   glue, keep `forbid` — `libs/pixel` already does.*
+
 6. **Fault containment by supervision, not unwinding.** ★ Theseus's
    fault-injection data (69% recovery; failures dominated by Rust/LLVM's
    missing async unwinding) shows panic-unwinding is not a containment

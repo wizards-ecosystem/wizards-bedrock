@@ -20,7 +20,7 @@ A full OS with userspace that can, eventually:
 | Area | Decision |
 |---|---|
 | Kernel language | Rust (stable channel while possible) |
-| Architecture | x86_64 first; `kernel/src/arch/` isolates arch code for future ports |
+| Architecture | x86_64 first; `arch/` modules in both `wost` and `kernel`, reached through `arch::current`, isolate arch code for future ports |
 | Boot | UEFI + Limine (vendored); own bootloader is a future side-quest |
 | Kernel shape | Monolithic, modular |
 | ABI | **Capability handles + async submission/completion queues** (native); POSIX only as an mlibc translation layer for ports — see `002-architecture.md` |

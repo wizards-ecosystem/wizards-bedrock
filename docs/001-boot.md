@@ -75,8 +75,15 @@ masks correctly. Serial log (QEMU):
   Records carry a level tag; `debug!` is filtered out by default.
 - framebuffer console (`kernel/src/console.rs`) — Noto Sans Mono bitmap
   glyphs, scrolling, pixel packing driven by the bootloader's channel masks
-  rather than an assumed `0xRRGGBB`. Carries user-facing output and the panic
-  screen; diagnostics stay on serial.
+  rather than an assumed `0xRRGGBB` (`libs/pixel`). Carries user-facing output
+  and the panic screen; diagnostics stay on serial.
+
+Both are brought up before the Limine base revision is checked, so a machine
+with neither a serial cable nor a supported bootloader still shows why it
+stopped. A framebuffer that is not direct RGB, not 32bpp, or not 4-byte aligned
+in address and pitch is refused with a typed reason rather than drawn on: the
+alternative failure mode is every access being rejected and the screen simply
+staying blank.
 
 ## Known limitations
 
@@ -88,10 +95,11 @@ deliberate choice to keep Phase 1 finishable, not an oversight.
   Unreachable until the kernel takes interrupts — which is Phase 2. **Fix this
   before the first IRQ handler logs anything**, and fix it in `SpinLock`
   (an `irqsave` acquire), not at the call sites.
-- **`Console::scroll` reads the framebuffer back.** Framebuffer memory is
-  uncached, so a full-screen scroll is on the order of a million slow reads.
-  Fine for a banner, visibly slow if anything ever logs to screen in a loop.
-  A software back-buffer is the answer once there is a heap (Phase 3).
+- **`Console::scroll` reads the framebuffer back.** Rows move as raw words, so
+  nothing is lost, but framebuffer memory is uncached and a full-screen scroll
+  is on the order of a million slow reads. Fine for a banner, visibly slow if
+  anything ever logs to screen in a loop. A software back-buffer is the answer
+  once there is a heap (Phase 3).
 - **Logging level is a compile-time constant** (`MAX_LEVEL` in
   `kernel/src/log.rs`). No runtime control and no per-module filtering until
   there is somewhere to configure it from.
