@@ -163,6 +163,6 @@ mod tests {
         // 56 bytes leaves no room for the length field, forcing a second block.
         let input = vec![b'x'; 56];
         assert_eq!(hash(&input).len(), 64);
-        assert_ne!(hash(&input), hash(&vec![b'x'; 55]));
+        assert_ne!(hash(&input), hash(&[b'x'; 55]));
     }
 }
