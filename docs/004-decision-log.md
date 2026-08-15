@@ -826,6 +826,127 @@ the framebuffer console still draws.)
 
 ---
 
+## D-33 x2APIC only, because xAPIC needs page tables — Status: Accepted (2026-08-14)
+
+**Context.** The local APIC has two encodings of the same registers. xAPIC is a
+page of memory-mapped words at the physical address `IA32_APIC_BASE` reports;
+x2APIC puts the same registers in model-specific registers. Phase 2 needs one
+of them, and Phase 2 does not own any page tables.
+
+**Decision.** x2APIC. `apic::init` requires `CPUID.01H:ECX.x2APIC`, switches the
+processor into extended mode, and drives everything through `rdmsr`/`wrmsr`. A
+processor without it is reported as `ApicError::NoExtendedMode` and the kernel
+runs on with interrupts off.
+
+**Alternatives.**
+
+- *xAPIC through Limine's direct map.* Implemented first, and it page-faulted
+  on the first register read. Under base revision 3 the direct map covers the
+  regions the memory map lists, and a device hole is not one of them. (The
+  fault printed `RIP` and a faulting address instead of resetting the machine,
+  which is slice 1 doing exactly what it was built for.)
+- *Map the page ourselves.* Needs a frame for the missing page-table levels,
+  which needs an allocator. That is Phase 3, and pulling it forward would make
+  the CPU phase a memory phase.
+- *Fall back to Limine base revision 2*, which maps the first 4 GiB. Downgrading
+  the bootloader contract to route around a gap we are about to close anyway.
+- *Support both encodings.* The xAPIC half would be unreachable code until
+  Phase 3 — speculative API with a hardware contract attached.
+
+**Rationale.** x2APIC is strictly less machinery here, not more: no direct map,
+no volatile memory access, and no argument needed about aliasing a device page
+between a configuration write and an end-of-interrupt from a trap handler. It
+has been in every Intel processor since Nehalem and every AMD one since
+Bulldozer, it is what SMP will want regardless, and this project does not target
+older hardware.
+
+**Consequences.**
+
+- Two writes to `IA32_APIC_BASE`, in order. The architecture has no transition
+  from disabled straight to extended mode; setting both bits at once faults.
+  `Base::x2apic` encodes that, and both writes are read back.
+- Registers are still named by their xAPIC offset — that is how SDM table 11-1
+  names them — and `Register::msr` derives `0x800 + offset / 16`. Both columns
+  of the table are transcribed into the host tests.
+- The APIC identifier is the whole register in this mode, not its top byte.
+- `BootInfo::direct_map` was written and then deleted: with no caller left it is
+  speculative API, and the 4 GiB bound it enforced was false besides. Phase 3
+  adds it back with the code that can use it.
+
+---
+
+## D-34 A spin lock holds the interrupt flag — Status: Accepted (2026-08-14)
+
+**Context.** `001-boot.md` recorded the hazard when `SpinLock` was written: a
+lock taken in ordinary kernel context and also taken from an interrupt handler
+deadlocks, and on a single CPU that is a certainty rather than a race. Nothing
+could reach it while interrupts were off. Slice 2 turns them on.
+
+**Decision.** Acquiring a `SpinLock` clears `IF`; the guard restores what it
+found on drop. Every lock in the kernel, not a second lock type.
+
+**Rationale.** The fix belongs in the lock rather than at the call sites, which
+is what the original note said. Restoring rather than enabling is what makes
+nesting correct: an inner lock that saw the flag already clear puts back a clear
+flag, so it cannot hand interrupts back while an outer section still holds one.
+Release order is part of it — unlock, then restore, because the other order
+opens a window in which an interrupt arrives at code still holding the lock.
+
+Asterinas parameterises its lock over the guard discipline
+(`LocalIrqDisabled`, `PreemptDisabled`). That distinction earns its keep once
+there is a scheduler; until then it would be a type parameter with one useful
+value.
+
+**Consequences.**
+
+- The surviving hazards are the entries `IF` does not mask: a fault can be
+  raised while a lock is held, and an NMI can arrive at any time. So D-31's rule
+  that a trap handler must not log still stands — for a narrower reason.
+- Interrupt latency is now bounded by the longest critical section. Scrolling
+  the framebuffer console holds a lock across a screenful of pixel copies.
+  Acceptable with no scheduler; revisit with one.
+- `force_unlock` leaves the flag alone: obtaining a `PanicToken` cleared it, and
+  the machine is not going to need it back.
+
+---
+
+## D-35 Enabling interrupts is safe because both preconditions are checked — Status: Accepted (2026-08-14)
+
+**Context.** `enable_interrupts` was written in Phase 1 and deleted unused, on
+the grounds recorded in `005`: an `unsafe fn` whose contract can only be stated
+in prose is a guess. But the kernel crate carries `#![deny(unsafe_code)]`, so
+whatever replaced it had to be callable from safe code.
+
+**Decision.** `interrupt::enable` is a safe function that asserts its
+preconditions: the interrupt table is loaded, and the legacy controller has been
+silenced. It lives in `interrupt.rs`, not `cpu.rs`, next to the table that is
+the reason it is safe. A private `set_flag` serves both it and
+`InterruptState::restore`.
+
+**Rationale.** `005` requires that a `wost` abstraction make the unsafe
+operation underneath it *checkable*, not merely wrapped — the rule behind
+`MmioRegion`'s bounds checks, `port::claim`'s registry, and `force_unlock`'s
+`PanicToken`. This is the same rule applied to an instruction. Both
+preconditions are already values something can read: `table_is_loaded()` asks
+the CPU, and `pic::is_silenced()` asks the driver. The third — that locks are
+IRQ-safe — is a property of the code rather than a runtime state, and is D-34.
+
+The split between `enable` and `set_flag` is the design in miniature: setting
+the flag the first time needs an argument, and putting back a flag that was
+already set does not.
+
+**Consequences.**
+
+- `cpu::disable_interrupts` moved to `interrupt::disable`, which now returns the
+  previous state so a critical section can restore rather than guess.
+- `cpu.rs` and `interrupt.rs` reference each other. Harmless within a crate, and
+  the alternative was `cpu` depending on the 8259 driver.
+- Both asserts are reachable on a real machine — a kernel that cannot silence
+  the 8259s or bring up the APIC declines to enable interrupts and says so,
+  rather than reaching an assert.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap
@@ -834,5 +955,5 @@ the framebuffer console still draws.)
 - `003-research-notes.md` — evidence tiers and citations behind
   Verified statuses
 - `005-code-conventions.md` — how the code is written (D-21, D-22, D-23)
-- `006-cpu-fundamentals.md` — Phase 2: descriptor tables, the fault path, and
-  the CPU protection baseline (D-29..D-32)
+- `006-cpu-fundamentals.md` — Phase 2: descriptor tables, the fault path, the
+  CPU protection baseline, and the interrupt controller (D-29..D-35)

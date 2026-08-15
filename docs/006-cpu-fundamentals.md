@@ -13,7 +13,8 @@ first thing that has to exist.
 
 References: Intel SDM Vol. 3A ch. 3 (protected-mode memory management), ch. 6
 (interrupt and exception handling), ch. 7 (task management, for the 64-bit
-TSS); OSDev wiki GDT/IDT/APIC; Osdev-Notes' interrupt chapter.
+TSS), ch. 11 (the advanced programmable interrupt controller); Intel 8259A
+datasheet; OSDev wiki GDT/IDT/APIC; Osdev-Notes' interrupt chapter.
 
 ## Order of work
 
@@ -25,13 +26,12 @@ is silenced.
 | Slice | Contents | Status |
 |---|---|---|
 | 1 | GDT + TSS, IDT, exception entry and reporting, SMEP/SMAP/UMIP/NX | **landed** |
-| 2 | Legacy PIC silenced, local APIC, IRQ-safe locking, `enable_interrupts` | next |
-| 3 | APIC timer: calibration, periodic tick, uptime | |
+| 2 | Legacy PIC silenced, local APIC, IRQ-safe locking, interrupts on | **landed** |
+| 3 | APIC timer: calibration, periodic tick, uptime | next |
 | 4 | PS/2 keyboard: scancode set 2 decoding, key events | |
 
-Slice 1 is the subject of the rest of this document; slices 2–4 get their
-design recorded here as they are built, so that this file ends the phase as
-the description of what exists.
+Each slice's design is recorded below as it is built, so that this file ends
+the phase as the description of what exists.
 
 ## Slice 1 — the CPU takes exceptions
 
@@ -205,10 +205,12 @@ the firmware left, the local APIC is not configured, and `SpinLock` still does
 not save the interrupt flag. Enabling interrupts before those three are fixed
 would be taking an IRQ into a kernel that cannot lock safely.
 
-So `cpu::enable_interrupts` is still not written, for the same reason it was
-deleted in Phase 1: its safety contract has to say what the caller must have
-already arranged, and until the PIC is silenced and `SpinLock` is IRQ-safe,
-that contract would be a guess. It arrives in slice 2, with its first caller.
+So nothing enables interrupts in this slice, for the same reason the function
+to do it was deleted in Phase 1: its safety contract has to say what the caller
+must have already arranged, and until the PIC is silenced and `SpinLock` is
+IRQ-safe, that contract would be a guess. It arrives in slice 2 as
+`interrupt::enable`, with its first caller — and by then both preconditions are
+values it can assert rather than prose.
 
 ### How it is checked
 
@@ -233,3 +235,205 @@ The double-fault IST cannot be checked without deliberately destroying the
 stack, and the vectors that end in a panic cannot be triggered by a test that
 has to return a verdict. Both are structural: verified by reading back the
 gates, and by the VMware boot that ends every phase (D-18).
+
+## Slice 2 — the CPU takes interrupts
+
+Slice 1 left a kernel that can be interrupted by itself. This slice makes it
+interruptible by hardware, which needs three things that are not obviously
+related: nothing else may still be wired to the CPU, a controller has to be
+configured to deliver, and every lock in the kernel has to survive being
+interrupted. All three are preconditions of the same one-instruction step, and
+the order is forced.
+
+### What owns what
+
+`wost` gains two drivers and one primitive: `arch/x86_64/pic.rs` (the 8259
+pair), `arch/x86_64/apic.rs` (the local APIC), and the interrupt flag, which
+moved from `cpu.rs` into `interrupt.rs` — next to the table whose existence is
+the reason setting it is safe. `arch/x86_64/msr.rs` is the model-specific
+register accessor both `cpu` and `apic` now share; it was private to `cpu`.
+
+The APIC's encoding — which register is where, which bit enables what, how a
+local vector table entry packs a vector and a mask — is arithmetic with no
+hardware behind it, so by the same rule that produced `x86-tables` it is
+`libs/x86-apic` (`base`, `command`, `local_vector`, `register`, `spurious`,
+`version`), unit-tested on the host. `wost` encodes with it and does nothing
+but write the result.
+
+The kernel gains `arch/x86_64/vector.rs`: which vector carries what. That is
+policy, not mechanism, so `apic::init` takes the two vectors it needs as an
+argument rather than choosing them.
+
+### x2APIC, and why the choice was not free
+
+The local APIC has two encodings of the same registers. The original — xAPIC —
+is a page of memory-mapped words at a physical address the processor reports in
+`IA32_APIC_BASE`, conventionally `0xFEE00000`. x2APIC puts the same registers
+in model-specific registers, reached with `rdmsr`/`wrmsr`.
+
+The first implementation used xAPIC, reaching the page through Limine's direct
+map of physical memory. It page-faulted on the first read, at
+`0xFFFF8000FEE00030` — and that fault, printed with an address instead of
+resetting the machine, is precisely what slice 1 was for. Under Limine base
+revision 3 the direct map covers the regions the memory map lists; a device
+hole is not one of them. Mapping the page is therefore work the kernel cannot
+do until it owns page tables, which is Phase 3.
+
+So: **x2APIC only.** Its registers need no mapping at all, which is what lets a
+phase about the CPU bring up the interrupt controller without first becoming a
+phase about memory. It is also less machinery, not more — no direct map, no
+volatile memory access, no argument about aliasing a device page between a
+configuration write and an end-of-interrupt from a handler. Every x86_64
+processor since 2008 has it, and SMP will want it regardless; a processor
+without one is reported (`ApicError::NoExtendedMode`), not worked around.
+
+Registers are still *named* by their xAPIC offset, because that is how SDM
+table 11-1 names them, and `Register::msr` converts: `0x800 + offset / 16`.
+Both columns of that table are transcribed into the host tests, so the
+derivation has something independent to be wrong against.
+
+The direct map went with it. `BootInfo` briefly carried one; with no caller
+left it is deleted rather than kept for Phase 3, under `005`'s no-speculative-
+API rule — the more so because the bound it enforced turned out to be false.
+
+### Silencing the 8259s
+
+Whatever the firmware left the legacy pair programmed with is still connected
+to this CPU. `pic::silence` walks both through the initialisation sequence and
+masks every line.
+
+Remapping a controller that is about to be masked anyway looks redundant, and
+is not. The firmware leaves the primary delivering IRQ 0 as vector 8 — the
+double fault — so anything that did leak through would arrive as the one
+exception whose report is guaranteed to be a lie. The vectors move to
+`0x20`–`0x2F` first, and then everything is masked.
+
+Two details worth recording. The first word of the initialisation sequence
+clears the interrupt mask, so for the length of `remap` every line the firmware
+left connected is unmasked; that is harmless only because the whole sequence
+runs with `IF` clear, which is a property of *when* this is called and not of
+the function. And the classic `io_wait` between accesses is deliberately
+absent: it covers the bus recovery time of a discrete 8259A, and on every
+machine this kernel boots the pair is emulated by the chipset or the
+hypervisor.
+
+The other half of the same job is in the APIC: firmware conventionally wires
+LINT0 to the legacy controller's output and LINT1 to the non-maskable
+interrupt, so both pins are masked during `apic::init`. Masking the 8259s
+without masking LINT0 would leave the path open at the other end.
+
+### Bringing the APIC up
+
+In order, because the order is the design:
+
+1. `cpuid` for a local APIC, then for x2APIC. Absent either, report and stop.
+2. Enable in `IA32_APIC_BASE`, then switch to x2APIC — **two writes**. The
+   architecture's state machine has no edge from disabled straight to extended
+   mode; a single write setting both bits raises a general protection fault.
+   Each is read back rather than assumed, because a disabled APIC stays
+   disabled until reset on some processors and the write is simply ignored.
+3. Read the version register. A version below `0x10` means nothing is
+   answering as an APIC, which is the one failure the previous steps cannot
+   detect.
+4. Task priority to zero — accept every priority class. Firmware may not have
+   left it there.
+5. Mask LINT0, LINT1 and the timer.
+6. Give the error line a real vector, and clear whatever the firmware
+   accumulated in the error-status register so the next reading is ours.
+7. **Last**, write the spurious-interrupt register, whose bit 8 software-enables
+   the whole controller. Nothing it is capable of delivering can arrive before
+   this, so everything above happens against a controller that is off.
+
+The interrupt flag is not set here. That is a separate step with a separate
+precondition, which is the next section.
+
+### Locks that survive being interrupted
+
+`SpinLock` did not touch the interrupt flag, and `001-boot.md` recorded the
+hazard: a lock taken in ordinary kernel context and also taken from a handler
+deadlocks, and on one CPU that is not a race but a certainty. The fix is in the
+lock, not at the call sites — acquiring one clears `IF`, and the guard restores
+it on drop.
+
+Restoring, not enabling, is the whole of the correctness argument. An inner
+lock taken while an outer one is held saw the flag already clear and puts back
+a clear flag, so nesting cannot hand interrupts back early. The release order
+matters for the same reason: the guard unlocks and *then* restores, because the
+other order opens a window in which an interrupt could arrive at code still
+holding the lock.
+
+Two hazards survive, and both are entries the flag does not mask. A fault can
+be raised while a lock is held, and a non-maskable interrupt can arrive at any
+time at all. So the rule from slice 1 stands — **a trap handler still must not
+log** — but it now stands for a narrower reason: not because interrupts are
+unsafe around locks, but because exceptions and NMIs are.
+
+The cost is interrupt latency. A section holding a lock cannot be preempted, so
+a long one — scrolling the framebuffer console — delays every interrupt behind
+it. That is a scheduler's problem and waits for one.
+
+### Enabling interrupts
+
+`interrupt::enable` is a safe function, and that is the point. The version
+deleted in Phase 1 was deleted because its safety contract could only have been
+prose; now both of its preconditions are values, and it asserts them:
+`table_is_loaded()`, and `pic::is_silenced()`. The third — that locks are
+IRQ-safe — is not a runtime state but a property of the code, discharged above.
+
+This is `005`'s rule that an abstraction must make the unsafe operation
+underneath it *checkable*, applied to an instruction rather than to a pointer.
+The private `set_flag` that both `enable` and `InterruptState::restore` call is
+where the difference lives: setting the flag the first time needs an argument,
+putting back a flag that was already set does not.
+
+### Which vector carries what
+
+| Vector | Name | Handler |
+|---|---|---|
+| 0–31 | architectural | breakpoint resumes; everything else panics |
+| `0x40` | `PING` | recorded, dismissed, resumes |
+| `0xFE` | `ERROR` | panics with the APIC's error-status register |
+| `0xFF` | `SPURIOUS` | counted, resumes, **not** dismissed |
+
+The APIC's two vectors are the top two, so device vectors can be handed out
+upward from 32 without ever meeting them. `0xFF`'s low four bits are all set
+because the earliest APICs hardwire them — `Spurious::enabled` refuses any
+other value rather than letting the hardware silently substitute one.
+
+A spurious interrupt is deliberately not dismissed. It is the APIC reporting
+that it committed to delivering something and then found it had nothing to say,
+so it never set an in-service bit; an end-of-interrupt there would retire a
+real interrupt underneath it.
+
+`PING` is how the kernel proves its own interrupt path. It is not a test
+fixture — the same self-directed interrupt is how one CPU will ask another to
+do work — but its first caller is the self-test, and it is the only way to
+observe delivery end to end before a timer exists.
+
+### How it is checked
+
+Host tests (`libs/x86-apic`): the MSR derivation against a transcribed copy of
+SDM table 11-1's own MSR column, the mode-transition encoding, the local vector
+table's masked value against the architectural reset value, the spurious
+register's hardwired low bits, and that no register offset can escape the
+`0x800`–`0x8FF` block the architecture reserves.
+
+On the machine, eight new checks:
+
+- both legacy controllers read back fully masked
+- the local APIC is software-enabled, and reports an integrated version
+- this CPU is accepting interrupts
+- a lock clears the flag, a nested lock does not restore it early, and the
+  outer release gives it back
+- a self-interrupt is delivered
+- **a second one is delivered** — which is the end-of-interrupt check, because
+  without it the first interrupt is still in service and nothing of the same
+  priority class can follow
+- the frame the handler saw has the interrupt flag set in the interrupted
+  code's `RFLAGS`, which is the only direct evidence it arrived through the
+  flag rather than as a software `int`
+- no spurious interrupt has been delivered, and the APIC has recorded no error
+
+Both new mechanisms were broken once to confirm the harness goes red:
+removing the handler's end-of-interrupt fails the second-delivery check alone,
+and removing the lock's `cli` fails the lock check alone.

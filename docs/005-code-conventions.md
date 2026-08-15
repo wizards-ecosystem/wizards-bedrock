@@ -177,8 +177,9 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   offset arithmetic — the code that carried a live out-of-bounds bug while it
   was buried in the kernel. `libs/x86-tables` is the second: GDT, IDT and TSS
   encoding, where the host test is the only thing that can check a bit position
-  against the manual. Add crates here for page-table bit packing, ELF parsing,
-  ring index arithmetic, and the WizFS on-disk format as those arrive.
+  against the manual. `libs/x86-apic` is the third, on the same grounds. Add
+  crates here for page-table bit packing, ELF parsing, ring index arithmetic,
+  and the WizFS on-disk format as those arrive.
 - A `libs/` crate goes in `default-members` so a bare `cargo test` covers it,
   and in `HOST_PACKAGES` in `xtask/src/paths.rs` so `cargo xtask ci` does too.
 - `xtask` logic is unit-tested directly, in-module. Anything touching the

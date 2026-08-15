@@ -126,13 +126,12 @@ staying blank.
 Things that work today and will not survive the next phase. Each is a
 deliberate choice to keep Phase 1 finishable, not an oversight.
 
-- **`wost::sync::SpinLock` does not touch the interrupt flag.** A lock taken in
-  normal kernel context and also taken from an interrupt handler will deadlock.
-  Still unreachable: Phase 2's first slice installs the interrupt table but
-  leaves `IF` clear, and the trap handler deliberately takes no lock (D-31).
-  **Fix this before the first IRQ handler logs anything** — Phase 2 slice 2,
-  alongside the local APIC — and fix it in `SpinLock` (an `irqsave` acquire),
-  not at the call sites.
+- ~~**`wost::sync::SpinLock` does not touch the interrupt flag.**~~ Fixed in
+  Phase 2 slice 2, in `SpinLock` rather than at the call sites, as this entry
+  asked: acquiring one clears `IF` and the guard restores it (D-34). What
+  remains is the narrower hazard the flag cannot cover — a fault or an NMI
+  arriving while a lock is held — which is why the trap handler still takes no
+  lock (D-31).
 - **`Console::scroll` reads the framebuffer back.** Rows move as raw words, so
   nothing is lost, but framebuffer memory is uncached and a full-screen scroll
   is on the order of a million slow reads. Fine for a banner, visibly slow if
