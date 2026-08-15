@@ -86,8 +86,13 @@ version = "0.1.0"
 dependencies = [
  "limine",
  "pixel",
+ "x86-apic",
  "x86-tables",
 ]
+
+[[package]]
+name = "x86-apic"
+version = "0.1.0"
 
 [[package]]
 name = "x86-tables"

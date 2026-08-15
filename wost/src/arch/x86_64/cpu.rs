@@ -1,8 +1,14 @@
-//! Direct CPU control: the interrupt flag, halting, and the protection bits.
+//! Direct CPU control: halting, feature discovery, and the protection bits.
+//!
+//! The interrupt flag lives in [`interrupt`](super::interrupt) instead, next to
+//! the table whose existence is the precondition for setting it.
 
 use core::arch::asm;
 use core::arch::x86_64::{__cpuid_count, __get_cpuid_max};
 use core::fmt;
+
+use super::interrupt;
+use super::msr;
 
 /// Extended feature enable register.
 const EFER: u32 = 0xC000_0080;
@@ -20,14 +26,6 @@ const CR4_SMEP: u64 = 1 << 20;
 /// `CR4` bit: supervisor mode access prevention.
 const CR4_SMAP: u64 = 1 << 21;
 
-/// Clear the interrupt flag on this CPU.
-pub fn disable_interrupts() {
-    // SAFETY: `cli` clears IF on the current CPU and touches nothing else. It
-    // has no preconditions in ring 0. `preserves_flags` is deliberately absent —
-    // modifying IF is the whole point.
-    unsafe { asm!("cli", options(nomem, nostack)) };
-}
-
 /// Halt this CPU until the next interrupt.
 ///
 /// Returns immediately if interrupts are disabled and one is already pending;
@@ -43,7 +41,7 @@ pub fn halt() {
 /// This is the kernel's terminal state: used by the panic handler and by the
 /// idle path before a scheduler exists.
 pub fn halt_forever() -> ! {
-    disable_interrupts();
+    interrupt::disable();
     loop {
         halt();
     }
@@ -131,7 +129,7 @@ impl Protections {
             smep: cr4 & CR4_SMEP != 0,
             smap: cr4 & CR4_SMAP != 0,
             umip: cr4 & CR4_UMIP != 0,
-            nx: read_msr(EFER) & EFER_NO_EXECUTE != 0,
+            nx: msr::read(EFER) & EFER_NO_EXECUTE != 0,
         }
     }
 }
@@ -180,10 +178,36 @@ pub fn enable_protections() -> Protections {
     write_cr4(cr4);
 
     if supported.nx {
-        write_msr(EFER, read_msr(EFER) | EFER_NO_EXECUTE);
+        // SAFETY: the only register named is `EFER`, and the only bit added to
+        // what it already held is the one `cpuid` just reported as supported.
+        unsafe { msr::write(EFER, msr::read(EFER) | EFER_NO_EXECUTE) };
     }
 
     Protections::enabled()
+}
+
+/// Whether this processor has a local advanced programmable interrupt
+/// controller of its own.
+///
+/// Every x86_64 processor does. Checking is what makes the register access that
+/// follows a reasoned step rather than an assumption, and costs one `cpuid`.
+pub(super) fn has_local_apic() -> bool {
+    /// `cpuid` leaf 1, `EDX` bit 9.
+    const APIC: u32 = 1 << 9;
+
+    cpuid(1, 0).edx & APIC != 0
+}
+
+/// Whether that controller has an x2APIC mode, where its registers are
+/// model-specific registers rather than a page of memory.
+///
+/// Present on everything since Nehalem and Bulldozer. It is what lets this
+/// kernel drive the controller before it can map anything.
+pub(super) fn has_x2apic() -> bool {
+    /// `cpuid` leaf 1, `ECX` bit 21.
+    const X2APIC: u32 = 1 << 21;
+
+    cpuid(1, 0).ecx & X2APIC != 0
 }
 
 /// One `cpuid` answer.
@@ -241,41 +265,6 @@ fn write_cr4(value: u64) {
         asm!(
             "mov cr4, {value}",
             value = in(reg) value,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-}
-
-fn read_msr(msr: u32) -> u64 {
-    let (low, high): (u32, u32);
-    // SAFETY: `rdmsr` in ring 0 reads the register named in `ecx`. The only one
-    // this module names is `EFER`, which every x86_64 CPU implements.
-    unsafe {
-        asm!(
-            "rdmsr",
-            in("ecx") msr,
-            out("eax") low,
-            out("edx") high,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-    u64::from(high) << 32 | u64::from(low)
-}
-
-/// Write a model-specific register.
-///
-/// Private for the same reason as [`write_cr4`]: the only write this module
-/// makes is `EFER` with the no-execute bit added to what was already there.
-fn write_msr(msr: u32, value: u64) {
-    // SAFETY: `wrmsr` in ring 0 writes the register named in `ecx`. The only
-    // one this module names is `EFER`, and the only bit it adds is one `cpuid`
-    // reported as supported.
-    unsafe {
-        asm!(
-            "wrmsr",
-            in("ecx") msr,
-            in("eax") value as u32,
-            in("edx") (value >> 32) as u32,
             options(nomem, nostack, preserves_flags),
         );
     }

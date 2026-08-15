@@ -21,8 +21,10 @@ mod theme;
 
 use core::fmt::Write;
 
-use wost::arch::current::{cpu, segment};
+use wost::arch::current::{apic, cpu, interrupt, pic, segment};
 use wost::boot::BootInfo;
+
+use crate::arch::current::vector;
 
 wost::entry!(kernel_main);
 
@@ -51,6 +53,8 @@ fn kernel_main(boot: BootInfo) -> ! {
     info!("cpu: descriptor tables installed");
     info!("cpu: protections {}", cpu::enable_protections());
 
+    start_interrupts();
+
     dev::with_console(|console| {
         for line in banner::LINES {
             console.write_line(line);
@@ -67,4 +71,30 @@ fn kernel_main(boot: BootInfo) -> ! {
 
     info!("kernel: entering idle loop");
     cpu::halt_forever()
+}
+
+/// Bring up the interrupt controller and start accepting interrupts.
+///
+/// Each step is a precondition for the next, and every one of them can decline:
+/// a kernel that cannot take interrupts is worth far more than one that takes
+/// them into a controller it never configured. The three are, in order — stop
+/// the legacy controllers delivering anything, give the local APIC its vectors
+/// and turn it on, and only then set the flag.
+fn start_interrupts() {
+    if let Err(reason) = pic::silence() {
+        warn!("legacy controllers not silenced: {reason}; interrupts stay off");
+        return;
+    }
+    info!("pic: legacy controllers remapped and masked");
+
+    match apic::init(vector::LOCAL_APIC) {
+        Ok(local) => info!("apic: {local}"),
+        Err(reason) => {
+            warn!("local apic: {reason}; interrupts stay off");
+            return;
+        }
+    }
+
+    interrupt::enable();
+    info!("cpu: accepting interrupts");
 }

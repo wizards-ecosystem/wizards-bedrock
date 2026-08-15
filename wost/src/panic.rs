@@ -7,7 +7,7 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::arch::current::cpu;
+use crate::arch::current::interrupt;
 
 static PANICKING: AtomicBool = AtomicBool::new(false);
 
@@ -29,7 +29,7 @@ pub struct PanicToken(());
 /// Single-CPU only: this stops the calling CPU from resuming interrupted code,
 /// but does not stop any other CPU. Revisit when SMP lands.
 pub fn enter() -> Option<PanicToken> {
-    cpu::disable_interrupts();
+    interrupt::disable();
     if PANICKING.swap(true, Ordering::Relaxed) {
         return None;
     }

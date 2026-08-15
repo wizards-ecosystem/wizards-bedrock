@@ -141,6 +141,12 @@ impl fmt::Display for FramebufferError {
 impl core::error::Error for FramebufferError {}
 
 /// Everything the bootloader handed the kernel.
+///
+/// Notably absent: the direct map of physical memory. Limine offers one, and
+/// Phase 3 will want it, but under base revision 3 it covers only the regions
+/// the memory map lists — not the device holes — so nothing in this phase could
+/// use it. It arrives with the code that can, rather than as a field nobody
+/// reads. See `docs/006-cpu-fundamentals.md`.
 #[derive(Debug)]
 pub struct BootInfo {
     /// Whether the bootloader honoured the base revision the kernel asked for.

@@ -1,16 +1,20 @@
 //! What the kernel does when the CPU raises a vector.
 //!
-//! Every vector arrives here. A breakpoint resumes; everything else is a kernel
-//! bug and ends the machine with a report. Nothing is recovered and nothing is
-//! retried — containment is supervised restart (D-14), and there is no
-//! supervisor yet.
+//! Every vector arrives here — exceptions the CPU raised against itself, and
+//! interrupts the local APIC delivered. An exception is a kernel bug and ends
+//! the machine with a report, bar the breakpoint, which resumes. An interrupt
+//! is dismissed and returned from. Nothing is recovered and nothing is retried
+//! — containment is supervised restart (D-14), and there is no supervisor yet.
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+use wost::arch::current::apic;
 use wost::arch::current::cpu;
 use wost::arch::current::interrupt::{self, TrapFrame};
 use x86_tables::exception;
+
+use super::vector;
 
 /// Route every vector to this module.
 pub(crate) fn init() {
@@ -19,19 +23,44 @@ pub(crate) fn init() {
 
 /// The kernel's response to every vector.
 ///
-/// Nothing here logs. Taking a console lock in trap context deadlocks against
-/// interrupted code that already holds it — the hazard `docs/001-boot.md`
-/// records against `SpinLock`. The panic path is exempt because it force-unlocks
-/// the consoles first; the breakpoint path records into atomics and leaves the
-/// printing to whoever planted the breakpoint.
+/// Nothing here logs. A fault can be raised while a lock is held — the
+/// interrupt flag does not mask one — so taking the console lock in trap
+/// context still deadlocks against the code it interrupted, even though
+/// `SpinLock` now excludes maskable interrupts. The panic path is exempt
+/// because it force-unlocks the consoles first; everything that has to survive
+/// is recorded into atomics and printed by whoever reads them.
 fn on_trap(frame: &mut TrapFrame) {
-    if frame.vector == u64::from(exception::BREAKPOINT) {
-        LAST_BREAKPOINT.record(frame);
-        return;
-    }
+    match frame.vector as u8 {
+        exception::BREAKPOINT => LAST_BREAKPOINT.record(frame),
 
-    panic!("{}", Fault(frame));
+        vector::PING => {
+            LAST_PING.record(frame);
+            apic::end_of_interrupt();
+        }
+
+        // Deliberately not dismissed: a spurious interrupt is the APIC saying
+        // it had nothing to deliver, so it never set an in-service bit and
+        // dismissing one would retire a real interrupt underneath it.
+        vector::SPURIOUS => {
+            SPURIOUS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        vector::ERROR => panic!(
+            "local apic error {:#x} at {:#018x}",
+            apic::error_status(),
+            frame.instruction_pointer
+        ),
+
+        _ => panic!("{}", Fault(frame)),
+    }
 }
+
+/// How many spurious interrupts have been delivered.
+///
+/// Should stay at zero. A count that climbs means an interrupt was dismissed
+/// that should not have been, or a vector was reprogrammed while one was in
+/// flight — neither of which shows up any other way.
+static SPURIOUS: AtomicUsize = AtomicUsize::new(0);
 
 /// A fault formatted for the panic message.
 struct Fault<'a>(&'a TrapFrame);
@@ -62,12 +91,13 @@ impl fmt::Display for Fault<'_> {
     }
 }
 
-/// What the last breakpoint saw.
+/// What the last vector of one kind saw.
 ///
-/// A breakpoint is the one exception that resumes, so unlike a fault it leaves
-/// no trace unless something records it. Atomics rather than a lock because
-/// this is written from trap context.
-struct LastBreakpoint {
+/// A vector that resumes leaves no trace unless something records it, and both
+/// of the ones that resume — the breakpoint and the ping — are deliberate acts
+/// whose whole point is to be observed afterwards. Atomics rather than a lock
+/// because this is written from trap context.
+struct Recorder {
     count: AtomicUsize,
     vector: AtomicU64,
     error_code: AtomicU64,
@@ -76,16 +106,18 @@ struct LastBreakpoint {
     stack_pointer: AtomicU64,
 }
 
-static LAST_BREAKPOINT: LastBreakpoint = LastBreakpoint {
-    count: AtomicUsize::new(0),
-    vector: AtomicU64::new(0),
-    error_code: AtomicU64::new(0),
-    code_selector: AtomicU64::new(0),
-    flags: AtomicU64::new(0),
-    stack_pointer: AtomicU64::new(0),
-};
+impl Recorder {
+    const fn new() -> Self {
+        Self {
+            count: AtomicUsize::new(0),
+            vector: AtomicU64::new(0),
+            error_code: AtomicU64::new(0),
+            code_selector: AtomicU64::new(0),
+            flags: AtomicU64::new(0),
+            stack_pointer: AtomicU64::new(0),
+        }
+    }
 
-impl LastBreakpoint {
     /// Record `frame`, publishing the count last so a reader that sees it sees
     /// the rest.
     fn record(&self, frame: &TrapFrame) {
@@ -98,23 +130,39 @@ impl LastBreakpoint {
             .store(frame.stack_pointer, Ordering::Relaxed);
         self.count.fetch_add(1, Ordering::Release);
     }
+
+    /// A consistent copy of what was last recorded.
+    #[cfg(feature = "selftest")]
+    fn read(&self) -> Record {
+        Record {
+            count: self.count.load(Ordering::Acquire),
+            vector: self.vector.load(Ordering::Relaxed),
+            error_code: self.error_code.load(Ordering::Relaxed),
+            code_selector: self.code_selector.load(Ordering::Relaxed),
+            flags: self.flags.load(Ordering::Relaxed),
+            stack_pointer: self.stack_pointer.load(Ordering::Relaxed),
+        }
+    }
 }
 
-/// A copy of what the trap handler recorded for the last breakpoint.
+static LAST_BREAKPOINT: Recorder = Recorder::new();
+static LAST_PING: Recorder = Recorder::new();
+
+/// A copy of what the trap handler recorded for one vector.
 #[cfg(feature = "selftest")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Breakpoint {
-    /// How many breakpoints have been taken since boot.
+pub(crate) struct Record {
+    /// How many of this vector have been taken since boot.
     pub(crate) count: usize,
-    /// The vector the handler was entered with. Three, if the gates are right.
+    /// The vector the handler was entered with.
     pub(crate) vector: u64,
-    /// The error code slot, which a breakpoint does not fill.
+    /// The error code slot, which neither of these vectors fills.
     pub(crate) error_code: u64,
-    /// The code selector at the breakpoint.
+    /// The code selector at the point of the trap.
     pub(crate) code_selector: u64,
-    /// The flags register at the breakpoint.
+    /// The flags register at the point of the trap.
     pub(crate) flags: u64,
-    /// The stack pointer at the breakpoint.
+    /// The stack pointer at the point of the trap.
     pub(crate) stack_pointer: u64,
 }
 
@@ -123,13 +171,18 @@ pub(crate) struct Breakpoint {
 /// The recording itself is unconditional — a trap handler is no place for
 /// conditional compilation — but nothing in a shipped kernel reads it yet.
 #[cfg(feature = "selftest")]
-pub(crate) fn last_breakpoint() -> Breakpoint {
-    Breakpoint {
-        count: LAST_BREAKPOINT.count.load(Ordering::Acquire),
-        vector: LAST_BREAKPOINT.vector.load(Ordering::Relaxed),
-        error_code: LAST_BREAKPOINT.error_code.load(Ordering::Relaxed),
-        code_selector: LAST_BREAKPOINT.code_selector.load(Ordering::Relaxed),
-        flags: LAST_BREAKPOINT.flags.load(Ordering::Relaxed),
-        stack_pointer: LAST_BREAKPOINT.stack_pointer.load(Ordering::Relaxed),
-    }
+pub(crate) fn last_breakpoint() -> Record {
+    LAST_BREAKPOINT.read()
+}
+
+/// What the trap handler recorded for the most recent ping.
+#[cfg(feature = "selftest")]
+pub(crate) fn last_ping() -> Record {
+    LAST_PING.read()
+}
+
+/// How many spurious interrupts the local APIC has delivered.
+#[cfg(feature = "selftest")]
+pub(crate) fn spurious_count() -> usize {
+    SPURIOUS.load(Ordering::Acquire)
 }

@@ -12,15 +12,18 @@
 //! asserts is not repeated here — a rejected base revision panics long before
 //! this, which the harness sees as a missing verdict.
 
+use core::hint::spin_loop;
+
 use wost::arch::current::cpu::{self, Protections};
-use wost::arch::current::{interrupt, port, segment};
+use wost::arch::current::{apic, interrupt, pic, port, segment};
 use wost::boot::{FramebufferInfo, Rgb};
 use wost::sync::{Once, SpinLock};
 use x86_tables::exception;
 
 use crate::arch::current::debug_exit;
-use crate::arch::current::trap::{self, Breakpoint};
+use crate::arch::current::trap::{self, Record};
 use crate::arch::current::uart::{self, UartError};
+use crate::arch::current::vector;
 use crate::{dev, error, info};
 
 /// Tally of what has been checked so far.
@@ -103,6 +106,48 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         Protections::enabled() == Protections::supported(),
     );
 
+    report.check(
+        "the legacy controllers are masked",
+        pic::masks() == Some((MASKED, MASKED)),
+    );
+    report.check("the local apic is software enabled", apic::is_enabled());
+    report.check("this cpu is accepting interrupts", interrupt::are_enabled());
+    report.check(
+        "a lock excludes interrupts and gives them back",
+        a_lock_excludes_interrupts(),
+    );
+
+    // Two in a row, because one only proves the interrupt arrived. The APIC
+    // will not deliver a second of the same priority class until the first is
+    // dismissed, so the second is what proves the handler's end-of-interrupt.
+    let before = trap::last_ping();
+    apic::send_self_interrupt(vector::PING);
+    report.check(
+        "a self-interrupt is delivered",
+        ping_arrives(before.count + 1),
+    );
+
+    let taken = trap::last_ping();
+    apic::send_self_interrupt(vector::PING);
+    report.check(
+        "the interrupt is dismissed, so the next one arrives",
+        ping_arrives(before.count + 2),
+    );
+    report.check(
+        "the interrupted code was taking interrupts",
+        ping_is_consistent(taken),
+    );
+    report.check(
+        "no spurious interrupt has been delivered",
+        trap::spurious_count() == 0,
+    );
+
+    // Last, because reading the error register clears it.
+    report.check(
+        "the local apic has recorded no error",
+        apic::error_status() == 0,
+    );
+
     let passed = report.failed == 0;
     if passed {
         info!("selftest: {} checks passed", report.passed);
@@ -157,6 +202,61 @@ fn latch_admits_one() -> bool {
     !latch.is_claimed() && latch.claim() && !latch.claim() && latch.is_claimed()
 }
 
+/// Every input line on both legacy controllers, disconnected.
+const MASKED: u8 = 0xFF;
+
+/// Holding a lock must exclude interrupts, releasing it must give them back,
+/// and a nested lock must not give them back early — the last being the one
+/// that a naive "enable on drop" gets wrong, and the one that would show up as
+/// an interrupt arriving in the middle of a critical section months later.
+///
+/// Only meaningful with interrupts already on, which by this point they are.
+fn a_lock_excludes_interrupts() -> bool {
+    let outer = SpinLock::new(0u32);
+    let inner = SpinLock::new(0u32);
+
+    let before = interrupt::are_enabled();
+    let outer_guard = outer.lock();
+    let excluded = !interrupt::are_enabled();
+
+    let inner_guard = inner.lock();
+    drop(inner_guard);
+    let still_excluded = !interrupt::are_enabled();
+
+    drop(outer_guard);
+    before && excluded && still_excluded && interrupt::are_enabled()
+}
+
+/// Spin until the ping count reaches `target`, giving up rather than hanging
+/// the harness on an interrupt that is never going to arrive.
+///
+/// Generous, because it is measuring hardware that has already been told to do
+/// something: a delivery this does not see within a million reads is not slow,
+/// it is absent.
+fn ping_arrives(target: usize) -> bool {
+    const ATTEMPTS: u32 = 1_000_000;
+
+    (0..ATTEMPTS).any(|_| {
+        spin_loop();
+        trap::last_ping().count >= target
+    })
+}
+
+/// The frame a delivered interrupt saved, checked the way `frame_is_consistent`
+/// checks a breakpoint's — except that this one can also assert something a
+/// trap cannot: the interrupted code had the interrupt flag set, which is the
+/// only direct evidence that this arrived through the flag rather than as a
+/// software `int`.
+fn ping_is_consistent(ping: Record) -> bool {
+    /// `RFLAGS` bit 9.
+    const INTERRUPT_FLAG: u64 = 1 << 9;
+
+    ping.vector == u64::from(vector::PING)
+        && ping.error_code == 0
+        && ping.code_selector == u64::from(segment::KERNEL_CODE.bits())
+        && ping.flags & INTERRUPT_FLAG != 0
+}
+
 /// The interrupt frame is the one place a struct definition and an assembly
 /// listing have to agree, and the compiler cannot check it. If the pushes and
 /// the fields drift apart, these values are what turn to nonsense.
@@ -164,7 +264,7 @@ fn latch_admits_one() -> bool {
 /// `stack_pointer` is the caller's, taken immediately before the breakpoint: the
 /// saved one belongs to a frame or two deeper, so it is checked for proximity
 /// rather than equality.
-fn frame_is_consistent(breakpoint: Breakpoint, stack_pointer: u64) -> bool {
+fn frame_is_consistent(breakpoint: Record, stack_pointer: u64) -> bool {
     /// Bit 1 of the flags register reads as one on every x86 ever made.
     const RESERVED_FLAG: u64 = 1 << 1;
 

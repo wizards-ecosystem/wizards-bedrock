@@ -6,6 +6,7 @@ use core::hint::spin_loop;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::arch::current::interrupt::{self, InterruptState};
 use crate::panic::PanicToken;
 
 /// A latch that admits exactly one caller.
@@ -38,12 +39,26 @@ impl Default for Once {
     }
 }
 
-/// A mutual-exclusion lock that spins while contended.
+/// A mutual-exclusion lock that spins while contended, held with interrupts
+/// off.
 ///
-/// This does not touch the interrupt flag, so a lock taken in normal kernel
-/// context and also taken from an interrupt handler will deadlock. Until the
-/// kernel takes interrupts that is unreachable; when it does, the fix belongs
-/// here rather than at the call sites.
+/// Acquiring one clears the interrupt flag and the guard restores it, which is
+/// what keeps a lock safe to take from a handler as well as from ordinary
+/// kernel code: an interrupt can no longer arrive on this CPU while the lock is
+/// held, so it can no longer arrive at code that tries to take the lock again.
+/// Without that, one CPU is enough to deadlock.
+///
+/// The flag is *restored*, not enabled, so nesting works: an inner lock taken
+/// while an outer one is held puts back a clear flag on release.
+///
+/// Two hazards survive, both of them entries the flag does not mask. A fault
+/// can be raised while a lock is held, and a non-maskable interrupt can arrive
+/// at any time at all — so a handler for either must still not take a lock. See
+/// `docs/006-cpu-fundamentals.md`.
+///
+/// The cost is interrupt latency: a section holding a lock cannot be preempted,
+/// so a long one — scrolling the framebuffer console, say — delays every
+/// interrupt behind it. That is a scheduler's problem and waits for one.
 pub struct SpinLock<T> {
     locked: AtomicBool,
     value: UnsafeCell<T>,
@@ -68,6 +83,11 @@ impl<T> SpinLock<T> {
     }
 
     /// Acquire the lock, spinning until it is free.
+    ///
+    /// The wait runs with the interrupt flag as the caller left it. Spinning
+    /// with interrupts off would mean waiting for a holder that cannot be
+    /// scheduled and cannot be interrupted, which on one CPU is a hang and on
+    /// several is merely slow.
     pub fn lock(&self) -> SpinLockGuard<'_, T> {
         loop {
             if let Some(guard) = self.try_lock() {
@@ -81,10 +101,23 @@ impl<T> SpinLock<T> {
 
     /// Acquire the lock if it is free, without spinning.
     pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
-        self.locked
+        // Disabling first: taking an interrupt between the exchange and the
+        // disable would leave this CPU holding the lock with interrupts on,
+        // which is the state the whole design exists to rule out.
+        let interrupts = interrupt::disable();
+        match self
+            .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .ok()
-            .map(|_| SpinLockGuard { lock: self })
+        {
+            Ok(_) => Some(SpinLockGuard {
+                lock: self,
+                interrupts,
+            }),
+            Err(_) => {
+                interrupts.restore();
+                None
+            }
+        }
     }
 
     /// Whether the lock is currently held.
@@ -99,6 +132,9 @@ impl<T> SpinLock<T> {
     /// [`PanicToken`] is itself the proof that makes it sound: the previous
     /// holder can never resume, so the guard it may still own is never used
     /// again.
+    ///
+    /// The interrupt flag is left alone. Obtaining a [`PanicToken`] cleared it,
+    /// and the machine is not going to need it back.
     pub fn force_unlock(&self, _panic: &PanicToken) {
         self.locked.store(false, Ordering::Release);
     }
@@ -120,6 +156,7 @@ impl<T: fmt::Debug> fmt::Debug for SpinLock<T> {
 /// Exclusive access to a [`SpinLock`]'s value, released on drop.
 pub struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
+    interrupts: InterruptState,
 }
 
 impl<T: fmt::Debug> fmt::Debug for SpinLockGuard<'_, T> {
@@ -147,7 +184,10 @@ impl<T> DerefMut for SpinLockGuard<'_, T> {
 }
 
 impl<T> Drop for SpinLockGuard<'_, T> {
+    /// Release, then restore. The other order would open a window in which an
+    /// interrupt could arrive at code still holding this lock.
     fn drop(&mut self) {
         self.lock.locked.store(false, Ordering::Release);
+        self.interrupts.restore();
     }
 }

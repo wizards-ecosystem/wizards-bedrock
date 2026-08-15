@@ -4,3 +4,4 @@
 pub(crate) mod debug_exit;
 pub(crate) mod trap;
 pub(crate) mod uart;
+pub(crate) mod vector;

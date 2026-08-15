@@ -7,6 +7,10 @@
 //!
 //! Every gate is an interrupt gate, so a handler starts with interrupts
 //! disabled. See `docs/006-cpu-fundamentals.md` for the frame layout argument.
+//!
+//! The interrupt flag itself lives here rather than in [`cpu`](super::cpu),
+//! because the reason it is safe to set is a property of this module: the table
+//! is loaded, and every one of its gates is present.
 
 use core::arch::{asm, global_asm};
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -15,10 +19,14 @@ use x86_tables::exception;
 use x86_tables::idt::{self, Gate};
 
 use super::cpu;
+use super::pic;
 use super::segment;
 use super::table::TablePointer;
 use crate::cell::HardwareCell;
 use crate::sync::Once;
+
+/// `RFLAGS` bit 9: this CPU accepts maskable interrupts.
+const FLAGS_INTERRUPT: u64 = 1 << 9;
 
 /// Bytes each entry stub occupies.
 ///
@@ -173,6 +181,96 @@ pub fn table_is_loaded() -> bool {
         );
     }
     pointer.base() == IDT.address() && pointer.limit() == idt::TABLE_LIMIT
+}
+
+/// Whether this CPU was accepting interrupts, captured so that a critical
+/// section can put the flag back the way it found it rather than guessing.
+///
+/// Restoring rather than enabling is what makes nesting work: an inner section
+/// that saw the flag already clear puts back a clear flag, so the outer section
+/// keeps the exclusion it was relying on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterruptState(bool);
+
+impl InterruptState {
+    /// Put the interrupt flag back the way it was.
+    pub fn restore(self) {
+        if self.0 {
+            set_flag();
+        }
+    }
+}
+
+/// Whether this CPU is currently accepting maskable interrupts.
+pub fn are_enabled() -> bool {
+    flags() & FLAGS_INTERRUPT != 0
+}
+
+/// Stop accepting maskable interrupts, reporting what it took to do so.
+///
+/// The report is the argument for [`InterruptState::restore`]; dropping it
+/// leaves interrupts off, which is always safe and occasionally what a caller
+/// means.
+pub fn disable() -> InterruptState {
+    let previous = are_enabled();
+    // SAFETY: `cli` clears IF on the current CPU and touches nothing else. It
+    // has no preconditions in ring 0. `preserves_flags` is deliberately absent —
+    // modifying IF is the whole point.
+    unsafe { asm!("cli", options(nomem, nostack)) };
+    InterruptState(previous)
+}
+
+/// Begin accepting maskable interrupts on this CPU.
+///
+/// Safe rather than `unsafe` because both of its preconditions are checkable
+/// and are checked. That is the point: the version of this function deleted in
+/// Phase 1 could only have stated them in prose.
+///
+/// # Panics
+///
+/// Panics unless the interrupt table is loaded and the legacy controller has
+/// been silenced. With no table, the first interrupt is a reset with nothing
+/// printed; with a live 8259 the firmware left pointing at the exception
+/// vectors, the first timer tick arrives as a double fault.
+pub fn enable() {
+    assert!(
+        table_is_loaded(),
+        "load the interrupt table before accepting interrupts"
+    );
+    assert!(
+        pic::is_silenced(),
+        "silence the legacy controller before accepting interrupts"
+    );
+    set_flag();
+}
+
+/// Set the interrupt flag with nothing checked.
+///
+/// Private, and the difference between it and [`enable`] is the whole design:
+/// restoring a flag that was set is safe because setting it was, whereas
+/// setting it the first time is the step that needs an argument.
+fn set_flag() {
+    // SAFETY: `sti` sets IF on the current CPU and touches nothing else. Every
+    // caller either checked the preconditions or is restoring a flag whose
+    // caller did.
+    unsafe { asm!("sti", options(nomem, nostack)) };
+}
+
+/// The flags register.
+fn flags() -> u64 {
+    let value: u64;
+    // SAFETY: `pushfq` pushes the flags register and `pop` takes the same eight
+    // bytes back off, so the stack ends as it started. `nomem` is accurate:
+    // nothing outside the asm can observe the slot in between.
+    unsafe {
+        asm!(
+            "pushfq",
+            "pop {value}",
+            value = out(reg) value,
+            options(nomem, preserves_flags),
+        );
+    }
+    value
 }
 
 /// Raise a breakpoint exception on this CPU.
