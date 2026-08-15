@@ -67,6 +67,42 @@ masks correctly. Serial log (QEMU):
 [info ] kernel: entering idle loop
 ```
 
+2026-08-13 — QEMU, after the descriptor tables landed (`006-cpu-fundamentals.md`,
+D-29..D-32). The runner moved to `-cpu max` so the protection bits exist to be
+enabled:
+
+```
+[info ] The Wizard's OS awakens.
+[info ] framebuffer: 1280x800 pitch=5120 bpp=32
+[info ] limine: base revision supported
+[info ] cpu: descriptor tables installed
+[info ] cpu: protections smep smap umip nx
+[info ] kernel: entering idle loop
+```
+
+The framebuffer console still draws after SMAP is enabled, which is the
+observation that confirms Limine's mappings are supervisor-only.
+
+Same day on VMware Workstation (`vmrun start vm\wizard-os.vmx`, serial to
+`vm/serial.log`), which is the target that matters for this slice: its virtual
+CPU exposes all four protection features, and its SVGA-II framebuffer is the one
+that could have differed under a supervisor-only mapping assumption.
+
+```
+[info ] The Wizard's OS awakens.
+[info ] framebuffer: 1024x768 pitch=4096 bpp=32
+[info ] limine: base revision supported
+[info ] cpu: descriptor tables installed
+[info ] cpu: protections smep smap umip nx
+[info ] kernel: entering idle loop
+```
+
+The linked image was checked at the same time: entry point equals the `kmain`
+symbol, the three `PT_LOAD` segments are `R-X`, `R--` and `RW-` with none both
+writable and executable, and the generated stub table spans exactly 4096 bytes
+at a 16-byte boundary — the assumption `interrupt::init` asserts at runtime,
+confirmed statically as well.
+
 ## Debug channels
 
 - COM1 serial (`kernel/src/arch/x86_64/uart.rs`) — primary log, works
@@ -92,9 +128,11 @@ deliberate choice to keep Phase 1 finishable, not an oversight.
 
 - **`wost::sync::SpinLock` does not touch the interrupt flag.** A lock taken in
   normal kernel context and also taken from an interrupt handler will deadlock.
-  Unreachable until the kernel takes interrupts — which is Phase 2. **Fix this
-  before the first IRQ handler logs anything**, and fix it in `SpinLock`
-  (an `irqsave` acquire), not at the call sites.
+  Still unreachable: Phase 2's first slice installs the interrupt table but
+  leaves `IF` clear, and the trap handler deliberately takes no lock (D-31).
+  **Fix this before the first IRQ handler logs anything** — Phase 2 slice 2,
+  alongside the local APIC — and fix it in `SpinLock` (an `irqsave` acquire),
+  not at the call sites.
 - **`Console::scroll` reads the framebuffer back.** Rows move as raw words, so
   nothing is lost, but framebuffer memory is uncached and a full-screen scroll
   is on the order of a million slow reads. Fine for a banner, visibly slow if

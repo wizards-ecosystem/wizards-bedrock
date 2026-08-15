@@ -525,6 +525,14 @@ demand a doc comment on every private helper, which is noise; the policy is
 "prose where it carries a safety obligation, nowhere else"
 (`005-code-conventions.md`).
 
+**Amended 2026-08-13.** The gate was linting only the library targets: neither
+`check` nor `clippy` passed `--all-targets`, so no test code in the workspace
+had ever been linted, and a `useless_vec` in `sha256.rs`'s tests had been sitting
+there unreported. `--all-targets` now goes to the host half — and only the host
+half, because the kernel crates have no test or bench targets and cannot have
+any (D-28). The argument construction moved into a pure `half_args` function
+with tests, so the distinction is asserted rather than remembered.
+
 **Consequences.** Cargo forbids mixing `[lints] workspace = true` with local
 lint tables in the same manifest, so per-crate escalation goes in source
 attributes — `#![deny(unsafe_code)]` sits at the top of `kernel/src/main.rs`,
@@ -696,6 +704,128 @@ VMware boot of D-18 remains the definition of done for a phase.
 
 ---
 
+## D-29 Interrupt entry is generated assembly, not a nightly ABI — Status: Accepted (2026-08-13)
+
+**Context.** Phase 2 needs 256 interrupt gates. Rust cannot express a handler
+directly: the calling convention that would let it, `extern "x86-interrupt"`,
+is gated behind nightly's `abi_x86_interrupt`, and D-01 keeps this project on
+stable.
+
+**Options.** (a) Adopt nightly for that one feature. (b) Take the `x86_64`
+crate, which wraps the ABI and ships a full descriptor-table API. (c) Write the
+entry path in assembly ourselves.
+
+**Decision.** (c). One `global_asm!` block generates 256 stubs with `.rept`,
+each padded to sixteen bytes so the table is indexed by vector rather than
+naming 256 functions; each stub normalises the frame — pushing a zero where the
+CPU pushes no error code, then its own vector number — and jumps to a common
+tail that saves the fifteen general-purpose registers and calls a Rust
+dispatcher with a pointer to the frame.
+
+**Rationale.** Nightly for one feature costs the whole stable-channel
+guarantee. The `x86_64` crate would be the pragmatic choice in most projects,
+but it inverts D-13: the `unsafe` that defines this kernel's TCB would live in
+a dependency rather than in `wost`, and the framekernel argument is precisely
+that the privileged surface is small, ours, and reviewable. Writing the entry
+path is also the part of Phase 2 most worth understanding by hand.
+
+**Consequences.**
+
+- **The stub stride is an assumption, so it is checked.** The generated table is
+  bracketed by two symbols and `init` asserts the span is exactly `256 × 16`
+  bytes before indexing into it.
+- **`TrapFrame`'s field order and the assembly must agree**, and no compiler can
+  check that. The selftest does, on the machine: it plants a breakpoint and
+  verifies the vector, error code, code selector, flags and stack pointer the
+  handler saw are the ones the CPU pushed. Swapping two fields was tried, and
+  the harness went red.
+- The dispatcher reads its handler from an `AtomicPtr` written before the table
+  is loaded, so a trap that reaches it has, by construction, a handler to call.
+- Not handled yet, each with its first caller still to come: `swapgs` (needs
+  ring 3), `XSAVE` (needs a scheduler; the kernel is built `+soft-float` and
+  cannot disturb SSE state), and nested-interrupt policy (needs interrupts on).
+
+---
+
+## D-30 Descriptor encoding is a host-tested library — Status: Accepted (2026-08-13)
+
+**Context.** `005-code-conventions.md` names "descriptor encoding" as a future
+`libs/` crate. Phase 2 is where it arrives.
+
+**Decision.** `libs/x86-tables` holds the GDT, IDT and TSS bit layouts, the
+selector arithmetic, and the exception name and error-code tables. `wost` builds
+descriptors from it and does nothing to them but load them.
+
+**Rationale.** A wrong bit in a descriptor does not produce a diagnosable
+failure; it produces a triple fault, or worse, a machine that runs with the
+wrong privilege. The only place that can be checked is a host test against the
+manual — `size_of::<Gate>() == 16`, the TSS's field offsets, the code descriptor
+equalling `0x00209A0000000000`, and the error-code mask agreeing with a
+transcribed copy of SDM table 6-1. Twenty-six such tests exist, and none of them
+could run in the kernel.
+
+**Consequences.** The crate is x86-specific, which is a first for `libs/`; a
+port adds a sibling rather than growing this one. `ERROR_CODE_VECTORS` is
+consumed both by the host tests and, as a `const` operand, by the assembler that
+generates the stubs — so the two cannot drift.
+
+---
+
+## D-31 A fault is terminal and reported; a breakpoint resumes — Status: Accepted (2026-08-13)
+
+**Context.** With an IDT installed, something has to decide what a fault means.
+
+**Decision.** Vector 3 records its frame and returns. Every other vector panics
+with the vector's name, the error code, and `RIP`/`CS`/`RFLAGS`/`RSP` — plus
+`CR2` for a page fault, where the address is the whole of the report. Nothing is
+recovered and nothing is retried.
+
+**Rationale.** D-14: containment is supervised restart, and there is no
+supervisor. A fault in ring 0 is a kernel bug, and the useful response is the
+report. When user threads exist, this grows one branch — "was this ring 3?" —
+in the one place faults arrive.
+
+**Consequences.** The handler logs nothing. Taking a console lock in trap
+context deadlocks against interrupted code that already holds it, which is the
+hazard `001-boot.md` records against `SpinLock`; the panic path is exempt only
+because it force-unlocks the consoles first. Breakpoints are recorded into
+atomics for the same reason. The recording is unconditional — a trap handler is
+no place for conditional compilation — while the accessor that reads it is
+behind the `selftest` feature.
+
+---
+
+## D-32 The CPU protection baseline goes on at boot — Status: Accepted (2026-08-13)
+
+**Context.** D-12 requires SMEP, SMAP, UMIP and NX from day one rather than as a
+retrofit. Phase 2 is the first phase with a CPU to configure.
+
+**Decision.** After the interrupt table is installed, the kernel enables every
+one of the four that `CPUID` reports, then reads the control registers back and
+logs what is actually on. Enabling is a safe call: none of these bits can
+produce undefined behaviour, only a trap, and by then a trap is reportable.
+
+**Rationale.** Ordering is the whole design. Enabling SMEP and SMAP against page
+tables the bootloader built is a real risk — if Limine had mapped the kernel or
+the framebuffer user-accessible, the next instruction fetch or the next pixel
+would fault. Installing the IDT first turns that from a silent reset into a page
+fault with an address. (It does not: verified 2026-08-13, all four enabled and
+the framebuffer console still draws.)
+
+**Consequences.**
+
+- **QEMU is now `-cpu max`, not `-cpu qemu64`.** The default model exposes none
+  of SMEP, SMAP or UMIP, so the kernel would have switched its baseline on
+  against a CPU that cannot enforce it and the check that it did would have
+  passed vacuously — which is exactly what the first run showed
+  (`protections nx`). The VMware target and the real machine have all four.
+- W^X, the other half of D-12, is a property of mappings and waits for Phase 3.
+  Enabling NX now is what makes it enforceable then.
+- `AC`, the flag that lifts SMAP for a deliberate user access, gets no accessor.
+  It arrives with the checked user copy it exists for, not before.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap
@@ -704,3 +834,5 @@ VMware boot of D-18 remains the definition of done for a phase.
 - `003-research-notes.md` — evidence tiers and citations behind
   Verified statuses
 - `005-code-conventions.md` — how the code is written (D-21, D-22, D-23)
+- `006-cpu-fundamentals.md` — Phase 2: descriptor tables, the fault path, and
+  the CPU protection baseline (D-29..D-32)
