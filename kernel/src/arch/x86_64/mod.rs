@@ -2,4 +2,5 @@
 
 #[cfg(feature = "selftest")]
 pub(crate) mod debug_exit;
+pub(crate) mod trap;
 pub(crate) mod uart;

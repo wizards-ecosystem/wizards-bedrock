@@ -13,3 +13,4 @@ workspace = true
 [dependencies]
 limine.workspace = true
 pixel.workspace = true
+x86-tables.workspace = true

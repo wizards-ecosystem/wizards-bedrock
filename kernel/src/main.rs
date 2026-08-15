@@ -21,7 +21,7 @@ mod theme;
 
 use core::fmt::Write;
 
-use wost::arch::current::cpu;
+use wost::arch::current::{cpu, segment};
 use wost::boot::BootInfo;
 
 wost::entry!(kernel_main);
@@ -42,6 +42,14 @@ fn kernel_main(boot: BootInfo) -> ! {
         "bootloader rejected our Limine base revision"
     );
     info!("limine: base revision supported");
+
+    // Order matters: the fault path exists before anything that can fault, so a
+    // wrong assumption about the bootloader's page tables prints a report
+    // instead of resetting the machine. See `docs/006-cpu-fundamentals.md`.
+    segment::init();
+    arch::current::trap::init();
+    info!("cpu: descriptor tables installed");
+    info!("cpu: protections {}", cpu::enable_protections());
 
     dev::with_console(|console| {
         for line in banner::LINES {

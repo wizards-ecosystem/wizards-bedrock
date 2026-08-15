@@ -12,6 +12,14 @@ use crate::paths::Paths;
 /// Default install location on Windows, checked before `PATH`.
 const WINDOWS_DEFAULT: &str = r"C:\Program Files\qemu";
 
+/// The machine both runners boot.
+///
+/// `-cpu max` rather than QEMU's default `qemu64`, which exposes neither SMEP,
+/// SMAP nor UMIP: the kernel would switch its security baseline on against a
+/// CPU that cannot enforce it, and the check that it did would pass vacuously.
+/// The VMware target of D-18 and the real machine both have all three.
+const MACHINE: &[&str] = &["-machine", "q35", "-cpu", "max", "-m", "512M"];
+
 /// Subdirectories of the QEMU installation that may hold firmware images.
 const FIRMWARE_DIRS: &[&str] = &["share", "share/qemu", "share/OVMF", "."];
 
@@ -94,7 +102,7 @@ pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
     println!("[xtask] launching QEMU (serial on stdio, close the window to exit)");
 
     let status = Command::new(&emulator)
-        .args(["-machine", "q35", "-cpu", "qemu64", "-m", "512M"])
+        .args(MACHINE)
         .args(["-serial", "stdio"])
         .args(drive(&format!(
             "if=pflash,format=raw,readonly=on,file={}",
@@ -145,7 +153,7 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
     println!("[xtask] booting the self-test kernel");
 
     let mut child = Command::new(&emulator)
-        .args(["-machine", "q35", "-cpu", "qemu64", "-m", "512M"])
+        .args(MACHINE)
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
         .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
         .args(drive(&format!(

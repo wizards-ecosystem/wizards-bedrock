@@ -1,0 +1,155 @@
+//! Interrupt descriptor table gates.
+//!
+//! A 64-bit gate is sixteen bytes that name a handler, the code selector to
+//! enter it with, and optionally one of the seven interrupt stacks in the
+//! task-state segment. The handler address is split across three fields for
+//! reasons that are entirely historical.
+
+use crate::Selector;
+
+/// Gates in an interrupt descriptor table. The architecture fixes this.
+pub const TABLE_LEN: usize = 256;
+
+/// Size of a full table in bytes.
+pub const TABLE_BYTES: usize = TABLE_LEN * size_of::<Gate>();
+
+/// Value the table's limit field takes: one less than its size.
+pub const TABLE_LIMIT: u16 = (TABLE_BYTES - 1) as u16;
+
+/// Present, ring 0, 64-bit interrupt gate.
+///
+/// An interrupt gate clears the interrupt flag on entry; the trap gate that
+/// does not is deliberately unavailable, because a handler that wants to run
+/// with interrupts on should say so itself.
+const INTERRUPT_GATE: u8 = 0x8E;
+
+/// Highest interrupt stack table index a gate can select.
+const MAX_INTERRUPT_STACK: u8 = 7;
+
+/// One interrupt descriptor table entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct Gate {
+    offset_low: u16,
+    selector: u16,
+    interrupt_stack: u8,
+    attributes: u8,
+    offset_middle: u16,
+    offset_high: u32,
+    reserved: u32,
+}
+
+impl Gate {
+    /// A gate with the present bit clear: taking this vector raises a general
+    /// protection fault rather than jumping somewhere arbitrary.
+    pub const MISSING: Self = Self {
+        offset_low: 0,
+        selector: 0,
+        interrupt_stack: 0,
+        attributes: 0,
+        offset_middle: 0,
+        offset_high: 0,
+        reserved: 0,
+    };
+
+    /// An interrupt gate entering `handler` through `selector`.
+    ///
+    /// `stack` selects an entry in the task-state segment's interrupt stack
+    /// table, counted from 1; zero means the handler runs on whichever stack
+    /// was in use when the interrupt arrived.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stack` exceeds 7.
+    pub const fn interrupt(handler: u64, selector: Selector, stack: u8) -> Self {
+        assert!(
+            stack <= MAX_INTERRUPT_STACK,
+            "the interrupt stack table has seven entries"
+        );
+
+        Self {
+            offset_low: handler as u16,
+            selector: selector.bits(),
+            interrupt_stack: stack,
+            attributes: INTERRUPT_GATE,
+            offset_middle: (handler >> 16) as u16,
+            offset_high: (handler >> 32) as u32,
+            reserved: 0,
+        }
+    }
+
+    /// The handler address, reassembled from its three fields.
+    pub const fn handler_address(self) -> u64 {
+        self.offset_low as u64 | (self.offset_middle as u64) << 16 | (self.offset_high as u64) << 32
+    }
+
+    /// The code selector the handler is entered through.
+    pub const fn selector(self) -> Selector {
+        Selector::from_bits(self.selector)
+    }
+
+    /// Which interrupt stack the handler runs on, or zero for the interrupted
+    /// one.
+    pub const fn interrupt_stack(self) -> u8 {
+        self.interrupt_stack
+    }
+
+    /// Whether the CPU will accept this vector.
+    pub const fn is_present(self) -> bool {
+        self.attributes & 0x80 != 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KERNEL_CODE: Selector = Selector::new(1, 0);
+
+    #[test]
+    fn a_gate_is_sixteen_bytes_and_a_table_is_four_kilobytes() {
+        assert_eq!(size_of::<Gate>(), 16);
+        assert_eq!(TABLE_BYTES, 4096);
+        assert_eq!(TABLE_LIMIT, 4095);
+    }
+
+    #[test]
+    fn a_handler_address_survives_being_split_in_three() {
+        let handler = 0xFFFF_FFFF_8012_3456;
+        let gate = Gate::interrupt(handler, KERNEL_CODE, 0);
+
+        assert_eq!(gate.handler_address(), handler);
+        assert_eq!(gate.offset_low, 0x3456);
+        assert_eq!(gate.offset_middle, 0x8012);
+        assert_eq!(gate.offset_high, 0xFFFF_FFFF);
+    }
+
+    #[test]
+    fn a_gate_records_its_selector_and_stack() {
+        let gate = Gate::interrupt(0x1000, KERNEL_CODE, 1);
+
+        assert_eq!(gate.selector(), KERNEL_CODE);
+        assert_eq!(gate.interrupt_stack(), 1);
+        assert!(gate.is_present());
+    }
+
+    #[test]
+    fn an_interrupt_gate_is_ring_zero_and_clears_the_interrupt_flag() {
+        let gate = Gate::interrupt(0x1000, KERNEL_CODE, 0);
+
+        assert_eq!(gate.attributes & 0b0110_0000, 0, "descriptor privilege");
+        assert_eq!(gate.attributes & 0xF, 0xE, "gate type");
+    }
+
+    #[test]
+    fn a_missing_gate_is_not_present() {
+        assert!(!Gate::MISSING.is_present());
+        assert_eq!(Gate::MISSING, Gate::default());
+    }
+
+    #[test]
+    #[should_panic(expected = "seven entries")]
+    fn a_gate_rejects_a_stack_outside_the_table() {
+        let _ = Gate::interrupt(0x1000, KERNEL_CODE, 8);
+    }
+}

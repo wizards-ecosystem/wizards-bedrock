@@ -1,0 +1,11 @@
+[package]
+name = "x86-tables"
+description = "x86_64 descriptor table encoding: GDT, IDT, TSS. Pure logic, host-testable."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

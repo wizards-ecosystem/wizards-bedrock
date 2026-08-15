@@ -8,6 +8,36 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::panic::PanicToken;
 
+/// A latch that admits exactly one caller.
+///
+/// Used to make a hardware `init` idempotent: the second caller returns having
+/// done nothing, rather than reloading a table the CPU is already using.
+#[derive(Debug)]
+pub struct Once(AtomicBool);
+
+impl Once {
+    /// Create an unclaimed latch.
+    pub const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    /// Claim the work this latch guards. True for the first caller only.
+    pub fn claim(&self) -> bool {
+        !self.0.swap(true, Ordering::AcqRel)
+    }
+
+    /// Whether the work this latch guards has been claimed.
+    pub fn is_claimed(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+impl Default for Once {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A mutual-exclusion lock that spins while contended.
 ///
 /// This does not touch the interrupt flag, so a lock taken in normal kernel

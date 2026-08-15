@@ -12,11 +12,14 @@
 //! asserts is not repeated here — a rejected base revision panics long before
 //! this, which the harness sees as a missing verdict.
 
-use wost::arch::current::port;
+use wost::arch::current::cpu::{self, Protections};
+use wost::arch::current::{interrupt, port, segment};
 use wost::boot::{FramebufferInfo, Rgb};
-use wost::sync::SpinLock;
+use wost::sync::{Once, SpinLock};
+use x86_tables::exception;
 
 use crate::arch::current::debug_exit;
+use crate::arch::current::trap::{self, Breakpoint};
 use crate::arch::current::uart::{self, UartError};
 use crate::{dev, error, info};
 
@@ -66,6 +69,39 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         ports_are_exclusive(),
     );
     report.check("a held lock excludes another holder", lock_excludes());
+    report.check("a one-shot latch admits one caller", latch_admits_one());
+
+    report.check(
+        "the code selector is the one we installed",
+        segment::code_selector() == segment::KERNEL_CODE,
+    );
+    report.check(
+        "the task register holds our segment",
+        segment::task_register() == segment::TASK_STATE,
+    );
+    report.check(
+        "the interrupt table the CPU holds is ours",
+        interrupt::table_is_loaded(),
+    );
+
+    let before = trap::last_breakpoint();
+    let stack_pointer = cpu::stack_pointer();
+    interrupt::breakpoint();
+    let taken = trap::last_breakpoint();
+
+    report.check(
+        "a breakpoint is delivered and resumes",
+        taken.count == before.count + 1,
+    );
+    report.check(
+        "the saved frame is the frame the CPU pushed",
+        frame_is_consistent(taken, stack_pointer),
+    );
+
+    report.check(
+        "every protection the CPU supports is enabled",
+        Protections::enabled() == Protections::supported(),
+    );
 
     let passed = report.failed == 0;
     if passed {
@@ -114,4 +150,30 @@ fn lock_excludes() -> bool {
     let refused = lock.try_lock().is_none();
     drop(held);
     refused && lock.try_lock().is_some()
+}
+
+fn latch_admits_one() -> bool {
+    let latch = Once::new();
+    !latch.is_claimed() && latch.claim() && !latch.claim() && latch.is_claimed()
+}
+
+/// The interrupt frame is the one place a struct definition and an assembly
+/// listing have to agree, and the compiler cannot check it. If the pushes and
+/// the fields drift apart, these values are what turn to nonsense.
+///
+/// `stack_pointer` is the caller's, taken immediately before the breakpoint: the
+/// saved one belongs to a frame or two deeper, so it is checked for proximity
+/// rather than equality.
+fn frame_is_consistent(breakpoint: Breakpoint, stack_pointer: u64) -> bool {
+    /// Bit 1 of the flags register reads as one on every x86 ever made.
+    const RESERVED_FLAG: u64 = 1 << 1;
+
+    /// How far the saved stack pointer may be from the one measured beside it.
+    const STACK_SLACK: u64 = 4096;
+
+    breakpoint.vector == u64::from(exception::BREAKPOINT)
+        && breakpoint.error_code == 0
+        && breakpoint.code_selector == u64::from(segment::KERNEL_CODE.bits())
+        && breakpoint.flags & RESERVED_FLAG != 0
+        && breakpoint.stack_pointer.abs_diff(stack_pointer) < STACK_SLACK
 }

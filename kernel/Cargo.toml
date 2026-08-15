@@ -15,3 +15,4 @@ selftest = []
 [dependencies]
 noto-sans-mono-bitmap.workspace = true
 wost = { path = "../wost" }
+x86-tables.workspace = true

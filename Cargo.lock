@@ -77,6 +77,7 @@ version = "0.1.0"
 dependencies = [
  "noto-sans-mono-bitmap",
  "wost",
+ "x86-tables",
 ]
 
 [[package]]
@@ -85,7 +86,12 @@ version = "0.1.0"
 dependencies = [
  "limine",
  "pixel",
+ "x86-tables",
 ]
+
+[[package]]
+name = "x86-tables"
+version = "0.1.0"
 
 [[package]]
 name = "xtask"
