@@ -1005,6 +1005,21 @@ so the tick rate survives even a misfired divide write.
 - `wost` gained five timer functions and zero new `unsafe` blocks: everything
   rides the MSR helpers whose gate D-33 built.
 
+**Amended 2026-08-20**, after the phase's adversarial audit, in which two
+independent reviewers converged on the same hole: the believability bounds
+cannot catch a stall that crosses the counter's 54.9 ms span mid-window,
+because the fold inflates the rate by a factor of two to four — inside
+bounds that must span both targets' clocks. The window is now guarded in
+depth: no gap between counter observations may exceed ten milliseconds, the
+finished window must land within one such gap of its target, and two
+consecutive windows must agree to one part in sixty-four — no single guard
+survives a stall of exactly the wrong length, but no stall forges the same
+wrong answer twice. A fourth guard came from the datasheet: the 8254 loads
+a written count only on the crystal edge after its high byte, so the
+baseline read now waits on the read-back status byte's null-count flag —
+instant under both hypervisors, real on real hardware. Attempts rose from
+three to five, giving the agreeing pair room around discarded windows.
+
 ---
 
 ## D-37 Keyboard input is polled until the I/O APIC exists — Status: Accepted (2026-08-20)
@@ -1048,8 +1063,9 @@ for page tables, the phase ships on what is reachable.
 
 **Consequences.**
 
-- The driver is the first written entirely outside `wost` — ports have been
-  safe since the claim registry — and the slice adds zero new `unsafe`.
+- The driver lives entirely outside `wost`, like the UART and PIT drivers
+  before it — ports have been safe since the claim registry — and the slice
+  adds zero new `unsafe`.
 - Input is dead if the timer declined: no tick, no wake, no drain. Accepted —
   the self-test would already be red on the timer checks, and a machine whose
   PIT and APIC both lie has larger problems than typing.

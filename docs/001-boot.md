@@ -104,13 +104,13 @@ at a 16-byte boundary — the assumption `interrupt::init` asserts at runtime,
 confirmed statically as well.
 
 2026-08-20 — Phase 2 complete, verified on both targets. QEMU's `test-boot`
-runs 34 machine checks, the last a QMP-injected keystroke decoded end to end
-(D-38). VMware Workstation (`vmrun start vm\wizard-os.vmx`, serial to
+runs 34 machine checks, among them a QMP-injected keystroke decoded end to
+end (D-38). VMware Workstation (`vmrun start vm\wizard-os.vmx`, serial to
 `vm/serial.log`) boots the same kernel and is the reading that matters for
 the timer: its APIC clock measured at 65.9 MHz by the same code that
-measured QEMU's at 997 MHz — rates two orders of magnitude apart, which is
-what the calibration's plausibility bounds were designed around, and both
-landed inside them on the first boot.
+measured QEMU's at 997 MHz — rates fifteen times apart, which is the spread
+the calibration's plausibility bounds were designed around, and both landed
+inside them on the first boot.
 
 ```
 [info ] The Wizard's OS awakens.
@@ -131,6 +131,11 @@ clock could only print multiples of ten — and `keyboard: polled, scancode
 set 2` is VMware's i8042 surviving the full bring-up: reset, self-test,
 translation off, set 2 selected. The eyeball that closes the phase is
 typing at the VMware console and watching the glyphs echo under the banner.
+
+Re-verified the same day, after the phase's adversarial audit hardened the
+calibration (D-36's amendment): the paired windows agreed on both targets —
+VMware at 65.93 MHz, within a part in ten thousand of the first boot's
+reading, and QEMU at 999.96 MHz, dead on the rate QEMU models.
 
 ## Debug channels
 

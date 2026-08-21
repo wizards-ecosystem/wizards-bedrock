@@ -508,9 +508,24 @@ rate would compound two floors. The divide configuration never enters the
 correctness path at all: calibration measures the *divided* clock and derives
 the count from the same clock, so the tick lands on 100 Hz even if the divide
 write misfired; the factor exists so the log line can report the undivided
-rate. A measurement can still lie — a stall long enough to wrap the crystal
-counter mod 65536 corrupts the ratio — so the result must land between one
-megahertz and fifty gigahertz, and three attempts are allowed before the
+rate.
+
+A measurement can still lie, and the phase's adversarial audit showed the
+obvious defence does not catch the dangerous case: a stall that crosses the
+counter's 54.9 ms span mid-window folds the elapsed ticks modulo 65536 and
+inflates the rate by a factor of two to four — squarely inside believability
+bounds that must span QEMU's gigahertz and VMware's tens of megahertz. So
+the window is guarded in depth. No gap between two counter observations may
+exceed ten milliseconds — a fold shows up as a giant or backwards step. The
+finished window must land within one such gap of its target. And because any
+single guard can be slipped by a stall of exactly the wrong length, two
+consecutive windows must agree to one part in sixty-four before either is
+believed: no stall forges the same wrong answer twice. One more guard is the
+datasheet's own — the 8254 loads a written count into its counting element
+only on the crystal edge after the high byte, up to 838 ns late, so the
+baseline read waits for the read-back status byte's null-count flag to
+clear. Both hypervisors load instantly; that wait stands for the real
+machine. Five windows are allowed around the agreeing pair; past that the
 kernel concludes the hardware is lying and boots without a clock. A timer
 failure vetoes nothing: `interrupt::enable` still runs, because a kernel
 without a clock still wants its keyboard.
@@ -605,9 +620,10 @@ nature puts it.
 
 `wost` gains **nothing**. The i8042 speaks entirely through two I/O ports,
 ports have been safe since Phase 1's claim registry, and so the driver —
-`kernel/arch/x86_64/i8042.rs` — is the first written wholly outside the
-privileged crate: the framekernel split collecting what slice 0 paid for.
-Zero new `unsafe` in this slice, as in the last.
+`kernel/src/arch/x86_64/i8042.rs` — lives wholly outside the privileged
+crate, as the UART and PIT drivers before it: the framekernel split
+collecting what the claim registry paid for. Zero new `unsafe` in this
+slice, as in the last.
 
 The protocol is arithmetic: `libs/ps2-keys` holds the set 2 tables, the
 byte-at-a-time decoder, shift tracking, and the US layout that turns a key
