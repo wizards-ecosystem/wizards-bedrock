@@ -138,3 +138,47 @@ pub(crate) fn scancode_set() -> Option<u8> {
         .as_mut()
         .and_then(|keyboard| keyboard.controller.scancode_set())
 }
+
+/// Wait for `key` to arrive through the whole path — controller, decoder —
+/// pressed and then released, in that order.
+///
+/// Doubly bounded: a tick budget for the honest case, and an iteration cap
+/// so a dead timer converts the wait into a red check rather than a hang.
+/// The harness kills the run at sixty seconds regardless.
+#[cfg(feature = "selftest")]
+pub(crate) fn await_key(key: ps2_keys::Key) -> bool {
+    /// Ten seconds of ticks — generous, because injection crosses a process,
+    /// a socket, and an emulated bus.
+    const WAIT_TICKS: u64 = 1_000;
+    /// Port reads are bus transactions, so this is seconds' worth too.
+    const WAIT_SPINS: u32 = 5_000_000;
+
+    let deadline = crate::time::ticks() + WAIT_TICKS;
+    let mut pressed = false;
+    for _ in 0..WAIT_SPINS {
+        if crate::time::ticks() > deadline {
+            return false;
+        }
+        let mut guard = KEYBOARD.lock();
+        let Some(keyboard) = guard.as_mut() else {
+            return false;
+        };
+        while let Some(byte) = keyboard.controller.poll_byte() {
+            let Some(event) = keyboard.decoder.feed(byte) else {
+                continue;
+            };
+            keyboard.shift.observe(event);
+            if event.key != key {
+                continue;
+            }
+            match event.state {
+                KeyState::Pressed => pressed = true,
+                KeyState::Released if pressed => return true,
+                KeyState::Released => {}
+            }
+        }
+        drop(guard);
+        core::hint::spin_loop();
+    }
+    false
+}

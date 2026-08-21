@@ -1,13 +1,19 @@
 //! Locating and launching QEMU.
 
 use std::ffi::OsString;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{ChildStdout, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
 use crate::paths::Paths;
+use crate::qmp::Qmp;
 
 /// Default install location on Windows, checked before `PATH`.
 const WINDOWS_DEFAULT: &str = r"C:\Program Files\qemu";
@@ -137,10 +143,25 @@ pub const SELFTEST_FEATURE: &str = "selftest";
 const SELFTEST_PASSED: i32 = 33;
 const SELFTEST_FAILED: i32 = 35;
 
+/// Line the self-test kernel prints immediately before its bounded wait for
+/// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
+const READY_MARKER: &str = "selftest: awaiting injected keystroke";
+
+/// The key the harness injects; its set 2 make code is `0x1C`.
+const INJECTED_QCODE: &str = "a";
+
 /// Boot `image` headless, wait for the kernel's verdict, and report it.
 ///
 /// A kernel that neither passes nor fails within `timeout` is a hang, which is
 /// itself a failure — so the emulator is killed rather than left running.
+///
+/// The boot carries a QMP control socket so the harness can press a key when
+/// the kernel says it is listening: the harness listens first and QEMU dials
+/// out, so there is no port to guess and no connect to race. Serial output is
+/// piped and forwarded line by line — both to keep it visible and to watch
+/// for the marker. QMP misbehaviour is reported and abandoned, never fatal
+/// here: the missing keystroke turns the kernel's own bounded check red, so
+/// the verdict stays the kernel's.
 pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()> {
     let qemu_dir = locate()?;
     let code = firmware(&qemu_dir, CODE_FIRMWARE)?;
@@ -149,6 +170,16 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
     std::fs::copy(&vars_template, &vars)
         .with_context(|| format!("copying {} to {}", vars_template.display(), vars.display()))?;
 
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).context("binding the QMP loopback listener")?;
+    listener
+        .set_nonblocking(true)
+        .context("making the QMP listener non-blocking")?;
+    let qmp_endpoint = format!(
+        "tcp:{}",
+        listener.local_addr().context("reading the QMP port")?
+    );
+
     let emulator = qemu_dir.join(exe_name("qemu-system-x86_64"));
     println!("[xtask] booting the self-test kernel");
 
@@ -156,6 +187,7 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
         .args(MACHINE)
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
         .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
+        .args(["-qmp", &qmp_endpoint])
         .args(drive(&format!(
             "if=pflash,format=raw,readonly=on,file={}",
             code.display()
@@ -165,8 +197,14 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
             vars.display()
         )))
         .args(drive(&format!("format=raw,file={}", image.display())))
+        .stdout(Stdio::piped())
         .spawn()
         .with_context(|| format!("could not launch {}", emulator.display()))?;
+
+    let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
+    let marker_seen = Arc::new(AtomicBool::new(false));
+    let forwarder = forward_serial(stdout, Arc::clone(&marker_seen));
+    let mut injector = Injector::new(listener, marker_seen);
 
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -175,13 +213,18 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
+            let _ = forwarder.join();
             bail!(
                 "self-test did not finish within {} seconds",
                 timeout.as_secs()
             );
         }
+        injector.advance();
         std::thread::sleep(POLL_INTERVAL);
     };
+
+    // Trailing serial lines print before the verdict does.
+    let _ = forwarder.join();
 
     match status.code() {
         Some(SELFTEST_PASSED) => {
@@ -192,6 +235,97 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
         Some(other) => bail!("QEMU exited with {other}; the kernel never reported a verdict"),
         None => bail!("QEMU was terminated by a signal"),
     }
+}
+
+/// Forward every serial line to the console, flagging the ready marker.
+///
+/// A kernel that dies mid-line still shows its last words: the unterminated
+/// remainder at end-of-stream is forwarded too.
+fn forward_serial(stdout: ChildStdout, marker_seen: Arc<AtomicBool>) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let Ok(read) = reader.read_until(b'\n', &mut line) else {
+                return;
+            };
+            if read == 0 {
+                return;
+            }
+            let text = String::from_utf8_lossy(&line);
+            print!("{text}");
+            if !text.ends_with('\n') {
+                println!();
+            }
+            let _ = std::io::stdout().flush();
+            if text.contains(READY_MARKER) {
+                marker_seen.store(true, Ordering::Release);
+            }
+        }
+    })
+}
+
+/// The keystroke's side of the poll loop: accept when QEMU dials in, inject
+/// once when the kernel says it is listening, and report-and-retire on any
+/// failure — the kernel's bounded wait is what turns a missing key red.
+struct Injector {
+    listener: TcpListener,
+    marker_seen: Arc<AtomicBool>,
+    state: InjectorState,
+}
+
+enum InjectorState {
+    Listening,
+    Connected(Qmp),
+    Retired,
+}
+
+impl Injector {
+    fn new(listener: TcpListener, marker_seen: Arc<AtomicBool>) -> Self {
+        Self {
+            listener,
+            marker_seen,
+            state: InjectorState::Listening,
+        }
+    }
+
+    fn advance(&mut self) {
+        self.state = match std::mem::replace(&mut self.state, InjectorState::Retired) {
+            InjectorState::Listening => match self.accept() {
+                Ok(Some(qmp)) => InjectorState::Connected(qmp),
+                Ok(None) => InjectorState::Listening,
+                Err(reason) => retire(&reason),
+            },
+            InjectorState::Connected(mut qmp) => {
+                if !self.marker_seen.load(Ordering::Acquire) {
+                    InjectorState::Connected(qmp)
+                } else {
+                    match qmp.inject_key(INJECTED_QCODE) {
+                        Ok(()) => {
+                            println!("[xtask] qmp: keystroke injected");
+                            InjectorState::Retired
+                        }
+                        Err(reason) => retire(&reason),
+                    }
+                }
+            }
+            InjectorState::Retired => InjectorState::Retired,
+        };
+    }
+
+    fn accept(&mut self) -> Result<Option<Qmp>> {
+        match self.listener.accept() {
+            Ok((stream, _)) => Qmp::handshake(stream).map(Some),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error).context("accepting QEMU's QMP connection"),
+        }
+    }
+}
+
+fn retire(reason: &anyhow::Error) -> InjectorState {
+    println!("[xtask] qmp: {reason:#}; the keystroke check will report it");
+    InjectorState::Retired
 }
 
 /// How often to check whether QEMU has exited. Short enough that a passing run

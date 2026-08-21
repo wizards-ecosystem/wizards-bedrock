@@ -11,6 +11,7 @@ pub mod cli;
 pub mod image;
 pub mod paths;
 pub mod qemu;
+pub mod qmp;
 pub mod sha256;
 pub mod tasks;
 pub mod vendor;

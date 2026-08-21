@@ -176,6 +176,16 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         input::scancode_set() == Some(2),
     );
 
+    // The harness watches serial for this exact line and presses a key when
+    // it appears — kept in step with READY_MARKER in `xtask/src/qemu.rs`.
+    // Nothing may talk to the keyboard between the marker and the wait, or
+    // the injected bytes could interleave with a command's replies.
+    info!("selftest: awaiting injected keystroke");
+    report.check(
+        "an injected keystroke arrives, and its release follows",
+        input::await_key(ps2_keys::Key::A),
+    );
+
     report.check(
         "no spurious interrupt has been delivered",
         trap::spurious_count() == 0,
