@@ -13,6 +13,8 @@
 
 use core::fmt::Write;
 
+#[cfg(feature = "selftest")]
+use ps2_keys::Key;
 use ps2_keys::{Decoder, KeyEvent, KeyState, Shift, us};
 use wost::sync::SpinLock;
 
@@ -25,6 +27,28 @@ struct Keyboard {
     shift: Shift,
 }
 
+impl Keyboard {
+    /// Pull bytes until one completes an event, the buffer runs dry, or the
+    /// per-call byte budget is spent.
+    ///
+    /// The budget is what makes a controller streaming protocol garbage —
+    /// bytes that never complete an event — unable to pin the caller's lock:
+    /// without it, "drain until empty" is bounded only by the device's good
+    /// behaviour.
+    fn next_event(&mut self) -> Option<KeyEvent> {
+        const BYTE_BUDGET: u32 = 16;
+
+        for _ in 0..BYTE_BUDGET {
+            let byte = self.controller.poll_byte()?;
+            if let Some(event) = self.decoder.feed(byte) {
+                self.shift.observe(event);
+                return Some(event);
+            }
+        }
+        None
+    }
+}
+
 static KEYBOARD: SpinLock<Option<Keyboard>> = SpinLock::new(None);
 
 /// One decoded event, with the character it typed resolved while the shift
@@ -35,8 +59,9 @@ struct Delivery {
     character: Option<char>,
 }
 
-/// Events decoded per hold of the keyboard lock, so a stream of input cannot
-/// pin the lock — and the consoles it delivers to — for its whole length.
+/// Events decoded per hold of the keyboard lock. With the byte budget in
+/// [`Keyboard::next_event`], a hold is bounded in bytes as well as events,
+/// so no stream of input can pin the lock for its whole length.
 const BATCH: usize = 8;
 
 /// Bring the keyboard up, or report why the kernel runs without one.
@@ -78,13 +103,9 @@ fn drain_batch(deliveries: &mut [Option<Delivery>; BATCH]) -> usize {
 
     let mut count = 0;
     while count < BATCH {
-        let Some(byte) = keyboard.controller.poll_byte() else {
+        let Some(event) = keyboard.next_event() else {
             break;
         };
-        let Some(event) = keyboard.decoder.feed(byte) else {
-            continue;
-        };
-        keyboard.shift.observe(event);
         let character = (event.state == KeyState::Pressed)
             .then(|| us::char_for(event.key, keyboard.shift))
             .flatten();
@@ -146,12 +167,13 @@ pub(crate) fn scancode_set() -> Option<u8> {
 /// so a dead timer converts the wait into a red check rather than a hang.
 /// The harness kills the run at sixty seconds regardless.
 #[cfg(feature = "selftest")]
-pub(crate) fn await_key(key: ps2_keys::Key) -> bool {
+pub(crate) fn await_key(key: Key) -> bool {
     /// Ten seconds of ticks — generous, because injection crosses a process,
     /// a socket, and an emulated bus.
     const WAIT_TICKS: u64 = 1_000;
-    /// Port reads are bus transactions, so this is seconds' worth too.
-    const WAIT_SPINS: u32 = 5_000_000;
+    /// Each spin is a lock and a status read — bus transactions — so this is
+    /// seconds' worth: the bound a dead timer falls back on.
+    const WAIT_SPINS: u32 = 2_000_000;
 
     let deadline = crate::time::ticks() + WAIT_TICKS;
     let mut pressed = false;
@@ -163,11 +185,7 @@ pub(crate) fn await_key(key: ps2_keys::Key) -> bool {
         let Some(keyboard) = guard.as_mut() else {
             return false;
         };
-        while let Some(byte) = keyboard.controller.poll_byte() {
-            let Some(event) = keyboard.decoder.feed(byte) else {
-                continue;
-            };
-            keyboard.shift.observe(event);
+        while let Some(event) = keyboard.next_event() {
             if event.key != key {
                 continue;
             }

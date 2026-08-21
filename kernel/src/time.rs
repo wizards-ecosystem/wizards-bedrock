@@ -11,7 +11,7 @@
 use core::fmt;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering, compiler_fence};
 
-use wost::arch::current::apic;
+use wost::arch::current::{apic, interrupt};
 use x86_apic::timer::{self, Divide};
 use x86_pit::{CRYSTAL_HZ, calibrate, elapsed_ticks};
 
@@ -37,13 +37,37 @@ const DIVIDE: Divide = Divide::By1;
 /// inside the 54.9 ms at which the sixteen-bit counter becomes ambiguous.
 const WINDOW_TICKS: u16 = (CRYSTAL_HZ / 50) as u16;
 
-/// Measurements to attempt before concluding the hardware is lying.
-const MEASUREMENT_ATTEMPTS: u32 = 3;
+/// The largest believable gap between two counter observations: ten
+/// milliseconds. An honest gap is a handful of ticks and a hypervisor
+/// hiccup a few thousand; only a stall jumps further, and a stall that
+/// crosses the counter's 54.9 ms span folds the window modulo 65536 into a
+/// rate inflated by a factor the believability bounds cannot see. A step
+/// past this — or backwards, which is the fold showing directly — discards
+/// the attempt instead of guessing.
+const MAX_STEP: u16 = (CRYSTAL_HZ / 100) as u16;
 
-/// Counter reads to allow one window before declaring the chip stuck. Each
-/// read is a bus transaction, so this is on the order of a second, and it
-/// only bites when the counter never advances.
-const MAX_POLLS: u32 = 1_000_000;
+/// Windows to attempt before concluding the hardware is lying. Two must
+/// agree, so this allows a few discarded ones around them.
+const MEASUREMENT_ATTEMPTS: u32 = 5;
+
+/// Counter reads to allow one window before declaring the chip stuck. A
+/// healthy window needs a few thousand; each read is a bus transaction, so
+/// the cap has to stay small enough that a dead chip costs seconds across
+/// every attempt, not the harness's whole timeout.
+const MAX_POLLS: u32 = 100_000;
+
+/// One part in sixty-four: two windows this close are measuring the same
+/// clock; a stall that survived the step guard cannot fake agreement twice.
+const AGREEMENT_DIVISOR: u64 = 64;
+
+const _: () = {
+    assert!(1000 % TICK_HZ == 0, "a tick must be whole milliseconds");
+    assert!(
+        CRYSTAL_HZ / 50 <= u16::MAX as u32,
+        "the window must fit the counter"
+    );
+    assert!(WINDOW_TICKS as u32 + MAX_STEP as u32 <= u16::MAX as u32);
+};
 
 /// Believable bounds for the divided clock: QEMU models a gigahertz, VMware
 /// tens of megahertz. A reading outside three orders of magnitude either way
@@ -92,6 +116,15 @@ pub(crate) struct Calibration {
     initial_count: u32,
 }
 
+impl Calibration {
+    /// Whether two windows measured the same clock: within one part in
+    /// sixty-four — far looser than honest window jitter, far tighter than
+    /// the factor-of-two-and-up a folded window inflates by.
+    fn agrees_with(self, other: Self) -> bool {
+        self.divided_hz.abs_diff(other.divided_hz) <= self.divided_hz / AGREEMENT_DIVISOR
+    }
+}
+
 impl fmt::Display for Calibration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -105,20 +138,36 @@ impl fmt::Display for Calibration {
 
 /// Calibrate the APIC timer against the interval timer and start the tick.
 ///
-/// Meant to run with the interrupt flag still clear: nothing can then preempt
-/// the measurement window, and the first tick this arms stays pending in the
-/// APIC until the flag is set. The interval timer is parked afterwards —
-/// stopped, its ports claimed for good — because the one measurement is all
-/// this kernel will ever ask of it.
+/// Runs with the interrupt flag still clear — asserted, because it is what
+/// makes the measurement unpreemptible for free — and the first tick this
+/// arms stays pending in the APIC until the flag is set. Two consecutive
+/// windows must agree before their answer is believed: every guard inside
+/// [`measure`] can be slipped by a stall of exactly the wrong length, but a
+/// second independent window cannot be slipped to the same wrong answer.
+/// The interval timer is parked afterwards — stopped, its ports claimed for
+/// good — because these measurements are all this kernel will ever ask of
+/// it.
 pub(crate) fn init() -> Result<Calibration, TimeError> {
+    assert!(
+        !interrupt::are_enabled(),
+        "calibration must run before interrupts are enabled"
+    );
     let mut pit = Pit::claim().map_err(|_| TimeError::PitUnavailable)?;
     apic::set_timer_divide(DIVIDE);
 
+    let mut candidate: Option<Calibration> = None;
     let mut outcome = None;
     for _ in 0..MEASUREMENT_ATTEMPTS {
-        outcome = measure(&mut pit);
-        if outcome.is_some() {
-            break;
+        let Some(current) = measure(&mut pit) else {
+            candidate = None;
+            continue;
+        };
+        match candidate {
+            Some(previous) if previous.agrees_with(current) => {
+                outcome = Some(current);
+                break;
+            }
+            _ => candidate = Some(current),
         }
     }
     pit.park();
@@ -137,9 +186,11 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
 ///
 /// The APIC reads sit inside the crystal reads, so the skew of the four port
 /// transactions lands symmetrically: the rate is understated by two reads in
-/// twenty milliseconds, which is noise. `None` means the numbers were not
-/// believable — a stuck counter, a wrapped one, or a stall long enough to
-/// corrupt the window — and the caller decides how patient to be.
+/// twenty milliseconds, which is noise. `None` means the window is not
+/// trustworthy — a stuck counter, a step past [`MAX_STEP`] or backwards
+/// (a stall folding through the counter's span), a window that overshot its
+/// bound, or a rate outside belief — and the caller decides how patient to
+/// be.
 fn measure(pit: &mut Pit) -> Option<Calibration> {
     // Free-running from the top under a still-masked entry: 32 bits at even
     // 5 GHz is 0.86 s to zero, forty times the window.
@@ -149,8 +200,17 @@ fn measure(pit: &mut Pit) -> Option<Calibration> {
     let pit_start = pit.count();
     let apic_start = apic::timer_current_count();
 
+    let mut previous = 0;
     let mut polls = 0;
-    while elapsed_ticks(pit_start, pit.count()) < WINDOW_TICKS {
+    loop {
+        let elapsed = elapsed_ticks(pit_start, pit.count());
+        if elapsed < previous || elapsed - previous > MAX_STEP {
+            return None;
+        }
+        previous = elapsed;
+        if elapsed >= WINDOW_TICKS {
+            break;
+        }
         polls += 1;
         if polls >= MAX_POLLS {
             return None;
@@ -163,6 +223,11 @@ fn measure(pit: &mut Pit) -> Option<Calibration> {
 
     let counted = u64::from(apic_start.checked_sub(apic_end)?);
     let pit_ticks = elapsed_ticks(pit_start, pit_end);
+    // The closing reads sit outside the step guard, so they get the same
+    // bound by range: a fold between loop exit and here lands outside it.
+    if !(WINDOW_TICKS..=WINDOW_TICKS + MAX_STEP).contains(&pit_ticks) {
+        return None;
+    }
 
     let divided_hz = calibrate::divided_hz(counted, pit_ticks);
     if !BELIEVABLE_HZ.contains(&divided_hz) {
@@ -199,11 +264,22 @@ pub(crate) fn uptime_ms() -> u64 {
     const READ_RETRIES: u32 = 3;
 
     let initial_count = INITIAL_COUNT.load(Ordering::Relaxed);
+    // An uncalibrated clock has no countdown worth reading: whole ticks —
+    // zero, since the timer never started — without touching the hardware.
+    if initial_count == 0 {
+        return clamp_monotonic(
+            TICKS
+                .load(Ordering::Relaxed)
+                .saturating_mul(u64::from(MS_PER_TICK)),
+        );
+    }
     for _ in 0..READ_RETRIES {
         let before = TICKS.load(Ordering::Relaxed);
-        // The fences pin the countdown read between the two tick loads. The
-        // read is `options(nomem)` assembly, which the compiler is otherwise
-        // free to float across both.
+        // The fences keep the tick loads from crossing the countdown read;
+        // the read itself is non-`pure` assembly, which the compiler must not
+        // hoist, merge, or discard. Even under the most hostile reading — the
+        // `nomem` register read floating past a fence — the error is bounded
+        // to one tick, and the clamp below keeps it monotonic.
         compiler_fence(Ordering::SeqCst);
         let current = apic::timer_current_count();
         compiler_fence(Ordering::SeqCst);

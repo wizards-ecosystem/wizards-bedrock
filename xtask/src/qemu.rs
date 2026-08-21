@@ -204,7 +204,7 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
     let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
     let marker_seen = Arc::new(AtomicBool::new(false));
     let forwarder = forward_serial(stdout, Arc::clone(&marker_seen));
-    let mut injector = Injector::new(listener, marker_seen);
+    inject_on_marker(listener, marker_seen);
 
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -219,7 +219,6 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
                 timeout.as_secs()
             );
         }
-        injector.advance();
         std::thread::sleep(POLL_INTERVAL);
     };
 
@@ -253,10 +252,13 @@ fn forward_serial(stdout: ChildStdout, marker_seen: Arc<AtomicBool>) -> JoinHand
             if read == 0 {
                 return;
             }
+            // One print per line, so a message from another thread cannot
+            // land between a dying kernel's last words and their newline.
             let text = String::from_utf8_lossy(&line);
-            print!("{text}");
-            if !text.ends_with('\n') {
-                println!();
+            if text.ends_with('\n') {
+                print!("{text}");
+            } else {
+                println!("{text}");
             }
             let _ = std::io::stdout().flush();
             if text.contains(READY_MARKER) {
@@ -266,66 +268,48 @@ fn forward_serial(stdout: ChildStdout, marker_seen: Arc<AtomicBool>) -> JoinHand
     })
 }
 
-/// The keystroke's side of the poll loop: accept when QEMU dials in, inject
-/// once when the kernel says it is listening, and report-and-retire on any
-/// failure — the kernel's bounded wait is what turns a missing key red.
-struct Injector {
-    listener: TcpListener,
-    marker_seen: Arc<AtomicBool>,
-    state: InjectorState,
-}
-
-enum InjectorState {
-    Listening,
-    Connected(Qmp),
-    Retired,
-}
-
-impl Injector {
-    fn new(listener: TcpListener, marker_seen: Arc<AtomicBool>) -> Self {
-        Self {
-            listener,
-            marker_seen,
-            state: InjectorState::Listening,
-        }
-    }
-
-    fn advance(&mut self) {
-        self.state = match std::mem::replace(&mut self.state, InjectorState::Retired) {
-            InjectorState::Listening => match self.accept() {
-                Ok(Some(qmp)) => InjectorState::Connected(qmp),
-                Ok(None) => InjectorState::Listening,
-                Err(reason) => retire(&reason),
-            },
-            InjectorState::Connected(mut qmp) => {
-                if !self.marker_seen.load(Ordering::Acquire) {
-                    InjectorState::Connected(qmp)
-                } else {
-                    match qmp.inject_key(INJECTED_QCODE) {
-                        Ok(()) => {
-                            println!("[xtask] qmp: keystroke injected");
-                            InjectorState::Retired
-                        }
-                        Err(reason) => retire(&reason),
-                    }
-                }
+/// Press the key on a thread of its own: accept when QEMU dials in, wait for
+/// the kernel's marker, inject once, and report-and-retire on any failure —
+/// the kernel's bounded wait is what turns a missing key red.
+///
+/// A dedicated thread rather than steps woven into the poll loop, so that no
+/// QMP stall — a slow handshake, a peer dribbling bytes — can ever delay the
+/// loop that enforces the run's deadline. The thread is deliberately never
+/// joined: if QEMU dies without connecting, the accept loop below would spin
+/// until process exit reaps it, and every exit path already has the verdict
+/// by then.
+fn inject_on_marker(listener: TcpListener, marker_seen: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        let outcome = accept(&listener).and_then(|mut qmp| {
+            while !marker_seen.load(Ordering::Acquire) {
+                std::thread::sleep(POLL_INTERVAL);
             }
-            InjectorState::Retired => InjectorState::Retired,
-        };
-    }
-
-    fn accept(&mut self) -> Result<Option<Qmp>> {
-        match self.listener.accept() {
-            Ok((stream, _)) => Qmp::handshake(stream).map(Some),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(error) => Err(error).context("accepting QEMU's QMP connection"),
+            qmp.inject_key(INJECTED_QCODE)
+        });
+        match outcome {
+            Ok(()) => println!("[xtask] qmp: keystroke injected"),
+            Err(reason) => {
+                println!("[xtask] qmp: {reason:#}; the keystroke check will report it");
+            }
         }
-    }
+    });
 }
 
-fn retire(reason: &anyhow::Error) -> InjectorState {
-    println!("[xtask] qmp: {reason:#}; the keystroke check will report it");
-    InjectorState::Retired
+/// Wait for QEMU's connection and negotiate on it.
+///
+/// The listener stays non-blocking — `run_selftest` configured it before the
+/// spawn — so this polls rather than parks, and a QEMU that dies before
+/// connecting leaves a loop that process exit cleans up.
+fn accept(listener: &TcpListener) -> Result<Qmp> {
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return Qmp::handshake(stream),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            Err(error) => return Err(error).context("accepting QEMU's QMP connection"),
+        }
+    }
 }
 
 /// How often to check whether QEMU has exited. Short enough that a passing run

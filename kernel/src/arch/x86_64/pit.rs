@@ -8,6 +8,7 @@
 use core::fmt;
 
 use wost::arch::current::port::{self, PortBlock};
+use x86_pit::STATUS_NULL_COUNT;
 use x86_pit::command::{Access, Channel, ControlWord, OperatingMode};
 
 /// I/O port base: three counters, then the control register.
@@ -63,16 +64,38 @@ impl Pit {
         Ok(Self { registers })
     }
 
-    /// Start counter 0 counting down through its full span.
+    /// Start counter 0 counting down through its full span, and wait until
+    /// the count has actually reached the counting element.
     ///
     /// Mode 0 decrements by one, monotonically, and keeps counting through
     /// zero — no reload to reason about inside a measurement window, and the
     /// single output edge at zero lands on a masked controller.
+    ///
+    /// The wait exists for real hardware: the chip loads a written count on
+    /// the crystal edge after the high byte, up to 838 ns later, and a
+    /// baseline latched before that reads the stale pre-load value — a
+    /// corruption both hypervisors are immune to, because their virtual
+    /// counters load instantly. Bounded, like every wait in this kernel: a
+    /// chip whose null-count flag never clears simply yields a baseline the
+    /// measurement guards will judge.
     pub(crate) fn start_measurement(&mut self) {
+        const LOAD_ATTEMPTS: u32 = 1_000;
+
         self.registers.write(register::CONTROL, MEASURE.bits());
         let count = FULL_SPAN.to_le_bytes();
         self.registers.write(register::CHANNEL_0, count[0]);
         self.registers.write(register::CHANNEL_0, count[1]);
+
+        for _ in 0..LOAD_ATTEMPTS {
+            self.registers.write(
+                register::CONTROL,
+                ControlWord::read_back_status(Channel::Zero).bits(),
+            );
+            let status = self.registers.read::<u8>(register::CHANNEL_0);
+            if status & STATUS_NULL_COUNT == 0 {
+                return;
+            }
+        }
     }
 
     /// Where counter 0 stands, latched so the two byte reads cohere.

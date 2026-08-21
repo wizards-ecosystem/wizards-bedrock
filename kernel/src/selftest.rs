@@ -276,19 +276,24 @@ fn a_lock_excludes_interrupts() -> bool {
     before && excluded && still_excluded && interrupt::are_enabled()
 }
 
-/// Spin until the ping count reaches `target`, giving up rather than hanging
-/// the harness on an interrupt that is never going to arrive.
+/// Spin until `done`, giving up after `attempts` rather than hanging the
+/// harness on something that is never going to happen.
+fn spins_until(attempts: u32, done: impl Fn() -> bool) -> bool {
+    (0..attempts).any(|_| {
+        spin_loop();
+        done()
+    })
+}
+
+/// Spin until the ping count reaches `target`.
 ///
-/// Generous, because it is measuring hardware that has already been told to do
-/// something: a delivery this does not see within a million reads is not slow,
-/// it is absent.
+/// A million reads, because it is measuring hardware that has already been
+/// told to do something: a delivery this does not see is not slow, it is
+/// absent.
 fn ping_arrives(target: usize) -> bool {
     const ATTEMPTS: u32 = 1_000_000;
 
-    (0..ATTEMPTS).any(|_| {
-        spin_loop();
-        trap::last_ping().count >= target
-    })
+    spins_until(ATTEMPTS, || trap::last_ping().count >= target)
 }
 
 /// The hardware's own record of the timer: unmasked, periodic, our vector.
@@ -305,19 +310,15 @@ fn rate_is_believable() -> bool {
     (1_000_000..=50_000_000_000).contains(&time::divided_hz())
 }
 
-/// Spin until the tick count reaches `target`, giving up rather than hanging
-/// the harness on a timer that is never going to fire.
+/// Spin until the tick count reaches `target`.
 ///
 /// Sized in reads rather than time: tens of millions of them span many 10 ms
-/// ticks on anything that can boot this kernel, and cost seconds, not
-/// minutes, when the timer is dead.
+/// ticks on anything that can boot this kernel, and cost a second or two,
+/// not the harness's whole budget, when the timer is dead.
 fn ticks_reach(target: u64) -> bool {
-    const ATTEMPTS: u32 = 50_000_000;
+    const ATTEMPTS: u32 = 20_000_000;
 
-    (0..ATTEMPTS).any(|_| {
-        spin_loop();
-        time::ticks() >= target
-    })
+    spins_until(ATTEMPTS, || time::ticks() >= target)
 }
 
 /// What a continuous read of the clock across several ticks saw.
@@ -334,7 +335,7 @@ struct UptimeSweep {
 /// exists for, because the countdown can reload under a clear interrupt flag
 /// while the tick it announces stays pending.
 fn sweep_uptime() -> UptimeSweep {
-    const ATTEMPTS: u32 = 20_000_000;
+    const ATTEMPTS: u32 = 2_000_000;
     const TICK_SPAN: u64 = 3;
 
     let per_tick = u64::from(time::MS_PER_TICK);

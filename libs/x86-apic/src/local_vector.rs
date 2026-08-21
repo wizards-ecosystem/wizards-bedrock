@@ -62,13 +62,9 @@ impl Entry {
     /// # Panics
     ///
     /// Panics if `vector` is below [`FIRST_VECTOR`], for the same reason
-    /// [`fixed`](Self::fixed) does.
+    /// [`fixed`](Self::fixed) does — whose guard this rides.
     pub const fn periodic(vector: u8) -> Self {
-        assert!(
-            vector >= FIRST_VECTOR,
-            "the local APIC will not deliver a vector below 16"
-        );
-        Self(vector as u32 | TIMER_PERIODIC)
+        Self(Self::fixed(vector).bits() | TIMER_PERIODIC)
     }
 
     /// Interpret what the register returned.

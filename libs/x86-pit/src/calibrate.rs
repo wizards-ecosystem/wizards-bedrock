@@ -18,8 +18,8 @@ pub const fn divided_hz(counted: u64, pit_ticks: u16) -> u64 {
         return 0;
     }
     let denominator = pit_ticks as u64;
-    match counted.checked_mul(CRYSTAL_HZ as u64) {
-        Some(numerator) => (numerator + denominator / 2) / denominator,
+    match rounded_numerator(counted, denominator) {
+        Some(numerator) => numerator / denominator,
         None => 0,
     }
 }
@@ -34,16 +34,26 @@ pub const fn periodic_initial_count(counted: u64, pit_ticks: u16, tick_hz: u32) 
     if pit_ticks == 0 || tick_hz == 0 {
         return None;
     }
-    let numerator = match counted.checked_mul(CRYSTAL_HZ as u64) {
-        Some(product) => product,
+    let denominator = pit_ticks as u64 * tick_hz as u64;
+    let numerator = match rounded_numerator(counted, denominator) {
+        Some(numerator) => numerator,
         None => return None,
     };
-    let denominator = pit_ticks as u64 * tick_hz as u64;
-    let count = (numerator + denominator / 2) / denominator;
+    let count = numerator / denominator;
     if count == 0 || count > u32::MAX as u64 {
         return None;
     }
     Some(count as u32)
+}
+
+/// The product plus the half-denominator that makes the division round to
+/// nearest — `None` if either step overflows, so both callers stay total on
+/// inputs no real measurement produces.
+const fn rounded_numerator(counted: u64, denominator: u64) -> Option<u64> {
+    match counted.checked_mul(CRYSTAL_HZ as u64) {
+        Some(product) => product.checked_add(denominator / 2),
+        None => None,
+    }
 }
 
 #[cfg(test)]
@@ -59,10 +69,26 @@ mod tests {
     }
 
     /// 1_193_182 / 4 is 298_295.5: nearest rounds up where floor loses half a
-    /// hertz per crystal tick.
+    /// hertz per crystal tick — in both functions, each of which carries its
+    /// own half-denominator.
     #[test]
     fn rounding_is_to_nearest_not_floor() {
         assert_eq!(divided_hz(1, 4), 298_296);
+        assert_eq!(periodic_initial_count(1, 4, 1), Some(298_296));
+    }
+
+    /// Inputs at the top of the space must answer, not overflow: the rounding
+    /// addend is checked as well as the product.
+    #[test]
+    fn the_rounding_addend_cannot_overflow() {
+        let largest_counted = u64::MAX / CRYSTAL_HZ as u64;
+
+        assert!(divided_hz(largest_counted, u16::MAX) > 0);
+        assert_eq!(divided_hz(largest_counted + 1, u16::MAX), 0);
+        assert_eq!(
+            periodic_initial_count(largest_counted, u16::MAX, u32::MAX),
+            None
+        );
     }
 
     #[test]

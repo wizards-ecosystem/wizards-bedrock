@@ -177,9 +177,13 @@ impl Controller {
     /// The next byte from the keyboard, or `None` when the buffer is empty.
     ///
     /// Bytes flagged as coming from the disabled second port are discarded —
-    /// the port is off, but a defensive discard costs one branch.
+    /// the port is off, but a defensive discard costs one branch. The
+    /// discard is bounded like every wait here, because callers hold a lock
+    /// with interrupts excluded: a controller that dies into a floating bus
+    /// reads as endlessly full *and* from the second port, and an unbounded
+    /// discard would wedge the machine silently.
     pub(crate) fn poll_byte(&mut self) -> Option<u8> {
-        loop {
+        for _ in 0..FLUSH_LIMIT {
             let status = self.control.read();
             if status & status::OUTPUT_FULL == 0 {
                 return None;
@@ -189,6 +193,7 @@ impl Controller {
                 return Some(byte);
             }
         }
+        None
     }
 
     /// The configuration byte, read live from the controller.

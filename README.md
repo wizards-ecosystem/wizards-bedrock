@@ -41,7 +41,7 @@ override that.
 ## Development
 
 ```
-cargo xtask ci       # the gate: fmt --check, clippy, tests, vendor digests, image
+cargo xtask ci       # the gate: fmt --check, clippy, tests, vendor digests, test-boot, image
 ```
 
 `ci` is the only gate — there is no hosted CI (D-26). Individual pieces:
@@ -49,8 +49,9 @@ cargo xtask ci       # the gate: fmt --check, clippy, tests, vendor digests, ima
 `cargo xtask test-boot`, `cargo xtask verify-vendor`, `cargo xtask clean [--all]`.
 
 `test` runs the host suite; `test-boot` boots a kernel built with the
-`selftest` feature headless in QEMU and reads its verdict from the exit code,
-which is how anything needing a real machine gets tested (D-28).
+`selftest` feature headless in QEMU, injects a keystroke over QMP when the
+kernel asks for one (D-38), and reads the verdict from the exit code, which
+is how anything needing a real machine gets tested (D-28).
 
 **`cargo build --workspace` does not work, and cannot on stable.** The kernel
 crates only build for `x86_64-unknown-none` and `xtask` only for the host, and

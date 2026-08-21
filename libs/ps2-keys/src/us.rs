@@ -119,6 +119,61 @@ mod tests {
         assert_eq!(char_for(Key::Slash, held()), Some('?'));
     }
 
+    /// The whole punctuation row, both halves, keyed to the legends on the
+    /// physical board — including the backslash, whose escaping makes it the
+    /// arm most worth pinning.
+    #[test]
+    fn every_punctuation_pair_matches_the_keycap() {
+        for (key, plain, shifted) in [
+            (Key::Grave, '`', '~'),
+            (Key::Minus, '-', '_'),
+            (Key::Equal, '=', '+'),
+            (Key::LeftBracket, '[', '{'),
+            (Key::RightBracket, ']', '}'),
+            (Key::Backslash, '\\', '|'),
+            (Key::Semicolon, ';', ':'),
+            (Key::Apostrophe, '\'', '"'),
+            (Key::Comma, ',', '<'),
+            (Key::Period, '.', '>'),
+            (Key::Slash, '/', '?'),
+        ] {
+            assert_eq!(char_for(key, Shift::new()), Some(plain), "{key:?}");
+            assert_eq!(char_for(key, held()), Some(shifted), "{key:?} shifted");
+        }
+    }
+
+    /// The three crates' worth of path, end to end: raw set 2 bytes through
+    /// the decoder, shift folded in as the driver folds it, characters out.
+    /// Shift down, 'a' becomes 'A'; shift released mid-stream, it goes back.
+    #[test]
+    fn a_decoded_stream_types_through_the_layout() {
+        let mut decoder = crate::Decoder::new();
+        let mut shift = Shift::new();
+        let mut typed = String::new();
+
+        let wire = [
+            0x1C, 0xF0, 0x1C, // a down, a up
+            0x12, // left shift down
+            0x1C, 0xF0, 0x1C, // A
+            0x16, 0xF0, 0x16, // !
+            0xF0, 0x12, // left shift up
+            0x1C, 0xF0, 0x1C, // a again
+        ];
+        for byte in wire {
+            let Some(event) = decoder.feed(byte) else {
+                continue;
+            };
+            shift.observe(event);
+            if event.state == crate::KeyState::Pressed
+                && let Some(character) = char_for(event.key, shift)
+            {
+                typed.push(character);
+            }
+        }
+
+        assert_eq!(typed, "aA!a");
+    }
+
     #[test]
     fn whitespace_maps() {
         assert_eq!(char_for(Key::Space, Shift::new()), Some(' '));

@@ -285,22 +285,36 @@ mod tests {
         );
     }
 
+    /// A held key repeats as bare makes with no breaks between; each one is
+    /// a fresh press, which is what a future input stack debounces, not this
+    /// crate.
+    #[test]
+    fn typematic_repeat_is_a_press_per_make() {
+        let mut decoder = Decoder::new();
+        for _ in 0..3 {
+            assert_eq!(decoder.feed(0x1C), event(Key::A, KeyState::Pressed));
+        }
+        assert_eq!(
+            decode(&mut decoder, &[0xF0, 0x1C]),
+            event(Key::A, KeyState::Released)
+        );
+    }
+
     /// Totality: every byte, fed in every reachable prefix state, neither
     /// panics nor wedges the machine — a letter still decodes afterwards,
     /// possibly on the second try when the byte itself opened a new prefix.
+    ///
+    /// The Pause prefixes are derived from the sequence constant, so every
+    /// intermediate `Pause(n)` state — home of the crate's one indexed
+    /// access — is visited even if the sequence changes. The list once
+    /// skipped three of them by hand-enumeration, which is the mistake this
+    /// construction removes.
     #[test]
     fn no_byte_in_no_state_panics_or_wedges() {
-        let prefixes: [&[u8]; 8] = [
-            &[],
-            &[0xF0],
-            &[0xE0],
-            &[0xE0, 0xF0],
-            &[0xE1],
-            &[0xE1, 0x14],
-            &[0xE1, 0x14, 0x77, 0xE1],
-            &[0xE1, 0x14, 0x77, 0xE1, 0xF0],
-        ];
-        for prefix in prefixes {
+        let other_prefixes: [&[u8]; 4] = [&[], &[0xF0], &[0xE0], &[0xE0, 0xF0]];
+        let pause_prefixes = (1..PAUSE_SEQUENCE.len()).map(|matched| &PAUSE_SEQUENCE[..matched]);
+
+        for prefix in other_prefixes.into_iter().chain(pause_prefixes) {
             for byte in 0..=u8::MAX {
                 let mut decoder = Decoder::new();
                 for &prefix_byte in prefix {

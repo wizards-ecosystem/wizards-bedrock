@@ -87,8 +87,26 @@ impl Qmp {
 /// The capabilities negotiation that ends the greeting phase.
 const CAPABILITIES: &str = r#"{"execute": "qmp_capabilities"}"#;
 
+/// Which way a key event moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Transition {
+    Press,
+    Release,
+}
+
+impl Transition {
+    /// The wire spelling of the schema's `down` field.
+    const fn wire(self) -> &'static str {
+        match self {
+            Self::Press => "true",
+            Self::Release => "false",
+        }
+    }
+}
+
 /// One key transition inside an `input-send-event`.
-fn key_event(qcode: &str, down: bool) -> String {
+fn key_event(qcode: &str, transition: Transition) -> String {
+    let down = transition.wire();
     format!(
         r#"{{"type": "key", "data": {{"down": {down}, "key": {{"type": "qcode", "data": "{qcode}"}}}}}}"#
     )
@@ -102,8 +120,8 @@ fn key_event(qcode: &str, down: bool) -> String {
 fn key_command(qcode: &str) -> String {
     format!(
         r#"{{"execute": "input-send-event", "arguments": {{"events": [{}, {}]}}}}"#,
-        key_event(qcode, true),
-        key_event(qcode, false)
+        key_event(qcode, Transition::Press),
+        key_event(qcode, Transition::Release)
     )
 }
 
@@ -120,13 +138,16 @@ enum Reply {
     Other,
 }
 
+/// Token order is a decision: events and the greeting win outright, and a
+/// line carrying both verdict tokens counts as the error — misreading a
+/// refusal as success is the one direction that could hide a cause.
 fn classify(line: &str) -> Reply {
     if line.contains(r#""QMP""#) || line.contains(r#""event""#) {
         Reply::Other
-    } else if line.contains(r#""return""#) {
-        Reply::Return
     } else if line.contains(r#""error""#) {
         Reply::Error
+    } else if line.contains(r#""return""#) {
+        Reply::Return
     } else {
         Reply::Other
     }
@@ -161,6 +182,15 @@ mod tests {
     fn an_error_line_is_failure() {
         assert_eq!(
             classify(r#"{"error": {"class": "GenericError", "desc": "no"}}"#),
+            Reply::Error
+        );
+    }
+
+    /// Both tokens on one line reads as the refusal, never the success.
+    #[test]
+    fn an_ambiguous_line_fails_safe() {
+        assert_eq!(
+            classify(r#"{"return": {}, "error": "impossible but decisive"}"#),
             Reply::Error
         );
     }

@@ -20,6 +20,16 @@ pub mod command;
 /// a third of the original machine's 3.579545 MHz colourburst crystal.
 pub const CRYSTAL_HZ: u32 = 1_193_182;
 
+/// Bit 6 of a read-back status byte: the written count has not yet reached
+/// the counting element.
+///
+/// A count loads on the crystal edge after its last byte arrives — up to
+/// 838 ns later — and until then the element still holds whatever it froze
+/// at. This flag is how the datasheet says to tell the difference, and the
+/// only way a baseline read is known to see the new count rather than the
+/// stale one.
+pub const STATUS_NULL_COUNT: u8 = 1 << 6;
+
 /// Timer ticks between two readings of the down-counter, surviving one wrap.
 ///
 /// The counter counts down, so the distance from `start` to `now` is their
