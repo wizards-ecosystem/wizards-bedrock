@@ -14,6 +14,7 @@ selftest = []
 
 [dependencies]
 noto-sans-mono-bitmap.workspace = true
+ps2-keys.workspace = true
 wost = { path = "../wost" }
 x86-apic.workspace = true
 x86-pit.workspace = true

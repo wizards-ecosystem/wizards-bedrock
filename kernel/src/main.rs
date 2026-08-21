@@ -13,6 +13,7 @@ mod arch;
 mod banner;
 mod console;
 mod dev;
+mod input;
 mod log;
 mod panic;
 #[cfg(feature = "selftest")]
@@ -55,6 +56,7 @@ fn kernel_main(boot: BootInfo) -> ! {
     info!("cpu: protections {}", cpu::enable_protections());
 
     start_interrupts();
+    input::init();
 
     dev::with_console(|console| {
         for line in banner::LINES {
@@ -79,12 +81,14 @@ fn kernel_main(boot: BootInfo) -> ! {
 
 /// Halt until something happens, do the work it brought, halt again.
 ///
-/// Everything an interrupt wakes gets its turn between the halts. With the
-/// flag never set — interrupts declined at boot — the first halt is permanent,
-/// which is the same idle this kernel had before it could take interrupts.
+/// Everything an interrupt wakes gets its turn between the halts — today
+/// that is the keyboard, drained on every tick. With the flag never set —
+/// interrupts declined at boot — the first halt is permanent, which is the
+/// same idle this kernel had before it could take interrupts.
 fn idle() -> ! {
     loop {
         cpu::halt();
+        input::poll();
     }
 }
 

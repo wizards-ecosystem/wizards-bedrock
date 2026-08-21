@@ -24,7 +24,7 @@ use crate::arch::current::debug_exit;
 use crate::arch::current::trap::{self, Record};
 use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
-use crate::{dev, error, info, time};
+use crate::{dev, error, info, input, time};
 
 /// Tally of what has been checked so far.
 struct Report {
@@ -160,6 +160,20 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "uptime agrees with the tick counter",
         uptime_matches_ticks(),
+    );
+
+    report.check("the keyboard controller came up", input::is_ready());
+    report.check(
+        "the controller raises no interrupts and does not translate",
+        keyboard_is_silent_and_raw(),
+    );
+    report.check(
+        "an echo to the keyboard comes back",
+        input::echo_roundtrips(),
+    );
+    report.check(
+        "the keyboard is speaking scancode set two",
+        input::scancode_set() == Some(2),
     );
 
     report.check(
@@ -366,6 +380,22 @@ fn uptime_matches_ticks() -> bool {
     let uptime = time::uptime_ms();
     let ceiling = (time::ticks() + 1) * per_tick;
     floor <= uptime && uptime <= ceiling
+}
+
+/// The configuration byte, against bits restated from the 8042 datasheet
+/// rather than shared with the driver: both interrupt enables and the set 1
+/// translation shim must be off, read back live from the hardware — the
+/// self-test's own reset of this byte is the quirk the driver rewrites it
+/// after, and this is the check that would catch the rewrite going missing.
+fn keyboard_is_silent_and_raw() -> bool {
+    const FIRST_IRQ: u8 = 1 << 0;
+    const SECOND_IRQ: u8 = 1 << 1;
+    const TRANSLATE: u8 = 1 << 6;
+
+    match input::controller_config() {
+        Some(byte) => byte & (FIRST_IRQ | SECOND_IRQ | TRANSLATE) == 0,
+        None => false,
+    }
 }
 
 /// The frame a delivered interrupt saved, checked the way `frame_is_consistent`

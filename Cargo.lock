@@ -80,6 +80,7 @@ name = "wizard-kernel"
 version = "0.1.0"
 dependencies = [
  "noto-sans-mono-bitmap",
+ "ps2-keys",
  "wost",
  "x86-apic",
  "x86-pit",
