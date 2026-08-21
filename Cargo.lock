@@ -72,6 +72,10 @@ name = "pixel"
 version = "0.1.0"
 
 [[package]]
+name = "ps2-keys"
+version = "0.1.0"
+
+[[package]]
 name = "wizard-kernel"
 version = "0.1.0"
 dependencies = [
