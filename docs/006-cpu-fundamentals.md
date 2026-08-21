@@ -28,7 +28,7 @@ is silenced.
 | 1 | GDT + TSS, IDT, exception entry and reporting, SMEP/SMAP/UMIP/NX | **landed** |
 | 2 | Legacy PIC silenced, local APIC, IRQ-safe locking, interrupts on | **landed** |
 | 3 | APIC timer: calibration, periodic tick, uptime | **landed** |
-| 4 | PS/2 keyboard: scancode set 2 decoding, key events | next |
+| 4 | PS/2 keyboard: scancode set 2 decoding, key events | **landed** |
 
 Each slice's design is recorded below as it is built, so that this file ends
 the phase as the description of what exists.
@@ -591,3 +591,150 @@ twice over: a clock deliberately run at eleven milliseconds per tick sailed
 error to escape the check's one-tick slack. The check now waits out twenty
 ticks before judging — and the incident is why the rule says to break the
 check, not just write it.
+
+## Slice 4 — the keyboard
+
+The phase's last slice is its first input device, and the moment the machine
+stops being write-only: press a key at the console and the glyph appears.
+Under that one visible behaviour sit three separate jobs — getting bytes out
+of a 1980s controller, decoding a protocol with five kinds of sequence, and
+proving a real keystroke crosses the whole path — and each landed where its
+nature puts it.
+
+### What owns what
+
+`wost` gains **nothing**. The i8042 speaks entirely through two I/O ports,
+ports have been safe since Phase 1's claim registry, and so the driver —
+`kernel/arch/x86_64/i8042.rs` — is the first written wholly outside the
+privileged crate: the framekernel split collecting what slice 0 paid for.
+Zero new `unsafe` in this slice, as in the last.
+
+The protocol is arithmetic: `libs/ps2-keys` holds the set 2 tables, the
+byte-at-a-time decoder, shift tracking, and the US layout that turns a key
+identity into a character — layout deliberately a sibling of the decoder,
+not part of it, so a second layout never touches the state machine. The
+kernel's policy lives in `input.rs`: a module-local singleton (not `dev.rs`,
+whose charter is the output devices the panic path must reach — a panicking
+kernel has no use for its keyboard), a batched drain, and the echo.
+
+### Polled, because the only interrupt path is walled off
+
+IRQ 1 has exactly two routes to this CPU. One is the legacy 8259 pair, and
+slice 2's whole point was that they are silenced — `interrupt::enable`
+asserts it, a self-test pins their masks, and reopening one line would
+reintroduce the mixed-controller state that slice removed, for code the I/O
+APIC would obsolete. The other is the I/O APIC, which is a memory-mapped
+device page — the same wall D-33 hit, standing until Phase 3 owns page
+tables.
+
+So the controller is told to raise nothing at all — its config byte's two
+interrupt enables are cleared — and slice 3's idle loop does the work: every
+tick wakes the `hlt`, and the loop drains every pending byte before halting
+again. Worst-case latency is one tick, ten milliseconds, a third of the way
+to the threshold where a keypress starts feeling detached; the keyboard's
+own buffering holds an order of magnitude more than a tick of typing, so
+nothing is lost. When Phase 3 pages the I/O APIC in, the polled drain
+retires and the driver and decoder under it carry over unchanged. See D-37.
+
+### Bringing up the 8042
+
+The standard sequence, every wait bounded in the 16550 driver's idiom, and
+each failure a typed decline — a kernel without a keyboard is worth more
+than one that hung bringing it up. Disable both ports, flush, then write the
+configuration: interrupts off, **translation off** — the controller boots
+translating the keyboard's set 2 into set 1 for the sake of a 1980s BIOS,
+and QEMU really does boot with that shim on, so clearing bit 6 is what makes
+the decoder's input raw. The controller self-test follows, and then the
+configuration is **written again**: real controllers may reset it to
+power-on defaults during the test, a quirk worth two lines now rather than
+an afternoon later. Interface test, port enable, keyboard reset (the basic
+assurance test is allowed hundreds of milliseconds, and emulators disagree
+on whether an acknowledgement precedes it, so either shape is accepted),
+set 2 selected — a refusal here is tolerated, because set 2 is the power-on
+default and the self-test's readback is the arbiter — and scanning on.
+
+### Set 2, byte by byte
+
+The decoder is a five-state machine fed one byte at a time, and it is
+*total*: every byte in every state has a defined transition, and garbage
+costs at most the sequence it corrupted. The states exist because the
+protocol has five shapes — bare makes, `F0`-prefixed breaks, `E0` extended
+pairs, PrintScreen's sequences wrapped in *fake shifts* (`E0 12` and
+`E0 59`, shifts no shift key sent, kept so 1980s BIOSes could track state;
+discarded here), and Pause, eight bytes with no break code at all. Protocol
+replies — acknowledgements, echoes, self-test results — can interleave with
+any of them and are swallowed without disturbing what is in flight. One
+table quirk earns a note: F7 sits at `0x83`, above `0x7F`, which is *why*
+set 2 breaks need a prefix byte rather than a high bit.
+
+A host test feeds all 256 bytes through every reachable prefix state and
+proves nothing panics or wedges; the sequences are driven byte-at-a-time
+with silence asserted at each intermediate step, which is the exact shape of
+the driver's loop.
+
+### From key event to glyph
+
+The idle loop's drain batches under the keyboard lock — eight events per
+hold, so a stream of input cannot pin the lock — and resolves each event's
+character against the shift state *as it stood at that event*, then delivers
+outside the lock: a `debug!` per event (compiled but discarded at the
+default level; the self-test asserts arrival programmatically for exactly
+that reason), and the echo through the console lock, which is mainline
+context, where taking it is the sanctioned nesting. Enter echoes a newline.
+Backspace deliberately echoes nothing: the console has no cursor-retreat
+primitive, and building one for a single caller is Phase 7's shell work,
+not this slice's.
+
+### The harness can press a key
+
+D-28's machinery can only observe what the machine does to itself; input
+needs an outside hand. The hand is QMP, QEMU's JSON control socket, spoken
+by a hand-rolled client in `xtask/src/qmp.rs` — three fixed exchanges, no
+JSON dependency, on the same argument as the hand-rolled SHA-256. The
+harness binds a loopback listener before the spawn and QEMU dials out to
+it, so there is no port to guess and no connect to race.
+
+The injection is gated on a marker, not sprayed from power-on: early
+keys would land in firmware setup prompts or the bootloader's menu, and the
+self-test's own controller commands must never interleave with injected
+bytes. The kernel prints one line — `selftest: awaiting injected
+keystroke`, held as a matching constant in `qemu.rs` the way the exit codes
+already are — and the harness, whose serial now flows through a forwarding
+thread that keeps every line visible, answers it with exactly one press and
+one release of `A`, explicit down and up rather than the monitor's
+`sendkey`, whose automatic release fires on QEMU's schedule.
+
+The verdict never leaves the kernel. A QMP failure of any kind prints its
+cause and retires the injector; the check then fails on its own doubly
+bounded wait — a tick budget for the honest case, an iteration cap for a
+dead timer — and the sixty-second kill stands behind everything. See D-38.
+
+### How it is checked
+
+Host tests: the two lookup tables against transcribed set 2 anchors and an
+injectivity sweep; every sequence shape byte-at-a-time; recovery from
+corruption in every prefix state; the 256-byte totality sweep; shift's
+"released one, still holding the other" case; the US layout's rows; and the
+QMP client's command strings and reply classification, including a real
+`SHUTDOWN` event line — which will genuinely arrive on that socket when the
+exit device fires, and must be skipped, not misread as a verdict.
+
+On the machine, five new checks, reaching 34:
+
+- the controller came up (its decline path names a reason and boots on)
+- its configuration byte, read back **live**, has both interrupt enables
+  and the translation shim off — the check that would catch the
+  after-self-test rewrite going missing
+- an echo command round-trips to the keyboard and back
+- the keyboard reports itself speaking set 2 — under translation this reads
+  back translated, so it cross-checks the config bit too
+- **an injected keystroke arrives, and its release follows** — one real key
+  crossing a process boundary, a socket, the emulated bus, the controller,
+  and the decoder, in order
+
+Every one was broken once: a wrong self-test expectation declines the whole
+driver; leaving translation on fails the config check and corrupts the set
+readback with it; a wrong echo byte fails alone; a keyboard deliberately
+put in set 3 fails alone; injecting `b` instead of `a` fails the keystroke
+check after its budget; and deleting the QMP channel entirely goes red
+rather than hanging, which is the injector's failure contract holding.

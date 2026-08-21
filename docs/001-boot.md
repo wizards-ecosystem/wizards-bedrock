@@ -103,6 +103,35 @@ writable and executable, and the generated stub table spans exactly 4096 bytes
 at a 16-byte boundary — the assumption `interrupt::init` asserts at runtime,
 confirmed statically as well.
 
+2026-08-20 — Phase 2 complete, verified on both targets. QEMU's `test-boot`
+runs 34 machine checks, the last a QMP-injected keystroke decoded end to end
+(D-38). VMware Workstation (`vmrun start vm\wizard-os.vmx`, serial to
+`vm/serial.log`) boots the same kernel and is the reading that matters for
+the timer: its APIC clock measured at 65.9 MHz by the same code that
+measured QEMU's at 997 MHz — rates two orders of magnitude apart, which is
+what the calibration's plausibility bounds were designed around, and both
+landed inside them on the first boot.
+
+```
+[info ] The Wizard's OS awakens.
+[info ] framebuffer: 1024x768 pitch=4096 bpp=32
+[info ] limine: base revision supported
+[info ] cpu: descriptor tables installed
+[info ] cpu: protections smep smap umip nx
+[info ] pic: legacy controllers remapped and masked
+[info ] apic: x2apic id 0 version 0x15 (bootstrap)
+[info ] time: 100 hz tick: apic timer at 65929212 hz, initial count 659292
+[info ] cpu: accepting interrupts
+[info ] keyboard: polled, scancode set 2
+[info ] kernel: entering idle loop, uptime 4 ms
+```
+
+The `uptime 4 ms` line is the interpolation visibly alive — a whole-tick
+clock could only print multiples of ten — and `keyboard: polled, scancode
+set 2` is VMware's i8042 surviving the full bring-up: reset, self-test,
+translation off, set 2 selected. The eyeball that closes the phase is
+typing at the VMware console and watching the glyphs echo under the banner.
+
 ## Debug channels
 
 - COM1 serial (`kernel/src/arch/x86_64/uart.rs`) — primary log, works
@@ -151,5 +180,6 @@ deliberate choice to keep Phase 1 finishable, not an oversight.
   lldb, gdb-multiarch via a future decision)
 - Limine crate 0.6.x when its nightly requirement lands on stable, or if
   we move to nightly for other reasons
-- Grow `kernel/src/selftest.rs` as Phase 2 lands: the harness exists (D-28), so
-  every new subsystem that touches hardware should arrive with its check
+- ~~Grow `kernel/src/selftest.rs` as Phase 2 lands~~ — done: the phase closed
+  at 34 checks, every new one broken once to prove it can go red, and the
+  harness itself grew a hand — it can press a key (D-38)

@@ -45,10 +45,11 @@ reference — not followed linearly). Docs are numbered in creation order.
 1. First light polish — logging, panic handling, framebuffer console;
    framekernel split into `wost` + `kernel` ✅ (2026-08-12)
 2. CPU fundamentals — GDT, IDT, exceptions, APIC timer, keyboard;
-   security baseline on (NX, W^X, SMEP/SMAP/UMIP) — *in progress: descriptor
-   tables, the fault path and NX/SMEP/SMAP/UMIP landed 2026-08-13; the x2APIC,
-   IRQ-safe locking and interrupts on 2026-08-14; the calibrated 100 Hz tick
-   and uptime 2026-08-20; slice table in `006-cpu-fundamentals.md`*
+   security baseline on (NX, W^X, SMEP/SMAP/UMIP) ✅ (2026-08-20) — *descriptor
+   tables, the fault path and NX/SMEP/SMAP/UMIP 2026-08-13; the x2APIC,
+   IRQ-safe locking and interrupts on 2026-08-14; the calibrated 100 Hz tick,
+   uptime, and the polled set 2 keyboard 2026-08-20; W^X follows the page
+   tables into Phase 3 (D-32); slice table in `006-cpu-fundamentals.md`*
 3. Memory — physical frame allocator, paging, kernel heap, memory objects
 4. Multitasking — kernel threads, EEVDF-style scheduler, tickless idle
 5. Userspace — ring 3, **handle table + rights**, spawn, ELF loading,

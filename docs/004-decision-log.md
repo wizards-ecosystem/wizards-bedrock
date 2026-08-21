@@ -1007,6 +1007,120 @@ so the tick rate survives even a misfired divide write.
 
 ---
 
+## D-37 Keyboard input is polled until the I/O APIC exists — Status: Accepted (2026-08-20)
+
+**Context.** The i8042 works, but its interrupt has nowhere legal to go.
+IRQ 1's two routes to the CPU are the legacy 8259 pair — silenced in slice 2,
+an invariant `interrupt::enable` asserts and a self-test pins — and the I/O
+APIC, a memory-mapped device page behind the same missing page tables that
+forced x2APIC (D-33). Slice 3 just gave the kernel a 100 Hz tick and an idle
+loop that wakes on it.
+
+**Options.**
+
+- *Unmask IRQ 1 on the 8259s.* Interrupt-driven input today, at the cost of
+  reopening the controller slice 2 existed to close: the `is_silenced`
+  precondition and its self-test both weaken, a PIC-specific end-of-interrupt
+  and spurious-IRQ-7 path get written, and all of it is deleted when the I/O
+  APIC arrives.
+- *Bring up the I/O APIC now.* The right final routing, but it needs a mapped
+  device page, which needs page tables, which is Phase 3's entire subject —
+  the CPU phase would become a memory phase, the exact trade D-33 refused.
+- *Poll from the tick-woken idle loop.* No interrupt routing at all: the
+  controller is configured to raise nothing, and each tick's wake drains it.
+- *Defer the keyboard to Phase 3 wholesale.* Forfeits the phase's visible
+  definition-of-done moment for no architectural gain — the driver and
+  decoder are identical either way.
+
+**Decision.** Poll. The i8042's configuration byte has both interrupt enables
+cleared — the choice is enforced at the device, not assumed — and translation
+cleared with them, so the decoder receives raw set 2. The idle loop drains
+every pending byte per wake, batched eight events per lock hold, delivering
+outside the lock.
+
+**Rationale.** Latency is bounded by one tick: ten milliseconds against a
+human perception threshold several times that, and against a keyboard that
+buffers an order of magnitude more than a tick of typing. Nothing is thrown
+away later — when Phase 3 pages the I/O APIC in, the polled call site in the
+idle loop retires and the driver, decoder, and delivery path carry over
+unchanged. It is the same deferral shape as D-33: the modern mechanism waits
+for page tables, the phase ships on what is reachable.
+
+**Consequences.**
+
+- The driver is the first written entirely outside `wost` — ports have been
+  safe since the claim registry — and the slice adds zero new `unsafe`.
+- Input is dead if the timer declined: no tick, no wake, no drain. Accepted —
+  the self-test would already be red on the timer checks, and a machine whose
+  PIT and APIC both lie has larger problems than typing.
+- Echoed characters ride the console lock from mainline context only; the
+  trap-context prohibition of D-31/D-34 is never in play.
+- Backspace echoes nothing until the console grows a cursor-retreat
+  primitive with a real second caller (Phase 7's shell).
+
+---
+
+## D-38 The harness can press a key — Status: Accepted (2026-08-20; extends D-28)
+
+**Context.** D-28's self-test can only observe what the machine does to
+itself: it proves the interrupt path with a self-interrupt and the timer with
+its own tick, but an input device's defining behaviour starts outside the
+machine. Without an outside hand, the whole keyboard path — controller,
+buffering, decoding — ships with its main road untested.
+
+**Options.**
+
+- *Host tests plus human eyes.* Leaves the only hardware-facing half
+  unasserted; regressions surface as "typing stopped working" on a VMware
+  boot, days later.
+- *QEMU's monitor `sendkey` via `human-monitor-command`.* Works, but the
+  release is automatic on QEMU's hold-time schedule — the check wants to
+  assert the break code's arrival and order, so the timing must be ours.
+- *A QMP crate.* A dependency for three fixed message exchanges, against
+  D-25's precedent that a hand-rolled hundred lines beats a supply-chain
+  edge.
+- *A hand-rolled QMP client sending `input-send-event`.* Chosen.
+
+**Decision.** `cargo xtask test-boot` binds a loopback `TcpListener` on an
+ephemeral port before spawning QEMU and passes `-qmp tcp:{addr}` so QEMU
+dials out — no fixed port to collide, no bind-then-connect race, no retry
+loop. Serial is piped through a forwarding thread (every line still reaches
+the console; a dying kernel's unterminated last line is flushed too) which
+watches for one marker the kernel prints immediately before its bounded
+wait: `selftest: awaiting injected keystroke`, a two-file contract kept in
+step by comment exactly as the exit codes already are. On the marker, the
+harness sends one command carrying an explicit press and release of `A`; the
+kernel's check requires the make and then the break to decode, in order.
+
+**Rationale.** Marker-gating rather than spraying keys from power-on: early
+keystrokes land in firmware setup prompts or the bootloader menu, and the
+self-test's own controller commands (config readback, echo, set readback)
+must never interleave with injected bytes — the ordering is load-bearing and
+commented at the check. The verdict stays the kernel's: any QMP failure
+prints its cause and retires the injector, whereupon the kernel's doubly
+bounded wait (a tick budget, plus an iteration cap so a dead timer cannot
+convert red into hang) fails the check, and the sixty-second kill stands
+behind everything. Reply handling is token classification, not JSON parsing,
+which is sufficient because both commands are fixed strings, the response
+set is tiny, and unsolicited `SHUTDOWN` events — which genuinely arrive on
+this socket when the exit device fires — need only to be skipped.
+
+**Consequences.**
+
+- `test-boot`'s serial output now passes through a pipe; behaviour is
+  preserved line-for-line, and this is the note recording that it is
+  deliberate.
+- Injection is unconditionally on for `test-boot` — a check that only
+  sometimes receives its stimulus is a check that only sometimes can fail.
+- The QMP failure path was broken once on purpose (the `-qmp` argument
+  deleted): the run went red on the keystroke check rather than hanging.
+- On real hardware there is no QMP and no injector; the same check would go
+  red, which is correct — nothing outside presses a key there either. The
+  self-test feature never ships in an image (D-28), so this changes nothing
+  for a real boot.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap
@@ -1016,5 +1130,5 @@ so the tick rate survives even a misfired divide write.
   Verified statuses
 - `005-code-conventions.md` — how the code is written (D-21, D-22, D-23)
 - `006-cpu-fundamentals.md` — Phase 2: descriptor tables, the fault path, the
-  CPU protection baseline, the interrupt controller, and the calibrated tick
-  (D-29..D-36)
+  CPU protection baseline, the interrupt controller, the calibrated tick, and
+  the polled keyboard (D-29..D-38)
