@@ -27,8 +27,8 @@ is silenced.
 |---|---|---|
 | 1 | GDT + TSS, IDT, exception entry and reporting, SMEP/SMAP/UMIP/NX | **landed** |
 | 2 | Legacy PIC silenced, local APIC, IRQ-safe locking, interrupts on | **landed** |
-| 3 | APIC timer: calibration, periodic tick, uptime | next |
-| 4 | PS/2 keyboard: scancode set 2 decoding, key events | |
+| 3 | APIC timer: calibration, periodic tick, uptime | **landed** |
+| 4 | PS/2 keyboard: scancode set 2 decoding, key events | next |
 
 Each slice's design is recorded below as it is built, so that this file ends
 the phase as the description of what exists.
@@ -437,3 +437,157 @@ On the machine, eight new checks:
 Both new mechanisms were broken once to confirm the harness goes red:
 removing the handler's end-of-interrupt fails the second-delivery check alone,
 and removing the lock's `cli` fails the lock check alone.
+
+## Slice 3 — the CPU keeps time
+
+Slice 2 left a kernel that takes interrupts nobody sends. This slice gives it
+the first device that sends them on its own: the local APIC's timer, ticking
+100 times a second, and an uptime in milliseconds derived from it. Both halves
+of that sentence hide a measurement problem, because the clock the timer
+counts has no documented rate.
+
+### What owns what
+
+`wost` gains five functions on the APIC module — set the divide, arm the
+countdown, start it periodic, read where it stands, read its entry back — and
+gains **no new `unsafe`**: every one rides the existing gated MSR helpers,
+which is the framekernel split paying rent. The kernel gains
+`arch/x86_64/pit.rs`, a driver written entirely outside `wost` because claimed
+ports made port I/O safe in Phase 1, and `time.rs`, where calibration policy
+and the uptime arithmetic live. The encodings go where encodings go: the
+timer's registers, its mode bits and the divide table join `libs/x86-apic`
+(`timer`), and the 8254's control word plus the calibration arithmetic are the
+new `libs/x86-pit` — all host-tested against the manuals.
+
+`vector.rs` grows `TIMER = 0x41`, beside `PING` rather than down at 32:
+vectors `0x20`–`0x2F` are where slice 2 remapped the legacy controllers, and
+staying clear of them keeps a leaked legacy interrupt panicking as
+"unexpected" instead of masquerading as a tick.
+
+### The only clock we can reach
+
+The APIC timer counts the bus clock divided by a configurable factor, and
+nothing reports that clock's rate. CPUID leaf 15H would, on hardware — under
+QEMU's software emulation it is absent or zero, and VMware's answers are not
+trustworthy either. The modern references — the HPET, and any clock reached
+through the I/O APIC's neighbourhood — are memory-mapped device pages, which
+is the same wall D-33 hit: no page tables until Phase 3, no MMIO. What
+remains is the 8254: port I/O, present in every PC and every hypervisor, its
+input crystal fixed at 1.193182 MHz since the original machine derived it
+from a colourburst oscillator.
+
+So the timer is measured against the 8254 once, and the 8254 is then
+**parked**: a control word halts the count, no initial count ever follows,
+and the permanent port claim means nothing can program the chip again.
+Counter 0 in mode 0 does the measuring — its gate is always high, its one
+output edge lands on a controller slice 2 masked, and mode 0 decrements
+monotonically with no reload to reason about inside the window. The classic
+alternative, gating counter 2 through the speaker port, drags in port `0x61`
+and a second device for zero benefit here.
+
+### Measuring
+
+The window is twenty milliseconds — `CRYSTAL_HZ / 50` crystal ticks. The
+bound above is the counter itself: sixteen bits at the crystal rate wrap in
+54.9 ms, beyond which a window is indistinguishable from a shorter one. The
+bound below is jitter: each latch-and-read is a bus transaction (a VM exit,
+under emulation), and the shorter the window the larger those transactions
+loom. Twenty milliseconds puts the bracketing reads at parts in ten thousand
+while leaving a 35 ms stall margin.
+
+The four reads bracket symmetrically — crystal, APIC, *window*, APIC,
+crystal — so the APIC's window nests inside the crystal's and the skew lands
+on both ends. Calibration runs between `apic::init` and `interrupt::enable`,
+which buys measurement atomicity by ordering alone: nothing can preempt a
+kernel that has not enabled interrupts. It also means the timer this arms
+delivers its first tick at the `sti`, not before.
+
+The arithmetic is one division, rounded to nearest, from the raw pair — rate
+and reload count both, because deriving the count from an already-rounded
+rate would compound two floors. The divide configuration never enters the
+correctness path at all: calibration measures the *divided* clock and derives
+the count from the same clock, so the tick lands on 100 Hz even if the divide
+write misfired; the factor exists so the log line can report the undivided
+rate. A measurement can still lie — a stall long enough to wrap the crystal
+counter mod 65536 corrupts the ratio — so the result must land between one
+megahertz and fifty gigahertz, and three attempts are allowed before the
+kernel concludes the hardware is lying and boots without a clock. A timer
+failure vetoes nothing: `interrupt::enable` still runs, because a kernel
+without a clock still wants its keyboard.
+
+QEMU measures at ~997 MHz (it models a gigahertz); VMware has traditionally
+advertised tens of megahertz. Both land comfortably inside the bounds, and
+the boot log prints what was actually measured.
+
+### A tick that does almost nothing
+
+The handler increments one atomic and dismisses the interrupt. D-31 and D-34
+still bind in trap context — no locks, no logging — and a tick has no more to
+say than "one more". 100 Hz is deliberately boring: cheap enough to leave
+running, decimal enough to read, and explicitly disposable when the tickless
+scheduling of D-15 arrives; the vision doc counts wakeups as a feature, and
+this is a hundred a second until a scheduler knows better.
+
+One cost is accepted and recorded rather than fixed: a critical section
+longer than a tick — a full framebuffer scroll holds the console lock across
+a screenful — can swallow a tick, because the APIC holds only one pending.
+Uptime then undercounts by ten milliseconds. That is D-34's latency cost
+wearing a clock face, and Phase 4's tickless design is the fix.
+
+### Uptime
+
+Whole ticks come from the handler's counter; milliseconds come from
+interpolating the hardware countdown inside the current tick — the fraction
+`(initial − current) × 10 / initial`, which never exceeds a tick and reaches
+one exactly at the countdown's zero, where the value meets what the counter
+will read after the increment.
+
+Two races, two defences. A tick can land between reading the counter and
+reading the countdown, so the countdown read is sandwiched between two reads
+of the tick count and retried when they disagree. The `compiler_fence`s
+around that read are load-bearing: `rdmsr` is `options(nomem)` assembly, and
+without the fences the compiler may float the atomic loads across it and
+unmake the sandwich. The second race the sandwich cannot see: code holding
+the interrupt flag clear — any lock — can watch the countdown reload while
+the tick it announces stays pending, and a second read in the same section
+would see time step back. Every reading therefore passes through a high-water
+clamp, monotonic against everything already reported. Breaking the handler's
+end-of-interrupt during testing produced exactly that state for seconds at a
+stretch — countdown reloading, tick counter frozen — and the clamp held.
+
+### The idle loop
+
+`kernel_main` used to end in `halt_forever`. It now ends in the idle loop:
+halt, wake, do the work the interrupt brought, halt again. Today the work is
+nothing; slice 4's keyboard drain is written into the loop body, and a kernel
+whose interrupts declined halts once and stays halted, exactly as before.
+
+### How it is checked
+
+Host tests: the three timer registers against both columns of SDM
+table 11-1, the periodic mode bit against the LVT figure, all eight divide
+encodings against the SDM's scattered-bits table, the interpolation's
+monotonicity and its boundary behaviour, the 8254 control word against the
+datasheet (including `0xB6`, the byte forty years of speaker code agree on),
+wrap-surviving tick deltas, and the calibration arithmetic's rounding, edges
+and overflow refusals — with fixtures shaped like both QEMU's gigahertz and
+VMware's sixty-six megahertz.
+
+On the machine, seven new checks:
+
+- the timer's entry reads back periodic, unmasked, and on our vector
+- the calibrated rate lands inside bounds restated in the test
+- the tick counter advances
+- **a second tick arrives** — the end-of-interrupt proof, same argument as
+  the ping pair
+- uptime never runs backwards, swept continuously across three ticks with one
+  read taken under a lock — the clamp's reason to exist
+- at least one reading is not a whole tick, so interpolation is alive
+- uptime and the tick counter agree, once twenty ticks have settled
+
+Every one was broken once and watched go red. One break earned its keep
+twice over: a clock deliberately run at eleven milliseconds per tick sailed
+*past* the agreement check, because a fresh boot had not accumulated enough
+error to escape the check's one-tick slack. The check now waits out twenty
+ticks before judging — and the incident is why the rule says to break the
+check, not just write it.
