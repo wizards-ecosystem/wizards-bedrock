@@ -24,7 +24,7 @@ use crate::arch::current::debug_exit;
 use crate::arch::current::trap::{self, Record};
 use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
-use crate::{dev, error, info};
+use crate::{dev, error, info, time};
 
 /// Tally of what has been checked so far.
 struct Report {
@@ -137,6 +137,31 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "the interrupted code was taking interrupts",
         ping_is_consistent(taken),
     );
+
+    report.check(
+        "the timer entry is periodic and unmasked",
+        timer_entry_is_programmed(),
+    );
+    report.check("the calibrated rate is believable", rate_is_believable());
+
+    let ticks = time::ticks();
+    report.check("the tick counter advances", ticks_reach(ticks + 1));
+    // Same argument as the ping pair: the APIC will not deliver a second tick
+    // until the first is dismissed, so the second proves the handler's
+    // end-of-interrupt.
+    report.check(
+        "a tick is dismissed, so the next one arrives",
+        ticks_reach(ticks + 2),
+    );
+
+    let sweep = sweep_uptime();
+    report.check("uptime never runs backwards", sweep.monotonic);
+    report.check("uptime resolves finer than a tick", sweep.interpolated);
+    report.check(
+        "uptime agrees with the tick counter",
+        uptime_matches_ticks(),
+    );
+
     report.check(
         "no spurious interrupt has been delivered",
         trap::spurious_count() == 0,
@@ -240,6 +265,107 @@ fn ping_arrives(target: usize) -> bool {
         spin_loop();
         trap::last_ping().count >= target
     })
+}
+
+/// The hardware's own record of the timer: unmasked, periodic, our vector.
+fn timer_entry_is_programmed() -> bool {
+    let entry = apic::timer_entry();
+    !entry.is_masked() && entry.is_periodic() && entry.vector() == vector::TIMER
+}
+
+/// The measured rate, against bounds restated here rather than shared with
+/// the code under test: a megahertz to fifty gigahertz covers every machine
+/// this could believably boot on, and calibration having declined reads as
+/// zero, which fails too.
+fn rate_is_believable() -> bool {
+    (1_000_000..=50_000_000_000).contains(&time::divided_hz())
+}
+
+/// Spin until the tick count reaches `target`, giving up rather than hanging
+/// the harness on a timer that is never going to fire.
+///
+/// Sized in reads rather than time: tens of millions of them span many 10 ms
+/// ticks on anything that can boot this kernel, and cost seconds, not
+/// minutes, when the timer is dead.
+fn ticks_reach(target: u64) -> bool {
+    const ATTEMPTS: u32 = 50_000_000;
+
+    (0..ATTEMPTS).any(|_| {
+        spin_loop();
+        time::ticks() >= target
+    })
+}
+
+/// What a continuous read of the clock across several ticks saw.
+struct UptimeSweep {
+    monotonic: bool,
+    interpolated: bool,
+}
+
+/// Read the clock as fast as it can be read until three ticks have passed.
+///
+/// Monotonicity is the property under test; interpolation is observed on the
+/// side, as at least one reading that is not a whole tick. The very first
+/// reading is taken while holding a lock — the case the clamp in `time`
+/// exists for, because the countdown can reload under a clear interrupt flag
+/// while the tick it announces stays pending.
+fn sweep_uptime() -> UptimeSweep {
+    const ATTEMPTS: u32 = 20_000_000;
+    const TICK_SPAN: u64 = 3;
+
+    let per_tick = u64::from(time::MS_PER_TICK);
+    let start = time::ticks();
+    let mut previous = 0;
+    let mut sweep = UptimeSweep {
+        monotonic: true,
+        interpolated: false,
+    };
+
+    for attempt in 0..ATTEMPTS {
+        let sample = if attempt == 0 {
+            let lock = SpinLock::new(0u32);
+            let held = lock.lock();
+            let sample = time::uptime_ms();
+            drop(held);
+            sample
+        } else {
+            time::uptime_ms()
+        };
+
+        if sample < previous {
+            sweep.monotonic = false;
+        }
+        if !sample.is_multiple_of(per_tick) {
+            sweep.interpolated = true;
+        }
+        previous = sample;
+
+        if time::ticks() >= start + TICK_SPAN {
+            break;
+        }
+    }
+    sweep
+}
+
+/// The two clocks agree: an uptime reading lands between the tick counts
+/// taken on either side of it, each converted to the milliseconds it stands
+/// for, with one tick of slack for the read in flight.
+///
+/// Checked only once twenty ticks have passed. The bracket allows one tick of
+/// slack, so a conversion off by even a millisecond per tick hides inside it
+/// until the error has had ten ticks to accumulate — breaking this check once
+/// proved exactly that, when a fresh-booted clock let a wrong ratio through.
+fn uptime_matches_ticks() -> bool {
+    const SETTLE_TICKS: u64 = 20;
+
+    if !ticks_reach(SETTLE_TICKS) {
+        return false;
+    }
+    let per_tick = u64::from(time::MS_PER_TICK);
+    let floor = time::ticks() * per_tick;
+    let uptime = time::uptime_ms();
+    let ceiling = (time::ticks() + 1) * per_tick;
+    floor <= uptime && uptime <= ceiling
 }
 
 /// The frame a delivered interrupt saved, checked the way `frame_is_consistent`

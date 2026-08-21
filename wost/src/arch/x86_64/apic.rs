@@ -27,6 +27,7 @@ use x86_apic::command::Command;
 use x86_apic::local_vector::Entry;
 use x86_apic::register;
 use x86_apic::spurious::Spurious;
+use x86_apic::timer::Divide;
 use x86_apic::version::Version;
 
 use super::cpu;
@@ -214,6 +215,51 @@ pub fn send_self_interrupt(vector: u8) {
     );
 }
 
+/// Set how the bus clock is divided before it drives the timer's countdown.
+///
+/// Does nothing before [`init`].
+pub fn set_timer_divide(divide: Divide) {
+    write(register::DIVIDE_CONFIGURATION, divide.bits().into());
+}
+
+/// Start the timer's countdown from `count` without touching its delivery.
+///
+/// With the timer's entry masked — as [`init`] leaves it — the countdown
+/// free-runs and delivers nothing, which is exactly what calibration
+/// measures. Writing the initial count is what starts the timer; that is the
+/// architecture's rule, not this module's. Does nothing before [`init`].
+pub fn arm_timer(count: u32) {
+    write(register::INITIAL_COUNT, count.into());
+}
+
+/// Deliver `vector` every `count` divided-clock cycles, starting now.
+///
+/// The entry is written before the count because the count write is what
+/// starts the timer: the first expiry must already have a vector and a mode.
+/// Does nothing before [`init`].
+///
+/// # Panics
+///
+/// Panics if `vector` is below 16, which the APIC would refuse, or if `count`
+/// is zero — a zero initial count stops the timer, which is never what a
+/// caller asking for a periodic tick means.
+pub fn start_periodic_timer(vector: u8, count: u32) {
+    assert!(count != 0, "a zero initial count stops the timer");
+    write(register::LVT_TIMER, Entry::periodic(vector).bits().into());
+    write(register::INITIAL_COUNT, count.into());
+}
+
+/// Where the timer's countdown currently stands. Zero before [`init`].
+pub fn timer_current_count() -> u32 {
+    read(register::CURRENT_COUNT) as u32
+}
+
+/// The timer's local vector entry, read back from the hardware rather than
+/// remembered from what was written.
+pub fn timer_entry() -> Entry {
+    Entry::from_bits(read(register::LVT_TIMER) as u32)
+}
+
 /// Errors the local APIC has recorded since this was last called.
 ///
 /// The register latches on write and holds that value until the next one, which
@@ -278,7 +324,9 @@ fn write(register: Register, value: u64) {
     // register number one it implements — `REGISTERS_READY` says so, and only
     // `enter_extended_mode` sets it, after reading the mode back. Every value
     // written comes from an encoding in `x86_apic`, which is where the
-    // reserved bits that would fault are accounted for.
+    // reserved bits that would fault are accounted for — or is the timer's
+    // initial count, for which the architecture defines all thirty-two bits
+    // and reserves none.
     unsafe { msr::write(register.msr(), value) };
 }
 

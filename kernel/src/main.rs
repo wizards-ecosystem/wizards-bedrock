@@ -18,6 +18,7 @@ mod panic;
 #[cfg(feature = "selftest")]
 mod selftest;
 mod theme;
+mod time;
 
 use core::fmt::Write;
 
@@ -69,17 +70,36 @@ fn kernel_main(boot: BootInfo) -> ! {
     #[cfg(feature = "selftest")]
     selftest::run(serial);
 
-    info!("kernel: entering idle loop");
-    cpu::halt_forever()
+    info!(
+        "kernel: entering idle loop, uptime {} ms",
+        time::uptime_ms()
+    );
+    idle()
 }
 
-/// Bring up the interrupt controller and start accepting interrupts.
+/// Halt until something happens, do the work it brought, halt again.
+///
+/// Everything an interrupt wakes gets its turn between the halts. With the
+/// flag never set — interrupts declined at boot — the first halt is permanent,
+/// which is the same idle this kernel had before it could take interrupts.
+fn idle() -> ! {
+    loop {
+        cpu::halt();
+    }
+}
+
+/// Bring up the interrupt controller, start the clock, and accept interrupts.
 ///
 /// Each step is a precondition for the next, and every one of them can decline:
 /// a kernel that cannot take interrupts is worth far more than one that takes
-/// them into a controller it never configured. The three are, in order — stop
-/// the legacy controllers delivering anything, give the local APIC its vectors
-/// and turn it on, and only then set the flag.
+/// them into a controller it never configured. In order — stop the legacy
+/// controllers delivering anything, give the local APIC its vectors and turn
+/// it on, calibrate and arm the timer, and only then set the flag. The timer
+/// sits where it does for both of its neighbours: it needs the APIC's
+/// registers answering, and running before the `sti` makes the measurement
+/// unpreemptible and holds the first tick pending until the kernel is ready
+/// to take it. Alone among the steps, its failure vetoes nothing — a kernel
+/// without a clock still wants its keyboard.
 fn start_interrupts() {
     if let Err(reason) = pic::silence() {
         warn!("legacy controllers not silenced: {reason}; interrupts stay off");
@@ -93,6 +113,11 @@ fn start_interrupts() {
             warn!("local apic: {reason}; interrupts stay off");
             return;
         }
+    }
+
+    match time::init() {
+        Ok(report) => info!("time: {report}"),
+        Err(reason) => warn!("timer: {reason}; uptime stays at zero"),
     }
 
     interrupt::enable();

@@ -77,6 +77,8 @@ version = "0.1.0"
 dependencies = [
  "noto-sans-mono-bitmap",
  "wost",
+ "x86-apic",
+ "x86-pit",
  "x86-tables",
 ]
 
@@ -92,6 +94,10 @@ dependencies = [
 
 [[package]]
 name = "x86-apic"
+version = "0.1.0"
+
+[[package]]
+name = "x86-pit"
 version = "0.1.0"
 
 [[package]]

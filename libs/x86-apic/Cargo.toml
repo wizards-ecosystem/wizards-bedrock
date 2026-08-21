@@ -1,6 +1,6 @@
 [package]
 name = "x86-apic"
-description = "Local APIC register encoding: offsets, LVT entries, commands. Pure logic, host-testable."
+description = "Local APIC register encoding: offsets, LVT entries, commands, timer arithmetic. Pure logic, host-testable."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -15,6 +15,14 @@ const DELIVERY_FIXED: u32 = 0;
 /// Bit 16: the source is disconnected while this is set.
 const MASK: u32 = 1 << 16;
 
+/// Bits 17–18: the timer's mode, meaningful only in the timer's entry. Zero is
+/// one-shot; the third value, TSC-deadline, is not implemented here because
+/// nothing calibrates the TSC.
+const TIMER_MODE: u32 = 0b11 << 17;
+
+/// The mode that reloads the initial count at zero and keeps counting.
+const TIMER_PERIODIC: u32 = 0b01 << 17;
+
 /// Bits 0–7: the vector.
 const VECTOR: u32 = 0xFF;
 
@@ -45,6 +53,24 @@ impl Entry {
         Self(vector as u32 | DELIVERY_FIXED)
     }
 
+    /// Deliver `vector` every time the timer's countdown reaches zero.
+    ///
+    /// The reload is the hardware's: at zero the timer restarts from its
+    /// initial count with no software involved, which is what makes the tick
+    /// periodic rather than re-armed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `vector` is below [`FIRST_VECTOR`], for the same reason
+    /// [`fixed`](Self::fixed) does.
+    pub const fn periodic(vector: u8) -> Self {
+        assert!(
+            vector >= FIRST_VECTOR,
+            "the local APIC will not deliver a vector below 16"
+        );
+        Self(vector as u32 | TIMER_PERIODIC)
+    }
+
     /// Interpret what the register returned.
     pub const fn from_bits(bits: u32) -> Self {
         Self(bits)
@@ -63,6 +89,11 @@ impl Entry {
     /// The vector this entry delivers on.
     pub const fn vector(self) -> u8 {
         (self.0 & VECTOR) as u8
+    }
+
+    /// Whether the timer reloads and continues at zero rather than stopping.
+    pub const fn is_periodic(self) -> bool {
+        self.0 & TIMER_MODE == TIMER_PERIODIC
     }
 }
 
@@ -105,9 +136,47 @@ mod tests {
         assert_eq!(Entry::from_bits(written.bits()), written);
     }
 
+    /// SDM Vol. 3A figure 11-8: the periodic mode is bit 17 alone, beside the
+    /// vector in bits 0–7 and nothing else set.
+    #[test]
+    fn a_periodic_entry_is_its_vector_plus_the_mode_bit() {
+        let entry = Entry::periodic(0x41);
+
+        assert_eq!(entry.bits(), 0x0002_0041);
+        assert!(entry.is_periodic());
+        assert!(!entry.is_masked());
+        assert_eq!(entry.vector(), 0x41);
+    }
+
+    #[test]
+    fn a_fixed_entry_is_one_shot() {
+        assert!(!Entry::fixed(0x40).is_periodic());
+    }
+
+    /// Re-masking the timer must also put its mode back to the reset value, or
+    /// the next unmask inherits a stale one.
+    #[test]
+    fn a_masked_entry_carries_no_timer_mode() {
+        assert_eq!(Entry::MASKED.bits() & TIMER_MODE, 0);
+        assert!(!Entry::MASKED.is_periodic());
+    }
+
+    #[test]
+    fn a_periodic_entry_round_trips() {
+        let written = Entry::periodic(0x41);
+
+        assert_eq!(Entry::from_bits(written.bits()), written);
+    }
+
     #[test]
     #[should_panic(expected = "below 16")]
     fn an_entry_refuses_a_vector_the_apic_would_reject() {
         let _ = Entry::fixed(FIRST_VECTOR - 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "below 16")]
+    fn a_periodic_entry_refuses_a_vector_the_apic_would_reject() {
+        let _ = Entry::periodic(FIRST_VECTOR - 1);
     }
 }

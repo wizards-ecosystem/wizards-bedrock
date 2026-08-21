@@ -47,6 +47,15 @@ pub const LVT_LINT1: Register = Register::new(0x360);
 /// Local vector table entry for the APIC's own error line.
 pub const LVT_ERROR: Register = Register::new(0x370);
 
+/// The value the timer's countdown restarts from. Writing it starts the timer.
+pub const INITIAL_COUNT: Register = Register::new(0x380);
+
+/// Where the timer's countdown currently stands. Read-only.
+pub const CURRENT_COUNT: Register = Register::new(0x390);
+
+/// How the bus clock is divided before it drives the timer's countdown.
+pub const DIVIDE_CONFIGURATION: Register = Register::new(0x3E0);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,6 +73,9 @@ mod tests {
         ("lvt lint0", LVT_LINT0),
         ("lvt lint1", LVT_LINT1),
         ("lvt error", LVT_ERROR),
+        ("initial count", INITIAL_COUNT),
+        ("current count", CURRENT_COUNT),
+        ("divide configuration", DIVIDE_CONFIGURATION),
     ];
 
     /// `Register::new` enforces this, but it is a `const` assertion that fires
@@ -96,6 +108,15 @@ mod tests {
         assert_eq!(LVT_ERROR.offset(), LVT_LINT1.offset() + 16);
     }
 
+    /// The two count registers are adjacent slots; the divide configuration
+    /// sits apart from them, past the slots the architecture reserves.
+    #[test]
+    fn the_timer_registers_sit_where_the_manual_puts_them() {
+        assert_eq!(INITIAL_COUNT.offset(), 0x380);
+        assert_eq!(CURRENT_COUNT.offset(), INITIAL_COUNT.offset() + 16);
+        assert_eq!(DIVIDE_CONFIGURATION.offset(), 0x3E0);
+    }
+
     /// SDM Vol. 3A table 11-1's "MSR address" column, for every register named
     /// here. Transcribed rather than derived, so the derivation has something
     /// independent to be wrong against.
@@ -113,6 +134,9 @@ mod tests {
             ("lvt lint0", LVT_LINT0, 0x835),
             ("lvt lint1", LVT_LINT1, 0x836),
             ("lvt error", LVT_ERROR, 0x837),
+            ("initial count", INITIAL_COUNT, 0x838),
+            ("current count", CURRENT_COUNT, 0x839),
+            ("divide configuration", DIVIDE_CONFIGURATION, 0x83E),
         ] {
             assert_eq!(register.msr(), msr, "{name}");
         }

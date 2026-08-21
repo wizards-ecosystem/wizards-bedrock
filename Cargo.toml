@@ -3,12 +3,20 @@
 # explicitly or cargo falls back to resolver 1. Resolver 3 is the edition-2024
 # default and honours `rust-version` when picking dependency versions.
 resolver = "3"
-members = ["kernel", "libs/pixel", "libs/x86-apic", "libs/x86-tables", "wost", "xtask"]
+members = [
+    "kernel",
+    "libs/pixel",
+    "libs/x86-apic",
+    "libs/x86-pit",
+    "libs/x86-tables",
+    "wost",
+    "xtask",
+]
 
 # Bare root commands are scoped to the half that builds for the host; the
 # kernel crates are reached through the aliases in .cargo/config.toml, and
 # `cargo xtask ci` runs both. See the README's Development section for why.
-default-members = ["libs/pixel", "libs/x86-apic", "libs/x86-tables", "xtask"]
+default-members = ["libs/pixel", "libs/x86-apic", "libs/x86-pit", "libs/x86-tables", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +29,7 @@ repository = "https://github.com/limbwizard/the-wizards-os"
 # Our own no_std libraries: pure logic, host-testable.
 pixel = { path = "libs/pixel" }
 x86-apic = { path = "libs/x86-apic" }
+x86-pit = { path = "libs/x86-pit" }
 x86-tables = { path = "libs/x86-tables" }
 
 # Kernel side (no_std). 0.6.x of limine requires nightly (ptr_metadata);

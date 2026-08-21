@@ -24,6 +24,7 @@ pub mod command;
 pub mod local_vector;
 pub mod register;
 pub mod spurious;
+pub mod timer;
 pub mod version;
 
 /// Bytes of memory-mapped register space one local APIC occupies — a page.

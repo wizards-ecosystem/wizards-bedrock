@@ -19,7 +19,7 @@ pub const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
 /// Packages that build and run their tests on the host. `libs/` crates are
 /// `no_std` but compile for the host under `cfg(test)`, which is the whole
 /// point of putting pure logic there.
-pub const HOST_PACKAGES: &[&str] = &["pixel", "x86-apic", "x86-tables", "xtask"];
+pub const HOST_PACKAGES: &[&str] = &["pixel", "x86-apic", "x86-pit", "x86-tables", "xtask"];
 
 /// Triple the kernel is cross-compiled for.
 pub const KERNEL_TARGET: &str = "x86_64-unknown-none";

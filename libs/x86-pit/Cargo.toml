@@ -1,0 +1,11 @@
+[package]
+name = "x86-pit"
+description = "8254 interval timer encoding and calibration arithmetic. Pure logic, host-testable."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

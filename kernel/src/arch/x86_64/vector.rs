@@ -29,6 +29,14 @@ pub(crate) const ERROR: u8 = 0xFE;
 /// not going away when the timer arrives.
 pub(crate) const PING: u8 = 0x40;
 
+/// The local APIC timer's tick.
+///
+/// Beside [`PING`] rather than down at 32: vectors 0x20–0x2F are where
+/// slice 2 remapped the legacy controllers, and staying clear of them keeps a
+/// leaked legacy interrupt panicking as unexpected instead of masquerading as
+/// a tick.
+pub(crate) const TIMER: u8 = 0x41;
+
 /// What the local APIC is told to use for itself.
 pub(crate) const LOCAL_APIC: Vectors = Vectors {
     spurious: SPURIOUS,

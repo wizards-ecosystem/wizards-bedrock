@@ -117,6 +117,10 @@ fn for_each_half(
 /// or bench targets and cannot have any, but the host crates do — and without
 /// it neither `check` nor `clippy` ever sees their test code. A `useless_vec`
 /// in `sha256.rs`'s tests sat there unreported until someone ran clippy by hand.
+///
+/// The kernel half gets the self-test feature for the same reason: the checks
+/// in `kernel/src/selftest.rs` are code too, the feature only adds items, and
+/// without it the gate would never lint them.
 fn half_args(
     subcommand: &str,
     packages: &[&str],
@@ -127,7 +131,12 @@ fn half_args(
     let mut args = vec![subcommand.to_string()];
     args.extend(cargo::package_args(packages));
     match target {
-        Some(target) => args.extend(["--target".to_string(), target.to_string()]),
+        Some(target) => args.extend([
+            "--target".to_string(),
+            target.to_string(),
+            "--features".to_string(),
+            format!("{}/{}", paths::KERNEL_PACKAGE, qemu::SELFTEST_FEATURE),
+        ]),
         None => args.push("--all-targets".to_string()),
     }
     args.extend_from_slice(extra);
@@ -162,6 +171,21 @@ mod tests {
             !args.contains(&"--all-targets".to_string()),
             "the kernel crates have no host test targets"
         );
+    }
+
+    #[test]
+    fn the_kernel_half_lints_the_self_test_code() {
+        let args = args(Some(paths::KERNEL_TARGET));
+        let position = args.iter().position(|arg| arg == "--features");
+        assert_eq!(
+            position.map(|index| args[index + 1].as_str()),
+            Some("wizard-kernel/selftest")
+        );
+    }
+
+    #[test]
+    fn the_host_half_has_no_kernel_features() {
+        assert!(!args(None).contains(&"--features".to_string()));
     }
 
     #[test]
