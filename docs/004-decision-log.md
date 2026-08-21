@@ -1148,3 +1148,6 @@ this socket when the exit device fires — need only to be skipped.
 - `006-cpu-fundamentals.md` — Phase 2: descriptor tables, the fault path, the
   CPU protection baseline, the interrupt controller, the calibrated tick, and
   the polled keyboard (D-29..D-38)
+- `007-memory.md` — Phase 3 charter: the debts D-12, D-32, D-33 and D-37
+  deferred here, the slice proposal, and the decisions still open (each
+  becomes an ADR as it is taken)

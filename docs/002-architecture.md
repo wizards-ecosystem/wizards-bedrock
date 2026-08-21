@@ -158,6 +158,7 @@ targeting virtio-gpu in VMs, with a dumb-framebuffer fallback.
   lost-wakeup re-check pattern, `Pin` for self-referential futures
 - Kernel-memory accounting: is seL4-style untyped-retype (callers donate
   memory for kernel objects) worth adopting to kill kernel-memory DoS?
+  (taken up in `007-memory.md` — Phase 3 must answer it)
 - WizFS on-disk format specifics (doc before Phase 6)
 - Compat-fork mechanics for mlibc (doc before Phase 9)
 - Research follow-ups (`003-research-notes.md` gaps): re-verify Tier-2

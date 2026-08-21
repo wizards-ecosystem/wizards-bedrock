@@ -50,7 +50,8 @@ reference — not followed linearly). Docs are numbered in creation order.
    IRQ-safe locking and interrupts on 2026-08-14; the calibrated 100 Hz tick,
    uptime, and the polled set 2 keyboard 2026-08-20; W^X follows the page
    tables into Phase 3 (D-32); slice table in `006-cpu-fundamentals.md`*
-3. Memory — physical frame allocator, paging, kernel heap, memory objects
+3. Memory — physical frame allocator, paging, kernel heap, memory objects —
+   *charter and inherited obligations in `007-memory.md`*
 4. Multitasking — kernel threads, EEVDF-style scheduler, tickless idle
 5. Userspace — ring 3, **handle table + rights**, spawn, ELF loading,
    channels, **async queue ABI**, initrd
