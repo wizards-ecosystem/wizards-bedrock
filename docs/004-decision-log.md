@@ -1291,6 +1291,10 @@ a verifier that stops the build for the wrong reason.
 - `007-memory.md` — Phase 3 charter: the debts D-12, D-32, D-33 and D-37
   deferred here, the slice proposal, and the decisions still open (each
   becomes an ADR as it is taken)
+- `008-research-notes-2.md` — the second research pass, opening Phase 3:
+  what the stable toolchain now allows, the evidence behind the decisions
+  `007` holds open, and the proposed additions to `005`. Its marks are its
+  own; `003`'s tiers still govern what counts as Verified here
 
 The 2026-08-22 adversarial audit closed the gaps recorded in D-39, D-40, and
 the amendments to D-22 and D-25. Its two standing lessons, worth reading

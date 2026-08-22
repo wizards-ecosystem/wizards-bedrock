@@ -7,5 +7,8 @@
 
 # Stray artifacts at the repo root. Anchored on purpose: unanchored `*.img` and
 # `*.log` would also swallow anything intentionally vendored under boot/ or libs/.
+# `.rlib` is here because probing a toolchain feature with a bare `rustc` leaves
+# one behind, and the answer belongs in a doc or a test rather than the tree.
 /*.img
 /*.log
+/*.rlib

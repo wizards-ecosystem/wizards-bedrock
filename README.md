@@ -12,7 +12,8 @@ Design docs live in [docs/](docs/) — one per subsystem, written before the
 code (design-first). Start with the
 [decision log](docs/004-decision-log.md) (every choice, its alternatives,
 and rationale) and the [architecture](docs/002-architecture.md); research
-evidence behind them is in [research notes](docs/003-research-notes.md), and
+evidence behind them is in [research notes](docs/003-research-notes.md) and
+[the second research pass](docs/008-research-notes-2.md), and
 [code conventions](docs/005-code-conventions.md) covers how the code is written.
 
 ## Building & running
