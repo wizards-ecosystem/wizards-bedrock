@@ -120,7 +120,11 @@ harness of D-38 unchanged.
   (D-13: paging is TCB).
 - `wost/src/mmio.rs` — `MmioRegion` is the checked-MMIO abstraction the
   framebuffer already uses; device mappings should hand out regions
-  through it, paired with a claim discipline like `port::claim`'s.
+  through it, paired with a claim discipline like `port::claim`'s — which
+  since D-39 means covering the span an access *reaches*, not the address it
+  names. The bookkeeping for that lives in `libs/port-space`, where it is
+  host-tested; a physical-address equivalent belongs beside it rather than
+  inside `wost`.
 - `wost/src/arch/x86_64/apic.rs` — module doc records the x2APIC decision;
   the I/O APIC is a *separate* controller and a new driver, not a revisit
   of this one.
@@ -131,4 +135,11 @@ harness of D-38 unchanged.
   back-buffer's motivation (`001-boot.md`).
 - `libs/` — the new page-table crate joins `members`, `default-members`,
   `[workspace.dependencies]`, and `HOST_PACKAGES` in `xtask/src/paths.rs`,
-  like `x86-pit` and `ps2-keys` before it.
+  like `x86-pit`, `ps2-keys` and `port-space` before it.
+- `kernel/linker.ld` and `xtask/src/elf.rs` — the script now names its own
+  orphans and the build checks the result (D-40). Phase 3's W^X work has a
+  head start there: the image is already three segments with no
+  writable-executable one, asserted after every build, so what the new page
+  tables must reproduce is written down and machine-checked rather than
+  inferred. KASLR still waits on making the image relocatable, and that is a
+  change to this script.

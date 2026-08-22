@@ -15,9 +15,19 @@ is deferred to a side-quest; Limine gives us:
 - ELF64, linked at `0xffffffff80000000` (linker script `kernel/linker.ld`)
 - built for `x86_64-unknown-none` with `code-model=kernel`,
   `relocation-model=static` (`.cargo/config.toml`)
-- Limine requests live in a `.requests` section between
-  `.requests_start_marker` / `.requests_end_marker` (kept by linker script)
+- Limine requests live in their own `.requests` output section, between
+  `.requests_start_marker` / `.requests_end_marker`, each `KEEP()`-ed against
+  section garbage collection
+- three `PT_LOAD` segments — read-execute, read-only, read-write — and Limine
+  maps each by its flags, so W^X holds for the kernel image from the first
+  instruction, well before the kernel owns page tables of its own
 - entry: `extern "C" fn kmain() -> !`
+
+Every one of those properties is asserted after each build by
+`xtask/src/elf.rs`, which reads the linked ELF back rather than trusting the
+script (D-40). An unnamed section is placed by the linker's orphan heuristic
+and still links — that is how `.got` spent Phase 2 sitting after `.bss`,
+forcing 29 KB of zeros into every image.
 
 The requests and the `kmain` symbol are emitted by `wost::entry!(kernel_main)`,
 which expands *in the binary crate* — `#[used]` statics inside an rlib can be
@@ -187,4 +197,5 @@ deliberate choice to keep Phase 1 finishable, not an oversight.
   we move to nightly for other reasons
 - ~~Grow `kernel/src/selftest.rs` as Phase 2 lands~~ — done: the phase closed
   at 34 checks, every new one broken once to prove it can go red, and the
-  harness itself grew a hand — it can press a key (D-38)
+  harness itself grew a hand — it can press a key (D-38). The 2026-08-22
+  audit added a 35th, for the port claim width D-39 fixed.

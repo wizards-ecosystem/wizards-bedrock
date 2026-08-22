@@ -40,11 +40,25 @@ and 32 bits because a sealed trait with one impl is not an abstraction.
 **What `wost` owes its callers:** every abstraction it exports must make the
 unsafe operation underneath it *checkable*, not merely *wrapped*.
 `MmioRegion` bounds- and alignment-checks. `port::claim` records ownership in a
-registry so exclusivity is verified rather than promised. `SpinLock::force_unlock`
-takes a `PanicToken` — a value only the terminal panic path can obtain — so the
-obligation is discharged by the type system instead of by a comment. Following
-Asterinas (`002-architecture.md` pillar 5): these abstractions are designed in
-from day one, never retrofitted.
+registry so exclusivity is verified rather than promised — over the span an
+access *reaches*, not the port it names, which is the distinction Phase 2 got
+wrong and D-39 fixed. `SpinLock::force_unlock` takes a `PanicToken` — a value
+only the terminal panic path can obtain — so the obligation is discharged by
+the type system instead of by a comment. Following Asterinas
+(`002-architecture.md` pillar 5): these abstractions are designed in from day
+one, never retrofitted.
+
+A bound stated in prose is not a bound. Where the checkable form needs
+arithmetic, the arithmetic goes to a `libs/` crate and `wost` keeps only the
+lock and the instruction — `port_space::PortSpace` under
+`arch::x86_64::port` is the pattern to copy.
+
+**Every lock in a `static` is on the panic path's list.** A fault is not masked
+by the interrupt flag, so any lock can be held by the code a panic interrupted,
+and a handler that blocks on one reports nothing. `wost::panic::reclaim` takes
+back everything `wost` owns; `dev::force_unlock` and `input::force_unlock` do
+the same for the kernel's. A new `static` lock that is not added to one of
+those three is a deadlock waiting for its first panic.
 
 `kernel/` uses `deny`, not `forbid`, for exactly one reason: `wost::entry!`
 expands `#[allow(unsafe_code)]` boot glue into the binary crate, and `forbid`
@@ -177,9 +191,23 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   offset arithmetic — the code that carried a live out-of-bounds bug while it
   was buried in the kernel. `libs/x86-tables` is the second: GDT, IDT and TSS
   encoding, where the host test is the only thing that can check a bit position
-  against the manual. `libs/x86-apic` is the third, on the same grounds. Add
-  crates here for page-table bit packing, ELF parsing, ring index arithmetic,
-  and the WizFS on-disk format as those arrive.
+  against the manual. `libs/x86-apic` and `libs/x86-pit` follow on the same
+  grounds, and `libs/ps2-keys` for the scancode state machine.
+  `libs/port-space` is the newest and the clearest case of *why*: the I/O port
+  reservation bitmap sat inside `wost`, where nothing could test it, and it
+  spent Phase 2 recording one port per claim however wide the access it
+  authorised (D-39). Add crates here for page-table bit packing, ELF parsing,
+  ring index arithmetic, and the WizFS on-disk format as those arrive.
+- **The gate runs over a configuration matrix, not a codebase.** A cargo
+  feature is a different crate graph, and a lint that fires in one need not
+  fire in the other: `cargo xtask ci` covers the host packages, the kernel
+  packages, and the kernel packages *again* with `selftest` on. Adding a
+  feature means adding a pass — see the `PASSES` table in `xtask/src/tasks.rs`
+  and the D-22 amendment for what it cost to learn.
+- Anything the linker produces is checked rather than trusted:
+  `xtask/src/elf.rs` reads the linked kernel back after every build and
+  requires the properties `kernel/linker.ld` is written to produce (D-40).
+  A linker script fails loudly when malformed and quietly when incomplete.
 - A `libs/` crate goes in `default-members` so a bare `cargo test` covers it,
   and in `HOST_PACKAGES` in `xtask/src/paths.rs` so `cargo xtask ci` does too.
 - `xtask` logic is unit-tested directly, in-module. Anything touching the

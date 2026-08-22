@@ -533,12 +533,51 @@ half, because the kernel crates have no test or bench targets and cannot have
 any (D-28). The argument construction moved into a pure `half_args` function
 with tests, so the distinction is asserted rather than remembered.
 
+**Amended 2026-08-22, after an adversarial audit.** Three holes, all of the
+same species as the one above — the gate covering less than it was believed
+to.
+
+1. *The configuration that ships was never linted.* Every kernel pass carried
+   `--features wizard-kernel/selftest`, so `cargo xtask ci` linted exactly one
+   crate graph and the release build in its own last step linted none. Two
+   `dead_code` constants used only by `selftest` had been riding release
+   images out, printed as warnings by a step nothing gated. The pass list is
+   now an explicit `PASSES` table — host, kernel, kernel + self-test — with
+   tests asserting the kernel appears twice and that the shipped
+   configuration comes first.
+2. *`kernel/` never opted in at all.* It had no `[lints]` table, so every lint
+   this ADR describes was unenforced in the crate that most needed them — the
+   `unreachable_pub` that `005` says enforces `pub(crate)` in a binary was
+   enforcing nothing. It opts in now. The code turned out to already conform,
+   which is the good outcome and not the point: it was conforming by habit.
+3. *Doc links rot unwatched.* `missing_docs` catches an absent doc; nothing
+   caught one pointing at a renamed or now-private item, because those lints
+   fire only under rustdoc and no gate step ran it. `[workspace.lints.rustdoc]`
+   denies `broken_intra_doc_links`, `private_intra_doc_links` and
+   `redundant_explicit_links`, and `cargo xtask doc` makes them bite. Two dead
+   links were found on the first run. `xtask` takes this table on its own,
+   still opting out of the rest.
+4. *The package list drifted, because there are two of them.* `HOST_PACKAGES`
+   in `xtask/src/paths.rs` and `default-members` in the root manifest say the
+   same thing twice, and adding `libs/port-space` to one and not the other
+   made the gate stop covering it while a bare `cargo test` still did — found
+   while fixing hole 1, by the same kind of looking. `paths::default_members`
+   now reads the real manifest in a unit test and requires the two to agree.
+   A list duplicated without a check between the copies is a defect with a
+   waiting period.
+
 **Consequences.** Cargo forbids mixing `[lints] workspace = true` with local
 lint tables in the same manifest, so per-crate escalation goes in source
 attributes — `#![deny(unsafe_code)]` sits at the top of `kernel/src/main.rs`,
 where a reader meets it in the first five lines. `xtask` opts out of the
-workspace lints entirely. Automated tests exist for host-side logic only; the
-reasoning and the path forward are in `005-code-conventions.md`.
+workspace lints bar the rustdoc ones: `missing_docs` on build tooling is
+noise, a link that no longer resolves is a defect anywhere. Automated tests
+exist for host-side logic only; the reasoning and the path forward are in
+`005-code-conventions.md`.
+
+The standing lesson, now twice learned: **a gate is only as wide as its
+configuration matrix, and the matrix is the thing to audit.** Every widening
+so far has been found by looking, never by the gate itself.
 
 ---
 
@@ -605,6 +644,14 @@ checked by `cargo xtask verify-vendor`, by `cargo xtask ci`, and by an
 integration test so that tampering fails `cargo test` too. The hash function
 is ~90 lines in `xtask/src/sha256.rs`, verified against the NIST vectors —
 cheaper than a dependency for one call site.
+
+**Amended 2026-08-22.** A digest catches a vendored file being *changed*; it
+says nothing about one being *added*, and an unlisted binary appearing beside
+`BOOTX64.EFI` passed the check silently. `verify_listing` now reads the
+directory as well as the listing and refuses anything neither an entry nor the
+directory's own paperwork — `CHECKSUMS`, `LICENSE`, `README.md` — accounts
+for. The comparison is a pure `unaccounted` function, tested on the host;
+the check was broken once with a stray `EXTRA.EFI` and went red.
 
 **Consequences.** Updating Limine is now a two-line diff a reviewer can
 actually check. Every future vendored artifact gets the same treatment.
@@ -1137,6 +1184,99 @@ this socket when the exit device fires — need only to be skipped.
 
 ---
 
+## D-39 A port claim covers the width it drives — Status: Accepted (2026-08-22)
+
+**Context.** An adversarial audit of Phase 2 found `wost::arch::x86_64::port`
+recording one bit per claim whatever the access width. `port::claim::<u32>`
+authorises an `out dx, eax`, which drives four consecutive ports; the registry
+believed it owned one. `kernel/src/arch/x86_64/debug_exit.rs` is a live
+instance: it claims `Port<u32>` at `0xF4` and the harness gives QEMU
+`iosize=0x04`, so the kernel drives `0xF4..0xF8` against a one-port claim.
+`PortBlock` had the mirror of the same hole — `port_for` asserted
+`offset < N`, so a `u32` access at `N - 1` ran three ports past the block into
+whatever answered next.
+
+Nothing collided in practice; every `PortBlock` caller happens to use `u8`.
+But `005-code-conventions.md` states that what `wost` owes its callers is that
+every abstraction make the unsafe operation underneath it *checkable* — and
+names `port::claim` as the worked example, "so exclusivity is verified rather
+than promised". It was promised.
+
+**Options.** (a) Leave it and document the caveat; (b) widen the claim and the
+bounds check in place; (c) widen them, and move the bookkeeping somewhere it
+can be tested.
+
+**Decision.** (c). `size_of::<T>()` is the number of ports an access drives —
+which the sealed `PortValue` trait makes true by construction, since its only
+implementors are the primitives of exactly those widths. `claim` reserves that
+many; `PortBlock::read`/`write` check `offset + size_of::<T>() <= N`. The
+bitmap itself moved to a new `libs/port-space` crate, on D-30's precedent: it
+is arithmetic over bits with no hardware behind it, so it belongs where
+`cargo test` can reach it.
+
+`Port::new` and `PortBlock::new` became private in the same change. They were
+`pub unsafe`, which left a documented way to construct a handle the registry
+knew nothing about; `claim` and `claim_block` are now the only doors.
+
+**Rationale.** The width is not a detail a caller should have to remember —
+it is already in the type. Extracting the bitmap bought thirteen host tests
+including a sweep of every way two spans can meet and a pass over all 65536
+ports, none of which a `no_std` cross-compiled module could have carried.
+
+**Consequences.** One on-machine check joins them (`a claim covers the width
+it drives`): a 32-bit claim two ports below COM1 must be refused, and a byte
+claim at the same port must then succeed — which proves both that the port
+was free, so the refusal was about the width, and that the refused claim
+recorded nothing. Broken once by making `reserve` ignore its length, and the
+boot went red. Phase 3's device mappings are to inherit this discipline, not
+the old one: `007-memory.md` asks for "a claim discipline like `port::claim`'s"
+and that now means covering the span an access reaches.
+
+---
+
+## D-40 The linked image is verified, not assumed — Status: Accepted (2026-08-22)
+
+**Context.** The same audit read the built ELF back and found `.got` placed
+*after* `.bss`. It linked, it booted, and it was wrong: `linker.ld` named
+neither `.got` nor `.got.plt`, so the linker placed them by orphan heuristic,
+and a loadable section following a `NOBITS` one forces the whole of `.bss`
+into the file. 29048 bytes of zeros were being written into every image, and
+`.bss` was no longer being zeroed by the bootloader but loaded from disk.
+
+A linker script fails loudly when it is malformed and quietly when it is
+merely incomplete. Nothing in the gate could tell the difference.
+
+**Options.** (a) Name the orphans and move on; (b) name them and check the
+result; (c) adopt a linker-script linter or an external `readelf` in the gate.
+
+**Decision.** (b). `linker.ld` now names `.got`, `.got.plt` and
+`.data.rel.ro`, puts `.bss` last and `(NOLOAD)`, discards `.comment`, and
+gives the Limine request block its own `KEEP()`-ed `.requests` section.
+`xtask/src/elf.rs` reads the linked ELF after every build and requires: the
+entry point in the higher half; every allocated section inside a `PT_LOAD`;
+no segment both writable and executable; no `NOBITS` section costing file
+space; and `.text` and `.requests` present and loaded. External tooling was
+rejected on D-16's grounds — the build stays self-contained, and this is
+~200 lines of header reading.
+
+**Rationale.** W^X at the segment level was already true and already load-
+bearing (Limine maps each `PT_LOAD` by its flags), but nothing asserted it,
+and Phase 3 is about to build page tables that must reproduce it. An orphan
+section is the failure mode that survives a link, boots, and shows up as
+something else entirely months later.
+
+**Consequences.** The check found a real gap on its first run: the request
+block had no section of its own — it was folded into `.data` — so nothing
+could confirm the block `wost::entry!` emits had linked at all. Giving it a
+name also let it be `KEEP()`-ed, which is what D-21's note about `#[used]`
+statics being dropped by a linker actually asks for. Broken once by placing a
+loadable section after `.bss`; the build went red naming `.bss` and the 29048
+bytes. Thirteen host tests cover the policy and the reader, including a
+truncated-file sweep, because a verifier that panics on a malformed input is
+a verifier that stops the build for the wrong reason.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap
@@ -1151,3 +1291,9 @@ this socket when the exit device fires — need only to be skipped.
 - `007-memory.md` — Phase 3 charter: the debts D-12, D-32, D-33 and D-37
   deferred here, the slice proposal, and the decisions still open (each
   becomes an ADR as it is taken)
+
+The 2026-08-22 adversarial audit closed the gaps recorded in D-39, D-40, and
+the amendments to D-22 and D-25. Its two standing lessons, worth reading
+before the next phase: a gate is only as wide as its configuration matrix,
+and an abstraction that promises a bound must be given something that can
+check it.
