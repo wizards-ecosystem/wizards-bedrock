@@ -4,14 +4,15 @@
 //! pointer, so it is `wost`'s (D-43). What is here is the part that needs no
 //! privilege: deciding whether the handoff is usable at all, and saying so.
 
-use wost::arch::current::paging::{self, AddressSpace, MapError};
+use wost::arch::current::cpu;
+use wost::arch::current::paging::{self, AddressSpace, DeviceMapping, MapError};
 use wost::boot::{self, DirectMap, HandoffError, ImageAddress, MemoryKind, MemoryMap};
 use wost::mm;
 use x86_paging::Flags;
 
 use crate::acpi::Interrupts;
 use crate::arch::current::ioapic::IoApic;
-use crate::{debug, info, warn};
+use crate::{debug, dev, info, warn};
 
 /// Bytes in a page frame.
 const FRAME_SIZE: u64 = 4096;
@@ -119,6 +120,19 @@ pub(crate) fn init_paging(
         }
     };
 
+    // The framebuffer, mapped again by us so it can be write-combining. The
+    // direct map already covers it write-back; this is a second mapping of the
+    // same pixels with a memory type that suits a device nobody reads (D-50).
+    let framebuffer = dev::framebuffer_extent(direct).and_then(|(physical, len)| {
+        match space.map_device_write_combining(physical, len) {
+            Ok(mapping) => Some(mapping),
+            Err(reason) => {
+                warn!("framebuffer: not remapped: {reason}; staying write-back");
+                None
+            }
+        }
+    });
+
     // Claimed after the switch, mapped before it.
     let pending = interrupts.and_then(|interrupts| {
         match space.map_device(u64::from(interrupts.io_apic().address), IO_APIC_WINDOW) {
@@ -136,6 +150,13 @@ pub(crate) fn init_paging(
             warn!("paging: refused to switch: {reason}");
             return None;
         }
+    }
+
+    if cpu::enable_write_combining()
+        && let Some(region) = framebuffer.and_then(DeviceMapping::claim)
+    {
+        dev::remap_framebuffer(region);
+        info!("framebuffer: write-combining");
     }
 
     let (mapping, interrupts) = pending?;

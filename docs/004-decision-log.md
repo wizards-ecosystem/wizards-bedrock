@@ -1894,6 +1894,56 @@ deliberately rather than by accident.
 
 ---
 
+## D-50 The framebuffer is write-combining — Status: Accepted (2026-08-22)
+
+**Context.** `008-research-notes-2.md` §3.4 argued that write-combining and the
+console back buffer are one decision, with numbers: Linux's own MTRR
+documentation puts WC at "2.5 times or more" for image writes, and field
+reports on framebuffer redraw run far higher. D-48 accepted the coupling and
+corrected the sequencing — the dependency runs back-buffer → WC, so the back
+buffer landed in slice 4 and this waited for the device-mapping machinery
+D-49 built.
+
+**Decision.** The page attribute table's second entry is changed from
+write-through, which this kernel never asks for, to write-combining; every
+other entry keeps its architectural default, so no existing mapping changes
+meaning. The framebuffer is then mapped a *second* time by
+`map_device_write_combining`, which selects that entry with `WRITE_THROUGH`
+alone, and the console is re-pointed at it.
+
+A second mapping rather than a change to the first: the direct map covers the
+framebuffer region write-back because D-45 requires the direct map to cover
+everything that is memory, and re-typing part of it would put a hole in a
+contract that is currently simple. Two mappings of one device, with different
+memory types, is what the device window exists for.
+
+**Rationale.** WC coalesces writes in a fill buffer instead of putting each on
+the bus, and makes reads dramatically worse — which is exactly the trade a
+framebuffer wants and exactly why it could not be taken before slice 4. After
+the back buffer, the console reads the device precisely once, when the shadow
+is seeded.
+
+Re-pointing live is safe for the same reason: the shadow already holds every
+pixel, so nothing is read through either mapping to make the change. The
+console keeps drawing across it.
+
+**Consequences.** One on-machine check, and it has two halves for a reason. The
+PAT entry must actually be write-combining — a hypervisor may decline the MSR
+write, which is why `write_combining_is_enabled` reads it back rather than
+remembering what was written — *and* the mapping must select it. Either alone
+leaves writes crossing the bus one at a time while the log claims otherwise.
+
+`enable_write_combining` is a safe function on the same grounds as
+`enable_protections`: a memory type cannot produce undefined behaviour. The
+worst a wrong one does is make a mapping slower or uncached, and nothing
+selects this entry until something asks for it.
+
+Phase 3's slice 6 closes with this, and with it the phase: every debt
+`007-memory.md` collected is paid except D-46's KASLR, which is deferred to
+Phase 12 with its cost named.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap

@@ -177,6 +177,23 @@ fn a_second_switch_is_refused() -> bool {
     }
 }
 
+/// The framebuffer is mapped write-combining, by the kernel's own tables.
+///
+/// Both halves again: the page attribute table must actually hold the
+/// write-combining entry — a hypervisor may decline the write — and the
+/// mapping must select it. Either alone means writes still cross the bus one
+/// at a time (D-50).
+fn the_framebuffer_is_write_combining() -> bool {
+    cpu::write_combining_is_enabled()
+        && dev::framebuffer_address()
+            .and_then(paging::translate)
+            .is_some_and(|(_, flags)| {
+                flags.contains(Flags::WRITE_THROUGH)
+                    && !flags.contains(Flags::NO_CACHE)
+                    && !flags.is_write_execute()
+            })
+}
+
 /// The I/O APIC is routing the keyboard's line to the vector we asked for.
 ///
 /// Read back out of the controller rather than remembered: the redirection
@@ -476,6 +493,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         input::await_key(ps2_keys::Key::A),
     );
 
+    report.check(
+        "the framebuffer is mapped write-combining",
+        the_framebuffer_is_write_combining(),
+    );
     report.check(
         "the io apic routes the keyboard line to our vector",
         the_keyboard_line_is_routed(),

@@ -73,6 +73,15 @@ impl MmioRegion {
         Self { base, len }
     }
 
+    /// The address the region begins at.
+    ///
+    /// For a caller that needs to describe the same memory another way — the
+    /// framebuffer, which is remapped with a different memory type once the
+    /// kernel owns its page tables.
+    pub const fn base_address(&self) -> *mut u8 {
+        self.base
+    }
+
     /// Write one 32-bit word at `offset`.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
         self.check(offset, WORD)?;

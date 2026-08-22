@@ -209,6 +209,16 @@ impl AddressSpace {
     /// As [`map`](Self::map), plus [`MapError::OutOfMemory`] if the device
     /// window is exhausted.
     pub fn map_device(&mut self, physical: Paddr, len: u64) -> Result<DeviceMapping, MapError> {
+        self.map_device_with(physical, len, Flags::NO_CACHE)
+    }
+
+    /// Map a device window with `memory_type` chosen by the caller.
+    fn map_device_with(
+        &mut self,
+        physical: Paddr,
+        len: u64,
+        memory_type: Flags,
+    ) -> Result<DeviceMapping, MapError> {
         let offset = physical % PAGE_SIZE;
         let base = physical - offset;
         let pages = (len + offset).div_ceil(PAGE_SIZE) * PAGE_SIZE;
@@ -224,9 +234,7 @@ impl AddressSpace {
             virtual_base,
             base,
             pages,
-            Flags::WRITABLE
-                .union(Flags::NO_EXECUTE)
-                .union(Flags::NO_CACHE),
+            Flags::WRITABLE.union(Flags::NO_EXECUTE).union(memory_type),
         )?;
         self.device_next = virtual_base + pages;
 
@@ -234,6 +242,26 @@ impl AddressSpace {
             address: virtual_base + offset,
             len,
         })
+    }
+
+    /// Map a device whose writes should coalesce rather than cross the bus one
+    /// at a time.
+    ///
+    /// Selects the page attribute table entry
+    /// [`super::cpu::enable_write_combining`]
+    /// sets, which is chosen by `WRITE_THROUGH` alone. A caller that has not
+    /// enabled it gets write-through, which is correct but slow — never
+    /// wrong.
+    ///
+    /// # Errors
+    ///
+    /// As [`map_device`](Self::map_device).
+    pub fn map_device_write_combining(
+        &mut self,
+        physical: Paddr,
+        len: u64,
+    ) -> Result<DeviceMapping, MapError> {
+        self.map_device_with(physical, len, Flags::WRITE_THROUGH)
     }
 
     /// Install one entry at `target`, allocating the tables above it.

@@ -61,6 +61,15 @@ impl Framebuffer {
         }
     }
 
+    /// Where these pixels are in physical memory, given the direct map the
+    /// bootloader placed them in.
+    ///
+    /// The bootloader reports a virtual address; mapping the framebuffer again
+    /// with a different memory type needs the physical one behind it.
+    pub fn physical_address(&self, direct: DirectMap) -> Option<u64> {
+        (self.region.base_address() as u64).checked_sub(direct.offset())
+    }
+
     /// Geometry and pixel layout.
     pub const fn info(&self) -> FramebufferInfo {
         self.info
@@ -89,6 +98,27 @@ impl Framebuffer {
         self.back
             .extend((0..words).map(|word| self.region.read_u32(word * WORD).unwrap_or(0)));
         true
+    }
+
+    /// Point the framebuffer at a different mapping of the same pixels.
+    ///
+    /// For replacing the bootloader's mapping with one of the kernel's own,
+    /// which is how the framebuffer becomes write-combining (D-50). The shadow
+    /// is untouched: it already holds every pixel, so nothing is read back
+    /// through either mapping to make the change.
+    ///
+    /// The caller owes that `region` covers the same pixels this framebuffer
+    /// already describes; nothing here can check that two mappings name the
+    /// same physical memory, which is why it takes an `MmioRegion` rather than
+    /// an address — only `wost` can make one.
+    pub fn remap(&mut self, region: MmioRegion) {
+        self.region = region;
+    }
+
+    /// Where the pixels are reachable now — which changes when the framebuffer
+    /// is remapped.
+    pub fn address(&self) -> u64 {
+        self.region.base_address() as u64
     }
 
     /// Whether writes are being shadowed.

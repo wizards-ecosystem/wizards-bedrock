@@ -52,6 +52,27 @@ impl Console {
         console
     }
 
+    /// Where the framebuffer is in physical memory, and how many bytes of it
+    /// the visible area spans.
+    pub(crate) fn framebuffer_extent(&self, direct: wost::boot::DirectMap) -> Option<(u64, u64)> {
+        let physical = self.framebuffer.physical_address(direct)?;
+        Some((
+            physical,
+            (self.geometry.pitch * self.geometry.height) as u64,
+        ))
+    }
+
+    /// Where the framebuffer is reachable now.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn framebuffer_address(&self) -> u64 {
+        self.framebuffer.address()
+    }
+
+    /// Point the framebuffer at a different mapping of the same pixels.
+    pub(crate) fn remap_framebuffer(&mut self, region: wost::mmio::MmioRegion) {
+        self.framebuffer.remap(region);
+    }
+
     /// Give the framebuffer a shadow in RAM, so scrolling stops reading it.
     ///
     /// Called once the heap exists — the console is built long before it.

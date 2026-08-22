@@ -59,7 +59,7 @@ switch has survived.
 | 3 | Protection completion: W^X verified by read-back, zero-on-allocate; KASLR decision executed or deferred on the record | ✅ 2026-08-22 |
 | 4 | Kernel heap (`alloc` enabled); console back-buffer retires the scroll read-back | ✅ 2026-08-22 |
 | 5 | Device mappings: I/O APIC up, IRQ 1 routed, polled keyboard drain retires (D-37) | ✅ 2026-08-22 |
-| 6 | Framebuffer write-combining, on slice 4's back buffer (D-48) | |
+| 6 | Framebuffer write-combining, on slice 4's back buffer (D-48) | ✅ 2026-08-22 |
 
 Memory *objects* — the kernel-object substrate Phase 5's handles will name —
 are scoped at phase start: either a sixth slice here or the opening of
@@ -341,10 +341,38 @@ never failed is not evidence; it is an untested claim.** Two of the three were
 caught by D-28's break-it-once rule. The third was caught by asking what a
 passing check would still permit.
 
-## What is left
+## Slice 6 — write-combining (2026-08-22)
 
-Slice 6 is write-combining, which D-48 moved here because it needs a
-framebuffer mapping of the kernel's own with PAT bits — device-mapping work,
-now that `map_device` exists — and because it was always gated on slice 4's
-back buffer, which now exists too. The phase's other outstanding item is D-46's
-KASLR deferral, which is Phase 12's.
+The page attribute table's second entry becomes write-combining — it held
+write-through, which this kernel never asks for — and the framebuffer is mapped
+a *second* time to select it (D-50). A second mapping rather than a change to
+the first, because the direct map covers the framebuffer write-back and D-45
+requires it to cover everything that is memory; putting a hole in that contract
+to save a page table would be a bad trade. Two mappings of one device with
+different memory types is what the device window exists for.
+
+Re-pointing the console live is safe for the reason that made the ordering work
+in the first place: the shadow already holds every pixel, so nothing is read
+through either mapping to make the change.
+
+The check has two halves and needs both. The PAT entry must actually be
+write-combining — a hypervisor may decline the MSR write, so it is read back
+rather than remembered — and the mapping must select it. Either alone leaves
+writes crossing the bus one at a time while the log says otherwise.
+
+## The phase, closed
+
+Every debt this file collected is paid except one. W^X, guard pages,
+zero-on-allocate, the direct map, device holes, the polled keyboard, the scroll
+read-back, the page-table crate, and the untyped-retype question all have
+answers on the record. **KASLR does not** — D-46 defers it to Phase 12 with its
+cost named, and it is now the only part of D-12's security baseline still owed.
+
+The phase's most transferable lesson is not about memory. Three separate checks
+hid defects in their own shape: D-43's zeroing check short-circuited on an
+identity comparison, D-47's reuse check depended on the compiler keeping two
+allocator calls in source order, and D-49's keystroke check measured the polled
+path while the interrupt path delivered nothing. All three looked reasonable.
+Two were caught by D-28's break-it-once rule; the third by asking what a
+passing check would still permit. **A check that has never failed is not
+evidence; it is an untested claim.**

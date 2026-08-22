@@ -252,6 +252,60 @@ fn read_cr4() -> u64 {
     value
 }
 
+/// Give page tables a write-combining memory type to select.
+///
+/// The page attribute table holds eight memory types, and a mapping picks one
+/// with three of its bits. Only the second is changed here, from write-through
+/// — which this kernel never asks for — to write-combining, so a caller that
+/// sets `WRITE_THROUGH` and nothing else gets writes that coalesce in a fill
+/// buffer instead of crossing the bus one at a time. Every other entry keeps
+/// its architectural default, so no existing mapping changes meaning.
+///
+/// Reports whether the processor has a PAT at all. Safe for the same reason
+/// [`enable_protections`] is: the worst an unexpected value can do here is
+/// make a mapping slower or uncached, never unsound.
+pub fn enable_write_combining() -> bool {
+    /// The page attribute table.
+    const PAT: u32 = 0x277;
+
+    /// Architectural default: WB, WT, UC-, UC, then the same four again.
+    const DEFAULT: u64 = 0x0007_0406_0007_0406;
+
+    /// The same, with entry 1 changed from write-through to write-combining.
+    const WITH_WRITE_COMBINING: u64 = 0x0007_0406_0007_0106;
+
+    /// `cpuid` leaf 1, `EDX` bit 16.
+    const SUPPORTED: u32 = 1 << 16;
+
+    if cpuid(1, 0).edx & SUPPORTED == 0 {
+        return false;
+    }
+
+    // SAFETY: the only register named is the PAT, and the value differs from
+    // the architectural default in one entry, which is set to an encoding the
+    // manual defines. Memory types cannot produce undefined behaviour: a wrong
+    // one is a correctness or performance problem for the mappings that select
+    // it, and nothing selects this entry until something asks for it.
+    unsafe { msr::write(PAT, WITH_WRITE_COMBINING) };
+    let _ = DEFAULT;
+    true
+}
+
+/// Whether the page attribute table's second entry is write-combining.
+///
+/// Read back rather than remembered: a hypervisor may decline the write, and
+/// the whole point of the entry is that a mapping selecting it behaves
+/// differently.
+pub fn write_combining_is_enabled() -> bool {
+    /// The page attribute table.
+    const PAT: u32 = 0x277;
+
+    /// Encoding of write-combining in a PAT entry.
+    const WRITE_COMBINING: u64 = 0x01;
+
+    (msr::read(PAT) >> 8) & 0xFF == WRITE_COMBINING
+}
+
 /// The physical address of the page table the CPU is walking.
 ///
 /// The low twelve bits of `CR3` hold cache-control flags, not address, so they

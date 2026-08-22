@@ -117,3 +117,34 @@ pub(crate) fn keep_io_apic(io_apic: IoApic) {
 pub(crate) fn with_io_apic<T>(f: impl FnOnce(&mut IoApic) -> T) -> Option<T> {
     IO_APIC.lock().as_mut().map(f)
 }
+
+/// Point the console's framebuffer at a better mapping of the same pixels.
+///
+/// The bootloader's mapping is write-back; the kernel's own is
+/// write-combining, which is what makes a screenful of writes cost a handful
+/// of bus transactions instead of one each (D-50). Safe to do live because the
+/// back buffer already holds every pixel — nothing is read through either
+/// mapping to make the change.
+pub(crate) fn remap_framebuffer(region: wost::mmio::MmioRegion) {
+    let mut guard = CONSOLE.lock();
+    if let Some(console) = guard.as_mut() {
+        console.remap_framebuffer(region);
+    }
+}
+
+/// Where the console's framebuffer is in physical memory, and how big.
+///
+/// So the kernel can map the same pixels again with a memory type that suits
+/// them. `None` if there is no console.
+pub(crate) fn framebuffer_extent(direct: wost::boot::DirectMap) -> Option<(u64, u64)> {
+    CONSOLE.lock().as_ref()?.framebuffer_extent(direct)
+}
+
+/// Where the console's framebuffer is reachable now.
+#[cfg(feature = "selftest")]
+pub(crate) fn framebuffer_address() -> Option<u64> {
+    CONSOLE
+        .lock()
+        .as_ref()
+        .map(|console| console.framebuffer_address())
+}
