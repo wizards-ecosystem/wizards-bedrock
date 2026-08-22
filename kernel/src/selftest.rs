@@ -12,6 +12,8 @@
 //! asserts is not repeated here — a rejected base revision panics long before
 //! this, which the harness sees as a missing verdict.
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::hint::spin_loop;
 
 use wost::arch::current::cpu::{self, Protections};
@@ -175,6 +177,61 @@ fn a_second_switch_is_refused() -> bool {
     }
 }
 
+/// A freed slot is reused rather than costing the heap another frame.
+///
+/// Counted, not compared by address. The obvious form of this check —
+/// allocate, note the address, free, allocate again, require the same address
+/// — is unsound, and failed here before passing for the wrong reason: nothing
+/// obliges the compiler to keep two allocator calls in source order when the
+/// values between them are dead, so the second `Box` could be built before the
+/// first was released. Adding a `debug!` between them made it pass, which is
+/// the signature of a check measuring the optimiser rather than the kernel.
+///
+/// What the heap actually promises is that a released slot costs nothing to
+/// hand out again. `live` moving and returning says the round trip happened;
+/// `slab_frames` standing still says it was served from the free list. Neither
+/// depends on where the slot is.
+fn the_heap_reuses_a_freed_slot() -> bool {
+    // Warm the class, so what is measured below is a reuse and not the refill
+    // that any first allocation of a class must pay for.
+    drop(core::hint::black_box(Box::new(0u32)));
+
+    let before = mm::heap::stats();
+    let boxed = core::hint::black_box(Box::new(0x5A5A_5A5Au32));
+    let taken = mm::heap::stats().live == before.live + 1;
+    drop(boxed);
+    let after = mm::heap::stats();
+
+    taken && after.live == before.live && after.slab_frames == before.slab_frames
+}
+
+/// A heap allocation is writable, and holds what was written.
+fn heap_memory_holds_what_it_is_given() -> bool {
+    let mut values: Vec<u32> = (0..1024).collect();
+    values
+        .iter_mut()
+        .for_each(|value| *value = value.wrapping_mul(3));
+
+    values.len() == 1024
+        && values
+            .iter()
+            .enumerate()
+            .all(|(i, v)| *v == (i as u32).wrapping_mul(3))
+}
+
+/// An allocation too large for any slot takes whole frames, and returns them.
+fn a_large_allocation_takes_and_returns_frames() -> bool {
+    const FRAMES: usize = 4;
+
+    let before = mm::free_frames();
+    let large: Vec<u8> = alloc::vec![0x42; FRAMES * 4096];
+    let taken = mm::free_frames() <= before - FRAMES;
+    let held = large.iter().all(|byte| *byte == 0x42);
+    drop(large);
+
+    taken && held && mm::free_frames() == before
+}
+
 /// Tally of what has been checked so far.
 struct Report {
     passed: usize,
@@ -261,6 +318,19 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a second address space is refused",
         a_second_switch_is_refused(),
+    );
+
+    report.check(
+        "the heap reuses a freed slot",
+        the_heap_reuses_a_freed_slot(),
+    );
+    report.check(
+        "heap memory holds what it is given",
+        heap_memory_holds_what_it_is_given(),
+    );
+    report.check(
+        "a large allocation takes and returns frames",
+        a_large_allocation_takes_and_returns_frames(),
     );
 
     report.check(

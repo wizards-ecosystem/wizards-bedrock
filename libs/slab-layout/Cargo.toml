@@ -1,0 +1,11 @@
+[package]
+name = "slab-layout"
+description = "How a heap request maps onto a size class, and how a frame is carved into slots of it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

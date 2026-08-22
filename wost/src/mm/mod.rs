@@ -18,6 +18,8 @@
 //! which is Phase 5 — writing it now would be a safety contract with nothing
 //! to check it against (`005-code-conventions.md`).
 
+pub mod heap;
+
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -298,6 +300,23 @@ impl Segment {
     /// Fill the run with zeros.
     pub fn zero(&mut self) -> bool {
         self.fill(0)
+    }
+}
+
+impl Segment {
+    /// Rebuild the handle for a run this crate allocated.
+    ///
+    /// # Safety
+    ///
+    /// `count` frames from `address` must be a run that
+    /// [`allocate_contiguous`] returned and whose handle was forgotten, and
+    /// no other `Segment` may name any of them. Dropping the result frees
+    /// them, so a second handle over the same run is a double free.
+    pub(crate) const unsafe fn from_raw(address: Paddr, count: usize) -> Self {
+        Self {
+            first: (address / FRAME_SIZE) as usize,
+            count,
+        }
     }
 }
 

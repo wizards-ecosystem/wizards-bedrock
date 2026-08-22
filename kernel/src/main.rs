@@ -9,6 +9,11 @@
 #![no_main]
 #![deny(unsafe_code)]
 
+/// The heap `wost::mm::heap` provides. Nothing in the kernel may allocate
+/// before `mem::init` has run, which is why the boot order in `kernel_main`
+/// puts it before everything that might.
+extern crate alloc;
+
 mod arch;
 mod banner;
 mod console;

@@ -84,6 +84,10 @@ name = "ps2-keys"
 version = "0.1.0"
 
 [[package]]
+name = "slab-layout"
+version = "0.1.0"
+
+[[package]]
 name = "wizard-kernel"
 version = "0.1.0"
 dependencies = [
@@ -104,6 +108,7 @@ dependencies = [
  "limine",
  "pixel",
  "port-space",
+ "slab-layout",
  "x86-apic",
  "x86-paging",
  "x86-tables",

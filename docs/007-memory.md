@@ -57,7 +57,7 @@ switch has survived.
 | 1 | Boot handoff grows the memory map + HHDM; physical frame allocator | ✅ 2026-08-22 |
 | 2 | Page-table encoding in `libs/`; `wost` builds its own tables (kernel, stacks with guard pages, framebuffer, direct map), W^X-correct; CR3 switch | ✅ 2026-08-22 |
 | 3 | Protection completion: W^X verified by read-back, zero-on-allocate; KASLR decision executed or deferred on the record | ✅ 2026-08-22 |
-| 4 | Kernel heap (`alloc` enabled); console back-buffer retires the scroll read-back | |
+| 4 | Kernel heap (`alloc` enabled); console back-buffer retires the scroll read-back | heap ✅ 2026-08-22; back-buffer open |
 | 5 | Device mappings: I/O APIC up, IRQ 1 routed, polled keyboard drain retires (D-37) | |
 
 Memory *objects* — the kernel-object substrate Phase 5's handles will name —
@@ -240,3 +240,46 @@ correct refusal for the wrong reason. Neither would have been found by reading.
 KASLR is deferred, on the record, with its cost named (D-46): it is now the
 only part of D-12's security baseline still owed, and every phase that adds a
 mapping makes the relocation work more expensive.
+
+## Slice 4 — the heap (2026-08-22)
+
+The charter framed this as hand-rolled versus a vetted crate. D-45 answered it
+first, and from an unexpected direction: `activate` consumes the address space
+so nothing can map into a live table, which is what makes `AddressSpace::map`
+safe — and a heap that grew by mapping pages would have to undo that.
+
+So the heap lives in the direct map (D-47). It takes frames and addresses them
+through a mapping that already exists, writable and never executable; a
+physically contiguous run is contiguous there too, so a large allocation is one
+`Segment` and one address. No page-table entry is ever added for the heap, and
+it grows to whatever the machine has rather than to whatever a boot-time
+reservation guessed. Hand-rolled won, but on the boundary rather than on the
+no-dependency principle: none of the surveyed crates would have known to
+allocate this way, because none of them knows this kernel made mapping
+one-way.
+
+`libs/slab-layout` carries the class arithmetic — eleven host tests, including
+one that asserts the invariant the whole design rests on, over every slot of
+every class: alignment is met by *choosing a class*, never by padding.
+
+**The check that had to be rewritten.** "A freed slot is reused" was first
+written the obvious way — allocate, note the address, free, allocate again,
+require the same address. It failed. Adding a `debug!` between the two
+allocations made it pass. That is the signature of a check measuring the
+optimiser: nothing obliges the compiler to keep two allocator calls in source
+order when the values between them are dead. The replacement counts rather
+than compares — `live` moves and returns, `slab_frames` stands still — and
+depends on neither addresses nor codegen.
+
+That is twice this phase that the defect was in a check rather than in the code
+under test, and both times the check was found by D-28's break-it-once rule
+rather than by reading. The pattern in both: an assumption that looked like
+defensive programming (an early return, an identity comparison) quietly made
+the failure path unreachable.
+
+**Still open in this slice.** The console back-buffer, and with it the
+write-combining decision that `008-research-notes-2.md` §3.4 argues is the same
+decision — WC makes framebuffer writes fast and reads catastrophic, so the
+back-buffer is the precondition that makes WC adoptable rather than a
+complement to it. Neither is done; both are the first thing slice 4's remainder
+should take.

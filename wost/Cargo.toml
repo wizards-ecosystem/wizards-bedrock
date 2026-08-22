@@ -14,6 +14,7 @@ workspace = true
 frame-space.workspace = true
 limine.workspace = true
 pixel.workspace = true
+slab-layout.workspace = true
 port-space.workspace = true
 x86-apic.workspace = true
 x86-paging.workspace = true
