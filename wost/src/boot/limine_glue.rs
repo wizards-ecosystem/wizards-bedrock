@@ -158,5 +158,5 @@ fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer,
     // above confirmed the alignment `MmioRegion::new` requires.
     let region = unsafe { MmioRegion::new(fb.addr(), info.pitch * info.height) };
 
-    Ok(Framebuffer { region, info })
+    Ok(Framebuffer::new(region, info))
 }

@@ -57,8 +57,8 @@ switch has survived.
 | 1 | Boot handoff grows the memory map + HHDM; physical frame allocator | ✅ 2026-08-22 |
 | 2 | Page-table encoding in `libs/`; `wost` builds its own tables (kernel, stacks with guard pages, framebuffer, direct map), W^X-correct; CR3 switch | ✅ 2026-08-22 |
 | 3 | Protection completion: W^X verified by read-back, zero-on-allocate; KASLR decision executed or deferred on the record | ✅ 2026-08-22 |
-| 4 | Kernel heap (`alloc` enabled); console back-buffer retires the scroll read-back | heap ✅ 2026-08-22; back-buffer open |
-| 5 | Device mappings: I/O APIC up, IRQ 1 routed, polled keyboard drain retires (D-37) | |
+| 4 | Kernel heap (`alloc` enabled); console back-buffer retires the scroll read-back | ✅ 2026-08-22 |
+| 5 | Device mappings: I/O APIC up, IRQ 1 routed, polled keyboard drain retires (D-37); framebuffer write-combining (D-48) | |
 
 Memory *objects* — the kernel-object substrate Phase 5's handles will name —
 are scoped at phase start: either a sixth slice here or the opening of
@@ -283,3 +283,22 @@ decision — WC makes framebuffer writes fast and reads catastrophic, so the
 back-buffer is the precondition that makes WC adoptable rather than a
 complement to it. Neither is done; both are the first thing slice 4's remainder
 should take.
+
+### Slice 4, completed — the back buffer (2026-08-22)
+
+`Framebuffer` now keeps a shadow of itself in RAM: one word per pixel at the
+device's own stride, written alongside every device write and read *instead of*
+the device. `001-boot.md`'s oldest known limitation is retired. Attaching seeds
+the shadow from the screen, so the lines already printed survive, and that read
+is the last one the design permits.
+
+**Write-combining does not land with it, and the reason is a boundary the
+research pass did not have.** `008-research-notes-2.md` §3.4 argued the two are
+one decision — correctly, because WC makes reads catastrophic and so depends on
+the back buffer. But WC needs the kernel to map the framebuffer *itself* with
+PAT bits, and D-45 deliberately keeps device holes out of the direct map so
+that devices are mapped on purpose. That mapping is slice 5's. The coupling was
+identified correctly and the sequencing loosely: the dependency runs
+back-buffer → WC, so the back buffer alone leaves nothing wrong, while WC alone
+would have made every scroll far worse. WC moves to slice 5 with its argument
+intact and its precondition now satisfied.

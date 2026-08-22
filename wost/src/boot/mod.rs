@@ -14,6 +14,9 @@ pub use pixel::{PixelFormat, Rgb};
 
 use crate::mmio::MmioRegion;
 
+/// Bytes in one framebuffer word — the only access width the region supports.
+const WORD: usize = size_of::<u32>();
+
 /// Geometry and pixel layout of a linear framebuffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FramebufferInfo {
@@ -31,16 +34,87 @@ pub struct FramebufferInfo {
 }
 
 /// A linear framebuffer the bootloader has already mapped for us.
+///
+/// Once [`attach_back_buffer`](Self::attach_back_buffer) has been called, every
+/// write goes to both the device and a shadow copy in RAM, and every *read*
+/// comes from the shadow. That is what retires the scroll read-back
+/// `001-boot.md` recorded as a limitation: framebuffer memory is uncached, so
+/// reading a screen's worth of it to move rows up costs far more than the same
+/// bytes in ordinary RAM — and it is the precondition for ever marking the
+/// mapping write-combining, where reads are worse still (D-48).
 #[derive(Debug)]
 pub struct Framebuffer {
     region: MmioRegion,
     info: FramebufferInfo,
+    /// One `u32` per pixel of the visible area, at the device's own stride, or
+    /// empty before a back buffer is attached.
+    back: alloc::vec::Vec<u32>,
 }
 
 impl Framebuffer {
+    /// Wrap a mapping the caller has vouched for, with no shadow yet.
+    pub(crate) const fn new(region: MmioRegion, info: FramebufferInfo) -> Self {
+        Self {
+            region,
+            info,
+            back: alloc::vec::Vec::new(),
+        }
+    }
+
     /// Geometry and pixel layout.
     pub const fn info(&self) -> FramebufferInfo {
         self.info
+    }
+
+    /// Give the framebuffer a shadow copy in RAM.
+    ///
+    /// Separate from construction because the framebuffer is built during the
+    /// boot handoff, long before there is a heap to build a shadow in. Called
+    /// once the heap exists; idempotent, and `false` if the allocation failed,
+    /// in which case the framebuffer keeps working exactly as it did before.
+    ///
+    /// The shadow starts as a copy of what is on screen, so attaching it
+    /// mid-boot does not lose the lines already printed.
+    pub fn attach_back_buffer(&mut self) -> bool {
+        if !self.back.is_empty() {
+            return true;
+        }
+
+        let words = self.words();
+        if self.back.try_reserve_exact(words).is_err() {
+            return false;
+        }
+        // The one read of device memory this design permits, paid once so that
+        // no scroll ever pays it again.
+        self.back
+            .extend((0..words).map(|word| self.region.read_u32(word * WORD).unwrap_or(0)));
+        true
+    }
+
+    /// Whether writes are being shadowed.
+    pub fn has_back_buffer(&self) -> bool {
+        !self.back.is_empty()
+    }
+
+    /// Words in the shadow: the device's stride times its visible height.
+    fn words(&self) -> usize {
+        self.info.pitch / WORD * self.info.height
+    }
+
+    /// Record a word in the shadow, if there is one.
+    fn shadow(&mut self, offset: usize, value: u32) {
+        if let Some(word) = self.back.get_mut(offset / WORD) {
+            *word = value;
+        }
+    }
+
+    /// The word at `offset`, from the shadow if there is one and from the
+    /// device otherwise.
+    fn word_at(&self, offset: usize) -> Option<u32> {
+        match self.back.get(offset / WORD) {
+            Some(word) => Some(*word),
+            None => self.region.read_u32(offset).ok(),
+        }
     }
 
     /// Set the pixel at (`x`, `y`), ignoring coordinates outside the visible
@@ -54,7 +128,9 @@ impl Framebuffer {
             return;
         }
         let offset = pixel::offset(x, y, self.info.pitch, self.info.bytes_per_pixel);
-        let _ = self.region.write_u32(offset, self.info.format.pack(colour));
+        let word = self.info.format.pack(colour);
+        let _ = self.region.write_u32(offset, word);
+        self.shadow(offset, word);
     }
 
     /// Paint every visible pixel one colour.
@@ -66,9 +142,11 @@ impl Framebuffer {
     pub fn fill_rows(&mut self, y: usize, rows: usize, colour: Rgb) {
         let word = self.info.format.pack(colour);
         for row in y..(y + rows).min(self.info.height) {
-            let _ = self
-                .region
-                .fill_u32(row * self.info.pitch, self.info.width, word);
+            let start = row * self.info.pitch;
+            let _ = self.region.fill_u32(start, self.info.width, word);
+            for column in 0..self.info.width {
+                self.shadow(start + column * WORD, word);
+            }
         }
     }
 
@@ -95,8 +173,11 @@ impl Framebuffer {
             for column in 0..width {
                 let from = pixel::offset(column, from_y + row, pitch, bytes_per_pixel);
                 let to = pixel::offset(column, to_y + row, pitch, bytes_per_pixel);
-                if let Ok(word) = self.region.read_u32(from) {
+                // From the shadow where there is one. Reading device memory to
+                // scroll is what this exists to stop.
+                if let Some(word) = self.word_at(from) {
                     let _ = self.region.write_u32(to, word);
+                    self.shadow(to, word);
                 }
             }
         }

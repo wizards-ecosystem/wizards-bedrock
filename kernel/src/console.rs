@@ -52,6 +52,21 @@ impl Console {
         console
     }
 
+    /// Give the framebuffer a shadow in RAM, so scrolling stops reading it.
+    ///
+    /// Called once the heap exists — the console is built long before it.
+    pub(crate) fn attach_back_buffer(&mut self) -> bool {
+        self.framebuffer.attach_back_buffer()
+    }
+
+    /// Whether scrolling reads RAM rather than the device.
+    ///
+    /// Read only by the boot-time check, so it exists only where that does.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn has_back_buffer(&self) -> bool {
+        self.framebuffer.has_back_buffer()
+    }
+
     /// Geometry of the framebuffer being drawn on.
     #[cfg(feature = "selftest")]
     pub(crate) const fn geometry(&self) -> FramebufferInfo {

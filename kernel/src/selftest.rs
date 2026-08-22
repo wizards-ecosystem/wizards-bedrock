@@ -332,6 +332,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "a large allocation takes and returns frames",
         a_large_allocation_takes_and_returns_frames(),
     );
+    report.check(
+        "the console scrolls without reading the device",
+        dev::console_has_back_buffer(),
+    );
 
     report.check(
         "the code selector is the one we installed",

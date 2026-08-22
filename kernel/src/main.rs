@@ -68,6 +68,11 @@ fn kernel_main(boot: BootInfo) -> ! {
     mem::init(boot.memory_map, boot.direct_map);
     mem::init_paging(boot.memory_map, boot.direct_map, boot.image);
 
+    // The heap exists from here, and the console is its first consumer: a
+    // shadow in RAM is what stops every scroll reading uncached device memory
+    // back (D-48).
+    dev::attach_back_buffer();
+
     start_interrupts();
     input::init();
 
