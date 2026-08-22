@@ -1277,6 +1277,274 @@ a verifier that stops the build for the wrong reason.
 
 ---
 
+## D-41 Three authorities for `unsafe`, and doctests where they can run — Status: Accepted (2026-08-22)
+
+**Context.** `005-code-conventions.md` admitted code to `wost` on a judgement:
+"an operation that cannot be expressed safely". That phrasing has held, but it
+is not a test a reviewer can apply to a borderline case, and Phase 3 is about
+to add more `unsafe` to `wost` than any phase since the split — frame
+ownership, page-table mutation, a heap.
+
+The second research pass (`008-research-notes-2.md` §2) surfaced two things
+`005` did not have. Microsoft's Pragmatic Rust Guidelines publish a **closed
+list** of valid reasons to write `unsafe`, which turns the judgement into a
+checklist. And the Rustonomicon states the standard a wrapper is actually held
+to — *safe code must not be able to cause UB through this abstraction, however
+it is called* — which is what `005`'s "checkable, not merely wrapped" was
+reaching for.
+
+The same pass found `005` overshooting in the other direction. It rejects
+C-EXAMPLE outright, reasoning that "these crates are `no_std` and
+cross-compiled, so doctests cannot run". True of `wost` and `kernel`. False of
+`libs/`, which carry `#![cfg_attr(not(test), no_std)]` **precisely so** they
+build for the host under `cargo test` — where doctests compile and run, inside
+the bare `cargo test` that `default-members` already scopes and `cargo xtask
+ci` already gates.
+
+**Options.** (a) Leave the admission test as a judgement; (b) adopt the
+taxonomy as guidance in prose; (c) adopt it as the admission test, name the
+Nomicon as the standard, and split C-EXAMPLE by where doctests execute.
+
+**Decision.** (c). Three reasons admit `unsafe` to `wost` — a novel
+abstraction, a measured performance need, or FFI/the platform — and nothing
+else. Every export is held to the sound-wrapper principle. The Unsafe Code
+Guidelines Reference is explicitly *not* an authority, because it describes
+itself as advisory and partly historical, and citing it as a rule has misled
+people before.
+
+C-EXAMPLE is adopted in `libs/` only. `wost` and `kernel` keep the exemption
+on the same grounds as before, now stated as the fact it is rather than a
+blanket preference.
+
+**Rationale.** The taxonomy's value is that reason 2 is falsifiable: it needs
+a number, and nothing in this kernel has ever produced one, which is itself
+worth knowing. The C-EXAMPLE split costs nothing — the harness that runs those
+doctests has existed since D-26 — and it lands exactly where it is most useful,
+on the encoding crates D-30 keeps producing, where an example is the clearest
+statement of a bit layout available.
+
+**Consequences.** No code change; `005` gains the taxonomy, the Nomicon
+standard, and the split, plus the three rustdoc conventions that go with it
+(first line under fifteen words, conventional section order, `#[doc(hidden)]`
+for technically-public items). `libs/x86-paging` is the first crate written
+under the new rule and carries doctests on its entry encoders. The lint that
+would enforce example presence does not exist, so this one is enforced by
+review — which is why it is written down.
+
+---
+
+## D-42 Limine base revision 4 — Status: Accepted (2026-08-22)
+
+**Context.** The kernel asked for base revision 3, and it asked by accident:
+`wost::entry!` emits `BaseRevision::new()`, and in the pinned `limine` 0.5.0
+that constructor is `with_revision(3)`. No decision was ever taken.
+
+That default has been shaping the design. `BootInfo`'s doc comment records the
+direct map's absence as a consequence of it — "under base revision 3 it covers
+only the regions the memory map lists — not the device holes" — and D-33
+deleted the field for that reason. `007-memory.md` inherits the same sentence
+as "device holes unmappable — the wall itself".
+
+The protocol has since reached base revision 6, with 0–5 marked deprecated.
+Reading the revision history rather than the deprecation notice is what
+matters here:
+
+| Revision | Change relevant to this kernel |
+|---|---|
+| 3 | HHDM covers Usable, Bootloader-reclaimable, Executable-and-modules, Framebuffer |
+| **4** | HHDM **adds Reserved (Mapped), ACPI reclaimable, ACPI NVS**; adds the `RESERVED_MAPPED` memory-map type; **guarantees ACPI tables are mapped** |
+| 5 | SMBIOS mapped; stricter x86-64 control-register handoff; more I/O APIC entries masked; IOMMUs disabled; local APIC left in a defined state on every processor |
+| 6 | Drops identity mapping; register-state guarantees for aarch64, RISC-V, loongarch64 — nothing x86-64 |
+
+**The obvious blocker is not one.** `001-boot.md` lists "Limine crate 0.6.x
+when its nightly requirement lands on stable" as an open item, which reads like
+the revision is gated behind it. It is not: `limine` 0.6.5 still carries
+`#![feature(ptr_metadata)]` and fails to build on stable 1.97.1 — confirmed by
+building it — so the `=0.5.0` pin stands, but the base revision is a *protocol*
+parameter and 0.5.0 exposes `BaseRevision::with_revision(u64)` as a public
+`const fn`. The crate version and the protocol revision are independent
+choices, and only the first is blocked.
+
+**Options.** (a) Stay on 3 and keep the wall; (b) take 4; (c) take 5 for the
+cleaner handoff; (d) take 6.
+
+**Decision.** (b), base revision 4, requested explicitly through
+`with_revision` rather than inherited from `new()`.
+
+**Rationale.** 4 is the revision that buys something this phase needs twice
+over: it is what lets the HHDM reach a device hole at all, and it guarantees
+the ACPI tables are mapped, which is how slice 5 finds the I/O APIC through
+the MADT. 5 and 6 were declined for now on the no-speculative-change rule —
+5's guarantees are about state this kernel already establishes for itself
+(it masks the legacy controllers and programs the local APIC in
+`start_interrupts`), and 6 is entirely non-x86-64. Both remain available as a
+one-argument change, which is the point of taking the decision explicitly.
+
+**Consequences.** `entry!` asks for 4; `is_supported()` is already checked and
+asserted in `kernel_main`, so a bootloader that will not honour it stops the
+boot with a message rather than misbehaving quietly. The vendored Limine v10
+does honour it — verified by boot, which is the only way this could be
+verified.
+
+The memory map gains a type the pinned crate does not know
+(`RESERVED_MAPPED`), so `limine_glue` maps entry types through an exhaustive
+match with an explicit unknown arm and treats anything unrecognised as
+reserved. That is the `#[non_exhaustive]` discipline `005` mandates for our own
+error enums, applied to a foreign one — and it is what makes a future
+revision bump a compile-time question rather than a silent misclassification.
+
+Base revision 4 does **not** change the plan to map device MMIO through
+`MmioRegion` with an explicit memory type. It removes the wall; it does not
+remove the reason for the door, and D-43's direct-map contract still excludes
+device holes deliberately.
+
+---
+
+## D-43 The frame allocator: mechanism in `wost`, policy in `libs/` — Status: Accepted (2026-08-22)
+
+**Context.** `007-memory.md` holds two questions open together, and they turn
+out to be one question. What shape should the physical frame allocator take —
+bitmap, buddy, or staged? And where does the D-13 boundary fall, given that
+table *mutation* is `wost`'s but allocator *policy* is arithmetic?
+
+`008-research-notes-2.md` §3.1 found the answer already published. Asterinas
+calls it **Safe Policy Injection**: the privileged framework keeps the
+*mechanism* and the invariant — for frames, the conversion that makes "every
+frame handed out came from unused memory" true — while the *policy* that
+chooses which frame lives outside the trusted base in ordinary safe Rust.
+Asterinas has exactly three such injection points, and the frame allocator is
+one of them.
+
+This project already has the pattern under a different name. D-39 moved the
+I/O port bitmap to `libs/port-space` because it is arithmetic with no hardware
+behind it, leaving `wost::port` holding the lock and the instruction, and
+`005-code-conventions.md` records the rule that came out of it: *a bound stated
+in prose is not a bound; where the checkable form needs arithmetic, the
+arithmetic goes to a `libs/` crate.*
+
+**Options.** (a) Allocator wholly in `wost`, bitmap and all; (b) allocator
+wholly in `kernel`, with `wost` exposing raw physical writes; (c) split it —
+`wost` owns the frame handle and the physical access, a `libs/` crate owns the
+search.
+
+**Decision.** (c), on the `port-space` precedent exactly.
+
+`libs/frame-space` holds two bitmaps and knows nothing but frame indices:
+`managed` (usable RAM under our control) and `free` (which of those are not
+handed out). Its capacity is a const parameter, so the kernel names its ceiling
+and tests use spaces small enough to sit on a stack. `wost::mm` wraps one in a
+`SpinLock` and exports `Frame` and `Segment` — handles whose existence *is* the
+claim and whose `Drop` releases it.
+
+Shape: a bitmap with first-fit-from-a-rotating-hint, **order-aware from the
+start**. `008` §3.1 argued that point and this phase proves it: the direct map
+wants 2 MiB pages, so `allocate_contiguous(512, 512)` is needed inside Phase 3
+rather than in Phase 8. A buddy remains the upgrade, and it is a change to one
+`libs/` file because the API speaks in frames rather than in the structure that
+finds them.
+
+**Rationale.** Two bitmaps rather than one is the decision inside the decision.
+One bitmap cannot distinguish a double free from a frame that was never ours,
+and `free` is what a `Drop` impl calls — the single place a bug is silent.
+With both, releasing a foreign or already-free frame is a refusal the caller
+can see, which is what `005` means by *checkable, not merely wrapped*.
+
+Nothing computes the kernel image's extent to exclude it. Only
+`MemoryKind::Usable` is inserted, so the image, the bootloader's structures and
+the ACPI tables are excluded **by the memory map itself** — including the
+megabyte of bitmap, which is `.bss` inside the loaded image. A range this code
+computed would be a second source of truth for something the bootloader already
+knows.
+
+The reclaimable kinds are deliberately *not* allocatable. Bootloader structures
+are still being read when the allocator is built, and the ACPI tables have not
+been parsed. Reclaiming either is a later decision with a precondition
+attached, not a default.
+
+**Consequences.** 20 host tests, including a run that crosses the boundary
+between two bitmap words and a full drain-and-restore sweep that requires every
+frame to be conserved. Six on-machine checks, and one of them earned its place
+the hard way: the first version of "allocation returns a zeroed frame" passed
+with the zeroing removed, because it short-circuited on an address comparison
+and because the hint means a released frame is rarely the next one handed out.
+Breaking it once — which D-28 requires and which nearly did not happen —
+exposed a check that could not fail. It was replaced by
+`dirty memory can be zeroed, and seen to be`, which writes `0xAA`, requires the
+kernel to *see* it, zeroes, and requires the kernel to see that; breaking
+`Frame::fill` turns the harness red. The composition `allocate_zeroed =
+allocate + zero` rests on that check plus three lines of code, and the selftest
+says so rather than pretending otherwise.
+
+The ceiling is 16 GiB, costing two bits of `.bss` per frame — one megabyte,
+which the image does not carry because both bitmaps start zeroed. The release
+kernel is 510 KiB on disk with a megabyte of `.bss` behind it, and D-40's ELF
+verifier confirms `.bss` stayed `NOBITS`. Memory above the ceiling is reported
+as ignored at boot rather than silently lost.
+
+Deliberately absent: the untyped-memory split (`UFrame`/`USegment`) that
+`008` §3.2 and D-44 adopt as a discipline. It arrives with the first caller
+that can map a frame into a second address space, which is Phase 5. Writing it
+now would be a safety contract with nothing to check it against
+(`005-code-conventions.md`).
+
+---
+
+## D-44 Untyped memory is a type discipline, not an accounting mechanism — Status: Accepted (2026-08-22)
+
+**Context.** `002-architecture.md` has carried an open question since the first
+research pass: *is seL4-style untyped-retype — callers donating memory for
+kernel objects — worth adopting to kill kernel-memory DoS?* `007-memory.md`
+made answering it a Phase 3 obligation, because the answer shapes every
+kernel-object API after this one.
+
+`008-research-notes-2.md` §3.2 found that the question conflates two different
+ideas that share a word.
+
+**seL4's untyped/retype is an accounting mechanism, and it is expensive in
+three separate ways.** Each untyped capability carries a single watermark, moved
+first to the new object's alignment and then past its size — so creating a
+4 KiB object and then a 16 KiB one strands the 12 KiB between them until *both*
+children are revoked. The community critique goes further: fixing the
+allocation policy inside the kernel contradicts seL4's own principle of keeping
+policy out of the kernel, because the kernel will refuse a gap that would
+satisfy the alignment. And `003-research-notes.md` already recorded that
+revocation is long-running and needs abortable sub-operations.
+
+**Asterinas's untyped memory is a type discipline, and it carries.** Its
+premise: safe Rust references cannot uphold their guarantees for *externally
+modifiable* memory — user-mapped, DMA-capable, or MMIO — so such memory gets a
+separate type admitting only plain-old-data copies. The consequence is
+structural rather than procedural: the user address space accepts *only*
+untyped frames, so mapping kernel memory into userspace is not a check that
+could be forgotten but a signature that will not typecheck. The DMA
+abstractions take the same argument, so no memory is DMA-accessible until a
+driver asks for untyped memory specifically.
+
+**Decision.** Reject seL4-style untyped-retype as the kernel-memory accounting
+mechanism. Adopt Asterinas-style untyped memory as a type discipline, arriving
+with its first real caller in Phase 5. Answer kernel-memory DoS at the handle
+layer with per-process quota accounting.
+
+**Rationale.** The quota is a *policy* decision and stays revisable; making
+callers donate memory is an *ABI* decision and is permanent. Everything
+untyped-retype buys can be had from a counter attached to a job, and the
+fragmentation, the revocation machinery and the policy-in-kernel objection all
+go away with it.
+
+The discipline is the half that must be early, because it is the half that
+cannot be retrofitted — which is `002` pillar 5's whole argument and
+Asterinas's own stated lesson. It costs nothing today: `wost::mm` hands out
+`Frame` and `Segment`, and the untyped variants join them when something can
+map a frame into an address space that is not the kernel's.
+
+**Consequences.** `002-architecture.md`'s open question is closed, and the
+naming collision is recorded here so it is not re-litigated: "untyped" in this
+kernel means *externally modifiable, POD-copy only*, never *donated for kernel
+object creation*. Phase 5's handle-table doc inherits the quota obligation.
+`wost::mm`'s module documentation names the absent split and why it is absent.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap

@@ -140,20 +140,213 @@ impl fmt::Display for FramebufferError {
 
 impl core::error::Error for FramebufferError {}
 
-/// Everything the bootloader handed the kernel.
+/// What a region of the physical address space is for.
 ///
-/// Notably absent: the direct map of physical memory. Limine offers one, and
-/// Phase 3 will want it, but under base revision 3 it covers only the regions
-/// the memory map lists — not the device holes — so nothing in this phase could
-/// use it. It arrives with the code that can, rather than as a field nobody
-/// reads. See `docs/006-cpu-fundamentals.md`.
+/// Named after what the kernel may do with a region rather than after any one
+/// bootloader's constants. `Unknown` carries the raw value so an unrecognised
+/// type is reportable rather than silently folded into `Reserved` — the
+/// discipline `005-code-conventions.md` requires of our own `#[non_exhaustive]`
+/// enums, applied to a foreign one (D-42).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MemoryKind {
+    /// Free RAM, ours to hand out.
+    Usable,
+    /// The bootloader's own structures. Usable once nothing refers to them.
+    BootloaderReclaimable,
+    /// The kernel image and any modules loaded with it.
+    KernelAndModules,
+    /// A framebuffer.
+    Framebuffer,
+    /// ACPI tables. Usable once they have been parsed.
+    AcpiReclaimable,
+    /// ACPI non-volatile storage. Must survive.
+    AcpiNvs,
+    /// Reserved by firmware. Not ours.
+    Reserved,
+    /// Known-bad memory.
+    BadMemory,
+    /// A type this kernel does not recognise, with the value the bootloader
+    /// gave. Treated as [`Reserved`](Self::Reserved) everywhere it matters.
+    Unknown(u64),
+}
+
+impl MemoryKind {
+    /// Whether the frame allocator may hand this region out.
+    ///
+    /// Only [`Usable`](Self::Usable). The reclaimable kinds are deliberately
+    /// excluded: bootloader structures are still being read when the allocator
+    /// is built, and ACPI tables have not been parsed yet. Reclaiming either is
+    /// a later decision with a precondition attached, not a default.
+    pub const fn is_allocatable(self) -> bool {
+        matches!(self, Self::Usable)
+    }
+}
+
+impl fmt::Display for MemoryKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Usable => f.write_str("usable"),
+            Self::BootloaderReclaimable => f.write_str("bootloader reclaimable"),
+            Self::KernelAndModules => f.write_str("kernel and modules"),
+            Self::Framebuffer => f.write_str("framebuffer"),
+            Self::AcpiReclaimable => f.write_str("acpi reclaimable"),
+            Self::AcpiNvs => f.write_str("acpi nvs"),
+            Self::Reserved => f.write_str("reserved"),
+            Self::BadMemory => f.write_str("bad memory"),
+            Self::Unknown(value) => write!(f, "unknown type {value}"),
+        }
+    }
+}
+
+/// One entry of the physical memory map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryRegion {
+    /// First physical byte.
+    pub base: u64,
+    /// Length in bytes.
+    pub len: u64,
+    /// What the region is for.
+    pub kind: MemoryKind,
+}
+
+/// Regions [`MemoryMap`] can hold.
+///
+/// Firmware maps run to a few dozen entries; the largest seen from OVMF is
+/// under thirty. Overflow is counted and reported rather than truncated
+/// silently, so a machine that exceeds this says so in the boot log.
+const MAX_REGIONS: usize = 128;
+
+/// The physical memory map, copied out of the bootloader's structures.
+///
+/// Copied rather than borrowed on purpose: the map itself lives in
+/// bootloader-reclaimable memory, and a kernel that intends to reclaim that
+/// memory cannot also be holding a reference into it.
+#[derive(Clone, Copy)]
+pub struct MemoryMap {
+    regions: [MemoryRegion; MAX_REGIONS],
+    len: usize,
+    dropped: usize,
+}
+
+impl MemoryMap {
+    /// An empty map.
+    pub(crate) const fn new() -> Self {
+        Self {
+            regions: [MemoryRegion {
+                base: 0,
+                len: 0,
+                kind: MemoryKind::Reserved,
+            }; MAX_REGIONS],
+            len: 0,
+            dropped: 0,
+        }
+    }
+
+    /// Append a region, counting it as dropped if there is no room.
+    pub(crate) const fn push(&mut self, region: MemoryRegion) {
+        if self.len == MAX_REGIONS {
+            self.dropped += 1;
+            return;
+        }
+        self.regions[self.len] = region;
+        self.len += 1;
+    }
+
+    /// Every region the bootloader reported, in the order it reported them.
+    pub fn regions(&self) -> impl Iterator<Item = MemoryRegion> + '_ {
+        self.regions[..self.len].iter().copied()
+    }
+
+    /// Regions the bootloader reported that did not fit.
+    ///
+    /// Non-zero means the kernel is running on less memory than the machine
+    /// has, which is a bug in this module's region limit rather than in the
+    /// machine.
+    pub const fn dropped(&self) -> usize {
+        self.dropped
+    }
+
+    /// Total bytes across regions the frame allocator may hand out.
+    pub fn allocatable_bytes(&self) -> u64 {
+        self.regions()
+            .filter(|region| region.kind.is_allocatable())
+            .map(|region| region.len)
+            .sum()
+    }
+}
+
+/// Counts and totals. Printing 128 regions from a panic handler helps nobody.
+impl fmt::Debug for MemoryMap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MemoryMap")
+            .field("regions", &self.len)
+            .field("dropped", &self.dropped)
+            .field("allocatable", &self.allocatable_bytes())
+            .finish()
+    }
+}
+
+/// The bootloader's direct map of physical memory into the higher half.
+///
+/// Every physical address the memory map lists is readable at
+/// `physical + offset` before the kernel has page tables of its own — which is
+/// what makes the first page table walkable and the first frame writable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectMap {
+    offset: u64,
+}
+
+impl DirectMap {
+    /// Wrap the offset the bootloader reported.
+    pub(crate) const fn new(offset: u64) -> Self {
+        Self { offset }
+    }
+
+    /// The offset itself.
+    pub const fn offset(self) -> u64 {
+        self.offset
+    }
+
+    /// Where `physical` is readable, or `None` if the sum does not fit.
+    pub const fn virtual_address(self, physical: u64) -> Option<u64> {
+        self.offset.checked_add(physical)
+    }
+}
+
+/// Everything the bootloader handed the kernel.
 #[derive(Debug)]
 pub struct BootInfo {
     /// Whether the bootloader honoured the base revision the kernel asked for.
     pub base_revision_supported: bool,
     /// The framebuffer, or why there is no usable one.
     pub framebuffer: Result<Framebuffer, FramebufferError>,
+    /// The physical memory map, or why there is none.
+    pub memory_map: Result<MemoryMap, HandoffError>,
+    /// The direct map of physical memory, or why there is none.
+    pub direct_map: Result<DirectMap, HandoffError>,
 }
+
+/// Why part of the boot handoff is missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HandoffError {
+    /// The bootloader ignored the request.
+    NoResponse,
+    /// The bootloader answered, but with nothing in it.
+    Empty,
+}
+
+impl fmt::Display for HandoffError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoResponse => f.write_str("bootloader ignored the request"),
+            Self::Empty => f.write_str("bootloader answered with nothing"),
+        }
+    }
+}
+
+impl core::error::Error for HandoffError {}
 
 /// Items [`entry!`](crate::entry) names in the calling crate.
 ///
@@ -162,7 +355,11 @@ pub struct BootInfo {
 #[doc(hidden)]
 pub mod __macro {
     pub use limine::BaseRevision;
-    pub use limine::request::{FramebufferRequest, RequestsEndMarker, RequestsStartMarker};
+    pub use limine::request::{
+        FramebufferRequest, HhdmRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker,
+    };
+
+    pub use super::limine_glue::base_revision;
 }
 
 /// Define the kernel entry point.
@@ -193,13 +390,25 @@ macro_rules! entry {
         #[allow(unsafe_code)]
         #[unsafe(link_section = ".requests")]
         static __WOST_BASE_REVISION: $crate::boot::__macro::BaseRevision =
-            $crate::boot::__macro::BaseRevision::new();
+            $crate::boot::__macro::base_revision();
 
         #[used]
         #[allow(unsafe_code)]
         #[unsafe(link_section = ".requests")]
         static __WOST_FRAMEBUFFER: $crate::boot::__macro::FramebufferRequest =
             $crate::boot::__macro::FramebufferRequest::new();
+
+        #[used]
+        #[allow(unsafe_code)]
+        #[unsafe(link_section = ".requests")]
+        static __WOST_MEMORY_MAP: $crate::boot::__macro::MemoryMapRequest =
+            $crate::boot::__macro::MemoryMapRequest::new();
+
+        #[used]
+        #[allow(unsafe_code)]
+        #[unsafe(link_section = ".requests")]
+        static __WOST_DIRECT_MAP: $crate::boot::__macro::HhdmRequest =
+            $crate::boot::__macro::HhdmRequest::new();
 
         #[used]
         #[allow(unsafe_code)]
@@ -213,6 +422,8 @@ macro_rules! entry {
             $crate::boot::enter(
                 &__WOST_BASE_REVISION,
                 &__WOST_FRAMEBUFFER,
+                &__WOST_MEMORY_MAP,
+                &__WOST_DIRECT_MAP,
                 __WOST_ENTRY_SIGNATURE,
             )
         }

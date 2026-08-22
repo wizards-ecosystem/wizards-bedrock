@@ -11,6 +11,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+frame-space.workspace = true
 limine.workspace = true
 pixel.workspace = true
 port-space.workspace = true

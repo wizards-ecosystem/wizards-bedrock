@@ -54,7 +54,7 @@ switch has survived.
 
 | Slice | Contents | Status |
 |---|---|---|
-| 1 | Boot handoff grows the memory map + HHDM; physical frame allocator | |
+| 1 | Boot handoff grows the memory map + HHDM; physical frame allocator | ✅ 2026-08-22 |
 | 2 | Page-table encoding in `libs/`; `wost` builds its own tables (kernel, stacks with guard pages, framebuffer, direct map), W^X-correct; CR3 switch | |
 | 3 | Protection completion: W^X verified by read-back, zero-on-allocate; KASLR decision executed or deferred on the record | |
 | 4 | Kernel heap (`alloc` enabled); console back-buffer retires the scroll read-back | |
@@ -143,3 +143,55 @@ harness of D-38 unchanged.
   tables must reproduce is written down and machine-checked rather than
   inferred. KASLR still waits on making the image relocatable, and that is a
   change to this script.
+
+## Slice 1 — the handoff and the frames (2026-08-22)
+
+Recorded as built, per the charter above.
+
+**The base revision moved first, and it was not the change it looked like.**
+The kernel had been asking for Limine base revision 3 by accident —
+`BaseRevision::new()` is `with_revision(3)` — and this file's own debt table
+inherited a consequence of that default as though it were a fact about the
+bootloader: *device holes unmappable, the wall itself*. Base revision 4 is the
+revision that lifts it, and reaching it turned out not to require the `limine`
+0.6.x upgrade `001-boot.md` lists as open: that crate still needs nightly, but
+the base revision is a protocol parameter the pinned 0.5.0 crate already
+exposes. One argument, in the one file allowed to name the bootloader (D-42).
+Verified by boot, which is the only way it could be.
+
+**The handoff.** `BootInfo` grew `memory_map` and `direct_map`, both
+`Result`s — a kernel that cannot allocate is still worth booting far enough to
+say why. `MemoryMap` **copies** the bootloader's entries rather than borrowing
+them, because the map lives in bootloader-reclaimable memory and a kernel that
+means to reclaim that memory cannot also hold a reference into it. Region types
+are translated in `limine_glue` against the crate's own constants, so a value
+moving underneath us is a compile error; anything unrecognised becomes
+`Unknown(n)` and is reported, which is how base revision 4's new type would
+announce itself. On QEMU with OVMF it has not appeared — every region so far
+is one of the eight the pinned crate names.
+
+**The allocator** is D-43: `libs/frame-space` holds the arithmetic and knows
+only frame indices, `wost::mm` holds the lock and the physical access and hands
+out `Frame` and `Segment` handles whose `Drop` releases them. Nothing computes
+the kernel image's extent — only `Usable` regions are inserted, so the image,
+the bootloader's structures and the ACPI tables exclude themselves, the
+megabyte of `.bss` bitmap along with them. First boot: 459 MiB usable in
+117,734 frames, direct map at `0xffff800000000000`.
+
+**What the checks caught.** The first version of "allocation returns a zeroed
+frame" passed with the zeroing removed. It short-circuited on an address
+comparison, and the allocator's hint means a released frame is rarely the next
+one handed out, so the escape hatch was always taken. D-28's rule — break every
+new check once — is the only reason that was found. Its replacement writes
+`0xAA`, requires the kernel to see it, zeroes, and requires the kernel to see
+that; removing `Frame::fill`'s write turns the harness red. The lesson is
+narrower than "test your tests": a check whose failure path can be reached by
+an *early return* is not a check, and both of those returns looked like
+defensive programming.
+
+**Still owed by this slice's neighbours.** The direct map is used here only to
+reach frames; the *contract* for the one the kernel builds itself — what is
+mapped, what is deliberately not, huge pages or not — is slice 2's, and D-42
+does not settle it. Base revision 4 removes the wall in front of device holes;
+it does not remove the reason to map devices through `MmioRegion` with an
+explicit memory type.

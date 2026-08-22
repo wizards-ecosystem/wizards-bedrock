@@ -38,6 +38,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "frame-space"
+version = "0.1.0"
+
+[[package]]
 name = "fscommon"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -95,6 +99,7 @@ dependencies = [
 name = "wost"
 version = "0.1.0"
 dependencies = [
+ "frame-space",
  "limine",
  "pixel",
  "port-space",
@@ -104,6 +109,10 @@ dependencies = [
 
 [[package]]
 name = "x86-apic"
+version = "0.1.0"
+
+[[package]]
+name = "x86-paging"
 version = "0.1.0"
 
 [[package]]

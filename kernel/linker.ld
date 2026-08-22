@@ -15,17 +15,28 @@ SECTIONS
     /* Top 2 GiB of the address space, as the kernel code model requires. */
     . = 0xffffffff80000000;
 
+    /* The three symbols below bound each protection class of the loaded image,
+       so `wost` can map its own tables W^X-correct without guessing where one
+       ends and the next begins (D-45). Each section is already aligned to
+       MAXPAGESIZE, so every _start lands on a page boundary; the _end symbols
+       are rounded up by the mapping code, not here. */
+    __text_start = .;
+
     .text : {
         *(.text .text.*)
     } :text
 
+    __text_end = .;
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    __rodata_start = .;
 
     .rodata : {
         *(.rodata .rodata.*)
     } :rodata
 
+    __rodata_end = .;
     . = ALIGN(CONSTANT(MAXPAGESIZE));
+    __data_start = .;
 
     /* Limine scans between the markers for request structures and writes its
        answers back into them, so this is loaded and writable. Its own output

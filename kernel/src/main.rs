@@ -1,6 +1,6 @@
 //! The Wizard's OS kernel — entry point.
 //!
-//! Booted by Limine (base revision 3) on x86_64, higher-half. Every privileged
+//! Booted by Limine (base revision 4, D-42) on x86_64, higher-half. Every privileged
 //! operation goes through `wost`; this crate contains no hand-written `unsafe`.
 //! `deny` rather than `forbid` because [`wost::entry!`] expands its own
 //! `#[allow(unsafe_code)]` glue here — see D-21.
@@ -15,6 +15,7 @@ mod console;
 mod dev;
 mod input;
 mod log;
+mod mem;
 mod panic;
 #[cfg(feature = "selftest")]
 mod selftest;
@@ -54,6 +55,12 @@ fn kernel_main(boot: BootInfo) -> ! {
     arch::current::trap::init();
     info!("cpu: descriptor tables installed");
     info!("cpu: protections {}", cpu::enable_protections());
+
+    // After the fault path, because the first write through the direct map is
+    // the first time this kernel touches an address the bootloader chose rather
+    // than the linker — and before everything else, because from here on
+    // anything may want a frame.
+    mem::init(boot.memory_map, boot.direct_map);
 
     start_interrupts();
     input::init();

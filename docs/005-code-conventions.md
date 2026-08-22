@@ -28,6 +28,29 @@ function touches no hardware and holds no raw pointer, it does not belong in
 `wost`; it belongs in `kernel/` or, better, in a `libs/` crate where it can be
 unit-tested on the host.
 
+That test is a judgement, so it is backed by a closed list. **The only valid
+reasons to write `unsafe` are** (Pragmatic Rust Guidelines, D-41):
+
+1. **a novel abstraction** the language cannot express — a frame type, an
+   allocator, a page table;
+2. **performance**, where a checked form exists and measurably costs too much;
+3. **FFI or the platform** — an instruction, a register, a bootloader ABI.
+
+Anything else is a defect, not a trade-off. Reason 2 is the one that needs a
+number attached before it counts, and so far nothing in this kernel has used
+it.
+
+**The standard every `wost` export is held to** is the Rustonomicon's
+sound-wrapper principle: *safe code must not be able to cause undefined
+behaviour through this abstraction, however it is called.* Not "is the unsafe
+block correct" but "can any caller, including a wrong one, reach UB". That is
+the same demand the paragraph below makes in different words, and it is the
+question to ask of a new export before its `# Safety` section is written.
+
+The Unsafe Code Guidelines Reference is **not** an authority here. It
+describes itself as largely historical and advisory, and documents open
+questions alongside settled rules; cite the Nomicon or the reference, not it.
+
 **No speculative API.** Do not add an operation because a subsystem will
 plausibly want it later. This matters most in `wost`, where an unused
 `pub unsafe fn` carries a safety contract nobody can check — `enable_interrupts`
@@ -128,9 +151,28 @@ Beyond that: `//!` on every module saying what it is for and what it assumes;
 `///` on public items, whose first line is a single sentence saying what the
 item does (`missing_docs`, at warn); `# Panics` on anything that can panic
 (C-FAILURE). `missing_docs_in_private_items` is deliberately **not** enabled —
-it manufactures noise on every helper. C-EXAMPLE (a rustdoc example on every
-item) is **not** adopted either: these crates are `no_std` and cross-compiled,
-so doctests cannot run and unrunnable examples rot.
+it manufactures noise on every helper.
+
+C-EXAMPLE (a rustdoc example on every item) is adopted **only in `libs/`**,
+and the split is a fact about where doctests can run rather than a preference
+(D-41). `wost` and `kernel` are `no_std` and cross-compiled, so their doctests
+cannot execute and an unrunnable example rots unnoticed. A `libs/` crate
+carries `#![cfg_attr(not(test), no_std)]` precisely so `cargo test` builds it
+for the host — where its doctests *do* compile and run, under the bare
+`cargo test` that `default-members` already scopes. There an example is an
+executable check, and for an encoding API it is the clearest statement of the
+encoding there is: `libs/x86-paging`'s entry bits are the worked case.
+
+Two rustdoc conventions that go with it:
+
+- The first line is the module listing and the search result, so it is one
+  sentence, ends in a period, and stays under about fifteen words.
+- Sections appear in the conventional order — summary, body, `# Examples`,
+  `# Errors`, `# Panics`, `# Safety` — because that is the order every
+  experienced reader scans for.
+- `#[doc(hidden)]` on items that are `pub` only for a technical reason.
+  `boot::__macro` is the case: `entry!` needs those names in scope in the
+  calling crate, and nobody should read them as API.
 
 The comments worth writing are the ones recording a decision that the code
 cannot show: why the divisor is 1, why the entry glue expands in the binary
@@ -265,3 +307,12 @@ Two conventions that belong with the code rather than the README:
   argument behind `MmioRegion`: declare a region safe to access with a specific
   set of operations and give it a type, rather than casting raw pointers at the
   point of use.
+- [Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/)
+  (Microsoft) — the closed taxonomy of valid reasons to write `unsafe` in the
+  crate-boundaries section above, and the recommendation to enable
+  `unsafe_op_in_unsafe_fn`, which this workspace already denies (D-41).
+- [Rustonomicon — Working with Unsafe](https://doc.rust-lang.org/nomicon/working-with-unsafe.html)
+  — the sound-wrapper principle every `wost` export is held to. The
+  [Unsafe Code Guidelines Reference](https://rust-lang.github.io/unsafe-code-guidelines/)
+  is deliberately *not* listed as an authority: it is advisory and partly
+  historical by its own description.

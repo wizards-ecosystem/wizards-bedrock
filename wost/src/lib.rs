@@ -9,6 +9,7 @@
 pub mod arch;
 pub mod boot;
 mod cell;
+pub mod mm;
 pub mod mmio;
 pub mod panic;
 pub mod sync;

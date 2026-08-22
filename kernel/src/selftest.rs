@@ -17,6 +17,7 @@ use core::hint::spin_loop;
 use wost::arch::current::cpu::{self, Protections};
 use wost::arch::current::{apic, interrupt, pic, port, segment};
 use wost::boot::{FramebufferInfo, Rgb};
+use wost::mm;
 use wost::sync::{Once, SpinLock};
 use x86_tables::exception;
 
@@ -25,6 +26,71 @@ use crate::arch::current::trap::{self, Record};
 use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
 use crate::{dev, error, info, input, time};
+
+/// A frame's handle releases it, and the allocator notices.
+///
+/// Counted rather than compared by address: nothing promises the next
+/// allocation reuses the frame just freed, but the free count must come back
+/// to exactly where it started.
+fn frame_round_trips() -> bool {
+    let before = mm::free_frames();
+    let frame = mm::allocate();
+    let taken = frame.is_some() && mm::free_frames() == before - 1;
+    drop(frame);
+    taken && mm::free_frames() == before
+}
+
+/// Two frames held at once are never the same frame.
+fn frames_are_exclusive() -> bool {
+    let (Some(first), Some(second)) = (mm::allocate(), mm::allocate()) else {
+        return false;
+    };
+    first.address() != second.address()
+}
+
+/// Dirty memory can be zeroed, and the kernel can tell the difference.
+///
+/// The dirtying is the point. A frame straight from a freshly booted machine
+/// is usually already zero, so a check that only reads one back passes whether
+/// or not anything zeroed it — and a check that cannot fail is worth nothing
+/// (`005-code-conventions.md`). Writing a known pattern first, and requiring
+/// the kernel to *see* that pattern, is what gives both halves teeth.
+///
+/// This covers `zero`, and `allocate_zeroed` is `allocate` followed by exactly
+/// that call. What it deliberately does not do is force the allocator to hand
+/// back a frame it knows to be dirty: the free-list hint moves past a released
+/// frame, so reuse would have to be driven by a bounded sweep of every frame
+/// in the machine. That is the wrong shape of test for the property, and
+/// distorting the allocator's API to make it possible would be worse.
+fn dirty_memory_can_be_zeroed() -> bool {
+    let Some(mut frame) = mm::allocate() else {
+        return false;
+    };
+
+    let dirtied = frame.fill(0xAA) && frame.is_zero() == Some(false);
+    let cleaned = frame.zero() && frame.is_zero() == Some(true);
+    dirtied && cleaned
+}
+
+/// The allocating form hands out a frame that reads as zero.
+fn allocation_is_zeroed() -> bool {
+    mm::allocate_zeroed().and_then(|frame| frame.is_zero()) == Some(true)
+}
+
+/// A run of frames is consecutive, aligned, and released whole.
+fn a_run_is_contiguous_and_aligned() -> bool {
+    const FRAMES: usize = 8;
+
+    let before = mm::free_frames();
+    let Some(run) = mm::allocate_contiguous(FRAMES, FRAMES) else {
+        return false;
+    };
+    let aligned = run.address().is_multiple_of(FRAMES as u64 * 4096);
+    let sized = run.frames() == FRAMES && mm::free_frames() == before - FRAMES;
+    drop(run);
+
+    aligned && sized && mm::free_frames() == before
+}
 
 /// Tally of what has been checked so far.
 struct Report {
@@ -77,6 +143,28 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     );
     report.check("a held lock excludes another holder", lock_excludes());
     report.check("a one-shot latch admits one caller", latch_admits_one());
+
+    report.check(
+        "the frame allocator has usable memory",
+        mm::free_frames() > 0,
+    );
+    report.check(
+        "a frame is returned when its handle drops",
+        frame_round_trips(),
+    );
+    report.check(
+        "two live frames are different frames",
+        frames_are_exclusive(),
+    );
+    report.check(
+        "dirty memory can be zeroed, and seen to be",
+        dirty_memory_can_be_zeroed(),
+    );
+    report.check("allocation returns a zeroed frame", allocation_is_zeroed());
+    report.check(
+        "a contiguous run is contiguous and aligned",
+        a_run_is_contiguous_and_aligned(),
+    );
 
     report.check(
         "the code selector is the one we installed",

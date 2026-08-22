@@ -2,12 +2,30 @@
 
 use limine::BaseRevision;
 use limine::framebuffer::MemoryModel;
-use limine::request::FramebufferRequest;
+use limine::memory_map::EntryType;
+use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest};
 
 use pixel::{Channel, PixelFormat};
 
-use crate::boot::{BootInfo, Framebuffer, FramebufferError, FramebufferInfo};
+use crate::boot::{
+    BootInfo, DirectMap, Framebuffer, FramebufferError, FramebufferInfo, HandoffError, MemoryKind,
+    MemoryMap, MemoryRegion,
+};
 use crate::mmio::MmioRegion;
+
+/// The boot protocol revision this kernel requests (D-42).
+///
+/// A function rather than a `const` of the tag type: `BaseRevision` holds
+/// `UnsafeCell`s, and a `const` containing one is what
+/// `clippy::declare_interior_mutable_const` exists to catch.
+///
+/// Revision 4 is the first whose direct map reaches a device hole, and the
+/// first that guarantees the ACPI tables are mapped — the two things Phase 3
+/// needs from the bootloader. `BaseRevision::new()` is revision 3, so asking
+/// for anything is a deliberate act; see D-42 for why not 5 or 6.
+pub const fn base_revision() -> BaseRevision {
+    BaseRevision::with_revision(4)
+}
 
 /// Bits per pixel the framebuffer code implements.
 const SUPPORTED_BPP: u16 = 32;
@@ -21,12 +39,66 @@ const WORD: usize = size_of::<u32>();
 pub fn enter(
     base_revision: &'static BaseRevision,
     framebuffer: &'static FramebufferRequest,
+    memory_map: &'static MemoryMapRequest,
+    hhdm: &'static HhdmRequest,
     kernel_main: fn(BootInfo) -> !,
 ) -> ! {
     kernel_main(BootInfo {
         base_revision_supported: base_revision.is_supported(),
         framebuffer: take_framebuffer(framebuffer),
+        memory_map: take_memory_map(memory_map),
+        direct_map: take_direct_map(hhdm),
     })
+}
+
+/// The bootloader's memory map, translated into types that name no bootloader.
+fn take_memory_map(request: &'static MemoryMapRequest) -> Result<MemoryMap, HandoffError> {
+    let response = request.get_response().ok_or(HandoffError::NoResponse)?;
+    let entries = response.entries();
+    if entries.is_empty() {
+        return Err(HandoffError::Empty);
+    }
+
+    let mut map = MemoryMap::new();
+    for entry in entries {
+        map.push(MemoryRegion {
+            base: entry.base,
+            len: entry.length,
+            kind: kind_of(entry.entry_type),
+        });
+    }
+    Ok(map)
+}
+
+/// Translate one protocol entry type.
+///
+/// The known types are compared against the crate's own constants rather than
+/// against numbers, so a value moving underneath us is a compile error. The raw
+/// value is read only to *report* a type we do not know: base revision 4 adds
+/// one (`RESERVED_MAPPED`) that the pinned 0.5.0 crate has no constant for, and
+/// D-42 requires that such a type be nameable in the log rather than folded
+/// silently into `Reserved`.
+fn kind_of(entry_type: EntryType) -> MemoryKind {
+    match entry_type {
+        EntryType::USABLE => MemoryKind::Usable,
+        EntryType::BOOTLOADER_RECLAIMABLE => MemoryKind::BootloaderReclaimable,
+        EntryType::EXECUTABLE_AND_MODULES => MemoryKind::KernelAndModules,
+        EntryType::FRAMEBUFFER => MemoryKind::Framebuffer,
+        EntryType::ACPI_RECLAIMABLE => MemoryKind::AcpiReclaimable,
+        EntryType::ACPI_NVS => MemoryKind::AcpiNvs,
+        EntryType::BAD_MEMORY => MemoryKind::BadMemory,
+        EntryType::RESERVED => MemoryKind::Reserved,
+        // SAFETY: `EntryType` is `#[repr(transparent)]` over `u64`, so the two
+        // have identical layout and every bit pattern of one is valid for the
+        // other. The crate provides no accessor for the value.
+        other => MemoryKind::Unknown(unsafe { core::mem::transmute::<EntryType, u64>(other) }),
+    }
+}
+
+/// The direct map's offset.
+fn take_direct_map(request: &'static HhdmRequest) -> Result<DirectMap, HandoffError> {
+    let response = request.get_response().ok_or(HandoffError::NoResponse)?;
+    Ok(DirectMap::new(response.offset()))
 }
 
 fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer, FramebufferError> {

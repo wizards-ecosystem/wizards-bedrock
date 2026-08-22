@@ -20,10 +20,12 @@ pub const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
 /// `no_std` but compile for the host under `cfg(test)`, which is the whole
 /// point of putting pure logic there.
 pub const HOST_PACKAGES: &[&str] = &[
+    "frame-space",
     "pixel",
     "port-space",
     "ps2-keys",
     "x86-apic",
+    "x86-paging",
     "x86-pit",
     "x86-tables",
     "xtask",

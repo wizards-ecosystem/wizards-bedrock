@@ -1,0 +1,11 @@
+[package]
+name = "x86-paging"
+description = "x86_64 four-level page table encoding: entry bits, address packing, and the index a virtual address takes at each level."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
