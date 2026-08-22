@@ -4,39 +4,41 @@
 //! claim in a registry so exclusivity is checked rather than merely promised.
 //! Reads and writes are then ordinary safe calls, so a driver built on this
 //! needs no `unsafe` of its own.
+//!
+//! A claim covers the ports an access *reaches*, not the one it names: an
+//! `out dx, eax` to port `n` drives `n..n + 4`, so a `Port<u32>` reserves four.
+//! The bookkeeping is `port_space::PortSpace`, where it is host-tested; this
+//! module is the lock around it and the instructions underneath it.
 
 use core::arch::asm;
 use core::marker::PhantomData;
 
+use port_space::PortSpace;
+
+use crate::panic::PanicToken;
 use crate::sync::SpinLock;
 
-/// Number of addressable I/O ports on x86.
-const PORT_SPACE: usize = 0x1_0000;
+/// Which ports are spoken for. Claims are permanent; a driver owns its
+/// registers for the life of the kernel.
+static CLAIMED: SpinLock<PortSpace> = SpinLock::new(PortSpace::new());
 
-/// One bit per port, set once that port has been claimed. Claims are permanent;
-/// a driver owns its registers for the life of the kernel.
-static CLAIMED: SpinLock<[u64; PORT_SPACE / 64]> = SpinLock::new([0; PORT_SPACE / 64]);
-
-fn is_claimed(bitmap: &[u64], number: usize) -> bool {
-    bitmap[number / 64] & (1 << (number % 64)) != 0
+/// Record `len` ports from `number` as claimed, all or nothing.
+fn reserve(number: u16, len: usize) -> bool {
+    CLAIMED.lock().reserve(number as usize, len)
 }
 
-fn mark_claimed(bitmap: &mut [u64], number: usize) {
-    bitmap[number / 64] |= 1 << (number % 64);
-}
-
-/// Claim exclusive access to port `number`.
+/// Claim exclusive access to port `number` and the ports a `T`-wide access
+/// reaches beyond it.
 ///
-/// Returns `None` if it is already claimed.
+/// Returns `None` if any of them is already claimed, or if the access would
+/// run past the end of I/O space.
 pub fn claim<T: PortValue>(number: u16) -> Option<Port<T>> {
-    let mut claimed = CLAIMED.lock();
-    if is_claimed(&claimed[..], number as usize) {
-        return None;
-    }
-    mark_claimed(&mut claimed[..], number as usize);
-    // SAFETY: the registry has just recorded this port, and no claim is ever
-    // released, so no other `Port` or `PortBlock` can cover it.
-    Some(unsafe { Port::new(number) })
+    reserve(number, size_of::<T>()).then(|| {
+        // SAFETY: the registry has just recorded every port a `T`-wide access
+        // at `number` drives, and no claim is ever released, so no other
+        // `Port` or `PortBlock` can cover any of them.
+        unsafe { Port::new(number) }
+    })
 }
 
 /// Claim exclusive access to the `N` consecutive ports starting at `base`.
@@ -44,18 +46,20 @@ pub fn claim<T: PortValue>(number: u16) -> Option<Port<T>> {
 /// Returns `None` if any of them is already claimed, or if the block would run
 /// past the end of I/O space.
 pub fn claim_block<const N: usize>(base: u16) -> Option<PortBlock<N>> {
-    let start = base as usize;
-    let end = start.checked_add(N).filter(|&end| end <= PORT_SPACE)?;
-    let mut claimed = CLAIMED.lock();
-    if (start..end).any(|number| is_claimed(&claimed[..], number)) {
-        return None;
-    }
-    for number in start..end {
-        mark_claimed(&mut claimed[..], number);
-    }
-    // SAFETY: the registry has just recorded every port in the block, and no
-    // claim is ever released, so nothing else can cover them.
-    Some(unsafe { PortBlock::new(base) })
+    reserve(base, N).then(|| {
+        // SAFETY: the registry has just recorded every port in the block, and
+        // no claim is ever released, so nothing else can cover them.
+        unsafe { PortBlock::new(base) }
+    })
+}
+
+/// Reclaim the registry's lock on the terminal panic path.
+///
+/// Called by [`panic::reclaim`](crate::panic::reclaim) rather than directly:
+/// the panic path has to be able to claim a port to report through, and the
+/// code it interrupted may have been part-way through a claim of its own.
+pub(crate) fn force_unlock(panic: &PanicToken) {
+    CLAIMED.force_unlock(panic);
 }
 
 mod sealed {
@@ -66,7 +70,10 @@ mod sealed {
 
 /// A width of value that can be transferred over an I/O port.
 ///
-/// Sealed: the x86 port instructions exist only for 8, 16, and 32 bits.
+/// Sealed: the x86 port instructions exist only for 8, 16, and 32 bits, and
+/// the only implementors are the primitives of exactly those widths. That is
+/// what lets `size_of::<T>()` stand for the number of ports an access drives,
+/// which is how [`claim`] knows how much to reserve.
 pub trait PortValue: sealed::Sealed + Copy {
     /// Read one value from `port`.
     ///
@@ -161,11 +168,16 @@ pub struct Port<T: PortValue> {
 impl<T: PortValue> Port<T> {
     /// Claim `number`.
     ///
+    /// Deliberately not public: [`claim`] is the only door, so a handle cannot
+    /// exist without the registry knowing about it.
+    ///
     /// # Safety
     ///
-    /// No other live `Port` or [`PortBlock`] may cover `number`, and the caller
-    /// must be entitled to drive whatever device answers there.
-    pub const unsafe fn new(number: u16) -> Self {
+    /// No other live `Port` or [`PortBlock`] may cover any of the
+    /// `size_of::<T>()` ports starting at `number` — the span a `T`-wide
+    /// access drives — and the caller must be entitled to drive whatever
+    /// device answers there.
+    const unsafe fn new(number: u16) -> Self {
         Self {
             number,
             value: PhantomData,
@@ -194,8 +206,10 @@ impl<T: PortValue> Port<T> {
 
 /// Exclusive access to `N` consecutive I/O ports — a device's register file.
 ///
-/// Register offsets are checked against `N`, so a driver indexes its registers
-/// by name without being able to walk off the end into another device.
+/// Accesses are checked against `N` by the span they reach, not by the offset
+/// they name, so a driver indexes its registers by name without being able to
+/// walk off the end into another device — including with a `u16` or `u32`
+/// access that starts inside the block and would finish outside it.
 #[derive(Debug)]
 pub struct PortBlock<const N: usize> {
     base: u16,
@@ -204,6 +218,9 @@ pub struct PortBlock<const N: usize> {
 impl<const N: usize> PortBlock<N> {
     /// Claim the `N` ports starting at `base`.
     ///
+    /// Deliberately not public: [`claim_block`] is the only door, so a handle
+    /// cannot exist without the registry knowing about it.
+    ///
     /// # Safety
     ///
     /// No other live [`Port`] or `PortBlock` may overlap `base..base + N`, and
@@ -211,10 +228,11 @@ impl<const N: usize> PortBlock<N> {
     ///
     /// # Panics
     ///
-    /// Panics if the block would run past port `0xFFFF`.
-    pub const unsafe fn new(base: u16) -> Self {
+    /// Panics if the block is empty or would run past port `0xFFFF`.
+    const unsafe fn new(base: u16) -> Self {
+        assert!(N > 0, "a port block covers at least one port");
         assert!(
-            base as usize + N <= 0x1_0000,
+            base as usize + N <= port_space::PORT_COUNT,
             "port block runs past the end of I/O space"
         );
         Self { base }
@@ -224,26 +242,36 @@ impl<const N: usize> PortBlock<N> {
     ///
     /// # Panics
     ///
-    /// Panics if `offset` is not within the block.
+    /// Panics unless the whole `T`-wide access lies within the block.
     pub fn read<T: PortValue>(&mut self, offset: usize) -> T {
-        // SAFETY: the offset is inside the block this handle exclusively owns,
-        // and `&mut self` rules out a concurrent access.
-        unsafe { T::port_read(self.port_for(offset)) }
+        // SAFETY: `port_for` confirmed the whole access lies inside the block
+        // this handle exclusively owns, and `&mut self` rules out a concurrent
+        // access.
+        unsafe { T::port_read(self.port_for::<T>(offset)) }
     }
 
     /// Write register `offset`.
     ///
     /// # Panics
     ///
-    /// Panics if `offset` is not within the block.
+    /// Panics unless the whole `T`-wide access lies within the block.
     pub fn write<T: PortValue>(&mut self, offset: usize, value: T) {
-        // SAFETY: the offset is inside the block this handle exclusively owns,
-        // and `&mut self` rules out a concurrent access.
-        unsafe { T::port_write(self.port_for(offset), value) };
+        // SAFETY: `port_for` confirmed the whole access lies inside the block
+        // this handle exclusively owns, and `&mut self` rules out a concurrent
+        // access.
+        unsafe { T::port_write(self.port_for::<T>(offset), value) };
     }
 
-    fn port_for(&self, offset: usize) -> u16 {
-        assert!(offset < N, "register {offset} is outside a {N}-port block");
+    /// The port a `T`-wide access at `offset` starts on, having confirmed that
+    /// every port it goes on to drive is inside the block.
+    fn port_for<T: PortValue>(&self, offset: usize) -> u16 {
+        let width = size_of::<T>();
+        assert!(
+            offset.checked_add(width).is_some_and(|end| end <= N),
+            "a {width}-byte access at register {offset} leaves a {N}-port block"
+        );
+        // Cannot overflow: `new` bounded `base + N` to the end of I/O space and
+        // the assertion above bounds `offset` below `N`.
         self.base + offset as u16
     }
 }

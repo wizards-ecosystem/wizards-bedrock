@@ -50,6 +50,9 @@ mod config {
 }
 
 mod device {
+    /// Asked for only by the self-test, which is the only thing that has a
+    /// reason to prove the keyboard is answering rather than simply use it.
+    #[cfg(feature = "selftest")]
     pub(super) const ECHO: u8 = 0xEE;
     pub(super) const SET_SCANCODE_SET: u8 = 0xF0;
     pub(super) const ENABLE_SCANNING: u8 = 0xF4;
@@ -62,6 +65,9 @@ mod reply {
     pub(super) const ACK: u8 = 0xFA;
     /// The keyboard's basic assurance test passed — follows a reset.
     pub(super) const TEST_PASSED: u8 = 0xAA;
+    /// Answer to the `device::ECHO` command, and so equally the
+    /// self-test's alone.
+    #[cfg(feature = "selftest")]
     pub(super) const ECHO: u8 = 0xEE;
 }
 

@@ -58,17 +58,27 @@ impl Channel {
     }
 
     /// Scale an 8-bit intensity to this channel's width and shift it into place.
+    ///
+    /// The scaling is proportional — full intensity lands on full scale at
+    /// every width — which is what makes a ten-bit channel reach white instead
+    /// of stopping a quarter short of it. Total on every `shift` and `size` a
+    /// bootloader could report, including ones no framebuffer has: a channel
+    /// that does not fit a 32-bit pixel contributes nothing rather than
+    /// shifting past the end of one.
     pub const fn encode(self, intensity: u8) -> u32 {
-        if self.size == 0 {
+        let size = self.size as u32;
+        let shift = self.shift as u32;
+        if size == 0 || shift >= u32::BITS || size > u32::BITS - shift {
             return 0;
         }
-        let intensity = intensity as u32;
-        let scaled = if self.size >= 8 {
-            intensity
+        let full_scale = if size == u32::BITS {
+            u32::MAX
         } else {
-            intensity >> (8 - self.size)
+            (1 << size) - 1
         };
-        scaled << self.shift
+        // Both factors are bounded by `u32::MAX`, so this is done in 64 bits.
+        let scaled = (intensity as u64 * full_scale as u64 / u8::MAX as u64) as u32;
+        scaled << shift
     }
 }
 
@@ -162,6 +172,100 @@ mod tests {
     fn a_zero_width_channel_contributes_nothing() {
         let format = PixelFormat::new(Channel::new(0, 0), Channel::new(0, 8), Channel::new(8, 8));
         assert_eq!(format.pack(Rgb::from_hex(0xFF_00_00)), 0);
+    }
+
+    /// The 30-bit-colour layout real displays report — ten bits a channel in a
+    /// 32-bit pixel. Full intensity must reach full scale: scaling by shifting
+    /// left instead would stop three quarters of a step short, and white would
+    /// come out very slightly grey on hardware nobody tests on.
+    #[test]
+    fn a_ten_bit_channel_reaches_full_scale() {
+        let xrgb2101010 = PixelFormat::new(
+            Channel::new(20, 10),
+            Channel::new(10, 10),
+            Channel::new(0, 10),
+        );
+
+        assert_eq!(xrgb2101010.pack(Rgb::from_hex(0xFF_FF_FF)), 0x3FFF_FFFF);
+        assert_eq!(xrgb2101010.pack(Rgb::from_hex(0x00_00_00)), 0);
+        assert_eq!(
+            xrgb2101010.pack(Rgb::from_hex(0xFF_00_00)),
+            0x3FF << 20,
+            "red alone fills its own ten bits and nothing else"
+        );
+    }
+
+    /// Every width, from one bit to the whole word: nothing packs to more than
+    /// its own bits, black is zero and white is every bit of the channel.
+    #[test]
+    fn every_channel_width_spans_exactly_its_own_bits() {
+        for size in 1..=32u8 {
+            let channel = Channel::new(0, size);
+            let mask = if size == 32 {
+                u32::MAX
+            } else {
+                (1u32 << size) - 1
+            };
+
+            assert_eq!(channel.encode(0), 0, "size {size} black");
+            assert_eq!(channel.encode(u8::MAX), mask, "size {size} white");
+            for intensity in 0..=u8::MAX {
+                assert_eq!(channel.encode(intensity) & !mask, 0, "size {size} spill");
+            }
+        }
+    }
+
+    /// A brighter input can never encode darker, at any width — the property a
+    /// scaling bug shows up as, and the one a shift-based version only has by
+    /// accident.
+    #[test]
+    fn encoding_is_monotonic_at_every_width() {
+        for size in 1..=16u8 {
+            let channel = Channel::new(0, size);
+            let mut previous = 0;
+            for intensity in 0..=u8::MAX {
+                let encoded = channel.encode(intensity);
+                assert!(encoded >= previous, "size {size} at {intensity}");
+                previous = encoded;
+            }
+        }
+    }
+
+    /// A shifted channel is the unshifted one moved, with nothing lost off
+    /// either end — swept over every placement that fits a 32-bit pixel.
+    #[test]
+    fn shifting_a_channel_only_moves_it() {
+        for size in 1..=8u8 {
+            for shift in 0..=(32 - size) {
+                let placed = Channel::new(shift, size).encode(0xA7);
+                let unplaced = Channel::new(0, size).encode(0xA7);
+
+                assert_eq!(placed, unplaced << shift, "size {size} shift {shift}");
+            }
+        }
+    }
+
+    /// Nothing a bootloader can report may shift past the end of a pixel: the
+    /// channel drops out instead, which loses a colour rather than panicking in
+    /// debug or wrapping in release.
+    #[test]
+    fn a_channel_that_cannot_fit_the_word_contributes_nothing() {
+        for (shift, size) in [(32, 8), (25, 8), (0, 33), (255, 255), (31, 2)] {
+            assert_eq!(
+                Channel::new(shift, size).encode(u8::MAX),
+                0,
+                "shift {shift} size {size}"
+            );
+        }
+    }
+
+    /// The boundary the case above sits next to: a channel ending exactly at
+    /// bit 31 is legal and must still encode.
+    #[test]
+    fn a_channel_ending_at_the_top_of_the_word_still_encodes() {
+        assert_eq!(Channel::new(24, 8).encode(u8::MAX), 0xFF00_0000);
+        assert_eq!(Channel::new(31, 1).encode(u8::MAX), 0x8000_0000);
+        assert_eq!(Channel::new(0, 32).encode(u8::MAX), u32::MAX);
     }
 
     #[test]

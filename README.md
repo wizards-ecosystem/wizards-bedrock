@@ -41,17 +41,30 @@ override that.
 ## Development
 
 ```
-cargo xtask ci       # the gate: fmt --check, clippy, tests, vendor digests, test-boot, image
+cargo xtask ci       # the gate: fmt --check, clippy, doc, tests, vendor digests,
+                     #   test-boot, image
 ```
 
 `ci` is the only gate — there is no hosted CI (D-26). Individual pieces:
-`cargo xtask fmt`, `cargo xtask clippy`, `cargo xtask test`,
+`cargo xtask fmt`, `cargo xtask clippy`, `cargo xtask doc`, `cargo xtask test`,
 `cargo xtask test-boot`, `cargo xtask verify-vendor`, `cargo xtask clean [--all]`.
 
 `test` runs the host suite; `test-boot` boots a kernel built with the
 `selftest` feature headless in QEMU, injects a keystroke over QMP when the
 kernel asks for one (D-38), and reads the verdict from the exit code, which
-is how anything needing a real machine gets tested (D-28).
+is how anything needing a real machine gets tested (D-28). `doc` exists to
+make the rustdoc link lints fire — nothing else in the gate runs rustdoc, so
+without it a doc link can rot unnoticed (D-22).
+
+Every cargo-driven check runs over **three** configurations, not two: the
+host packages, the kernel packages, and the kernel packages again with
+`selftest` on. A cargo feature is a different crate graph, and linting only
+one of them is how two dead constants once rode a release image out. Adding a
+feature means adding a pass to `PASSES` in `xtask/src/tasks.rs`.
+
+Every kernel build is read back and checked against what `kernel/linker.ld` is
+written to produce — entry in the higher half, no orphan sections, no segment
+both writable and executable, `.bss` costing no file space (D-40).
 
 **`cargo build --workspace` does not work, and cannot on stable.** The kernel
 crates only build for `x86_64-unknown-none` and `xtask` only for the host, and
@@ -79,8 +92,8 @@ triple and reports phantom errors across every kernel file.
 ```
 wost/       privileged kernel framework — the only crate that may write `unsafe`
 kernel/     the kernel binary (no_std, #![deny(unsafe_code)], higher-half)
-libs/       shared no_std crates: pure logic, host-testable (pixel, ps2-keys,
-            x86-apic, x86-pit, x86-tables)
+libs/       shared no_std crates: pure logic, host-testable (pixel, port-space,
+            ps2-keys, x86-apic, x86-pit, x86-tables)
 xtask/      build orchestrator: pure-Rust disk imaging, QEMU/VMware runners
 boot/       limine.conf + vendored Limine UEFI binary (digest-pinned)
 docs/       design docs (design-first: docs before code)

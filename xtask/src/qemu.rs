@@ -135,9 +135,6 @@ fn drive(spec: &str) -> [String; 2] {
     ["-drive".to_string(), spec.to_string()]
 }
 
-/// Cargo feature that compiles the kernel's boot-time self-checks in.
-pub const SELFTEST_FEATURE: &str = "selftest";
-
 /// QEMU exits with `(value << 1) | 1`, so the kernel's 0x10 arrives as 33 and
 /// its 0x11 as 35. Kept in step with `kernel/src/arch/x86_64/debug_exit.rs`.
 const SELFTEST_PASSED: i32 = 33;

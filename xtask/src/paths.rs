@@ -21,6 +21,7 @@ pub const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
 /// point of putting pure logic there.
 pub const HOST_PACKAGES: &[&str] = &[
     "pixel",
+    "port-space",
     "ps2-keys",
     "x86-apic",
     "x86-pit",
@@ -28,8 +29,44 @@ pub const HOST_PACKAGES: &[&str] = &[
     "xtask",
 ];
 
+/// The `default-members` entries of a workspace manifest, as package names.
+///
+/// This list exists twice — here as [`HOST_PACKAGES`], and in the root
+/// manifest, where it scopes bare cargo commands to the half that builds for
+/// the host. Two copies of a list is two chances to add a crate to one of
+/// them, which is exactly what happened to `port-space`: the gate silently
+/// stopped covering it. A test below reads the real manifest through this
+/// function and requires the two to agree.
+///
+/// Hand-rolled rather than a TOML dependency, on the `sha256.rs` precedent —
+/// one array, one call site. Entries are directory paths and the package name
+/// is the last segment, a convention the same test enforces by comparing.
+pub fn default_members(manifest: &str) -> Vec<String> {
+    manifest
+        .split_once("default-members = [")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(list, _)| {
+            list.lines()
+                .map(|line| line.split('#').next().unwrap_or(line))
+                .filter_map(|line| line.split('"').nth(1))
+                .filter_map(|path| path.rsplit('/').next())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Triple the kernel is cross-compiled for.
 pub const KERNEL_TARGET: &str = "x86_64-unknown-none";
+
+/// Cargo feature that compiles the kernel's boot-time self-checks in.
+pub const SELFTEST_FEATURE: &str = "selftest";
+
+/// The same feature spelled the way a workspace-scoped `--features` wants it.
+///
+/// Written out rather than formatted, because a `const` cannot be — so a test
+/// below asserts it against the two constants it is made of.
+pub const SELFTEST_FEATURE_SPEC: &str = "wizard-kernel/selftest";
 
 /// Name the kernel takes on the EFI system partition. Must match the `path:`
 /// line in `boot/limine.conf`.
@@ -139,6 +176,60 @@ mod tests {
 
     fn paths(target_dir: Option<&str>) -> Paths {
         Paths::new(PathBuf::from("/repo"), target_dir.map(Path::new))
+    }
+
+    #[test]
+    fn default_members_reads_a_list_of_paths_as_package_names() {
+        let manifest = "\
+[workspace]
+default-members = [
+    \"libs/pixel\",
+    \"libs/x86-apic\",
+    \"xtask\",
+]
+";
+        assert_eq!(
+            default_members(manifest),
+            ["pixel", "x86-apic", "xtask"],
+            "a nested path names the crate in its last segment"
+        );
+    }
+
+    #[test]
+    fn default_members_ignores_a_comment_and_a_missing_key() {
+        let manifest = "\
+default-members = [
+    # \"libs/not-a-member\" — commented out, and quoted inside the comment
+    \"libs/pixel\",
+]
+";
+        assert_eq!(default_members(manifest), ["pixel"]);
+        assert!(default_members("[workspace]\nmembers = [\"a\"]\n").is_empty());
+        assert!(default_members("").is_empty());
+    }
+
+    /// The list lives here and in the root manifest, and drifted once: a new
+    /// `libs/` crate reached `default-members` but not [`HOST_PACKAGES`], so
+    /// `cargo xtask test` and `cargo xtask clippy` quietly stopped covering
+    /// it while a bare `cargo test` still did. This is the check that says so.
+    #[test]
+    fn host_packages_are_exactly_the_workspace_default_members() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("root manifest");
+
+        assert_eq!(default_members(&manifest), HOST_PACKAGES);
+    }
+
+    /// The spec is two other constants glued together; nothing but this notices
+    /// if one of them moves.
+    #[test]
+    fn the_feature_spec_names_the_kernel_package_and_its_feature() {
+        assert_eq!(
+            SELFTEST_FEATURE_SPEC,
+            format!("{KERNEL_PACKAGE}/{SELFTEST_FEATURE}")
+        );
     }
 
     #[test]

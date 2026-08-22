@@ -5,7 +5,7 @@
 //! when QEMU is started with `-device isa-debug-exit`, so this is compiled in
 //! with the `selftest` feature and never ships in a real image.
 //!
-//! Nothing here is privileged: a claimed [`Port`] writes in safe code.
+//! Nothing here is privileged: a claimed `Port` writes in safe code.
 
 use wost::arch::current::port;
 

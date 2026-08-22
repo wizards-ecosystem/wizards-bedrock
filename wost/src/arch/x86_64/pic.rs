@@ -13,6 +13,7 @@
 use core::fmt;
 
 use super::port::{self, PortBlock};
+use crate::panic::PanicToken;
 use crate::sync::SpinLock;
 
 /// Command and data port of the controller wired directly to the CPU.
@@ -118,6 +119,15 @@ pub fn masks() -> Option<(u8, u8)> {
         pair.primary.read(register::DATA),
         pair.secondary.read(register::DATA),
     ))
+}
+
+/// Reclaim this module's lock on the terminal panic path.
+///
+/// Called by [`panic::reclaim`](crate::panic::reclaim). A fault raised inside
+/// [`silence`] would otherwise leave the lock held for ever, and the panic path
+/// is entitled to look at anything.
+pub(crate) fn force_unlock(panic: &PanicToken) {
+    CONTROLLERS.force_unlock(panic);
 }
 
 /// Both controllers.

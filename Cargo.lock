@@ -72,6 +72,10 @@ name = "pixel"
 version = "0.1.0"
 
 [[package]]
+name = "port-space"
+version = "0.1.0"
+
+[[package]]
 name = "ps2-keys"
 version = "0.1.0"
 
@@ -93,6 +97,7 @@ version = "0.1.0"
 dependencies = [
  "limine",
  "pixel",
+ "port-space",
  "x86-apic",
  "x86-tables",
 ]

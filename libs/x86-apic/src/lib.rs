@@ -80,7 +80,7 @@ impl Register {
     /// The model-specific register x2APIC mode reaches this one through.
     ///
     /// The block is laid out so that each sixteen-byte slot in the page becomes
-    /// one consecutive register number from [`FIRST_MSR`] — the same table,
+    /// one consecutive register number from the base of the block — the same table,
     /// divided by its own stride.
     pub const fn msr(self) -> u32 {
         FIRST_MSR + (self.0 / REGISTER_STRIDE) as u32

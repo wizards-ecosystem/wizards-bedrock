@@ -23,7 +23,7 @@ const SHORTHAND_SELF: u32 = 1 << 18;
 /// Bits 0–7: the vector.
 const VECTOR: u32 = 0xFF;
 
-/// The contents of [`crate::register::COMMAND_LOW`].
+/// The contents of [`crate::register::COMMAND`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Command(u32);
 

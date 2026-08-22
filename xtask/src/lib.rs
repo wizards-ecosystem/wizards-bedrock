@@ -8,6 +8,7 @@
 
 pub mod cargo;
 pub mod cli;
+pub mod elf;
 pub mod image;
 pub mod paths;
 pub mod qemu;
@@ -42,6 +43,7 @@ pub fn run(task: Task) -> Result<()> {
         }
         Task::Check { message_format } => tasks::check(&paths, message_format.as_deref()),
         Task::Clippy => tasks::clippy(&paths),
+        Task::Doc => tasks::doc(&paths),
         Task::Fmt(mode) => tasks::fmt(&paths, mode),
         Task::Test => tasks::test(&paths),
         Task::TestBoot(profile) => tasks::test_boot(&paths, profile),

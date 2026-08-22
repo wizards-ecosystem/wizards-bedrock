@@ -16,6 +16,7 @@ use core::fmt::Write;
 #[cfg(feature = "selftest")]
 use ps2_keys::Key;
 use ps2_keys::{Decoder, KeyEvent, KeyState, Shift, us};
+use wost::panic::PanicToken;
 use wost::sync::SpinLock;
 
 use crate::arch::current::i8042::Controller;
@@ -79,9 +80,20 @@ pub(crate) fn init() {
     }
 }
 
-/// Drain everything the controller is holding. The idle loop's work.
+/// Drain what the controller is holding. The idle loop's work.
+///
+/// Bounded like every other wait in this kernel, and for the same reason: a
+/// controller that never stops producing complete events would otherwise own
+/// the idle loop for as long as it kept producing. The lock is already
+/// bounded per batch, so what this bound protects is the loop's turn, not the
+/// lock — anything still waiting is drained on the next tick, one tick later.
 pub(crate) fn poll() {
-    loop {
+    /// Batches per call. With [`BATCH`] events each, a tick's turn at the
+    /// keyboard is two orders of magnitude more than a person can type into
+    /// it, and finite either way.
+    const BATCHES: usize = 8;
+
+    for _ in 0..BATCHES {
         let mut deliveries = [None; BATCH];
         let count = drain_batch(&mut deliveries);
         for delivery in deliveries.iter().flatten() {
@@ -125,6 +137,15 @@ fn deliver(delivery: Delivery) {
             let _ = console.write_char(character);
         });
     }
+}
+
+/// Reclaim the keyboard lock on the terminal panic path.
+///
+/// A panicking kernel has no use for its keyboard, but it does have a use for
+/// not deadlocking: the panic can have been raised by a fault taken while this
+/// lock was held, and a fault is not masked by the interrupt flag.
+pub(crate) fn force_unlock(token: &PanicToken) {
+    KEYBOARD.force_unlock(token);
 }
 
 /// Whether the controller came up.

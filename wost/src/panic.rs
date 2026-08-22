@@ -35,3 +35,21 @@ pub fn enter() -> Option<PanicToken> {
     }
     Some(PanicToken(()))
 }
+
+/// Reclaim every lock `wost` owns, so the panic path can use what it needs.
+///
+/// The interrupt flag does not mask a fault, so any of these can be held by
+/// the code a panic interrupted — and the panic path may want to claim a port
+/// to report through, or read back what the legacy controllers are masking.
+/// Reclaiming is sound for exactly the reason
+/// [`SpinLock::force_unlock`](crate::sync::SpinLock::force_unlock) says: the
+/// holder can never resume.
+///
+/// **Every lock in a `static` inside this crate belongs in this function.** A
+/// new one that is not listed here is a deadlock waiting for the first panic
+/// raised while it is held, and nothing but this comment will catch it. The
+/// kernel reclaims its own locks separately; `wost` cannot see them.
+pub fn reclaim(panic: &PanicToken) {
+    crate::arch::current::pic::force_unlock(panic);
+    crate::arch::current::port::force_unlock(panic);
+}

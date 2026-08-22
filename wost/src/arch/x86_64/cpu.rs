@@ -1,6 +1,6 @@
 //! Direct CPU control: halting, feature discovery, and the protection bits.
 //!
-//! The interrupt flag lives in [`interrupt`](super::interrupt) instead, next to
+//! The interrupt flag lives in [`interrupt`] instead, next to
 //! the table whose existence is the precondition for setting it.
 
 use core::arch::asm;

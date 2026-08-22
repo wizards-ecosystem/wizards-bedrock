@@ -25,6 +25,7 @@ BUILD TASKS:
 CHECK TASKS:
     check             cargo check, host and kernel targets
     clippy            cargo clippy, host and kernel targets
+    doc               build the docs, failing on a broken doc link
     fmt               format the workspace
     test              run the host test suite
     test-boot         boot a self-test kernel in QEMU and require its verdict
@@ -70,6 +71,8 @@ pub enum Task {
     },
     /// Lint every crate.
     Clippy,
+    /// Build the documentation, so the doc-link lints fire.
+    Doc,
     /// Format the workspace.
     Fmt(FmtMode),
     /// Run the host tests.
@@ -155,6 +158,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         "vmware" => Ok(Task::Vmware(profile)),
         "check" => Ok(Task::Check { message_format }),
         "clippy" => Ok(Task::Clippy),
+        "doc" => Ok(Task::Doc),
         "fmt" => Ok(Task::Fmt(if check {
             FmtMode::Check
         } else {
@@ -265,5 +269,39 @@ mod tests {
     fn unknown_tasks_and_options_are_rejected() {
         assert!(parse_args(&["bulid"]).is_err());
         assert!(parse_args(&["build", "--fast"]).is_err());
+    }
+
+    /// A task the parser accepts but the help text never mentions is a task
+    /// nobody will run; one the help offers but the parser rejects is worse.
+    #[test]
+    fn every_task_the_parser_accepts_is_named_in_the_help() {
+        let names = [
+            "build",
+            "image",
+            "run",
+            "vmware",
+            "check",
+            "clippy",
+            "doc",
+            "fmt",
+            "test",
+            "test-boot",
+            "verify-vendor",
+            "ci",
+            "clean",
+        ];
+
+        for name in names {
+            assert!(parse_args(&[name]).is_ok(), "{name} does not parse");
+            assert!(
+                HELP.contains(&format!("\n    {name} ")),
+                "{name} is missing from the help text"
+            );
+        }
+    }
+
+    #[test]
+    fn the_doc_task_parses() {
+        assert_eq!(parse_args(&["doc"]).unwrap(), Task::Doc);
     }
 }

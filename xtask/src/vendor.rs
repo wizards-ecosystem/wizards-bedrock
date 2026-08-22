@@ -48,7 +48,32 @@ pub fn parse(listing: &str) -> Result<Vec<Entry>> {
         .collect()
 }
 
-/// Check every file listed beside `listing` against its recorded digest.
+/// Files a vendored directory carries as its own paperwork rather than as
+/// payload, and which therefore need no digest.
+///
+/// Everything else in the directory must be listed. A digest catches a file
+/// being *changed*; only this catches one being *added*, which is the easier
+/// of the two to slip past a reviewer.
+const PAPERWORK: &[&str] = &["CHECKSUMS", "LICENSE", "README.md"];
+
+/// Names in a vendored directory that neither an entry nor the directory's own
+/// paperwork accounts for, sorted so the report is stable.
+pub fn unaccounted<'a, I>(present: I, entries: &[Entry]) -> Vec<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut extra: Vec<String> = present
+        .into_iter()
+        .filter(|name| !PAPERWORK.contains(name))
+        .filter(|name| !entries.iter().any(|entry| entry.name == *name))
+        .map(str::to_string)
+        .collect();
+    extra.sort_unstable();
+    extra
+}
+
+/// Check every file beside `listing`: each entry against its recorded digest,
+/// and the directory against the listing.
 pub fn verify_listing(listing: &Path) -> Result<usize> {
     let text = std::fs::read_to_string(listing)
         .with_context(|| format!("reading {}", listing.display()))?;
@@ -67,6 +92,22 @@ pub fn verify_listing(listing: &Path) -> Result<usize> {
                 actual
             );
         }
+    }
+
+    let present = std::fs::read_dir(dir)
+        .with_context(|| format!("listing {}", dir.display()))?
+        .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
+        .collect::<std::io::Result<Vec<String>>>()
+        .with_context(|| format!("listing {}", dir.display()))?;
+
+    let extra = unaccounted(present.iter().map(String::as_str), &entries);
+    if !extra.is_empty() {
+        bail!(
+            "{} has files no digest accounts for: {}\n  add them to {} or remove them",
+            dir.display(),
+            extra.join(", "),
+            listing.display()
+        );
     }
     Ok(entries.len())
 }
@@ -115,5 +156,60 @@ mod tests {
     fn rejects_a_line_with_no_file_name() {
         assert!(parse(DIGEST).is_err());
         assert!(parse(&format!("{DIGEST}   ")).is_err());
+    }
+
+    fn listed(names: &[&str]) -> Vec<Entry> {
+        names
+            .iter()
+            .map(|name| Entry {
+                digest: DIGEST.to_string(),
+                name: (*name).to_string(),
+            })
+            .collect()
+    }
+
+    /// The gap a digest cannot close: a file that was *added* matches no
+    /// recorded hash because it has none.
+    #[test]
+    fn a_file_no_entry_lists_is_unaccounted_for() {
+        let entries = listed(&["BOOTX64.EFI"]);
+
+        assert_eq!(
+            unaccounted(["BOOTX64.EFI", "BOOTIA32.EFI"], &entries),
+            ["BOOTIA32.EFI"]
+        );
+    }
+
+    #[test]
+    fn a_directory_holding_exactly_what_is_listed_is_accounted_for() {
+        let entries = listed(&["BOOTX64.EFI"]);
+
+        assert!(unaccounted(["BOOTX64.EFI"], &entries).is_empty());
+        assert!(
+            unaccounted([], &entries).is_empty(),
+            "absence is the digest's job"
+        );
+    }
+
+    /// The directory's own paperwork carries no payload, so it needs no digest
+    /// — including `CHECKSUMS` itself, which could not hash itself anyway.
+    #[test]
+    fn paperwork_needs_no_digest() {
+        let entries = listed(&["BOOTX64.EFI"]);
+        let present = ["BOOTX64.EFI", "CHECKSUMS", "LICENSE", "README.md"];
+
+        assert!(unaccounted(present, &entries).is_empty());
+    }
+
+    /// Several strays are all reported at once, in a stable order, so fixing
+    /// them is one pass rather than one commit per file.
+    #[test]
+    fn every_stray_is_reported_in_a_stable_order() {
+        let entries = listed(&["BOOTX64.EFI"]);
+
+        assert_eq!(
+            unaccounted(["zebra.efi", "BOOTX64.EFI", "alpha.efi"], &entries),
+            ["alpha.efi", "zebra.efi"]
+        );
     }
 }

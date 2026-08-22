@@ -59,7 +59,11 @@ pub(crate) fn console_geometry() -> Option<wost::boot::FramebufferInfo> {
     guard.as_ref().map(Console::geometry)
 }
 
-/// Reclaim both device locks on the terminal panic path.
+/// Reclaim both output-device locks on the terminal panic path.
+///
+/// This module's two; the keyboard's is `input`'s and `wost`'s are reclaimed
+/// by [`wost::panic::reclaim`]. All three are called together from the panic
+/// handler.
 pub(crate) fn force_unlock(token: &PanicToken) {
     UART.force_unlock(token);
     CONSOLE.force_unlock(token);

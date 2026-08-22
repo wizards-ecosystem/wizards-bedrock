@@ -3,7 +3,7 @@
 //! The kernel cannot host `cargo test`: it is a `#![no_std] #![no_main]` binary,
 //! and the in-QEMU test harnesses need nightly. So the checks that need a real
 //! machine run here instead, on a kernel built with the `selftest` feature, and
-//! report their verdict through [`debug_exit`](crate::arch::current::debug_exit).
+//! report their verdict through [`crate::arch::current::debug_exit`].
 //!
 //! Everything here must be checkable *on the machine*. Anything that is pure
 //! arithmetic belongs in a `libs/` crate with ordinary unit tests instead.
@@ -70,6 +70,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a claimed port cannot be claimed twice",
         ports_are_exclusive(),
+    );
+    report.check(
+        "a claim covers the width it drives",
+        a_claim_covers_the_width_it_drives(),
     );
     report.check("a held lock excludes another holder", lock_excludes());
     report.check("a one-shot latch admits one caller", latch_admits_one());
@@ -233,9 +237,28 @@ fn channels_are_disjoint(geometry: FramebufferInfo) -> bool {
     red != 0 && green != 0 && blue != 0 && red & green == 0 && green & blue == 0 && red & blue == 0
 }
 
-/// COM1 is already owned by the serial driver, so a second claim must be refused.
+/// COM1 is already owned by the serial driver, so a second claim must be
+/// refused — the whole block, and any single port inside it.
 fn ports_are_exclusive() -> bool {
-    port::claim_block::<8>(uart::COM1).is_none()
+    port::claim_block::<8>(uart::COM1).is_none() && port::claim::<u8>(uart::COM1).is_none()
+}
+
+/// A claim covers the ports its access *reaches*, not just the one it names.
+///
+/// The two ports below COM1 are free, so a 32-bit claim starting there can
+/// only be refused because its last two ports are the serial driver's. The
+/// byte claim that follows proves both halves of that reading: the port really
+/// was free, so the refusal was about the width — and the refused claim left
+/// nothing behind on its way out. The third line closes the loop.
+///
+/// This spends port `0x3F6` for the life of the boot, which is why it belongs
+/// to a self-test kernel and not to one that ships.
+fn a_claim_covers_the_width_it_drives() -> bool {
+    const BELOW_COM1: u16 = uart::COM1 - 2;
+
+    port::claim::<u32>(BELOW_COM1).is_none()
+        && port::claim::<u8>(BELOW_COM1).is_some()
+        && port::claim::<u8>(BELOW_COM1).is_none()
 }
 
 fn lock_excludes() -> bool {

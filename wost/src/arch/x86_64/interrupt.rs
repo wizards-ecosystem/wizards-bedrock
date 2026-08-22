@@ -8,7 +8,7 @@
 //! Every gate is an interrupt gate, so a handler starts with interrupts
 //! disabled. See `docs/006-cpu-fundamentals.md` for the frame layout argument.
 //!
-//! The interrupt flag itself lives here rather than in [`cpu`](super::cpu),
+//! The interrupt flag itself lives here rather than in [`cpu`],
 //! because the reason it is safe to set is a property of this module: the table
 //! is loaded, and every one of its gates is present.
 

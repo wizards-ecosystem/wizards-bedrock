@@ -1,8 +1,9 @@
 //! The check, format, and housekeeping tasks.
 //!
-//! Each cargo-driven task runs twice — once for the host packages, once for the
-//! cross-compiled ones — reading both lists from [`crate::paths`], so a local
-//! run and a CI run cannot drift apart.
+//! Each cargo-driven task runs over every configuration the gate covers — the
+//! host packages, and the kernel packages with and without their self-test
+//! feature — reading the package lists from [`crate::paths`], so a local run
+//! and a scripted one cannot drift apart.
 
 use std::time::Duration;
 
@@ -13,12 +14,24 @@ use crate::cli::{CleanScope, FmtMode};
 use crate::paths::{self, Paths};
 use crate::{image, qemu, vendor};
 
+/// Whether a subcommand should be pointed at a package's test and bench
+/// targets as well as the ones it ships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// Everything a package builds, test code included. What `check` and
+    /// `clippy` want, and the reason the host half sees its own tests.
+    AllTargets,
+    /// What the subcommand builds by default. `cargo doc` rejects
+    /// `--all-targets` outright rather than ignoring it.
+    Default,
+}
+
 /// Type-check every crate.
 pub fn check(paths: &Paths, message_format: Option<&str>) -> Result<()> {
     let extra: Vec<String> = message_format
         .map(|format| vec![format!("--message-format={format}")])
         .unwrap_or_default();
-    for_each_half(paths, "check", "check", &extra, &[])
+    for_each_half(paths, "check", "check", Scope::AllTargets, &extra, &[])
 }
 
 /// Lint every crate, treating warnings as errors.
@@ -31,8 +44,27 @@ pub fn clippy(paths: &Paths) -> Result<()> {
         paths,
         "clippy",
         "clippy",
+        Scope::AllTargets,
         &[],
         &["-D".to_string(), "warnings".to_string()],
+    )
+}
+
+/// Build the documentation, so the doc-link lints have something to fire on.
+///
+/// `missing_docs` notices a doc comment that is absent; nothing notices one
+/// that points at a name since renamed or made private, because
+/// `rustdoc::broken_intra_doc_links` only fires under rustdoc — which no other
+/// gate step runs. The lints themselves are declared in `[workspace.lints]`,
+/// so an editor reports them too; this is what makes them a gate.
+pub fn doc(paths: &Paths) -> Result<()> {
+    for_each_half(
+        paths,
+        "docs",
+        "doc",
+        Scope::Default,
+        &["--no-deps".to_string()],
+        &[],
     )
 }
 
@@ -58,7 +90,7 @@ pub fn test(paths: &Paths) -> Result<()> {
 /// This is the only automated check that exercises the kernel on a machine
 /// rather than as arithmetic on the host.
 pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
-    let image = image::build(paths, profile, &[qemu::SELFTEST_FEATURE])?;
+    let image = image::build(paths, profile, &[paths::SELFTEST_FEATURE])?;
     qemu::run_selftest(paths, &image, SELFTEST_TIMEOUT)
 }
 
@@ -70,6 +102,7 @@ const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
 pub fn ci(paths: &Paths) -> Result<()> {
     fmt(paths, FmtMode::Check)?;
     clippy(paths)?;
+    doc(paths)?;
     test(paths)?;
     vendor::verify(paths)?;
     test_boot(paths, Profile::Release)?;
@@ -92,52 +125,94 @@ pub fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
     Ok(())
 }
 
-/// Run `subcommand` over the host packages and then the kernel packages.
+/// One pass of a cargo subcommand: which packages, for which target, with
+/// which features.
+///
+/// There are three, not two. The host packages are one; the kernel packages
+/// are *two*, because a cargo feature is a different crate graph and a lint
+/// that fires in one configuration need not fire in the other. Linting only
+/// the self-test build is how `dead_code` on a constant used solely by
+/// `selftest` reached a release image unreported (D-22).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Pass {
+    packages: &'static [&'static str],
+    target: Option<&'static str>,
+    features: Option<&'static str>,
+}
+
+impl Pass {
+    /// How this pass is named in the log line and in a failure.
+    fn label(self) -> String {
+        match (self.target, self.features) {
+            (None, _) => "host".to_string(),
+            (Some(target), None) => target.to_string(),
+            (Some(target), Some(features)) => format!("{target} +{features}"),
+        }
+    }
+}
+
+/// Every configuration the gate covers.
+///
+/// The shipped kernel comes before the self-test one so the fastest failure is
+/// also the one that matters most: an image nobody could boot.
+const PASSES: &[Pass] = &[
+    Pass {
+        packages: paths::HOST_PACKAGES,
+        target: None,
+        features: None,
+    },
+    Pass {
+        packages: paths::KERNEL_PACKAGES,
+        target: Some(paths::KERNEL_TARGET),
+        features: None,
+    },
+    Pass {
+        packages: paths::KERNEL_PACKAGES,
+        target: Some(paths::KERNEL_TARGET),
+        features: Some(paths::SELFTEST_FEATURE_SPEC),
+    },
+];
+
+/// Run `subcommand` over every configuration in [`PASSES`].
 fn for_each_half(
     paths: &Paths,
     description: &str,
     subcommand: &str,
+    scope: Scope,
     extra: &[String],
     after_dashes: &[String],
 ) -> Result<()> {
-    for (packages, target) in [
-        (paths::HOST_PACKAGES, None),
-        (paths::KERNEL_PACKAGES, Some(paths::KERNEL_TARGET)),
-    ] {
-        let args = half_args(subcommand, packages, target, extra, after_dashes);
-        let half = target.unwrap_or("host");
-        cargo::run(paths.root(), &format!("{description} ({half})"), &args)?;
+    for pass in PASSES {
+        let args = half_args(subcommand, *pass, scope, extra, after_dashes);
+        let label = pass.label();
+        cargo::run(paths.root(), &format!("{description} ({label})"), &args)?;
     }
     Ok(())
 }
 
-/// The command line for one half of the workspace.
+/// The command line for one pass.
 ///
-/// `--all-targets` goes to the host half only. The kernel crates have no test
-/// or bench targets and cannot have any, but the host crates do — and without
-/// it neither `check` nor `clippy` ever sees their test code. A `useless_vec`
-/// in `sha256.rs`'s tests sat there unreported until someone ran clippy by hand.
-///
-/// The kernel half gets the self-test feature for the same reason: the checks
-/// in `kernel/src/selftest.rs` are code too, the feature only adds items, and
-/// without it the gate would never lint them.
+/// `--all-targets` goes to the host half only, and only for a subcommand that
+/// takes it. The kernel crates have no test or bench targets and cannot have
+/// any, but the host crates do — and without it neither `check` nor `clippy`
+/// ever sees their test code. A `useless_vec` in `sha256.rs`'s tests sat there
+/// unreported until someone ran clippy by hand.
 fn half_args(
     subcommand: &str,
-    packages: &[&str],
-    target: Option<&str>,
+    pass: Pass,
+    scope: Scope,
     extra: &[String],
     after_dashes: &[String],
 ) -> Vec<String> {
     let mut args = vec![subcommand.to_string()];
-    args.extend(cargo::package_args(packages));
-    match target {
-        Some(target) => args.extend([
-            "--target".to_string(),
-            target.to_string(),
-            "--features".to_string(),
-            format!("{}/{}", paths::KERNEL_PACKAGE, qemu::SELFTEST_FEATURE),
-        ]),
-        None => args.push("--all-targets".to_string()),
+    args.extend(cargo::package_args(pass.packages));
+    match pass.target {
+        Some(target) => args.extend(["--target".to_string(), target.to_string()]),
+        None if scope == Scope::AllTargets => args.push("--all-targets".to_string()),
+        None => {}
+    }
+    if let Some(features) = pass.features {
+        args.extend(["--features".to_string(), features.to_string()]);
     }
     args.extend_from_slice(extra);
     if !after_dashes.is_empty() {
@@ -151,8 +226,24 @@ fn half_args(
 mod tests {
     use super::*;
 
-    fn args(target: Option<&str>) -> Vec<String> {
-        half_args("clippy", &["pixel"], target, &[], &["-D".to_string()])
+    const PIXEL: &[&str] = &["pixel"];
+
+    fn pass(target: Option<&'static str>, features: Option<&'static str>) -> Pass {
+        Pass {
+            packages: PIXEL,
+            target,
+            features,
+        }
+    }
+
+    fn args(target: Option<&'static str>) -> Vec<String> {
+        half_args(
+            "clippy",
+            pass(target, None),
+            Scope::AllTargets,
+            &[],
+            &["-D".to_string()],
+        )
     }
 
     #[test]
@@ -174,13 +265,24 @@ mod tests {
     }
 
     #[test]
-    fn the_kernel_half_lints_the_self_test_code() {
-        let args = args(Some(paths::KERNEL_TARGET));
-        let position = args.iter().position(|arg| arg == "--features");
-        assert_eq!(
-            position.map(|index| args[index + 1].as_str()),
-            Some("wizard-kernel/selftest")
+    fn a_pass_with_features_names_them_and_one_without_names_none() {
+        let with = half_args(
+            "clippy",
+            pass(
+                Some(paths::KERNEL_TARGET),
+                Some(paths::SELFTEST_FEATURE_SPEC),
+            ),
+            Scope::AllTargets,
+            &[],
+            &[],
         );
+        let position = with.iter().position(|arg| arg == "--features");
+        assert_eq!(
+            position.map(|index| with[index + 1].as_str()),
+            Some(paths::SELFTEST_FEATURE_SPEC)
+        );
+
+        assert!(!args(Some(paths::KERNEL_TARGET)).contains(&"--features".to_string()));
     }
 
     #[test]
@@ -190,7 +292,71 @@ mod tests {
 
     #[test]
     fn nothing_follows_a_bare_double_dash() {
-        let args = half_args("check", &["pixel"], None, &[], &[]);
+        let args = half_args("check", pass(None, None), Scope::AllTargets, &[], &[]);
         assert!(!args.contains(&"--".to_string()));
+    }
+
+    /// `cargo doc` rejects `--all-targets` rather than ignoring it, so the
+    /// scope has to be part of the call and not inferred from the half.
+    #[test]
+    fn a_default_scope_asks_for_no_extra_targets() {
+        let args = half_args("doc", pass(None, None), Scope::Default, &[], &[]);
+
+        assert_eq!(args, ["doc", "--package", "pixel"]);
+    }
+
+    /// The hole this table closes: the gate used to lint the kernel only with
+    /// the self-test feature on, so the configuration that ships was never
+    /// linted at all, and two `dead_code` warnings rode a release image out.
+    #[test]
+    fn the_gate_covers_the_kernel_with_and_without_the_self_test_feature() {
+        let kernel: Vec<Option<&str>> = PASSES
+            .iter()
+            .filter(|pass| pass.packages == paths::KERNEL_PACKAGES)
+            .map(|pass| pass.features)
+            .collect();
+
+        assert_eq!(kernel, [None, Some(paths::SELFTEST_FEATURE_SPEC)]);
+    }
+
+    #[test]
+    fn the_gate_covers_the_host_packages_exactly_once() {
+        let host = PASSES
+            .iter()
+            .filter(|pass| pass.packages == paths::HOST_PACKAGES)
+            .count();
+
+        assert_eq!(host, 1);
+    }
+
+    /// Every pass has to be distinguishable in the log, or a failure in one
+    /// configuration reads as a failure in the other.
+    #[test]
+    fn every_pass_is_labelled_distinctly() {
+        let labels: Vec<String> = PASSES.iter().map(|pass| pass.label()).collect();
+
+        for (index, label) in labels.iter().enumerate() {
+            assert!(!label.is_empty());
+            assert!(
+                !labels[index + 1..].contains(label),
+                "two passes both called {label}"
+            );
+        }
+    }
+
+    /// Kernel passes are cross-compiled and host passes are not — the property
+    /// that stops a kernel crate being checked for the host triple, which is
+    /// what produces phantom errors across every kernel file.
+    #[test]
+    fn only_the_host_pass_builds_for_the_host() {
+        for pass in PASSES {
+            let cross = pass.target == Some(paths::KERNEL_TARGET);
+            assert_eq!(
+                cross,
+                pass.packages == paths::KERNEL_PACKAGES,
+                "{}",
+                pass.label()
+            );
+        }
     }
 }
