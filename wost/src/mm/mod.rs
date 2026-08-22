@@ -109,6 +109,7 @@ pub fn init(map: &MemoryMap, direct: DirectMap) -> Report {
     }
 
     DIRECT_MAP_OFFSET.store(direct.offset(), Ordering::Release);
+    *MAP.lock() = Some(*map);
 
     let mut ignored = 0;
     let mut frames = FRAMES.lock();
@@ -144,6 +145,48 @@ pub fn managed_frames() -> usize {
     FRAMES.lock().managed_count()
 }
 
+/// Read-only access to `len` bytes of physical memory at `address`.
+///
+/// For firmware tables — ACPI's, and whatever follows them — which live at
+/// addresses the bootloader reports and nothing else ever owns.
+///
+/// Safe because the precondition is checked rather than promised, which is
+/// what `005-code-conventions.md` asks of every `wost` export. The range is
+/// refused unless the memory map says **no part of it is allocatable**: a
+/// slice over memory the frame allocator might hand out would alias a
+/// `Frame`, and no comment could prevent that. Firmware regions are exactly
+/// the ones the allocator was told to leave alone (D-43), so the check admits
+/// what it should and nothing more.
+///
+/// The lifetime is `'static` because such regions are never freed and never
+/// mapped elsewhere: the direct map has covered them since the switch, and
+/// the allocator will not touch them.
+pub fn read_physical(address: Paddr, len: usize) -> Option<&'static [u8]> {
+    let end = address.checked_add(len as u64)?;
+    let guard = MAP.lock();
+    let overlaps_allocatable = guard
+        .as_ref()?
+        .regions()
+        .filter(|region| region.kind.is_allocatable())
+        .any(|region| address < region.base.saturating_add(region.len) && region.base < end);
+    drop(guard);
+
+    if overlaps_allocatable {
+        return None;
+    }
+
+    let base = direct_pointer(address, len as u64)?;
+    // SAFETY: the memory map says no part of this range is allocatable, so no
+    // `Frame` can ever name it and nothing else in the kernel writes it;
+    // `direct_pointer` confirmed the direct map covers all `len` bytes. A
+    // shared reference to memory only firmware ever wrote is sound, and the
+    // region outlives the kernel.
+    Some(unsafe { core::slice::from_raw_parts(base.cast_const(), len) })
+}
+
+/// The memory map [`init`] was given, for [`read_physical`]'s check.
+static MAP: SpinLock<Option<MemoryMap>> = SpinLock::new(None);
+
 /// The direct map [`init`] recorded, or `None` before it has run.
 ///
 /// Handed back so callers that already hold a physical address can name the
@@ -164,6 +207,7 @@ pub fn direct_map() -> Option<DirectMap> {
 /// reports free memory would otherwise spin forever.
 pub(crate) fn force_unlock(panic: &PanicToken) {
     FRAMES.force_unlock(panic);
+    MAP.force_unlock(panic);
 }
 
 /// One physical frame, owned for as long as this value lives.

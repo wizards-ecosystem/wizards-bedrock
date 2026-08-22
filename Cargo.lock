@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "acpi-tables"
+version = "0.1.0"
+
+[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -91,6 +95,7 @@ version = "0.1.0"
 name = "wizard-kernel"
 version = "0.1.0"
 dependencies = [
+ "acpi-tables",
  "noto-sans-mono-bitmap",
  "ps2-keys",
  "wost",

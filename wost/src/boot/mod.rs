@@ -539,6 +539,11 @@ pub struct BootInfo {
     pub direct_map: Result<DirectMap, HandoffError>,
     /// Where the bootloader placed the kernel image, or why it did not say.
     pub image: Result<ImageAddress, HandoffError>,
+    /// The address of the ACPI root pointer, or why there is none.
+    ///
+    /// Virtual from base revision 4, which is one of the reasons D-42 asked
+    /// for it: the table tree is readable before the kernel maps anything.
+    pub rsdp: Result<u64, HandoffError>,
 }
 
 /// Why part of the boot handoff is missing.
@@ -571,7 +576,7 @@ pub mod __macro {
     pub use limine::BaseRevision;
     pub use limine::request::{
         ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest,
-        RequestsEndMarker, RequestsStartMarker,
+        RequestsEndMarker, RequestsStartMarker, RsdpRequest,
     };
 
     pub use super::limine_glue::base_revision;
@@ -633,6 +638,12 @@ macro_rules! entry {
 
         #[used]
         #[allow(unsafe_code)]
+        #[unsafe(link_section = ".requests")]
+        static __WOST_RSDP: $crate::boot::__macro::RsdpRequest =
+            $crate::boot::__macro::RsdpRequest::new();
+
+        #[used]
+        #[allow(unsafe_code)]
         #[unsafe(link_section = ".requests_end_marker")]
         static __WOST_REQUESTS_END: $crate::boot::__macro::RequestsEndMarker =
             $crate::boot::__macro::RequestsEndMarker::new();
@@ -646,6 +657,7 @@ macro_rules! entry {
                 &__WOST_MEMORY_MAP,
                 &__WOST_DIRECT_MAP,
                 &__WOST_IMAGE,
+                &__WOST_RSDP,
                 __WOST_ENTRY_SIGNATURE,
             )
         }

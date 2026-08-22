@@ -28,6 +28,7 @@ use x86_paging::{ENTRIES, Entry, EntryError, Flags, LARGE_PAGE_SIZE, Level, PAGE
 
 use super::cpu;
 use crate::mm::{self, Paddr};
+use crate::mmio::MmioRegion;
 use crate::sync::Once;
 
 /// Why a mapping could not be made.
@@ -116,6 +117,8 @@ impl core::error::Error for ActivateError {}
 #[derive(Debug)]
 pub struct AddressSpace {
     root: Paddr,
+    /// Next free address in the device window.
+    device_next: u64,
 }
 
 impl AddressSpace {
@@ -126,7 +129,10 @@ impl AddressSpace {
     /// [`MapError::OutOfMemory`] if no frame is free for the top-level table.
     pub fn new() -> Result<Self, MapError> {
         let root = take_table()?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            device_next: DEVICE_WINDOW_START,
+        })
     }
 
     /// The physical address of the top-level table — what `CR3` would hold.
@@ -186,6 +192,48 @@ impl AddressSpace {
             offset += level.span();
         }
         Ok(())
+    }
+
+    /// Map a device's registers, and hand back the claim on them.
+    ///
+    /// Uncacheable and never executable. Device mappings are deliberately kept
+    /// out of the direct map (D-45) so that reaching a device is always a
+    /// deliberate act with the right memory type, and this is that act.
+    ///
+    /// Addresses come from a range of kernel space reserved for devices, so a
+    /// device is never at its physical address and two devices are never at the
+    /// same one. `len` is rounded up to whole pages.
+    ///
+    /// # Errors
+    ///
+    /// As [`map`](Self::map), plus [`MapError::OutOfMemory`] if the device
+    /// window is exhausted.
+    pub fn map_device(&mut self, physical: Paddr, len: u64) -> Result<DeviceMapping, MapError> {
+        let offset = physical % PAGE_SIZE;
+        let base = physical - offset;
+        let pages = (len + offset).div_ceil(PAGE_SIZE) * PAGE_SIZE;
+
+        let virtual_base = self
+            .device_next
+            .checked_add(pages)
+            .filter(|end| *end <= DEVICE_WINDOW_END)
+            .map(|_| self.device_next)
+            .ok_or(MapError::OutOfMemory)?;
+
+        self.map(
+            virtual_base,
+            base,
+            pages,
+            Flags::WRITABLE
+                .union(Flags::NO_EXECUTE)
+                .union(Flags::NO_CACHE),
+        )?;
+        self.device_next = virtual_base + pages;
+
+        Ok(DeviceMapping {
+            address: virtual_base + offset,
+            len,
+        })
     }
 
     /// Install one entry at `target`, allocating the tables above it.
@@ -381,4 +429,54 @@ fn translate_in(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags)> {
         table = entry.address();
     }
     None
+}
+
+/// First address of the window device registers are mapped into.
+///
+/// Well clear of the direct map below it and the kernel image above it, so a
+/// device address is never mistaken for either.
+const DEVICE_WINDOW_START: u64 = 0xffff_ff00_0000_0000;
+
+/// One page past the last address device registers may occupy.
+const DEVICE_WINDOW_END: u64 = 0xffff_ff01_0000_0000;
+
+/// A claim on a device's registers, made while the tables were being built.
+///
+/// Held rather than used until the space is active — the mapping does not
+/// exist for the CPU until then. Not `Copy` or `Clone` on purpose: it is the
+/// evidence that exactly one caller owns this device's window, which is what
+/// makes [`claim`](Self::claim) safe to expose without an obligation.
+#[derive(Debug)]
+pub struct DeviceMapping {
+    address: u64,
+    len: u64,
+}
+
+impl DeviceMapping {
+    /// Where the registers are readable, once the space is active.
+    pub const fn address(&self) -> u64 {
+        self.address
+    }
+
+    /// Take the region these registers are reached through.
+    ///
+    /// Safe because every part of `MmioRegion::new`'s contract is discharged
+    /// by construction rather than promised. The mapping was made by
+    /// [`AddressSpace::map_device`] over a physical range the direct map
+    /// excludes, at an address in a window nothing else uses; it is global and
+    /// permanent, because nothing unmaps; and this value cannot be copied, so
+    /// no second region can cover the same bytes.
+    ///
+    /// `None` until the space holding the mapping has been activated — before
+    /// that the address translates to nothing, and a region over it would fault
+    /// on first use.
+    pub fn claim(self) -> Option<MmioRegion> {
+        if !is_active() || translate(self.address).is_none() {
+            return None;
+        }
+        // SAFETY: see the doc comment above — the mapping is live, exclusive,
+        // permanent, and 4-byte aligned because it is page-aligned plus the
+        // device's own offset, which `map_device` preserved.
+        Some(unsafe { MmioRegion::new(self.address as *mut u8, self.len as usize) })
+    }
 }

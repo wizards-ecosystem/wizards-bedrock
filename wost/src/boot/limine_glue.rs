@@ -4,7 +4,7 @@ use limine::BaseRevision;
 use limine::framebuffer::MemoryModel;
 use limine::memory_map::EntryType;
 use limine::request::{
-    ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest,
+    ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest, RsdpRequest,
 };
 
 use pixel::{Channel, PixelFormat};
@@ -44,6 +44,7 @@ pub fn enter(
     memory_map: &'static MemoryMapRequest,
     hhdm: &'static HhdmRequest,
     image: &'static ExecutableAddressRequest,
+    rsdp: &'static RsdpRequest,
     kernel_main: fn(BootInfo) -> !,
 ) -> ! {
     kernel_main(BootInfo {
@@ -52,6 +53,7 @@ pub fn enter(
         memory_map: take_memory_map(memory_map),
         direct_map: take_direct_map(hhdm),
         image: take_image(image),
+        rsdp: take_rsdp(rsdp),
     })
 }
 
@@ -62,6 +64,15 @@ fn take_image(request: &'static ExecutableAddressRequest) -> Result<ImageAddress
         response.physical_base(),
         response.virtual_base(),
     ))
+}
+
+/// The ACPI root pointer's address.
+fn take_rsdp(request: &'static RsdpRequest) -> Result<u64, HandoffError> {
+    let response = request.get_response().ok_or(HandoffError::NoResponse)?;
+    match response.address() as u64 {
+        0 => Err(HandoffError::Empty),
+        address => Ok(address),
+    }
 }
 
 /// The bootloader's memory map, translated into types that name no bootloader.

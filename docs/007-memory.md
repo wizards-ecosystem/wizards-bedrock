@@ -58,7 +58,8 @@ switch has survived.
 | 2 | Page-table encoding in `libs/`; `wost` builds its own tables (kernel, stacks with guard pages, framebuffer, direct map), W^X-correct; CR3 switch | ✅ 2026-08-22 |
 | 3 | Protection completion: W^X verified by read-back, zero-on-allocate; KASLR decision executed or deferred on the record | ✅ 2026-08-22 |
 | 4 | Kernel heap (`alloc` enabled); console back-buffer retires the scroll read-back | ✅ 2026-08-22 |
-| 5 | Device mappings: I/O APIC up, IRQ 1 routed, polled keyboard drain retires (D-37); framebuffer write-combining (D-48) | |
+| 5 | Device mappings: I/O APIC up, IRQ 1 routed, polled keyboard drain retires (D-37) | ✅ 2026-08-22 |
+| 6 | Framebuffer write-combining, on slice 4's back buffer (D-48) | |
 
 Memory *objects* — the kernel-object substrate Phase 5's handles will name —
 are scoped at phase start: either a sixth slice here or the opening of
@@ -302,3 +303,48 @@ identified correctly and the sequencing loosely: the dependency runs
 back-buffer → WC, so the back buffer alone leaves nothing wrong, while WC alone
 would have made every scroll far worse. WC moves to slice 5 with its argument
 intact and its precondition now satisfied.
+
+## Slice 5 — the wall comes down (2026-08-22)
+
+D-33 called the unmappable device hole "the wall itself". It is down: the I/O
+APIC is mapped, IRQ 1 is routed, and the keyboard interrupts rather than being
+polled from the tick. D-37 is retired.
+
+**The ordering was forced, not chosen.** D-45 made mapping one-way, so a
+device's window has to be known while the tables are still being written — but
+devices are discovered by reading ACPI. The two only reconcile one way: read
+ACPI *before* building, while the bootloader's direct map still covers the
+tables, and redeem the claim on the window after the switch. That constraint
+turned out to be a feature. A device the kernel has not decided to map is not
+merely unmapped; it is unmappable, and `DeviceMapping` — neither `Copy` nor
+`Clone` — is what makes handing out an `MmioRegion` for one a safe function.
+
+**Firmware is the least trustworthy input the kernel has**, so `libs/acpi-tables`
+validates before it trusts and refuses rather than panics: seventeen host tests
+including a zero-length entry that would otherwise loop forever, an entry
+running past its table, and a truncated entry of a known kind. Interrupt source
+overrides are honoured — assuming `irq == gsi` is the classic way to program an
+I/O APIC that then delivers nothing.
+
+**The check that had never failed.** "An injected keystroke arrives" passed at
+every step of this work, including the steps where nothing was being delivered
+by interrupt at all — because `await_key` polled the controller itself, so it
+proved a keystroke arrived and said nothing about *how*. Rewritten to watch
+what the handler delivered, it went red at once: the line was routed, the
+vector was right, and the i8042 had been configured by Phase 2 to raise no
+interrupts (D-37, correctly, at the time).
+
+That is the third check this phase whose shape hid a defect — after D-43's
+identity comparison and D-47's dependence on allocator call ordering — and the
+three together are the phase's most transferable lesson. **A check that has
+never failed is not evidence; it is an untested claim.** Two of the three were
+caught by D-28's break-it-once rule. The third was caught by asking what a
+passing check would still permit.
+
+## What is left
+
+Slice 6 is write-combining, which D-48 moved here because it needs a
+framebuffer mapping of the kernel's own with PAT bits — device-mapping work,
+now that `map_device` exists — and because it was always gated on slice 4's
+back buffer, which now exists too. The phase's other outstanding item is D-46's
+KASLR deferral, which is Phase 12's.

@@ -9,6 +9,8 @@ use wost::boot::{self, DirectMap, HandoffError, ImageAddress, MemoryKind, Memory
 use wost::mm;
 use x86_paging::Flags;
 
+use crate::acpi::Interrupts;
+use crate::arch::current::ioapic::IoApic;
 use crate::{debug, info, warn};
 
 /// Bytes in a page frame.
@@ -90,24 +92,77 @@ pub(crate) fn init_paging(
     map: Result<MemoryMap, HandoffError>,
     direct: Result<DirectMap, HandoffError>,
     image: Result<ImageAddress, HandoffError>,
-) {
+    rsdp: Result<u64, HandoffError>,
+) -> Option<Routing> {
     let (Ok(map), Ok(direct), Ok(image)) = (map, direct, image) else {
         warn!("paging: incomplete handoff; staying on the bootloader's tables");
-        return;
+        return None;
     };
 
-    let space = match build(&map, direct, image) {
-        Ok(space) => space,
+    // ACPI is read *before* the tables are built, and the ordering is forced:
+    // D-45 made mapping one-way, so a device's window has to be known while
+    // the tables are still being written. The tables are readable now because
+    // the bootloader's direct map still covers them (D-49).
+    let interrupts = match rsdp {
+        Ok(rsdp) => crate::acpi::interrupts(rsdp),
         Err(reason) => {
-            warn!("paging: {reason}; staying on the bootloader's tables");
-            return;
+            warn!("acpi: {reason}; no interrupt routing");
+            None
         }
     };
 
+    let mut space = match build(&map, direct, image) {
+        Ok(space) => space,
+        Err(reason) => {
+            warn!("paging: {reason}; staying on the bootloader's tables");
+            return None;
+        }
+    };
+
+    // Claimed after the switch, mapped before it.
+    let pending = interrupts.and_then(|interrupts| {
+        match space.map_device(u64::from(interrupts.io_apic().address), IO_APIC_WINDOW) {
+            Ok(mapping) => Some((mapping, interrupts)),
+            Err(reason) => {
+                warn!("ioapic: not mapped: {reason}; no interrupt routing");
+                None
+            }
+        }
+    });
+
     match paging::activate(space) {
         Ok(()) => info!("paging: running on our own tables"),
-        Err(reason) => warn!("paging: refused to switch: {reason}"),
+        Err(reason) => {
+            warn!("paging: refused to switch: {reason}");
+            return None;
+        }
     }
+
+    let (mapping, interrupts) = pending?;
+    let registers = mapping.claim()?;
+    match IoApic::take(registers, interrupts.io_apic().gsi_base) {
+        Ok(io_apic) => Some(Routing {
+            io_apic,
+            interrupts,
+        }),
+        Err(reason) => {
+            warn!("ioapic: registers unreadable: {reason}; no interrupt routing");
+            None
+        }
+    }
+}
+
+/// Bytes of register window an I/O APIC occupies. The index/data pair sits in
+/// the first 32; a page is the smallest thing worth mapping.
+const IO_APIC_WINDOW: u64 = 4096;
+
+/// The interrupt controller ACPI described, ready to route lines.
+#[derive(Debug)]
+pub(crate) struct Routing {
+    /// The controller itself.
+    pub(crate) io_apic: IoApic,
+    /// What ACPI said about which line goes where.
+    pub(crate) interrupts: Interrupts,
 }
 
 /// Lay out the kernel's address space.

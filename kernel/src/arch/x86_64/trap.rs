@@ -43,6 +43,11 @@ fn on_trap(frame: &mut TrapFrame) {
             apic::end_of_interrupt();
         }
 
+        vector::KEYBOARD => {
+            crate::input::on_interrupt();
+            apic::end_of_interrupt();
+        }
+
         // Deliberately not dismissed: a spurious interrupt is the APIC saying
         // it had nothing to deliver, so it never set an in-service bit and
         // dismissing one would retire a real interrupt underneath it.

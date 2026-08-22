@@ -7,6 +7,7 @@ use wost::boot::Framebuffer;
 use wost::panic::PanicToken;
 use wost::sync::SpinLock;
 
+use crate::arch::current::ioapic::IoApic;
 use crate::arch::current::uart::{self, Uart, UartError};
 use crate::console::Console;
 use crate::theme;
@@ -67,6 +68,7 @@ pub(crate) fn console_geometry() -> Option<wost::boot::FramebufferInfo> {
 pub(crate) fn force_unlock(token: &PanicToken) {
     UART.force_unlock(token);
     CONSOLE.force_unlock(token);
+    IO_APIC.force_unlock(token);
 }
 
 /// Give the console's framebuffer a shadow in RAM.
@@ -96,4 +98,22 @@ pub(crate) fn console_has_back_buffer() -> bool {
         .lock()
         .as_ref()
         .is_some_and(|console| console.has_back_buffer())
+}
+
+/// The I/O APIC, once a line has been routed through it.
+///
+/// Kept because the controller owns its register window for the life of the
+/// kernel and the boot-time checks read routing back out of it. On the panic
+/// path's list like every other `static` lock.
+static IO_APIC: SpinLock<Option<IoApic>> = SpinLock::new(None);
+
+/// Keep the controller a line was just routed through.
+pub(crate) fn keep_io_apic(io_apic: IoApic) {
+    *IO_APIC.lock() = Some(io_apic);
+}
+
+/// Ask the I/O APIC something, if there is one.
+#[cfg(feature = "selftest")]
+pub(crate) fn with_io_apic<T>(f: impl FnOnce(&mut IoApic) -> T) -> Option<T> {
+    IO_APIC.lock().as_mut().map(f)
 }

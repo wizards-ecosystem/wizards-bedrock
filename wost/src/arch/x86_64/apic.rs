@@ -271,6 +271,16 @@ pub fn error_status() -> u32 {
     read(register::ERROR_STATUS) as u32
 }
 
+/// This processor's local APIC identifier.
+///
+/// What an I/O APIC redirection entry names as an interrupt's destination in
+/// physical mode. Reads as zero before the controller is up — which is also
+/// the boot processor's usual identifier, so a caller that must tell the two
+/// apart asks [`is_enabled`] first.
+pub fn id() -> u32 {
+    read(register::ID) as u32
+}
+
 /// Whether the APIC is software-enabled and therefore delivering.
 pub fn is_enabled() -> bool {
     REGISTERS_READY.load(Ordering::Acquire)

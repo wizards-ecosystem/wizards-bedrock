@@ -42,3 +42,10 @@ pub(crate) const LOCAL_APIC: Vectors = Vectors {
     spurious: SPURIOUS,
     error: ERROR,
 };
+
+/// The keyboard controller's line, routed through the I/O APIC.
+///
+/// Beside [`TIMER`] and for the same reason: clear of 0x20–0x2F, where slice 2
+/// of Phase 2 remapped the legacy controllers, so a leaked legacy interrupt
+/// still panics as unexpected instead of arriving here as a keystroke.
+pub(crate) const KEYBOARD: u8 = 0x42;

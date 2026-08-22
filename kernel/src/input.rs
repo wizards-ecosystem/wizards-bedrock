@@ -12,12 +12,11 @@
 //! for its keyboard.
 
 use core::fmt::Write;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(feature = "selftest")]
-use ps2_keys::Key;
-use ps2_keys::{Decoder, KeyEvent, KeyState, Shift, us};
+use ps2_keys::{Decoder, Key, KeyEvent, KeyState, Shift, us};
 use wost::panic::PanicToken;
-use wost::sync::SpinLock;
+use wost::sync::{Once, SpinLock};
 
 use crate::arch::current::i8042::Controller;
 use crate::{debug, dev, info, warn};
@@ -74,7 +73,7 @@ pub(crate) fn init() {
                 decoder: Decoder::new(),
                 shift: Shift::new(),
             });
-            info!("keyboard: polled, scancode set 2");
+            info!("keyboard: up, scancode set 2");
         }
         Err(reason) => warn!("keyboard: {reason}; running without input"),
     }
@@ -132,6 +131,7 @@ fn drain_batch(deliveries: &mut [Option<Delivery>; BATCH]) -> usize {
 /// nesting.
 fn deliver(delivery: Delivery) {
     debug!("key: {:?} {:?}", delivery.event.key, delivery.event.state);
+    WATCH.lock().observe(delivery.event);
     if let Some(character) = delivery.character {
         dev::with_console(|console| {
             let _ = console.write_char(character);
@@ -202,6 +202,19 @@ pub(crate) fn await_key(key: Key) -> bool {
         if crate::time::ticks() > deadline {
             return false;
         }
+
+        // Where the line is routed, the handler is the only reader: polling
+        // here would race it for the byte and could report success on a
+        // keystroke the interrupt path never saw, which is the one thing this
+        // check exists to rule out.
+        if is_interrupt_driven() {
+            if WATCH.lock().saw(key) {
+                return true;
+            }
+            core::hint::spin_loop();
+            continue;
+        }
+
         let mut guard = KEYBOARD.lock();
         let Some(keyboard) = guard.as_mut() else {
             return false;
@@ -220,4 +233,84 @@ pub(crate) fn await_key(key: Key) -> bool {
         core::hint::spin_loop();
     }
     false
+}
+
+/// Set once the keyboard's line is routed and unmasked.
+static INTERRUPT_DRIVEN: Once = Once::new();
+
+/// Whether keystrokes arrive as interrupts rather than by polling.
+pub(crate) fn is_interrupt_driven() -> bool {
+    INTERRUPT_DRIVEN.is_claimed()
+}
+
+/// Record that the controller's line is live, so the idle loop stops polling.
+pub(crate) fn take_interrupts() {
+    INTERRUPT_DRIVEN.claim();
+}
+
+/// Drain the controller from its interrupt handler.
+///
+/// The same work [`poll`] does, and bounded the same way. Safe to take the
+/// keyboard and console locks from here for the reason `006-cpu-fundamentals.md`
+/// establishes: `SpinLock` clears the interrupt flag while a lock is held, so
+/// code holding either one cannot have been interrupted by this handler.
+pub(crate) fn on_interrupt() {
+    INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+    poll();
+}
+
+/// Keyboard interrupts this CPU has taken.
+static INTERRUPTS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many keyboard interrupts have been delivered.
+///
+/// The evidence that routing worked. Nothing else distinguishes a keystroke
+/// the handler decoded from one the idle loop happened to poll — which is
+/// exactly the confusion the boot-time check has to avoid.
+#[cfg(feature = "selftest")]
+pub(crate) fn interrupt_count() -> usize {
+    INTERRUPTS.load(Ordering::Relaxed)
+}
+
+/// The last press and release seen, whichever path delivered them.
+#[derive(Debug, Clone, Copy, Default)]
+struct Watch {
+    pressed: Option<Key>,
+    released: Option<Key>,
+}
+
+impl Watch {
+    /// Note an event.
+    fn observe(&mut self, event: KeyEvent) {
+        match event.state {
+            KeyState::Pressed => self.pressed = Some(event.key),
+            KeyState::Released => self.released = Some(event.key),
+        }
+    }
+
+    /// Whether `key` has been both pressed and released.
+    #[cfg(feature = "selftest")]
+    const fn saw(&self, key: Key) -> bool {
+        matches!((self.pressed, self.released), (Some(down), Some(up)) if down as u8 == key as u8 && up as u8 == key as u8)
+    }
+}
+
+static WATCH: SpinLock<Watch> = SpinLock::new(Watch {
+    pressed: None,
+    released: None,
+});
+
+/// Reclaim the watch's lock on the terminal panic path.
+pub(crate) fn force_unlock_watch(token: &PanicToken) {
+    WATCH.force_unlock(token);
+}
+
+/// Ask the controller to raise its line when a byte arrives.
+///
+/// Called only after the I/O APIC has been given somewhere to send it.
+pub(crate) fn enable_interrupts() -> bool {
+    let mut guard = KEYBOARD.lock();
+    guard
+        .as_mut()
+        .is_some_and(|keyboard| keyboard.controller.enable_interrupt())
 }

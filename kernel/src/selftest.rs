@@ -177,6 +177,33 @@ fn a_second_switch_is_refused() -> bool {
     }
 }
 
+/// The I/O APIC is routing the keyboard's line to the vector we asked for.
+///
+/// Read back out of the controller rather than remembered: the redirection
+/// entry the hardware holds is what decides where an interrupt goes, and a
+/// write that was silently dropped looks exactly like one that took.
+fn the_keyboard_line_is_routed() -> bool {
+    /// The legacy line the keyboard has always used, and — on every machine
+    /// seen so far — the global system interrupt it still arrives on.
+    const KEYBOARD_GSI: u32 = 1;
+
+    dev::with_io_apic(|io_apic| {
+        matches!(io_apic.is_masked(KEYBOARD_GSI), Ok(false))
+            && matches!(io_apic.vector_of(KEYBOARD_GSI), Ok(vector::KEYBOARD))
+    })
+    .unwrap_or(false)
+}
+
+/// Keystrokes reached the kernel as interrupts, not by polling.
+///
+/// The check that retires D-37. It runs after the injected keystroke, so the
+/// handler has had something to take; a zero here means the line was routed on
+/// paper and delivered nothing — which is exactly what the old polled path
+/// hid, and what the stricter `await_key` above now refuses to hide.
+fn keystrokes_arrive_as_interrupts() -> bool {
+    input::is_interrupt_driven() && input::interrupt_count() > 0
+}
+
 /// A freed slot is reused rather than costing the heap another frame.
 ///
 /// Counted, not compared by address. The obvious form of this check —
@@ -427,8 +454,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
 
     report.check("the keyboard controller came up", input::is_ready());
     report.check(
-        "the controller raises no interrupts and does not translate",
-        keyboard_is_silent_and_raw(),
+        "the controller raises its line exactly when routed, and never translates",
+        keyboard_config_matches_its_routing(),
     );
     report.check(
         "an echo to the keyboard comes back",
@@ -447,6 +474,15 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "an injected keystroke arrives, and its release follows",
         input::await_key(ps2_keys::Key::A),
+    );
+
+    report.check(
+        "the io apic routes the keyboard line to our vector",
+        the_keyboard_line_is_routed(),
+    );
+    report.check(
+        "keystrokes arrive as interrupts",
+        keystrokes_arrive_as_interrupts(),
     );
 
     report.check(
@@ -680,15 +716,27 @@ fn uptime_matches_ticks() -> bool {
 /// translation shim must be off, read back live from the hardware — the
 /// self-test's own reset of this byte is the quirk the driver rewrites it
 /// after, and this is the check that would catch the rewrite going missing.
-fn keyboard_is_silent_and_raw() -> bool {
+fn keyboard_config_matches_its_routing() -> bool {
     const FIRST_IRQ: u8 = 1 << 0;
     const SECOND_IRQ: u8 = 1 << 1;
     const TRANSLATE: u8 = 1 << 6;
 
-    match input::controller_config() {
-        Some(byte) => byte & (FIRST_IRQ | SECOND_IRQ | TRANSLATE) == 0,
-        None => false,
-    }
+    let Some(byte) = input::controller_config() else {
+        return false;
+    };
+
+    // Translation stays off in both worlds: the decoder reads set 2 raw, and
+    // a controller quietly converting to set 1 is the classic way to get a
+    // keyboard that types the wrong characters.
+    let raw = byte & TRANSLATE == 0;
+    // The second port is never enabled — nothing is on it.
+    let second_silent = byte & SECOND_IRQ == 0;
+    // The first port raises its line exactly when something routed it. Phase 2
+    // required this to be off because nothing could route it (D-37); slice 5
+    // turns it on, and the two must agree either way.
+    let first_matches_routing = (byte & FIRST_IRQ != 0) == input::is_interrupt_driven();
+
+    raw && second_silent && first_matches_routing
 }
 
 /// The frame a delivered interrupt saved, checked the way `frame_is_consistent`

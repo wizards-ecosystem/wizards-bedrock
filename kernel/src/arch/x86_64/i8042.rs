@@ -202,6 +202,23 @@ impl Controller {
         None
     }
 
+    /// Have the controller raise IRQ 1 when the keyboard has a byte for us.
+    ///
+    /// Left off by [`new`](Self::new) on purpose (D-37): a line nothing routes
+    /// is a line that would fire into a vector with no handler. It is turned on
+    /// only once the I/O APIC has somewhere to send it, and the change is read
+    /// back rather than assumed — some controllers quietly ignore a
+    /// configuration write.
+    pub(crate) fn enable_interrupt(&mut self) -> bool {
+        let _ = self.flush();
+        let Some(current) = self.read_config() else {
+            return false;
+        };
+        let wanted = current | config::FIRST_IRQ;
+        self.write_config(wanted);
+        self.read_config() == Some(wanted)
+    }
+
     /// The configuration byte, read live from the controller.
     #[cfg(feature = "selftest")]
     pub(crate) fn config(&mut self) -> Option<u8> {

@@ -22,6 +22,7 @@ fn panic(info: &PanicInfo<'_>) -> ! {
     wost::panic::reclaim(&token);
     dev::force_unlock(&token);
     input::force_unlock(&token);
+    input::force_unlock_watch(&token);
 
     error!("KERNEL PANIC: {info}");
 
