@@ -18,7 +18,7 @@ slice table is the dependency-forced proposal, refined when the phase
 starts.
 
 References: Intel SDM Vol. 3A ch. 4 (paging), ch. 12 (memory types, PAT);
-Limine protocol (memory map and HHDM features, base revision 3); Asterinas
+Limine protocol (memory map and HHDM features, base revision 4 — D-42); Asterinas
 OSTD's frame-ownership model (the framekernel precedent D-13 follows); seL4
 untyped/retype (the accounting question `002` poses); OSDev paging and
 higher-half pages.

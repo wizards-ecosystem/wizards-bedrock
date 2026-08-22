@@ -2,7 +2,7 @@
 
 ## Decision
 
-Boot via **UEFI + Limine** (boot protocol base revision 3, `limine` crate
+Boot via **UEFI + Limine** (boot protocol base revision 4 since D-42, `limine` crate
 0.5.0 — pinned because 0.6.x requires nightly). Writing our own bootloader
 is deferred to a side-quest; Limine gives us:
 
@@ -176,11 +176,11 @@ deliberate choice to keep Phase 1 finishable, not an oversight.
   remains is the narrower hazard the flag cannot cover — a fault or an NMI
   arriving while a lock is held — which is why the trap handler still takes no
   lock (D-31).
-- **`Console::scroll` reads the framebuffer back.** Rows move as raw words, so
-  nothing is lost, but framebuffer memory is uncached and a full-screen scroll
-  is on the order of a million slow reads. Fine for a banner, visibly slow if
-  anything ever logs to screen in a loop. A software back-buffer is the answer
-  once there is a heap (Phase 3).
+- ~~**`Console::scroll` reads the framebuffer back.**~~ — retired 2026-08-22
+  (D-48). The framebuffer keeps a shadow in RAM, written alongside every device
+  write and read instead of the device, so a scroll no longer touches uncached
+  memory at all. That also made the mapping safe to mark write-combining
+  (D-50), where reads would have been worse still.
 - **Logging level is a compile-time constant** (`MAX_LEVEL` in
   `kernel/src/log.rs`). No runtime control and no per-module filtering until
   there is somewhere to configure it from.
