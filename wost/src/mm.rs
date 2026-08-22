@@ -142,6 +142,18 @@ pub fn managed_frames() -> usize {
     FRAMES.lock().managed_count()
 }
 
+/// The direct map [`init`] recorded, or `None` before it has run.
+///
+/// Handed back so callers that already hold a physical address can name the
+/// same byte virtually — which is what the read-back check on the direct map's
+/// own permissions needs.
+pub fn direct_map() -> Option<DirectMap> {
+    match DIRECT_MAP_OFFSET.load(Ordering::Acquire) {
+        0 => None,
+        offset => Some(DirectMap::new(offset)),
+    }
+}
+
 /// Reclaim the frame allocator's lock on the terminal panic path.
 ///
 /// Called by [`panic::reclaim`](crate::panic::reclaim) rather than directly, on
@@ -274,10 +286,10 @@ impl Segment {
     /// False if the direct map cannot reach the whole run, having written
     /// nothing.
     pub fn fill(&mut self, byte: u8) -> bool {
-        let Some(base) = direct_map_span(self.address(), self.len()) else {
+        let Some(base) = direct_pointer(self.address(), self.len()) else {
             return false;
         };
-        // SAFETY: `self` owns every frame in the run, and `direct_map_span`
+        // SAFETY: `self` owns every frame in the run, and `direct_pointer`
         // confirmed the bootloader's map covers all `len()` bytes of it.
         unsafe { core::ptr::write_bytes(base, byte, self.len() as usize) };
         true
@@ -325,14 +337,14 @@ pub fn allocate_zeroed() -> Option<Frame> {
 
 /// Where the direct map makes one frame at `physical` accessible.
 fn direct_map_pointer(physical: Paddr) -> Option<*mut u8> {
-    direct_map_span(physical, FRAME_SIZE)
+    direct_pointer(physical, FRAME_SIZE)
 }
 
 /// Where the direct map makes `len` bytes at `physical` accessible.
 ///
 /// Checks the whole span, not merely its first byte, so a caller that got a
 /// pointer may write `len` bytes through it. `None` before [`init`] has run.
-fn direct_map_span(physical: Paddr, len: u64) -> Option<*mut u8> {
+pub(crate) fn direct_pointer(physical: Paddr, len: u64) -> Option<*mut u8> {
     let offset = DIRECT_MAP_OFFSET.load(Ordering::Acquire);
     if offset == 0 {
         return None;

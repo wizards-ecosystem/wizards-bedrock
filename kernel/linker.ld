@@ -72,6 +72,10 @@ SECTIONS
         *(COMMON)
     } :data
 
+    /* `.requests`, `.data` and `.bss` are one writable run, so one symbol
+       bounds all three. */
+    __data_end = .;
+
     /DISCARD/ : {
         *(.eh_frame*)
         *(.note .note.*)

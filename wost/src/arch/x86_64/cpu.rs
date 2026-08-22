@@ -252,6 +252,53 @@ fn read_cr4() -> u64 {
     value
 }
 
+/// The physical address of the page table the CPU is walking.
+///
+/// The low twelve bits of `CR3` hold cache-control flags, not address, so they
+/// are masked off — a caller comparing this against a table's address would
+/// otherwise never see a match.
+pub fn page_table_base() -> u64 {
+    /// `CR3` bits 51:12. The rest are flags or reserved.
+    const ADDRESS: u64 = 0x000f_ffff_ffff_f000;
+
+    let value: u64;
+    // SAFETY: reading a control register in ring 0 has no preconditions and no
+    // effects.
+    unsafe {
+        asm!(
+            "mov {value}, cr3",
+            value = out(reg) value,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    value & ADDRESS
+}
+
+/// Point the CPU at a different top-level page table.
+///
+/// # Safety
+///
+/// `address` must be the physical address of a correctly formed, 4 KiB-aligned
+/// PML4 that stays live for as long as it is loaded, and which maps — at the
+/// addresses they already occupy — every page this CPU is about to touch:
+/// the code executing this call, its stack, and anything either reads or
+/// writes before the next switch. A table missing any of them faults on an
+/// instruction that has no handler mapped, which the CPU reports as a triple
+/// fault and the machine as a reset.
+pub unsafe fn set_page_table_base(address: u64) {
+    // SAFETY: the caller guarantees the address names a page table that maps
+    // everything this CPU is standing on, which is the entire precondition for
+    // the write. Writing `CR3` also flushes the non-global TLB entries, so no
+    // stale translation survives the switch.
+    unsafe {
+        asm!(
+            "mov cr3, {address}",
+            address = in(reg) address,
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
 /// Write `CR4`.
 ///
 /// Private, and it stays private: the register holds bits that switch paging

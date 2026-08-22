@@ -15,10 +15,12 @@
 use core::hint::spin_loop;
 
 use wost::arch::current::cpu::{self, Protections};
+use wost::arch::current::paging::{self, ActivateError, AddressSpace};
 use wost::arch::current::{apic, interrupt, pic, port, segment};
-use wost::boot::{FramebufferInfo, Rgb};
+use wost::boot::{self, FramebufferInfo, Rgb};
 use wost::mm;
 use wost::sync::{Once, SpinLock};
+use x86_paging::Flags;
 use x86_tables::exception;
 
 use crate::arch::current::debug_exit;
@@ -90,6 +92,87 @@ fn a_run_is_contiguous_and_aligned() -> bool {
     drop(run);
 
     aligned && sized && mm::free_frames() == before
+}
+
+/// The kernel is walking the tables it built, not the bootloader's.
+///
+/// Both halves matter. `is_active` says the switch was attempted and the
+/// checks passed; `CR3` says it took effect. A kernel that recorded success
+/// and kept the old tables would satisfy only the first.
+fn the_loaded_table_is_ours() -> bool {
+    paging::is_active() && cpu::page_table_base() == paging::active_root()
+}
+
+/// Every address in the kernel image obeys W^X, read back from the tables the
+/// CPU is walking.
+///
+/// Walked rather than assumed: the mapping code could be right and the entries
+/// still wrong, and the entries are what the CPU obeys. Each section is probed
+/// at its first page, its last, and one in the middle, because a run of large
+/// pages can be correct at the edges and wrong between them.
+fn the_image_obeys_write_xor_execute() -> bool {
+    let sections = boot::sections();
+
+    [
+        (sections.text, false, true),
+        (sections.rodata, false, false),
+        (sections.data, true, false),
+    ]
+    .into_iter()
+    .all(|(section, writable, executable)| {
+        // Offsets from the base, never a sum of two higher-half addresses:
+        // those are within a hair of `u64::MAX` and adding a pair overflows.
+        let len = section.mapped_len();
+        let middle = section.start + ((len / 2) & !4095);
+        [section.start, middle, section.start + len - 4096]
+            .into_iter()
+            .all(|address| match paging::translate(address) {
+                None => false,
+                Some((_, flags)) => {
+                    !flags.is_write_execute()
+                        && flags.contains(Flags::WRITABLE) == writable
+                        && !flags.contains(Flags::NO_EXECUTE) == executable
+                }
+            })
+    })
+}
+
+/// The direct map is writable and never executable.
+///
+/// The largest writable mapping in the kernel, and the one an attacker would
+/// most like to run code from.
+fn the_direct_map_is_not_executable() -> bool {
+    let Some(frame) = mm::allocate() else {
+        return false;
+    };
+    // Any frame the allocator owns is inside a region the direct map covers,
+    // so its direct-map address is a fair sample of the whole mapping.
+    let Some(address) = mm::direct_map().and_then(|map| map.virtual_address(frame.address()))
+    else {
+        return false;
+    };
+
+    match paging::translate(address) {
+        Some((physical, flags)) => {
+            physical == frame.address()
+                && flags.contains(Flags::WRITABLE)
+                && flags.contains(Flags::NO_EXECUTE)
+                && !flags.is_write_execute()
+        }
+        None => false,
+    }
+}
+
+/// A second switch is refused.
+///
+/// The property that makes `AddressSpace::map` safe: nothing can add a mapping
+/// to a table the CPU is already walking, because nothing can install a second
+/// table to map into.
+fn a_second_switch_is_refused() -> bool {
+    match AddressSpace::new() {
+        Ok(space) => paging::activate(space) == Err(ActivateError::AlreadyActive),
+        Err(_) => false,
+    }
 }
 
 /// Tally of what has been checked so far.
@@ -164,6 +247,20 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a contiguous run is contiguous and aligned",
         a_run_is_contiguous_and_aligned(),
+    );
+
+    report.check("the loaded page table is ours", the_loaded_table_is_ours());
+    report.check(
+        "the kernel image obeys write-xor-execute",
+        the_image_obeys_write_xor_execute(),
+    );
+    report.check(
+        "the direct map is writable and never executable",
+        the_direct_map_is_not_executable(),
+    );
+    report.check(
+        "a second address space is refused",
+        a_second_switch_is_refused(),
     );
 
     report.check(

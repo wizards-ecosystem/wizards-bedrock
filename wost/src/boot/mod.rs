@@ -181,6 +181,30 @@ impl MemoryKind {
     pub const fn is_allocatable(self) -> bool {
         matches!(self, Self::Usable)
     }
+
+    /// Whether the kernel's own direct map should cover this region.
+    ///
+    /// Everything that is memory, and nothing that is not (D-45). The
+    /// exclusions are the point: `Reserved` is where device holes live, and
+    /// mapping one here would give it the direct map's cache type instead of
+    /// the one its device needs — so devices are mapped deliberately, through
+    /// `MmioRegion`, and never reached by accident.
+    ///
+    /// The inclusions are equally deliberate. The kernel is *executing on* a
+    /// stack the bootloader placed in `BootloaderReclaimable`, and *logging
+    /// through* a `Framebuffer` region; a direct map of only `Usable` memory
+    /// would triple-fault the instant `CR3` changed.
+    pub const fn is_direct_mapped(self) -> bool {
+        matches!(
+            self,
+            Self::Usable
+                | Self::BootloaderReclaimable
+                | Self::KernelAndModules
+                | Self::Framebuffer
+                | Self::AcpiReclaimable
+                | Self::AcpiNvs
+        )
+    }
 }
 
 impl fmt::Display for MemoryKind {
@@ -314,6 +338,113 @@ impl DirectMap {
     }
 }
 
+/// Where the bootloader placed the kernel image.
+///
+/// The pair is what lets the kernel map its own sections: the linker gives
+/// their virtual addresses, and the difference between these two turns any of
+/// them into the physical frame behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageAddress {
+    physical: u64,
+    virtual_: u64,
+}
+
+impl ImageAddress {
+    /// Record the pair the bootloader reported.
+    pub(crate) const fn new(physical: u64, virtual_: u64) -> Self {
+        Self { physical, virtual_ }
+    }
+
+    /// Where the image begins in physical memory.
+    pub const fn physical_base(self) -> u64 {
+        self.physical
+    }
+
+    /// Where the image begins in virtual memory — the linker's base.
+    pub const fn virtual_base(self) -> u64 {
+        self.virtual_
+    }
+
+    /// The frame behind a virtual address inside the image, or `None` if the
+    /// address is below its base.
+    pub const fn to_physical(self, address: u64) -> Option<u64> {
+        match address.checked_sub(self.virtual_) {
+            Some(offset) => self.physical.checked_add(offset),
+            None => None,
+        }
+    }
+}
+
+/// One protection class of the loaded kernel image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Section {
+    /// First virtual address, page-aligned by the linker script.
+    pub start: u64,
+    /// One past the last virtual address, not necessarily aligned.
+    pub end: u64,
+}
+
+impl Section {
+    /// Bytes from `start` to the end of the page `end` falls in.
+    ///
+    /// Rounded up because a mapping covers whole pages: the tail of the last
+    /// page belongs to this section whether or not anything is in it.
+    pub const fn mapped_len(self) -> u64 {
+        let len = self.end.saturating_sub(self.start);
+        len.next_multiple_of(4096)
+    }
+}
+
+/// The kernel image, divided by what each part may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sections {
+    /// Executable code. Mapped read-only and executable.
+    pub text: Section,
+    /// Constants. Mapped read-only and never executable.
+    pub rodata: Section,
+    /// Everything writable — `.requests`, `.data` and `.bss`, which the linker
+    /// script keeps contiguous in one segment. Mapped writable and never
+    /// executable.
+    pub data: Section,
+}
+
+/// Where the linker put each protection class of this kernel.
+///
+/// `entry!` already ties `wost` to the linker script through `ENTRY(kmain)`
+/// and the `.requests` section; the six symbols read here are the rest of that
+/// contract. A script that does not define them fails to link, which is the
+/// failure mode to want — the alternative is a kernel that maps its own text
+/// writable because a symbol silently resolved to zero.
+pub fn sections() -> Sections {
+    // These are linker-defined symbols with no storage of their own. Only
+    // their addresses are ever taken — never their contents — which is what
+    // makes `u8` the conventional and harmless declared type, and what makes
+    // `&raw const` safe where a read would not be.
+    unsafe extern "C" {
+        static __text_start: u8;
+        static __text_end: u8;
+        static __rodata_start: u8;
+        static __rodata_end: u8;
+        static __data_start: u8;
+        static __data_end: u8;
+    }
+
+    Sections {
+        text: Section {
+            start: &raw const __text_start as u64,
+            end: &raw const __text_end as u64,
+        },
+        rodata: Section {
+            start: &raw const __rodata_start as u64,
+            end: &raw const __rodata_end as u64,
+        },
+        data: Section {
+            start: &raw const __data_start as u64,
+            end: &raw const __data_end as u64,
+        },
+    }
+}
+
 /// Everything the bootloader handed the kernel.
 #[derive(Debug)]
 pub struct BootInfo {
@@ -325,6 +456,8 @@ pub struct BootInfo {
     pub memory_map: Result<MemoryMap, HandoffError>,
     /// The direct map of physical memory, or why there is none.
     pub direct_map: Result<DirectMap, HandoffError>,
+    /// Where the bootloader placed the kernel image, or why it did not say.
+    pub image: Result<ImageAddress, HandoffError>,
 }
 
 /// Why part of the boot handoff is missing.
@@ -356,7 +489,8 @@ impl core::error::Error for HandoffError {}
 pub mod __macro {
     pub use limine::BaseRevision;
     pub use limine::request::{
-        FramebufferRequest, HhdmRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker,
+        ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest,
+        RequestsEndMarker, RequestsStartMarker,
     };
 
     pub use super::limine_glue::base_revision;
@@ -412,6 +546,12 @@ macro_rules! entry {
 
         #[used]
         #[allow(unsafe_code)]
+        #[unsafe(link_section = ".requests")]
+        static __WOST_IMAGE: $crate::boot::__macro::ExecutableAddressRequest =
+            $crate::boot::__macro::ExecutableAddressRequest::new();
+
+        #[used]
+        #[allow(unsafe_code)]
         #[unsafe(link_section = ".requests_end_marker")]
         static __WOST_REQUESTS_END: $crate::boot::__macro::RequestsEndMarker =
             $crate::boot::__macro::RequestsEndMarker::new();
@@ -424,6 +564,7 @@ macro_rules! entry {
                 &__WOST_FRAMEBUFFER,
                 &__WOST_MEMORY_MAP,
                 &__WOST_DIRECT_MAP,
+                &__WOST_IMAGE,
                 __WOST_ENTRY_SIGNATURE,
             )
         }

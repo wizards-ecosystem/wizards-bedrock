@@ -91,6 +91,7 @@ dependencies = [
  "ps2-keys",
  "wost",
  "x86-apic",
+ "x86-paging",
  "x86-pit",
  "x86-tables",
 ]
@@ -104,6 +105,7 @@ dependencies = [
  "pixel",
  "port-space",
  "x86-apic",
+ "x86-paging",
  "x86-tables",
 ]
 

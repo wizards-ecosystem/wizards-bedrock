@@ -55,8 +55,8 @@ switch has survived.
 | Slice | Contents | Status |
 |---|---|---|
 | 1 | Boot handoff grows the memory map + HHDM; physical frame allocator | ✅ 2026-08-22 |
-| 2 | Page-table encoding in `libs/`; `wost` builds its own tables (kernel, stacks with guard pages, framebuffer, direct map), W^X-correct; CR3 switch | |
-| 3 | Protection completion: W^X verified by read-back, zero-on-allocate; KASLR decision executed or deferred on the record | |
+| 2 | Page-table encoding in `libs/`; `wost` builds its own tables (kernel, stacks with guard pages, framebuffer, direct map), W^X-correct; CR3 switch | ✅ 2026-08-22 |
+| 3 | Protection completion: W^X verified by read-back, zero-on-allocate; KASLR decision executed or deferred on the record | ✅ 2026-08-22 |
 | 4 | Kernel heap (`alloc` enabled); console back-buffer retires the scroll read-back | |
 | 5 | Device mappings: I/O APIC up, IRQ 1 routed, polled keyboard drain retires (D-37) | |
 
@@ -195,3 +195,48 @@ mapped, what is deliberately not, huge pages or not — is slice 2's, and D-42
 does not settle it. Base revision 4 removes the wall in front of device holes;
 it does not remove the reason to map devices through `MmioRegion` with an
 explicit memory type.
+
+## Slices 2 and 3 — the kernel's own tables (2026-08-22)
+
+**The encoding went first, and told the truth about itself.** `libs/x86-paging`
+carries the entry bits, the index each level takes from a virtual address, and
+the canonical-form test, transcribed from SDM 3A §4.5. Its tests restate every
+bit position *from the manual* rather than from the constants above them,
+which is the only arrangement in which a transcription error fails instead of
+agreeing with itself. Nineteen host tests and a doctest before any hardware saw
+a table (D-30).
+
+**The switch is a safe function**, and that is D-45's substance rather than its
+packaging. `activate` walks the *new* tables for its own code and its own stack
+before loading them, and refuses a table that would not survive. The one moment
+this file warned "reports as a triple fault rather than a page fault" now
+reports as a `Result`. It worked on the first boot, which is not evidence the
+check was unnecessary — it is what the check was for.
+
+**The direct-map contract changed under contact, and the change is the
+lesson.** `008-research-notes-2.md` §3.3 proposed *usable RAM only*. That would
+have triple-faulted immediately: the kernel is executing on a stack the
+bootloader put in bootloader-reclaimable memory and logging through a
+framebuffer region. The contract is now *everything that is memory* — usable,
+bootloader-reclaimable, kernel-and-modules, framebuffer, and both ACPI kinds —
+and *nothing that is not*, so device holes stay out and are mapped
+deliberately later. The excluding half of the research recommendation was
+right; the including half was written without asking what the kernel was
+standing on.
+
+**W^X closes D-12's oldest line.** Six linker symbols bound the three
+protection classes, so the image is mapped by what each part may do: text
+read-only and executable, rodata read-only and not, data writable and not.
+There is no fourth combination. The check walks the live tables at three points
+per section — a run of 2 MiB pages can be right at its edges and wrong between
+them — and broke correctly when `.data` was mapped executable on purpose.
+
+**Both slice-3 checks found bugs, and both bugs were in the checks.** The W^X
+probe computed a section's midpoint as `(start + last) / 2`, which overflows
+`u64` on a pair of higher-half addresses. And `activate` validated the tables
+before testing its own already-active latch, so the second-switch check got a
+correct refusal for the wrong reason. Neither would have been found by reading.
+
+KASLR is deferred, on the record, with its cost named (D-46): it is now the
+only part of D-12's security baseline still owed, and every phase that adds a
+mapping makes the relocation work more expensive.

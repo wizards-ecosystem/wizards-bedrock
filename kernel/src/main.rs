@@ -61,6 +61,7 @@ fn kernel_main(boot: BootInfo) -> ! {
     // than the linker — and before everything else, because from here on
     // anything may want a frame.
     mem::init(boot.memory_map, boot.direct_map);
+    mem::init_paging(boot.memory_map, boot.direct_map, boot.image);
 
     start_interrupts();
     input::init();

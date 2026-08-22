@@ -3,13 +3,15 @@
 use limine::BaseRevision;
 use limine::framebuffer::MemoryModel;
 use limine::memory_map::EntryType;
-use limine::request::{FramebufferRequest, HhdmRequest, MemoryMapRequest};
+use limine::request::{
+    ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest,
+};
 
 use pixel::{Channel, PixelFormat};
 
 use crate::boot::{
-    BootInfo, DirectMap, Framebuffer, FramebufferError, FramebufferInfo, HandoffError, MemoryKind,
-    MemoryMap, MemoryRegion,
+    BootInfo, DirectMap, Framebuffer, FramebufferError, FramebufferInfo, HandoffError,
+    ImageAddress, MemoryKind, MemoryMap, MemoryRegion,
 };
 use crate::mmio::MmioRegion;
 
@@ -41,6 +43,7 @@ pub fn enter(
     framebuffer: &'static FramebufferRequest,
     memory_map: &'static MemoryMapRequest,
     hhdm: &'static HhdmRequest,
+    image: &'static ExecutableAddressRequest,
     kernel_main: fn(BootInfo) -> !,
 ) -> ! {
     kernel_main(BootInfo {
@@ -48,7 +51,17 @@ pub fn enter(
         framebuffer: take_framebuffer(framebuffer),
         memory_map: take_memory_map(memory_map),
         direct_map: take_direct_map(hhdm),
+        image: take_image(image),
     })
+}
+
+/// Where the bootloader placed the kernel image.
+fn take_image(request: &'static ExecutableAddressRequest) -> Result<ImageAddress, HandoffError> {
+    let response = request.get_response().ok_or(HandoffError::NoResponse)?;
+    Ok(ImageAddress::new(
+        response.physical_base(),
+        response.virtual_base(),
+    ))
 }
 
 /// The bootloader's memory map, translated into types that name no bootloader.
