@@ -236,7 +236,7 @@ impl<T> Drop for SpinLockGuard<'_, T> {
 /// Which is exactly why one of these may not be taken while a [`SpinLock`] is
 /// held: there the waiter's interrupts are *off*, the timer never comes, and
 /// the preempted holder is never scheduled again. That is the second thing
-/// [`lock`](Self::lock) asserts, against [`SPINLOCKS_HELD`].
+/// [`lock`](Self::lock) asserts, against a count of the spin locks held.
 ///
 /// The panic path is exempt from both, because the code it interrupted can
 /// never resume.

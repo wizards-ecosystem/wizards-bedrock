@@ -411,32 +411,53 @@ pub(crate) fn interrupt_count() -> usize {
     INTERRUPTS.load(Ordering::Relaxed)
 }
 
-/// The last press and release seen, whichever path delivered them.
+/// Every key seen pressed, and every key seen released, since boot.
+///
+/// Accumulated rather than sampled, and that is the whole design. This began
+/// as "the last press and the last release", which works only if the reader
+/// looks between one keystroke and the next — and the harness injects three
+/// at once, so all six events can be decoded in a single drain. The reader
+/// then sees the *last* key of the burst and never the first, and a check
+/// waiting for the first waits for ever. It was a real intermittent failure,
+/// and it became a reliable one the moment the handler stopped logging and
+/// got fast enough to drain the whole burst at once.
+///
+/// Two bitmasks over `Key as u8`, which is 104 variants and non-exhaustive —
+/// so the width is checked, and a key past the end is dropped rather than
+/// shifting past the end of a word.
 #[derive(Debug, Clone, Copy, Default)]
 struct Watch {
-    pressed: Option<Key>,
-    released: Option<Key>,
+    pressed: u128,
+    released: u128,
 }
 
 impl Watch {
     /// Note an event.
     fn observe(&mut self, event: KeyEvent) {
+        let Some(bit) = Self::bit(event.key) else {
+            return;
+        };
         match event.state {
-            KeyState::Pressed => self.pressed = Some(event.key),
-            KeyState::Released => self.released = Some(event.key),
+            KeyState::Pressed => self.pressed |= bit,
+            KeyState::Released => self.released |= bit,
         }
+    }
+
+    /// Where a key sits in the masks, or `None` for one past their width.
+    fn bit(key: Key) -> Option<u128> {
+        1u128.checked_shl(u32::from(key as u8))
     }
 
     /// Whether `key` has been both pressed and released.
     #[cfg(feature = "selftest")]
-    const fn saw(&self, key: Key) -> bool {
-        matches!((self.pressed, self.released), (Some(down), Some(up)) if down as u8 == key as u8 && up as u8 == key as u8)
+    fn saw(&self, key: Key) -> bool {
+        Self::bit(key).is_some_and(|bit| self.pressed & bit != 0 && self.released & bit != 0)
     }
 }
 
 static WATCH: SpinLock<Watch> = SpinLock::new(Watch {
-    pressed: None,
-    released: None,
+    pressed: 0,
+    released: 0,
 });
 
 /// Reclaim the watch's lock on the terminal panic path.
