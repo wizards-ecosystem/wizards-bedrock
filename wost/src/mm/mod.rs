@@ -18,7 +18,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use frame_space::{FRAME_SIZE, FrameSpace, words_for};
 
-use crate::boot::{DirectMap, MemoryMap};
+use crate::boot::{DirectMap, MemoryMap, MemoryRegion};
 use crate::panic::PanicToken;
 use crate::sync::{Once, SpinLock};
 
@@ -140,35 +140,75 @@ pub fn managed_frames() -> usize {
 
 /// Read-only access to `len` bytes of physical memory at `address`.
 ///
-/// For firmware tables. Safe because the range is refused unless the memory
-/// map says no part of it is allocatable — a slice over memory the allocator
-/// might hand out would alias a [`Frame`]. Such regions are never freed, which
-/// is what the `'static` lifetime rests on.
+/// For firmware tables. Three things must hold, and all three are checked
+/// against the memory map rather than assumed: every byte lies inside a region
+/// the bootloader described, no part of it is allocatable — a slice over
+/// memory the allocator might hand out would alias a [`Frame`] — and, once
+/// the kernel has installed its own tables, every region it touches is one
+/// that map reaches.
+///
+/// That last condition is the one worth stating. Before the kernel installs
+/// its tables, the bootloader's direct map covers everything it described, so
+/// "described" is enough. Afterwards the map covers only what
+/// [`MemoryKind::is_direct_mapped`](crate::boot::MemoryKind::is_direct_mapped)
+/// names, and a reference to anything else would be a reference to an absent
+/// mapping.
 pub fn read_physical(address: Paddr, len: usize) -> Option<&'static [u8]> {
+    if len == 0 {
+        return None;
+    }
     let end = address.checked_add(len as u64)?;
+    let narrowed = NARROWED.is_claimed();
+
     let guard = MAP.lock();
-    let overlaps_allocatable = guard
-        .as_ref()?
-        .regions()
-        .filter(|region| region.kind.is_allocatable())
-        .any(|region| address < region.base.saturating_add(region.len) && region.base < end);
+    let map = guard.as_ref()?;
+    let overlaps = |region: &MemoryRegion| {
+        address < region.base.saturating_add(region.len) && region.base < end
+    };
+    let refused = map.regions().any(|region| {
+        overlaps(&region)
+            && (region.kind.is_allocatable() || (narrowed && !region.kind.is_direct_mapped()))
+    });
+    let described = map.covers(address, end);
     drop(guard);
 
-    if overlaps_allocatable {
+    if refused || !described {
         return None;
     }
 
     let base = direct_pointer(address, len as u64)?;
-    // SAFETY: the memory map says no part of this range is allocatable, so no
-    // `Frame` can ever name it and nothing else in the kernel writes it;
-    // `direct_pointer` confirmed the direct map covers all `len` bytes. A
-    // shared reference to memory only firmware ever wrote is sound, and the
-    // region outlives the kernel.
+    // SAFETY: every byte of this range lies in a region the bootloader
+    // described, none of it is allocatable — so no `Frame` can ever name it
+    // and nothing else in the kernel writes it — and the direct map in force
+    // reaches all of it, which is what the two checks above establish between
+    // them. A shared reference to memory only firmware ever wrote is sound,
+    // and such regions are never freed, which is what the `'static` rests on.
     Some(unsafe { core::slice::from_raw_parts(base.cast_const(), len) })
+}
+
+/// Set once the kernel's own tables are the ones in force.
+static NARROWED: Once = Once::new();
+
+/// Record that the direct map is no longer the bootloader's.
+///
+/// Called by [`paging::activate`](crate::arch::current::paging::activate): the
+/// kernel's own direct map covers strictly less, and [`read_physical`] is the
+/// one safe function whose soundness turns on which of the two is in force.
+pub(crate) fn narrow_direct_map() {
+    NARROWED.claim();
 }
 
 /// The memory map [`init`] was given, for [`read_physical`]'s check.
 static MAP: SpinLock<Option<MemoryMap>> = SpinLock::new(None);
+
+/// Run `f` against the memory map [`init`] recorded, if there is one.
+///
+/// A borrow rather than a copy: the map is kilobytes and a caller wants one
+/// field of it. The lock is held for the call, so `f` must not touch anything
+/// that takes it — [`read_physical`] does.
+pub fn with_memory_map<T>(f: impl FnOnce(&MemoryMap) -> T) -> Option<T> {
+    MAP.lock().as_ref().map(f)
+}
 
 /// The direct map [`init`] recorded, or `None` before it has run.
 ///
@@ -229,8 +269,9 @@ impl Frame {
         };
         // SAFETY: `self` owns this frame — no other `Frame` can name it, since
         // the allocator hands out one handle per frame and this method needs
-        // `&mut self`. `direct_map_pointer` confirmed the bootloader's map
-        // covers the whole frame, and the write stays inside it.
+        // `&mut self`. The frame is allocatable memory, and every allocatable
+        // region is direct-mapped, so the whole of it is reachable through the
+        // pointer just formed.
         unsafe { core::ptr::write_bytes(base, byte, FRAME_SIZE as usize) };
         true
     }
@@ -254,10 +295,9 @@ impl Frame {
         let base = direct_map_pointer(self.address())?.cast::<u64>();
         let mut zero = true;
         for index in 0..WORDS {
-            // SAFETY: `direct_map_pointer` confirmed the map covers all
-            // `FRAME_SIZE` bytes of the frame `self` owns, and `index` stays
-            // below the number of words in one frame, so the result is inside
-            // that mapping.
+            // SAFETY: the frame `self` owns is allocatable memory and so is
+            // direct-mapped whichever map is in force, and `index` stays below
+            // the number of words in one frame, so the result is inside it.
             let word = unsafe { base.add(index) };
             // SAFETY: a frame is `FRAME_SIZE`-aligned and so is the direct
             // map, so `word` is `u64`-aligned, and the mapping is readable.
@@ -388,8 +428,11 @@ fn direct_map_pointer(physical: Paddr) -> Option<*mut u8> {
 
 /// Where the direct map makes `len` bytes at `physical` accessible.
 ///
-/// Checks the whole span, not merely its first byte, so a caller that got a
-/// pointer may write `len` bytes through it. `None` before [`init`] has run.
+/// Arithmetic only: `None` before [`init`] has run, or if the span does not
+/// fit the address space. Whether the map actually *reaches* those bytes is
+/// the caller to establish — [`read_physical`] does it against the memory
+/// map, and a [`Frame`] carries it by construction, the allocator handing out
+/// only allocatable memory and every allocatable region being direct-mapped.
 pub(crate) fn direct_pointer(physical: Paddr, len: u64) -> Option<*mut u8> {
     let offset = DIRECT_MAP_OFFSET.load(Ordering::Acquire);
     if offset == 0 {

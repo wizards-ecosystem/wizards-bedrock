@@ -402,6 +402,28 @@ impl MemoryMap {
         self.dropped
     }
 
+    /// Whether every byte of `start..end` lies inside some described region.
+    ///
+    /// Regions may abut, so this walks rather than looking for one region that
+    /// holds the whole range: a span crossing a boundary between two adjacent
+    /// regions is still described. A gap of even one byte is not.
+    ///
+    /// The bootloader does not promise its regions are sorted, so each step
+    /// searches the whole list. There is a bounded number of them and
+    /// the one caller runs a handful of times at boot.
+    pub fn covers(&self, start: u64, end: u64) -> bool {
+        let mut cursor = start;
+        while cursor < end {
+            let Some(region) = self.regions().find(|region| {
+                region.base <= cursor && cursor < region.base.saturating_add(region.len)
+            }) else {
+                return false;
+            };
+            cursor = region.base.saturating_add(region.len);
+        }
+        true
+    }
+
     /// Total bytes across regions the frame allocator may hand out.
     pub fn allocatable_bytes(&self) -> u64 {
         self.regions()

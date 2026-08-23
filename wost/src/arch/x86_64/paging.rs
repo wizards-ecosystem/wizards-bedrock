@@ -39,6 +39,9 @@ pub enum MapError {
     NonCanonical(u64),
     /// The range's start or length is not page-aligned.
     Misaligned(u64),
+    /// A device's registers do not begin on a four-byte boundary, so the
+    /// thirty-two-bit accesses an [`MmioRegion`] makes would be misaligned.
+    UnalignedDevice(Paddr),
     /// A physical address did not fit the entry encoding.
     Encoding(EntryError),
 }
@@ -59,6 +62,12 @@ impl fmt::Display for MapError {
             Self::Conflict(address) => write!(f, "{address:#x} is already mapped by a larger page"),
             Self::NonCanonical(address) => write!(f, "{address:#x} is not a canonical address"),
             Self::Misaligned(address) => write!(f, "{address:#x} is not page-aligned"),
+            Self::UnalignedDevice(address) => {
+                write!(
+                    f,
+                    "device registers at {address:#x} are not four-byte aligned"
+                )
+            }
             Self::Encoding(error) => write!(f, "{error}"),
         }
     }
@@ -203,6 +212,14 @@ impl AddressSpace {
         len: u64,
         memory_type: Flags,
     ) -> Result<DeviceMapping, MapError> {
+        // The window keeps the device's own offset from a page boundary, so
+        // the region's base inherits its low bits — and `MmioRegion` makes
+        // thirty-two-bit accesses, which a base of the wrong parity would make
+        // misaligned. Refused here, where it can be reported, rather than at
+        // the `claim` that would otherwise have to trust it.
+        if !physical.is_multiple_of(size_of::<u32>() as u64) {
+            return Err(MapError::UnalignedDevice(physical));
+        }
         let offset = physical % PAGE_SIZE;
         let base = physical - offset;
         let pages = (len + offset).div_ceil(PAGE_SIZE) * PAGE_SIZE;
@@ -412,6 +429,9 @@ pub fn activate(space: AddressSpace) -> Result<(), ActivateError> {
     // and never dropped, so the tables outlive the load.
     unsafe { cpu::set_page_table_base(space.root) };
     ACTIVE_ROOT.store(space.root, Ordering::Release);
+    // The map in force now covers strictly less than the bootloader's did, and
+    // `read_physical` is the one safe function whose soundness turns on which.
+    mm::narrow_direct_map();
 
     // `space` is dropped here, and that is correct: an `AddressSpace` owns no
     // frame it would give back. Its tables were leaked when they were taken,
@@ -528,8 +548,8 @@ impl DeviceMapping {
         }
         // SAFETY: the walk above confirmed the mapping is live; it is exclusive
         // because `self` cannot be copied, permanent because nothing unmaps,
-        // and aligned because `map_device` preserved the device's own offset
-        // from a page boundary.
+        // and four-byte aligned because `map_device_with` refused a device
+        // whose registers were not, and the window preserves that offset.
         Some(unsafe { MmioRegion::new(self.address as *mut u8, self.len as usize) })
     }
 }

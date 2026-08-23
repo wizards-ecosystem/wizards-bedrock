@@ -160,6 +160,46 @@ fn the_direct_map_is_not_executable() -> bool {
     }
 }
 
+/// Physical reads are refused for anything the direct map may not reach.
+///
+/// The three ways the range can be wrong, each tried against the live memory
+/// map. Usable RAM would alias a `Frame`; an address past everything the
+/// bootloader described is not memory at all; and after the switch the
+/// kernel's own direct map covers less than the bootloader's did, so a
+/// `Reserved` region — a device hole — is no longer reachable even though no
+/// `Frame` can name it either.
+///
+/// The accepting half matters as much: a check that only ever saw refusals
+/// would pass with the function returning `None` unconditionally.
+fn physical_reads_are_bounded() -> bool {
+    /// Bytes to ask for: enough that a region shorter than it is no sample.
+    const WORD: usize = 8;
+
+    // Chosen under the map's lock and read outside it: `read_physical` takes
+    // the same lock.
+    let addresses = mm::with_memory_map(|map| {
+        let pick = |wanted: fn(&wost::boot::MemoryRegion) -> bool| {
+            map.regions()
+                .find(|region| wanted(region) && region.len >= WORD as u64)
+                .map(|region| region.base)
+        };
+        (
+            pick(|region| region.kind.is_allocatable()),
+            pick(|region| !region.kind.is_direct_mapped()),
+            pick(|region| region.kind.is_direct_mapped() && !region.kind.is_allocatable()),
+        )
+    });
+
+    let Some((Some(usable), Some(unreachable), Some(readable))) = addresses else {
+        return false;
+    };
+
+    mm::read_physical(usable, WORD).is_none()
+        && mm::read_physical(u64::MAX - WORD as u64, WORD).is_none()
+        && mm::read_physical(unreachable, WORD).is_none()
+        && mm::read_physical(readable, WORD).is_some()
+}
+
 /// A second switch is refused.
 ///
 /// The property that makes `AddressSpace::map` safe: nothing can add a mapping
@@ -906,6 +946,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a second address space is refused",
         a_second_switch_is_refused(),
+    );
+    report.check(
+        "a physical read is refused for memory the direct map may not reach",
+        physical_reads_are_bounded(),
     );
 
     report.check(
