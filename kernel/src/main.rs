@@ -28,6 +28,7 @@ mod selftest;
 mod theme;
 mod thread;
 mod time;
+mod wait;
 
 use core::fmt::Write;
 
@@ -78,6 +79,7 @@ fn kernel_main(boot: BootInfo) -> ! {
     start_interrupts();
     input::init();
     route_keyboard(routing);
+    input::start_poller();
 
     dev::with_console(|console| {
         for line in banner::LINES {
@@ -93,37 +95,38 @@ fn kernel_main(boot: BootInfo) -> ! {
     #[cfg(feature = "selftest")]
     selftest::run(serial);
 
+    // Started here rather than at `thread::init`, because a thread that halts
+    // needs interrupts to be on before it can be woken from one. Idempotent:
+    // the self-checks start it earlier on purpose, so they can watch the
+    // machine on both sides of it.
+    thread::start_idle();
     info!(
-        "kernel: entering idle loop, uptime {} ms",
+        "kernel: reading the keyboard, uptime {} ms",
         time::uptime_ms()
     );
-    idle()
+    echo_keystrokes()
 }
 
-/// Halt until something happens, do the work it brought, halt again.
+/// The boot thread's last job: block on the keyboard, and draw what arrives.
 ///
-/// Where the keyboard's line is routed there is nothing to do between the
-/// halts: a keystroke wakes its handler directly (D-37 retired by D-49). With
-/// the flag never set — interrupts declined at boot — the first halt is
-/// permanent, which is the same idle this kernel had before it could take
-/// interrupts.
+/// The end state Phase 4 was for. Nothing here polls and nothing spins: this
+/// thread stops being runnable until a keystroke's interrupt makes it
+/// runnable again (D-61), the idle thread halts meanwhile, and no timer is
+/// armed on anyone's behalf — so a kernel sitting at a prompt takes exactly
+/// as many interrupts as there are keystrokes.
 ///
-/// Where the line could not be routed, the byte has to be fetched by
-/// somebody, and until D-57 that somebody was whoever the 100 Hz tick woke.
-/// A tickless kernel has no such somebody, so the polled path asks for the
-/// interval it needs: a sleep that arms one timer, drains one batch, and
-/// arms the next. The rate is the same and the machine is quiet without it.
-fn idle() -> ! {
-    /// What the retired tick used to give the polled path, restated as the
-    /// interval it always was.
-    const POLL_INTERVAL_MS: u64 = 10;
-
+/// Drawing is here rather than in the handler on purpose: a glyph can cost a
+/// scroll, and a scroll under the console lock is the longest stretch of this
+/// kernel with interrupts off (D-63).
+fn echo_keystrokes() -> ! {
+    let context = thread::ThreadContext::require();
     loop {
-        if input::is_interrupt_driven() {
-            cpu::halt();
-        } else {
-            input::poll();
-            thread::sleep_ms(POLL_INTERVAL_MS);
+        let keystroke = input::read_key(&context);
+        debug!("key: {:?} {:?}", keystroke.event.key, keystroke.event.state);
+        if let Some(character) = keystroke.character {
+            dev::with_console(|console| {
+                let _ = console.write_char(character);
+            });
         }
     }
 }
@@ -179,13 +182,13 @@ fn start_interrupts() {
 ///
 /// Declines rather than fails: a kernel whose firmware described no I/O APIC,
 /// or whose registers would not answer, keeps the polled path Phase 2 left
-/// behind (D-37). The idle loop asks which it got.
+/// behind (D-37), which `input::start_poller` then gives a thread to.
 fn route_keyboard(routing: Option<mem::Routing>) {
     /// The legacy line the keyboard controller has always used.
     const KEYBOARD_IRQ: u8 = 1;
 
     let Some(mut routing) = routing else {
-        info!("keyboard: no io apic; polled from a sleeping idle loop");
+        info!("keyboard: no io apic; a poller thread drains it instead");
         return;
     };
 

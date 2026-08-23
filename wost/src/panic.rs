@@ -36,6 +36,17 @@ pub fn enter() -> Option<PanicToken> {
     Some(PanicToken(()))
 }
 
+/// Whether the terminal panic path has been entered.
+///
+/// What lets a lock relax a rule it would otherwise enforce: a
+/// [`ThreadLock`](crate::sync::ThreadLock) refuses trap context, and the panic
+/// handler is the one caller that may be in it and must be served anyway —
+/// the code it interrupted is never resuming, so there is nothing left for the
+/// rule to protect.
+pub fn is_panicking() -> bool {
+    PANICKING.load(Ordering::Relaxed)
+}
+
 /// Reclaim every lock `wost` owns, so the panic path can use what it needs.
 ///
 /// The interrupt flag does not mask a fault, so any of these can be held by

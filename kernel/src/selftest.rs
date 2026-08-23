@@ -31,6 +31,7 @@ use crate::arch::current::debug_exit;
 use crate::arch::current::trap::{self, Record};
 use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
+use crate::thread::ThreadContext;
 use crate::{dev, error, info, input, thread, time};
 
 /// A frame's handle releases it, and the allocator notices.
@@ -312,6 +313,15 @@ fn a_large_allocation_takes_and_returns_frames() -> bool {
     taken && held && mm::free_frames() == before
 }
 
+/// The token the blocking calls below need, minted where they are made.
+///
+/// Passing one down through every helper would be plumbing with nothing to
+/// say; `require` panics in trap context, which is where a self-check that
+/// blocked would be a bug worth stopping the machine for.
+fn context() -> ThreadContext {
+    ThreadContext::require()
+}
+
 /// Yields a thread may spend waiting for something before the check gives up
 /// — so a switch that never hands control over is a red verdict, not a hang.
 const YIELD_BUDGET: usize = 100_000;
@@ -334,7 +344,7 @@ fn take_turns(mine: usize) {
             TURN.store(1 - mine, Ordering::Release);
         } else {
             budget -= 1;
-            thread::yield_now();
+            thread::yield_now(&context());
         }
     }
 }
@@ -350,7 +360,7 @@ fn second_turns() {
 /// Yield until `done`, or until the budget runs out.
 fn yields_until(done: impl Fn() -> bool) -> bool {
     (0..YIELD_BUDGET).any(|_| {
-        thread::yield_now();
+        thread::yield_now(&context());
         done()
     })
 }
@@ -406,7 +416,7 @@ fn churn(seed: u64) -> bool {
         c = c.wrapping_mul(MULTIPLIER).wrapping_add(b);
         d = d.wrapping_mul(MULTIPLIER).wrapping_add(c);
         e = e.wrapping_mul(MULTIPLIER).wrapping_add(d);
-        thread::yield_now();
+        thread::yield_now(&context());
     }
 
     let (mut p, mut q, mut r, mut s, mut t) = (
@@ -657,6 +667,160 @@ fn runtime_divides_by_weight() -> bool {
     exited && ratio_in_bounds
 }
 
+/// What the blocked reader saw: zero until it has anything to say.
+static READER_SAW: AtomicUsize = AtomicUsize::new(0);
+
+/// Rounds the reader went through before it had a keystroke.
+///
+/// One, always. A `read_key` that polled would show this climbing; a
+/// `read_key` that blocked goes round once, blocks, and comes back with an
+/// event in hand.
+static READER_ROUNDS: AtomicUsize = AtomicUsize::new(0);
+
+/// Block on the keyboard, and record the first key that arrives.
+fn read_one_key() {
+    let context = context();
+    READER_ROUNDS.fetch_add(1, Ordering::Relaxed);
+    let keystroke = input::read_key(&context);
+    READER_SAW.store(keystroke.event.key as usize + 1, Ordering::Release);
+}
+
+/// A thread blocked on the keyboard is woken by the keystroke's interrupt.
+///
+/// The phase's last claim, and D-49's lesson decides its shape: a check that
+/// polls cannot tell a working wake from a working poll. So the evidence is
+/// three things at once. The reader is *blocked* — not runnable, counted by
+/// the state transition rather than inferred. The machine is quiet while it
+/// waits: no timer is armed for a thread with no deadline, so a wait for a
+/// keystroke that never comes costs nothing at all. And what the reader has
+/// when it comes back is the key the harness pressed, delivered through the
+/// interrupt path.
+///
+/// Set up here and collected after the injection, because the harness presses
+/// its key on a marker this check is upstream of.
+fn a_blocked_reader_is_ready_to_wake() -> bool {
+    READER_SAW.store(0, Ordering::Release);
+    READER_ROUNDS.store(0, Ordering::Release);
+
+    let blocks = thread::blocks();
+    if thread::spawn("reader", read_one_key).is_err() {
+        return false;
+    }
+    // Long enough for the reader to be picked, run, and block; short beside
+    // everything between here and the injection.
+    let blocked = runs_until(50, || thread::blocks() > blocks);
+
+    let quiet = time::expiries();
+    runs_until(100, || false);
+    let stayed_quiet = time::expiries() == quiet;
+
+    blocked && stayed_quiet && input::has_reader() && READER_SAW.load(Ordering::Acquire) == 0
+}
+
+/// The reader woke, with the key the harness pressed and without polling for
+/// it.
+fn the_blocked_reader_woke_with_the_key() -> bool {
+    let wanted = ps2_keys::Key::A as usize + 1;
+
+    let woke = runs_until(1_000, || READER_SAW.load(Ordering::Acquire) != 0);
+    woke && READER_SAW.load(Ordering::Acquire) == wanted
+        && READER_ROUNDS.load(Ordering::Relaxed) == 1
+        && input::dropped_events() == 0
+}
+
+/// The idle thread runs when nothing else can, and never when something can.
+///
+/// Both halves, because either alone is satisfied by a bug. An idle thread
+/// that never runs would pass the second; one that the policy schedules like
+/// any other would pass the first. The spinner is what separates them: while
+/// it is runnable, the idle thread must not get the CPU at all.
+fn the_idle_thread_runs_only_when_nothing_else_can() -> bool {
+    // Slept rather than spun: this thread is a normal one, so as long as it
+    // is runnable the idle thread must not run — which is the very thing the
+    // second half checks.
+    let idled = thread::idle_halts();
+    thread::sleep_ms(&context(), 20);
+    let ran_when_free = thread::idle_halts() > idled;
+
+    STOP_SPINNING.store(0, Ordering::Release);
+    LIGHT_SPINS.store(0, Ordering::Release);
+    let free = thread::free_slots();
+    if thread::spawn("busy", light_spinner).is_err() {
+        return false;
+    }
+    let busy = thread::idle_halts();
+    runs_until(100, || false);
+    let stayed_off = thread::idle_halts() == busy;
+    STOP_SPINNING.store(1, Ordering::Release);
+    let exited = yields_until(|| thread::free_slots() == free);
+
+    ran_when_free && stayed_off && exited && LIGHT_SPINS.load(Ordering::Relaxed) > 0
+}
+
+/// The console's longest operation does not stop the machine taking
+/// interrupts.
+///
+/// D-34 accepted that interrupt latency is bounded by the longest critical
+/// section and left the bound unnamed, for want of a clock fine enough to
+/// name it with. Named, on the machine the gate runs on, it is a console
+/// scroll: a whole framebuffer moved and blitted, and the number this logs
+/// beside the check is tens of milliseconds. That is not a latency any
+/// interrupt should wait behind, so D-63 stops it waiting rather than
+/// stating it.
+///
+/// The property, therefore, is not how long the scroll takes — it takes what
+/// it takes — but that interrupts keep arriving while it runs. A spinner
+/// makes the timer arm at slice intervals, and a scroll several slices long
+/// must have several expiries inside it. Before D-63 the answer was none.
+fn a_scroll_does_not_block_interrupts() -> bool {
+    /// Scrolls to time, so one unlucky sample cannot decide it.
+    const SAMPLES: usize = 8;
+    /// A scroll spans this many slices at the very least, and each one owes
+    /// an expiry while a second thread is waiting for the CPU.
+    const EXPECTED_EXPIRIES: u64 = 2;
+
+    let Some((_, (_, line_height))) = dev::console_cursor() else {
+        return false;
+    };
+    let Some(geometry) = dev::console_geometry() else {
+        return false;
+    };
+    let rows = geometry.height / line_height.max(1);
+
+    STOP_SPINNING.store(0, Ordering::Release);
+    LIGHT_SPINS.store(0, Ordering::Release);
+    let free = thread::free_slots();
+    if thread::spawn("scroll-witness", light_spinner).is_err() {
+        return false;
+    }
+
+    let mut worst = 0;
+    let mut expiries = 0;
+    for _ in 0..SAMPLES {
+        // Fill the console to the bottom so the next line has to scroll, then
+        // time the line that does it. The whole call is timed, lock included,
+        // because the lock is what the latency was about.
+        for _ in 0..rows {
+            dev::with_console(|console| console.write_line(""));
+        }
+        let before = time::now_ns();
+        let taken = time::expiries();
+        dev::with_console(|console| console.write_line(""));
+        expiries += time::expiries() - taken;
+        worst = worst.max(time::now_ns() - before);
+    }
+
+    STOP_SPINNING.store(1, Ordering::Release);
+    let exited = yields_until(|| thread::free_slots() == free);
+    LONGEST_SCROLL.store(worst as usize, Ordering::Relaxed);
+
+    exited && worst > 0 && expiries >= EXPECTED_EXPIRIES
+}
+
+/// What [`a_scroll_does_not_block_interrupts`] measured, so the verdict can
+/// report the number as well as the judgement — it is the one D-63 is about.
+static LONGEST_SCROLL: AtomicUsize = AtomicUsize::new(0);
+
 /// Tally of what has been checked so far.
 struct Report {
     passed: usize,
@@ -892,6 +1056,17 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         sleeping_hands_the_cpu_over(),
     );
 
+    // Everything above ran on a kernel with no idle thread, which is the
+    // state the sleep checks needed: with nothing else runnable, a sleeper
+    // halts on its own stack, and that branch has no other witness. From here
+    // there is always something runnable, which is what the rest assumes.
+    thread::start_idle();
+    report.check("the idle thread is running", thread::idle_is_started());
+    report.check(
+        "the idle thread runs only when nothing else can",
+        the_idle_thread_runs_only_when_nothing_else_can(),
+    );
+
     report.check("the keyboard controller came up", input::is_ready());
     report.check(
         "the controller raises its line exactly when routed, and never translates",
@@ -904,6 +1079,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the keyboard is speaking scancode set two",
         input::scancode_set() == Some(2),
+    );
+
+    // Set up before the marker, collected after it: the reader has to be
+    // blocked before the harness presses anything, or what wakes it is a
+    // keystroke that was already waiting, which proves nothing.
+    report.check(
+        "a thread blocked on the keyboard is off the run queue, and quiet",
+        a_blocked_reader_is_ready_to_wake(),
     );
 
     // The harness watches serial for this exact line and presses a key when
@@ -928,6 +1111,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "keystrokes arrive as interrupts",
         keystrokes_arrive_as_interrupts(),
     );
+    report.check(
+        "the blocked reader woke with the injected key, without polling",
+        the_blocked_reader_woke_with_the_key(),
+    );
 
     // Before the editing check and not merely beside it: this is what makes
     // that one's cursor readings its own. Enter is the last key the harness
@@ -940,6 +1127,17 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "backspace erases and enter starts a line",
         the_editing_keys_move_the_cursor(),
+    );
+
+    // Last of the timed checks, because it scrolls the console to the bottom
+    // eight times and every check above wants its own output legible.
+    report.check(
+        "a console scroll does not block interrupts",
+        a_scroll_does_not_block_interrupts(),
+    );
+    info!(
+        "selftest: longest console scroll {} ns",
+        LONGEST_SCROLL.load(Ordering::Relaxed)
     );
 
     report.check(
@@ -1226,7 +1424,7 @@ fn a_sleeper_wakes_on_time_and_quietly() -> bool {
 
     let expiries = time::expiries();
     let before = time::uptime_ms();
-    thread::sleep_ms(SLEEP_MS);
+    thread::sleep_ms(&context(), SLEEP_MS);
     let slept = time::uptime_ms() - before;
     let spent = time::expiries() - expiries;
 
@@ -1259,7 +1457,7 @@ fn sleeping_hands_the_cpu_over() -> bool {
     }
 
     let woke = thread::wakes();
-    thread::sleep_ms(SLEEP_MS);
+    thread::sleep_ms(&context(), SLEEP_MS);
     let progressed = LIGHT_SPINS.load(Ordering::Relaxed) >= PROGRESS;
     let woken = thread::wakes() == woke + 1;
     STOP_SPINNING.store(1, Ordering::Release);

@@ -1,27 +1,30 @@
-//! The polled keyboard input path: drain, decode, deliver.
+//! The keyboard input path: drain, decode, queue, wake.
 //!
-//! Where the line is routed the handler does this work directly (D-49);
-//! where it is not, the idle loop sleeps ten milliseconds at a time and does
-//! it in between (D-37, D-57). Either way every pending byte is pulled
-//! through the decoder, and each completed event is logged at debug level
-//! and — when it types a character — echoed to the framebuffer console.
-//! Polled latency is bounded by that interval, and the keyboard's own
-//! buffering holds an order of magnitude more than a person can type into it
-//! in ten milliseconds.
+//! Where the line is routed the handler does the draining (D-49); where it is
+//! not, a thread of its own sleeps ten milliseconds at a time and does it in
+//! between (D-37, D-57). Either way every pending byte is pulled through the
+//! decoder and each completed event is queued for a reader, which is woken if
+//! one is waiting (D-61).
+//!
+//! Nothing here draws. Echoing a keystroke used to be the handler's work, and
+//! moving it to the thread that reads is what took the console's scroll off
+//! every other interrupt's latency path (D-63).
 //!
 //! The singleton is module-local rather than in `dev`, whose charter is the
 //! output devices the panic path must reach; a panicking kernel has no use
 //! for its keyboard.
 
-use core::fmt::Write;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ps2_keys::{Decoder, Key, KeyEvent, KeyState, Shift, us};
+use wost::arch::current::interrupt;
 use wost::panic::PanicToken;
 use wost::sync::{Once, SpinLock};
 
 use crate::arch::current::i8042::Controller;
-use crate::{debug, dev, info, warn};
+use crate::thread::ThreadContext;
+use crate::wait::WaitQueue;
+use crate::{info, warn};
 
 struct Keyboard {
     controller: Controller,
@@ -55,10 +58,16 @@ static KEYBOARD: SpinLock<Option<Keyboard>> = SpinLock::new(None);
 
 /// One decoded event, with the character it typed resolved while the shift
 /// state around it was still current.
-#[derive(Clone, Copy)]
-struct Delivery {
-    event: KeyEvent,
-    character: Option<char>,
+///
+/// The character travels with the event because the shift state that decided
+/// it was current *then*, and a reader picked up milliseconds later would
+/// resolve a different one.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Keystroke {
+    /// The key, and whether it went down or up.
+    pub(crate) event: KeyEvent,
+    /// What it typed, if it typed anything.
+    pub(crate) character: Option<char>,
 }
 
 /// Events decoded per hold of the keyboard lock. With the byte budget in
@@ -89,27 +98,35 @@ pub(crate) fn init() {
 /// bounded per batch, so what this bound protects is the loop's turn, not the
 /// lock — anything still waiting is drained on the next pass, one interval
 /// later.
-pub(crate) fn poll() {
+///
+/// Returns how many threads the events it queued woke, which the trap handler
+/// uses to decide whether the scheduler needs asking who should run now.
+pub(crate) fn poll() -> usize {
     /// Batches per call. With [`BATCH`] events each, one pass at the keyboard
     /// is two orders of magnitude more than a person can type into it, and
     /// finite either way.
     const BATCHES: usize = 8;
 
+    let mut delivered = 0;
     for _ in 0..BATCHES {
-        let mut deliveries = [None; BATCH];
-        let count = drain_batch(&mut deliveries);
-        for delivery in deliveries.iter().flatten() {
-            deliver(*delivery);
+        let mut keystrokes = [None; BATCH];
+        let count = drain_batch(&mut keystrokes);
+        for keystroke in keystrokes.iter().flatten() {
+            deliver(*keystroke);
+            delivered += 1;
         }
         if count < BATCH {
-            return;
+            break;
         }
     }
+    // Outside every other lock, and last: a woken reader may be picked the
+    // moment the handler returns, and it will want the queue this filled.
+    if delivered > 0 { READERS.wake_all() } else { 0 }
 }
 
 /// Decode up to one batch under the lock, resolving each event's character
 /// against the shift state as it stood at that event.
-fn drain_batch(deliveries: &mut [Option<Delivery>; BATCH]) -> usize {
+fn drain_batch(keystrokes: &mut [Option<Keystroke>; BATCH]) -> usize {
     let mut guard = KEYBOARD.lock();
     let Some(keyboard) = guard.as_mut() else {
         return 0;
@@ -123,22 +140,139 @@ fn drain_batch(deliveries: &mut [Option<Delivery>; BATCH]) -> usize {
         let character = (event.state == KeyState::Pressed)
             .then(|| us::char_for(event.key, keyboard.shift))
             .flatten();
-        deliveries[count] = Some(Delivery { event, character });
+        keystrokes[count] = Some(Keystroke { event, character });
         count += 1;
     }
     count
 }
 
-/// Log the event, and echo what it typed. Runs outside the keyboard lock,
-/// in mainline context, where taking the console locks is the sanctioned
-/// nesting.
-fn deliver(delivery: Delivery) {
-    debug!("key: {:?} {:?}", delivery.event.key, delivery.event.state);
-    WATCH.lock().observe(delivery.event);
-    if let Some(character) = delivery.character {
-        dev::with_console(|console| {
-            let _ = console.write_char(character);
-        });
+/// Queue the event for whoever is reading, and note it for the self-checks.
+///
+/// What it does *not* do is touch an output device — no glyph, and no log
+/// line. Both used to happen here, which meant a keyboard interrupt held the
+/// console lock for as long as a scroll takes; that lock is now one a handler
+/// is refused (D-63), so this is the last place either could have happened
+/// and it does neither. Drawing and logging are the reader's, on its own
+/// thread, where a scroll delays nobody but itself.
+fn deliver(keystroke: Keystroke) {
+    WATCH.lock().observe(keystroke.event);
+    EVENTS.lock().push(keystroke);
+}
+
+/// Decoded events waiting for a reader.
+///
+/// A fixed ring rather than a list: the producer is an interrupt handler, and
+/// D-55 forbids it the heap. Sixteen is two orders of magnitude more than the
+/// gap between a keystroke and a reader that blocks on one.
+const QUEUED: usize = 16;
+
+/// The events themselves, and what has been lost.
+#[derive(Debug)]
+struct Events {
+    ring: [Option<Keystroke>; QUEUED],
+    /// Where the next event goes.
+    head: usize,
+    /// Where the next read comes from.
+    tail: usize,
+    /// Events dropped because nobody was reading fast enough.
+    ///
+    /// Should stay at zero. Dropping the newest rather than the oldest is
+    /// deliberate: a full queue means a reader is not keeping up, and the
+    /// keystrokes worth keeping are the ones already typed.
+    dropped: usize,
+}
+
+impl Events {
+    const fn new() -> Self {
+        Self {
+            ring: [None; QUEUED],
+            head: 0,
+            tail: 0,
+            dropped: 0,
+        }
+    }
+
+    fn push(&mut self, keystroke: Keystroke) {
+        if self.ring[self.head].is_some() {
+            self.dropped += 1;
+            return;
+        }
+        self.ring[self.head] = Some(keystroke);
+        self.head = (self.head + 1) % QUEUED;
+    }
+
+    fn pop(&mut self) -> Option<Keystroke> {
+        let keystroke = self.ring[self.tail].take()?;
+        self.tail = (self.tail + 1) % QUEUED;
+        Some(keystroke)
+    }
+}
+
+static EVENTS: SpinLock<Events> = SpinLock::new(Events::new());
+
+/// Threads waiting for a keystroke.
+static READERS: WaitQueue = WaitQueue::new();
+
+/// Wait for the next key event, blocking until one arrives.
+///
+/// The whole point of the phase, in one function: a thread that asks for a
+/// keystroke stops being runnable, the machine arms nothing on its behalf and
+/// takes no interrupts, and the keyboard's own interrupt is what makes it
+/// runnable again. Nothing polls anywhere on this path.
+///
+/// The check for an event and the registration as a waiter happen with the
+/// interrupt flag clear, together: the wakeup that arrived between "the queue
+/// is empty" and "I am waiting" is the classic way to lose one for good.
+pub(crate) fn read_key(context: &ThreadContext) -> Keystroke {
+    loop {
+        let saved = interrupt::disable();
+        if let Some(keystroke) = EVENTS.lock().pop() {
+            saved.restore();
+            return keystroke;
+        }
+        READERS.wait(context);
+        saved.restore();
+    }
+}
+
+/// Events dropped because no reader kept up. See [`Events::dropped`].
+#[cfg(feature = "selftest")]
+pub(crate) fn dropped_events() -> usize {
+    EVENTS.lock().dropped
+}
+
+/// Whether anything is waiting for a keystroke.
+#[cfg(feature = "selftest")]
+pub(crate) fn has_reader() -> bool {
+    !READERS.is_idle()
+}
+
+/// Where the line could not be routed, give the drain a thread of its own.
+///
+/// Until the tick was retired this work belonged to whoever the tick woke
+/// (D-37). A tickless kernel has no such somebody, so the fallback asks for
+/// the interval it needs and pays for it alone: one thread that drains, sleeps
+/// ten milliseconds, and drains again, on a machine that would otherwise never
+/// look. Does nothing where the interrupt does the work.
+pub(crate) fn start_poller() {
+    /// What the retired tick used to give this path, restated as the interval
+    /// it always was.
+    const POLL_INTERVAL_MS: u64 = 10;
+
+    fn poll_forever() {
+        let context = ThreadContext::require();
+        loop {
+            poll();
+            crate::thread::sleep_ms(&context, POLL_INTERVAL_MS);
+        }
+    }
+
+    if is_interrupt_driven() {
+        return;
+    }
+    match crate::thread::spawn("keyboard-poll", poll_forever) {
+        Ok(_) => info!("keyboard: polled every {POLL_INTERVAL_MS} ms"),
+        Err(reason) => warn!("keyboard: no poller: {reason}; input is lost"),
     }
 }
 
@@ -149,6 +283,8 @@ fn deliver(delivery: Delivery) {
 /// lock was held, and a fault is not masked by the interrupt flag.
 pub(crate) fn force_unlock(token: &PanicToken) {
     KEYBOARD.force_unlock(token);
+    EVENTS.force_unlock(token);
+    READERS.force_unlock(token);
 }
 
 /// Whether the controller came up.
@@ -257,9 +393,9 @@ pub(crate) fn take_interrupts() {
 /// keyboard and console locks from here for the reason `006-cpu-fundamentals.md`
 /// establishes: `SpinLock` clears the interrupt flag while a lock is held, so
 /// code holding either one cannot have been interrupted by this handler.
-pub(crate) fn on_interrupt() {
+pub(crate) fn on_interrupt() -> bool {
     INTERRUPTS.fetch_add(1, Ordering::Relaxed);
-    poll();
+    poll() > 0
 }
 
 /// Keyboard interrupts this CPU has taken.

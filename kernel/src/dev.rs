@@ -2,10 +2,17 @@
 //!
 //! Both live here as locked singletons so the panic handler can reach them from
 //! any context without threading them through every call site.
+//!
+//! Their locks keep interrupts *on* (D-63). Writing a line can cost a scroll,
+//! and a scroll is tens of milliseconds of framebuffer — far too long for
+//! every interrupt on the machine to wait behind, which is what a
+//! `SpinLock` here would mean. The price is that no trap handler may write to
+//! either device, which was already the rule (D-31) and is now a
+//! [`ThreadLock`] that panics rather than a comment that can be forgotten.
 
 use wost::boot::Framebuffer;
 use wost::panic::PanicToken;
-use wost::sync::SpinLock;
+use wost::sync::{SpinLock, ThreadLock};
 
 use crate::arch::current::ioapic::IoApic;
 use crate::arch::current::uart::{self, Uart, UartError};
@@ -13,8 +20,8 @@ use crate::console::Console;
 use crate::theme;
 use crate::{debug, info, warn};
 
-static UART: SpinLock<Option<Uart>> = SpinLock::new(None);
-static CONSOLE: SpinLock<Option<Console>> = SpinLock::new(None);
+static UART: ThreadLock<Option<Uart>> = ThreadLock::new(None);
+static CONSOLE: ThreadLock<Option<Console>> = ThreadLock::new(None);
 
 /// Bring up the serial console.
 pub(crate) fn init_uart() -> Result<(), UartError> {

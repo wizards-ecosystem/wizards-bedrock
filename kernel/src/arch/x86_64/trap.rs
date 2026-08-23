@@ -44,12 +44,20 @@ fn on_trap(frame: &mut TrapFrame) {
             // until the end-of-interrupt, and another thread running inside
             // it would hold every later expiry hostage.
             apic::end_of_interrupt();
-            crate::thread::on_expiry(frame);
+            crate::thread::reschedule(frame);
         }
 
         vector::KEYBOARD => {
-            crate::input::on_interrupt();
+            let woke = crate::input::on_interrupt();
             apic::end_of_interrupt();
+            // A thread made runnable by a keystroke must not wait for the
+            // next expiry to run: there may not be one. The scheduler is
+            // asked here for the same reason it is asked after a timer —
+            // trap exit is where a switch is legal — and only when there is
+            // something new to consider.
+            if woke {
+                crate::thread::reschedule(frame);
+            }
         }
 
         // Deliberately not dismissed: a spurious interrupt is the APIC saying
