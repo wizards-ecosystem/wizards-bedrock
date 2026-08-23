@@ -215,7 +215,11 @@ static READERS: WaitQueue = WaitQueue::new();
 pub(crate) fn read_key(context: &ThreadContext) -> Keystroke {
     loop {
         let saved = interrupt::disable();
-        if let Some(keystroke) = EVENTS.lock().pop() {
+        // A statement of its own: held across the restore below, this guard
+        // would leave the queue locked with the flag set, and the next
+        // keyboard interrupt would spin on it for ever (D-66).
+        let keystroke = EVENTS.lock().pop();
+        if let Some(keystroke) = keystroke {
             saved.restore();
             return keystroke;
         }

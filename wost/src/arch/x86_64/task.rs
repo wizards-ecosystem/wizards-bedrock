@@ -364,7 +364,17 @@ pub fn exit_to(slot: usize) -> TaskError {
 /// the switch needs: where to save this context, and what to load.
 ///
 /// The leaving slot becomes `leaving`. Called with the interrupt flag clear.
+///
+/// # Panics
+///
+/// Panics if a spin lock is held. A switch would leave it locked on a
+/// context nothing can schedule, and the next taker spins with the flag
+/// clear (D-66).
 fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
+    assert!(
+        crate::sync::spinlocks_held() == 0,
+        "a spin lock is held, so the thread left behind could never release it"
+    );
     let mut table = TABLE.lock();
     if table.count == 0 {
         return Err(TaskError::NotInitialised);

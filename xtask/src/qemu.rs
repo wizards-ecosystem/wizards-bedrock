@@ -1,8 +1,8 @@
 //! Locating and launching QEMU.
 
 use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
@@ -162,6 +162,67 @@ const INJECTED_QCODES: &[&str] = &["a", "backspace", "ret"];
 
 /// Boot `image` headless, wait for the kernel's verdict, and report it.
 ///
+/// Report where the CPU was when the deadline ran out.
+///
+/// A hung kernel prints nothing, and a kernel that prints nothing is the one
+/// failure that cannot be read from the log. The monitor knows the
+/// instruction pointer and can disassemble around it, which is enough to name
+/// the loop: the interrupt flag in `RFLAGS` says whether it can ever end.
+fn report_hang(port: u16) {
+    let Some(state) = monitor(port, "info registers\n") else {
+        println!("[xtask] no monitor: where the kernel hung is unknown");
+        return;
+    };
+    for line in state
+        .lines()
+        .filter(|line| line.contains("RIP=") || line.contains("RSP="))
+    {
+        println!("[xtask] hung at: {}", line.trim());
+    }
+    let Some(rip) = state
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("RIP="))
+    else {
+        return;
+    };
+    let Some(code) = monitor(port, &format!("x/8i 0x{rip}\n")) else {
+        return;
+    };
+    for line in code
+        .lines()
+        .filter(|line| line.trim_start().starts_with("0x"))
+    {
+        println!("[xtask] hung in:  {}", line.trim());
+    }
+}
+
+/// One monitor exchange on a connection of its own.
+///
+/// A fresh connection per command because the monitor serves one at a time,
+/// and every read is bounded: this runs when the machine is already wedged.
+fn monitor(port: u16, command: &str) -> Option<String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(MONITOR_TIMEOUT)).ok()?;
+    stream.write_all(command.as_bytes()).ok()?;
+
+    let mut text = String::new();
+    let mut buffer = [0u8; 4096];
+    while let Ok(read) = stream.read(&mut buffer) {
+        // The prompt appears once on connect and once after the reply.
+        if read == 0 || text.matches(MONITOR_PROMPT).count() >= 2 {
+            break;
+        }
+        text.push_str(&String::from_utf8_lossy(&buffer[..read]));
+    }
+    Some(text)
+}
+
+/// Long enough for a reply, short enough not to extend a failing run.
+const MONITOR_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// What the monitor prints when it wants a command.
+const MONITOR_PROMPT: &str = "(qemu)";
+
 /// A kernel that neither passes nor fails within `timeout` is a hang, which is
 /// itself a failure — so the emulator is killed rather than left running.
 ///
@@ -190,6 +251,16 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
         listener.local_addr().context("reading the QMP port")?
     );
 
+    // Bound and dropped: QEMU wants a port number, and this is how a free
+    // one is found without guessing.
+    let monitor_port = {
+        let probe = TcpListener::bind(("127.0.0.1", 0)).context("probing for a monitor port")?;
+        probe
+            .local_addr()
+            .context("reading the monitor port")?
+            .port()
+    };
+
     let emulator = qemu_dir.join(exe_name("qemu-system-x86_64"));
     println!("[xtask] booting the self-test kernel");
 
@@ -198,6 +269,10 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
         .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
         .args(["-qmp", &qmp_endpoint])
+        .args([
+            "-monitor",
+            &format!("tcp:127.0.0.1:{monitor_port},server,nowait"),
+        ])
         .args(drive(&format!(
             "if=pflash,format=raw,readonly=on,file={}",
             code.display()
@@ -213,7 +288,8 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
 
     let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
     let marker_seen = Arc::new(AtomicBool::new(false));
-    let forwarder = forward_serial(stdout, Arc::clone(&marker_seen));
+    let panicked = Arc::new(AtomicBool::new(false));
+    let forwarder = forward_serial(stdout, Arc::clone(&marker_seen), Arc::clone(&panicked));
     inject_on_marker(listener, marker_seen);
 
     let deadline = Instant::now() + timeout;
@@ -221,7 +297,15 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
         if let Some(status) = child.try_wait().context("waiting for QEMU")? {
             break status;
         }
+        // A panicking kernel halts rather than reporting, so the timeout
+        // would otherwise be the only way it ever ends.
+        if panicked.load(Ordering::Acquire) {
+            let _ = child.kill();
+            let _ = forwarder.join();
+            bail!("the self-test kernel panicked — see the log above");
+        }
         if Instant::now() >= deadline {
+            report_hang(monitor_port);
             let _ = child.kill();
             let _ = forwarder.join();
             bail!(
@@ -250,7 +334,11 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
 ///
 /// A kernel that dies mid-line still shows its last words: the unterminated
 /// remainder at end-of-stream is forwarded too.
-fn forward_serial(stdout: ChildStdout, marker_seen: Arc<AtomicBool>) -> JoinHandle<()> {
+fn forward_serial(
+    stdout: ChildStdout,
+    marker_seen: Arc<AtomicBool>,
+    panicked: Arc<AtomicBool>,
+) -> JoinHandle<()> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut line = Vec::new();
@@ -273,6 +361,9 @@ fn forward_serial(stdout: ChildStdout, marker_seen: Arc<AtomicBool>) -> JoinHand
             let _ = std::io::stdout().flush();
             if text.contains(READY_MARKER) {
                 marker_seen.store(true, Ordering::Release);
+            }
+            if text.contains(PANIC_MARKER) {
+                panicked.store(true, Ordering::Release);
             }
         }
     })

@@ -287,6 +287,10 @@ pub fn enable() {
 /// live legacy controller, the interrupt that ends the halt is a reset.
 pub fn enable_and_halt() {
     assert!(
+        crate::sync::spinlocks_held() == 0,
+        "a spin lock is held, so halting with the flag set would strand it"
+    );
+    assert!(
         table_is_loaded(),
         "load the interrupt table before accepting interrupts"
     );
@@ -307,7 +311,17 @@ pub fn enable_and_halt() {
 /// Private, and the difference between it and [`enable`] is the whole design:
 /// restoring a flag that was set is safe because setting it was, whereas
 /// setting it the first time is the step that needs an argument.
+///
+/// # Panics
+///
+/// Panics if a spin lock is held: the flag is what keeps its holder from
+/// being interrupted, and an interrupt that then waits on the same lock waits
+/// on a context that cannot resume (D-66).
 fn set_flag() {
+    assert!(
+        crate::sync::spinlocks_held() == 0 || crate::panic::is_panicking(),
+        "a spin lock is held, so setting the interrupt flag would strand it"
+    );
     // SAFETY: `sti` sets IF on the current CPU and touches nothing else. Every
     // caller either checked the preconditions or is restoring a flag whose
     // caller did.

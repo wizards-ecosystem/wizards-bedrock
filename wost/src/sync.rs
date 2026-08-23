@@ -17,6 +17,15 @@ use crate::panic::PanicToken;
 /// per-CPU when SMP lands (D-56).
 static SPINLOCKS_HELD: AtomicUsize = AtomicUsize::new(0);
 
+/// How many spin locks this CPU holds.
+///
+/// For the two invariants that read it from outside this module: setting the
+/// interrupt flag with one held, and switching threads with one held, are both
+/// ways to strand a lock on a context that can never resume (D-66).
+pub fn spinlocks_held() -> usize {
+    SPINLOCKS_HELD.load(Ordering::Relaxed)
+}
+
 /// A latch that admits exactly one caller.
 ///
 /// Used to make a hardware `init` idempotent: the second caller returns having
