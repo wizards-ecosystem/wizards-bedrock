@@ -13,7 +13,7 @@
 //! is loaded, and every one of its gates is present.
 
 use core::arch::{asm, global_asm};
-use core::sync::atomic::{AtomicPtr, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use x86_tables::exception;
 use x86_tables::idt::{self, Gate};
@@ -26,7 +26,7 @@ use crate::cell::HardwareCell;
 use crate::sync::Once;
 
 /// `RFLAGS` bit 9: this CPU accepts maskable interrupts.
-const FLAGS_INTERRUPT: u64 = 1 << 9;
+pub(crate) const FLAGS_INTERRUPT: u64 = 1 << 9;
 
 /// Bytes each entry stub occupies.
 ///
@@ -103,6 +103,32 @@ static IDT: HardwareCell<[Gate; idt::TABLE_LEN]> =
     HardwareCell::new([Gate::MISSING; idt::TABLE_LEN]);
 static HANDLER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static INIT: Once = Once::new();
+
+/// How many trap handlers are on this CPU's stack — zero in thread context.
+///
+/// What "in trap context" means, made a value something can read (D-55): the
+/// heap refuses to allocate while it is non-zero, and the scheduler refuses
+/// to yield. A context switch out of a handler parks the count with the
+/// thread that owns it, so the thread switched *to* sees its own.
+static TRAP_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether this CPU is inside a trap handler.
+pub fn in_trap() -> bool {
+    TRAP_DEPTH.load(Ordering::Relaxed) != 0
+}
+
+/// Take this context's trap depth off the CPU, for a switch to another.
+///
+/// Paired with [`resume_trap`] on the way back; between them the CPU runs a
+/// thread whose depth is its own.
+pub(crate) fn suspend_trap() -> usize {
+    TRAP_DEPTH.swap(0, Ordering::Relaxed)
+}
+
+/// Put back the depth [`suspend_trap`] took.
+pub(crate) fn resume_trap(depth: usize) {
+    TRAP_DEPTH.store(depth, Ordering::Relaxed);
+}
 
 /// Fill the interrupt descriptor table and load it, routing every vector to
 /// `handler`.
@@ -302,7 +328,9 @@ extern "C" fn dispatch(frame: *mut TrapFrame) {
     // flag.
     let frame = unsafe { &mut *frame };
 
+    TRAP_DEPTH.fetch_add(1, Ordering::Relaxed);
     handler(frame);
+    TRAP_DEPTH.fetch_sub(1, Ordering::Relaxed);
 }
 
 unsafe extern "C" {

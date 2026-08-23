@@ -58,7 +58,7 @@ wake-from-interrupt, which needs the preemption-era lock discipline settled.
 | Slice | Contents | Status |
 |---|---|---|
 | 1 | Kernel threads, cooperative: stack arena with guard gaps, TCB table, `spawn`/`yield_now`/`exit`, naked-function context switch in `wost`, round-robin ready list (deliberately policy-free) | ✅ 2026-08-22 |
-| 2 | The scheduler: `libs/eevdf` arithmetic host-tested, EEVDF policy behind a separable seam with round-robin fallback, timer preemption at trap exit, the lock order and the context token | |
+| 2 | The scheduler: `libs/eevdf` arithmetic host-tested, EEVDF policy behind a separable seam with round-robin fallback, timer preemption at trap exit, the lock order and the context token | ✅ 2026-08-22 |
 | 3 | Tickless: one-shot APIC programming, sleep queue and `sleep_ms`, the 100 Hz tick retired, uptime re-based | |
 | 4 | Blocking: `WaitQueue`, the keyboard read blocks a thread and the interrupt wakes it, idle becomes the idle thread, D-34's latency position taken | |
 | 5 | Phase close: VMware boot (D-18), roadmap and docs updated, this file's closing section | |
@@ -202,3 +202,58 @@ noticed. Fifty-eight checks on the machine.
 never yields runs forever, which is slice 2's claim to test. Nothing enforces
 that a thread holds no lock when it yields — it cannot corrupt memory, only
 hang — and D-55's context token is where the type system takes that over.
+
+## Slice 2 — the scheduler (2026-08-22)
+
+**The policy is a crate, and the crate found the first bug.** `libs/eevdf`
+is the whole of EEVDF as pure functions — wrapping virtual time, weighted
+charging, the fair-share average, eligibility, the earliest-deadline pick,
+and lag-clamped placement — with thirteen host tests (D-53). One of them
+drives the policy the way the kernel will, a thousand steps at 1:2 weight,
+and its first run reported a ratio of infinity: the heavy thread's clock
+never moved, because one unit of real time at twice the base weight
+truncated to zero virtual time. `RESOLUTION` exists because of that test.
+The kernel's side of the seam feeds the policy the runnable entities in
+rotation from just after the running thread, so equals take turns, and
+counts the one answer the policy must never give.
+
+**Preemption is the timer calling the scheduler after its end-of-interrupt,
+and the gate is the flag the CPU pushed** (D-54). Code that was not accepting
+interrupts is not switched out — and since D-34 clears the flag for every
+lock, that single test makes every critical section unpreemptible with no
+count to maintain. `switch_from_trap` in `wost` refuses a frame whose flag
+is clear, so the rule is checked where the switch happens rather than
+trusted from where it is called. Asterinas's `PreemptDisabled` discipline is
+declined on the record: a lock already is one.
+
+**Trap context became a number** (D-55). The heap refuses to allocate while
+a handler is on the stack and the scheduler refuses to yield; a switch out of
+a handler parks the count with the thread that owns it. The token type
+`008` §4.2 proposed waits for the first API that can sleep, which is slice
+4's, and D-56 names the three statics that become per-CPU when SMP arrives.
+
+**What the counter caught on the first boot.** Sixty checks passed and the
+sixty-first — "the policy never needed its fallback" — failed. Not a policy
+fault: the yield path excludes the running thread from the candidates but
+not from the average, so when the yielder is the one behind the average,
+"nobody else is eligible" is the honest answer, and the thread should keep
+the CPU rather than hand it to round-robin. The fallback now belongs only to
+the preemption path, where everyone is considered and the policy's own tests
+promise an answer. A counter that exists to make an inconsistency visible
+made one visible in its first hour — in the caller, not the policy.
+
+**Three more checks, each broken once.** A spinner cannot starve the boot
+thread, which also never yields (preemption disabled: red). Runtime divides
+1:2 by weight within bounds coarse enough for a hypervisor (weight ignored:
+red). The fallback counter stays at zero (the preempt path denied its pick:
+red). The first attempt at that last break — handing the policy a wrong
+average everywhere — crashed in `exit` instead, the second time this phase
+that a break reached the wrong code; a break has to hit the path the check
+watches, or it proves nothing about the check. Sixty-one checks on the
+machine, and every slice-1 check ran under preemption unchanged.
+
+**Still owed by this slice's neighbours.** The tick costs a lock and a pick a
+hundred times a second; slice 3 retires it. Time is charged in milliseconds,
+conserved but coarsely attributed; the finer clock is slice 3's too. Nothing
+can block, so lag's clamp has no sleeper to act on yet; slice 4's wait queue
+is its first.

@@ -18,6 +18,7 @@ selftest = []
 [dependencies]
 noto-sans-mono-bitmap.workspace = true
 acpi-tables.workspace = true
+eevdf.workspace = true
 ps2-keys.workspace = true
 stack-layout.workspace = true
 x86-paging.workspace = true

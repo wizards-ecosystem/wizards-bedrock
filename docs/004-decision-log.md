@@ -2055,6 +2055,173 @@ strongest guard there is and the cheapest.
 
 ---
 
+## D-53 Scheduling policy is arithmetic in `libs/eevdf`, behind a seam with a fallback — Status: Accepted (2026-08-22)
+
+**Context.** D-15 chose EEVDF and wanted pluggable policy as "a cheap future
+door, not a v1 feature"; `008-research-notes-2.md` §4.4 took sched_ext's
+lesson as a constraint on the interface — policy *separable and observable,
+with a fallback path* — and flagged the lag rule as the part that is easy to
+omit.
+
+**Decision.** The policy is `libs/eevdf`, pure functions over plain data:
+virtual time that wraps and compares by signed difference, charging scaled
+by weight, a weighted average as the fair-share point, eligibility as
+non-negative lag, the pick as earliest deadline among the eligible, and
+placement that clamps lag to one slice either way. Thirteen host tests
+including a simulation that drives the policy the way the kernel does and
+asserts a 1:2 weight ratio lands at 1.9–2.1, and a sleeper test that asserts
+the clamp is what stops a returning thread running unopposed.
+
+The kernel's `thread.rs` is the mechanism side of the seam: it keeps an
+`Entity` per thread, feeds the runnable ones to the policy, and acts on the
+answer. Candidates are considered in rotation from just after the running
+thread, so equal deadlines take turns rather than the lowest index winning
+every tie. If the policy ever answers "nobody" when everyone was considered —
+which its own tests say cannot happen — the kernel takes the next runnable
+slot round-robin and counts it, and a self-check requires the count to be
+zero. That is the fallback in its smallest honest form: not a second policy,
+but a way to keep the machine up and make the inconsistency visible.
+
+**Rationale.** Arithmetic that decides who runs is exactly what D-30's
+pattern exists for; on the host it can be driven a thousand steps in a
+millisecond. Separability costs nothing — the seam is a function signature —
+and observability is one counter.
+
+**Consequences.**
+
+- Virtual time carries a `RESOLUTION` of 1024 units per unit of real time,
+  because the fairness simulation found the heavy thread's clock standing
+  still: one millisecond at twice the base weight truncated to nothing. The
+  test that found it is the test that guards it.
+- Real time is charged in milliseconds from `uptime_ms`, and the start
+  stamp always advances to `now`, so time is conserved across stints even
+  when single stints are shorter than a millisecond — it is attributed
+  coarsely, never lost. Slice 3's finer clock refines the attribution.
+- The yield path excludes the running thread from the candidates but not
+  from the average, so "nobody else is eligible" is a real answer there and
+  the thread keeps the CPU; the fallback counter is reserved for the
+  preemption path, where everyone is considered. The first boot counted a
+  fallback for exactly this reason, and the counter earned its keep on day
+  one by saying so.
+- Lag is clamped, not decayed: preserved across a sleep so a brief sleep
+  sheds no debt, capped at one slice so a long one banks no credit. That is
+  mainline's rule; the decay `008` described is a proposal there, and it can
+  be revisited when something here can sleep (slice 4).
+
+---
+
+## D-54 Preemption: cooperative first, then the timer at trap exit, with "was interruptible" as the test — Status: Accepted (2026-08-22)
+
+**Context.** Slice 1 proved the switch under yields alone. Something had to
+take the CPU from a thread that never gives it up, and the question was
+where that switch may happen and what must stop it.
+
+**Options.** Preemptive from the first commit (couples the two hardest new
+mechanisms in one change); a deferred-reschedule flag acted on at some later
+safe point (another state to keep consistent); a switch from inside the
+timer's handler, gated on whether the interrupted code could be interrupted.
+
+**Decision.** The tick handler dismisses the interrupt and then calls
+`thread::preempt` with the trap frame. It switches only if the frame's
+interrupt flag was set. That test is free and exact: D-34 clears the flag
+while any lock is held, and the scheduler itself clears it from decision to
+switch, so every critical section in the kernel is unpreemptible without a
+preempt count, and nothing is ever switched out of the middle of a decision.
+`wost::task::switch_from_trap` makes the frame the evidence — it refuses a
+frame whose flag is clear, and refuses to be called outside a handler.
+
+The handler's own frame stays on the preempted thread's stack; what the
+switch saves is the handler's path down to it. When the thread is next picked
+it resumes inside its own handler, returns through the trampoline, and
+`iretq` restores the flags the CPU pushed.
+
+Asterinas's `PreemptDisabled` guard discipline, which D-34 left for "once
+there is a scheduler", is **declined**: with the flag as the test, a lock
+*is* a preemption guard, and a second lock type would be a type parameter
+with one useful value still.
+
+**Rationale.** The ordering — end-of-interrupt before the switch — is not a
+detail: the APIC holds the timer's priority class until the EOI, and a thread
+running inside it would hold every later tick hostage. Cooperative first was
+the right sequencing: every one of slice 1's checks ran under slice 2's
+preemption unchanged, which is what proving the switch in isolation bought.
+
+**Consequences.**
+
+- A thread that was preempted inside a handler and one that yielded resume
+  by different paths, and both work without either knowing which it is; the
+  switch does not care what is above it on the stack.
+- Two checks: a spinner cannot starve the boot thread, which also spins
+  (red with preemption disabled), and runtime divides 1:2 by weight within
+  coarse bounds (red with the weight ignored).
+- One hundred ticks a second now each cost a lock and a pick. Slice 3
+  retires the tick and the cost with it.
+
+---
+
+## D-55 Trap context is a count the heap and the scheduler can ask — Status: Accepted (2026-08-22)
+
+**Context.** `008-research-notes-2.md` §4.2 named the bug class no lint
+here can catch — sleep-in-atomic-context, and its memory-safety cousin,
+allocation from a handler that interrupted the allocator's own refill — and
+said the idea was expressible on stable as a context token in the
+`PanicToken` idiom, worth an ADR when the heap landed. The heap landed in
+D-47; slice 2 adds the first switch out of a handler, which is where the
+rule starts being breakable.
+
+**Decision.** `wost::interrupt` keeps a trap-depth count: incremented around
+every handler call, zero in thread context. The heap's `alloc` asserts it is
+zero — loudly, because a silent null would be blamed on memory. `yield_now`
+asserts it is zero. A switch out of a handler parks the count with the
+thread it belongs to, so the thread switched to sees its own depth and the
+preempted one gets its back on resumption.
+
+The token *type* — a value only thread context can mint, taken by every API
+that may sleep — is deferred to the first API that may sleep, which is
+`WaitQueue::wait` in slice 4. Today's two callers assert against the count
+directly, and a token over two call sites would be ceremony. Klint itself is
+a custom driver and out under D-01.
+
+**Rationale.** The count is the mechanism either way; the token is sugar
+over it that pays off when there are enough call sites to forget one. The
+allocation assert is the half that matters now, because it is the half with
+memory safety behind it.
+
+**Consequences.**
+
+- Nothing in the kernel allocates in trap context today, which the first
+  boot with the assert confirmed by not panicking — a fact that was not on
+  record before.
+- Not yet enforced: yielding while holding a lock. It cannot corrupt memory
+  (the next thread spins with the flag it inherited), only hang. The token
+  of slice 4 is where it becomes a type error.
+
+---
+
+## D-56 Per-CPU state is one word, shaped to widen — Status: Accepted (2026-08-22)
+
+**Context.** One CPU today; SMP is a later phase. The scheduler needs "which
+thread is on this CPU", and how that is stored decides whether SMP is a
+widening or a rewrite.
+
+**Decision.** `wost::task::CURRENT` is a single atomic word, read and written
+only under the task table's lock with the flag clear. Everything that is
+per-CPU in principle — the current slot, the trap depth, the interrupt
+hand-off flag — is a `static` today and is named as such in its doc comment,
+so the SMP phase has a list rather than a hunt. GS base and `swapgs` stay
+where D-29 left them, waiting for ring 3.
+
+**Rationale.** A per-CPU abstraction designed before there is a second CPU
+would guess at what it needs (APIC IDs, stack switching on entry, IPIs) and
+be wrong in the details. Keeping the statics few and named is the cheap form
+of the same intent.
+
+**Consequences.** The SMP phase owes: `CURRENT` and `TRAP_DEPTH` become
+per-CPU cells, `prepare`'s single-CPU exclusivity argument becomes a per-CPU
+one, and D-45's TLB-shootdown debt comes due the moment anything unmaps.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap
@@ -2071,7 +2238,7 @@ strongest guard there is and the cheapest.
   becomes an ADR as it is taken)
 - `009-multitasking.md` — Phase 4 charter: the debts D-15, D-34, D-36 and
   D-47 deferred here, the lock order, and the decisions still open
-  (D-51..)
+  (D-51..D-56)
 - `008-research-notes-2.md` — the second research pass, opening Phase 3:
   what the stable toolchain now allows, the evidence behind the decisions
   `007` holds open, and the proposed additions to `005`. Its marks are its

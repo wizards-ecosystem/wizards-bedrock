@@ -15,6 +15,7 @@ use core::ptr;
 use slab_layout::{CLASSES, Placement, SizeClass, place};
 
 use super::{Paddr, Segment, allocate_zeroed, direct_pointer};
+use crate::arch::current::interrupt;
 use crate::sync::SpinLock;
 
 /// An empty free list. Zero is never a slot address: the direct map is in the
@@ -142,6 +143,11 @@ struct KernelAllocator;
 // returns exactly what `alloc` handed out, under the same lock.
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // A handler that allocates can be the one that interrupted the heap's
+        // own refill, and `003`'s rule that handlers do not allocate was
+        // enforced by nobody until there was a count to ask (D-55). Loud,
+        // because a silent null here would be blamed on memory.
+        assert!(!interrupt::in_trap(), "allocation in trap context");
         match place(layout.size(), layout.align()) {
             Placement::Slot(class) => HEAP.lock().take_slot(class),
             Placement::Frames { count, align } => {

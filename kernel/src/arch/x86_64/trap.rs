@@ -40,7 +40,11 @@ fn on_trap(frame: &mut TrapFrame) {
 
         vector::TIMER => {
             crate::time::on_tick();
+            // Dismissed before any switch: the APIC holds this priority class
+            // until the end-of-interrupt, and another thread running inside
+            // it would hold every later tick hostage.
             apic::end_of_interrupt();
+            crate::thread::preempt(frame);
         }
 
         vector::KEYBOARD => {

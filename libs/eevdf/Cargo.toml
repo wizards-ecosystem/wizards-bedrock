@@ -1,0 +1,11 @@
+[package]
+name = "eevdf"
+description = "Earliest eligible virtual deadline first, as arithmetic: virtual time, lag, deadlines, and the pick."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

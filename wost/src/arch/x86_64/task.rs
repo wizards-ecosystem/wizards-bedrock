@@ -24,7 +24,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use x86_paging::Flags;
 
-use super::interrupt;
+use super::interrupt::{self, TrapFrame};
 use super::paging::{self, StackArena};
 use crate::cell::HardwareCell;
 use crate::panic::PanicToken;
@@ -70,6 +70,11 @@ pub enum TaskError {
     Current(usize),
     /// The boot slot has no arena stack to fabricate a frame on.
     Boot,
+    /// The interrupted code was not accepting interrupts, so it is inside a
+    /// critical section that must not be switched out of.
+    Uninterruptible,
+    /// [`switch_from_trap`] was called outside a trap handler.
+    NotInTrap,
 }
 
 impl fmt::Display for TaskError {
@@ -85,6 +90,8 @@ impl fmt::Display for TaskError {
             Self::Occupied(slot) => write!(f, "slot {slot} is live"),
             Self::Current(slot) => write!(f, "slot {slot} is already running"),
             Self::Boot => f.write_str("the boot slot cannot be fabricated"),
+            Self::Uninterruptible => f.write_str("the interrupted code holds a critical section"),
+            Self::NotInTrap => f.write_str("not inside a trap handler"),
         }
     }
 }
@@ -275,6 +282,49 @@ pub fn switch_to(slot: usize) -> Result<(), TaskError> {
         // nothing runs between the bookkeeping and the switch.
         unsafe { switch(save, load) };
     });
+    saved.restore();
+    result
+}
+
+/// Run `slot` from inside a trap handler, returning when something switches
+/// back — at which point the caller is still inside its handler, and
+/// returning from it resumes the code that was interrupted.
+///
+/// The handler's frame stays on the preempted thread's own stack; what this
+/// saves is the handler's path down to here. Two things make it safe to do
+/// from a handler at all. The interrupted code must have been accepting
+/// interrupts — `frame` is the evidence, and code that was not (a lock
+/// holder, D-34) is refused, so no critical section is ever switched out of.
+/// And the trap depth goes with the thread: the one switched to runs at its
+/// own depth, and this one gets its back on resumption (D-55).
+///
+/// The thread switched to inherits an *enabled* interrupt flag on its first
+/// run, because the code this handler interrupted had one.
+///
+/// # Errors
+///
+/// [`TaskError::Uninterruptible`] if the interrupted code had the flag
+/// clear, [`TaskError::NotInTrap`] outside a handler, and otherwise as
+/// [`switch_to`].
+pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
+    if !interrupt::in_trap() {
+        return Err(TaskError::NotInTrap);
+    }
+    if frame.flags & interrupt::FLAGS_INTERRUPT == 0 {
+        return Err(TaskError::Uninterruptible);
+    }
+
+    let saved = interrupt::disable();
+    let depth = interrupt::suspend_trap();
+    let result = prepare(slot, State::Alive).map(|(save, load)| {
+        HANDOFF_INTERRUPTS.store(true, Ordering::Relaxed);
+        // SAFETY: as in `switch_to` — `prepare` vouches for both pointers and
+        // the flag is clear. The handler's own frame is below the saved
+        // pointer on this thread's stack, and this thread is the only thing
+        // that will ever unwind it.
+        unsafe { switch(save, load) };
+    });
+    interrupt::resume_trap(depth);
     saved.restore();
     result
 }

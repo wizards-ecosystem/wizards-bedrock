@@ -21,6 +21,7 @@ pub const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
 /// point of putting pure logic there.
 pub const HOST_PACKAGES: &[&str] = &[
     "acpi-tables",
+    "eevdf",
     "frame-space",
     "pixel",
     "port-space",

@@ -497,6 +497,103 @@ fn an_exited_slot_is_reused() -> bool {
     taken && returned && again && returned_again
 }
 
+/// Set to tell every spinner to finish.
+static STOP_SPINNING: AtomicUsize = AtomicUsize::new(0);
+
+/// How many loops each spinner has run: one counter per weight class.
+static LIGHT_SPINS: AtomicUsize = AtomicUsize::new(0);
+static HEAVY_SPINS: AtomicUsize = AtomicUsize::new(0);
+
+/// Loop without ever yielding, counting, until told to stop.
+fn spin_counting(counter: &AtomicUsize) {
+    while STOP_SPINNING.load(Ordering::Acquire) == 0 {
+        counter.fetch_add(1, Ordering::Relaxed);
+        spin_loop();
+    }
+}
+
+fn light_spinner() {
+    spin_counting(&LIGHT_SPINS);
+}
+
+fn heavy_spinner() {
+    spin_counting(&HEAVY_SPINS);
+}
+
+/// Run without yielding until `done` or `ms` have passed.
+///
+/// This thread never gives the CPU up on purpose, so anything that makes
+/// progress meanwhile did so because the timer took it away.
+fn runs_until(ms: u64, done: impl Fn() -> bool) -> bool {
+    let deadline = time::uptime_ms() + ms;
+    loop {
+        if done() {
+            return true;
+        }
+        if time::uptime_ms() >= deadline {
+            return false;
+        }
+        spin_loop();
+    }
+}
+
+/// A thread that never yields cannot keep the CPU from one that is waiting.
+///
+/// Preemption's whole claim. The boot thread spins without yielding and
+/// watches for a spawned spinner — which also never yields — to make
+/// progress. Either thread making progress while the other spins is the
+/// timer switching them, and it has to happen in both directions for the
+/// boot thread to be here to notice.
+fn a_spinner_cannot_starve_another() -> bool {
+    /// Generous beside a 30 ms slice, stingy beside a hung harness.
+    const PATIENCE_MS: u64 = 500;
+
+    STOP_SPINNING.store(0, Ordering::Release);
+    LIGHT_SPINS.store(0, Ordering::Release);
+    let free = thread::free_slots();
+    if thread::spawn("spinner", light_spinner).is_err() {
+        return false;
+    }
+
+    let progressed = runs_until(PATIENCE_MS, || LIGHT_SPINS.load(Ordering::Relaxed) > 0);
+    STOP_SPINNING.store(1, Ordering::Release);
+    let exited = yields_until(|| thread::free_slots() == free);
+
+    progressed && exited
+}
+
+/// CPU time divides between spinners in proportion to their weights.
+///
+/// Two spinners, one at twice the other's weight, counting as fast as they
+/// can while the boot thread spins alongside them. The ratio of their counts
+/// is the ratio of their CPU time, quantised to ticks and jittered by the
+/// hypervisor — so the bounds are coarse, and deliberately so.
+fn runtime_divides_by_weight() -> bool {
+    /// Long enough for twenty-odd ticks per thread.
+    const WINDOW_MS: u64 = 600;
+
+    STOP_SPINNING.store(0, Ordering::Release);
+    LIGHT_SPINS.store(0, Ordering::Release);
+    HEAVY_SPINS.store(0, Ordering::Release);
+    let free = thread::free_slots();
+    if thread::spawn_weighted("light", light_spinner, eevdf::BASE_WEIGHT).is_err()
+        || thread::spawn_weighted("heavy", heavy_spinner, 2 * eevdf::BASE_WEIGHT).is_err()
+    {
+        return false;
+    }
+
+    runs_until(WINDOW_MS, || false);
+    STOP_SPINNING.store(1, Ordering::Release);
+    let exited = yields_until(|| thread::free_slots() == free);
+
+    let light = LIGHT_SPINS.load(Ordering::Relaxed);
+    let heavy = HEAVY_SPINS.load(Ordering::Relaxed);
+    // Integer bounds: 1.4 ≤ heavy / light ≤ 2.6, without dividing.
+    let ratio_in_bounds = light > 0 && heavy * 10 >= light * 14 && heavy * 10 <= light * 26;
+
+    exited && ratio_in_bounds
+}
+
 /// Tally of what has been checked so far.
 struct Report {
     passed: usize,
@@ -616,6 +713,18 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         registers_survive_a_switch(),
     );
     report.check("an exited slot is reused", an_exited_slot_is_reused());
+    report.check(
+        "a spinning thread cannot starve another",
+        a_spinner_cannot_starve_another(),
+    );
+    report.check(
+        "runtime divides in proportion to weight",
+        runtime_divides_by_weight(),
+    );
+    report.check(
+        "the policy never needed its fallback",
+        thread::policy_fallbacks() == 0,
+    );
 
     report.check(
         "the code selector is the one we installed",

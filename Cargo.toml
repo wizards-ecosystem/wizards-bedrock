@@ -6,6 +6,7 @@ resolver = "3"
 members = [
     "kernel",
     "libs/acpi-tables",
+    "libs/eevdf",
     "libs/frame-space",
     "libs/pixel",
     "libs/port-space",
@@ -25,6 +26,7 @@ members = [
 # `cargo xtask ci` runs both. See the README's Development section for why.
 default-members = [
     "libs/acpi-tables",
+    "libs/eevdf",
     "libs/frame-space",
     "libs/pixel",
     "libs/port-space",
@@ -48,6 +50,7 @@ repository = "https://github.com/limbwizard/the-wizards-os"
 [workspace.dependencies]
 # Our own no_std libraries: pure logic, host-testable.
 acpi-tables = { path = "libs/acpi-tables" }
+eevdf = { path = "libs/eevdf" }
 frame-space = { path = "libs/frame-space" }
 pixel = { path = "libs/pixel" }
 port-space = { path = "libs/port-space" }
