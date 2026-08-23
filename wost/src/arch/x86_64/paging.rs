@@ -16,6 +16,7 @@
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use stack_layout::StackLayout;
 use x86_paging::{ENTRIES, Entry, EntryError, Flags, LARGE_PAGE_SIZE, Level, PAGE_SIZE};
 
 use super::cpu;
@@ -244,6 +245,41 @@ impl AddressSpace {
         self.map_device_with(physical, len, Flags::WRITE_THROUGH)
     }
 
+    /// Map every stack of `layout`, leaving every guard gap unmapped.
+    ///
+    /// Writable and never executable, one physically contiguous run per slot,
+    /// zeroed before it is mapped. The guards are guards precisely because
+    /// this function never touches them: an overrun lands on an absent
+    /// mapping, which faults, rather than on a neighbour's stack, which
+    /// would not.
+    ///
+    /// # Errors
+    ///
+    /// As [`map`](Self::map), plus [`MapError::OutOfMemory`] if any slot's
+    /// frames cannot be allocated. Frames already committed stay committed —
+    /// the space that failed is abandoned whole, exactly as a failed
+    /// [`activate`] abandons it.
+    pub fn map_stacks(&mut self, layout: &StackLayout) -> Result<StackArena, MapError> {
+        for index in 0..layout.slots() {
+            let slot = layout.slot(index).ok_or(MapError::OutOfMemory)?;
+            let frames = slot.stack_len.div_ceil(PAGE_SIZE) as usize;
+            let mut run = mm::allocate_contiguous(frames, 1).ok_or(MapError::OutOfMemory)?;
+            if !run.zero() {
+                return Err(MapError::Unreachable(run.address()));
+            }
+            self.map(
+                slot.stack_base,
+                run.address(),
+                slot.stack_len,
+                Flags::WRITABLE.union(Flags::NO_EXECUTE),
+            )?;
+            // The frames belong to the mapping for the life of the kernel,
+            // like the tables themselves: nothing unmaps.
+            core::mem::forget(run);
+        }
+        Ok(StackArena { layout: *layout })
+    }
+
     /// Install one entry at `target`, allocating the tables above it.
     fn set(
         &mut self,
@@ -443,6 +479,25 @@ const DEVICE_WINDOW_START: u64 = 0xffff_ff00_0000_0000;
 
 /// One page past the last address device registers may occupy.
 const DEVICE_WINDOW_END: u64 = 0xffff_ff01_0000_0000;
+
+/// The stacks [`AddressSpace::map_stacks`] committed, ready to run threads on.
+///
+/// Held rather than used until the space is active, like [`DeviceMapping`],
+/// and not `Copy` or `Clone` for the same reason: it is the evidence that
+/// these ranges were mapped by exactly one call, which is what lets
+/// [`task::init`](super::task::init) fabricate contexts on them from safe
+/// code.
+#[derive(Debug)]
+pub struct StackArena {
+    layout: StackLayout,
+}
+
+impl StackArena {
+    /// The layout the stacks were mapped to.
+    pub(crate) const fn layout(&self) -> &StackLayout {
+        &self.layout
+    }
+}
 
 /// A claim on a device's registers, made while the tables were being built.
 ///

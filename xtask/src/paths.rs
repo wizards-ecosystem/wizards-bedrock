@@ -26,6 +26,7 @@ pub const HOST_PACKAGES: &[&str] = &[
     "port-space",
     "ps2-keys",
     "slab-layout",
+    "stack-layout",
     "x86-apic",
     "x86-paging",
     "x86-pit",

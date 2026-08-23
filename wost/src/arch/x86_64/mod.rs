@@ -7,6 +7,7 @@ pub mod paging;
 pub mod pic;
 pub mod port;
 pub mod segment;
+pub mod task;
 
 mod msr;
 mod table;

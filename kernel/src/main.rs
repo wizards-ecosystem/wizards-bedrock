@@ -26,6 +26,7 @@ mod panic;
 #[cfg(feature = "selftest")]
 mod selftest;
 mod theme;
+mod thread;
 mod time;
 
 use core::fmt::Write;

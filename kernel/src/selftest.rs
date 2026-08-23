@@ -16,6 +16,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt::Write;
 use core::hint::spin_loop;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use wost::arch::current::cpu::{self, Protections};
 use wost::arch::current::paging::{self, ActivateError, AddressSpace};
@@ -30,7 +31,7 @@ use crate::arch::current::debug_exit;
 use crate::arch::current::trap::{self, Record};
 use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
-use crate::{dev, error, info, input, time};
+use crate::{dev, error, info, input, thread, time};
 
 /// A frame's handle releases it, and the allocator notices.
 ///
@@ -175,7 +176,7 @@ fn a_second_switch_is_refused() -> bool {
 /// Drives the console directly rather than waiting on the injected keystrokes:
 /// every check between here and the injection logs a line, and every line moves
 /// the cursor, so watching for motion would race this function's own output.
-/// The layout half is asserted from `char_for` and tested on the host (D-51).
+/// The layout half is asserted from `char_for` and tested on the host in `libs/ps2-keys`.
 fn the_editing_keys_move_the_cursor() -> bool {
     let (Some(backspace), Some(newline)) = (
         ps2_keys::us::char_for(ps2_keys::Key::Backspace, ps2_keys::Shift::new()),
@@ -305,6 +306,197 @@ fn a_large_allocation_takes_and_returns_frames() -> bool {
     taken && held && mm::free_frames() == before
 }
 
+/// Yields a thread may spend waiting for something before the check gives up
+/// — so a switch that never hands control over is a red verdict, not a hang.
+const YIELD_BUDGET: usize = 100_000;
+
+/// Turns the alternation check asks for.
+const TURNS: usize = 64;
+
+/// Whose turn it is: zero for the first thread, one for the second.
+static TURN: AtomicUsize = AtomicUsize::new(0);
+
+/// Turns taken so far, each one strictly after the other thread's.
+static TURNS_TAKEN: AtomicUsize = AtomicUsize::new(0);
+
+/// Take every turn that is `mine`, yielding whenever it is not.
+fn take_turns(mine: usize) {
+    let mut budget = YIELD_BUDGET;
+    while TURNS_TAKEN.load(Ordering::Acquire) < TURNS && budget > 0 {
+        if TURN.load(Ordering::Acquire) == mine {
+            TURNS_TAKEN.fetch_add(1, Ordering::AcqRel);
+            TURN.store(1 - mine, Ordering::Release);
+        } else {
+            budget -= 1;
+            thread::yield_now();
+        }
+    }
+}
+
+fn first_turns() {
+    take_turns(0);
+}
+
+fn second_turns() {
+    take_turns(1);
+}
+
+/// Yield until `done`, or until the budget runs out.
+fn yields_until(done: impl Fn() -> bool) -> bool {
+    (0..YIELD_BUDGET).any(|_| {
+        thread::yield_now();
+        done()
+    })
+}
+
+/// Two threads take turns in strict alternation, through yields alone.
+///
+/// Counted rather than inferred: a turn can only be taken when the other
+/// thread has just handed it over, so the count is the number of handovers
+/// that really happened. A yield that does not switch leaves it at zero.
+/// Waits for both threads to exit before returning, so the slots are free
+/// for whatever checks next.
+fn threads_alternate_strictly() -> bool {
+    TURN.store(0, Ordering::Release);
+    TURNS_TAKEN.store(0, Ordering::Release);
+    let free = thread::free_slots();
+
+    if thread::spawn("first", first_turns).is_err()
+        || thread::spawn("second", second_turns).is_err()
+    {
+        return false;
+    }
+    let alternated = yields_until(|| TURNS_TAKEN.load(Ordering::Acquire) >= TURNS);
+    let exited = yields_until(|| thread::free_slots() == free);
+
+    alternated && exited && TURNS_TAKEN.load(Ordering::Acquire) == TURNS
+}
+
+/// What the register-churning thread concluded: zero while it is still
+/// running, one if its values survived every switch, two if they did not.
+static CHURN_VERDICT: AtomicUsize = AtomicUsize::new(0);
+
+/// Rounds of churn, each ending in a yield.
+const CHURN_ROUNDS: u64 = 256;
+
+/// Carry five live values across a yield, many times, and report whether
+/// they came back.
+///
+/// Five scalars rather than an array because an array lives in memory, where
+/// a switch cannot lose it. Scalars live across a call are what the compiler
+/// puts in callee-saved registers — the ones the switch must preserve — and
+/// the value it puts there is exactly what a dropped push would corrupt.
+fn churn(seed: u64) -> bool {
+    let (mut a, mut b, mut c, mut d, mut e) = (
+        core::hint::black_box(seed),
+        core::hint::black_box(seed.rotate_left(7)),
+        core::hint::black_box(seed.rotate_left(14)),
+        core::hint::black_box(seed.rotate_left(21)),
+        core::hint::black_box(seed.rotate_left(28)),
+    );
+    for round in 0..CHURN_ROUNDS {
+        a = a.wrapping_mul(MULTIPLIER).wrapping_add(round);
+        b = b.wrapping_mul(MULTIPLIER).wrapping_add(a);
+        c = c.wrapping_mul(MULTIPLIER).wrapping_add(b);
+        d = d.wrapping_mul(MULTIPLIER).wrapping_add(c);
+        e = e.wrapping_mul(MULTIPLIER).wrapping_add(d);
+        thread::yield_now();
+    }
+
+    let (mut p, mut q, mut r, mut s, mut t) = (
+        seed,
+        seed.rotate_left(7),
+        seed.rotate_left(14),
+        seed.rotate_left(21),
+        seed.rotate_left(28),
+    );
+    for round in 0..CHURN_ROUNDS {
+        p = p.wrapping_mul(MULTIPLIER).wrapping_add(round);
+        q = q.wrapping_mul(MULTIPLIER).wrapping_add(p);
+        r = r.wrapping_mul(MULTIPLIER).wrapping_add(q);
+        s = s.wrapping_mul(MULTIPLIER).wrapping_add(r);
+        t = t.wrapping_mul(MULTIPLIER).wrapping_add(s);
+    }
+    (a, b, c, d, e) == (p, q, r, s, t)
+}
+
+/// Knuth's multiplier, for a sequence with no short cycle.
+const MULTIPLIER: u64 = 6_364_136_223_846_793_005;
+
+fn churn_and_report() {
+    let survived = churn(0x9E37_79B9_7F4A_7C15);
+    CHURN_VERDICT.store(if survived { 1 } else { 2 }, Ordering::Release);
+}
+
+/// Callee-saved state survives a switch in both directions.
+///
+/// Two threads churn registers with different seeds, yielding to each other
+/// between rounds, so each one's values cross the switch while the other is
+/// overwriting every register it can. Both must come back intact.
+fn registers_survive_a_switch() -> bool {
+    CHURN_VERDICT.store(0, Ordering::Release);
+    let free = thread::free_slots();
+    if thread::spawn("churn", churn_and_report).is_err() {
+        return false;
+    }
+
+    let boot_survived = churn(0xD1B5_4A32_D192_ED03);
+    let exited = yields_until(|| thread::free_slots() == free);
+
+    boot_survived && exited && CHURN_VERDICT.load(Ordering::Acquire) == 1
+}
+
+/// Every thread stack is guarded below, read back from the live tables.
+///
+/// Structural, because the fault itself is terminal: the guard must be absent
+/// from the tables, the stack present, writable and never executable — at its
+/// first byte and its last, since a mapping can be right at one end and wrong
+/// at the other.
+fn thread_stacks_are_guarded() -> bool {
+    let Some(layout) = thread::layout() else {
+        return false;
+    };
+    (0..layout.slots()).all(|index| {
+        let Some(slot) = layout.slot(index) else {
+            return false;
+        };
+        let guard_absent = paging::translate(slot.guard_base).is_none()
+            && paging::translate(slot.stack_base - 8).is_none();
+        let stack_present = [slot.stack_base, slot.stack_top() - 8]
+            .into_iter()
+            .all(|address| match paging::translate(address) {
+                Some((_, flags)) => {
+                    flags.contains(Flags::WRITABLE)
+                        && flags.contains(Flags::NO_EXECUTE)
+                        && !flags.is_write_execute()
+                }
+                None => false,
+            });
+        guard_absent && stack_present
+    })
+}
+
+fn leave_at_once() {}
+
+/// A slot whose thread has exited is free again, and can be spawned on.
+///
+/// Counted: the number of free slots must come back to where it began after
+/// a thread runs to its end, and a second spawn must succeed on what the
+/// first gave back.
+fn an_exited_slot_is_reused() -> bool {
+    let free = thread::free_slots();
+    if thread::spawn("brief", leave_at_once).is_err() {
+        return false;
+    }
+    let taken = thread::free_slots() == free - 1;
+    let returned = yields_until(|| thread::free_slots() == free);
+
+    let again = thread::spawn("brief again", leave_at_once).is_ok();
+    let returned_again = yields_until(|| thread::free_slots() == free);
+
+    taken && returned && again && returned_again
+}
+
 /// Tally of what has been checked so far.
 struct Report {
     passed: usize,
@@ -409,6 +601,21 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "the console scrolls without reading the device",
         dev::console_has_back_buffer(),
     );
+
+    report.check("threads are available", thread::is_available());
+    report.check(
+        "thread stacks are guarded below",
+        thread_stacks_are_guarded(),
+    );
+    report.check(
+        "two threads alternate strictly through yields",
+        threads_alternate_strictly(),
+    );
+    report.check(
+        "callee-saved registers survive a switch",
+        registers_survive_a_switch(),
+    );
+    report.check("an exited slot is reused", an_exited_slot_is_reused());
 
     report.check(
         "the code selector is the one we installed",

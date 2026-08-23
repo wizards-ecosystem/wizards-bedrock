@@ -12,7 +12,7 @@ use x86_paging::Flags;
 
 use crate::acpi::Interrupts;
 use crate::arch::current::ioapic::IoApic;
-use crate::{debug, dev, info, warn};
+use crate::{debug, dev, info, thread, warn};
 
 /// Bytes in a page frame.
 const FRAME_SIZE: u64 = 4096;
@@ -133,6 +133,20 @@ pub(crate) fn init_paging(
         }
     });
 
+    // Thread stacks, committed now because nothing can be mapped later
+    // (D-45, D-52). The guards between them are the pages this never maps.
+    let arena = match thread::layout().map(|layout| space.map_stacks(&layout)) {
+        Some(Ok(arena)) => Some(arena),
+        Some(Err(reason)) => {
+            warn!("threads: stacks not mapped: {reason}; no threads");
+            None
+        }
+        None => {
+            warn!("threads: stack layout is invalid; no threads");
+            None
+        }
+    };
+
     // Claimed after the switch, mapped before it.
     let pending = interrupts.and_then(|interrupts| {
         match space.map_device(u64::from(interrupts.io_apic().address), IO_APIC_WINDOW) {
@@ -149,6 +163,13 @@ pub(crate) fn init_paging(
         Err(reason) => {
             warn!("paging: refused to switch: {reason}");
             return None;
+        }
+    }
+
+    if let Some(arena) = arena {
+        match thread::init(arena) {
+            Ok(slots) => info!("threads: {slots} guarded stacks ready"),
+            Err(reason) => warn!("threads: {reason}; no threads"),
         }
     }
 

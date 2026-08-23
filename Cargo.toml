@@ -11,6 +11,7 @@ members = [
     "libs/port-space",
     "libs/ps2-keys",
     "libs/slab-layout",
+    "libs/stack-layout",
     "libs/x86-apic",
     "libs/x86-paging",
     "libs/x86-pit",
@@ -29,6 +30,7 @@ default-members = [
     "libs/port-space",
     "libs/ps2-keys",
     "libs/slab-layout",
+    "libs/stack-layout",
     "libs/x86-apic",
     "libs/x86-paging",
     "libs/x86-pit",
@@ -51,6 +53,7 @@ pixel = { path = "libs/pixel" }
 port-space = { path = "libs/port-space" }
 ps2-keys = { path = "libs/ps2-keys" }
 slab-layout = { path = "libs/slab-layout" }
+stack-layout = { path = "libs/stack-layout" }
 x86-apic = { path = "libs/x86-apic" }
 x86-paging = { path = "libs/x86-paging" }
 x86-pit = { path = "libs/x86-pit" }

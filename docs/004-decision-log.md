@@ -1944,6 +1944,117 @@ Phase 12 with its cost named.
 
 ---
 
+## D-51 The context switch is a naked function, and a switch is a safe call — Status: Accepted (2026-08-22)
+
+**Context.** `008-research-notes-2.md` §1 verified `#[unsafe(naked)]` and
+`naked_asm!` against the pinned toolchain and named Phase 4's context switch
+as the natural place to adopt them. The only other assembly in the kernel is
+the interrupt trampoline, a `global_asm!` blob that sits outside every
+mechanism `005` mandates — no signature, no `///`, no `# Safety`.
+
+**Options.** Another `global_asm!` blob (a symbol the type system cannot see);
+a naked function (a Rust item with a signature and a contract); convert the
+interrupt trampoline to match (churn on the most battle-tested assembly in the
+repo, for no behavioural change).
+
+**Decision.** `wost::task::switch` is a naked function: push the six
+callee-saved registers, store `rsp`, load the other, pop, `ret`. Nothing
+else crosses — the ABI already lets a call clobber the rest, and the kernel
+is built without SSE so there is no floating-point state to carry. The
+interrupt trampoline is **not** converted: that is a judgement about churn,
+taken, and it may be revisited when the trampoline next changes for a reason
+of its own.
+
+The switch is `unsafe` and private. What the kernel calls — `switch_to`,
+`exit_to`, `fabricate` — is safe, on the same grounds that make `activate`
+safe (D-45): every value the switch loads can only have come from this
+module. A saved pointer is written by a previous switch or by `fabricate`;
+`fabricate` writes only on a stack the arena mapped and `init` walked in the
+live tables; a slot that has exited is marked dead and refused by every
+later switch, so nothing can resume onto a stack that has since been handed
+to a new thread. The kernel never holds a context value at all — it names
+slots by index, and the table decides what each index may do.
+
+**Rationale.** The sound-wrapper principle `005` holds every `wost` export to
+asks not whether the assembly is right but whether any caller can reach
+undefined behaviour. A public `Context` value would make that unanswerable —
+two of them for one stack is a switch into a frame something else is standing
+on. Keeping the state private and exposing only checked transitions answers
+it. The naked function is the right shape for the assembly for the reasons
+§1 gave: it is an item, so the lints reach it.
+
+**Consequences.**
+
+- The interrupt flag is clear across every switch and restored by the
+  context that resumes; a thread on its first run inherits the switcher's
+  flag, the rule a lock guard follows. Nothing runs between the bookkeeping
+  and the switch, which is what makes a single `CURRENT` word sufficient.
+- A fabricated frame is six zero words and `thread_start`'s address, placed
+  so that `ret` leaves the stack eight below the top — what the ABI promises a
+  function on entry. Seven words, and the alignment argument is in the code.
+- The first break-once attempt — deleting the `r12` push and pop — did not
+  test what it meant to: it changed the frame size, so the fabricated frame's
+  `ret` popped a zero and the machine faulted. Saving `rax` in `r12`'s place
+  is the break that tests preservation, and it turned the register check red.
+  A break that crashes proves less than one that fails.
+- Kernel-side, `THREADS` is a leaf lock and every switch happens after its
+  guard drops; `wost`'s own table lock is taken inside `switch_to`, never
+  under the kernel's. The lock order is in `009-multitasking.md`.
+- Not yet enforced: that a thread does not yield while holding a lock. It
+  cannot corrupt memory — the next thread simply spins with the flag it
+  inherited — but it can hang, and D-55 (the context token) is where the
+  type system takes it over.
+
+---
+
+## D-52 Thread stacks come from a boot-time arena, because mapping is one-way — Status: Accepted (2026-08-22)
+
+**Context.** D-45 made `activate` consume the address space, so nothing can
+map after the CR3 switch; D-49 deferred how the address space grows to
+Phase 5, deliberately. Phase 4 needs stacks with guard pages for threads
+that do not exist at boot.
+
+**Options.** Stacks in the direct map (no hole can be punched for a guard
+without unmapping, which D-45 forbids, and D-12 requires the guard); a
+post-activation mapping API (weakens D-45 and pre-empts the decision D-49
+reserved); a fixed arena mapped while the tables are being built.
+
+**Decision.** An arena: sixteen slots of a 16 KiB stack above a 4 KiB gap, at
+`0xffff_fe00_0000_0000` — clear of the direct map, the device window and the
+image. Every stack is committed, zeroed and mapped writable-and-NX in
+`build`; every gap is simply never mapped. The arithmetic is
+`libs/stack-layout`, host-tested for the property the design rests on: no
+two slots touch, and every stack has its guard immediately below. `wost`
+keeps the allocation and the map calls, and hands back a `StackArena` that
+is neither `Copy` nor `Clone` — the evidence, on D-49's `DeviceMapping`
+pattern, that `task::init` may fabricate on exactly these ranges.
+
+The boot thread keeps the bootloader's stack. Moving it would mean a one-way
+jump onto a new stack mid-`kernel_main`, and the only thing that buys today
+is a guard under a stack that has never needed one; slice 4's idle thread is
+the natural moment to retire it, if it is retired at all.
+
+**Rationale.** Sixteen stacks cost 256 KiB of a machine with hundreds of
+megabytes, and a cap that is a constant in one file is cheaper than a growth
+mechanism designed before its constraints are known. An absent mapping is the
+strongest guard there is and the cheapest.
+
+**Consequences.**
+
+- A real cap on threads until Phase 5's growth design, recorded as such.
+- One more layout assumption for D-46's ledger: the arena's address is fixed
+  and KASLR would have to move it.
+- `008` §4.1's caveat is named rather than hidden: a frame larger than 4 KiB
+  can jump the gap. The kernel has no `alloca` and no SSE spills, so the
+  frames it builds are small; if that changes, the gap grows.
+- `task::init` walks every stack in the *live* tables before accepting the
+  arena — the arena says they were mapped, the walk says the CPU agrees.
+- The check is structural: the guard is absent at both ends and the stack is
+  present, writable and NX at both ends, for all sixteen slots. Mapping the
+  guard turned it red.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap
@@ -1958,6 +2069,9 @@ Phase 12 with its cost named.
 - `007-memory.md` — Phase 3 charter: the debts D-12, D-32, D-33 and D-37
   deferred here, the slice proposal, and the decisions still open (each
   becomes an ADR as it is taken)
+- `009-multitasking.md` — Phase 4 charter: the debts D-15, D-34, D-36 and
+  D-47 deferred here, the lock order, and the decisions still open
+  (D-51..)
 - `008-research-notes-2.md` — the second research pass, opening Phase 3:
   what the stable toolchain now allows, the evidence behind the decisions
   `007` holds open, and the proposed additions to `005`. Its marks are its

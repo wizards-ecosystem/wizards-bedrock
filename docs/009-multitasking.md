@@ -57,7 +57,7 @@ wake-from-interrupt, which needs the preemption-era lock discipline settled.
 
 | Slice | Contents | Status |
 |---|---|---|
-| 1 | Kernel threads, cooperative: stack arena with guard gaps, TCB table, `spawn`/`yield_now`/`exit`, naked-function context switch in `wost`, round-robin ready list (deliberately policy-free) | |
+| 1 | Kernel threads, cooperative: stack arena with guard gaps, TCB table, `spawn`/`yield_now`/`exit`, naked-function context switch in `wost`, round-robin ready list (deliberately policy-free) | ✅ 2026-08-22 |
 | 2 | The scheduler: `libs/eevdf` arithmetic host-tested, EEVDF policy behind a separable seam with round-robin fallback, timer preemption at trap exit, the lock order and the context token | |
 | 3 | Tickless: one-shot APIC programming, sleep queue and `sleep_ms`, the 100 Hz tick retired, uptime re-based | |
 | 4 | Blocking: `WaitQueue`, the keyboard read blocks a thread and the interrupt wakes it, idle becomes the idle thread, D-34's latency position taken | |
@@ -103,11 +103,13 @@ Held open deliberately; each becomes an ADR when taken.
 This section is the authority; module docs restate it, the ADRs cite it.
 
 D-47 established `HEAP → FRAMES`: the heap takes the frame allocator's lock
-during a slab refill, never the reverse. The scheduler adds `SCHED`, and it
-enters as a **leaf**: while holding `SCHED`, take nothing — not `HEAP`, not
-`FRAMES`, not a console lock. Spawn does its allocating before it touches
-`SCHED`; wake takes `SCHED` alone, which is what makes it legal from trap
-context, where D-31's no-logging rule still binds.
+during a slab refill, never the reverse. The kernel's thread table, `THREADS`, enters
+as a **leaf**: while holding it, take nothing — not `HEAP`, not `FRAMES`, not
+a console lock, not even `wost`'s own task-table lock, which `switch_to` and
+`fabricate` take on their own and which is itself a leaf. Spawn does its
+allocating before it touches `THREADS`; every switch happens after its guard
+has dropped; a wake (slice 4) takes `THREADS` alone, which is what makes it
+legal from trap context, where D-31's no-logging rule still binds.
 
 ## How it will be checked
 
@@ -152,3 +154,51 @@ reader wake — not a poll, which is the shape D-49 caught lying.
 - `kernel/src/time.rs` — slice 3 re-bases uptime; `input::await_key`'s
   tick-counted timeout and every `time::ticks()` consumer are the
   pre-named casualties.
+
+## Slice 1 — threads and the switch (2026-08-22)
+
+Recorded as built, per the charter above.
+
+**The boundary fell where D-13 said it would, and the kernel never holds a
+context.** `wost::task` owns a fixed table of slots, each with a stack from
+the arena and a saved stack pointer; the kernel names slots by index and asks
+for transitions — `fabricate`, `switch_to`, `exit_to` — every one of which is
+checked before it happens. That is D-51's substance: a `Context` value the
+kernel could copy would make the sound-wrapper question unanswerable, and an
+index into a table that refuses dead slots answers it. The switch itself is
+fifteen instructions in a naked function (D-51); the interrupt trampoline
+stays as it is.
+
+**The stacks were forced into an arena by D-45**, not chosen (D-52). Sixteen
+slots of 16 KiB above a 4 KiB gap that is never mapped, committed while the
+tables are being built, with the arithmetic in `libs/stack-layout` and six
+host tests for the one property that matters — no two slots touch. `task::init`
+walks every stack in the live tables before it will fabricate on one. The boot
+thread stays on the bootloader's stack this slice; slice 4 decides whether it
+moves.
+
+**Kernel-side policy is a ring.** `thread.rs` is a table of names and states
+over the same indices and a fixed ring of who runs next — round-robin, no
+allocation, and a leaf lock per this file's lock-order section. `spawn`
+reserves a slot under the lock, drops it, then asks `wost` to fabricate;
+`yield_now` and `exit` choose the next slot under the lock and switch after the
+guard drops. Nothing outside the self-checks calls any of it yet, and the
+module says so in the one `allow` it carries: the idle thread of slice 4 is
+its first shipped caller, and the allow leaves with it.
+
+**Four checks, each broken once, and one break that taught something.** Two
+threads alternate strictly (yield made a no-op: red); callee-saved registers
+survive a switch; every stack is guarded at both ends and present at both
+(guard mapped: red); an exited slot is reused, by count (exit left the slot
+taken: red). The register check's first break — deleting `r12`'s push and pop
+— crashed the machine instead of failing the check, because it changed the
+frame size and the fabricated frame's `ret` popped a zero. Saving `rax` in
+`r12`'s slot is the break that tests what the check claims, and it went red.
+A break that crashes proves less than one that fails: the harness cannot tell a
+crash from a hang, and it says nothing about whether the check would have
+noticed. Fifty-eight checks on the machine.
+
+**Still owed by this slice's neighbours.** Nothing preempts: a thread that
+never yields runs forever, which is slice 2's claim to test. Nothing enforces
+that a thread holds no lock when it yields — it cannot corrupt memory, only
+hang — and D-55's context token is where the type system takes that over.

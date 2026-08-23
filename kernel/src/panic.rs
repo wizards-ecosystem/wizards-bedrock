@@ -9,7 +9,7 @@ use core::panic::PanicInfo;
 
 use wost::arch::current::cpu;
 
-use crate::{dev, error, input, theme};
+use crate::{dev, error, input, theme, thread};
 
 #[panic_handler]
 fn panic(info: &PanicInfo<'_>) -> ! {
@@ -23,6 +23,7 @@ fn panic(info: &PanicInfo<'_>) -> ! {
     dev::force_unlock(&token);
     input::force_unlock(&token);
     input::force_unlock_watch(&token);
+    thread::force_unlock(&token);
 
     error!("KERNEL PANIC: {info}");
 

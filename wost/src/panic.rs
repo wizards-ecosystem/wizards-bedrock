@@ -54,4 +54,5 @@ pub fn reclaim(panic: &PanicToken) {
     crate::arch::current::port::force_unlock(panic);
     crate::mm::force_unlock(panic);
     crate::mm::heap::force_unlock(panic);
+    crate::arch::current::task::force_unlock(panic);
 }
