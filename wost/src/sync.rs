@@ -11,15 +11,10 @@ use crate::panic::PanicToken;
 
 /// How many [`SpinLock`]s this CPU is holding.
 ///
-/// A [`ThreadLock`] may not be taken while any is held, and this is what says
-/// so. The hazard is not obvious and it is silent: a `SpinLock` holder has
-/// interrupts off, so if the `ThreadLock` it then waits for is held by a
-/// thread that has been preempted, that thread can never be scheduled and the
-/// wait never ends. It is a deadlock produced by two locks that are each
-/// individually correct, and it cost one debugging session before this counter
-/// existed.
-///
-/// One CPU, one counter; per-CPU when SMP lands (D-56).
+/// A [`ThreadLock`] may not be taken while any is held: the holder has
+/// interrupts off, so if the thread holding the `ThreadLock` was preempted it
+/// can never be scheduled and the wait never ends. One CPU, one counter;
+/// per-CPU when SMP lands (D-56).
 static SPINLOCKS_HELD: AtomicUsize = AtomicUsize::new(0);
 
 /// A latch that admits exactly one caller.
@@ -214,32 +209,22 @@ impl<T> Drop for SpinLockGuard<'_, T> {
 /// A mutual-exclusion lock that spins while contended, held with interrupts
 /// **on** — and refuses to be taken from a trap handler.
 ///
-/// The other half of the pair [`SpinLock`] is one of, and the one D-34 said
-/// would earn its keep once there was a scheduler. A `SpinLock` keeps
-/// interrupts off for as long as it is held, which is what makes it safe for a
-/// handler to take — and what makes every interrupt on the machine wait behind
-/// its longest holder. For the console that holder is a scroll, tens of
-/// milliseconds of framebuffer, and no interrupt should wait that long.
+/// The lock D-34 said would earn its keep once there was a scheduler, and
+/// D-63 gave to the console: a `SpinLock` makes every interrupt on the
+/// machine wait behind its longest holder, and for the console that holder is
+/// a scroll.
 ///
-/// So this lock trades the one property for the other. It excludes nothing but
-/// other holders, which means a handler that took it could deadlock against
-/// the code it interrupted — and that is why it refuses: [`lock`](Self::lock)
-/// asserts it is not in trap context, using the depth count D-55 already
-/// keeps. The rule "nothing logs from a handler" (D-31) stops being prose and
-/// starts being a panic that names itself.
+/// It excludes nothing but other holders, so [`lock`](Self::lock) asserts two
+/// things. Not trap context, or a handler could deadlock against the code it
+/// interrupted — which makes D-31 a panic rather than prose. And no
+/// `SpinLock` held, or the waiter has interrupts off and the preempted holder
+/// is never scheduled again.
 ///
-/// A holder can be preempted, which a `SpinLock` holder cannot. On one CPU
-/// that costs the waiter the rest of its slice and no more: the waiter spins
-/// with interrupts on, so the timer takes the CPU back and gives it to the
-/// holder. It is not a deadlock, and the scheduler is what makes that true.
+/// A holder can be preempted, which a `SpinLock` holder cannot. That costs a
+/// waiter the rest of its slice and no more, because the timer takes the CPU
+/// back and gives it to the holder.
 ///
-/// Which is exactly why one of these may not be taken while a [`SpinLock`] is
-/// held: there the waiter's interrupts are *off*, the timer never comes, and
-/// the preempted holder is never scheduled again. That is the second thing
-/// [`lock`](Self::lock) asserts, against a count of the spin locks held.
-///
-/// The panic path is exempt from both, because the code it interrupted can
-/// never resume.
+/// The panic path is exempt from both: the code it interrupted never resumes.
 pub struct ThreadLock<T> {
     locked: AtomicBool,
     value: UnsafeCell<T>,

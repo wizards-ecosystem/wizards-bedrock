@@ -6,9 +6,8 @@
 //! decoder and each completed event is queued for a reader, which is woken if
 //! one is waiting (D-61).
 //!
-//! Nothing here draws. Echoing a keystroke used to be the handler's work, and
-//! moving it to the thread that reads is what took the console's scroll off
-//! every other interrupt's latency path (D-63).
+//! Nothing here draws or logs: both are the reading thread's, which is what
+//! keeps a console scroll off every other interrupt's latency path (D-63).
 //!
 //! The singleton is module-local rather than in `dev`, whose charter is the
 //! output devices the panic path must reach; a panicking kernel has no use
@@ -59,9 +58,8 @@ static KEYBOARD: SpinLock<Option<Keyboard>> = SpinLock::new(None);
 /// One decoded event, with the character it typed resolved while the shift
 /// state around it was still current.
 ///
-/// The character travels with the event because the shift state that decided
-/// it was current *then*, and a reader picked up milliseconds later would
-/// resolve a different one.
+/// The character travels with the event: the shift state that decided it was
+/// current then, and a reader may not look for milliseconds.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Keystroke {
     /// The key, and whether it went down or up.
@@ -148,12 +146,8 @@ fn drain_batch(keystrokes: &mut [Option<Keystroke>; BATCH]) -> usize {
 
 /// Queue the event for whoever is reading, and note it for the self-checks.
 ///
-/// What it does *not* do is touch an output device — no glyph, and no log
-/// line. Both used to happen here, which meant a keyboard interrupt held the
-/// console lock for as long as a scroll takes; that lock is now one a handler
-/// is refused (D-63), so this is the last place either could have happened
-/// and it does neither. Drawing and logging are the reader's, on its own
-/// thread, where a scroll delays nobody but itself.
+/// Touches no output device: the console lock is one a handler is now refused
+/// (D-63), and a glyph can cost a scroll.
 fn deliver(keystroke: Keystroke) {
     WATCH.lock().observe(keystroke.event);
     EVENTS.lock().push(keystroke);
@@ -161,9 +155,8 @@ fn deliver(keystroke: Keystroke) {
 
 /// Decoded events waiting for a reader.
 ///
-/// A fixed ring rather than a list: the producer is an interrupt handler, and
-/// D-55 forbids it the heap. Sixteen is two orders of magnitude more than the
-/// gap between a keystroke and a reader that blocks on one.
+/// A fixed ring: the producer is an interrupt handler, where D-55 forbids the
+/// heap.
 const QUEUED: usize = 16;
 
 /// The events themselves, and what has been lost.
@@ -174,11 +167,9 @@ struct Events {
     head: usize,
     /// Where the next read comes from.
     tail: usize,
-    /// Events dropped because nobody was reading fast enough.
-    ///
-    /// Should stay at zero. Dropping the newest rather than the oldest is
-    /// deliberate: a full queue means a reader is not keeping up, and the
-    /// keystrokes worth keeping are the ones already typed.
+    /// Events dropped because nobody was reading fast enough; should stay at
+    /// zero. The newest goes, not the oldest: the keystrokes worth keeping
+    /// are the ones already typed.
     dropped: usize,
 }
 
@@ -215,14 +206,12 @@ static READERS: WaitQueue = WaitQueue::new();
 
 /// Wait for the next key event, blocking until one arrives.
 ///
-/// The whole point of the phase, in one function: a thread that asks for a
-/// keystroke stops being runnable, the machine arms nothing on its behalf and
-/// takes no interrupts, and the keyboard's own interrupt is what makes it
-/// runnable again. Nothing polls anywhere on this path.
+/// The thread stops being runnable, nothing is armed for it, and the
+/// keyboard's interrupt is what makes it runnable again. Nothing polls.
 ///
-/// The check for an event and the registration as a waiter happen with the
-/// interrupt flag clear, together: the wakeup that arrived between "the queue
-/// is empty" and "I am waiting" is the classic way to lose one for good.
+/// The check and the registration happen with the flag clear, together: a
+/// wakeup arriving between "empty" and "waiting" is the classic way to lose
+/// one for good.
 pub(crate) fn read_key(context: &ThreadContext) -> Keystroke {
     loop {
         let saved = interrupt::disable();
@@ -249,11 +238,9 @@ pub(crate) fn has_reader() -> bool {
 
 /// Where the line could not be routed, give the drain a thread of its own.
 ///
-/// Until the tick was retired this work belonged to whoever the tick woke
-/// (D-37). A tickless kernel has no such somebody, so the fallback asks for
-/// the interval it needs and pays for it alone: one thread that drains, sleeps
-/// ten milliseconds, and drains again, on a machine that would otherwise never
-/// look. Does nothing where the interrupt does the work.
+/// The retired tick used to wake whoever did this (D-37). Now the fallback
+/// asks for the interval it needs and pays for it alone. Does nothing where
+/// the interrupt does the work.
 pub(crate) fn start_poller() {
     /// What the retired tick used to give this path, restated as the interval
     /// it always was.
@@ -413,18 +400,10 @@ pub(crate) fn interrupt_count() -> usize {
 
 /// Every key seen pressed, and every key seen released, since boot.
 ///
-/// Accumulated rather than sampled, and that is the whole design. This began
-/// as "the last press and the last release", which works only if the reader
-/// looks between one keystroke and the next — and the harness injects three
-/// at once, so all six events can be decoded in a single drain. The reader
-/// then sees the *last* key of the burst and never the first, and a check
-/// waiting for the first waits for ever. It was a real intermittent failure,
-/// and it became a reliable one the moment the handler stopped logging and
-/// got fast enough to drain the whole burst at once.
-///
-/// Two bitmasks over `Key as u8`, which is 104 variants and non-exhaustive —
-/// so the width is checked, and a key past the end is dropped rather than
-/// shifting past the end of a word.
+/// Accumulated, not sampled: a burst of keystrokes can be decoded in a single
+/// drain, and a reader that only saw the last of them would wait for ever on
+/// the first. Two bitmasks over `Key as u8`, whose width is checked because
+/// the enum is non-exhaustive.
 #[derive(Debug, Clone, Copy, Default)]
 struct Watch {
     pressed: u128,

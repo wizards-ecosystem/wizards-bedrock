@@ -50,11 +50,8 @@ fn on_trap(frame: &mut TrapFrame) {
         vector::KEYBOARD => {
             let woke = crate::input::on_interrupt();
             apic::end_of_interrupt();
-            // A thread made runnable by a keystroke must not wait for the
-            // next expiry to run: there may not be one. The scheduler is
-            // asked here for the same reason it is asked after a timer —
-            // trap exit is where a switch is legal — and only when there is
-            // something new to consider.
+            // A thread woken by a keystroke must not wait for the next
+            // expiry: there may not be one.
             if woke {
                 crate::thread::reschedule(frame);
             }

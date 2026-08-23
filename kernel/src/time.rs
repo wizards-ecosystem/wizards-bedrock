@@ -1,19 +1,15 @@
 //! The kernel's clock: a counter that never stops, and a timer armed only for
 //! what someone is waiting for.
 //!
-//! Two clocks, measured in one window, each doing the job it is shaped for.
-//! The processor's timestamp counter free-runs at a constant rate and is read
-//! with one instruction, so it is the clock: [`now_ns`] is a subtraction and
-//! a multiply, with nothing to interpolate and no handler to keep it moving.
-//! The APIC timer counts down and interrupts, so it is the alarm: armed in
-//! one-shot mode for the next moment the scheduler has a reason to look, and
-//! left stopped when there is none.
+//! Two clocks, one window. The timestamp counter free-runs and is read with
+//! one instruction, so it is the clock: [`now_ns`] is a subtraction and a
+//! multiply. The APIC timer counts down and interrupts, so it is the alarm:
+//! one-shot, armed for the next moment the scheduler has a reason to look and
+//! stopped when there is none.
 //!
-//! Neither rate is reported by anything, so both are measured — against the
-//! 8254, whose rate is known and whose registers need no page tables. One
-//! twenty-millisecond window, bracketed reads, and the same window serves
-//! both counters because both are read inside it. See D-36 for the
-//! measurement, and D-57 for why the tick it once produced is gone.
+//! Neither rate is reported, so both are measured against the 8254 in the
+//! same twenty-millisecond window. D-36 for the measurement, D-57 for why the
+//! tick it once produced is gone.
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -37,11 +33,9 @@ const DIVIDE: Divide = Divide::By1;
 
 /// The soonest the timer will be armed for.
 ///
-/// A scheduler asking for a deadline that has already passed would otherwise
-/// arm for one tick of a gigahertz clock and take the interrupt again
-/// immediately, and again. This is the floor that turns that into a bounded
-/// rate — twenty thousand interrupts a second in the worst case, against a
-/// slice three orders of magnitude longer.
+/// A deadline already passed would otherwise arm one tick of a gigahertz
+/// clock and take the interrupt again immediately. The floor bounds that at
+/// twenty thousand a second.
 const MINIMUM_LEAD_NS: u64 = 50_000;
 
 /// Measurement window, in crystal ticks: twenty milliseconds. Long enough
@@ -109,10 +103,8 @@ static APIC_HZ: AtomicU64 = AtomicU64::new(0);
 
 /// Timer interrupts taken since the clock started.
 ///
-/// The evidence for the whole of D-57: on the kernel this replaced, this
-/// climbed a hundred times a second whatever the machine was doing. Now it
-/// counts events somebody asked for, and a self-check requires an idle
-/// machine to add nothing to it.
+/// The evidence for D-57: this used to climb a hundred times a second
+/// whatever the machine was doing, and now counts events somebody asked for.
 static EXPIRIES: AtomicU64 = AtomicU64::new(0);
 
 /// Why the clock could not be started.
@@ -158,12 +150,9 @@ impl Calibration {
     /// Whether the processor promised that the counter this clock is built on
     /// runs at a constant rate.
     ///
-    /// Not a veto. The promise is `cpuid`'s and the evidence is the two
-    /// windows this kernel measured, which are what actually caught a counter
-    /// that was not running at a constant rate — and QEMU under emulation
-    /// declines the bit while providing a perfectly steady counter, so
-    /// refusing to boot on it would be refusing the machine the gate runs on.
-    /// A machine without it gets a warning naming what is unpromised.
+    /// Not a veto: QEMU declines the bit while providing a steady counter, and
+    /// the evidence this kernel actually has is its two agreeing windows. A
+    /// machine without it gets a warning naming what is unpromised.
     pub(crate) const fn counter_is_invariant(self) -> bool {
         self.invariant
     }
@@ -324,12 +313,10 @@ fn measure(pit: &mut Pit) -> Option<Calibration> {
 
 /// Nanoseconds since the clock started. Zero for as long as it never does.
 ///
-/// One counter read and one multiply, taking no lock and reading nothing
-/// another context could be part-way through changing — which is what makes
-/// it callable from a trap handler, where every scheduling decision is made.
-/// Monotonic because the counter is: nothing here clamps, so the self-check
-/// that watches for time running backwards is watching the hardware's claim
-/// rather than a clamp's (D-57).
+/// One counter read and one multiply, taking no lock — which is what makes it
+/// callable from a trap handler, where every scheduling decision is made.
+/// Nothing clamps, so monotonicity is the counter's claim and the check that
+/// watches for it is watching the hardware (D-57).
 pub(crate) fn now_ns() -> u64 {
     let elapsed = Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed));
     elapsed.convert(cpu::timestamp().wrapping_sub(ORIGIN.load(Ordering::Relaxed)))
@@ -343,9 +330,8 @@ pub(crate) fn uptime_ms() -> u64 {
 
 /// Whether the clock was measured, and therefore whether it runs at all.
 ///
-/// The question anything that means to *wait* has to ask first: with no
-/// clock there is no deadline to wait for and no timer to be woken by, so a
-/// wait would be a hang.
+/// What anything that means to wait must ask first: with no clock there is no
+/// deadline and no timer, so a wait would be a hang.
 pub(crate) fn is_calibrated() -> bool {
     Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed)).is_calibrated()
 }

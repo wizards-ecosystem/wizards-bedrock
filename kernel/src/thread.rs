@@ -7,23 +7,18 @@
 //! on the answer, with a round-robin fallback if the answer is ever missing
 //! (D-53). The timer preempts at trap exit (D-54).
 //!
-//! Nothing here runs on a tick. Every path that changes who is runnable ends
-//! by asking the table for the next moment a decision is due — the running
-//! thread's slice ending, or the earliest sleeper's deadline — and arming the
-//! timer for exactly that, or stopping it when the answer is "never" (D-57).
+//! Nothing runs on a tick. Every path that changes who is runnable ends by
+//! arming the timer for the next moment a decision is due, or stopping it
+//! when there is none (D-57).
 //!
-//! Lock order (`docs/009-multitasking.md`): `THREADS` is a leaf. Nothing is
-//! taken while it is held — not the heap, not a console, not even `wost`'s
-//! own task table. Every switch happens after the guard has dropped, with
-//! the interrupt flag clear from before the lock was taken until after the
-//! switch, so no expiry can preempt a half-made decision. Arming the timer is
-//! one register written and takes no lock, but it is still done outside the
-//! guard, so the rule needs no exception.
+//! Lock order (`docs/009-multitasking.md`): `THREADS` is a leaf — nothing is
+//! taken while it is held. Every switch happens after the guard has dropped,
+//! with the interrupt flag clear throughout, so no expiry can preempt a
+//! half-made decision.
 
-// Spawning, yielding and exiting still have no caller but the self-checks;
-// sleeping has had one since the idle loop started polling through it.
-// Silenced here rather than cfg-gated, so the shipped image carries the same
-// code the checks exercise. Remove with slice 4's idle thread.
+// `yield_now` and `exit` still have no caller but the self-checks. Silenced
+// rather than cfg-gated, so the shipped image carries the code the checks
+// exercise.
 #![allow(dead_code)]
 
 use core::fmt;
@@ -60,18 +55,11 @@ const WINDOW: u64 = 0xffff_fe00_0000_0000;
 /// Slots in the table, the boot thread's among them.
 pub(crate) const CAPACITY: usize = STACK_SLOTS + 1;
 
-/// Evidence that the caller is in thread context rather than inside a trap
-/// handler.
+/// Evidence that the caller is in thread context, not inside a trap handler.
 ///
-/// The token `008-research-notes-2.md` §4.2 proposed, and D-55 deferred until
-/// there was an API that could block. There is now — [`sleep_ms`],
-/// [`yield_now`] and [`WaitQueue::wait`](crate::wait::WaitQueue::wait) each
-/// take one — so the rule those three used to assert at run time is a rule
-/// the compiler keeps: a handler cannot reach them, because it cannot mint
-/// the argument.
-///
-/// Neither `Send` nor `Sync`, and holding no data: it cannot be stashed in a
-/// `static` and produced later by something that has no right to it.
+/// D-62. Every call that can block takes one, so the rule they used to assert
+/// at run time is one the compiler keeps. Neither `Send` nor `Sync`, so it
+/// cannot be stashed in a `static` and produced later.
 #[derive(Debug)]
 pub(crate) struct ThreadContext(core::marker::PhantomData<*const ()>);
 
@@ -97,10 +85,8 @@ impl ThreadContext {
 
 /// Real time a thread may run before its deadline moves, in nanoseconds.
 ///
-/// Three milliseconds — a tenth of what it was, because the cost of a shorter
-/// slice used to be a tick that could not resolve one and is now a timer
-/// armed for exactly it. The one tunable EEVDF has, and in the same range as
-/// mainline's base slice.
+/// Three milliseconds, in the range mainline uses. The one tunable EEVDF has,
+/// and a tenth of what a tick-bounded slice could be (D-57).
 const SLICE_NS: u64 = 3 * NANOSECONDS_PER_MS;
 
 /// The arena the kernel asks `wost` to map.
@@ -156,11 +142,9 @@ enum Class {
     Normal,
     /// The thread that runs when no normal one can, and never otherwise.
     ///
-    /// Outside the policy rather than at the bottom of it. A weight low
-    /// enough to be ignorable is still a weight, and EEVDF would hand the
-    /// idle thread the CPU every so often on eligibility grounds alone —
-    /// which is a wakeup spent on doing nothing, and the vision doc counts
-    /// wakeups.
+    /// Outside the policy, not at the bottom of it: a weight small enough to
+    /// ignore is still a weight, and eligibility would hand it the CPU now
+    /// and then — a wakeup spent on nothing.
     Idle,
 }
 
@@ -251,9 +235,8 @@ impl Threads {
 
     /// Make every sleeper whose deadline has passed runnable again.
     ///
-    /// Each comes back at the queue's fair-share point offset by the lag it
-    /// left with, which is where the policy's clamp acts: this is its first
-    /// caller, and the reason it exists.
+    /// Each comes back at the fair-share point offset by the lag it left
+    /// with, which is where D-53's clamp acts.
     fn wake_due(&mut self, now: u64) {
         for slot in 0..CAPACITY {
             let thread = &self.threads[slot];
@@ -290,11 +273,9 @@ impl Threads {
     /// winning every tie. `current` itself is a candidate only if
     /// `include_current`.
     ///
-    /// A thread that is *leaving* the CPU — sleeping, blocking, exiting —
-    /// records that in the table before asking, so that it is not among the
-    /// candidates and the idle thread becomes reachable. A thread that is
-    /// merely offering the CPU does not, and is told to keep it when nobody
-    /// else is owed one.
+    /// A thread *leaving* the CPU records that before asking, so it is not a
+    /// candidate and the idle thread becomes reachable. A thread merely
+    /// offering the CPU is told to keep it when nobody else is owed one.
     fn choose(&self, current: usize, include_current: bool) -> Option<usize> {
         let candidates = || {
             (1..=CAPACITY)
@@ -335,10 +316,9 @@ impl Threads {
     /// When the kernel next has a reason to be interrupted, given that
     /// `running` is on the CPU — or `None` if it has none at all.
     ///
-    /// Two reasons, and only two. A thread's slice ending matters only if
-    /// somebody else could take the CPU from it, so a lone runnable thread is
-    /// left alone however long it runs. A sleeper's deadline always matters,
-    /// because nothing else is going to notice it.
+    /// Two reasons only. A slice ending matters just when somebody else could
+    /// take the CPU; a sleeper's deadline always does, because nothing else
+    /// will notice it.
     fn next_event(&self, running: usize, now: u64) -> Option<u64> {
         let slice_end = (self.runnable() > 1)
             .then(|| now.saturating_add(self.threads[running].entity.remaining_slice()));
@@ -380,8 +360,8 @@ static WAKES: AtomicUsize = AtomicUsize::new(0);
 /// Threads that have stopped being runnable to wait on a queue.
 static BLOCKS: AtomicUsize = AtomicUsize::new(0);
 
-/// Times the idle thread has reached its halt — which is to say, times this
-/// machine has genuinely had nothing to do.
+/// Times the idle thread has reached its halt: times the machine had nothing
+/// to do.
 static IDLE_HALTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Started once, by whoever gets there first.
@@ -449,16 +429,10 @@ pub(crate) fn idle_is_started() -> bool {
 
 /// Start the thread that runs when nothing else can.
 ///
-/// Outside the policy entirely (see [`Class::Idle`]): it is picked only when
-/// no normal thread is runnable, it is not counted when deciding whether the
-/// timer needs arming, and it does not appear in the fair-share average. So a
-/// machine with nothing to do halts on this thread's stack and takes no
-/// interrupts, which is the same tickless idle the kernel had before it had a
-/// thread to do it on — with the difference that everything else may now
-/// assume something is always runnable.
-///
-/// Does nothing after the first call, and nothing at all on a machine with no
-/// threads, which keeps its halt loop where it always was.
+/// Outside the policy entirely (see [`Class::Idle`]), so a machine with
+/// nothing to do halts on this thread and still takes no interrupts — the
+/// difference being that everything else may now assume something is
+/// runnable. Does nothing after the first call, or with no threads.
 pub(crate) fn start_idle() {
     if !is_available() || !IDLE_STARTED.claim() {
         return;
@@ -473,8 +447,8 @@ pub(crate) fn start_idle() {
 fn idle_loop() {
     loop {
         IDLE_HALTS.fetch_add(1, Ordering::Relaxed);
-        // Nothing is armed on this thread's behalf, so what ends the halt is
-        // whatever the rest of the machine was already waiting for.
+        // Nothing is armed for this thread; the halt ends on whatever the
+        // rest of the machine was already waiting for.
         cpu::halt();
     }
 }
@@ -587,18 +561,13 @@ pub(crate) fn yield_now(_context: &ThreadContext) {
 
 /// Give the CPU up until `milliseconds` have passed.
 ///
-/// The first thing in this kernel that waits for the clock rather than
-/// spinning on it. Another runnable thread takes the CPU meanwhile; if there
-/// is none, the CPU halts on this thread's stack until the timer it armed
-/// goes off, which is the same wait with nobody to hand the CPU to. Either
-/// way nothing is interrupted between now and the deadline unless somebody
-/// else asked for it.
+/// Another runnable thread takes the CPU meanwhile; with none, the CPU halts
+/// here until the timer this armed goes off. Nothing is interrupted before
+/// the deadline unless somebody else asked for it.
 ///
-/// Returns no earlier than the deadline, and possibly later: the thread
-/// becomes *runnable* then, and runs when the policy picks it. Returns at
-/// once on a machine whose clock never started, where there is no deadline to
-/// wait for and no timer to be woken by — a wait there would be a hang, and
-/// returning early is the only honest thing a sleep can do without one.
+/// Returns no earlier than the deadline and possibly later — the thread
+/// becomes runnable then, and runs when the policy picks it — or at once on a
+/// machine whose clock never started, where a wait would be a hang.
 ///
 /// # Panics
 ///
@@ -632,21 +601,13 @@ pub(crate) fn sleep_ns(context: &ThreadContext, nanoseconds: u64) {
 
 /// Stop being runnable until something makes this thread ready again.
 ///
-/// The mechanism under both waits: mark the running thread `leaving`, record
-/// what it is owed, and hand the CPU to whoever the policy picks now that it
-/// is out of the running. With no such thread — no idle thread yet, and
-/// nothing else ready — this one keeps the CPU and halts on it until an
-/// interrupt, which for a sleep is the timer it armed and for a block is
-/// whatever was going to wake it. Either way the caller re-checks, because a
-/// halt returns on *any* interrupt.
+/// Mark the running thread `leaving`, record what it is owed, and hand the
+/// CPU on. With nobody to hand it to it keeps the CPU and halts, and the
+/// caller re-checks — a halt returns on any interrupt.
 ///
-/// `until` is the deadline the caller must not overshoot, if it has one; it
-/// bounds the arming, so a sleeper halting alone is woken by its own timer
-/// rather than by nothing.
-///
-/// Called with the interrupt flag already clear, and it is clear from before
-/// the state changes until after the switch — which is what makes registering
-/// on a wait queue and ceasing to be runnable one step rather than two.
+/// `until` bounds the arming, so a sleeper halting alone is woken by its own
+/// timer. Called with the flag already clear, and it stays clear until after
+/// the switch.
 fn park(_context: &ThreadContext, leaving: State, until: Option<u64>) {
     let now = time::now_ns();
     let (next, event) = {
@@ -703,9 +664,8 @@ fn earliest(one: Option<u64>, other: Option<u64>) -> Option<u64> {
 
 /// Stop being runnable until [`unblock`] names this thread.
 ///
-/// The wait-queue half of [`park`]: no deadline, so nothing is armed on this
-/// thread's behalf and a machine with nothing else to do takes no interrupts
-/// at all until the event arrives.
+/// The wait-queue half of [`park`]: no deadline, so nothing is armed and a
+/// machine with nothing else to do takes no interrupts until the event.
 pub(crate) fn block(context: &ThreadContext) {
     BLOCKS.fetch_add(1, Ordering::Relaxed);
     park(context, State::Blocked, None);
@@ -714,11 +674,9 @@ pub(crate) fn block(context: &ThreadContext) {
 /// Make every blocked thread in `slots` runnable, and report how many that
 /// was.
 ///
-/// A bitmask rather than a list because the caller is a wait queue and the
-/// caller's caller is an interrupt handler, where D-55 forbids the heap. A
-/// slot that is set but not blocked is skipped rather than an error: a thread
-/// that registered on a queue and then found it had nothing to wait for is
-/// still registered, and this is where that resolves.
+/// A bitmask because the caller's caller is an interrupt handler, where D-55
+/// forbids the heap. A set-but-not-blocked slot is skipped: a thread that
+/// registered and then found nothing to wait for is still registered.
 pub(crate) fn unblock(slots: u32) -> usize {
     let mut threads = THREADS.lock();
     let mut woken = 0;
@@ -740,17 +698,13 @@ pub(crate) fn current_slot() -> usize {
 /// Trap exit's turn: charge the running thread, wake whatever is due, switch
 /// if something else is owed the CPU, and arm for whatever comes next.
 ///
-/// Called from a handler after its end-of-interrupt — by the timer always,
-/// and by the keyboard when a keystroke made a reader runnable, because a
-/// thread woken by an event has no appointment to be woken at instead. Trap
-/// exit is where a switch is legal at all (D-54), so it is where every
-/// handler that changes who could run asks this.
+/// Called from a handler after its end-of-interrupt: by the timer always, and
+/// by the keyboard when a keystroke made a reader runnable. Trap exit is where
+/// a switch is legal at all (D-54).
 ///
-/// The switch — and only the switch — is skipped if the interrupted code had
-/// interrupts off, because it holds a lock or is between a decision and a
-/// switch of its own; D-34 makes that test free. Waking and re-arming happen
-/// either way, because a sleeper whose deadline has passed has no other
-/// appointment: this expiry was it. Nothing here logs (D-31).
+/// Only the switch is skipped when the interrupted code had interrupts off
+/// (D-54). Waking and re-arming happen either way: a sleeper whose deadline
+/// has passed has no other appointment. Nothing here logs (D-31).
 pub(crate) fn reschedule(frame: &TrapFrame) {
     let now = time::now_ns();
     let switchable = frame.flags & INTERRUPT_FLAG != 0;
@@ -783,9 +737,8 @@ pub(crate) fn reschedule(frame: &TrapFrame) {
 /// Arm the timer for the next thing owed a decision, or stop it if nothing
 /// is.
 ///
-/// Every path that can change the answer ends here, and this is the whole of
-/// tickless: an idle machine leaves with the timer stopped, and takes no
-/// interrupts at all until something gives it a reason.
+/// Every path that can change the answer ends here. An idle machine leaves
+/// with the timer stopped.
 fn reschedule_timer(event: Option<u64>) {
     match event {
         Some(deadline) => time::arm_at(deadline),

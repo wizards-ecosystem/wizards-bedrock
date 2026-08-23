@@ -95,9 +95,8 @@ fn kernel_main(boot: BootInfo) -> ! {
     #[cfg(feature = "selftest")]
     selftest::run(serial);
 
-    // Started here rather than at `thread::init`, because a thread that halts
-    // needs interrupts to be on before it can be woken from one. Idempotent:
-    // the self-checks start it earlier on purpose, so they can watch the
+    // After interrupts are on, because a halting thread needs them to be
+    // woken. Idempotent: the self-checks start it earlier, to watch the
     // machine on both sides of it.
     thread::start_idle();
     info!(
@@ -109,15 +108,12 @@ fn kernel_main(boot: BootInfo) -> ! {
 
 /// The boot thread's last job: block on the keyboard, and draw what arrives.
 ///
-/// The end state Phase 4 was for. Nothing here polls and nothing spins: this
-/// thread stops being runnable until a keystroke's interrupt makes it
-/// runnable again (D-61), the idle thread halts meanwhile, and no timer is
-/// armed on anyone's behalf — so a kernel sitting at a prompt takes exactly
-/// as many interrupts as there are keystrokes.
+/// Nothing polls and nothing spins: this thread is not runnable until a
+/// keystroke wakes it (D-61), the idle thread halts meanwhile, and no timer
+/// is armed — so a kernel at a prompt takes one interrupt per keystroke.
 ///
-/// Drawing is here rather than in the handler on purpose: a glyph can cost a
-/// scroll, and a scroll under the console lock is the longest stretch of this
-/// kernel with interrupts off (D-63).
+/// Drawing is here rather than in the handler because a glyph can cost a
+/// scroll (D-63).
 fn echo_keystrokes() -> ! {
     let context = thread::ThreadContext::require();
     loop {

@@ -3,12 +3,10 @@
 //! Both live here as locked singletons so the panic handler can reach them from
 //! any context without threading them through every call site.
 //!
-//! Their locks keep interrupts *on* (D-63). Writing a line can cost a scroll,
-//! and a scroll is tens of milliseconds of framebuffer — far too long for
-//! every interrupt on the machine to wait behind, which is what a
-//! `SpinLock` here would mean. The price is that no trap handler may write to
-//! either device, which was already the rule (D-31) and is now a
-//! [`ThreadLock`] that panics rather than a comment that can be forgotten.
+//! Their locks keep interrupts on (D-63): writing a line can cost a scroll,
+//! and no interrupt should wait tens of milliseconds behind one. The price is
+//! that no trap handler may write to either device, which was already the
+//! rule (D-31) and is now a lock that panics rather than a comment.
 
 use wost::boot::Framebuffer;
 use wost::panic::PanicToken;

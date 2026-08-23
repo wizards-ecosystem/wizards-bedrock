@@ -179,11 +179,9 @@ fn a_second_switch_is_refused() -> bool {
 /// the cursor, so watching for motion would race this function's own output.
 /// The layout half is asserted from `char_for` and tested on the host in `libs/ps2-keys`.
 ///
-/// Runs only once the last injected key has been seen released. The harness
-/// injects three and the keystroke check waits for the first, so the other
-/// two were still arriving while this measured — and an echoed character
-/// between two cursor readings is a red check with nothing wrong. It failed
-/// that way about one boot in three before the wait was added.
+/// Runs only once the last injected key has been seen released: the harness
+/// injects three, and one still arriving between two cursor readings is a red
+/// check with nothing wrong.
 fn the_editing_keys_move_the_cursor() -> bool {
     let (Some(backspace), Some(newline)) = (
         ps2_keys::us::char_for(ps2_keys::Key::Backspace, ps2_keys::Shift::new()),
@@ -313,11 +311,9 @@ fn a_large_allocation_takes_and_returns_frames() -> bool {
     taken && held && mm::free_frames() == before
 }
 
-/// The token the blocking calls below need, minted where they are made.
-///
-/// Passing one down through every helper would be plumbing with nothing to
-/// say; `require` panics in trap context, which is where a self-check that
-/// blocked would be a bug worth stopping the machine for.
+/// The token the blocking calls below need, minted where they are made:
+/// passing one down through every helper would be plumbing with nothing to
+/// say.
 fn context() -> ThreadContext {
     ThreadContext::require()
 }
@@ -673,11 +669,9 @@ static READER_SAW: AtomicUsize = AtomicUsize::new(0);
 /// Whether the reader actually stopped being runnable to get its keystroke:
 /// zero until it knows, one for blocked, two for not.
 ///
-/// Recorded by the reader itself, across its own call, because the outcome
-/// cannot tell the difference — a key that arrives is a key that arrives
-/// whether the thread waited for it or spun on it. That is D-49's lesson, and
-/// this counter is what an earlier version of this check was missing: a
-/// deliberately polling `read_key` passed it.
+/// Recorded by the reader across its own call: a key that arrives is a key
+/// that arrives whether the thread waited or spun. An earlier version of this
+/// check lacked it, and a deliberately polling `read_key` passed.
 static READER_BLOCKED: AtomicUsize = AtomicUsize::new(0);
 
 /// Block on the keyboard, and record the first key that arrives.
@@ -694,17 +688,14 @@ fn read_one_key() {
 
 /// A thread blocked on the keyboard is woken by the keystroke's interrupt.
 ///
-/// The phase's last claim, and D-49's lesson decides its shape: a check that
-/// polls cannot tell a working wake from a working poll. So the evidence is
-/// three things at once. The reader is *blocked* — not runnable, counted by
-/// the state transition rather than inferred. The machine is quiet while it
-/// waits: no timer is armed for a thread with no deadline, so a wait for a
-/// keystroke that never comes costs nothing at all. And what the reader has
-/// when it comes back is the key the harness pressed, delivered through the
-/// interrupt path.
+/// D-49's lesson decides the shape: an outcome cannot tell a working wake
+/// from a working poll. So three things at once — the reader is blocked,
+/// counted by the state transition; the machine is quiet, because nothing is
+/// armed for a thread with no deadline; and what it comes back with is the
+/// key the harness pressed.
 ///
 /// Set up here and collected after the injection, because the harness presses
-/// its key on a marker this check is upstream of.
+/// on a marker this check is upstream of.
 fn a_blocked_reader_is_ready_to_wake() -> bool {
     READER_SAW.store(0, Ordering::Release);
     READER_BLOCKED.store(0, Ordering::Release);
@@ -737,10 +728,9 @@ fn the_blocked_reader_woke_with_the_key() -> bool {
 
 /// The idle thread runs when nothing else can, and never when something can.
 ///
-/// Both halves, because either alone is satisfied by a bug. An idle thread
-/// that never runs would pass the second; one that the policy schedules like
-/// any other would pass the first. The spinner is what separates them: while
-/// it is runnable, the idle thread must not get the CPU at all.
+/// Both halves, because either alone is satisfied by a bug: an idle thread
+/// that never runs passes the second, one the policy schedules like any other
+/// passes the first.
 fn the_idle_thread_runs_only_when_nothing_else_can() -> bool {
     // Slept rather than spun: this thread is a normal one, so as long as it
     // is runnable the idle thread must not run — which is the very thing the
@@ -767,18 +757,14 @@ fn the_idle_thread_runs_only_when_nothing_else_can() -> bool {
 /// The console's longest operation does not stop the machine taking
 /// interrupts.
 ///
-/// D-34 accepted that interrupt latency is bounded by the longest critical
-/// section and left the bound unnamed, for want of a clock fine enough to
-/// name it with. Named, on the machine the gate runs on, it is a console
-/// scroll: a whole framebuffer moved and blitted, and the number this logs
-/// beside the check is tens of milliseconds. That is not a latency any
-/// interrupt should wait behind, so D-63 stops it waiting rather than
-/// stating it.
+/// D-34 left interrupt latency bounded by the longest critical section and
+/// the bound unnamed. Named, it is a console scroll — tens of milliseconds,
+/// logged beside this check — which is why D-63 stops interrupts waiting
+/// behind it rather than stating how long they would.
 ///
-/// The property, therefore, is not how long the scroll takes — it takes what
-/// it takes — but that interrupts keep arriving while it runs. A spinner
-/// makes the timer arm at slice intervals, and a scroll several slices long
-/// must have several expiries inside it. Before D-63 the answer was none.
+/// So the property is not how long the scroll takes but that interrupts keep
+/// arriving while it runs. A spinner makes the timer arm at slice intervals;
+/// before D-63 the answer was none.
 fn a_scroll_does_not_block_interrupts() -> bool {
     /// Scrolls to time, so one unlucky sample cannot decide it.
     const SAMPLES: usize = 8;
@@ -812,11 +798,9 @@ fn a_scroll_does_not_block_interrupts() -> bool {
     let mut expiries = 0;
     for _ in 0..SAMPLES {
         dev::with_console(|console| {
-            // Both readings are taken *inside* the lock, which is the whole
-            // difference: sampled outside it, a pending expiry is delivered
-            // the instant the guard drops and the count moves either way.
-            // Measured against a lock that excludes interrupts, this counts
-            // zero — which is what it did before D-63.
+            // Both readings inside the lock: sampled outside, a pending
+            // expiry lands the instant the guard drops and the count moves
+            // either way.
             let taken = time::expiries();
             let before = time::now_ns();
             console.write_line("");
@@ -1312,15 +1296,12 @@ struct ClockSweep {
 
 /// Read the clock as fast as it can be read, for a few milliseconds.
 ///
-/// Monotonicity is no longer a formality: the clamp that used to make it true
-/// by construction went with the tick, so this is now watching the counter's
-/// own claim (D-57). The first reading is taken while holding a lock, which
-/// is where the retired clock could be caught reading backwards.
+/// Monotonicity is no longer a formality: the clamp that made it true by
+/// construction went with the tick (D-57). The first reading is taken while
+/// holding a lock, where the retired clock could read backwards.
 ///
-/// The smallest step is the clock's grain, measured rather than inferred —
-/// the smallest difference between two adjacent readings that differ at all.
-/// Adjacent readings that are equal say only that the reads were faster than
-/// the counter, which on an emulated machine they sometimes are.
+/// The smallest step is the grain, measured rather than inferred. Adjacent
+/// readings that are equal say only that the reads outpaced the counter.
 fn sweep_clock() -> ClockSweep {
     const ATTEMPTS: u32 = 2_000_000;
     const SPAN_MS: u64 = 3;
@@ -1361,11 +1342,9 @@ fn sweep_clock() -> ClockSweep {
 
 /// Timer expiries taken while nothing at all is waiting for one.
 ///
-/// The whole claim of D-57, and the one number that would have been fifty on
-/// the kernel this replaced. The boot thread is the only runnable thread and
-/// there are no sleepers, so the scheduler has nothing to be interrupted
-/// *for* — and a machine with nothing to do should therefore take no timer
-/// interrupts whatever, not merely fewer.
+/// D-57's claim, and a number that would have been fifty before it. Nothing
+/// is runnable but the boot thread and nothing sleeps, so there is nothing to
+/// be interrupted *for* — none, not merely fewer.
 fn an_idle_kernel_takes_no_timer_interrupts() -> bool {
     /// Five times the old tick's period, so a tick that survived would show
     /// up five times over.
@@ -1378,18 +1357,14 @@ fn an_idle_kernel_takes_no_timer_interrupts() -> bool {
 
 /// While threads compete for the CPU, the timer fires about once a slice.
 ///
-/// The other half of the claim above, and the half it cannot make: a machine
-/// that takes no interrupts when idle might simply have a timer that never
-/// works. This is the same counter under load, bounded on both sides — too
-/// few and nothing is being preempted on the schedule the slice sets, too
-/// many and something is arming for far less than it was asked for. The
-/// slice is restated here rather than shared with the scheduler, so a change
-/// there has to be made here too, deliberately.
+/// The half the check above cannot make: a machine that takes no interrupts
+/// when idle might have a timer that never works. Bounded both ways — too few
+/// and nothing is preempted on the slice's schedule, too many and something
+/// is arming for less than it was asked.
 ///
-/// It is also what proves the handler's end-of-interrupt, which the retired
-/// tick's pair of checks used to: the APIC will not deliver a second timer
-/// interrupt until the first is dismissed, so a lower bound of dozens is a
-/// lower bound on dismissals.
+/// Also what proves the handler's end-of-interrupt, which the retired tick's
+/// checks used to: the APIC delivers no second timer interrupt until the
+/// first is dismissed.
 fn the_timer_fires_about_once_a_slice() -> bool {
     const WINDOW_MS: u64 = 300;
     /// `thread::SLICE_NS`, in the unit this window is measured in.
@@ -1419,13 +1394,10 @@ fn the_timer_fires_about_once_a_slice() -> bool {
 /// A thread that sleeps with nothing else to run comes back no earlier than
 /// it asked, and the machine stays quiet while it waits.
 ///
-/// The degenerate branch of sleeping: the boot thread has nobody to hand the
-/// CPU to, so it halts on its own stack until the timer it armed goes off.
-/// Both halves matter and neither alone is evidence — a sleeper that returned
-/// on time might have spun, and a quiet machine might have had nothing
-/// sleeping. Together they say the wait was the timer's: armed for the
-/// deadline, taken at it, once. The upper bound is what a periodic tick would
-/// blow through twenty times over.
+/// The degenerate branch: nobody to hand the CPU to, so the thread halts on
+/// its own stack until its timer fires. Neither half is evidence alone — a
+/// sleeper that returned on time might have spun, a quiet machine might have
+/// had nothing sleeping — and together they say the wait was the timer's.
 fn a_sleeper_wakes_on_time_and_quietly() -> bool {
     /// Long enough that a surviving tick would be caught many times, short
     /// beside the harness's patience.
@@ -1452,12 +1424,9 @@ fn a_sleeper_wakes_on_time_and_quietly() -> bool {
 /// A sleeping thread gives the CPU to a runnable one, and is put back on the
 /// queue when its deadline passes.
 ///
-/// The other branch: something else is runnable, so the sleeper really does
-/// leave the CPU and really is woken — counted, because the count only moves
-/// on the path that takes a thread out of the sleeping state and places it
-/// back on the queue. What the spinner counted meanwhile is the proof the
-/// CPU went somewhere: a sleeper that had busy-waited would have left it near
-/// zero.
+/// The other branch: something else is runnable, so the sleeper really leaves
+/// the CPU and really is woken. What the spinner counted meanwhile is the
+/// proof the CPU went somewhere.
 fn sleeping_hands_the_cpu_over() -> bool {
     const SLEEP_MS: u64 = 100;
     /// A thread with the CPU to itself counts far more than this in 100 ms;

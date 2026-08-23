@@ -1,23 +1,17 @@
 //! Turning a counter's ticks into nanoseconds, and nanoseconds back into
 //! ticks.
 //!
-//! A kernel that has retired its periodic tick reads time from a counter that
-//! runs at whatever rate the machine measured — a number with no round factor
-//! in it — and arms a timer in ticks of a second counter running at a third
-//! rate. Both conversions are one rational multiplication, and doing them by
-//! dividing would put a sixty-four-bit division on the path every clock read
-//! takes. So each is precomputed once, as the rounded fixed-point ratio
-//! `value × multiplier >> shift`, and applied with a widening multiply.
+//! A counter measured at some arbitrary rate, converted to nanoseconds — and
+//! nanoseconds back into ticks of a second counter at a third rate. Both are
+//! one rational multiplication, precomputed once as the rounded fixed-point
+//! ratio `value × multiplier >> shift`, because dividing would put a
+//! sixty-four-bit division on the path every clock read takes.
 //!
-//! The multiplier is held to thirty-two bits. That is what makes the product
-//! of any `u64` and it fit in a `u128` with room to spare, and it is also
-//! what lets a whole conversion pack into a single `u64` — which is how a
-//! kernel publishes one to a reader that cannot take a lock, because it is
-//! running inside an interrupt handler.
-//!
-//! The shift is then the largest that keeps the multiplier inside those
-//! thirty-two bits, so a conversion carries at least thirty-one significant
-//! bits: about two parts in ten billion, or under a nanosecond per second.
+//! The multiplier is held to thirty-two bits, which keeps the product inside
+//! a `u128` and lets a whole conversion pack into one `u64` — how a kernel
+//! publishes one to a reader inside an interrupt handler, where no lock can
+//! go. The shift is then the largest that still fits, so a conversion carries
+//! at least thirty-one significant bits: under a nanosecond per second.
 //!
 //! # Examples
 //!
@@ -68,9 +62,8 @@ impl Timebase {
     /// The conversion of a clock that was never measured: everything it is
     /// asked converts to zero.
     ///
-    /// This is deliberately the value a zeroed word decodes to, so a kernel
-    /// that publishes conversions into `static`s reads "no clock yet" without
-    /// a second flag to keep in step.
+    /// Deliberately what a zeroed word decodes to, so a kernel publishing
+    /// conversions into `static`s reads "no clock yet" without a second flag.
     pub const UNCALIBRATED: Self = Self {
         multiplier: 0,
         shift: 0,
@@ -123,10 +116,9 @@ impl Timebase {
 
     /// Apply the conversion, saturating rather than wrapping.
     ///
-    /// Saturation is the right answer for a clock: a reading that has run off
-    /// the end of the range it is being converted into should read as far in
-    /// the future as the type allows, never as though it had gone back to the
-    /// beginning.
+    /// Saturating because this is a clock: a reading past the end of the range
+    /// should read as far ahead as the type allows, never as though it had
+    /// wrapped to the beginning.
     pub const fn convert(self, value: u64) -> u64 {
         // Both factors are bounded — any `u64` and at most thirty-two bits —
         // so the product is at most ninety-six bits and cannot overflow.
@@ -145,9 +137,8 @@ impl Timebase {
 
     /// Read back what [`to_bits`](Self::to_bits) wrote.
     ///
-    /// Total on every input, including ones this type never produced: the
-    /// shift is masked to the range a shift may take, so a word full of
-    /// nonsense converts to nonsense rather than to undefined behaviour.
+    /// Total on every input: the shift is masked, so a word of nonsense
+    /// converts to nonsense rather than to undefined behaviour.
     pub const fn from_bits(bits: u64) -> Self {
         Self {
             multiplier: bits & MAX_MULTIPLIER,
