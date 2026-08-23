@@ -32,8 +32,8 @@ session finds them collected.
 
 | Debt | Where recorded | What Phase 4 does |
 |---|---|---|
-| 100 Hz periodic tick, "explicitly disposable when D-15 lands" | D-15, D-36; `006-cpu-fundamentals.md` ("D-34's latency cost wearing a clock face") | Slice 3 retires it: one-shot APIC programming, no timer armed when nothing needs waking |
-| A critical section longer than a tick swallows one; uptime undercounts 10 ms | D-36 consequences | Dies with the periodic tick; uptime moves off tick-interpolation (slice 3, with its own ADR) |
+| 100 Hz periodic tick, "explicitly disposable when D-15 lands" | D-15, D-36; `006-cpu-fundamentals.md` ("D-34's latency cost wearing a clock face") | ✅ Retired by D-57: one-shot programming, and no timer armed when nothing needs waking |
+| A critical section longer than a tick swallows one; uptime undercounts 10 ms | D-36 consequences | ✅ Discharged by D-57: a late deadline is delivered, not lost, and uptime is the timestamp counter rather than an interpolated countdown |
 | Interrupt latency bounded by the longest critical section — "a scheduler's problem and waits for one" | D-34; `wost/src/sync.rs` module doc | The phase takes a position in slice 4: fix, or accept with the bound named |
 | Lock guard-discipline parameterisation "earns its keep once there is a scheduler" | D-34 rationale (Asterinas `PreemptDisabled`) | Revisited when preemption lands (slice 2); adopted or declined on the record |
 | No allocation in IRQ handlers, enforced by nobody; "worth an ADR when the heap lands" | `003`; `008` §4.2 | The heap landed in D-47, so the ADR is due: a context token in the `PanicToken` idiom (slice 2) |
@@ -59,7 +59,7 @@ wake-from-interrupt, which needs the preemption-era lock discipline settled.
 |---|---|---|
 | 1 | Kernel threads, cooperative: stack arena with guard gaps, TCB table, `spawn`/`yield_now`/`exit`, naked-function context switch in `wost`, round-robin ready list (deliberately policy-free) | ✅ 2026-08-22 |
 | 2 | The scheduler: `libs/eevdf` arithmetic host-tested, EEVDF policy behind a separable seam with round-robin fallback, timer preemption at trap exit, the lock order and the context token | ✅ 2026-08-22 |
-| 3 | Tickless: one-shot APIC programming, sleep queue and `sleep_ms`, the 100 Hz tick retired, uptime re-based | |
+| 3 | Tickless: one-shot APIC programming, sleep queue and `sleep_ms`, the 100 Hz tick retired, uptime re-based | ✅ 2026-08-23 |
 | 4 | Blocking: `WaitQueue`, the keyboard read blocks a thread and the interrupt wakes it, idle becomes the idle thread, D-34's latency position taken | |
 | 5 | Phase close: VMware boot (D-18), roadmap and docs updated, this file's closing section | |
 
@@ -96,7 +96,9 @@ Held open deliberately; each becomes an ADR when taken.
 - **The tickless timebase.** Uptime currently interpolates a periodic
   countdown (D-36); one-shot mode deletes its denominator. TSC, accumulated
   deadlines, or something else — decided in slice 3 with the calibration
-  machinery D-36 already built.
+  machinery D-36 already built. *Taken in D-57: the timestamp counter, on the
+  same window, with accumulated deadlines rejected because an idle machine's
+  clock would stop.*
 
 ## The lock order
 
@@ -139,9 +141,9 @@ reader wake — not a poll, which is the shape D-49 caught lying.
 - `wost/src/arch/x86_64/paging.rs` — grows the stack-arena mapping,
   built before `activate` like everything else; the `KernelStack` handle
   follows `DeviceMapping`'s not-`Copy`-not-`Clone` precedent (D-49).
-- `libs/stack-layout`, `libs/eevdf` — new host-tested crates; each joins
-  `members`, `default-members`, `[workspace.dependencies]`, and
-  `HOST_PACKAGES` in `xtask/src/paths.rs`.
+- `libs/stack-layout`, `libs/eevdf`, `libs/timebase` — new host-tested
+  crates; each joins `members`, `default-members`,
+  `[workspace.dependencies]`, and `HOST_PACKAGES` in `xtask/src/paths.rs`.
 - `kernel/src/thread.rs`, `kernel/src/sched.rs` — new, safe code: the TCB
   table, spawn/yield/exit, the ready list, the policy seam. Scheduling
   policy is arithmetic, and arithmetic is the kernel's (D-43's pattern).
@@ -151,9 +153,10 @@ reader wake — not a poll, which is the shape D-49 caught lying.
   hook; EOI stays first.
 - `kernel/src/main.rs` — the idle loop is the scheduler's to claim
   (slice 4), not before.
-- `kernel/src/time.rs` — slice 3 re-bases uptime; `input::await_key`'s
-  tick-counted timeout and every `time::ticks()` consumer are the
-  pre-named casualties.
+- `kernel/src/time.rs` — slice 3 re-based uptime on the timestamp counter
+  and turned the timer into an alarm; `input::await_key`'s tick-counted
+  timeout and every `time::ticks()` consumer were the pre-named casualties,
+  and all of them went.
 
 ## Slice 1 — threads and the switch (2026-08-22)
 
@@ -257,3 +260,71 @@ hundred times a second; slice 3 retires it. Time is charged in milliseconds,
 conserved but coarsely attributed; the finer clock is slice 3's too. Nothing
 can block, so lag's clamp has no sleeper to act on yet; slice 4's wait queue
 is its first.
+
+## Slice 3 — tickless (2026-08-23)
+
+**The tick is gone, and what replaced it is two clocks doing two jobs**
+(D-57). The processor's timestamp counter free-runs, so it is the clock:
+`now_ns` is a subtraction and a multiply, with nothing to interpolate and no
+handler to keep it moving. The APIC timer counts down and interrupts, so it
+is the alarm: one-shot, armed for the running thread's slice ending or the
+earliest sleeper's deadline, whichever is sooner, and stopped when there is
+neither. Both rates come out of the same twenty-millisecond window D-36 built,
+with two more reads inside it — the arithmetic that turns them into a clock is
+`libs/timebase`, thirteen host tests, a rounded multiply-and-shift held to
+thirty-two bits so a whole conversion packs into one word and can be published
+to a reader inside an interrupt handler.
+
+**One question the charter held open answered itself in the negative.**
+Accumulated deadlines — summing each one-shot interval as it expires — needs
+no new hardware and has a hole exactly where tickless puts one: while nothing
+is armed, nothing accrues, and an idle machine's clock stops. Closing it means
+arming a housekeeping timer, which is the tick wearing a different name.
+
+**The clamp went, and its check started meaning something.** D-36's uptime was
+clamped monotonic against a high-water mark, because a reader with the flag
+clear could watch the countdown reload while the tick it announced stayed
+pending. There is no countdown to reload now, so monotonicity is the counter's
+claim rather than a clamp's — and "the clock never runs backwards", which
+could not have failed before, went red on its first break.
+
+**Sleeping is the first thing that waits** (D-58). A deadline, a saved lag,
+and a state; every scheduling path wakes what is due before deciding anything,
+and a woken thread comes back at the fair-share point offset by the lag it
+left with, which is D-53's clamp finally acting on a real sleeper. A thread
+that sleeps with nothing else runnable keeps the CPU and halts on it, on one
+`sti`-`hlt` pair whose shadow is what stops the wakeup landing in the gap.
+Slice 4's idle thread deletes that branch; inventing it here would have taken
+slice 4's decision.
+
+**The bug the sleep found had been there since slice 1** (D-59). A thread's
+first run took its interrupt flag from the context that switched to it — and
+that context is a scheduler, which clears the flag around every decision. So
+every thread first started from a yield had run uninterruptible since slice 1,
+and nothing noticed, because the checks that used that path yielded constantly
+and the check that needed preemption got its thread started by the preemption
+path, where the flag handed over is set. The symptom was a hang: a thread
+slept, handed the CPU to a spinner that could not be interrupted, and the
+machine stopped. The flag now comes from the thread's creator, captured where
+there is still a real one to read.
+
+**Nine checks broken, and two of the breaks taught the same lesson a third
+time.** The one worth quoting is *an idle kernel takes no timer interrupts* —
+not fewer, none, against the fifty the retired tick would have taken in the
+same half second — with a counterpart under load that bounds the same counter
+from below and is also what now proves the handler's end-of-interrupt. Making
+the measured counter rate a thousand times too fast turned the machine into an
+interrupt storm before the check that reads the rate could run; breaking the
+expiry handler could not redden a check about an idle kernel, which never
+enters it. A break has to reach the path the check watches.
+
+**One flake fixed on the way past.** The editing-keys check measured the
+console cursor while the harness's second and third injected keystrokes were
+still echoing into it — a red check with nothing wrong, about one boot in
+three. It now waits for the last injected key to be seen released, which is
+also a check that the key arrived. Sixty-four checks on the machine, and
+sixteen more on the host.
+
+**Still owed by this slice's neighbours.** Nothing can be woken by an *event*
+— only by a deadline — so `WaitQueue` and the blocking keyboard read are
+slice 4's, along with the idle thread and D-34's latency position.
