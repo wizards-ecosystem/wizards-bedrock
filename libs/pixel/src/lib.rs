@@ -4,6 +4,20 @@
 //! byte a pixel lands on and what value goes into it. It lives in its own crate
 //! so it can be unit-tested on the host, which is where arithmetic like this
 //! actually gets verified — see `docs/005-code-conventions.md`.
+//!
+//! # Examples
+//!
+//! ```
+//! use pixel::{Channel, PixelFormat, Rgb, offset};
+//!
+//! // The layout QEMU and VMware both report: eight-bit channels, red high.
+//! let format = PixelFormat::new(Channel::new(16, 8), Channel::new(8, 8), Channel::new(0, 8));
+//! let red = Rgb { red: 255, green: 0, blue: 0 };
+//! assert_eq!(format.pack(red), 0x00ff_0000);
+//!
+//! // A pixel lands at its row times the pitch, plus its column.
+//! assert_eq!(offset(2, 1, 4096, 4), 4104);
+//! ```
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]

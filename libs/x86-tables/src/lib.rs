@@ -8,6 +8,20 @@
 //!
 //! Bit positions follow Intel SDM Vol. 3A ch. 3 (segment descriptors), ch. 6
 //! (gate descriptors) and ch. 7 (the 64-bit TSS).
+//!
+//! # Examples
+//!
+//! ```
+//! use x86_tables::Selector;
+//! use x86_tables::gdt::Descriptor;
+//!
+//! // Entry one at ring zero: the index sits above the three low bits.
+//! assert_eq!(Selector::new(1, 0).bits(), 0x08);
+//!
+//! // The two values every x86_64 kernel arrives at.
+//! assert_eq!(Descriptor::KERNEL_CODE.bits(), 0x0020_9a00_0000_0000);
+//! assert_eq!(Descriptor::KERNEL_DATA.bits(), 0x0000_9200_0000_0000);
+//! ```
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]

@@ -15,6 +15,20 @@
 //! register number by [`Register::msr`]. Only the second is reachable in this
 //! kernel: the first is a page of memory-mapped words that the bootloader does
 //! not map and the kernel cannot map for itself until it owns page tables.
+//!
+//! # Examples
+//!
+//! ```
+//! use x86_apic::local_vector::Entry;
+//! use x86_apic::register;
+//!
+//! // The timer's entry lives at xAPIC offset 0x320, which is MSR 0x832.
+//! assert_eq!(register::LVT_TIMER.msr(), 0x832);
+//!
+//! // A one-shot entry is its vector and nothing else; masking is one bit.
+//! assert_eq!(Entry::one_shot(0x41).bits(), 0x41);
+//! assert_eq!(Entry::MASKED.bits(), 0x0001_0000);
+//! ```
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]

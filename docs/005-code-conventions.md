@@ -153,9 +153,12 @@ item does (`missing_docs`, at warn); `# Panics` on anything that can panic
 (C-FAILURE). `missing_docs_in_private_items` is deliberately **not** enabled —
 it manufactures noise on every helper.
 
-C-EXAMPLE (a rustdoc example on every item) is adopted **only in `libs/`**,
-and the split is a fact about where doctests can run rather than a preference
-(D-41). `wost` and `kernel` are `no_std` and cross-compiled, so their doctests
+C-EXAMPLE is adopted **only in `libs/`**, and the split is a fact about where
+doctests can run rather than a preference (D-41). The floor is one runnable
+example in every `libs/` crate's module doc, and all thirteen carry one; more
+go on any item whose encoding an example states better than prose. Not "an
+example on every item", which the rule used to say and no crate has ever
+done. `wost` and `kernel` are `no_std` and cross-compiled, so their doctests
 cannot execute and an unrunnable example rots unnoticed. A `libs/` crate
 carries `#![cfg_attr(not(test), no_std)]` precisely so `cargo test` builds it
 for the host — where its doctests *do* compile and run, under the bare

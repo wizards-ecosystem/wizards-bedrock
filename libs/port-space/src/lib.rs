@@ -9,6 +9,21 @@
 //! Reservations are permanent by design. A driver owns its registers for the
 //! life of the kernel, and a registry with no release path cannot suffer the
 //! stale-handle problem a releasable one would.
+//!
+//! # Examples
+//!
+//! ```
+//! use port_space::PortSpace;
+//!
+//! let mut space = PortSpace::new();
+//! // A serial port: eight registers from 0x3F8.
+//! assert!(space.reserve(0x3F8, 8));
+//!
+//! // A 32-bit access at 0x3F6 reaches 0x3F6..0x3FA, so it overlaps.
+//! assert!(!space.reserve(0x3F6, 4));
+//! // The two ports below it are still free.
+//! assert!(space.reserve(0x3F6, 2));
+//! ```
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]

@@ -9,6 +9,19 @@
 //! Bit positions follow the Intel 8254 datasheet's control-word figure; the
 //! kernel uses the chip only as a calibration reference, never as an
 //! interrupt source.
+//!
+//! # Examples
+//!
+//! ```
+//! use x86_pit::{CRYSTAL_HZ, calibrate, elapsed_ticks};
+//!
+//! // The counter counts down, so a delta is a wrapping subtraction.
+//! assert_eq!(elapsed_ticks(1000, 400), 600);
+//! assert_eq!(elapsed_ticks(100, 65_436), 200, "through zero mid-window");
+//!
+//! // Ten cycles per crystal tick is ten times the crystal.
+//! assert_eq!(calibrate::measured_hz(200_000, 20_000), 10 * CRYSTAL_HZ as u64);
+//! ```
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]

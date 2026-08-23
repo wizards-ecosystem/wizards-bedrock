@@ -16,6 +16,15 @@ References: Intel SDM Vol. 3A ch. 3 (protected-mode memory management), ch. 6
 TSS), ch. 11 (the advanced programmable interrupt controller); Intel 8259A
 datasheet; OSDev wiki GDT/IDT/APIC; Osdev-Notes' interrupt chapter.
 
+> **Two slices of this phase have since been replaced.** Slice 3's 100 Hz
+> tick, its interpolated uptime and its monotonic clamp were retired by D-57;
+> what survives is the calibration, now measuring two clocks. Slice 4's polled
+> keyboard was retired by D-49 and its interrupt-driven successor made
+> blocking by D-61. The rest — the descriptor tables, the fault path, the
+> protection baseline, the APIC — is still what the kernel does. A phase doc
+> is the record of what its phase built; the decision log is where to look for
+> what happened afterwards.
+
 ## Order of work
 
 Each slice boots, is checked on the machine, and leaves the tree green. The

@@ -2546,8 +2546,15 @@ behind, and naming it would have been accepting it.
 exclude interrupts and refuses to be taken from trap context. Both console
 devices use it. The rule that makes it sound — nothing logs or draws from a
 handler — was already D-31's, stated in prose; it is now an assert against
-D-55's trap depth. The keyboard handler's `debug!` and its echo, the last two
-violations, moved to the reading thread.
+D-55's trap depth. The keyboard handler's echo, and its `debug!`, moved to the
+reading thread.
+
+*Corrected 2026-08-23 by the phase 0–4 audit.* This said the handler's
+`debug!` drew from a handler. It never did: `MAX_LEVEL` is `Info`, so `record`
+returns before touching a device. The echo was the live violation; the log
+line was a latent one that would have become real the moment the level was
+raised — which is the better argument for moving it, and the one the assert
+now makes unnecessary to remember.
 
 **And a second rule, found by breaking the first.** Putting the console back
 on a `SpinLock` to check that the new check went red made the machine hang

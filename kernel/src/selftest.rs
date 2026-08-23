@@ -693,10 +693,10 @@ fn a_spinner_cannot_starve_another() -> bool {
 ///
 /// Two spinners, one at twice the other's weight, counting as fast as they
 /// can while the boot thread spins alongside them. The ratio of their counts
-/// is the ratio of their CPU time, quantised to ticks and jittered by the
+/// is the ratio of their CPU time, quantised by the slice and jittered by the
 /// hypervisor — so the bounds are coarse, and deliberately so.
 fn runtime_divides_by_weight() -> bool {
-    /// Long enough for twenty-odd ticks per thread.
+    /// Long enough for a couple of hundred slices between them.
     const WINDOW_MS: u64 = 600;
 
     STOP_SPINNING.store(0, Ordering::Release);

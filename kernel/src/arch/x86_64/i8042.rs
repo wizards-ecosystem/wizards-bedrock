@@ -1,11 +1,10 @@
-//! Intel 8042 keyboard controller driver — polled, silent, raw set 2.
+//! Intel 8042 keyboard controller driver — raw set 2, interrupt or polled.
 //!
-//! Configured to raise no interrupts at all: IRQ 1's two routes to this CPU
-//! are the legacy controllers slice 2 silenced and an I/O APIC that is
-//! memory-mapped behind Phase 3's missing page tables, so the tick-woken
-//! idle loop drains the controller instead (D-37). Translation is switched
-//! off too — the decoder in `ps2-keys` speaks set 2 as the keyboard sends
-//! it, not the set 1 the controller would fake for a 1980s BIOS.
+//! The controller raises IRQ 1 once something has routed it (D-49); until
+//! then, and on a machine with no I/O APIC, a thread drains it on an interval
+//! (D-37, D-57). Translation is switched off either way — the decoder in
+//! `ps2-keys` speaks set 2 as the keyboard sends it, not the set 1 the
+//! controller would fake for a 1980s BIOS.
 //!
 //! Every wait is bounded, in the 16550 driver's idiom: a controller that
 //! stops answering costs a timeout and a decline, never a hang.
