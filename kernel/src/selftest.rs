@@ -183,19 +183,31 @@ fn physical_reads_are_bounded() -> bool {
                 .find(|region| wanted(region) && region.len >= WORD as u64)
                 .map(|region| region.base)
         };
+        // Just past everything described: inside the address space, so the
+        // arithmetic guards let it through, and covered by no region, so the
+        // memory map is the only thing that can refuse it. An address at the
+        // top of the space would be refused by overflow instead, and prove
+        // nothing about the map.
+        let undescribed = map
+            .regions()
+            .map(|region| region.base.saturating_add(region.len))
+            .max()
+            .map(|top| top.next_multiple_of(4096));
         (
             pick(|region| region.kind.is_allocatable()),
             pick(|region| !region.kind.is_direct_mapped()),
             pick(|region| region.kind.is_direct_mapped() && !region.kind.is_allocatable()),
+            undescribed,
         )
     });
 
-    let Some((Some(usable), Some(unreachable), Some(readable))) = addresses else {
+    let Some((Some(usable), Some(unreachable), Some(readable), Some(undescribed))) = addresses
+    else {
         return false;
     };
 
     mm::read_physical(usable, WORD).is_none()
-        && mm::read_physical(u64::MAX - WORD as u64, WORD).is_none()
+        && mm::read_physical(undescribed, WORD).is_none()
         && mm::read_physical(unreachable, WORD).is_none()
         && mm::read_physical(readable, WORD).is_some()
 }
