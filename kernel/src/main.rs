@@ -211,7 +211,7 @@ fn route_keyboard(routing: Option<mem::Routing>) {
         return;
     }
     input::take_interrupts();
-    dev::keep_io_apic(routing.io_apic);
+    dev::keep_io_apic(routing.io_apic, gsi);
     info!(
         "keyboard: irq {KEYBOARD_IRQ} on gsi {gsi} routed to vector {:#x}",
         vector::KEYBOARD

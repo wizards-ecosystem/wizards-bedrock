@@ -112,10 +112,26 @@ pub(crate) fn console_has_back_buffer() -> bool {
 /// path's list like every other `static` lock.
 static IO_APIC: SpinLock<Option<IoApic>> = SpinLock::new(None);
 
-/// Keep the controller a line was just routed through.
-pub(crate) fn keep_io_apic(io_apic: IoApic) {
+/// Keep the controller the keyboard was just routed through, and the global
+/// system interrupt it was routed on.
+///
+/// The interrupt number is kept because the boot-time check needs the line
+/// the kernel actually chose: firmware may map any legacy IRQ to any global
+/// system interrupt, and a check that assumed the identity would be reading
+/// somebody else's entry.
+pub(crate) fn keep_io_apic(io_apic: IoApic, gsi: u32) {
     *IO_APIC.lock() = Some(io_apic);
+    KEYBOARD_GSI.store(gsi, core::sync::atomic::Ordering::Release);
 }
+
+/// The global system interrupt the keyboard was routed on.
+#[cfg(feature = "selftest")]
+pub(crate) fn keyboard_gsi() -> u32 {
+    KEYBOARD_GSI.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// Set by [`keep_io_apic`]; meaningless unless there is an I/O APIC.
+static KEYBOARD_GSI: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Ask the I/O APIC something, if there is one.
 #[cfg(feature = "selftest")]

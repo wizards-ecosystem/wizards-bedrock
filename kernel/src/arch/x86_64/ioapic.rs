@@ -7,7 +7,9 @@
 //! (D-49). The registers are an index/data pair, so every access is two writes
 //! deep and the driver lives behind one lock.
 
+use core::fmt;
 use wost::arch::current::apic;
+
 use wost::mmio::{MmioError, MmioRegion};
 
 use crate::debug;
@@ -82,6 +84,34 @@ impl Wiring {
     }
 }
 
+/// Why a redirection entry could not be reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RoutingError {
+    /// The interrupt is not one this controller routes.
+    ///
+    /// Separate from an access failure because the arithmetic that finds a
+    /// line subtracts the controller's base: a global system interrupt below
+    /// it would wrap and address some unrelated register.
+    NotOurs(u32),
+    /// The registers refused the access.
+    Registers(MmioError),
+}
+
+impl fmt::Display for RoutingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotOurs(gsi) => write!(f, "gsi {gsi} is not this controller's"),
+            Self::Registers(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl From<MmioError> for RoutingError {
+    fn from(error: MmioError) -> Self {
+        Self::Registers(error)
+    }
+}
+
 /// An I/O APIC.
 #[derive(Debug)]
 pub(crate) struct IoApic {
@@ -119,28 +149,46 @@ impl IoApic {
         gsi >= self.gsi_base && gsi - self.gsi_base < self.entries
     }
 
+    /// The line `gsi` occupies on this controller.
+    ///
+    /// Every entry below goes through this rather than subtracting for itself:
+    /// `handles` is the caller's courtesy, this is the guarantee, and without
+    /// it a global system interrupt below the base wraps into some register
+    /// this driver never meant to name.
+    fn line_for(&self, gsi: u32) -> Result<u32, RoutingError> {
+        self.handles(gsi)
+            .then(|| gsi - self.gsi_base)
+            .ok_or(RoutingError::NotOurs(gsi))
+    }
+
     /// Route `gsi` to `vector` on this processor, and unmask it.
     ///
     /// The high word is written before the low one on purpose: the low word
     /// holds the mask bit, so writing it last means the line becomes live only
     /// once its destination is already correct.
-    pub(crate) fn route(&mut self, gsi: u32, vector: u8, wiring: Wiring) -> Result<(), MmioError> {
-        let line = gsi - self.gsi_base;
+    pub(crate) fn route(
+        &mut self,
+        gsi: u32,
+        vector: u8,
+        wiring: Wiring,
+    ) -> Result<(), RoutingError> {
+        let line = self.line_for(gsi)?;
         let destination = apic::id() << 24;
         write(&mut self.registers, redirection(line) + 1, destination)?;
         write(
             &mut self.registers,
             redirection(line),
             u32::from(vector) | wiring.bits(),
-        )
+        )?;
+        Ok(())
     }
 
     /// Whether `gsi` is currently masked.
     ///
     /// Read by the boot-time check, so it exists only where that does.
     #[cfg(feature = "selftest")]
-    pub(crate) fn is_masked(&mut self, gsi: u32) -> Result<bool, MmioError> {
-        let line = gsi - self.gsi_base;
+    pub(crate) fn is_masked(&mut self, gsi: u32) -> Result<bool, RoutingError> {
+        let line = self.line_for(gsi)?;
         Ok(read(&mut self.registers, redirection(line))? & entry::MASKED != 0)
     }
 
@@ -148,8 +196,8 @@ impl IoApic {
     ///
     /// Read by the boot-time check, so it exists only where that does.
     #[cfg(feature = "selftest")]
-    pub(crate) fn vector_of(&mut self, gsi: u32) -> Result<u8, MmioError> {
-        let line = gsi - self.gsi_base;
+    pub(crate) fn vector_of(&mut self, gsi: u32) -> Result<u8, RoutingError> {
+        let line = self.line_for(gsi)?;
         Ok(read(&mut self.registers, redirection(line))? as u8)
     }
 

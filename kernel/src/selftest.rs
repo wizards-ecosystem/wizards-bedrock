@@ -298,13 +298,36 @@ fn the_framebuffer_is_write_combining() -> bool {
 /// entry the hardware holds is what decides where an interrupt goes, and a
 /// write that was silently dropped looks exactly like one that took.
 fn the_keyboard_line_is_routed() -> bool {
-    /// The legacy line the keyboard has always used, and — on every machine
-    /// seen so far — the global system interrupt it still arrives on.
-    const KEYBOARD_GSI: u32 = 1;
+    // The interrupt the kernel actually routed, not the one a legacy IRQ
+    // number suggests: firmware may map any IRQ to any global system
+    // interrupt, and asking the controller about the wrong line is a check
+    // that reads somebody else's entry and believes it.
+    let gsi = dev::keyboard_gsi();
 
     dev::with_io_apic(|io_apic| {
-        matches!(io_apic.is_masked(KEYBOARD_GSI), Ok(false))
-            && matches!(io_apic.vector_of(KEYBOARD_GSI), Ok(vector::KEYBOARD))
+        matches!(io_apic.is_masked(gsi), Ok(false))
+            && matches!(io_apic.vector_of(gsi), Ok(vector::KEYBOARD))
+    })
+    .unwrap_or(false)
+}
+
+/// The controller refuses an interrupt it does not route.
+///
+/// The bound `line_for` puts on the subtraction that finds a redirection
+/// entry. Below the base it would wrap; above the last entry it would address
+/// past them. Neither is an access this driver can make now, and in a release
+/// build the wrap was silent.
+fn the_io_apic_refuses_a_line_it_does_not_own() -> bool {
+    dev::with_io_apic(|io_apic| {
+        let mut refused = 0;
+        for gsi in [u32::MAX, dev::keyboard_gsi().wrapping_sub(1)] {
+            if !io_apic.handles(gsi) && io_apic.vector_of(gsi).is_err() {
+                refused += 1;
+            }
+        }
+        // The one above the top always exists; the one below the base only on
+        // a controller whose base is not zero, so a single refusal is enough.
+        refused > 0
     })
     .unwrap_or(false)
 }
@@ -1161,6 +1184,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the io apic routes the keyboard line to our vector",
         the_keyboard_line_is_routed(),
+    );
+    report.check(
+        "the io apic refuses a line it does not own",
+        the_io_apic_refuses_a_line_it_does_not_own(),
     );
     report.check(
         "keystrokes arrive as interrupts",
