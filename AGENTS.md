@@ -32,7 +32,11 @@ thing that works: `cargo xtask ci` passes at every commit.
 
 Match the existing log's voice — a short declarative line saying what changed
 and what it bought, not a changelog entry. `git log --oneline` shows the
-register. Branch first if you are on `main` and the change is substantial.
+register.
+
+**Work on `main`, and push as you commit.** There are no feature branches:
+the gate at every commit is what keeps `main` green, so a branch would only
+defer the merge that is coming anyway. Do not create one unless Isaac asks.
 
 ## Commands
 
