@@ -29,6 +29,7 @@ CHECK TASKS:
     fmt               format the workspace
     test              run the host test suite
     test-boot         boot a self-test kernel in QEMU and require its verdict
+    boot-check        boot the shipped kernel and require it to settle
     verify-vendor     check vendored binaries against boot/limine/CHECKSUMS
     ci                every check above, in the order that fails fastest
 
@@ -79,6 +80,8 @@ pub enum Task {
     Test,
     /// Boot a self-test kernel under QEMU and require its verdict.
     TestBoot(Profile),
+    /// Boot the shipped kernel and require it to settle without panicking.
+    BootCheck(Profile),
     /// Check vendored binaries against their recorded digests.
     VerifyVendor,
     /// Everything CI runs.
@@ -166,6 +169,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         })),
         "test" => Ok(Task::Test),
         "test-boot" => Ok(Task::TestBoot(profile)),
+        "boot-check" => Ok(Task::BootCheck(profile)),
         "verify-vendor" => Ok(Task::VerifyVendor),
         "ci" => Ok(Task::Ci),
         "clean" => Ok(Task::Clean(if all {

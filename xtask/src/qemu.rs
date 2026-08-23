@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -143,6 +143,14 @@ const SELFTEST_FAILED: i32 = 35;
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
 const READY_MARKER: &str = "selftest: awaiting injected keystroke";
+
+/// Line the shipped kernel prints once it has finished booting and is doing
+/// the one thing it does. Kept in step with `kernel/src/main.rs`.
+const SETTLED_MARKER: &str = "kernel: reading the keyboard";
+
+/// What a kernel that has given up says. Watched for rather than inferred
+/// from an exit code: a panicking kernel halts, it does not exit.
+const PANIC_MARKER: &str = "KERNEL PANIC";
 
 /// The keys the harness injects, in order, once the marker appears.
 ///
@@ -320,6 +328,126 @@ fn accept(listener: &TcpListener) -> Result<Qmp> {
 /// is not padded noticeably, long enough not to spin.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Boot the image the kernel ships and require it to reach its steady state.
+///
+/// The self-test build cannot do this. It ends at the debug-exit device, so
+/// everything the shipped kernel does *after* the checks — which since the
+/// blocking keyboard read is everything it does at all — has never been run
+/// by the gate. The image built here is the one that goes on the disk.
+///
+/// The verdict is what the serial log says: the settled marker and no panic.
+/// There is no debug-exit device in a shipped kernel to report anything else,
+/// and adding one would mean the gate booted a different image again.
+pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
+    let qemu_dir = locate()?;
+    let code = firmware(&qemu_dir, CODE_FIRMWARE)?;
+    let vars_template = firmware(&qemu_dir, VARS_FIRMWARE)?;
+    let vars = paths.efi_vars();
+    std::fs::copy(&vars_template, &vars)
+        .with_context(|| format!("copying {} to {}", vars_template.display(), vars.display()))?;
+
+    let emulator = qemu_dir.join(exe_name("qemu-system-x86_64"));
+    println!("[xtask] booting the shipped kernel");
+
+    let mut child = Command::new(&emulator)
+        .args(MACHINE)
+        .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
+        .args(drive(&format!(
+            "if=pflash,format=raw,readonly=on,file={}",
+            code.display()
+        )))
+        .args(drive(&format!(
+            "if=pflash,format=raw,file={}",
+            vars.display()
+        )))
+        .args(drive(&format!("format=raw,file={}", image.display())))
+        .stdout(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("could not launch {}", emulator.display()))?;
+
+    let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
+    let settled = Arc::new(AtomicBool::new(false));
+    let panicked = Arc::new(AtomicBool::new(false));
+    let forwarder = watch_serial(stdout, Arc::clone(&settled), Arc::clone(&panicked));
+
+    // Two phases: reach the steady state, then stay in it. A kernel that
+    // settles and dies on its first interrupt would pass the first alone.
+    let outcome = watch(&mut child, &panicked, BOOT_TIMEOUT, Some(&settled))
+        .and_then(|()| watch(&mut child, &panicked, settle, None));
+
+    let _ = child.kill();
+    let _ = forwarder.join();
+
+    outcome?;
+    println!("[xtask] shipped kernel boots and settles");
+    Ok(())
+}
+
+/// How long to allow for a cold start before the marker must have appeared.
+const BOOT_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Watch the serial flags for `window`, failing on a panic or an early exit.
+///
+/// With `until`, the wait ends the moment that flag is set and the window is
+/// a deadline the flag must beat. Without one, the whole window is watched.
+fn watch(
+    child: &mut Child,
+    panicked: &AtomicBool,
+    window: Duration,
+    until: Option<&AtomicBool>,
+) -> Result<()> {
+    let deadline = Instant::now() + window;
+    while Instant::now() < deadline {
+        if panicked.load(Ordering::Acquire) {
+            bail!("the shipped kernel panicked — see the log above");
+        }
+        if let Some(status) = child.try_wait().context("waiting for QEMU")? {
+            bail!("the shipped kernel stopped early ({status})");
+        }
+        if until.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+            return Ok(());
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    match until {
+        Some(_) => bail!("the shipped kernel never reached its steady state ({SETTLED_MARKER:?})"),
+        None => Ok(()),
+    }
+}
+
+/// Forward every serial line, flagging the two the boot check cares about.
+fn watch_serial(
+    stdout: ChildStdout,
+    settled: Arc<AtomicBool>,
+    panicked: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let Ok(read) = reader.read_until(b'\n', &mut line) else {
+                return;
+            };
+            if read == 0 {
+                return;
+            }
+            let text = String::from_utf8_lossy(&line);
+            if text.ends_with('\n') {
+                print!("{text}");
+            } else {
+                println!("{text}");
+            }
+            let _ = std::io::stdout().flush();
+            if text.contains(SETTLED_MARKER) {
+                settled.store(true, Ordering::Release);
+            }
+            if text.contains(PANIC_MARKER) {
+                panicked.store(true, Ordering::Release);
+            }
+        }
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -98,6 +98,22 @@ pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
 /// a hung kernel is reported rather than waited on.
 const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Boot the shipped kernel and require it to reach its steady state.
+///
+/// The self-test kernel exits at the debug-exit device the moment it has a
+/// verdict, so it never runs what the shipped one does afterwards — which,
+/// since the boot thread became a blocking keyboard reader, is everything it
+/// does at all. This boots the image that goes on the disk.
+pub fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
+    let image = image::build(paths, profile, &[])?;
+    qemu::run_boot_check(paths, &image, BOOT_SETTLE)
+}
+
+/// Seconds of running *after* the kernel says it has settled, so one that
+/// dies on its first interrupt is still caught. The cold start has its own,
+/// longer allowance inside the runner.
+const BOOT_SETTLE: Duration = Duration::from_secs(5);
+
 /// Everything the gate runs, in the order that fails fastest.
 pub fn ci(paths: &Paths) -> Result<()> {
     fmt(paths, FmtMode::Check)?;
@@ -106,7 +122,12 @@ pub fn ci(paths: &Paths) -> Result<()> {
     test(paths)?;
     vendor::verify(paths)?;
     test_boot(paths, Profile::Release)?;
-    image::build(paths, Profile::Release, &[])?;
+    // The same checks with overflow checks and debug assertions on. Release
+    // wraps silently, so this is the only configuration in which the kernel's
+    // arithmetic can go red on the machine rather than quietly wrong.
+    test_boot(paths, Profile::Dev)?;
+    // Last, and the only step that runs the image the disk gets.
+    boot_check(paths, Profile::Release)?;
     println!("[xtask] ci passed");
     Ok(())
 }
