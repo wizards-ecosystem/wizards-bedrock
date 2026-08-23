@@ -529,10 +529,8 @@ pub(crate) fn spawn_weighted(
 
 /// Let another runnable thread have the CPU, if any is owed it.
 ///
-/// No shipped caller yet — the self-checks are the only ones. Allowed rather
-/// than cfg-gated so the image carries the code the checks exercise, and
-/// narrowly rather than over the module, which hid six accessors that belong
-/// behind the feature and a field nothing read.
+/// No shipped caller yet. Allowed rather than cfg-gated so the image carries
+/// the code the checks exercise, and narrowly rather than over the module.
 #[allow(dead_code)]
 ///
 /// Returns when this thread is picked again — at once, if nothing else is
@@ -630,9 +628,8 @@ fn park(_context: &ThreadContext, leaving: State, until: Option<u64>) {
 
         match threads.choose(current, false) {
             Some(next) => {
-                // Counted here and not at the call: a thread that finds nobody
-                // to hand the CPU to never leaves the run queue, and a
-                // counter that moved anyway would say it had.
+                // Counted here, not at the call: a thread with nobody to hand
+                // the CPU to never leaves the run queue.
                 if leaving == State::Blocked {
                     BLOCKS.fetch_add(1, Ordering::Relaxed);
                 }
@@ -710,11 +707,10 @@ pub(crate) fn current_slot() -> usize {
     task::current()
 }
 
-/// The name of the thread this CPU is running, for a report that wants it.
+/// The name of the thread this CPU is running.
 ///
-/// `try_lock` rather than `lock`, because the one caller is the panic handler
-/// and a panic can be raised by the code holding this. An unnameable thread
-/// is worth saying so about; a report that hangs is not.
+/// `try_lock`: the one caller is the panic handler, and a panic can be raised
+/// by the code holding this.
 pub(crate) fn current_name() -> &'static str {
     let slot = task::current();
     match THREADS.try_lock() {

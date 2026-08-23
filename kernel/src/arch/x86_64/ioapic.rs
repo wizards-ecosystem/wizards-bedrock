@@ -89,9 +89,8 @@ impl Wiring {
 pub(crate) enum RoutingError {
     /// The interrupt is not one this controller routes.
     ///
-    /// Separate from an access failure because the arithmetic that finds a
-    /// line subtracts the controller's base: a global system interrupt below
-    /// it would wrap and address some unrelated register.
+    /// Separate from an access failure: the arithmetic that finds a line
+    /// subtracts the base, and below it that wraps.
     NotOurs(u32),
     /// The registers refused the access.
     Registers(MmioError),
@@ -151,10 +150,7 @@ impl IoApic {
 
     /// The line `gsi` occupies on this controller.
     ///
-    /// Every entry below goes through this rather than subtracting for itself:
-    /// `handles` is the caller's courtesy, this is the guarantee, and without
-    /// it a global system interrupt below the base wraps into some register
-    /// this driver never meant to name.
+    /// Every entry below goes through this rather than subtracting for itself.
     fn line_for(&self, gsi: u32) -> Result<u32, RoutingError> {
         self.handles(gsi)
             .then(|| gsi - self.gsi_base)

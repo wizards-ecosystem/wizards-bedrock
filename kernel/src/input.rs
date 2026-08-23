@@ -242,18 +242,6 @@ pub(crate) fn has_reader() -> bool {
 /// asks for the interval it needs and pays for it alone. Does nothing where
 /// the interrupt does the work.
 pub(crate) fn start_poller() {
-    /// What the retired tick used to give this path, restated as the interval
-    /// it always was.
-    const POLL_INTERVAL_MS: u64 = 10;
-
-    fn poll_forever() {
-        let context = ThreadContext::require();
-        loop {
-            poll();
-            crate::thread::sleep_ms(&context, POLL_INTERVAL_MS);
-        }
-    }
-
     if is_interrupt_driven() {
         return;
     }
@@ -261,6 +249,55 @@ pub(crate) fn start_poller() {
         Ok(_) => info!("keyboard: polled every {POLL_INTERVAL_MS} ms"),
         Err(reason) => warn!("keyboard: no poller: {reason}; input is lost"),
     }
+}
+
+/// What the retired tick used to give this path, restated as the interval it
+/// always was.
+const POLL_INTERVAL_MS: u64 = 10;
+
+/// Rounds the poller has left, or [`FOREVER`] for the shipped one. Bounded
+/// only so the boot-time check can watch this path work and then leave.
+static POLLER_ROUNDS: AtomicUsize = AtomicUsize::new(FOREVER);
+
+/// A round count that never runs out.
+const FOREVER: usize = usize::MAX;
+
+/// Drain, wait, drain again — the whole of the fallback.
+fn poll_forever() {
+    let context = ThreadContext::require();
+    // `then`, not `then_some`: the latter evaluates the subtraction even at
+    // zero, which wraps in release and panics in debug.
+    while POLLER_ROUNDS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |rounds| {
+        (rounds > 0).then(|| {
+            if rounds == FOREVER {
+                FOREVER
+            } else {
+                rounds - 1
+            }
+        })
+    }) != Err(0)
+    {
+        poll();
+        POLLER_PASSES.fetch_add(1, Ordering::Relaxed);
+        crate::thread::sleep_ms(&context, POLL_INTERVAL_MS);
+    }
+}
+
+/// Times the poller has been round its loop.
+static POLLER_PASSES: AtomicUsize = AtomicUsize::new(0);
+
+/// Times the poller has been round its loop.
+#[cfg(feature = "selftest")]
+pub(crate) fn poller_passes() -> usize {
+    POLLER_PASSES.load(Ordering::Relaxed)
+}
+
+/// Start a bounded poller whatever the routing says, for the boot-time check
+/// on a machine whose line is routed.
+#[cfg(feature = "selftest")]
+pub(crate) fn start_bounded_poller(rounds: usize) -> bool {
+    POLLER_ROUNDS.store(rounds, Ordering::Release);
+    crate::thread::spawn("keyboard-poll-check", poll_forever).is_ok()
 }
 
 /// Reclaim the keyboard lock on the terminal panic path.

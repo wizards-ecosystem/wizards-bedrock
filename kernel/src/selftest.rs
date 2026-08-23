@@ -162,32 +162,20 @@ fn the_direct_map_is_not_executable() -> bool {
 
 /// Physical reads are refused for anything the direct map may not reach.
 ///
-/// The three ways the range can be wrong, each tried against the live memory
-/// map. Usable RAM would alias a `Frame`; an address past everything the
-/// bootloader described is not memory at all; and after the switch the
-/// kernel's own direct map covers less than the bootloader's did, so a
-/// `Reserved` region — a device hole — is no longer reachable even though no
-/// `Frame` can name it either.
-///
-/// The accepting half matters as much: a check that only ever saw refusals
-/// would pass with the function returning `None` unconditionally.
+/// Three refusals and one acceptance: a check that only saw refusals would
+/// pass against a function that returned `None` for everything.
 fn physical_reads_are_bounded() -> bool {
-    /// Bytes to ask for: enough that a region shorter than it is no sample.
     const WORD: usize = 8;
 
-    // Chosen under the map's lock and read outside it: `read_physical` takes
-    // the same lock.
+    // Chosen under the map's lock, used outside it: `read_physical` takes it.
     let addresses = mm::with_memory_map(|map| {
         let pick = |wanted: fn(&wost::boot::MemoryRegion) -> bool| {
             map.regions()
                 .find(|region| wanted(region) && region.len >= WORD as u64)
                 .map(|region| region.base)
         };
-        // Just past everything described: inside the address space, so the
-        // arithmetic guards let it through, and covered by no region, so the
-        // memory map is the only thing that can refuse it. An address at the
-        // top of the space would be refused by overflow instead, and prove
-        // nothing about the map.
+        // Inside the address space, so only the map can refuse it — an address
+        // at the top would be caught by an overflow guard instead.
         let undescribed = map
             .regions()
             .map(|region| region.base.saturating_add(region.len))
@@ -298,10 +286,8 @@ fn the_framebuffer_is_write_combining() -> bool {
 /// entry the hardware holds is what decides where an interrupt goes, and a
 /// write that was silently dropped looks exactly like one that took.
 fn the_keyboard_line_is_routed() -> bool {
-    // The interrupt the kernel actually routed, not the one a legacy IRQ
-    // number suggests: firmware may map any IRQ to any global system
-    // interrupt, and asking the controller about the wrong line is a check
-    // that reads somebody else's entry and believes it.
+    // The line the kernel routed, not the one a legacy IRQ number suggests:
+    // firmware may map any IRQ to any global system interrupt.
     let gsi = dev::keyboard_gsi();
 
     dev::with_io_apic(|io_apic| {
@@ -313,10 +299,8 @@ fn the_keyboard_line_is_routed() -> bool {
 
 /// The controller refuses an interrupt it does not route.
 ///
-/// The bound `line_for` puts on the subtraction that finds a redirection
-/// entry. Below the base it would wrap; above the last entry it would address
-/// past them. Neither is an access this driver can make now, and in a release
-/// build the wrap was silent.
+/// Below its base the line arithmetic wraps, and in release it wrapped
+/// silently into an unrelated register.
 fn the_io_apic_refuses_a_line_it_does_not_own() -> bool {
     dev::with_io_apic(|io_apic| {
         let mut refused = 0;
@@ -325,8 +309,7 @@ fn the_io_apic_refuses_a_line_it_does_not_own() -> bool {
                 refused += 1;
             }
         }
-        // The one above the top always exists; the one below the base only on
-        // a controller whose base is not zero, so a single refusal is enough.
+        // Only the first always exists: a base of zero has nothing below it.
         refused > 0
     })
     .unwrap_or(false)
@@ -801,6 +784,28 @@ fn the_blocked_reader_woke_with_the_key() -> bool {
         && input::dropped_events() == 0
 }
 
+/// The polled keyboard fallback drains, sleeps and stops.
+///
+/// D-37's path had never run: both test machines have an I/O APIC. Started
+/// here for a bounded number of rounds, on the code the shipped fallback runs.
+/// It must make progress *and* leave, so the exit is half the claim.
+fn the_polled_fallback_drains_and_sleeps() -> bool {
+    const ROUNDS: usize = 4;
+
+    let free = thread::free_slots();
+    let before = input::poller_passes();
+    if !input::start_bounded_poller(ROUNDS) {
+        return false;
+    }
+    // Its own sleeps are what let this thread run, so waiting is a sleep too.
+    thread::sleep_ms(&context(), (ROUNDS as u64 + 2) * 10);
+
+    let passes = input::poller_passes() - before;
+    let exited = yields_until(|| thread::free_slots() == free);
+
+    passes == ROUNDS && exited
+}
+
 /// The idle thread runs when nothing else can, and never when something can.
 ///
 /// Both halves, because either alone is satisfied by a bug: an idle thread
@@ -1143,6 +1148,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the idle thread runs only when nothing else can",
         the_idle_thread_runs_only_when_nothing_else_can(),
+    );
+    report.check(
+        "the polled keyboard fallback drains, sleeps and stops",
+        the_polled_fallback_drains_and_sleeps(),
     );
 
     report.check("the keyboard controller came up", input::is_ready());

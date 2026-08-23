@@ -39,8 +39,8 @@ pub enum MapError {
     NonCanonical(u64),
     /// The range's start or length is not page-aligned.
     Misaligned(u64),
-    /// A device's registers do not begin on a four-byte boundary, so the
-    /// thirty-two-bit accesses an [`MmioRegion`] makes would be misaligned.
+    /// A device's registers are not four-byte aligned, so an [`MmioRegion`]
+    /// over them would make misaligned accesses.
     UnalignedDevice(Paddr),
     /// A physical address did not fit the entry encoding.
     Encoding(EntryError),
@@ -212,11 +212,9 @@ impl AddressSpace {
         len: u64,
         memory_type: Flags,
     ) -> Result<DeviceMapping, MapError> {
-        // The window keeps the device's own offset from a page boundary, so
-        // the region's base inherits its low bits — and `MmioRegion` makes
-        // thirty-two-bit accesses, which a base of the wrong parity would make
-        // misaligned. Refused here, where it can be reported, rather than at
-        // the `claim` that would otherwise have to trust it.
+        // The window keeps the device's offset from a page boundary, so the
+        // region's base inherits its low bits — and an `MmioRegion` makes
+        // thirty-two-bit accesses. Refused here, where it can be reported.
         if !physical.is_multiple_of(size_of::<u32>() as u64) {
             return Err(MapError::UnalignedDevice(physical));
         }
@@ -429,8 +427,7 @@ pub fn activate(space: AddressSpace) -> Result<(), ActivateError> {
     // and never dropped, so the tables outlive the load.
     unsafe { cpu::set_page_table_base(space.root) };
     ACTIVE_ROOT.store(space.root, Ordering::Release);
-    // The map in force now covers strictly less than the bootloader's did, and
-    // `read_physical` is the one safe function whose soundness turns on which.
+    // The map in force covers strictly less than the bootloader's did.
     mm::narrow_direct_map();
 
     // `space` is dropped here, and that is correct: an `AddressSpace` owns no

@@ -140,19 +140,12 @@ pub fn managed_frames() -> usize {
 
 /// Read-only access to `len` bytes of physical memory at `address`.
 ///
-/// For firmware tables. Three things must hold, and all three are checked
-/// against the memory map rather than assumed: every byte lies inside a region
-/// the bootloader described, no part of it is allocatable — a slice over
-/// memory the allocator might hand out would alias a [`Frame`] — and, once
-/// the kernel has installed its own tables, every region it touches is one
-/// that map reaches.
-///
-/// That last condition is the one worth stating. Before the kernel installs
-/// its tables, the bootloader's direct map covers everything it described, so
-/// "described" is enough. Afterwards the map covers only what
+/// For firmware tables. The range must be described by the memory map, must
+/// not be allocatable — that would alias a [`Frame`] — and, once the kernel
+/// installs its own tables, must lie in regions
 /// [`MemoryKind::is_direct_mapped`](crate::boot::MemoryKind::is_direct_mapped)
-/// names, and a reference to anything else would be a reference to an absent
-/// mapping.
+/// names. The bootloader's map covers everything it described; the kernel's
+/// covers less.
 pub fn read_physical(address: Paddr, len: usize) -> Option<&'static [u8]> {
     if len == 0 {
         return None;
@@ -189,11 +182,8 @@ pub fn read_physical(address: Paddr, len: usize) -> Option<&'static [u8]> {
 /// Set once the kernel's own tables are the ones in force.
 static NARROWED: Once = Once::new();
 
-/// Record that the direct map is no longer the bootloader's.
-///
-/// Called by [`paging::activate`](crate::arch::current::paging::activate): the
-/// kernel's own direct map covers strictly less, and [`read_physical`] is the
-/// one safe function whose soundness turns on which of the two is in force.
+/// Record that the direct map is no longer the bootloader's, which covers
+/// strictly more. [`read_physical`] is the one caller that has to know.
 pub(crate) fn narrow_direct_map() {
     NARROWED.claim();
 }
@@ -203,9 +193,8 @@ static MAP: SpinLock<Option<MemoryMap>> = SpinLock::new(None);
 
 /// Run `f` against the memory map [`init`] recorded, if there is one.
 ///
-/// A borrow rather than a copy: the map is kilobytes and a caller wants one
-/// field of it. The lock is held for the call, so `f` must not touch anything
-/// that takes it — [`read_physical`] does.
+/// The lock is held for the call, so `f` must not take it — [`read_physical`]
+/// does.
 pub fn with_memory_map<T>(f: impl FnOnce(&MemoryMap) -> T) -> Option<T> {
     MAP.lock().as_ref().map(f)
 }
@@ -428,11 +417,9 @@ fn direct_map_pointer(physical: Paddr) -> Option<*mut u8> {
 
 /// Where the direct map makes `len` bytes at `physical` accessible.
 ///
-/// Arithmetic only: `None` before [`init`] has run, or if the span does not
-/// fit the address space. Whether the map actually *reaches* those bytes is
-/// the caller to establish — [`read_physical`] does it against the memory
-/// map, and a [`Frame`] carries it by construction, the allocator handing out
-/// only allocatable memory and every allocatable region being direct-mapped.
+/// Arithmetic only. Whether the map actually *reaches* those bytes is the
+/// caller's to establish: [`read_physical`] checks the memory map, and a
+/// [`Frame`] carries it by construction.
 pub(crate) fn direct_pointer(physical: Paddr, len: u64) -> Option<*mut u8> {
     let offset = DIRECT_MAP_OFFSET.load(Ordering::Acquire);
     if offset == 0 {

@@ -91,7 +91,19 @@ pub fn test(paths: &Paths) -> Result<()> {
 /// rather than as arithmetic on the host.
 pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
     let image = image::build(paths, profile, &[paths::SELFTEST_FEATURE])?;
-    qemu::run_selftest(paths, &image, SELFTEST_TIMEOUT)
+    qemu::run_selftest(paths, &image, selftest_timeout(profile))
+}
+
+/// How long a self-test boot may take, by profile.
+///
+/// A debug kernel runs several times slower under emulation — a console
+/// scroll alone costs the better part of a second — so holding it to the
+/// release budget would report load as a hang.
+const fn selftest_timeout(profile: Profile) -> Duration {
+    match profile {
+        Profile::Release => SELFTEST_TIMEOUT,
+        Profile::Dev => Duration::from_secs(150),
+    }
 }
 
 /// Generous enough for a cold QEMU start on a loaded machine; short enough that
@@ -101,17 +113,14 @@ const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Boot the shipped kernel and require it to reach its steady state.
 ///
 /// The self-test kernel exits at the debug-exit device the moment it has a
-/// verdict, so it never runs what the shipped one does afterwards — which,
-/// since the boot thread became a blocking keyboard reader, is everything it
-/// does at all. This boots the image that goes on the disk.
+/// verdict; this boots the image that goes on the disk.
 pub fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
     let image = image::build(paths, profile, &[])?;
     qemu::run_boot_check(paths, &image, BOOT_SETTLE)
 }
 
-/// Seconds of running *after* the kernel says it has settled, so one that
-/// dies on its first interrupt is still caught. The cold start has its own,
-/// longer allowance inside the runner.
+/// Seconds of running after the kernel says it has settled, so one that dies
+/// on its first interrupt is still caught.
 const BOOT_SETTLE: Duration = Duration::from_secs(5);
 
 /// Everything the gate runs, in the order that fails fastest.
@@ -122,11 +131,9 @@ pub fn ci(paths: &Paths) -> Result<()> {
     test(paths)?;
     vendor::verify(paths)?;
     test_boot(paths, Profile::Release)?;
-    // The same checks with overflow checks and debug assertions on. Release
-    // wraps silently, so this is the only configuration in which the kernel's
-    // arithmetic can go red on the machine rather than quietly wrong.
+    // Again with overflow checks on: release wraps in silence.
     test_boot(paths, Profile::Dev)?;
-    // Last, and the only step that runs the image the disk gets.
+    // The only step that runs the image the disk gets.
     boot_check(paths, Profile::Release)?;
     println!("[xtask] ci passed");
     Ok(())

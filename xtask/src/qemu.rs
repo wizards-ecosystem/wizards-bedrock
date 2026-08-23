@@ -330,14 +330,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Boot the image the kernel ships and require it to reach its steady state.
 ///
-/// The self-test build cannot do this. It ends at the debug-exit device, so
-/// everything the shipped kernel does *after* the checks — which since the
-/// blocking keyboard read is everything it does at all — has never been run
-/// by the gate. The image built here is the one that goes on the disk.
-///
-/// The verdict is what the serial log says: the settled marker and no panic.
-/// There is no debug-exit device in a shipped kernel to report anything else,
-/// and adding one would mean the gate booted a different image again.
+/// The self-test build exits at the debug-exit device, so nothing it does
+/// covers what the shipped kernel does afterwards. The verdict here is what
+/// the serial log says: the settled marker, and no panic.
 pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
     let qemu_dir = locate()?;
     let code = firmware(&qemu_dir, CODE_FIRMWARE)?;
@@ -370,8 +365,7 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
     let panicked = Arc::new(AtomicBool::new(false));
     let forwarder = watch_serial(stdout, Arc::clone(&settled), Arc::clone(&panicked));
 
-    // Two phases: reach the steady state, then stay in it. A kernel that
-    // settles and dies on its first interrupt would pass the first alone.
+    // Two phases: reach the steady state, then stay in it.
     let outcome = watch(&mut child, &panicked, BOOT_TIMEOUT, Some(&settled))
         .and_then(|()| watch(&mut child, &panicked, settle, None));
 
@@ -388,8 +382,8 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Watch the serial flags for `window`, failing on a panic or an early exit.
 ///
-/// With `until`, the wait ends the moment that flag is set and the window is
-/// a deadline the flag must beat. Without one, the whole window is watched.
+/// With `until`, the window is a deadline that flag must beat; without one,
+/// the whole window is watched.
 fn watch(
     child: &mut Child,
     panicked: &AtomicBool,
