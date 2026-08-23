@@ -34,15 +34,15 @@ session finds them collected.
 |---|---|---|
 | 100 Hz periodic tick, "explicitly disposable when D-15 lands" | D-15, D-36; `006-cpu-fundamentals.md` ("D-34's latency cost wearing a clock face") | ✅ Retired by D-57: one-shot programming, and no timer armed when nothing needs waking |
 | A critical section longer than a tick swallows one; uptime undercounts 10 ms | D-36 consequences | ✅ Discharged by D-57: a late deadline is delivered, not lost, and uptime is the timestamp counter rather than an interpolated countdown |
-| Interrupt latency bounded by the longest critical section — "a scheduler's problem and waits for one" | D-34; `wost/src/sync.rs` module doc | The phase takes a position in slice 4: fix, or accept with the bound named |
-| Lock guard-discipline parameterisation "earns its keep once there is a scheduler" | D-34 rationale (Asterinas `PreemptDisabled`) | Revisited when preemption lands (slice 2); adopted or declined on the record |
-| No allocation in IRQ handlers, enforced by nobody; "worth an ADR when the heap lands" | `003`; `008` §4.2 | The heap landed in D-47, so the ADR is due: a context token in the `PanicToken` idiom (slice 2) |
+| Interrupt latency bounded by the longest critical section — "a scheduler's problem and waits for one" | D-34; `wost/src/sync.rs` module doc | ✅ Fixed by D-63: measured at seventy milliseconds of console scroll, then taken off the latency path by a lock that keeps interrupts on |
+| Lock guard-discipline parameterisation "earns its keep once there is a scheduler" | D-34 rationale (Asterinas `PreemptDisabled`) | ✅ Declined for preemption in D-54, then adopted for latency in D-63: two lock kinds, not a type parameter |
+| No allocation in IRQ handlers, enforced by nobody; "worth an ADR when the heap lands" | `003`; `008` §4.2 | ✅ D-55 made it a count the heap asserts on; D-62 made it a token the compiler keeps |
 | `HEAP → FRAMES` is the one lock order; "the inversion is the one deadlock this pair can produce" | D-47 | The scheduler adds a lock; this file's lock-order section becomes the total order's authority |
 | XSAVE "needs a scheduler; the kernel is built `+soft-float`" | D-29 | Still deferred: kernel threads are soft-float too, so there is no FPU state to switch until ring 3 (Phase 5) |
 | Per-CPU stacks add layout assumptions — interest on the KASLR debt | D-46 | The stack arena is one more hardcoded window; the ADR that places it adds the entry to D-46's ledger |
 | The address space cannot grow after boot; how it grows is "a decision Phase 5's address-space work should take deliberately" | D-45, D-49 | Phase 4 lives *within* the constraint — stacks are provisioned at table-build time — and does not pre-empt Phase 5's decision |
 | SMP TLB shootdown, owed if anything ever unmaps | D-45 | Stays dormant: the arena maps at boot and unmaps nothing |
-| Keyboard input drains to the log; nothing can block on a key | D-49 retired polling, not blocking | Slice 4: a wait queue, a blocking read, the interrupt wakes the reader |
+| Keyboard input drains to the log; nothing can block on a key | D-49 retired polling, not blocking | ✅ D-61: a wait queue, a blocking read, and the interrupt wakes the reader |
 
 Not this phase's debt, recorded so nobody mistakes it: the handle-table and
 rights-taxonomy doc and the queue-layout doc are owed **before Phase 5**
@@ -60,7 +60,7 @@ wake-from-interrupt, which needs the preemption-era lock discipline settled.
 | 1 | Kernel threads, cooperative: stack arena with guard gaps, TCB table, `spawn`/`yield_now`/`exit`, naked-function context switch in `wost`, round-robin ready list (deliberately policy-free) | ✅ 2026-08-22 |
 | 2 | The scheduler: `libs/eevdf` arithmetic host-tested, EEVDF policy behind a separable seam with round-robin fallback, timer preemption at trap exit, the lock order and the context token | ✅ 2026-08-22 |
 | 3 | Tickless: one-shot APIC programming, sleep queue and `sleep_ms`, the 100 Hz tick retired, uptime re-based | ✅ 2026-08-23 |
-| 4 | Blocking: `WaitQueue`, the keyboard read blocks a thread and the interrupt wakes it, idle becomes the idle thread, D-34's latency position taken | |
+| 4 | Blocking: `WaitQueue`, the keyboard read blocks a thread and the interrupt wakes it, idle becomes the idle thread, D-34's latency position taken | ✅ 2026-08-23 |
 | 5 | Phase close: VMware boot (D-18), roadmap and docs updated, this file's closing section | |
 
 ## Decisions the phase must make (with their tensions)
@@ -88,7 +88,8 @@ Held open deliberately; each becomes an ADR when taken.
 - **The allocation-safety context token.** `008` §4.2 says the ADR is due
   when the heap lands; it has. Adopt now — while the wake-from-interrupt
   path that makes violations writable is being built — or defer with
-  reasons.
+  reasons. *Deferred in D-55 to a count, then taken in D-62 when the third
+  blocking API made a token cheaper than the asserts.*
 - **Per-CPU state.** One CPU today; SMP is a later phase. What shape does
   "current thread" take so that going SMP is a widening rather than a
   rewrite, and when does GS finally get loaded (D-29 left `swapgs` for
@@ -110,8 +111,20 @@ as a **leaf**: while holding it, take nothing — not `HEAP`, not `FRAMES`, not
 a console lock, not even `wost`'s own task-table lock, which `switch_to` and
 `fabricate` take on their own and which is itself a leaf. Spawn does its
 allocating before it touches `THREADS`; every switch happens after its guard
-has dropped; a wake (slice 4) takes `THREADS` alone, which is what makes it
-legal from trap context, where D-31's no-logging rule still binds.
+has dropped; a wake takes `THREADS` alone, which is what makes it legal from
+trap context, where D-31's no-logging rule still binds.
+
+A wait queue's lock is a **second leaf**, not an edge: registering as a
+waiter and ceasing to be runnable are separate holds, and what makes them one
+step is the interrupt flag, clear across both. On one CPU that is exclusion;
+SMP owes the pair a second look.
+
+Slice 4 adds an ordering between lock *kinds* as well as locks (D-63). A
+`ThreadLock` may never be taken while a `SpinLock` is held — the holder has
+interrupts off, so a `ThreadLock` whose owner has been preempted can never be
+released. This one is not on trust: `SpinLock` counts its holders and
+`ThreadLock` asserts the count is zero. It is also why the two consoles are
+`ThreadLock`s and everything a handler touches is a `SpinLock`.
 
 ## How it will be checked
 
@@ -151,8 +164,10 @@ reader wake — not a poll, which is the shape D-49 caught lying.
   knows how many threads the boot-time decision bought.
 - `kernel/src/arch/x86_64/trap.rs` — the TIMER arm grows the preemption
   hook; EOI stays first.
-- `kernel/src/main.rs` — the idle loop is the scheduler's to claim
-  (slice 4), not before.
+- `kernel/src/main.rs` — the idle loop became the idle thread in slice 4,
+  and the boot thread became the keyboard reader.
+- `kernel/src/wait.rs` — new: the wait queue, and the only thing besides a
+  deadline that can make a thread runnable again.
 - `kernel/src/time.rs` — slice 3 re-based uptime on the timestamp counter
   and turned the timer into an alarm; `input::await_key`'s tick-counted
   timeout and every `time::ticks()` consumer were the pre-named casualties,
@@ -328,3 +343,66 @@ sixteen more on the host.
 **Still owed by this slice's neighbours.** Nothing can be woken by an *event*
 — only by a deadline — so `WaitQueue` and the blocking keyboard read are
 slice 4's, along with the idle thread and D-34's latency position.
+
+## Slice 4 — blocking (2026-08-23)
+
+**A thread can wait for an event now, and the kernel's own last act is to do
+it** (D-61). `WaitQueue` is a bitmask of thread slots in the queue itself —
+no allocation, because the waker is an interrupt handler and D-55 forbids it
+the heap. The keyboard queues decoded events in a fixed ring and wakes the
+readers; the boot thread, having finished booting, blocks on `read_key` and
+draws what arrives. A kernel sitting at a prompt takes exactly one interrupt
+per keystroke and arms nothing between them, which is the sentence the whole
+phase was for.
+
+**A wake needs a reschedule, and trap exit is the only place one is legal.**
+A thread made runnable by a keystroke has no appointment to be woken at, so
+the keyboard handler asks the scheduler after its end-of-interrupt, exactly
+as the timer does. That is the same D-54 rule with a second caller.
+
+**The idle thread is outside the policy, not at the bottom of it** (D-60). A
+weight small enough to ignore is still a weight, and eligibility would hand
+an idle-weighted thread the CPU now and then — a wakeup spent on nothing. So
+it has a class the policy never sees, and the tickless claim stays exact. The
+self-checks start it half way through their own run, which is how both sides
+of it are checked: the sleep checks above it have no idle thread and exercise
+the halt-in-place branch, the checks below it do.
+
+**D-55's token arrived with the API that needed it** (D-62). Three calls can
+block now, which is enough that a `ThreadContext` argument is cheaper than
+three run-time asserts.
+
+**D-34's latency debt was measured, and then fixed rather than named**
+(D-63). The longest critical section in this kernel is a console scroll:
+seventy milliseconds of framebuffer under one lock, with interrupts off for
+all of it. Naming that would have been accepting it. So the console keeps its
+lock but not the interrupt flag, and refuses trap context instead — enforcing
+D-31's prose rule with D-55's trap depth. The keyboard handler's log line and
+its echo, the last two things that drew from a handler, moved to the reading
+thread.
+
+**Breaking that check found a second rule.** Putting the console back on a
+`SpinLock` made the machine hang rather than go red: the log path then took
+an interrupts-on lock from inside an interrupts-off one, and the preempted
+holder could never be scheduled. Two locks each individually correct,
+deadlocking together. `SpinLock` counts its holders now and `ThreadLock`
+refuses to be taken while any is held.
+
+**Two checks were wrong in the same way, and the breaks are what said so.**
+The scroll check sampled the expiry counter *outside* the lock, where a
+pending interrupt lands the instant the guard drops — so it passed under its
+own break. And the blocked-reader check claimed the reader had not polled
+while having no way to tell; a deliberately polling `read_key` passed it.
+Both now measure from inside the thing they are about. D-49's lesson, twice
+over: an outcome cannot distinguish a working wake from a working poll.
+
+**One more flake, and it was the same root as the last.** The keystroke watch
+kept the last press and the last release, which works only if a reader looks
+between one keystroke and the next. Once the handler stopped logging it got
+fast enough to decode the harness's whole three-key burst in a single drain,
+and the check waiting for the *first* key waited out its ten seconds. Two
+accumulating bitmasks instead. Sixty-nine checks on the machine.
+
+**Still owed.** A wait with a timeout, and a wait on two queues; neither has
+a caller yet. Slice 5 is the phase close: a VMware boot (D-18), and the
+roadmap.

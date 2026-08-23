@@ -2417,6 +2417,172 @@ unconditionally enabling them would panic.
 
 ---
 
+## D-60 The idle thread is outside the policy, not at the bottom of it — Status: Accepted (2026-08-23)
+
+**Context.** Slice 3's sleep had a branch for "nobody else is runnable": the
+sleeping thread kept the CPU and halted on its own stack. Correct, but it
+exists only because there is sometimes nothing to run, and everything after
+this phase is easier if something always is.
+
+**Options.** A thread of the lowest weight the policy will take; a second
+scheduling class; or no idle thread at all, keeping the halt-in-place branch
+everywhere it is needed.
+
+**Decision.** A thread of its own with `Class::Idle`, which the policy never
+sees. It is not in the fair-share average, it is not counted when deciding
+whether the timer needs arming, and it is picked only when no normal thread
+is runnable. `start_idle` is idempotent and runs after interrupts are on,
+because a thread that halts needs them to be woken from.
+
+**Rationale.** A weight small enough to ignore is still a weight: EEVDF would
+hand an idle-weighted thread the CPU every so often on eligibility grounds,
+and every one of those is a wakeup spent on nothing. The vision doc counts
+wakeups. Keeping the class out of the policy is four lines and makes the
+tickless claim exact rather than approximate — an idle machine still arms
+nothing.
+
+**Consequences.**
+
+- The halt-in-place branch stays, because the idle thread does not exist
+  during early boot or on a machine where the spawn failed. The self-checks
+  start the idle thread half way through their own run, so both sides of it
+  are exercised: the sleep checks above it have no idle thread, the checks
+  below it do.
+- Two checks, both broken once. The idle thread runs when the boot thread
+  sleeps, and does not run at all while a spinner is runnable. Either alone is
+  satisfied by a bug — an idle thread that never runs, or one the policy
+  schedules like any other — and the second break, making it a normal thread,
+  reddened four checks including the tickless ones.
+- SMP owes it one idle thread per CPU, which is one more entry on D-56's list.
+
+---
+
+## D-61 Waiting on an event: a bitmask queue, and a reschedule at trap exit — Status: Accepted (2026-08-23)
+
+**Context.** D-58 gave the kernel a wait for a *time*. The keyboard needs a
+wait for an *event*: D-49 routed the line and retired polling, and the debt it
+left was that nothing could block on a key.
+
+**Decision.** `WaitQueue` is a bitmask of thread slots in the queue itself.
+`wait` registers, blocks, and hands the CPU on; `wake_all` takes the mask and
+makes those slots ready. No allocation anywhere on the path, because the waker
+is an interrupt handler and D-55 forbids it the heap. A woken thread is placed
+back at the fair-share point offset by the lag it parked with — the same rule
+sleepers get.
+
+The keyboard queues decoded events in a fixed ring and wakes the readers. The
+kernel's own last act is to become one: the boot thread blocks on `read_key`
+and draws what arrives.
+
+**A wake needs a reschedule, and trap exit is where one is legal.** A thread
+made runnable by a keystroke has no appointment to be woken at — there may be
+no next expiry at all — so the keyboard handler asks the scheduler after its
+end-of-interrupt, exactly as the timer does, and only when something woke.
+
+**Rationale.** The lost-wakeup race is the classic bug here, and the fix is
+that checking the queue and registering as a waiter happen together under a
+clear interrupt flag. A queue's lock and `THREADS` are never held at once, so
+the lock order gains a second leaf rather than an edge.
+
+**Consequences.**
+
+- A kernel at a prompt takes exactly one interrupt per keystroke. Nothing is
+  armed for a thread with no deadline, so the machine is genuinely idle
+  between them — which is the whole of Phase 4 in one sentence.
+- Two checks. A blocked reader is off the run queue *and* the machine is quiet
+  while it waits; then it wakes with the key the harness pressed. D-49's lesson
+  shaped both: the first version of the second check claimed the reader had
+  not polled and could not tell, and a deliberately polling `read_key` passed
+  it. It now records whether it blocked, across its own call.
+- The dropped-event counter should stay at zero and is checked. Sixteen
+  events is generous against a reader that blocks; a burst larger than that
+  means nobody is reading.
+- Still owed: nothing can wait on a queue with a timeout, and nothing can wait
+  on two. Both wait for a reason to exist.
+
+---
+
+## D-62 The context token arrives with the API that needed it — Status: Accepted (2026-08-23)
+
+**Context.** D-55 built the trap-depth count and deferred the *token* —
+`008-research-notes-2.md` §4.2's idea — until there was an API that could
+sleep, on the grounds that a token over two call sites would be ceremony.
+D-58 and D-61 are that API.
+
+**Decision.** `ThreadContext` is a zero-sized token minted only by
+`ThreadContext::claim`, which refuses in trap context. `yield_now`,
+`sleep_ms` and `WaitQueue::wait` take one by reference. It is neither `Send`
+nor `Sync`, so it cannot be stashed in a `static` and produced later by
+something with no right to it.
+
+**Rationale.** The count was always the mechanism; the token is what turns
+three run-time asserts into one compile-time rule. With three call sites and
+more coming in Phase 5, it now pays for itself.
+
+**Consequences.**
+
+- `ThreadContext::require` exists for the two places that are structurally in
+  thread context and would rather panic than thread an `Option` through —
+  the boot thread's final loop, and the self-checks.
+- The token proves the *context*, not the absence of a lock. Yielding while
+  holding one is still possible and still only a hang. A guard-carrying
+  variant is the obvious next step and has no caller yet.
+
+---
+
+## D-63 The console keeps interrupts on, and a lock kind is a rule — Status: Accepted (2026-08-23)
+
+**Context.** D-34 accepted that interrupt latency is bounded by the longest
+critical section, named no bound, and declined a second lock type as "a type
+parameter with one useful value still". This phase's charter required a
+position: fix, or accept with the bound named.
+
+**What the measurement said.** A console scroll on the gate's own machine is
+seventy milliseconds — a framebuffer moved and blitted under one lock, with
+interrupts off for all of it. That is not a latency for any interrupt to wait
+behind, and naming it would have been accepting it.
+
+**Decision.** `wost::sync::ThreadLock`: a spinning lock that does *not*
+exclude interrupts and refuses to be taken from trap context. Both console
+devices use it. The rule that makes it sound — nothing logs or draws from a
+handler — was already D-31's, stated in prose; it is now an assert against
+D-55's trap depth. The keyboard handler's `debug!` and its echo, the last two
+violations, moved to the reading thread.
+
+**And a second rule, found by breaking the first.** Putting the console back
+on a `SpinLock` to check that the new check went red made the machine hang
+instead: the log path then took an interrupts-on lock from inside an
+interrupts-off one, and the preempted holder could never be scheduled. So
+`SpinLock` counts its holders and `ThreadLock` refuses to be taken while any
+is held. Two locks each individually correct, deadlocking together, is
+exactly the kind of thing a comment does not catch.
+
+**Rationale.** D-34's reasoning was right for its time and its conclusion has
+expired: there are two useful values now, and the second one is what lets the
+longest operation in the kernel stop being everyone's latency floor.
+
+**Consequences.**
+
+- A `ThreadLock` holder can be preempted, which a `SpinLock` holder cannot.
+  That costs a waiter the rest of its slice and no more, because the timer
+  takes the CPU back and gives it to the holder — the scheduler is what makes
+  the trade safe, which is precisely what D-34 said it was waiting for.
+- The panic path is exempt from both asserts: the code it interrupted never
+  resumes.
+- The check is not how long a scroll takes but that interrupts keep arriving
+  while it runs, counted from inside the lock. Sampled outside it, a pending
+  expiry lands the instant the guard drops and the count moves either way —
+  which the first version did, and it passed under the break.
+- The keystroke watch had to change with it. It kept the last press and the
+  last release, which works only if a reader looks between one keystroke and
+  the next; once the handler stopped logging it became fast enough to decode
+  a whole injected burst in one drain, and a check waiting for the first key
+  of that burst waited out its ten seconds. Two accumulating bitmasks now.
+- Still owed: `SpinLock` holders are counted globally, which is one more
+  entry on D-56's per-CPU list.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap
@@ -2433,7 +2599,7 @@ unconditionally enabling them would panic.
   becomes an ADR as it is taken)
 - `009-multitasking.md` — Phase 4 charter: the debts D-15, D-34, D-36 and
   D-47 deferred here, the lock order, and the decisions still open
-  (D-51..D-59)
+  (D-51..D-63)
 - `008-research-notes-2.md` — the second research pass, opening Phase 3:
   what the stable toolchain now allows, the evidence behind the decisions
   `007` holds open, and the proposed additions to `005`. Its marks are its
