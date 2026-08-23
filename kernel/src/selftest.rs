@@ -670,18 +670,25 @@ fn runtime_divides_by_weight() -> bool {
 /// What the blocked reader saw: zero until it has anything to say.
 static READER_SAW: AtomicUsize = AtomicUsize::new(0);
 
-/// Rounds the reader went through before it had a keystroke.
+/// Whether the reader actually stopped being runnable to get its keystroke:
+/// zero until it knows, one for blocked, two for not.
 ///
-/// One, always. A `read_key` that polled would show this climbing; a
-/// `read_key` that blocked goes round once, blocks, and comes back with an
-/// event in hand.
-static READER_ROUNDS: AtomicUsize = AtomicUsize::new(0);
+/// Recorded by the reader itself, across its own call, because the outcome
+/// cannot tell the difference — a key that arrives is a key that arrives
+/// whether the thread waited for it or spun on it. That is D-49's lesson, and
+/// this counter is what an earlier version of this check was missing: a
+/// deliberately polling `read_key` passed it.
+static READER_BLOCKED: AtomicUsize = AtomicUsize::new(0);
 
 /// Block on the keyboard, and record the first key that arrives.
 fn read_one_key() {
     let context = context();
-    READER_ROUNDS.fetch_add(1, Ordering::Relaxed);
+    let blocks = thread::blocks();
     let keystroke = input::read_key(&context);
+    READER_BLOCKED.store(
+        if thread::blocks() > blocks { 1 } else { 2 },
+        Ordering::Release,
+    );
     READER_SAW.store(keystroke.event.key as usize + 1, Ordering::Release);
 }
 
@@ -700,7 +707,7 @@ fn read_one_key() {
 /// its key on a marker this check is upstream of.
 fn a_blocked_reader_is_ready_to_wake() -> bool {
     READER_SAW.store(0, Ordering::Release);
-    READER_ROUNDS.store(0, Ordering::Release);
+    READER_BLOCKED.store(0, Ordering::Release);
 
     let blocks = thread::blocks();
     if thread::spawn("reader", read_one_key).is_err() {
@@ -724,7 +731,7 @@ fn the_blocked_reader_woke_with_the_key() -> bool {
 
     let woke = runs_until(1_000, || READER_SAW.load(Ordering::Acquire) != 0);
     woke && READER_SAW.load(Ordering::Acquire) == wanted
-        && READER_ROUNDS.load(Ordering::Relaxed) == 1
+        && READER_BLOCKED.load(Ordering::Acquire) == 1
         && input::dropped_events() == 0
 }
 
@@ -794,20 +801,28 @@ fn a_scroll_does_not_block_interrupts() -> bool {
         return false;
     }
 
+    // Filled to the bottom once, not once per sample: from here every line
+    // scrolls, and refilling would have cost fifty scrolls a sample — which
+    // it did, until a run spent most of the harness's minute doing it.
+    for _ in 0..rows {
+        dev::with_console(|console| console.write_line(""));
+    }
+
     let mut worst = 0;
     let mut expiries = 0;
     for _ in 0..SAMPLES {
-        // Fill the console to the bottom so the next line has to scroll, then
-        // time the line that does it. The whole call is timed, lock included,
-        // because the lock is what the latency was about.
-        for _ in 0..rows {
-            dev::with_console(|console| console.write_line(""));
-        }
-        let before = time::now_ns();
-        let taken = time::expiries();
-        dev::with_console(|console| console.write_line(""));
-        expiries += time::expiries() - taken;
-        worst = worst.max(time::now_ns() - before);
+        dev::with_console(|console| {
+            // Both readings are taken *inside* the lock, which is the whole
+            // difference: sampled outside it, a pending expiry is delivered
+            // the instant the guard drops and the count moves either way.
+            // Measured against a lock that excludes interrupts, this counts
+            // zero — which is what it did before D-63.
+            let taken = time::expiries();
+            let before = time::now_ns();
+            console.write_line("");
+            worst = worst.max(time::now_ns() - before);
+            expiries += time::expiries() - taken;
+        });
     }
 
     STOP_SPINNING.store(1, Ordering::Release);

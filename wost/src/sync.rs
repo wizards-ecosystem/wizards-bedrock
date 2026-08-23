@@ -4,10 +4,23 @@ use core::cell::UnsafeCell;
 use core::fmt;
 use core::hint::spin_loop;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::arch::current::interrupt::{self, InterruptState};
 use crate::panic::PanicToken;
+
+/// How many [`SpinLock`]s this CPU is holding.
+///
+/// A [`ThreadLock`] may not be taken while any is held, and this is what says
+/// so. The hazard is not obvious and it is silent: a `SpinLock` holder has
+/// interrupts off, so if the `ThreadLock` it then waits for is held by a
+/// thread that has been preempted, that thread can never be scheduled and the
+/// wait never ends. It is a deadlock produced by two locks that are each
+/// individually correct, and it cost one debugging session before this counter
+/// existed.
+///
+/// One CPU, one counter; per-CPU when SMP lands (D-56).
+static SPINLOCKS_HELD: AtomicUsize = AtomicUsize::new(0);
 
 /// A latch that admits exactly one caller.
 ///
@@ -111,10 +124,13 @@ impl<T> SpinLock<T> {
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         {
-            Ok(_) => Some(SpinLockGuard {
-                lock: self,
-                interrupts,
-            }),
+            Ok(_) => {
+                SPINLOCKS_HELD.fetch_add(1, Ordering::Relaxed);
+                Some(SpinLockGuard {
+                    lock: self,
+                    interrupts,
+                })
+            }
             Err(_) => {
                 interrupts.restore();
                 None
@@ -189,6 +205,7 @@ impl<T> Drop for SpinLockGuard<'_, T> {
     /// Release, then restore. The other order would open a window in which an
     /// interrupt could arrive at code still holding this lock.
     fn drop(&mut self) {
+        SPINLOCKS_HELD.fetch_sub(1, Ordering::Relaxed);
         self.lock.locked.store(false, Ordering::Release);
         self.interrupts.restore();
     }
@@ -216,7 +233,13 @@ impl<T> Drop for SpinLockGuard<'_, T> {
 /// with interrupts on, so the timer takes the CPU back and gives it to the
 /// holder. It is not a deadlock, and the scheduler is what makes that true.
 ///
-/// The panic path is exempt, because the code it interrupted can never resume.
+/// Which is exactly why one of these may not be taken while a [`SpinLock`] is
+/// held: there the waiter's interrupts are *off*, the timer never comes, and
+/// the preempted holder is never scheduled again. That is the second thing
+/// [`lock`](Self::lock) asserts, against [`SPINLOCKS_HELD`].
+///
+/// The panic path is exempt from both, because the code it interrupted can
+/// never resume.
 pub struct ThreadLock<T> {
     locked: AtomicBool,
     value: UnsafeCell<T>,
@@ -250,6 +273,10 @@ impl<T> ThreadLock<T> {
         assert!(
             !interrupt::in_trap() || crate::panic::is_panicking(),
             "a trap handler may not take a thread lock"
+        );
+        assert!(
+            SPINLOCKS_HELD.load(Ordering::Relaxed) == 0 || crate::panic::is_panicking(),
+            "a spin lock is held, so waiting for a thread lock could never end"
         );
         loop {
             if let Some(guard) = self.try_lock() {
