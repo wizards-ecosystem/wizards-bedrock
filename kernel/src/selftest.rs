@@ -177,6 +177,12 @@ fn a_second_switch_is_refused() -> bool {
 /// every check between here and the injection logs a line, and every line moves
 /// the cursor, so watching for motion would race this function's own output.
 /// The layout half is asserted from `char_for` and tested on the host in `libs/ps2-keys`.
+///
+/// Runs only once the last injected key has been seen released. The harness
+/// injects three and the keystroke check waits for the first, so the other
+/// two were still arriving while this measured — and an echoed character
+/// between two cursor readings is a red check with nothing wrong. It failed
+/// that way about one boot in three before the wait was added.
 fn the_editing_keys_move_the_cursor() -> bool {
     let (Some(backspace), Some(newline)) = (
         ps2_keys::us::char_for(ps2_keys::Key::Backspace, ps2_keys::Shift::new()),
@@ -862,10 +868,12 @@ pub(crate) fn run(serial: Result<(), UartError>) {
 
     let sweep = sweep_clock();
     report.check("the clock never runs backwards", sweep.monotonic);
-    report.check("the clock advances between two reads", sweep.advanced);
+    // A thousand times finer than the tick it replaced, and the smallest
+    // step is the honest way to say so: the old clock could report a value
+    // between two ticks, but never resolve two events inside one.
     report.check(
-        "the clock resolves finer than a millisecond",
-        sweep.finer_than_a_millisecond,
+        "the clock advances in steps finer than a microsecond",
+        sweep.finest_step.is_some_and(|step| step < 1_000),
     );
     report.check(
         "an idle kernel takes no timer interrupts",
@@ -921,6 +929,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         keystrokes_arrive_as_interrupts(),
     );
 
+    // Before the editing check and not merely beside it: this is what makes
+    // that one's cursor readings its own. Enter is the last key the harness
+    // injects, and only a press echoes a character, so its release is the
+    // moment the console stops moving underneath the measurement.
+    report.check(
+        "the injected editing keys arrive, ending with enter",
+        input::await_key(ps2_keys::Key::Enter),
+    );
     report.check(
         "backspace erases and enter starts a line",
         the_editing_keys_move_the_cursor(),
@@ -1076,19 +1092,22 @@ fn rates_are_believable() -> bool {
 /// What a continuous read of the clock saw.
 struct ClockSweep {
     monotonic: bool,
-    advanced: bool,
-    finer_than_a_millisecond: bool,
+    /// The smallest step the clock was seen to take, or `None` if it never
+    /// took one.
+    finest_step: Option<u64>,
 }
 
 /// Read the clock as fast as it can be read, for a few milliseconds.
 ///
-/// Three properties at once, and monotonicity is no longer a formality: the
-/// clamp that used to make it true by construction went with the tick, so
-/// this is now watching the counter's own claim (D-57). A pair of adjacent
-/// readings that differ is the resolution, and a reading that is not a whole
-/// number of milliseconds is the grain the old interpolation could only
-/// approximate. The first reading is taken while holding a lock, which is
-/// where the retired clock could be caught reading backwards.
+/// Monotonicity is no longer a formality: the clamp that used to make it true
+/// by construction went with the tick, so this is now watching the counter's
+/// own claim (D-57). The first reading is taken while holding a lock, which
+/// is where the retired clock could be caught reading backwards.
+///
+/// The smallest step is the clock's grain, measured rather than inferred —
+/// the smallest difference between two adjacent readings that differ at all.
+/// Adjacent readings that are equal say only that the reads were faster than
+/// the counter, which on an emulated machine they sometimes are.
 fn sweep_clock() -> ClockSweep {
     const ATTEMPTS: u32 = 2_000_000;
     const SPAN_MS: u64 = 3;
@@ -1097,8 +1116,7 @@ fn sweep_clock() -> ClockSweep {
     let mut previous = 0;
     let mut sweep = ClockSweep {
         monotonic: true,
-        advanced: false,
-        finer_than_a_millisecond: false,
+        finest_step: None,
     };
 
     for attempt in 0..ATTEMPTS {
@@ -1116,10 +1134,8 @@ fn sweep_clock() -> ClockSweep {
             sweep.monotonic = false;
         }
         if attempt > 0 && sample > previous {
-            sweep.advanced = true;
-        }
-        if !sample.is_multiple_of(time::NANOSECONDS_PER_MS) {
-            sweep.finer_than_a_millisecond = true;
+            let step = sample - previous;
+            sweep.finest_step = Some(sweep.finest_step.map_or(step, |finest| finest.min(step)));
         }
         previous = sample;
 
