@@ -122,12 +122,21 @@ pub enum Placement {
 
 /// Decide where a request of `size` bytes at `align` is served from.
 ///
-/// A zero-sized request is given the smallest slot rather than refused: `Layout`
-/// permits a size of zero, `GlobalAlloc` requires a unique non-null address
-/// back, and one slot is the cheapest way to provide one.
+/// A zero-sized request is given the smallest slot that meets its alignment
+/// rather than refused: `Layout` permits a size of zero, `GlobalAlloc`
+/// requires a unique non-null address back, and one slot is the cheapest way
+/// to provide one. An alignment too large for any class takes a frame, which
+/// is the same answer one byte at that alignment would get.
 pub const fn place(size: usize, align: usize) -> Placement {
     match SizeClass::for_size_align(size, align) {
         Some(class) => Placement::Slot(class),
+        // At least one frame: a zero-sized request whose alignment is too
+        // large for any class lands here, and `GlobalAlloc` owes it a unique
+        // non-null address rather than a run of nothing.
+        None if size == 0 => Placement::Frames {
+            count: 1,
+            align: align.div_ceil(FRAME_SIZE),
+        },
         None => Placement::Frames {
             count: size.div_ceil(FRAME_SIZE),
             align: align.div_ceil(FRAME_SIZE),
@@ -266,6 +275,22 @@ mod tests {
         assert_eq!(
             place(0, 1),
             Placement::Slot(SizeClass::from_index(0).expect("the smallest class"))
+        );
+    }
+
+    /// The corner where the two rules above meet: nothing to store, but an
+    /// alignment no class can meet. A run of *zero* frames is what the naive
+    /// arithmetic gives, and an allocator handed one returns null — which
+    /// `GlobalAlloc` reads as out of memory.
+    #[test]
+    fn a_zero_sized_request_too_aligned_for_a_class_still_gets_a_frame() {
+        assert_eq!(
+            place(0, MAX_CLASS * 2),
+            Placement::Frames { count: 1, align: 1 }
+        );
+        assert_eq!(
+            place(0, FRAME_SIZE * 4),
+            Placement::Frames { count: 1, align: 4 }
         );
     }
 }

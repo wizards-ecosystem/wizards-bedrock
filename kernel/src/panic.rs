@@ -25,13 +25,17 @@ fn panic(info: &PanicInfo<'_>) -> ! {
     input::force_unlock_watch(&token);
     thread::force_unlock(&token);
 
-    error!("KERNEL PANIC: {info}");
+    // The thread is named because a panic in one of several is otherwise a
+    // report with no subject: every thread runs the same kernel.
+    let thread = thread::current_name();
+    error!("KERNEL PANIC on thread '{thread}': {info}");
 
     dev::with_console(|console| {
         console.reset(theme::PANIC);
         console.write_line("");
         console.write_line("  KERNEL PANIC");
         console.write_line("");
+        let _ = writeln!(console, "  thread '{thread}'");
         let _ = writeln!(console, "  {info}");
     });
 

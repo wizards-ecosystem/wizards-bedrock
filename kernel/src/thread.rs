@@ -16,11 +16,6 @@
 //! with the interrupt flag clear throughout, so no expiry can preempt a
 //! half-made decision.
 
-// `yield_now` and `exit` still have no caller but the self-checks. Silenced
-// rather than cfg-gated, so the shipped image carries the code the checks
-// exercise.
-#![allow(dead_code)]
-
 use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -357,7 +352,7 @@ static POLICY_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
 /// Parked threads put back on the queue.
 static WAKES: AtomicUsize = AtomicUsize::new(0);
 
-/// Threads that have stopped being runnable to wait on a queue.
+/// Threads that have actually left the run queue to wait on a queue.
 static BLOCKS: AtomicUsize = AtomicUsize::new(0);
 
 /// Times the idle thread has reached its halt: times the machine had nothing
@@ -394,6 +389,7 @@ pub(crate) fn is_available() -> bool {
 }
 
 /// Slots with no live thread in them.
+#[cfg(feature = "selftest")]
 pub(crate) fn free_slots() -> usize {
     let threads = THREADS.lock();
     threads.threads[1..=threads.spawnable]
@@ -403,26 +399,31 @@ pub(crate) fn free_slots() -> usize {
 }
 
 /// How often the policy has been stood in for. See [`POLICY_FALLBACKS`].
+#[cfg(feature = "selftest")]
 pub(crate) fn policy_fallbacks() -> usize {
     POLICY_FALLBACKS.load(Ordering::Relaxed)
 }
 
 /// How many parked threads have been put back on the queue.
+#[cfg(feature = "selftest")]
 pub(crate) fn wakes() -> usize {
     WAKES.load(Ordering::Relaxed)
 }
 
 /// How many threads have blocked on a wait queue.
+#[cfg(feature = "selftest")]
 pub(crate) fn blocks() -> usize {
     BLOCKS.load(Ordering::Relaxed)
 }
 
 /// How many times the idle thread has had the CPU with nothing to do on it.
+#[cfg(feature = "selftest")]
 pub(crate) fn idle_halts() -> usize {
     IDLE_HALTS.load(Ordering::Relaxed)
 }
 
 /// Whether the idle thread is running.
+#[cfg(feature = "selftest")]
 pub(crate) fn idle_is_started() -> bool {
     IDLE_STARTED.is_claimed() && THREADS.lock().idle().is_some()
 }
@@ -465,6 +466,9 @@ pub(crate) fn spawn(name: &'static str, entry: fn()) -> Result<usize, SpawnError
 }
 
 /// Create a thread of `weight` that will run `entry`, and make it runnable.
+///
+/// Weights other than the base have no shipped caller yet; see [`yield_now`].
+#[allow(dead_code)]
 ///
 /// Returns its slot. It is placed at the queue's fair-share point with a
 /// fresh slice, so it neither jumps the queue nor waits behind everyone. It
@@ -524,6 +528,12 @@ pub(crate) fn spawn_weighted(
 }
 
 /// Let another runnable thread have the CPU, if any is owed it.
+///
+/// No shipped caller yet — the self-checks are the only ones. Allowed rather
+/// than cfg-gated so the image carries the code the checks exercise, and
+/// narrowly rather than over the module, which hid six accessors that belong
+/// behind the feature and a field nothing read.
+#[allow(dead_code)]
 ///
 /// Returns when this thread is picked again — at once, if nothing else is
 /// eligible.
@@ -620,6 +630,12 @@ fn park(_context: &ThreadContext, leaving: State, until: Option<u64>) {
 
         match threads.choose(current, false) {
             Some(next) => {
+                // Counted here and not at the call: a thread that finds nobody
+                // to hand the CPU to never leaves the run queue, and a
+                // counter that moved anyway would say it had.
+                if leaving == State::Blocked {
+                    BLOCKS.fetch_add(1, Ordering::Relaxed);
+                }
                 threads.threads[next].state = State::Running;
                 threads.threads[next].started = now;
                 (Some(next), threads.next_event(next, now))
@@ -667,7 +683,6 @@ fn earliest(one: Option<u64>, other: Option<u64>) -> Option<u64> {
 /// The wait-queue half of [`park`]: no deadline, so nothing is armed and a
 /// machine with nothing else to do takes no interrupts until the event.
 pub(crate) fn block(context: &ThreadContext) {
-    BLOCKS.fetch_add(1, Ordering::Relaxed);
     park(context, State::Blocked, None);
 }
 
@@ -693,6 +708,20 @@ pub(crate) fn unblock(slots: u32) -> usize {
 /// The slot this CPU is running on.
 pub(crate) fn current_slot() -> usize {
     task::current()
+}
+
+/// The name of the thread this CPU is running, for a report that wants it.
+///
+/// `try_lock` rather than `lock`, because the one caller is the panic handler
+/// and a panic can be raised by the code holding this. An unnameable thread
+/// is worth saying so about; a report that hangs is not.
+pub(crate) fn current_name() -> &'static str {
+    let slot = task::current();
+    match THREADS.try_lock() {
+        Some(threads) if !threads.threads[slot].name.is_empty() => threads.threads[slot].name,
+        Some(_) => "unnamed",
+        None => "unknown",
+    }
 }
 
 /// Trap exit's turn: charge the running thread, wake whatever is due, switch

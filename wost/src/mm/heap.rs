@@ -170,6 +170,10 @@ unsafe impl GlobalAlloc for KernelAllocator {
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        // The same rule as `alloc`, and it has to be stated on both sides: a
+        // handler that drops a `Box` touches the heap exactly as much as one
+        // that makes it (D-55).
+        assert!(!interrupt::in_trap(), "deallocation in trap context");
         match place(layout.size(), layout.align()) {
             // SAFETY: `GlobalAlloc`'s contract is that `pointer` came from
             // `alloc` with this same layout, so it is a live slot of exactly
