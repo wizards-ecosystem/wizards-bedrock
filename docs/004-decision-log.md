@@ -2590,6 +2590,88 @@ longest operation in the kernel stop being everyone's latency floor.
 
 ---
 
+## D-64 A physical read is bounded by the memory map, not by a comment — Status: Accepted (2026-08-23)
+
+**Context.** The phase 0–4 audit found two `// SAFETY:` comments asserting
+checks that no code performed. `mm::read_physical` said `direct_pointer` had
+confirmed the direct map covers the range; `direct_pointer` only checks that
+the arithmetic does not overflow. `DeviceMapping::claim` said its region was
+four-byte aligned; nothing established that, and the window deliberately keeps
+the device's own offset from a page boundary.
+
+Neither was reachable. `read_physical` runs before `activate`, where the
+bootloader's map covers everything; every device this kernel maps happens to
+be page-aligned. Both were one firmware quirk from being real, and
+`read_physical`'s length comes from a firmware table's own header.
+
+**Decision.** `read_physical` requires the range to be described by the memory
+map, to touch nothing allocatable, and — once `activate` has called
+`mm::narrow_direct_map` — to lie only in regions `is_direct_mapped` names. A
+device whose registers are not four-byte aligned is refused at map time, with
+an error that says so.
+
+**Rationale.** The previous audit's standing lesson was that an abstraction
+promising a bound must be given something that can check it. A safety comment
+is not that thing. The narrowing latch exists because the invariant genuinely
+changes at `activate` — the bootloader's map covers strictly more than the
+kernel's — and a function whose soundness turns on which map is in force has
+to be able to ask.
+
+**Consequences.**
+
+- One check, broken three ways: the narrowed refusal, the described-range
+  requirement, and the acceptance. The third matters most — a check that only
+  ever saw refusals would pass against a function returning `None` for
+  everything. The undescribed probe had to be moved off the top of the address
+  space, where an overflow guard was refusing it before the map was consulted.
+- `MemoryMap::covers` walks rather than looking for one containing region, so
+  a span crossing two adjacent regions is still described. It lives in `wost`
+  rather than a `libs/` crate, which is a departure from D-30 and the reason
+  its only test is on the machine; extracting the map is the follow-up if that
+  ever costs anything.
+- The `Frame` methods kept their claim but got the true argument for it: a
+  frame is allocatable memory, and every allocatable region is direct-mapped.
+
+---
+
+## D-65 The gate boots three kernels — Status: Accepted (2026-08-23)
+
+**Context.** The 2026-08-22 audit's other standing lesson was that a gate is
+only as wide as its configuration matrix. This one found the matrix two
+configurations short. `ci` booted the self-test kernel and *built* the shipped
+one; and it was release-only, where arithmetic wraps in silence.
+
+The first gap had grown teeth. The self-test build exits at the debug-exit
+device the moment it has a verdict, so nothing it does covers what the shipped
+kernel does afterwards — and since D-61 made the boot thread a blocking
+keyboard reader, that is everything the kernel does at all.
+
+**Decision.** Three boots. The self-test kernel in release, the same in debug,
+and the shipped image under `boot-check`, which requires it to reach its
+steady state and then survive five more seconds without panicking. Fifteen
+seconds of extra wall clock between them.
+
+**Rationale.** Both gaps were found by reading rather than by failing, which
+is the argument for closing them: a hole in the gate is invisible from inside
+it. The debug boot is the only configuration in which an overflow on the
+machine goes red rather than quietly wrong, and it caught one on its first
+run — in the round counter written that hour, where `then_some` evaluates its
+argument even at zero.
+
+**Consequences.**
+
+- A debug boot gets 150 seconds where release gets 60. A debug kernel is
+  several times slower under emulation — a console scroll costs the better
+  part of a second — and holding it to the release budget reports load as a
+  hang, which it did once.
+- `boot-check` has no debug-exit device to report through, so its verdict is
+  what the serial log says: a settled marker, and no panic line. Two markers
+  kept in step with the kernel by comment, like `READY_MARKER` before them.
+- Both new steps were broken before being believed: a panic before settling, a
+  panic after settling, and a kernel that never says it settled.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap
@@ -2606,7 +2688,7 @@ longest operation in the kernel stop being everyone's latency floor.
   becomes an ADR as it is taken)
 - `009-multitasking.md` — Phase 4 charter: the debts D-15, D-34, D-36 and
   D-47 deferred here, the lock order, and the decisions still open
-  (D-51..D-63)
+  (D-51..D-65)
 - `008-research-notes-2.md` — the second research pass, opening Phase 3:
   what the stable toolchain now allows, the evidence behind the decisions
   `007` holds open, and the proposed additions to `005`. Its marks are its
@@ -2617,3 +2699,24 @@ the amendments to D-22 and D-25. Its two standing lessons, worth reading
 before the next phase: a gate is only as wide as its configuration matrix,
 and an abstraction that promises a bound must be given something that can
 check it.
+
+The 2026-08-23 audit swept phases 0–4 and found fifteen things, none of them
+a live bug on either target. Both of the previous audit's lessons had been
+broken again, which is why they are recorded as standing: D-64 is two safety
+comments asserting checks nothing performed, and D-65 is two configurations
+the gate never ran. The rest were corrections — an I/O APIC that subtracted
+without checking it owned the line, a counter that counted intent rather than
+the transition it was cited for, an `in_trap` assert on one side of the heap
+only, a module-wide `allow(dead_code)` broader than its comment, a thread name
+nothing read, and three documents describing subsystems that had been
+replaced. Its own standing lesson is narrower than the last two and worth the
+same weight: **a check's evidence must be the thing it claims, not something
+correlated with it.** Three checks failed that test in one afternoon — one
+sampled a counter outside the lock it was about, one claimed a reader had not
+polled while having no way to tell, and one probed an address an overflow
+guard refused before the code under test saw it. Each passed under its own
+break until it was fixed.
+
+What the audit did *not* reach, recorded so the next one knows where to start:
+xtask's FAT, MBR and GPT writers, `qmp.rs`, `vmware.rs`, the `pixel` packing
+arithmetic, and the GDT and IDT bit encodings beyond the TSS.
