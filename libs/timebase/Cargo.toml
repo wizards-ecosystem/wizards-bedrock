@@ -1,0 +1,11 @@
+[package]
+name = "timebase"
+description = "Turning a free-running counter's ticks into nanoseconds and back, as a rounded multiply-and-shift."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

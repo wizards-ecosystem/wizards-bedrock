@@ -20,7 +20,7 @@
 
 use core::arch::naked_asm;
 use core::fmt;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use x86_paging::Flags;
 
@@ -111,6 +111,8 @@ struct Slot {
     /// One past the stack's highest byte. Zero for the boot slot.
     stack_top: u64,
     entry: Option<(Entry, usize)>,
+    /// Whether the thread should be accepting interrupts on its first run.
+    starts_interruptible: bool,
 }
 
 impl Slot {
@@ -118,6 +120,7 @@ impl Slot {
         state: State::Vacant,
         stack_top: 0,
         entry: None,
+        starts_interruptible: false,
     };
 }
 
@@ -142,13 +145,6 @@ static TABLE: SpinLock<Table> = SpinLock::new(Table {
 static CONTEXTS: HardwareCell<[u64; MAX_TASKS]> = HardwareCell::new([0; MAX_TASKS]);
 
 static CURRENT: AtomicUsize = AtomicUsize::new(BOOT);
-
-/// Whether the context that last switched away was accepting interrupts.
-///
-/// A thread resuming after a switch restores its own flag from its own stack.
-/// A thread starting for the first time has no such record, so it inherits the
-/// switcher's — the same rule a lock guard follows: put back what was found.
-static HANDOFF_INTERRUPTS: AtomicBool = AtomicBool::new(false);
 
 static INIT: Once = Once::new();
 
@@ -213,12 +209,23 @@ pub fn count() -> usize {
 /// fabricated again: its stack is reused, and that is safe because the table
 /// refuses to resume a dead slot, so nothing can be standing on it.
 ///
+/// The interrupt flag the thread will start with is captured here, from this
+/// caller — the thread's creator. It cannot be captured at the switch: a
+/// scheduler clears the flag around every decision it makes, so by the time
+/// the switch runs, the only flag left to read is the scheduler's own, and a
+/// thread that started from it would be uninterruptible for life. A new
+/// thread holds no lock and has nothing to protect, so what it inherits is
+/// whether the machine was accepting interrupts at all when it was made.
+///
 /// # Errors
 ///
 /// [`TaskError::Occupied`] if the slot's thread is live, [`TaskError::Boot`]
 /// for the boot slot, [`TaskError::OutOfRange`] past the table, and
 /// [`TaskError::NotInitialised`] before [`init`].
 pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError> {
+    // Before the lock, which clears the flag: what is wanted is the caller's
+    // own, not the one taking this lock leaves behind.
+    let starts_interruptible = interrupt::are_enabled();
     let mut table = TABLE.lock();
     if table.count == 0 {
         return Err(TaskError::NotInitialised);
@@ -254,6 +261,7 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
         state: State::Alive,
         stack_top: top,
         entry: Some((entry, arg)),
+        starts_interruptible,
     };
     Ok(())
 }
@@ -272,10 +280,8 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
 /// [`TaskError::OutOfRange`] past the table, and
 /// [`TaskError::NotInitialised`] before [`init`].
 pub fn switch_to(slot: usize) -> Result<(), TaskError> {
-    let was_enabled = interrupt::are_enabled();
     let saved = interrupt::disable();
     let result = prepare(slot, State::Alive).map(|(save, load)| {
-        HANDOFF_INTERRUPTS.store(was_enabled, Ordering::Relaxed);
         // SAFETY: `prepare` took `save` from this CPU's own slot and `load`
         // from a live slot's record, each written only by `fabricate` or by a
         // previous switch on a stack `init` confirmed. The flag is clear, so
@@ -317,7 +323,6 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
     let saved = interrupt::disable();
     let depth = interrupt::suspend_trap();
     let result = prepare(slot, State::Alive).map(|(save, load)| {
-        HANDOFF_INTERRUPTS.store(true, Ordering::Relaxed);
         // SAFETY: as in `switch_to` — `prepare` vouches for both pointers and
         // the flag is clear. The handler's own frame is below the saved
         // pointer on this thread's stack, and this thread is the only thing
@@ -340,11 +345,9 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
 ///
 /// As [`switch_to`].
 pub fn exit_to(slot: usize) -> TaskError {
-    let was_enabled = interrupt::are_enabled();
     let saved = interrupt::disable();
     match prepare(slot, State::Dead) {
         Ok((save, load)) => {
-            HANDOFF_INTERRUPTS.store(was_enabled, Ordering::Relaxed);
             // SAFETY: as in `switch_to`. The slot being left is now `Dead`,
             // which every later switch refuses, so the save is never loaded.
             unsafe { switch(save, load) };
@@ -404,14 +407,23 @@ const FRAME_BYTES: u64 = FRAME_WORDS as u64 * 8;
 const FRAME_WORDS: usize = 7;
 
 /// Where every fabricated thread begins: on its own stack, with nothing in its
-/// registers, and the interrupt flag as the thread that switched here had it.
+/// registers, and the interrupt flag its creator had.
+///
+/// The flag is set here rather than left to the switch because the switch
+/// arrives with it clear by construction — see [`fabricate`].
 extern "C" fn thread_start() -> ! {
     let slot = current();
-    let entry = TABLE.lock().slots[slot].entry;
+    let (entry, interruptible) = {
+        let table = TABLE.lock();
+        (
+            table.slots[slot].entry,
+            table.slots[slot].starts_interruptible,
+        )
+    };
     let Some((entry, arg)) = entry else {
         panic!("slot {slot} started with no entry point");
     };
-    if HANDOFF_INTERRUPTS.load(Ordering::Relaxed) {
+    if interruptible {
         interrupt::enable();
     }
     entry(arg)

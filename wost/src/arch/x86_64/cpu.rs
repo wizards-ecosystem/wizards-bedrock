@@ -47,6 +47,51 @@ pub fn halt_forever() -> ! {
     }
 }
 
+/// Whether this processor's timestamp counter runs at a constant rate
+/// whatever the core is doing.
+///
+/// `cpuid` leaf 0x8000_0007, `EDX` bit 8. Without it the counter still counts,
+/// but it counts *cycles* — slower when the core throttles, stopped in the
+/// deeper idle states — which is a performance counter, not a clock. Present
+/// on everything since Nehalem and Bulldozer, which is the same generation
+/// the x2APIC mode this kernel already requires arrived in.
+pub fn has_invariant_tsc() -> bool {
+    /// `cpuid` leaf 0x8000_0007, `EDX` bit 8.
+    const INVARIANT: u32 = 1 << 8;
+
+    max_leaf(0x8000_0000) >= 0x8000_0007 && cpuid(0x8000_0007, 0).edx & INVARIANT != 0
+}
+
+/// The timestamp counter: cycles since the processor started.
+///
+/// Fenced, because `rdtsc` is not a serialising instruction and the processor
+/// is free to execute it out of order with the work it is meant to bracket —
+/// which for a calibration window means measuring something other than the
+/// window. `lfence` in front is the sequence both vendors document for
+/// reading the counter as a clock.
+///
+/// `nomem` is deliberately absent for the same reason: it would let the
+/// compiler move the read across memory operations, undoing at compile time
+/// what the fence does at run time.
+pub fn timestamp() -> u64 {
+    let low: u32;
+    let high: u32;
+    // SAFETY: `rdtsc` reads the counter into edx:eax and has no preconditions
+    // in ring 0 — `CR4.TSD`, the bit that could make it fault, gates ring 3
+    // only, and this kernel never sets it. The `lfence` before it orders
+    // execution and touches no state.
+    unsafe {
+        asm!(
+            "lfence",
+            "rdtsc",
+            out("eax") low,
+            out("edx") high,
+            options(nostack, preserves_flags),
+        );
+    }
+    u64::from(high) << 32 | u64::from(low)
+}
+
 /// The current stack pointer.
 pub fn stack_pointer() -> u64 {
     let value: u64;

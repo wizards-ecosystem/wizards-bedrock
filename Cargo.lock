@@ -100,6 +100,10 @@ name = "stack-layout"
 version = "0.1.0"
 
 [[package]]
+name = "timebase"
+version = "0.1.0"
+
+[[package]]
 name = "wizard-kernel"
 version = "0.1.0"
 dependencies = [
@@ -108,6 +112,7 @@ dependencies = [
  "noto-sans-mono-bitmap",
  "ps2-keys",
  "stack-layout",
+ "timebase",
  "wost",
  "x86-apic",
  "x86-paging",

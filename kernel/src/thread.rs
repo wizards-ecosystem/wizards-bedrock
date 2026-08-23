@@ -1,4 +1,4 @@
-//! Kernel threads: who exists, who is ready, and who runs next.
+//! Kernel threads: who exists, who is ready, who is asleep, and who runs next.
 //!
 //! The mechanism — stacks, saved state, the switch — is `wost::task`'s. What
 //! is here is policy, and policy is safe Rust: a table of names, states and
@@ -7,15 +7,23 @@
 //! on the answer, with a round-robin fallback if the answer is ever missing
 //! (D-53). The timer preempts at trap exit (D-54).
 //!
+//! Nothing here runs on a tick. Every path that changes who is runnable ends
+//! by asking the table for the next moment a decision is due — the running
+//! thread's slice ending, or the earliest sleeper's deadline — and arming the
+//! timer for exactly that, or stopping it when the answer is "never" (D-57).
+//!
 //! Lock order (`docs/009-multitasking.md`): `THREADS` is a leaf. Nothing is
 //! taken while it is held — not the heap, not a console, not even `wost`'s
 //! own task table. Every switch happens after the guard has dropped, with
 //! the interrupt flag clear from before the lock was taken until after the
-//! switch, so no tick can preempt a half-made decision.
+//! switch, so no expiry can preempt a half-made decision. Arming the timer is
+//! one register written and takes no lock, but it is still done outside the
+//! guard, so the rule needs no exception.
 
-// Until slice 4 gives the kernel its idle thread, the only callers are the
-// self-checks. Silenced here rather than cfg-gated, so the shipped image
-// carries the same code the checks exercise. Remove with the first caller.
+// Spawning, yielding and exiting still have no caller but the self-checks;
+// sleeping has had one since the idle loop started polling through it.
+// Silenced here rather than cfg-gated, so the shipped image carries the same
+// code the checks exercise. Remove with slice 4's idle thread.
 #![allow(dead_code)]
 
 use core::fmt;
@@ -29,7 +37,7 @@ use wost::arch::current::task::{self, BOOT, TaskError};
 use wost::panic::PanicToken;
 use wost::sync::SpinLock;
 
-use crate::time;
+use crate::time::{self, NANOSECONDS_PER_MS};
 
 /// Threads that can exist at once, besides the boot thread.
 ///
@@ -51,11 +59,13 @@ const WINDOW: u64 = 0xffff_fe00_0000_0000;
 /// Slots in the table, the boot thread's among them.
 const CAPACITY: usize = STACK_SLOTS + 1;
 
-/// Real time a thread may run before its deadline moves, in milliseconds.
+/// Real time a thread may run before its deadline moves, in nanoseconds.
 ///
-/// Three ticks of the 100 Hz clock. The one tunable EEVDF has, and the
-/// thing slice 3's finer clock will let shrink.
-const SLICE_MS: u64 = 30;
+/// Three milliseconds — a tenth of what it was, because the cost of a shorter
+/// slice used to be a tick that could not resolve one and is now a timer
+/// armed for exactly it. The one tunable EEVDF has, and in the same range as
+/// mainline's base slice.
+const SLICE_NS: u64 = 3 * NANOSECONDS_PER_MS;
 
 /// The arena the kernel asks `wost` to map.
 pub(crate) fn layout() -> Option<StackLayout> {
@@ -96,6 +106,8 @@ enum State {
     Ready,
     /// On the CPU.
     Running,
+    /// Waiting for a deadline, and not a candidate until it passes.
+    Sleeping,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -104,8 +116,15 @@ struct Thread {
     name: &'static str,
     entry: Option<fn()>,
     entity: Entity,
-    /// Uptime, in milliseconds, when it last went on the CPU.
+    /// Uptime, in nanoseconds, when it last went on the CPU.
     started: u64,
+    /// Uptime at which a sleeper becomes runnable again. Meaningless in every
+    /// other state.
+    wake_at: u64,
+    /// The lag it went to sleep carrying, which is what it is placed back on
+    /// the queue with — clamped to a slice either way by the policy, so a
+    /// brief sleep sheds no debt and a long one banks no credit.
+    slept_with_lag: i64,
 }
 
 impl Thread {
@@ -115,6 +134,8 @@ impl Thread {
         entry: None,
         entity: Entity::new(BASE_WEIGHT),
         started: 0,
+        wake_at: 0,
+        slept_with_lag: 0,
     };
 
     const fn is_runnable(&self) -> bool {
@@ -140,13 +161,43 @@ impl Threads {
         )
     }
 
+    /// How many threads could be picked right now.
+    fn runnable(&self) -> usize {
+        self.threads
+            .iter()
+            .filter(|thread| thread.is_runnable())
+            .count()
+    }
+
     /// Charge the running thread for the time since it went on.
     fn charge(&mut self, slot: usize, now: u64) {
         let thread = &mut self.threads[slot];
         thread.entity.charge(now.saturating_sub(thread.started));
         thread.started = now;
         if thread.entity.slice_is_spent() {
-            thread.entity.renew_deadline(SLICE_MS);
+            thread.entity.renew_deadline(SLICE_NS);
+        }
+    }
+
+    /// Make every sleeper whose deadline has passed runnable again.
+    ///
+    /// Each comes back at the queue's fair-share point offset by the lag it
+    /// left with, which is where the policy's clamp acts: this is its first
+    /// caller, and the reason it exists.
+    fn wake_due(&mut self, now: u64) {
+        for slot in 0..CAPACITY {
+            let thread = &self.threads[slot];
+            if thread.state != State::Sleeping || thread.wake_at > now {
+                continue;
+            }
+            let average = self
+                .average()
+                .unwrap_or(self.threads[slot].entity.vruntime());
+            let lag = self.threads[slot].slept_with_lag;
+            let thread = &mut self.threads[slot];
+            thread.entity.place(average, lag, SLICE_NS);
+            thread.state = State::Ready;
+            WAKES.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -186,6 +237,29 @@ impl Threads {
         }
     }
 
+    /// When the kernel next has a reason to be interrupted, given that
+    /// `running` is on the CPU — or `None` if it has none at all.
+    ///
+    /// Two reasons, and only two. A thread's slice ending matters only if
+    /// somebody else could take the CPU from it, so a lone runnable thread is
+    /// left alone however long it runs. A sleeper's deadline always matters,
+    /// because nothing else is going to notice it.
+    fn next_event(&self, running: usize, now: u64) -> Option<u64> {
+        let slice_end = (self.runnable() > 1)
+            .then(|| now.saturating_add(self.threads[running].entity.remaining_slice()));
+        let earliest_sleeper = self
+            .threads
+            .iter()
+            .filter(|thread| thread.state == State::Sleeping)
+            .map(|thread| thread.wake_at)
+            .min();
+
+        match (slice_end, earliest_sleeper) {
+            (Some(slice), Some(sleeper)) => Some(slice.min(sleeper)),
+            (only, None) | (None, only) => only,
+        }
+    }
+
     /// Move the CPU's bookkeeping from `current` to `next`.
     fn hand_over(&mut self, current: usize, next: usize, leaving: State, now: u64) {
         self.threads[current].state = leaving;
@@ -205,6 +279,9 @@ static THREADS: SpinLock<Threads> = SpinLock::new(Threads {
 /// its own host tests, which is worth knowing about immediately.
 static POLICY_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
 
+/// Sleepers put back on the queue.
+static WAKES: AtomicUsize = AtomicUsize::new(0);
+
 /// Take the mapped arena into use, making the caller the boot thread.
 ///
 /// # Errors
@@ -215,13 +292,15 @@ pub(crate) fn init(arena: StackArena) -> Result<usize, TaskError> {
     let mut threads = THREADS.lock();
     threads.spawnable = spawnable.min(STACK_SLOTS);
     let mut entity = Entity::new(BASE_WEIGHT);
-    entity.place(0, 0, SLICE_MS);
+    entity.place(0, 0, SLICE_NS);
     threads.threads[BOOT] = Thread {
         state: State::Running,
         name: "boot",
         entry: None,
         entity,
-        started: time::uptime_ms(),
+        started: time::now_ns(),
+        wake_at: 0,
+        slept_with_lag: 0,
     };
     Ok(threads.spawnable)
 }
@@ -243,6 +322,11 @@ pub(crate) fn free_slots() -> usize {
 /// How often the policy has been stood in for. See [`POLICY_FALLBACKS`].
 pub(crate) fn policy_fallbacks() -> usize {
     POLICY_FALLBACKS.load(Ordering::Relaxed)
+}
+
+/// How many sleepers have been put back on the queue.
+pub(crate) fn wakes() -> usize {
+    WAKES.load(Ordering::Relaxed)
 }
 
 /// Create a thread of the base weight that will run `entry`.
@@ -285,23 +369,33 @@ pub(crate) fn spawn_weighted(
             name,
             entry: Some(entry),
             entity: Entity::new(weight),
-            started: 0,
+            ..Thread::FREE
         };
         slot
     };
 
     // Outside the lock: `fabricate` takes `wost`'s own, and this one is a
     // leaf. The slot is reserved, so no other spawn can choose it and no
-    // tick can pick it.
+    // expiry can pick it.
     if let Err(error) = task::fabricate(slot, start, slot) {
         THREADS.lock().threads[slot] = Thread::FREE;
         return Err(SpawnError::Task(error));
     }
 
-    let mut threads = THREADS.lock();
-    let average = threads.average().unwrap_or(0);
-    threads.threads[slot].entity.place(average, 0, SLICE_MS);
-    threads.threads[slot].state = State::Ready;
+    // The new thread is the second runnable one, which is the moment the
+    // running thread's slice starts mattering — so this is an arming point
+    // even though nothing switches here.
+    let saved = interrupt::disable();
+    let now = time::now_ns();
+    let event = {
+        let mut threads = THREADS.lock();
+        let average = threads.average().unwrap_or(0);
+        threads.threads[slot].entity.place(average, 0, SLICE_NS);
+        threads.threads[slot].state = State::Ready;
+        threads.next_event(task::current(), now)
+    };
+    reschedule_timer(event);
+    saved.restore();
     Ok(slot)
 }
 
@@ -318,21 +412,23 @@ pub(crate) fn spawn_weighted(
 pub(crate) fn yield_now() {
     assert!(!interrupt::in_trap(), "yield from trap context");
 
-    // Flag clear from decision to switch, so a tick cannot preempt between
+    // Flag clear from decision to switch, so an expiry cannot preempt between
     // them and act on a table that says `next` is running when it is not.
     let saved = interrupt::disable();
-    let now = time::uptime_ms();
-    let next = {
+    let now = time::now_ns();
+    let (next, event) = {
         let mut threads = THREADS.lock();
         let current = task::current();
         threads.charge(current, now);
+        threads.wake_due(now);
         let next = threads.choose(current, false);
         if let Some(next) = next {
             threads.hand_over(current, next, State::Ready, now);
         }
-        next
+        (next, threads.next_event(next.unwrap_or(current), now))
     };
 
+    reschedule_timer(event);
     if let Some(next) = next
         && let Err(error) = task::switch_to(next)
     {
@@ -341,37 +437,140 @@ pub(crate) fn yield_now() {
     saved.restore();
 }
 
-/// The timer's turn: charge the running thread, and switch if something
-/// else is owed the CPU.
+/// Give the CPU up until `milliseconds` have passed.
 ///
-/// Called from the tick handler, after the end-of-interrupt. Does nothing
-/// if the interrupted code had interrupts off — it holds a lock, or is
-/// between a decision and a switch — so a critical section is never
-/// preempted; D-34 makes that test free. Nothing here logs (D-31).
-pub(crate) fn preempt(frame: &TrapFrame) {
-    if frame.flags & INTERRUPT_FLAG == 0 {
+/// The first thing in this kernel that waits for the clock rather than
+/// spinning on it. Another runnable thread takes the CPU meanwhile; if there
+/// is none, the CPU halts on this thread's stack until the timer it armed
+/// goes off, which is the same wait with nobody to hand the CPU to. Either
+/// way nothing is interrupted between now and the deadline unless somebody
+/// else asked for it.
+///
+/// Returns no earlier than the deadline, and possibly later: the thread
+/// becomes *runnable* then, and runs when the policy picks it. Returns at
+/// once on a machine whose clock never started, where there is no deadline to
+/// wait for and no timer to be woken by — a wait there would be a hang, and
+/// returning early is the only honest thing a sleep can do without one.
+///
+/// # Panics
+///
+/// Panics from trap context, where a switch would carry the handler's stack
+/// frame away with it (D-55), or if `wost` refuses a switch.
+pub(crate) fn sleep_ms(milliseconds: u64) {
+    sleep_ns(milliseconds.saturating_mul(NANOSECONDS_PER_MS));
+}
+
+/// Give the CPU up until `nanoseconds` have passed. See [`sleep_ms`].
+///
+/// # Panics
+///
+/// As [`sleep_ms`].
+pub(crate) fn sleep_ns(nanoseconds: u64) {
+    assert!(!interrupt::in_trap(), "sleep from trap context");
+    if !time::is_calibrated() {
         return;
     }
 
-    let now = time::uptime_ms();
-    let next = {
+    let saved = interrupt::disable();
+    let wake_at = time::now_ns().saturating_add(nanoseconds);
+    // A loop rather than one switch: a thread can be woken by something other
+    // than its own deadline — the halt below returns on any interrupt — and
+    // the deadline, not the wakeup, is what this promised.
+    while time::now_ns() < wake_at {
+        let now = time::now_ns();
+        let (next, event) = {
+            let mut threads = THREADS.lock();
+            let current = task::current();
+            threads.charge(current, now);
+            threads.wake_due(now);
+            match threads.choose(current, false) {
+                Some(next) => {
+                    let average = threads.average().unwrap_or(0);
+                    let thread = &mut threads.threads[current];
+                    thread.slept_with_lag = thread.entity.lag(average);
+                    thread.wake_at = wake_at;
+                    threads.hand_over(current, next, State::Sleeping, now);
+                    let event = threads.next_event(next, now);
+                    (Some(next), event)
+                }
+                // Nobody to hand the CPU to, so this thread keeps it and
+                // waits on it. Still the running thread, and still the one
+                // the table will charge — for time spent halted, which is
+                // the honest accounting: it had the CPU.
+                None => {
+                    let event = threads.next_event(current, now).unwrap_or(wake_at);
+                    (None, Some(event.min(wake_at)))
+                }
+            }
+        };
+
+        reschedule_timer(event);
+        match next {
+            Some(next) => {
+                if let Err(error) = task::switch_to(next) {
+                    panic!("sleep from slot {} refused: {error}", task::current());
+                }
+            }
+            None => {
+                // Enabling and halting has to be one step, or the interrupt
+                // that was going to end the wait can land in between and
+                // leave the CPU halted with nothing left to wake it.
+                interrupt::enable_and_halt();
+                interrupt::disable();
+            }
+        }
+    }
+    saved.restore();
+}
+
+/// The timer's turn: charge the running thread, wake whatever is due, switch
+/// if something else is owed the CPU, and arm for whatever comes next.
+///
+/// Called from the expiry handler, after the end-of-interrupt. The switch —
+/// and only the switch — is skipped if the interrupted code had interrupts
+/// off, because it holds a lock or is between a decision and a switch of its
+/// own; D-34 makes that test free. Waking and re-arming happen either way,
+/// because a sleeper whose deadline has passed has no other appointment: this
+/// expiry was it. Nothing here logs (D-31).
+pub(crate) fn on_expiry(frame: &TrapFrame) {
+    let now = time::now_ns();
+    let switchable = frame.flags & INTERRUPT_FLAG != 0;
+    let (next, event) = {
         let mut threads = THREADS.lock();
         if threads.spawnable == 0 {
             return;
         }
         let current = task::current();
         threads.charge(current, now);
-        match threads.choose(current, true) {
+        threads.wake_due(now);
+        let next = match switchable.then(|| threads.choose(current, true)).flatten() {
             Some(next) if next != current => {
                 threads.hand_over(current, next, State::Ready, now);
-                next
+                Some(next)
             }
-            _ => return,
-        }
+            _ => None,
+        };
+        (next, threads.next_event(next.unwrap_or(current), now))
     };
 
-    if let Err(error) = task::switch_from_trap(next, frame) {
+    reschedule_timer(event);
+    if let Some(next) = next
+        && let Err(error) = task::switch_from_trap(next, frame)
+    {
         panic!("preemption to slot {next} refused: {error}");
+    }
+}
+
+/// Arm the timer for the next thing owed a decision, or stop it if nothing
+/// is.
+///
+/// Every path that can change the answer ends here, and this is the whole of
+/// tickless: an idle machine leaves with the timer stopped, and takes no
+/// interrupts at all until something gives it a reason.
+fn reschedule_timer(event: Option<u64>) {
+    match event {
+        Some(deadline) => time::arm_at(deadline),
+        None => time::disarm(),
     }
 }
 
@@ -387,23 +586,25 @@ const INTERRUPT_FLAG: u64 = 1 << 9;
 /// started from, or if nothing is runnable — neither can happen while the
 /// boot thread is ready, which it is whenever it is not running.
 pub(crate) fn exit() -> ! {
-    // Never restored: this context is ending, and a tick between the
+    // Never restored: this context is ending, and an expiry between the
     // decision and the switch would find a thread that is neither running
     // nor free.
     let _off = interrupt::disable();
-    let now = time::uptime_ms();
-    let next = {
+    let now = time::now_ns();
+    let (next, event) = {
         let mut threads = THREADS.lock();
         let current = task::current();
         assert!(current != BOOT, "the boot thread cannot exit");
         threads.threads[current] = Thread::FREE;
+        threads.wake_due(now);
         let Some(next) = threads.choose(current, false) else {
             panic!("nothing is runnable after slot {current} exited");
         };
         threads.hand_over(current, next, State::Free, now);
-        next
+        (next, threads.next_event(next, now))
     };
 
+    reschedule_timer(event);
     let error = task::exit_to(next);
     panic!("exit to slot {next} refused: {error}");
 }

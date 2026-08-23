@@ -21,6 +21,7 @@ acpi-tables.workspace = true
 eevdf.workspace = true
 ps2-keys.workspace = true
 stack-layout.workspace = true
+timebase.workspace = true
 x86-paging.workspace = true
 wost = { path = "../wost" }
 x86-apic.workspace = true

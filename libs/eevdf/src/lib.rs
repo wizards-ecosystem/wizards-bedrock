@@ -42,10 +42,12 @@ pub const BASE_WEIGHT: u32 = 1024;
 
 /// Virtual-time units per unit of real time, at [`BASE_WEIGHT`].
 ///
-/// Real time is charged in whatever unit the caller keeps — milliseconds,
-/// today — and a single one of those at twice the base weight would truncate
-/// to nothing. Scaling by this first is what keeps a heavy thread's clock
-/// moving; the fairness test below is the one that found it standing still.
+/// Real time is charged in whatever unit the caller keeps, and a single one
+/// of those at twice the base weight would truncate to nothing. Scaling by
+/// this first is what keeps a heavy thread's clock moving; the fairness test
+/// below is the one that found it standing still. It also buys the headroom
+/// [`Entity::remaining_slice`] converts back through, which is why the
+/// round-trip is lossless at every weight the tests try.
 pub const RESOLUTION: u64 = 1024;
 
 /// Whether virtual time `a` comes before `b`, across a wrap.
@@ -94,6 +96,26 @@ impl Entity {
         // Widened so that a large charge at a small weight cannot overflow
         // before the division brings it back down.
         ((real as u128 * RESOLUTION as u128 * BASE_WEIGHT as u128) / self.weight as u128) as u64
+    }
+
+    /// Convert this thread's virtual time back into real units.
+    const fn real_units(&self, virtual_time: u64) -> u64 {
+        ((virtual_time as u128 * self.weight as u128) / (RESOLUTION as u128 * BASE_WEIGHT as u128))
+            as u64
+    }
+
+    /// Real time this thread may still run before its deadline, in whatever
+    /// unit its slice was given in.
+    ///
+    /// What a tickless kernel arms its timer for: the answer says when this
+    /// thread stops being the earliest deadline, so there is no reason to
+    /// interrupt it before then. Zero once the slice is spent, which is the
+    /// honest answer to "how long until now".
+    pub const fn remaining_slice(&self) -> u64 {
+        if self.slice_is_spent() {
+            return 0;
+        }
+        self.real_units(self.deadline.wrapping_sub(self.vruntime))
     }
 
     /// Account `ran` units of real time the thread has just spent running.
@@ -316,6 +338,55 @@ mod tests {
         fresh.place(AVERAGE, 0, SLICE);
         assert_eq!(fresh.vruntime(), AVERAGE);
         assert_eq!(fresh.deadline(), AVERAGE + slice_v);
+    }
+
+    /// What a tickless kernel asks before it arms anything: the answer must
+    /// be the slice it was given, count down as the thread runs, and reach
+    /// zero exactly where `slice_is_spent` turns true — at every weight,
+    /// because the conversion out and back is where a weight could be lost.
+    #[test]
+    fn the_remaining_slice_counts_down_to_the_deadline() {
+        for weight in [1, BASE_WEIGHT / 4, BASE_WEIGHT, 8 * BASE_WEIGHT] {
+            let mut entity = Entity::new(weight);
+            entity.place(0, 0, SLICE);
+            assert_eq!(entity.remaining_slice(), SLICE, "weight {weight}");
+
+            entity.charge(SLICE / 3);
+            assert_eq!(
+                entity.remaining_slice(),
+                SLICE - SLICE / 3,
+                "weight {weight}"
+            );
+
+            entity.charge(SLICE - SLICE / 3 - 1);
+            assert_eq!(entity.remaining_slice(), 1, "weight {weight}");
+
+            entity.charge(1);
+            assert!(entity.slice_is_spent(), "weight {weight}");
+            assert_eq!(entity.remaining_slice(), 0, "weight {weight}");
+        }
+    }
+
+    /// A slice long enough to matter to a tickless timer — milliseconds of
+    /// nanoseconds — survives the trip through virtual time at every weight,
+    /// which is the arithmetic that would overflow if the widening were
+    /// dropped from either conversion.
+    #[test]
+    fn a_slice_of_nanoseconds_survives_the_round_trip() {
+        const NANOSECONDS: u64 = 3_000_000;
+
+        for weight in [1, BASE_WEIGHT, 64 * BASE_WEIGHT] {
+            let mut entity = Entity::new(weight);
+            entity.place(0, 0, NANOSECONDS);
+            assert_eq!(entity.remaining_slice(), NANOSECONDS, "weight {weight}");
+        }
+    }
+
+    /// An entity that has never been placed has no slice, and a caller that
+    /// arms a timer from this must be told to fire now rather than never.
+    #[test]
+    fn an_unplaced_entity_has_nothing_remaining() {
+        assert_eq!(Entity::new(BASE_WEIGHT).remaining_slice(), 0);
     }
 
     #[test]

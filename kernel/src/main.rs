@@ -102,18 +102,28 @@ fn kernel_main(boot: BootInfo) -> ! {
 
 /// Halt until something happens, do the work it brought, halt again.
 ///
-/// Everything an interrupt wakes gets its turn between the halts — today
-/// that is the keyboard, drained on every tick. With the flag never set —
-/// interrupts declined at boot — the first halt is permanent, which is the
-/// same idle this kernel had before it could take interrupts.
+/// Where the keyboard's line is routed there is nothing to do between the
+/// halts: a keystroke wakes its handler directly (D-37 retired by D-49). With
+/// the flag never set — interrupts declined at boot — the first halt is
+/// permanent, which is the same idle this kernel had before it could take
+/// interrupts.
+///
+/// Where the line could not be routed, the byte has to be fetched by
+/// somebody, and until D-57 that somebody was whoever the 100 Hz tick woke.
+/// A tickless kernel has no such somebody, so the polled path asks for the
+/// interval it needs: a sleep that arms one timer, drains one batch, and
+/// arms the next. The rate is the same and the machine is quiet without it.
 fn idle() -> ! {
+    /// What the retired tick used to give the polled path, restated as the
+    /// interval it always was.
+    const POLL_INTERVAL_MS: u64 = 10;
+
     loop {
-        cpu::halt();
-        // Only where the line could not be routed. With the I/O APIC driving
-        // it, a keystroke wakes the handler directly and there is nothing
-        // left here to drain (D-37 retired by D-49).
-        if !input::is_interrupt_driven() {
+        if input::is_interrupt_driven() {
+            cpu::halt();
+        } else {
             input::poll();
+            thread::sleep_ms(POLL_INTERVAL_MS);
         }
     }
 }
@@ -124,12 +134,12 @@ fn idle() -> ! {
 /// a kernel that cannot take interrupts is worth far more than one that takes
 /// them into a controller it never configured. In order — stop the legacy
 /// controllers delivering anything, give the local APIC its vectors and turn
-/// it on, calibrate and arm the timer, and only then set the flag. The timer
-/// sits where it does for both of its neighbours: it needs the APIC's
-/// registers answering, and running before the `sti` makes the measurement
-/// unpreemptible and holds the first tick pending until the kernel is ready
-/// to take it. Alone among the steps, its failure vetoes nothing — a kernel
-/// without a clock still wants its keyboard.
+/// it on, measure the clocks, and only then set the flag. Calibration sits
+/// where it does for both of its neighbours: it needs the APIC's registers
+/// answering, and running before the `sti` is what makes the measurement
+/// unpreemptible. It arms nothing — the timer is the scheduler's to arm, and
+/// nothing has asked it for anything yet. Alone among the steps, its failure
+/// vetoes nothing: a kernel without a clock still wants its keyboard.
 fn start_interrupts() {
     if let Err(reason) = pic::silence() {
         warn!("legacy controllers not silenced: {reason}; interrupts stay off");
@@ -146,8 +156,19 @@ fn start_interrupts() {
     }
 
     match time::init() {
-        Ok(report) => info!("time: {report}"),
-        Err(reason) => warn!("timer: {reason}; uptime stays at zero"),
+        Ok(report) => {
+            info!("time: {report}");
+            // Loud, because it is the one property of the clock this kernel
+            // cannot check for itself: `cpuid` either promises the counter
+            // runs at a constant rate or it does not, and a machine that
+            // declines the promise may still be throttling underneath us.
+            if !report.counter_is_invariant() {
+                warn!(
+                    "time: the counter is not advertised invariant; the clock is only as steady as this machine's power management"
+                );
+            }
+        }
+        Err(reason) => warn!("clock: {reason}; uptime stays at zero, nothing preempts"),
     }
 
     interrupt::enable();
@@ -164,7 +185,7 @@ fn route_keyboard(routing: Option<mem::Routing>) {
     const KEYBOARD_IRQ: u8 = 1;
 
     let Some(mut routing) = routing else {
-        info!("keyboard: no io apic; polled from the tick");
+        info!("keyboard: no io apic; polled from a sleeping idle loop");
         return;
     };
 

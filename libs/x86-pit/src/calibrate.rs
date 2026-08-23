@@ -1,10 +1,12 @@
-//! Turning one shared measurement window into a rate and a reload count.
+//! Turning one measurement window into a clock's rate.
 //!
-//! Both functions work from the same raw pair — cycles another clock counted
-//! while the 8254 counted `pit_ticks` of its crystal — and round to nearest
-//! exactly once, from the raw numbers. Deriving the reload count from an
-//! already-rounded rate would compound two floors; deriving both from the
-//! window keeps the tick honest to what was actually measured.
+//! A window is a pair: cycles some other clock counted while the 8254 counted
+//! `pit_ticks` of its crystal. One window can be shared by every clock read
+//! across it — the kernel measures the APIC timer and the timestamp counter
+//! in the same one — so this is a single function, applied once per clock.
+//!
+//! Rounding is to nearest, from the raw numbers, exactly once. Deriving
+//! anything from an already-rounded rate would compound two floors.
 
 use crate::CRYSTAL_HZ;
 
@@ -13,7 +15,7 @@ use crate::CRYSTAL_HZ;
 /// Zero when the window is empty or the product overflows — both are readings
 /// no real measurement produces, and zero fails any plausibility bound the
 /// caller applies.
-pub const fn divided_hz(counted: u64, pit_ticks: u16) -> u64 {
+pub const fn measured_hz(counted: u64, pit_ticks: u16) -> u64 {
     if pit_ticks == 0 {
         return 0;
     }
@@ -24,30 +26,8 @@ pub const fn divided_hz(counted: u64, pit_ticks: u16) -> u64 {
     }
 }
 
-/// The reload count that makes the measured clock expire `tick_hz` times a
-/// second.
-///
-/// `None` when the window is empty, the rate asked for is zero, the count
-/// would not fit the timer's thirty-two bits, or it would be zero — a zero
-/// reload count stops the hardware rather than running it fast.
-pub const fn periodic_initial_count(counted: u64, pit_ticks: u16, tick_hz: u32) -> Option<u32> {
-    if pit_ticks == 0 || tick_hz == 0 {
-        return None;
-    }
-    let denominator = pit_ticks as u64 * tick_hz as u64;
-    let numerator = match rounded_numerator(counted, denominator) {
-        Some(numerator) => numerator,
-        None => return None,
-    };
-    let count = numerator / denominator;
-    if count == 0 || count > u32::MAX as u64 {
-        return None;
-    }
-    Some(count as u32)
-}
-
 /// The product plus the half-denominator that makes the division round to
-/// nearest — `None` if either step overflows, so both callers stay total on
+/// nearest — `None` if either step overflows, so the caller stays total on
 /// inputs no real measurement produces.
 const fn rounded_numerator(counted: u64, denominator: u64) -> Option<u64> {
     match counted.checked_mul(CRYSTAL_HZ as u64) {
@@ -64,17 +44,14 @@ mod tests {
     /// ten cycles per crystal tick is ten times the crystal.
     #[test]
     fn an_exact_ratio_calibrates_exactly() {
-        assert_eq!(divided_hz(200_000, 20_000), 10 * CRYSTAL_HZ as u64);
-        assert_eq!(periodic_initial_count(200_000, 20_000, 100), Some(119_318));
+        assert_eq!(measured_hz(200_000, 20_000), 10 * CRYSTAL_HZ as u64);
     }
 
-    /// 1_193_182 / 4 is 298_295.5: nearest rounds up where floor loses half a
-    /// hertz per crystal tick — in both functions, each of which carries its
-    /// own half-denominator.
+    /// 1_193_182 / 4 is 298_295.5: nearest rounds up where floor would lose
+    /// half a hertz per crystal tick.
     #[test]
     fn rounding_is_to_nearest_not_floor() {
-        assert_eq!(divided_hz(1, 4), 298_296);
-        assert_eq!(periodic_initial_count(1, 4, 1), Some(298_296));
+        assert_eq!(measured_hz(1, 4), 298_296);
     }
 
     /// Inputs at the top of the space must answer, not overflow: the rounding
@@ -83,65 +60,55 @@ mod tests {
     fn the_rounding_addend_cannot_overflow() {
         let largest_counted = u64::MAX / CRYSTAL_HZ as u64;
 
-        assert!(divided_hz(largest_counted, u16::MAX) > 0);
-        assert_eq!(divided_hz(largest_counted + 1, u16::MAX), 0);
-        assert_eq!(
-            periodic_initial_count(largest_counted, u16::MAX, u32::MAX),
-            None
-        );
+        assert!(measured_hz(largest_counted, u16::MAX) > 0);
+        assert_eq!(measured_hz(largest_counted + 1, u16::MAX), 0);
     }
 
     #[test]
     fn an_empty_window_yields_nothing() {
-        assert_eq!(divided_hz(500, 0), 0);
-        assert_eq!(periodic_initial_count(500, 0, 100), None);
+        assert_eq!(measured_hz(500, 0), 0);
     }
 
     #[test]
-    fn a_zero_rate_yields_nothing() {
-        assert_eq!(periodic_initial_count(500, 100, 0), None);
+    fn a_counter_that_never_moved_measures_no_rate() {
+        assert_eq!(measured_hz(0, 20_000), 0);
     }
 
-    #[test]
-    fn a_counter_that_never_moved_yields_nothing() {
-        assert_eq!(periodic_initial_count(0, 20_000, 100), None);
-    }
-
-    /// A clock fast enough to overflow the reload count is refused, not
-    /// truncated: one crystal tick of window and one expiry a second pushes
-    /// the count past thirty-two bits.
-    #[test]
-    fn a_count_past_thirty_two_bits_yields_nothing() {
-        assert_eq!(periodic_initial_count(u32::MAX as u64, 1, 1), None);
-    }
-
-    /// The numbers the two real machines produce: QEMU models the APIC clock
-    /// at a gigahertz, VMware has traditionally advertised sixty-six
-    /// megahertz. Both measured over a genuine 20 ms window.
+    /// The numbers the two real machines produce, for both clocks a window is
+    /// now shared by. QEMU models the APIC clock at a gigahertz and passes
+    /// the host's timestamp counter through; VMware has traditionally
+    /// advertised a sixty-six megahertz bus. All measured over a genuine
+    /// 20 ms window.
     #[test]
     fn qemu_and_vmware_shaped_numbers_land_in_sane_bounds() {
         let window = 23_863;
 
-        let hz = divided_hz(20_000_000, window);
-        assert!((999_000_000..=1_001_000_000).contains(&hz), "qemu {hz}");
-        let count = periodic_initial_count(20_000_000, window, 100).unwrap();
-        assert!((9_990_000..=10_010_000).contains(&count), "qemu {count}");
+        let apic = measured_hz(20_000_000, window);
+        assert!((999_000_000..=1_001_000_000).contains(&apic), "qemu {apic}");
 
-        let hz = divided_hz(1_320_000, window);
-        assert!((65_000_000..=67_000_000).contains(&hz), "vmware {hz}");
-        let count = periodic_initial_count(1_320_000, window, 100).unwrap();
-        assert!((650_000..=670_000).contains(&count), "vmware {count}");
+        let tsc = measured_hz(64_000_000, window);
+        assert!(
+            (3_190_000_000..=3_210_000_000).contains(&tsc),
+            "qemu tsc {tsc}"
+        );
+
+        let apic = measured_hz(1_320_000, window);
+        assert!((65_000_000..=67_000_000).contains(&apic), "vmware {apic}");
     }
 
-    /// The plausible extremes both fit: a 10 MHz bus still yields a count with
-    /// hundred-nanosecond interpolation grain, and a 5 GHz one stays far
-    /// inside sixty-four bits.
+    /// The plausible extremes both fit: a 10 MHz bus and a 5 GHz counter are
+    /// measured from the same window arithmetic without either saturating.
     #[test]
-    fn the_plausible_bus_range_stays_representable() {
-        let slow = periodic_initial_count(200_000, 23_863, 100).unwrap();
-        assert!((99_000..101_000).contains(&slow), "slow {slow}");
+    fn the_plausible_clock_range_stays_representable() {
+        let window = 23_863;
 
-        let fast = periodic_initial_count(100_000_000, 23_863, 100).unwrap();
-        assert!((49_900_000..=50_100_000).contains(&fast), "fast {fast}");
+        let slow = measured_hz(200_000, window);
+        assert!((9_900_000..=10_100_000).contains(&slow), "slow {slow}");
+
+        let fast = measured_hz(100_000_000, window);
+        assert!(
+            (4_990_000_000..=5_010_000_000).contains(&fast),
+            "fast {fast}"
+        );
     }
 }

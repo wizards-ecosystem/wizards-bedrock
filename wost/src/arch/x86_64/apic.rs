@@ -224,29 +224,44 @@ pub fn set_timer_divide(divide: Divide) {
 
 /// Start the timer's countdown from `count` without touching its delivery.
 ///
-/// With the timer's entry masked — as [`init`] leaves it — the countdown
-/// free-runs and delivers nothing, which is exactly what calibration
-/// measures. Writing the initial count is what starts the timer; that is the
-/// architecture's rule, not this module's. Does nothing before [`init`].
-pub fn arm_timer(count: u32) {
-    write(register::INITIAL_COUNT, count.into());
-}
-
-/// Deliver `vector` every `count` divided-clock cycles, starting now.
-///
-/// The entry is written before the count because the count write is what
-/// starts the timer: the first expiry must already have a vector and a mode.
-/// Does nothing before [`init`].
+/// Writing the initial count is what starts the timer; that is the
+/// architecture's rule, not this module's. What the expiry then does is
+/// whatever the entry says: nothing at all while it is masked, as [`init`]
+/// leaves it and as calibration wants it, or one interrupt after
+/// [`set_timer_one_shot`]. Does nothing before [`init`].
 ///
 /// # Panics
 ///
-/// Panics if `vector` is below 16, which the APIC would refuse, or if `count`
-/// is zero — a zero initial count stops the timer, which is never what a
-/// caller asking for a periodic tick means.
-pub fn start_periodic_timer(vector: u8, count: u32) {
+/// Panics if `count` is zero, which stops the timer rather than arming it —
+/// [`disarm_timer`] is how a caller says that on purpose.
+pub fn arm_timer(count: u32) {
     assert!(count != 0, "a zero initial count stops the timer");
-    write(register::LVT_TIMER, Entry::periodic(vector).bits().into());
     write(register::INITIAL_COUNT, count.into());
+}
+
+/// Stop the countdown.
+///
+/// A zero initial count is how the architecture spells "not counting", and
+/// reading the current count back as zero is how a caller confirms it. An
+/// interrupt the timer has already delivered is not recalled by this; a
+/// handler that finds nothing to do is the cost of the race, and it is
+/// cheaper than the lock that would close it. Does nothing before [`init`].
+pub fn disarm_timer() {
+    write(register::INITIAL_COUNT, 0);
+}
+
+/// Make each expiry deliver `vector` once, and stop.
+///
+/// Only the entry: the timer stays as armed or as stopped as it already was,
+/// so a caller unmasking a countdown it has not disarmed will get an
+/// interrupt whenever that countdown happens to reach zero. Arrange to be
+/// disarmed first. Does nothing before [`init`].
+///
+/// # Panics
+///
+/// Panics if `vector` is below 16, which the APIC would refuse.
+pub fn set_timer_one_shot(vector: u8) {
+    write(register::LVT_TIMER, Entry::one_shot(vector).bits().into());
 }
 
 /// Where the timer's countdown currently stands. Zero before [`init`].

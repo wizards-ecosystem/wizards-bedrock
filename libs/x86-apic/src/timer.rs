@@ -1,10 +1,11 @@
-//! The timer's divide encoding and down-counter arithmetic.
+//! The timer's divide encoding and the count it is armed with.
 //!
 //! Two pieces, both hardware-free. The divide-configuration register scatters
 //! a four-bit value across bits 0, 1 and 3 (Intel SDM Vol. 3A §11.5.4), which
 //! is exactly the kind of layout that earns a transcribed table and a test.
-//! And turning a tick count plus the down-counter's position into elapsed
-//! milliseconds is arithmetic the kernel should not be trusted to improvise.
+//! And a one-shot timer is armed by writing a count, which the architecture
+//! bounds at both ends: zero stops the hardware rather than firing it soon,
+//! and thirty-two bits is as far ahead as it can be asked to look.
 
 /// How the bus clock is divided before it drives the timer's countdown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,29 +58,28 @@ impl Divide {
     }
 }
 
-/// Milliseconds since the timer started: whole ticks, plus the fraction of the
-/// current tick the down-counter has already covered.
+/// The count to arm a one-shot timer with, for a wait of `ticks` of the
+/// divided clock.
 ///
-/// The fraction never exceeds `ms_per_tick`, and reaches it only at the
-/// instant the counter reads zero — the boundary the tick count is about to
-/// claim, so the value is continuous across the increment rather than jumping.
-/// A zero `initial_count` means the timer never calibrated, and the answer is
-/// whole ticks alone, which for a timer that never started is zero.
-pub const fn elapsed_milliseconds(
-    ticks: u64,
-    ms_per_tick: u32,
-    initial_count: u32,
-    current_count: u32,
-) -> u64 {
-    let whole = ticks.saturating_mul(ms_per_tick as u64);
-    if initial_count == 0 {
-        return whole;
+/// Clamped at both ends, because both ends mean something the caller did not
+/// ask for. Zero is the architecture's way of spelling "stopped", so a wait
+/// of no time at all becomes the soonest the hardware can be asked for — one
+/// tick — rather than a timer that never fires. And a wait further ahead than
+/// the counter's thirty-two bits becomes the furthest it can express, which
+/// is a caller that must re-arm when it expires rather than one that has been
+/// silently given a wrapped-around count.
+pub const fn initial_count(ticks: u64) -> u32 {
+    if ticks == 0 {
+        return 1;
     }
-    // Both factors fit in 32 bits, so the product fits in 64 with room over.
-    let counted = initial_count.saturating_sub(current_count) as u64;
-    let fraction = counted * ms_per_tick as u64 / initial_count as u64;
-    whole.saturating_add(fraction)
+    if ticks > u32::MAX as u64 {
+        return u32::MAX;
+    }
+    ticks as u32
 }
+
+/// The longest wait one arming can express, in ticks of the divided clock.
+pub const MAX_TICKS: u64 = u32::MAX as u64;
 
 #[cfg(test)]
 mod tests {
@@ -135,62 +135,25 @@ mod tests {
     }
 
     #[test]
-    fn interpolation_starts_a_tick_at_zero() {
-        assert_eq!(elapsed_milliseconds(7, 10, 100_000, 100_000), 70);
+    fn a_wait_inside_the_counter_is_the_count() {
+        assert_eq!(initial_count(1), 1);
+        assert_eq!(initial_count(3_000_000), 3_000_000);
+        assert_eq!(initial_count(MAX_TICKS), u32::MAX);
     }
 
-    /// Sweeping the counter from full to empty must never claim more than the
-    /// tick in progress, and may claim all of it only at the instant the
-    /// counter reads zero — where the value meets, exactly, what the counted
-    /// boundary will read after the increment.
+    /// The clamp that matters: a scheduler asking for a deadline that has
+    /// already passed must get an interrupt, and a zero count would instead
+    /// stop the timer for good.
     #[test]
-    fn interpolation_never_passes_the_next_tick() {
-        for initial in [3u32, 7, 100, 100_000, 10_000_000] {
-            for current in (0..=initial).rev() {
-                let elapsed = elapsed_milliseconds(5, 10, initial, current);
-                if current == 0 {
-                    assert_eq!(elapsed, elapsed_milliseconds(6, 10, initial, initial));
-                } else {
-                    assert!(elapsed < 60, "initial {initial} current {current}");
-                }
-            }
-        }
+    fn a_wait_of_no_time_still_arms_the_timer() {
+        assert_eq!(initial_count(0), 1);
     }
 
+    /// The other clamp: a sleep longer than the counter can express is armed
+    /// as far ahead as it goes, and the caller re-arms for the remainder.
     #[test]
-    fn interpolation_is_monotonic_within_a_tick_and_across_the_boundary() {
-        let initial = 10_000;
-        let mut previous = 0;
-        for current in (0..=initial).rev() {
-            let elapsed = elapsed_milliseconds(3, 10, initial, current);
-            assert!(elapsed >= previous, "current {current}");
-            previous = elapsed;
-        }
-        assert!(elapsed_milliseconds(4, 10, initial, initial) >= previous);
-    }
-
-    /// The path a machine whose timer declined takes: no initial count means
-    /// whole ticks only, and no ticks means zero.
-    #[test]
-    fn a_zero_initial_count_counts_whole_ticks_only() {
-        assert_eq!(elapsed_milliseconds(12, 10, 0, 0), 120);
-        assert_eq!(elapsed_milliseconds(0, 10, 0, 0), 0);
-    }
-
-    /// A read that races the hardware's reload can catch the counter above the
-    /// initial count it is falling from; the fraction saturates to the start
-    /// of the tick rather than wrapping.
-    #[test]
-    fn a_current_count_above_initial_saturates_to_the_tick_start() {
-        assert_eq!(elapsed_milliseconds(4, 10, 100, 250), 40);
-    }
-
-    #[test]
-    fn the_arithmetic_cannot_overflow_at_the_extremes() {
-        assert_eq!(elapsed_milliseconds(u64::MAX, 1000, u32::MAX, 0), u64::MAX);
-        assert_eq!(
-            elapsed_milliseconds(0, u32::MAX, u32::MAX, 0),
-            u64::from(u32::MAX)
-        );
+    fn a_wait_past_the_counter_is_the_counter() {
+        assert_eq!(initial_count(MAX_TICKS + 1), u32::MAX);
+        assert_eq!(initial_count(u64::MAX), u32::MAX);
     }
 }

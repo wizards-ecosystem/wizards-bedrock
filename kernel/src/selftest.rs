@@ -476,6 +476,43 @@ fn thread_stacks_are_guarded() -> bool {
     })
 }
 
+/// What a thread found the interrupt flag to be on its first instruction:
+/// zero before it ran, one for set, two for clear.
+static FIRST_RUN_FLAG: AtomicUsize = AtomicUsize::new(0);
+
+fn report_the_flag() {
+    FIRST_RUN_FLAG.store(
+        if interrupt::are_enabled() { 1 } else { 2 },
+        Ordering::Release,
+    );
+}
+
+/// A thread is accepting interrupts on its first instruction.
+///
+/// Not a formality. A thread's first run is the one moment its flag comes
+/// from somewhere other than its own stack, and the obvious place to take it
+/// from — the context doing the switch — is always wrong: a scheduler clears
+/// the flag around every decision, so the switch never sees anything but a
+/// clear one. A thread that starts uninterruptible can never be preempted and
+/// never be woken; it can only yield. This kernel spawned such threads from
+/// slice 1 until a sleeping check hung waiting for one of them.
+///
+/// Spawned from a yield, because that is the path that used to get it wrong;
+/// the preemption path always handed over a set flag and would pass either
+/// way.
+fn a_new_thread_is_interruptible() -> bool {
+    FIRST_RUN_FLAG.store(0, Ordering::Release);
+    let free = thread::free_slots();
+    if thread::spawn("flag", report_the_flag).is_err() {
+        return false;
+    }
+
+    let ran = yields_until(|| FIRST_RUN_FLAG.load(Ordering::Acquire) != 0);
+    let exited = yields_until(|| thread::free_slots() == free);
+
+    ran && exited && FIRST_RUN_FLAG.load(Ordering::Acquire) == 1
+}
+
 fn leave_at_once() {}
 
 /// A slot whose thread has exited is free again, and can be spawned on.
@@ -524,7 +561,16 @@ fn heavy_spinner() {
 ///
 /// This thread never gives the CPU up on purpose, so anything that makes
 /// progress meanwhile did so because the timer took it away.
+///
+/// Guarded by [`the_clock_is_running`], because a deadline read from a clock
+/// that never advances is a hang — and the harness cannot tell a hang from a
+/// crash, which is the difference between a red verdict and no verdict at
+/// all. The first boot of the tickless kernel spent its sixty seconds here,
+/// on a machine whose calibration had declined.
 fn runs_until(ms: u64, done: impl Fn() -> bool) -> bool {
+    if !the_clock_is_running() {
+        return false;
+    }
     let deadline = time::uptime_ms() + ms;
     loop {
         if done() {
@@ -535,6 +581,17 @@ fn runs_until(ms: u64, done: impl Fn() -> bool) -> bool {
         }
         spin_loop();
     }
+}
+
+/// Whether the clock moves at all, within a bounded number of reads.
+///
+/// The precondition every timed wait here takes first, and the only one that
+/// can be established without a working clock to time it against.
+fn the_clock_is_running() -> bool {
+    const ATTEMPTS: u32 = 1_000_000;
+
+    let start = time::now_ns();
+    time::is_calibrated() && spins_until(ATTEMPTS, || time::now_ns() > start)
 }
 
 /// A thread that never yields cannot keep the CPU from one that is waiting.
@@ -714,6 +771,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     );
     report.check("an exited slot is reused", an_exited_slot_is_reused());
     report.check(
+        "a new thread runs with interrupts accepted",
+        a_new_thread_is_interruptible(),
+    );
+    report.check(
         "a spinning thread cannot starve another",
         a_spinner_cannot_starve_another(),
     );
@@ -791,27 +852,36 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     );
 
     report.check(
-        "the timer entry is periodic and unmasked",
+        "the timer entry is one-shot and unmasked",
         timer_entry_is_programmed(),
     );
-    report.check("the calibrated rate is believable", rate_is_believable());
-
-    let ticks = time::ticks();
-    report.check("the tick counter advances", ticks_reach(ticks + 1));
-    // Same argument as the ping pair: the APIC will not deliver a second tick
-    // until the first is dismissed, so the second proves the handler's
-    // end-of-interrupt.
     report.check(
-        "a tick is dismissed, so the next one arrives",
-        ticks_reach(ticks + 2),
+        "both calibrated rates are believable",
+        rates_are_believable(),
     );
 
-    let sweep = sweep_uptime();
-    report.check("uptime never runs backwards", sweep.monotonic);
-    report.check("uptime resolves finer than a tick", sweep.interpolated);
+    let sweep = sweep_clock();
+    report.check("the clock never runs backwards", sweep.monotonic);
+    report.check("the clock advances between two reads", sweep.advanced);
     report.check(
-        "uptime agrees with the tick counter",
-        uptime_matches_ticks(),
+        "the clock resolves finer than a millisecond",
+        sweep.finer_than_a_millisecond,
+    );
+    report.check(
+        "an idle kernel takes no timer interrupts",
+        an_idle_kernel_takes_no_timer_interrupts(),
+    );
+    report.check(
+        "the timer fires about once a slice under load",
+        the_timer_fires_about_once_a_slice(),
+    );
+    report.check(
+        "a sleeping thread wakes on time, and quietly",
+        a_sleeper_wakes_on_time_and_quietly(),
+    );
+    report.check(
+        "a sleeping thread hands the cpu over",
+        sleeping_hands_the_cpu_over(),
     );
 
     report.check("the keyboard controller came up", input::is_ready());
@@ -985,101 +1055,201 @@ fn ping_arrives(target: usize) -> bool {
     spins_until(ATTEMPTS, || trap::last_ping().count >= target)
 }
 
-/// The hardware's own record of the timer: unmasked, periodic, our vector.
+/// The hardware's own record of the timer: unmasked, one-shot, our vector.
+///
+/// One-shot is the half that is new. A periodic entry here would mean the
+/// tick D-57 retired had come back, and every check below that counts
+/// interrupts would be counting something the scheduler never asked for.
 fn timer_entry_is_programmed() -> bool {
     let entry = apic::timer_entry();
-    !entry.is_masked() && entry.is_periodic() && entry.vector() == vector::TIMER
+    !entry.is_masked() && entry.is_one_shot() && entry.vector() == vector::TIMER
 }
 
-/// The measured rate, against bounds restated here rather than shared with
-/// the code under test: a megahertz to fifty gigahertz covers every machine
-/// this could believably boot on, and calibration having declined reads as
-/// zero, which fails too.
-fn rate_is_believable() -> bool {
-    (1_000_000..=50_000_000_000).contains(&time::divided_hz())
+/// Both measured rates, against bounds restated here rather than shared with
+/// the code under test. Calibration having declined reads as zero for either,
+/// which fails.
+fn rates_are_believable() -> bool {
+    (1_000_000..=50_000_000_000).contains(&time::apic_hz())
+        && (100_000_000..=100_000_000_000).contains(&time::counter_hz())
 }
 
-/// Spin until the tick count reaches `target`.
-///
-/// Sized in reads rather than time: tens of millions of them span many 10 ms
-/// ticks on anything that can boot this kernel, and cost a second or two,
-/// not the harness's whole budget, when the timer is dead.
-fn ticks_reach(target: u64) -> bool {
-    const ATTEMPTS: u32 = 20_000_000;
-
-    spins_until(ATTEMPTS, || time::ticks() >= target)
-}
-
-/// What a continuous read of the clock across several ticks saw.
-struct UptimeSweep {
+/// What a continuous read of the clock saw.
+struct ClockSweep {
     monotonic: bool,
-    interpolated: bool,
+    advanced: bool,
+    finer_than_a_millisecond: bool,
 }
 
-/// Read the clock as fast as it can be read until three ticks have passed.
+/// Read the clock as fast as it can be read, for a few milliseconds.
 ///
-/// Monotonicity is the property under test; interpolation is observed on the
-/// side, as at least one reading that is not a whole tick. The very first
-/// reading is taken while holding a lock — the case the clamp in `time`
-/// exists for, because the countdown can reload under a clear interrupt flag
-/// while the tick it announces stays pending.
-fn sweep_uptime() -> UptimeSweep {
+/// Three properties at once, and monotonicity is no longer a formality: the
+/// clamp that used to make it true by construction went with the tick, so
+/// this is now watching the counter's own claim (D-57). A pair of adjacent
+/// readings that differ is the resolution, and a reading that is not a whole
+/// number of milliseconds is the grain the old interpolation could only
+/// approximate. The first reading is taken while holding a lock, which is
+/// where the retired clock could be caught reading backwards.
+fn sweep_clock() -> ClockSweep {
     const ATTEMPTS: u32 = 2_000_000;
-    const TICK_SPAN: u64 = 3;
+    const SPAN_MS: u64 = 3;
 
-    let per_tick = u64::from(time::MS_PER_TICK);
-    let start = time::ticks();
+    let deadline = time::uptime_ms() + SPAN_MS;
     let mut previous = 0;
-    let mut sweep = UptimeSweep {
+    let mut sweep = ClockSweep {
         monotonic: true,
-        interpolated: false,
+        advanced: false,
+        finer_than_a_millisecond: false,
     };
 
     for attempt in 0..ATTEMPTS {
         let sample = if attempt == 0 {
             let lock = SpinLock::new(0u32);
             let held = lock.lock();
-            let sample = time::uptime_ms();
+            let sample = time::now_ns();
             drop(held);
             sample
         } else {
-            time::uptime_ms()
+            time::now_ns()
         };
 
         if sample < previous {
             sweep.monotonic = false;
         }
-        if !sample.is_multiple_of(per_tick) {
-            sweep.interpolated = true;
+        if attempt > 0 && sample > previous {
+            sweep.advanced = true;
+        }
+        if !sample.is_multiple_of(time::NANOSECONDS_PER_MS) {
+            sweep.finer_than_a_millisecond = true;
         }
         previous = sample;
 
-        if time::ticks() >= start + TICK_SPAN {
+        if sample / time::NANOSECONDS_PER_MS >= deadline {
             break;
         }
     }
     sweep
 }
 
-/// The two clocks agree: an uptime reading lands between the tick counts
-/// taken on either side of it, each converted to the milliseconds it stands
-/// for, with one tick of slack for the read in flight.
+/// Timer expiries taken while nothing at all is waiting for one.
 ///
-/// Checked only once twenty ticks have passed. The bracket allows one tick of
-/// slack, so a conversion off by even a millisecond per tick hides inside it
-/// until the error has had ten ticks to accumulate — breaking this check once
-/// proved exactly that, when a fresh-booted clock let a wrong ratio through.
-fn uptime_matches_ticks() -> bool {
-    const SETTLE_TICKS: u64 = 20;
+/// The whole claim of D-57, and the one number that would have been fifty on
+/// the kernel this replaced. The boot thread is the only runnable thread and
+/// there are no sleepers, so the scheduler has nothing to be interrupted
+/// *for* — and a machine with nothing to do should therefore take no timer
+/// interrupts whatever, not merely fewer.
+fn an_idle_kernel_takes_no_timer_interrupts() -> bool {
+    /// Five times the old tick's period, so a tick that survived would show
+    /// up five times over.
+    const QUIET_MS: u64 = 500;
 
-    if !ticks_reach(SETTLE_TICKS) {
+    let before = time::expiries();
+    runs_until(QUIET_MS, || false);
+    time::expiries() == before
+}
+
+/// While threads compete for the CPU, the timer fires about once a slice.
+///
+/// The other half of the claim above, and the half it cannot make: a machine
+/// that takes no interrupts when idle might simply have a timer that never
+/// works. This is the same counter under load, bounded on both sides — too
+/// few and nothing is being preempted on the schedule the slice sets, too
+/// many and something is arming for far less than it was asked for. The
+/// slice is restated here rather than shared with the scheduler, so a change
+/// there has to be made here too, deliberately.
+///
+/// It is also what proves the handler's end-of-interrupt, which the retired
+/// tick's pair of checks used to: the APIC will not deliver a second timer
+/// interrupt until the first is dismissed, so a lower bound of dozens is a
+/// lower bound on dismissals.
+fn the_timer_fires_about_once_a_slice() -> bool {
+    const WINDOW_MS: u64 = 300;
+    /// `thread::SLICE_NS`, in the unit this window is measured in.
+    const SLICE_MS: u64 = 3;
+
+    STOP_SPINNING.store(0, Ordering::Release);
+    LIGHT_SPINS.store(0, Ordering::Release);
+    let free = thread::free_slots();
+    if thread::spawn("competitor", light_spinner).is_err() {
         return false;
     }
-    let per_tick = u64::from(time::MS_PER_TICK);
-    let floor = time::ticks() * per_tick;
-    let uptime = time::uptime_ms();
-    let ceiling = (time::ticks() + 1) * per_tick;
-    floor <= uptime && uptime <= ceiling
+
+    let before = time::expiries();
+    runs_until(WINDOW_MS, || false);
+    let spent = time::expiries() - before;
+    STOP_SPINNING.store(1, Ordering::Release);
+    let exited = yields_until(|| thread::free_slots() == free);
+
+    // A factor of four either way: the window is quantised by the slice and
+    // jittered by a hypervisor, and the numbers this is separating — one an
+    // interrupt per slice, the other none at all or thousands — are orders
+    // of magnitude apart.
+    let expected = WINDOW_MS / SLICE_MS;
+    exited && spent >= expected / 4 && spent <= expected * 4
+}
+
+/// A thread that sleeps with nothing else to run comes back no earlier than
+/// it asked, and the machine stays quiet while it waits.
+///
+/// The degenerate branch of sleeping: the boot thread has nobody to hand the
+/// CPU to, so it halts on its own stack until the timer it armed goes off.
+/// Both halves matter and neither alone is evidence — a sleeper that returned
+/// on time might have spun, and a quiet machine might have had nothing
+/// sleeping. Together they say the wait was the timer's: armed for the
+/// deadline, taken at it, once. The upper bound is what a periodic tick would
+/// blow through twenty times over.
+fn a_sleeper_wakes_on_time_and_quietly() -> bool {
+    /// Long enough that a surviving tick would be caught many times, short
+    /// beside the harness's patience.
+    const SLEEP_MS: u64 = 200;
+    /// The wake itself, and room for the odd extra expiry around it.
+    const EXPIRY_BUDGET: u64 = 4;
+    /// How late the wake may be. Nothing else is runnable, so the thread
+    /// resumes the moment its own timer fires — this is slack for the
+    /// hypervisor, not for the policy.
+    const LATE_MS: u64 = 50;
+
+    let expiries = time::expiries();
+    let before = time::uptime_ms();
+    thread::sleep_ms(SLEEP_MS);
+    let slept = time::uptime_ms() - before;
+    let spent = time::expiries() - expiries;
+
+    // Two-sided, and that is the point: the sleep was armed on the APIC
+    // timer's clock and measured on the counter's, so a conversion wrong in
+    // either direction shows up as a wait of the wrong length.
+    (SLEEP_MS..=SLEEP_MS + LATE_MS).contains(&slept) && (1..=EXPIRY_BUDGET).contains(&spent)
+}
+
+/// A sleeping thread gives the CPU to a runnable one, and is put back on the
+/// queue when its deadline passes.
+///
+/// The other branch: something else is runnable, so the sleeper really does
+/// leave the CPU and really is woken — counted, because the count only moves
+/// on the path that takes a thread out of the sleeping state and places it
+/// back on the queue. What the spinner counted meanwhile is the proof the
+/// CPU went somewhere: a sleeper that had busy-waited would have left it near
+/// zero.
+fn sleeping_hands_the_cpu_over() -> bool {
+    const SLEEP_MS: u64 = 100;
+    /// A thread with the CPU to itself counts far more than this in 100 ms;
+    /// one scavenging a spin loop's leftovers counts far fewer.
+    const PROGRESS: usize = 10_000;
+
+    STOP_SPINNING.store(0, Ordering::Release);
+    LIGHT_SPINS.store(0, Ordering::Release);
+    let free = thread::free_slots();
+    if thread::spawn("while-asleep", light_spinner).is_err() {
+        return false;
+    }
+
+    let woke = thread::wakes();
+    thread::sleep_ms(SLEEP_MS);
+    let progressed = LIGHT_SPINS.load(Ordering::Relaxed) >= PROGRESS;
+    let woken = thread::wakes() == woke + 1;
+    STOP_SPINNING.store(1, Ordering::Release);
+    let exited = yields_until(|| thread::free_slots() == free);
+
+    progressed && woken && exited
 }
 
 /// The configuration byte, against bits restated from the 8042 datasheet

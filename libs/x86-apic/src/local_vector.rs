@@ -15,10 +15,15 @@ const DELIVERY_FIXED: u32 = 0;
 /// Bit 16: the source is disconnected while this is set.
 const MASK: u32 = 1 << 16;
 
-/// Bits 17–18: the timer's mode, meaningful only in the timer's entry. Zero is
-/// one-shot; the third value, TSC-deadline, is not implemented here because
-/// nothing calibrates the TSC.
+/// Bits 17–18: the timer's mode, meaningful only in the timer's entry. The
+/// third value, TSC-deadline, is not implemented here: it arms the timer from
+/// a comparison against the timestamp counter rather than from a countdown,
+/// which is a different interface, not another mode of this one.
 const TIMER_MODE: u32 = 0b11 << 17;
+
+/// The mode that counts down once and stops. Zero, which is also what the
+/// register resets to.
+const TIMER_ONE_SHOT: u32 = 0b00 << 17;
 
 /// The mode that reloads the initial count at zero and keeps counting.
 const TIMER_PERIODIC: u32 = 0b01 << 17;
@@ -51,6 +56,21 @@ impl Entry {
             "the local APIC will not deliver a vector below 16"
         );
         Self(vector as u32 | DELIVERY_FIXED)
+    }
+
+    /// Deliver `vector` once when the timer's countdown reaches zero, and
+    /// then stop.
+    ///
+    /// The mode a tickless kernel programs: each expiry is an event the
+    /// scheduler asked for, and the timer does nothing again until it is
+    /// armed for the next one.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `vector` is below [`FIRST_VECTOR`], for the same reason
+    /// [`fixed`](Self::fixed) does — whose guard this rides.
+    pub const fn one_shot(vector: u8) -> Self {
+        Self(Self::fixed(vector).bits() | TIMER_ONE_SHOT)
     }
 
     /// Deliver `vector` every time the timer's countdown reaches zero.
@@ -90,6 +110,11 @@ impl Entry {
     /// Whether the timer reloads and continues at zero rather than stopping.
     pub const fn is_periodic(self) -> bool {
         self.0 & TIMER_MODE == TIMER_PERIODIC
+    }
+
+    /// Whether the timer counts down once and stops.
+    pub const fn is_one_shot(self) -> bool {
+        self.0 & TIMER_MODE == TIMER_ONE_SHOT
     }
 }
 
@@ -144,9 +169,33 @@ mod tests {
         assert_eq!(entry.vector(), 0x41);
     }
 
+    /// The same figure: one-shot is the mode bits left at zero, so a one-shot
+    /// entry is indistinguishable from a plain fixed one — which is the
+    /// property that lets every other local vector share this type.
+    #[test]
+    fn a_one_shot_entry_is_its_vector_and_nothing_else() {
+        let entry = Entry::one_shot(0x41);
+
+        assert_eq!(entry.bits(), 0x0000_0041);
+        assert_eq!(entry, Entry::fixed(0x41));
+        assert!(entry.is_one_shot());
+        assert!(!entry.is_periodic());
+        assert!(!entry.is_masked());
+    }
+
+    /// The two modes this crate encodes are exclusive, and a masked entry is
+    /// one-shot by the same rule the processor resets it to.
+    #[test]
+    fn no_entry_is_both_modes_at_once() {
+        for entry in [Entry::one_shot(0x41), Entry::periodic(0x41), Entry::MASKED] {
+            assert!(entry.is_one_shot() != entry.is_periodic(), "{entry:?}");
+        }
+    }
+
     #[test]
     fn a_fixed_entry_is_one_shot() {
         assert!(!Entry::fixed(0x40).is_periodic());
+        assert!(Entry::fixed(0x40).is_one_shot());
     }
 
     /// Re-masking the timer must also put its mode back to the reset value, or
@@ -174,5 +223,11 @@ mod tests {
     #[should_panic(expected = "below 16")]
     fn a_periodic_entry_refuses_a_vector_the_apic_would_reject() {
         let _ = Entry::periodic(FIRST_VECTOR - 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "below 16")]
+    fn a_one_shot_entry_refuses_a_vector_the_apic_would_reject() {
+        let _ = Entry::one_shot(FIRST_VECTOR - 1);
     }
 }

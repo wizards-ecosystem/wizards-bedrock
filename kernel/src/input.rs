@@ -1,11 +1,13 @@
 //! The polled keyboard input path: drain, decode, deliver.
 //!
-//! The driver raises no interrupts (D-37), so this runs from the idle loop
-//! each time the tick wakes it: every pending byte is pulled through the
-//! decoder, and each completed event is logged at debug level and — when it
-//! types a character — echoed to the framebuffer console. Latency is
-//! bounded by one tick, and the keyboard's own buffering holds an order of
-//! magnitude more than a tick of typing.
+//! Where the line is routed the handler does this work directly (D-49);
+//! where it is not, the idle loop sleeps ten milliseconds at a time and does
+//! it in between (D-37, D-57). Either way every pending byte is pulled
+//! through the decoder, and each completed event is logged at debug level
+//! and — when it types a character — echoed to the framebuffer console.
+//! Polled latency is bounded by that interval, and the keyboard's own
+//! buffering holds an order of magnitude more than a person can type into it
+//! in ten milliseconds.
 //!
 //! The singleton is module-local rather than in `dev`, whose charter is the
 //! output devices the panic path must reach; a panicking kernel has no use
@@ -85,11 +87,12 @@ pub(crate) fn init() {
 /// controller that never stops producing complete events would otherwise own
 /// the idle loop for as long as it kept producing. The lock is already
 /// bounded per batch, so what this bound protects is the loop's turn, not the
-/// lock — anything still waiting is drained on the next tick, one tick later.
+/// lock — anything still waiting is drained on the next pass, one interval
+/// later.
 pub(crate) fn poll() {
-    /// Batches per call. With [`BATCH`] events each, a tick's turn at the
-    /// keyboard is two orders of magnitude more than a person can type into
-    /// it, and finite either way.
+    /// Batches per call. With [`BATCH`] events each, one pass at the keyboard
+    /// is two orders of magnitude more than a person can type into it, and
+    /// finite either way.
     const BATCHES: usize = 8;
 
     for _ in 0..BATCHES {
@@ -184,22 +187,22 @@ pub(crate) fn scancode_set() -> Option<u8> {
 /// Wait for `key` to arrive through the whole path — controller, decoder —
 /// pressed and then released, in that order.
 ///
-/// Doubly bounded: a tick budget for the honest case, and an iteration cap
-/// so a dead timer converts the wait into a red check rather than a hang.
-/// The harness kills the run at sixty seconds regardless.
+/// Doubly bounded: a deadline on the clock for the honest case, and an
+/// iteration cap so a dead clock converts the wait into a red check rather
+/// than a hang. The harness kills the run at sixty seconds regardless.
 #[cfg(feature = "selftest")]
 pub(crate) fn await_key(key: Key) -> bool {
-    /// Ten seconds of ticks — generous, because injection crosses a process,
-    /// a socket, and an emulated bus.
-    const WAIT_TICKS: u64 = 1_000;
+    /// Ten seconds — generous, because injection crosses a process, a socket,
+    /// and an emulated bus.
+    const WAIT_MS: u64 = 10_000;
     /// Each spin is a lock and a status read — bus transactions — so this is
-    /// seconds' worth: the bound a dead timer falls back on.
+    /// seconds' worth: the bound a dead clock falls back on.
     const WAIT_SPINS: u32 = 2_000_000;
 
-    let deadline = crate::time::ticks() + WAIT_TICKS;
+    let deadline = crate::time::uptime_ms() + WAIT_MS;
     let mut pressed = false;
     for _ in 0..WAIT_SPINS {
-        if crate::time::ticks() > deadline {
+        if crate::time::uptime_ms() > deadline {
             return false;
         }
 

@@ -270,6 +270,38 @@ pub fn enable() {
     set_flag();
 }
 
+/// Begin accepting interrupts and halt, as one step.
+///
+/// What a thread with nothing to do until a deadline does with the flag
+/// clear. The two halves cannot be separate calls: an interrupt arriving
+/// between them would be taken before the halt, and the CPU would then halt
+/// with the thing that was going to wake it already spent. The architecture
+/// closes exactly that window — `sti` does not admit an interrupt until after
+/// the instruction following it, which here is the `hlt`.
+///
+/// Returns once an interrupt has been taken, with the flag left set.
+///
+/// # Panics
+///
+/// As [`enable`], whose preconditions this shares: with no table loaded or a
+/// live legacy controller, the interrupt that ends the halt is a reset.
+pub fn enable_and_halt() {
+    assert!(
+        table_is_loaded(),
+        "load the interrupt table before accepting interrupts"
+    );
+    assert!(
+        pic::is_silenced(),
+        "silence the legacy controller before accepting interrupts"
+    );
+    // SAFETY: `sti` sets IF and `hlt` stops the CPU until an interrupt
+    // arrives; both are unprivileged in ring 0 and neither touches memory.
+    // The preconditions for setting the flag are the two asserts above, and
+    // the pair cannot deadlock the CPU because the shadow makes the halt
+    // reachable only with interrupts already admitted.
+    unsafe { asm!("sti", "hlt", options(nomem, nostack, preserves_flags)) };
+}
+
 /// Set the interrupt flag with nothing checked.
 ///
 /// Private, and the difference between it and [`enable`] is the whole design:
