@@ -1,17 +1,14 @@
 //! How a heap request maps onto a size class, and how a frame is carved into
 //! slots of it.
 //!
-//! The arithmetic half of the kernel heap. Choosing a class, counting the
-//! slots a frame holds, and deciding when a request is too big for any class
-//! are all pure functions over sizes and alignments, so they live here and are
-//! unit-tested on the host; `wost::mm::heap` holds the intrusive free lists
-//! and the frames, because those need raw pointers (D-47).
+//! The arithmetic half of the kernel heap; `wost::mm::heap` holds the free
+//! lists and the frames (D-47).
 //!
-//! Classes are powers of two from 16 to 2048 bytes. A slot of class `c` sits
-//! at a multiple of `c` from the start of a frame, and a frame is 4096-byte
-//! aligned, so **every slot is aligned to its own class** — which is what lets
-//! [`SizeClass::for_size_align`] answer an alignment requirement by choosing a
-//! larger class rather than by padding.
+//! Classes are powers of two from 16 to 2048 bytes. A frame is 4096-aligned
+//! and a class's slots sit at multiples of the class size, so every slot is
+//! aligned to its own class — which is why
+//! [`SizeClass::for_size_align`] meets an alignment by choosing a larger
+//! class rather than by padding.
 //!
 //! ```
 //! use slab_layout::{SizeClass, Placement, place};

@@ -1,30 +1,19 @@
 //! Allocation bookkeeping for physical page frames.
 //!
-//! Which frames physically exist, which of them are free, and where a run of
-//! `n` consecutive ones begins. That is arithmetic over two bitmaps with no
-//! hardware behind it, so it lives here and is unit-tested on the host;
-//! `wost::mm` wraps one of these in a lock and hands out the frame handles.
-//! The same split `port_space::PortSpace` makes for the I/O port space, and
-//! for the same reason (`005-code-conventions.md`).
+//! Arithmetic over two bitmaps, with no hardware behind it; `wost::mm` wraps
+//! one in a lock and hands out the frame handles (D-43, on `port_space`'s
+//! precedent).
 //!
-//! Two bitmaps rather than one, deliberately. `managed` records the frames the
-//! memory map said are usable RAM; `free` records which of those are not
-//! currently handed out. One bitmap could not tell a double free from a frame
-//! that was never ours, and [`free`](FrameSpace::free) is the operation a
-//! `Drop` impl calls — the one place a bug is silent. With both, releasing a
-//! frame outside the managed set, or one already free, is a refusal the caller
-//! can see.
+//! Two bitmaps, because one could not tell a double free from a frame that was
+//! never ours — and [`free`](FrameSpace::free) is what a `Drop` impl calls,
+//! the one place a bug is silent.
 //!
-//! The capacity is a const parameter rather than a constant, so the kernel
-//! names the physical ceiling it wants ([`words_for`]) while tests use spaces
-//! small enough to sit on a stack. Both bitmaps start zeroed, so a `static`
-//! one lands in `.bss` and costs nothing in the image.
+//! Capacity is a const parameter so the kernel names its ceiling while tests
+//! use spaces small enough for a stack. Both start zeroed, so a `static` one
+//! lands in `.bss`.
 //!
-//! Policy lives above this crate, not in it. The search is first-fit from a
-//! rotating hint, which is adequate for a kernel whose allocations are page
-//! tables and stacks; swapping in a buddy or per-CPU free lists is a change to
-//! this file and nothing else, because the API speaks in frames rather than in
-//! the structure that finds them (D-43).
+//! The search is first-fit from a rotating hint. Swapping in a buddy changes
+//! this file and nothing else.
 //!
 //! ```
 //! use frame_space::{FrameSpace, FRAME_SIZE};

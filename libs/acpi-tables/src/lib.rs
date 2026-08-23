@@ -1,15 +1,12 @@
 //! Parsing for the ACPI tables this kernel reads.
 //!
-//! Enough of ACPI to find one device: the RSDP points at the XSDT, the XSDT
-//! lists tables by signature, and the MADT describes the interrupt
-//! controllers. That is all slice 5 needs, and adding more before something
-//! reads it would be speculative API (`005-code-conventions.md`).
+//! The RSDP points at the XSDT, the XSDT lists tables by signature, and the
+//! MADT describes the interrupt controllers. Nothing more, until something
+//! reads it.
 //!
-//! Everything here works on `&[u8]` and validates before it trusts, so it is
-//! entirely host-testable — which matters more for ACPI than for most
-//! encodings, because the tables come from firmware and firmware is the least
-//! trustworthy input the kernel has. A malformed table must produce an error,
-//! never a panic and never a read past the end of the buffer.
+//! Works on `&[u8]` and validates before it trusts. Firmware is the least
+//! trustworthy input the kernel has, so a malformed table must produce an
+//! error — never a panic, never a read past the buffer.
 //!
 //! ```
 //! use acpi_tables::{Rsdp, Sdt};

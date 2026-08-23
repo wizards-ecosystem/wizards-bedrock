@@ -148,3 +148,11 @@ pub(crate) fn framebuffer_address() -> Option<u64> {
         .as_ref()
         .map(|console| console.framebuffer_address())
 }
+
+/// Where the console's cursor is, and how big one character cell is.
+#[cfg(feature = "selftest")]
+pub(crate) fn console_cursor() -> Option<((usize, usize), (usize, usize))> {
+    let guard = CONSOLE.lock();
+    let console = guard.as_ref()?;
+    Some((console.cursor(), console.cell_size()))
+}

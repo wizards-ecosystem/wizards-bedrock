@@ -1,25 +1,17 @@
-//! The kernel's own page tables.
+//! The kernel's own page tables (D-45).
 //!
 //! [`AddressSpace`] builds a four-level table out of frames from
-//! [`crate::mm`] and [`activate`] switches the CPU to it. The encoding is
-//! `x86_paging`'s, host-tested against the manual (D-30); what is here is
-//! everything that needs a raw pointer — walking a table through the direct
-//! map, and the one `mov cr3` that is the whole trusted base in an
-//! instruction.
+//! [`crate::mm`]; [`activate`] switches the CPU to it. The encoding lives in
+//! `x86_paging`, host-tested against the manual (D-30), so what is here is
+//! what needs a raw pointer: walking a table through the direct map, and the
+//! `mov cr3` itself.
 //!
-//! **Why the switch is a safe function.** `005-code-conventions.md` asks that
-//! every `wost` abstraction make the unsafe operation underneath it
-//! *checkable*. For `CR3` the obligation is unusually concrete: the new tables
-//! must map the code executing the switch and the stack it is standing on, or
-//! the next instruction fetch faults with no handler mapped and the machine
-//! resets. Both are addresses this module can look up in the new tables
-//! *before* loading them, so [`activate`] does, and a table that would not
-//! survive the switch is refused rather than loaded.
-//!
-//! Mapping is deliberately one-way. [`activate`] takes the space by value and
-//! keeps it, so nothing can add a mapping to a table the CPU is already
-//! walking — the aliasing question that would otherwise make
-//! [`AddressSpace::map`] unsafe never arises.
+//! Two design points that the signatures alone do not give away. [`activate`]
+//! is safe because it walks the new tables for its own code and stack before
+//! loading them, so a table that would not survive the switch is refused
+//! rather than triple-faulting. And it takes the space *by value*, which is
+//! what keeps [`AddressSpace::map`] safe — nothing can map into a table the
+//! CPU is already walking.
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -143,12 +135,8 @@ impl AddressSpace {
     /// Map `len` bytes at `virtual_base` onto physical memory at
     /// `physical_base`, with `flags`.
     ///
-    /// Large pages are used wherever the addresses and the remaining length
-    /// all permit, which is what keeps the direct map's tables to a few
-    /// hundred kilobytes instead of tens of megabytes.
-    ///
-    /// `PRESENT` is added for you here — a mapping request that did not want
-    /// the mapping to exist would be a contradiction — but nothing else is.
+    /// Large pages wherever the addresses and remaining length permit, and
+    /// `PRESENT` is added; no other flag is.
     ///
     /// # Errors
     ///
@@ -196,13 +184,8 @@ impl AddressSpace {
 
     /// Map a device's registers, and hand back the claim on them.
     ///
-    /// Uncacheable and never executable. Device mappings are deliberately kept
-    /// out of the direct map (D-45) so that reaching a device is always a
-    /// deliberate act with the right memory type, and this is that act.
-    ///
-    /// Addresses come from a range of kernel space reserved for devices, so a
-    /// device is never at its physical address and two devices are never at the
-    /// same one. `len` is rounded up to whole pages.
+    /// Uncacheable and never executable, at an address in the device window
+    /// rather than the physical one. `len` is rounded up to whole pages.
     ///
     /// # Errors
     ///
@@ -247,11 +230,8 @@ impl AddressSpace {
     /// Map a device whose writes should coalesce rather than cross the bus one
     /// at a time.
     ///
-    /// Selects the page attribute table entry
-    /// [`super::cpu::enable_write_combining`]
-    /// sets, which is chosen by `WRITE_THROUGH` alone. A caller that has not
-    /// enabled it gets write-through, which is correct but slow — never
-    /// wrong.
+    /// Selects the entry [`super::cpu::enable_write_combining`] sets. A caller
+    /// that has not enabled it gets write-through: slow, never wrong.
     ///
     /// # Errors
     ///
@@ -344,13 +324,9 @@ static ACTIVE_ROOT: AtomicU64 = AtomicU64::new(0);
 
 /// Switch this CPU to `space`, keeping it for the life of the kernel.
 ///
-/// Safe because the obligation is checked rather than promised. Before `CR3`
-/// is written, the new tables are asked to translate the two addresses whose
-/// absence would be fatal and unreportable: the code executing this function,
-/// and the stack it is standing on — with a page of headroom below the stack
-/// pointer, because the fault handler this would otherwise reach needs
-/// somewhere to push. A table that fails either check is refused with the
-/// old one still loaded, which turns a triple fault into a `Result`.
+/// Safe because it walks the new tables first, for this function's own code
+/// and its stack. A table that would not survive the switch is refused with
+/// the old one still loaded, so the failure is a `Result` and not a reset.
 ///
 /// # Errors
 ///
@@ -488,23 +464,17 @@ impl DeviceMapping {
 
     /// Take the region these registers are reached through.
     ///
-    /// Safe because every part of `MmioRegion::new`'s contract is discharged
-    /// by construction rather than promised. The mapping was made by
-    /// [`AddressSpace::map_device`] over a physical range the direct map
-    /// excludes, at an address in a window nothing else uses; it is global and
-    /// permanent, because nothing unmaps; and this value cannot be copied, so
-    /// no second region can cover the same bytes.
-    ///
-    /// `None` until the space holding the mapping has been activated — before
-    /// that the address translates to nothing, and a region over it would fault
-    /// on first use.
+    /// Safe because `MmioRegion::new`'s contract holds by construction: the
+    /// mapping is permanent, and this value cannot be copied, so no second
+    /// region can cover the same bytes. `None` until the space is active.
     pub fn claim(self) -> Option<MmioRegion> {
         if !is_active() || translate(self.address).is_none() {
             return None;
         }
-        // SAFETY: see the doc comment above — the mapping is live, exclusive,
-        // permanent, and 4-byte aligned because it is page-aligned plus the
-        // device's own offset, which `map_device` preserved.
+        // SAFETY: the walk above confirmed the mapping is live; it is exclusive
+        // because `self` cannot be copied, permanent because nothing unmaps,
+        // and aligned because `map_device` preserved the device's own offset
+        // from a page boundary.
         Some(unsafe { MmioRegion::new(self.address as *mut u8, self.len as usize) })
     }
 }

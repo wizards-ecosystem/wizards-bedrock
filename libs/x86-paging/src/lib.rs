@@ -1,17 +1,13 @@
 //! x86_64 four-level page table encoding.
 //!
-//! Everything about a page table that is arithmetic rather than hardware: what
-//! the bits of an entry mean, which bits of a virtual address select the slot
-//! at each level, and which addresses are canonical. `wost` owns the tables
-//! themselves — walking one needs a raw pointer, and writing `CR3` is the
-//! whole trusted base in one instruction — but the encoding is checkable on
-//! the host, so D-30 puts it here and tests it against the manual before any
-//! hardware sees it.
+//! Entry bits, the index each level takes from a virtual address, and
+//! canonical form. `wost` owns the tables; the encoding is checkable on the
+//! host, so D-30 puts it here.
 //!
-//! Transcribed from Intel SDM Vol. 3A §4.5 (four-level paging), tables 4-14
-//! through 4-19. The tests below restate each bit position from the manual
-//! rather than from this file, which is the only way a transcription error
-//! shows up as a failure instead of as agreement with itself.
+//! Transcribed from Intel SDM Vol. 3A §4.5, tables 4-14 through 4-19. The
+//! tests restate each bit position from the manual rather than from this file,
+//! which is the only way a transcription error fails instead of agreeing with
+//! itself.
 //!
 //! ```
 //! use x86_paging::{Entry, Flags, Level, PAGE_SIZE};

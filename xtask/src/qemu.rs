@@ -144,8 +144,13 @@ const SELFTEST_FAILED: i32 = 35;
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
 const READY_MARKER: &str = "selftest: awaiting injected keystroke";
 
-/// The key the harness injects; its set 2 make code is `0x1C`.
-const INJECTED_QCODE: &str = "a";
+/// The keys the harness injects, in order, once the marker appears.
+///
+/// `a` is what the keystroke check waits for. The two after it are the
+/// editing keys, which reached a user before they reached a test: backspace
+/// typed nothing at all, and Enter had no visible effect because the console
+/// drew no cursor. Both are checked on the machine now (D-51).
+const INJECTED_QCODES: &[&str] = &["a", "backspace", "ret"];
 
 /// Boot `image` headless, wait for the kernel's verdict, and report it.
 ///
@@ -281,10 +286,12 @@ fn inject_on_marker(listener: TcpListener, marker_seen: Arc<AtomicBool>) {
             while !marker_seen.load(Ordering::Acquire) {
                 std::thread::sleep(POLL_INTERVAL);
             }
-            qmp.inject_key(INJECTED_QCODE)
+            INJECTED_QCODES
+                .iter()
+                .try_for_each(|qcode| qmp.inject_key(qcode))
         });
         match outcome {
-            Ok(()) => println!("[xtask] qmp: keystroke injected"),
+            Ok(()) => println!("[xtask] qmp: {} keystrokes injected", INJECTED_QCODES.len()),
             Err(reason) => {
                 println!("[xtask] qmp: {reason:#}; the keystroke check will report it");
             }

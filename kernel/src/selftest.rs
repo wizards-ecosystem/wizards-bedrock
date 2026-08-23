@@ -14,6 +14,7 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::fmt::Write;
 use core::hint::spin_loop;
 
 use wost::arch::current::cpu::{self, Protections};
@@ -54,18 +55,10 @@ fn frames_are_exclusive() -> bool {
 
 /// Dirty memory can be zeroed, and the kernel can tell the difference.
 ///
-/// The dirtying is the point. A frame straight from a freshly booted machine
-/// is usually already zero, so a check that only reads one back passes whether
-/// or not anything zeroed it — and a check that cannot fail is worth nothing
-/// (`005-code-conventions.md`). Writing a known pattern first, and requiring
-/// the kernel to *see* that pattern, is what gives both halves teeth.
-///
-/// This covers `zero`, and `allocate_zeroed` is `allocate` followed by exactly
-/// that call. What it deliberately does not do is force the allocator to hand
-/// back a frame it knows to be dirty: the free-list hint moves past a released
-/// frame, so reuse would have to be driven by a bounded sweep of every frame
-/// in the machine. That is the wrong shape of test for the property, and
-/// distorting the allocator's API to make it possible would be worse.
+/// Dirtied first, because memory on a fresh boot is usually already zero and
+/// a check that only reads one back cannot fail. Covers `zero`; reuse of a
+/// known-dirty frame is not forced, since the allocator hint moves past a
+/// released frame.
 fn dirty_memory_can_be_zeroed() -> bool {
     let Some(mut frame) = mm::allocate() else {
         return false;
@@ -177,6 +170,53 @@ fn a_second_switch_is_refused() -> bool {
     }
 }
 
+/// Backspace erases and Enter starts a line, as a person pressing them expects.
+///
+/// Drives the console directly rather than waiting on the injected keystrokes:
+/// every check between here and the injection logs a line, and every line moves
+/// the cursor, so watching for motion would race this function's own output.
+/// The layout half is asserted from `char_for` and tested on the host (D-51).
+fn the_editing_keys_move_the_cursor() -> bool {
+    let (Some(backspace), Some(newline)) = (
+        ps2_keys::us::char_for(ps2_keys::Key::Backspace, ps2_keys::Shift::new()),
+        ps2_keys::us::char_for(ps2_keys::Key::Enter, ps2_keys::Shift::new()),
+    ) else {
+        return false;
+    };
+
+    let Some(((start_x, start_y), (glyph_width, line_height))) = dev::console_cursor() else {
+        return false;
+    };
+
+    dev::with_console(|console| {
+        let _ = console.write_char('X');
+    });
+    let Some(((typed_x, typed_y), _)) = dev::console_cursor() else {
+        return false;
+    };
+    let advanced = typed_x == start_x + glyph_width && typed_y == start_y;
+
+    dev::with_console(|console| {
+        let _ = console.write_char(backspace);
+    });
+    let Some(((erased_x, erased_y), _)) = dev::console_cursor() else {
+        return false;
+    };
+    let erased = erased_x == start_x && erased_y == start_y;
+
+    // From a column past the margin, so the return to it is observable.
+    dev::with_console(|console| {
+        let _ = console.write_char('X');
+        let _ = console.write_char(newline);
+    });
+    let Some(((home_x, home_y), _)) = dev::console_cursor() else {
+        return false;
+    };
+    let started_a_line = home_x <= start_x && home_y == start_y + line_height;
+
+    advanced && erased && started_a_line
+}
+
 /// The framebuffer is mapped write-combining, by the kernel's own tables.
 ///
 /// Both halves again: the page attribute table must actually hold the
@@ -213,28 +253,17 @@ fn the_keyboard_line_is_routed() -> bool {
 
 /// Keystrokes reached the kernel as interrupts, not by polling.
 ///
-/// The check that retires D-37. It runs after the injected keystroke, so the
-/// handler has had something to take; a zero here means the line was routed on
-/// paper and delivered nothing — which is exactly what the old polled path
-/// hid, and what the stricter `await_key` above now refuses to hide.
+/// Retires D-37. A zero means the line was routed on paper and delivered
+/// nothing — what the old polled `await_key` hid.
 fn keystrokes_arrive_as_interrupts() -> bool {
     input::is_interrupt_driven() && input::interrupt_count() > 0
 }
 
 /// A freed slot is reused rather than costing the heap another frame.
 ///
-/// Counted, not compared by address. The obvious form of this check —
-/// allocate, note the address, free, allocate again, require the same address
-/// — is unsound, and failed here before passing for the wrong reason: nothing
-/// obliges the compiler to keep two allocator calls in source order when the
-/// values between them are dead, so the second `Box` could be built before the
-/// first was released. Adding a `debug!` between them made it pass, which is
-/// the signature of a check measuring the optimiser rather than the kernel.
-///
-/// What the heap actually promises is that a released slot costs nothing to
-/// hand out again. `live` moving and returning says the round trip happened;
-/// `slab_frames` standing still says it was served from the free list. Neither
-/// depends on where the slot is.
+/// Counted, not compared by address: nothing obliges the compiler to keep two
+/// allocator calls in source order when the values between them are dead, so
+/// the address form of this check measures the optimiser (D-47).
 fn the_heap_reuses_a_freed_slot() -> bool {
     // Warm the class, so what is measured below is a reuse and not the refill
     // that any first allocation of a class must pay for.
@@ -504,6 +533,11 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "keystrokes arrive as interrupts",
         keystrokes_arrive_as_interrupts(),
+    );
+
+    report.check(
+        "backspace erases and enter starts a line",
+        the_editing_keys_move_the_cursor(),
     );
 
     report.check(

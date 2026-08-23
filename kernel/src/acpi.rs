@@ -1,17 +1,12 @@
 //! Finding the interrupt controllers ACPI describes.
 //!
-//! Just enough of the table tree to answer two questions: where the I/O APIC's
-//! registers are, and which global system interrupt a legacy IRQ actually
-//! arrives on. The parsing is `acpi_tables`', host-tested against synthetic
-//! and malformed tables; the bytes come from `wost::mm::read_physical`, which
-//! refuses any range the frame allocator might hand out.
+//! Enough of the table tree to find the I/O APIC and learn which global system
+//! interrupt a legacy IRQ arrives on. Parsing is `acpi_tables`, host-tested;
+//! the bytes come from `wost::mm::read_physical`.
 //!
-//! Read **before** the kernel builds its own page tables, and that ordering is
-//! forced. D-45 made mapping one-way — `activate` consumes the address space so
-//! nothing can map into a table the CPU is already walking — so every device
-//! mapping has to be known while the tables are still being built. The ACPI
-//! regions are reachable through the bootloader's direct map at that point,
-//! which is what makes the ordering possible at all (D-49).
+//! Read before the page tables are built, because D-45 made mapping one-way
+//! and a device window must be known while the tables are still writable
+//! (D-49).
 
 use acpi_tables::{MadtEntries, MadtEntry, Rsdp, Sdt, SdtPointers};
 use wost::mm;

@@ -66,6 +66,12 @@ pub fn char_for(key: Key, shift: Shift) -> Option<char> {
         Key::Space => ' ',
         Key::Enter | Key::KeypadEnter => '\n',
         Key::Tab => '\t',
+        // Backspace is an editing action rather than a character, but ASCII
+        // has one for it and a console knows what to do with it. Returning it
+        // here costs nothing until there is a second key that acts without
+        // typing — at which point those keys want a channel of their own, not
+        // a wider set of control characters.
+        Key::Backspace => '\u{8}',
         Key::Keypad0 => '0',
         Key::Keypad1 => '1',
         Key::Keypad2 => '2',
@@ -190,6 +196,17 @@ mod tests {
     }
 
     #[test]
+    fn the_control_characters_a_console_acts_on_are_typed() {
+        // Not printable, but each is an ASCII character whose meaning a console
+        // implements, so the layout returns it rather than making every caller
+        // special-case the key.
+        assert_eq!(char_for(Key::Enter, Shift::new()), Some('\n'));
+        assert_eq!(char_for(Key::KeypadEnter, Shift::new()), Some('\n'));
+        assert_eq!(char_for(Key::Tab, Shift::new()), Some('\t'));
+        assert_eq!(char_for(Key::Backspace, Shift::new()), Some('\u{8}'));
+    }
+
+    #[test]
     fn a_key_that_types_nothing_maps_to_nothing() {
         for key in [
             Key::F1,
@@ -197,7 +214,6 @@ mod tests {
             Key::ShiftLeft,
             Key::CtrlRight,
             Key::Escape,
-            Key::Backspace,
             Key::Pause,
         ] {
             assert_eq!(char_for(key, Shift::new()), None, "{key:?}");

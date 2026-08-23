@@ -1,19 +1,11 @@
 //! The I/O APIC: where a device's interrupt line becomes a vector.
 //!
-//! The local APIC delivers; this is what decides *what* it delivers. A device
-//! raises a global system interrupt, and a redirection entry says which vector
-//! that becomes, which processor takes it, and how the line is electrically
-//! read.
+//! A redirection entry says which vector a device's line becomes, which
+//! processor takes it, and how the line is read electrically.
 //!
-//! Safe kernel code throughout. The registers arrive as a `wost::MmioRegion`
-//! whose mapping was made while the page tables were being built (D-49) and
-//! whose bounds and alignment every access is checked against — so a driver
-//! bug here is an error value, never a stray write into whatever follows the
-//! device.
-//!
-//! Its registers are an index/data pair rather than a flat window, so every
-//! access is two writes deep and none of them can be done concurrently. The
-//! whole driver is therefore behind one lock.
+//! Safe kernel code over a `wost::MmioRegion` mapped during table construction
+//! (D-49). The registers are an index/data pair, so every access is two writes
+//! deep and the driver lives behind one lock.
 
 use wost::arch::current::apic;
 use wost::mmio::{MmioError, MmioRegion};

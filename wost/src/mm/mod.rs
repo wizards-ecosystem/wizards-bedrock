@@ -1,22 +1,15 @@
 //! Physical memory: which frames exist, and who owns each one.
 //!
-//! The boundary this module draws is the one `008-research-notes-2.md` §3.1
-//! took from Asterinas and D-43 adopted. The *mechanism* is here: a [`Frame`]
-//! is a handle whose existence means "this frame is allocated to me", and
-//! whose `Drop` gives it back. The *policy* — how a free frame is found — is
-//! `frame_space::FrameSpace`, a `libs/` crate that speaks only in frame
-//! indices and is unit-tested on the host. Swapping first-fit for a buddy
+//! Mechanism only, per D-43: a [`Frame`] is a handle whose existence means
+//! the frame is allocated, and whose `Drop` returns it. The search itself is
+//! `frame_space::FrameSpace`, host-tested, and swapping first-fit for a buddy
 //! changes that crate and nothing here.
 //!
-//! Physical memory is reached through the bootloader's direct map until the
-//! kernel builds page tables of its own. [`init`] records the offset; every
-//! access through it is bounds-checked against the frame the caller owns.
+//! Frames are reached through the direct map, whose offset [`init`] records.
 //!
-//! Not yet here, and deliberately: the untyped-memory split (`UFrame`) that
-//! keeps user-mapped and DMA-capable frames out of the typed API. It arrives
+//! Absent on purpose: the untyped split (`UFrame`) D-44 adopted. It arrives
 //! with the first caller that can map a frame into a second address space,
-//! which is Phase 5 — writing it now would be a safety contract with nothing
-//! to check it against (`005-code-conventions.md`).
+//! which is Phase 5.
 
 pub mod heap;
 
@@ -147,20 +140,10 @@ pub fn managed_frames() -> usize {
 
 /// Read-only access to `len` bytes of physical memory at `address`.
 ///
-/// For firmware tables — ACPI's, and whatever follows them — which live at
-/// addresses the bootloader reports and nothing else ever owns.
-///
-/// Safe because the precondition is checked rather than promised, which is
-/// what `005-code-conventions.md` asks of every `wost` export. The range is
-/// refused unless the memory map says **no part of it is allocatable**: a
-/// slice over memory the frame allocator might hand out would alias a
-/// `Frame`, and no comment could prevent that. Firmware regions are exactly
-/// the ones the allocator was told to leave alone (D-43), so the check admits
-/// what it should and nothing more.
-///
-/// The lifetime is `'static` because such regions are never freed and never
-/// mapped elsewhere: the direct map has covered them since the switch, and
-/// the allocator will not touch them.
+/// For firmware tables. Safe because the range is refused unless the memory
+/// map says no part of it is allocatable — a slice over memory the allocator
+/// might hand out would alias a [`Frame`]. Such regions are never freed, which
+/// is what the `'static` lifetime rests on.
 pub fn read_physical(address: Paddr, len: usize) -> Option<&'static [u8]> {
     let end = address.checked_add(len as u64)?;
     let guard = MAP.lock();

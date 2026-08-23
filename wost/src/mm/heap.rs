@@ -1,24 +1,13 @@
 //! The kernel heap.
 //!
-//! Segregated free lists over slabs carved from single frames, with anything
-//! too large for a slot served by a run of whole frames. The size-class
-//! arithmetic is `slab_layout`'s, host-tested; what is here is the part that
-//! needs raw pointers — the free lists, which live *inside* the free slots
-//! themselves (D-47).
+//! Segregated free lists over slabs carved from single frames; anything too
+//! large for a slot takes whole frames. The size-class arithmetic is
+//! `slab_layout`, host-tested. What is here needs raw pointers: the free
+//! lists live inside the free slots themselves.
 //!
-//! **The heap lives in the direct map, and that is a design decision rather
-//! than a convenience.** [`activate`](crate::arch::current::paging::activate)
-//! consumes the address space so nothing can map into a table the CPU is
-//! already walking, which is what makes `AddressSpace::map` safe. A heap that
-//! grew by mapping fresh pages would have to undo that. Instead it grows by
-//! taking frames the direct map already covers, writable and never executable,
-//! and a physically contiguous run is contiguous there too — so a large
-//! allocation is one `Segment` and one address.
-//!
-//! Slab frames are never given back. A slab whose slots are all free could be
-//! returned, but knowing that needs a per-slab live count, and a kernel whose
-//! heap has stopped growing has nothing to spend it on. The counter is the
-//! next thing to add if fragmentation ever shows up in the numbers below.
+//! It allocates out of the direct map rather than mapping pages, because
+//! `activate` made mapping one-way (D-47). Slab frames are never returned;
+//! [`stats`] reports the numbers that would justify changing that.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
