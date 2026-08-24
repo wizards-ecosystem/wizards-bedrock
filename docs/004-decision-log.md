@@ -3315,9 +3315,12 @@ path progressed by interrupt.
   panic output uses `try_lock`; no safe caller can recover a lock and then
   resume through a live guard.
 - Interrupt handlers receive `&TrapFrame`, whose fields are private and
-  read-only. The raw 22-word machine frame is checked at compile time and by a
-  live same-privilege probe, the assembly aligns every Rust call explicitly,
-  and `InterruptState` is a single-use, non-transferable restoration token.
+  read-only. The raw 22-word machine frame has its offsets asserted at compile
+  time and its *extent* checked by a live same-privilege probe — the frame base
+  plus the words the struct claims must land on the interrupted stack pointer,
+  which is the half no compile-time assertion can see. The assembly aligns
+  every Rust call explicitly, and `InterruptState` is a single-use,
+  non-transferable restoration token.
 - Firmware access is an ACPI-only copying capability. RSDP, SDT, pointer-array
   and MADT parsing each enforce both the caller's buffer and the structure's
   declared budget before exposing a prefix.
@@ -3362,6 +3365,17 @@ next phase would build user authority on unsound kernel authority).
 - The current boot contract is 79 named machine checks. Every new refusal and
   every new positive path was deliberately weakened once and observed to turn
   the corresponding host or boot check red before restoration.
+- **Corrected the same day.** The entry-path check as first written recorded
+  the stack pointer *after* the alignment mask, so `alignment == 0` was a
+  tautology — D-28's failure mode, in the commit that claimed every check had
+  been broken red. It now records where the frame begins and checks its extent,
+  and that claim was earned by shortening the declared frame and watching the
+  boot report 78 of 79. Two smaller corrections rode along: `Rsdp::parse` reads
+  the signature before the revision, so bytes that are not an RSDP are named by
+  the field that says so rather than by an undefined revision; and every silent
+  refusal on the firmware-read path now says which address it would not read,
+  because the narrower authority of this entry makes a routing-less boot the
+  likely way it is first met.
 - D-31, D-34, D-50, D-64 and D-76 are amended where their original mechanisms
   were too broad. The decisions they protected — terminal kernel faults,
   IRQ-safe locks, WC framebuffer output, bounded firmware input, and a sound

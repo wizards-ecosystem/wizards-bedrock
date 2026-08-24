@@ -255,9 +255,6 @@ static INIT: Once = Once::new();
 /// thread that owns it, so the thread switched *to* sees its own.
 static TRAP_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
-/// Low address bits at the most recent dispatcher call boundary.
-static CALL_ALIGNMENT: AtomicUsize = AtomicUsize::new(usize::MAX);
-
 /// The assembly frame behind the innermost handler's read-only snapshot.
 ///
 /// Its address is the evidence the scheduler needs; the snapshot's private
@@ -269,13 +266,19 @@ pub fn in_trap() -> bool {
     TRAP_DEPTH.load(Ordering::Relaxed) != 0
 }
 
-/// The stack alignment observed at the most recent dispatcher call boundary.
+/// Bytes the entry path pushes before the dispatcher is called.
 ///
-/// Zero is the System V x86-64 ABI requirement. The value is retained so the
-/// machine selftest can check assembly that Rust's type system cannot see.
+/// The pushes and the struct that mirrors them have to agree on how many
+/// words that is, and only a live trap can say whether they still do.
+pub const SAVED_FRAME_BYTES: u64 = size_of::<RawTrapFrame>() as u64;
+
+/// Where the innermost live handler's assembly frame begins.
+///
+/// A number rather than a pointer: nothing safe can reach the frame through
+/// it, and the machine selftest needs only to subtract.
 #[doc(hidden)]
-pub fn last_call_alignment() -> usize {
-    CALL_ALIGNMENT.load(Ordering::Relaxed)
+pub fn live_frame_address() -> u64 {
+    LIVE_FRAME.load(Ordering::Relaxed) as u64
 }
 
 /// Whether `frame` is the one the innermost live handler was entered with.
@@ -550,7 +553,7 @@ pub fn breakpoint() {
 }
 
 /// Call the registered handler with the frame the entry path saved.
-extern "C" fn dispatch(raw: *mut RawTrapFrame, call_stack_pointer: usize) {
+extern "C" fn dispatch(raw: *mut RawTrapFrame) {
     let registered = HANDLER.load(Ordering::Acquire);
     if registered.is_null() {
         cpu::halt_forever();
@@ -574,7 +577,6 @@ extern "C" fn dispatch(raw: *mut RawTrapFrame, call_stack_pointer: usize) {
     TRAP_DEPTH.fetch_add(1, Ordering::Relaxed);
     // Swapped so a nested trap restores its outer frame on the way out.
     let outer = LIVE_FRAME.swap(raw, Ordering::Relaxed);
-    CALL_ALIGNMENT.store(call_stack_pointer & 0xF, Ordering::Relaxed);
     handler(&frame);
     LIVE_FRAME.store(outer, Ordering::Relaxed);
     TRAP_DEPTH.fetch_sub(1, Ordering::Relaxed);
@@ -648,7 +650,6 @@ global_asm!(
     "mov rdi, rsp",
     "mov rbx, rsp",
     "and rsp, -16",
-    "mov rsi, rsp",
     "call {dispatch}",
     "mov rsp, rbx",
     "pop r15",

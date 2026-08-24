@@ -222,13 +222,18 @@ impl Rsdp {
     /// [`AcpiError::TooShort`], [`AcpiError::BadSignature`] or
     /// [`AcpiError::BadChecksum`].
     pub fn parse(bytes: &[u8]) -> Result<Self, AcpiError> {
-        let length = Self::parse_length(bytes, usize::MAX)?;
-        let head = &bytes[..Self::V1_LEN];
+        let head = bytes.get(..Self::V1_LEN).ok_or(AcpiError::TooShort {
+            needed: Self::V1_LEN,
+            available: bytes.len(),
+        })?;
 
+        // Before the revision: the signature is what says these bytes are an
+        // RSDP at all, and an unknown revision is a poor name for random memory.
         let signature: [u8; 8] = head[..8].try_into().map_err(|_| AcpiError::BadChecksum)?;
         if signature != Self::SIGNATURE {
             return Err(AcpiError::BadSignature(signature));
         }
+        let length = Self::parse_length(bytes, usize::MAX)?;
         if !checksum_is_valid(head) {
             return Err(AcpiError::BadChecksum);
         }
@@ -692,6 +697,20 @@ mod tests {
         assert!(matches!(
             Rsdp::parse(&rsdp(2)[..Rsdp::V1_LEN]),
             Err(AcpiError::TooShort { .. })
+        ));
+    }
+
+    #[test]
+    fn bytes_that_are_not_an_rsdp_are_named_by_their_signature() {
+        // An undefined revision must not out-rank the field that says whether
+        // these bytes describe an RSDP at all.
+        let mut bytes = rsdp(0);
+        bytes[0] = b'X';
+        bytes[15] = 7;
+
+        assert!(matches!(
+            Rsdp::parse(&bytes),
+            Err(AcpiError::BadSignature(_))
         ));
     }
 

@@ -72,8 +72,17 @@ impl Interrupts {
 /// `rsdp` is the *virtual* address the bootloader reported, which base
 /// revision 4 guarantees is inside the direct map.
 pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
-    let firmware = mm::firmware_memory()?;
-    let root = read_root_pointer(firmware, rsdp)?;
+    // Each refusal says so: the reader only reaches ACPI storage, and a boot
+    // that lost its routing to that rule is otherwise a keyboard that stopped
+    // working for no stated reason.
+    let Some(firmware) = mm::firmware_memory() else {
+        warn!("acpi: no reader for firmware memory");
+        return None;
+    };
+    let Some(root) = read_root_pointer(firmware, rsdp) else {
+        warn!("acpi: the root pointer at {rsdp:#x} is not readable acpi storage");
+        return None;
+    };
     let root = match Rsdp::parse(&root) {
         Ok(root) => root,
         Err(reason) => {
@@ -134,7 +143,10 @@ fn find_madt(firmware: FirmwareMemory, root: Rsdp) -> Option<Vec<u8>> {
         }
     };
 
-    let root_table = read_table(firmware, address)?;
+    let Some(root_table) = read_table(firmware, address) else {
+        warn!("acpi: the root table at {address:#x} is not readable acpi storage");
+        return None;
+    };
     let pointers = if extended {
         SdtPointers::xsdt(&root_table)
     } else {

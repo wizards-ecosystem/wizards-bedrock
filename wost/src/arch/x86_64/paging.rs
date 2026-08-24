@@ -514,7 +514,6 @@ pub fn activate(space: AddressSpace) -> Result<(), ActivateError> {
     // and never dropped, so the tables outlive the load.
     unsafe { cpu::set_page_table_base(space.root) };
     ACTIVE_ROOT.store(space.root, Ordering::Release);
-    // The map in force covers strictly less than the bootloader's did.
 
     // `space` is dropped here, and that is correct: an `AddressSpace` owns no
     // frame it would give back. Its tables were leaked when they were taken,

@@ -1220,8 +1220,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         frame_is_consistent(taken),
     );
     report.check(
-        "interrupt entry aligns the Rust call boundary",
-        interrupt::last_call_alignment() == 0,
+        "interrupt entry pushes the frame the layout describes",
+        frame_spans_the_saved_words(taken),
     );
 
     report.check(
@@ -1762,4 +1762,17 @@ fn frame_is_consistent(breakpoint: Record) -> bool {
         && breakpoint.stack_selector == u64::from(segment::KERNEL_DATA.bits())
         && breakpoint.flags & RESERVED_FLAG != 0
         && breakpoint.stack_pointer == breakpoint.rax
+}
+
+/// The saved frame ends exactly where the interrupted stack pointer was.
+///
+/// The compile-time assertions fix the *offsets* within `TrapFrame`; nothing
+/// but a live trap can say the entry path pushes that many words. `rax` holds
+/// the stack pointer as it was before the CPU pushed anything, so the frame
+/// base plus the words the layout claims must land back on it.
+fn frame_spans_the_saved_words(breakpoint: Record) -> bool {
+    breakpoint
+        .frame_address
+        .checked_add(interrupt::SAVED_FRAME_BYTES)
+        == Some(breakpoint.rax)
 }

@@ -119,6 +119,7 @@ impl fmt::Display for Fault<'_> {
 struct Recorder {
     count: AtomicUsize,
     rax: AtomicU64,
+    frame_address: AtomicU64,
     vector: AtomicU64,
     error_code: AtomicU64,
     code_selector: AtomicU64,
@@ -132,6 +133,7 @@ impl Recorder {
         Self {
             count: AtomicUsize::new(0),
             rax: AtomicU64::new(0),
+            frame_address: AtomicU64::new(0),
             vector: AtomicU64::new(0),
             error_code: AtomicU64::new(0),
             code_selector: AtomicU64::new(0),
@@ -145,6 +147,8 @@ impl Recorder {
     /// the rest.
     fn record(&self, frame: &TrapFrame) {
         self.rax.store(frame.rax(), Ordering::Relaxed);
+        self.frame_address
+            .store(interrupt::live_frame_address(), Ordering::Relaxed);
         self.vector.store(frame.vector(), Ordering::Relaxed);
         self.error_code.store(frame.error_code(), Ordering::Relaxed);
         self.code_selector
@@ -163,6 +167,7 @@ impl Recorder {
         Record {
             count: self.count.load(Ordering::Acquire),
             rax: self.rax.load(Ordering::Relaxed),
+            frame_address: self.frame_address.load(Ordering::Relaxed),
             vector: self.vector.load(Ordering::Relaxed),
             error_code: self.error_code.load(Ordering::Relaxed),
             code_selector: self.code_selector.load(Ordering::Relaxed),
@@ -184,6 +189,8 @@ pub(crate) struct Record {
     pub(crate) count: usize,
     /// The general register loaded with the interrupted stack pointer.
     pub(crate) rax: u64,
+    /// Where the entry path's own frame begins on the interrupted stack.
+    pub(crate) frame_address: u64,
     /// The vector the handler was entered with.
     pub(crate) vector: u64,
     /// The error code slot, which neither of these vectors fills.

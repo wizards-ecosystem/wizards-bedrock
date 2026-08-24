@@ -96,7 +96,7 @@ impl MmioRegion {
     /// Write one 32-bit word at `offset`.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
         self.check_words(offset, 1)?;
-        // SAFETY: `check` confirmed the word is in bounds and 4-byte aligned.
+        // SAFETY: `check_words` confirmed the word is in bounds and 4-byte aligned.
         unsafe { self.write_word_unchecked(offset, value) };
         Ok(())
     }
@@ -104,10 +104,10 @@ impl MmioRegion {
     /// Read one 32-bit word at `offset`.
     pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
         self.check_words(offset, 1)?;
-        // SAFETY: `check` confirmed the word is inside the region, so the
+        // SAFETY: `check_words` confirmed the word is inside the region, so the
         // result stays within the mapping `new`'s contract promised.
         let word = unsafe { self.base.add(offset) }.cast::<u32>();
-        // SAFETY: `check` confirmed `offset` is 4-byte aligned, so `word` is
+        // SAFETY: `check_words` confirmed `offset` is 4-byte aligned, so `word` is
         // aligned, and the mapping is valid for reads.
         Ok(unsafe { word.read_volatile() })
     }
@@ -117,7 +117,7 @@ impl MmioRegion {
         let span = self.check_words(offset, count)?;
         let mut cursor = span.offset();
         for _ in 0..count {
-            // SAFETY: `check` confirmed the whole span is in bounds and the
+            // SAFETY: `check_words` confirmed the whole span is in bounds and the
             // start is 4-byte aligned, so every word within it is too.
             unsafe { self.write_word_unchecked(cursor, value) };
             cursor += WORD;
@@ -138,9 +138,7 @@ impl MmioRegion {
                 len,
                 region_len,
             },
-            AccessError::LengthOverflow { .. }
-            | AccessError::EndOverflow { .. }
-            | AccessError::InvalidWidth(_) => MmioError::Overflow { offset, count },
+            // Overflow and a bad width alike: the request never named a range.
             _ => MmioError::Overflow { offset, count },
         })
     }
