@@ -22,6 +22,7 @@ pub const KERNEL_PACKAGES: &[&str] = &["wost", KERNEL_PACKAGE];
 pub const HOST_PACKAGES: &[&str] = &[
     "acpi-tables",
     "eevdf",
+    "elf64",
     "frame-space",
     "handle-space",
     "mmio-range",
