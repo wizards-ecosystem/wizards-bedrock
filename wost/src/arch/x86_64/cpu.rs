@@ -9,6 +9,7 @@ use core::fmt;
 
 use super::interrupt;
 use super::msr;
+use x86_cpuid::{SPEC_CTRL_MSR, Speculation};
 
 /// Extended feature enable register.
 const EFER: u32 = 0xC000_0080;
@@ -253,6 +254,32 @@ pub(super) fn has_x2apic() -> bool {
     const X2APIC: u32 = 1 << 21;
 
     cpuid(1, 0).ecx & X2APIC != 0
+}
+
+/// Read the machine's speculation posture and enable enhanced IBRS if it has
+/// it.
+///
+/// One MSR write at boot, and D-81 records why it happens here rather than
+/// later: it is trivial now and awkward to retrofit into a mature entry path.
+///
+/// The decisions are `x86_cpuid`'s, host-tested against synthetic capability
+/// words, and this keeps the two instructions. That split matters more here
+/// than usual: QEMU's TCG does not emulate `IA32_ARCH_CAPABILITIES`, so on the
+/// development loop this function always takes its earliest return and the
+/// write below is never reached (D-91).
+pub fn enable_speculation_controls() -> Speculation {
+    let posture = Speculation::read(cpuid(7, 0).edx, msr::read);
+    if !posture.wants_boot_ibrs() {
+        return posture;
+    }
+
+    let wanted = posture.spec_ctrl_after(msr::read(SPEC_CTRL_MSR));
+    // SAFETY: `IA32_SPEC_CTRL` selects a speculation mode and nothing else.
+    // Setting `IBRS` on a processor reporting `IBRS_ALL` changes how indirect
+    // branches are predicted, never what any instruction means, and the value
+    // preserves every bit firmware set.
+    unsafe { msr::write(SPEC_CTRL_MSR, wanted) };
+    posture
 }
 
 /// One `cpuid` answer.

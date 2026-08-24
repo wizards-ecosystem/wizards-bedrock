@@ -32,6 +32,7 @@ pub const HOST_PACKAGES: &[&str] = &[
     "timebase",
     "trap-cause",
     "x86-apic",
+    "x86-cpuid",
     "x86-paging",
     "x86-pit",
     "x86-tables",

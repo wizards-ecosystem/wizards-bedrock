@@ -19,5 +19,6 @@ slab-layout.workspace = true
 port-space.workspace = true
 stack-layout.workspace = true
 x86-apic.workspace = true
+x86-cpuid.workspace = true
 x86-paging.workspace = true
 x86-tables.workspace = true

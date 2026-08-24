@@ -17,6 +17,7 @@ members = [
     "libs/timebase",
     "libs/trap-cause",
     "libs/x86-apic",
+    "libs/x86-cpuid",
     "libs/x86-paging",
     "libs/x86-pit",
     "libs/x86-tables",
@@ -40,6 +41,7 @@ default-members = [
     "libs/timebase",
     "libs/trap-cause",
     "libs/x86-apic",
+    "libs/x86-cpuid",
     "libs/x86-paging",
     "libs/x86-pit",
     "libs/x86-tables",
@@ -67,6 +69,7 @@ stack-layout = { path = "libs/stack-layout" }
 timebase = { path = "libs/timebase" }
 trap-cause = { path = "libs/trap-cause" }
 x86-apic = { path = "libs/x86-apic" }
+x86-cpuid = { path = "libs/x86-cpuid" }
 x86-paging = { path = "libs/x86-paging" }
 x86-pit = { path = "libs/x86-pit" }
 x86-tables = { path = "libs/x86-tables" }

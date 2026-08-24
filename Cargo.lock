@@ -144,12 +144,17 @@ dependencies = [
  "slab-layout",
  "stack-layout",
  "x86-apic",
+ "x86-cpuid",
  "x86-paging",
  "x86-tables",
 ]
 
 [[package]]
 name = "x86-apic"
+version = "0.1.0"
+
+[[package]]
+name = "x86-cpuid"
 version = "0.1.0"
 
 [[package]]

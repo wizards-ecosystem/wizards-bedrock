@@ -146,6 +146,11 @@ fn start_interrupts() {
     }
     info!("pic: legacy controllers remapped and masked");
 
+    // One MSR write, at boot, where it is trivial (D-81). The report is the
+    // point as much as the write: what a machine claims about speculation
+    // varies enormously in 2026, and this is the only place it is visible.
+    info!("cpu: {}", cpu::enable_speculation_controls());
+
     match apic::init(vector::LOCAL_APIC) {
         Ok(local) => info!("apic: {local}"),
         Err(reason) => {
