@@ -415,6 +415,19 @@ pub fn page_table_base() -> u64 {
     }
     value & ADDRESS
 }
+/// Drop any cached translation for `address` from this CPU's TLB.
+///
+/// Safe, and it is worth saying why, because most of this module is not: the
+/// page tables are the truth and the TLB is a cache of them, so removing an
+/// entry can only make the CPU re-read what is already there. The unsound
+/// direction is the other one — *not* invalidating after a mapping is taken
+/// away — which is why [`super::paging::Unmapped`] owns the frames until this
+/// has run (D-88).
+pub fn invalidate_page(address: u64) {
+    // SAFETY: `invlpg` reads no memory through `address` and writes none; it
+    // only discards a cached translation for it, which is sound for any value.
+    unsafe { core::arch::asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags)) };
+}
 
 /// Point the CPU at a different top-level page table.
 ///

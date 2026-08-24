@@ -69,6 +69,17 @@ pub enum MapError {
     /// The boot handoff never described this physical range, so there is no
     /// evidence it is memory rather than a guess (D-87).
     Undescribed(Paddr),
+    /// Nothing is mapped at this address, so there is nothing to take away.
+    NotMapped(u64),
+    /// The mapping here is not one this space owns the frame under, so
+    /// unmapping it would hand the allocator memory that was never its (D-88).
+    NotOwned(u64),
+    /// A large page covers this address. Splitting one is not offered: the
+    /// direct map is deliberately unsplittable (D-45).
+    Unsplittable(u64),
+    /// The range's frames are not one ascending run, so they were not mapped
+    /// by a single `map_owned` and cannot be returned as one segment.
+    Discontiguous(u64),
 }
 
 impl From<EntryError> for MapError {
@@ -106,6 +117,16 @@ impl fmt::Display for MapError {
             }
             Self::Undescribed(address) => {
                 write!(f, "{address:#x} is not described by the memory map")
+            }
+            Self::NotMapped(address) => write!(f, "nothing is mapped at {address:#x}"),
+            Self::NotOwned(address) => {
+                write!(f, "the mapping at {address:#x} does not own its frame")
+            }
+            Self::Unsplittable(address) => {
+                write!(f, "{address:#x} is inside a large page, which is not split")
+            }
+            Self::Discontiguous(address) => {
+                write!(f, "the frames behind {address:#x} are not one run")
             }
             Self::NotDeviceMemory(address) => {
                 write!(f, "device range at {address:#x} overlaps ordinary memory")
@@ -286,11 +307,108 @@ impl AddressSpace {
         run: Segment,
         flags: Flags,
     ) -> Result<(), MapError> {
-        self.map_range(virtual_base, run.address(), run.len(), flags)?;
-        // The run belongs to the mapping now. Nothing unmaps yet, so nothing
-        // gives it back; when unmap arrives it is what hands these over.
+        // The owned bit is what `unmap` reads to know these frames are the
+        // allocator's to have back (D-88). It is written in the entry rather
+        // than tracked beside it because the entry is the one thing every path
+        // to an unmap can see.
+        self.map_range(
+            virtual_base,
+            run.address(),
+            run.len(),
+            flags.union(Flags::OWNED),
+        )?;
+        // The run belongs to the mapping now; `unmap` is what gives it back.
         core::mem::forget(run);
         Ok(())
+    }
+
+    /// Take a mapping away, and hand back what it owned.
+    ///
+    /// The range must be exactly what one [`map_owned`](Self::map_owned) put
+    /// there: every page present, four-kilobyte, owned, and backed by one
+    /// ascending run of frames.
+    ///
+    /// The frames are **not** free when this returns. They belong to the
+    /// [`Unmapped`] until its invalidation has run, because a CPU may still
+    /// hold a cached translation to them (D-70 rule 9, D-88).
+    ///
+    /// # Errors
+    ///
+    /// [`MapError::Misaligned`] unless base and length are page-aligned,
+    /// [`MapError::NotMapped`] for a hole, [`MapError::Unsplittable`] for a
+    /// large page, [`MapError::NotOwned`] for a mapping whose frame is not the
+    /// allocator's, and [`MapError::Discontiguous`] if the frames are not one
+    /// run.
+    pub fn unmap(&mut self, virtual_base: u64, len: u64) -> Result<Unmapped, MapError> {
+        if !virtual_base.is_multiple_of(PAGE_SIZE) || len == 0 || !len.is_multiple_of(PAGE_SIZE) {
+            return Err(MapError::Misaligned(virtual_base));
+        }
+        let pages = len / PAGE_SIZE;
+
+        // Preflight the whole range before clearing anything, so a refusal
+        // leaves the space exactly as it was — the rule D-77 gave `map`.
+        let mut first = None;
+        for page in 0..pages {
+            let address = virtual_base
+                .checked_add(page * PAGE_SIZE)
+                .ok_or(MapError::NonCanonical(virtual_base))?;
+            let slot = self.leaf(address)?;
+            // SAFETY: `leaf` returns a pointer into a table frame this space
+            // owns, reachable through the direct map.
+            let entry = unsafe { slot.read_volatile() };
+            if !entry.flags().contains(Flags::OWNED) {
+                return Err(MapError::NotOwned(address));
+            }
+            match first {
+                None => first = Some(entry.address()),
+                Some(base) if entry.address() == base + page * PAGE_SIZE => {}
+                Some(_) => return Err(MapError::Discontiguous(address)),
+            }
+        }
+        let base = first.ok_or(MapError::NotMapped(virtual_base))?;
+
+        for page in 0..pages {
+            let address = virtual_base + page * PAGE_SIZE;
+            let slot = self.leaf(address)?;
+            // SAFETY: as above, and the preflight confirmed this slot holds a
+            // present, owned, four-kilobyte mapping.
+            unsafe { slot.write_volatile(Entry::ABSENT) };
+        }
+
+        Ok(Unmapped {
+            base: virtual_base,
+            pages,
+            // SAFETY: the preflight proved these `pages` frames from `base`
+            // are one ascending run that a `map_owned` moved into this space
+            // and that nothing else holds, and the entries naming them have
+            // just been cleared.
+            frames: Some(unsafe { Segment::from_raw(base, pages as usize) }),
+        })
+    }
+
+    /// The four-kilobyte leaf entry for `address`, or why there is not one.
+    fn leaf(&self, address: u64) -> Result<*mut Entry, MapError> {
+        let mut table = self.root;
+        for level in Level::WALK {
+            let slot = entry_pointer(table, level.index(address))?;
+            // SAFETY: `entry_pointer` confirmed the slot is inside a table
+            // frame this space owns and reachable through the direct map.
+            let entry = unsafe { slot.read_volatile() };
+            if level == Level::Pt {
+                if !entry.is_present() {
+                    return Err(MapError::NotMapped(address));
+                }
+                return Ok(slot);
+            }
+            if !entry.is_present() {
+                return Err(MapError::NotMapped(address));
+            }
+            if entry.is_huge() {
+                return Err(MapError::Unsplittable(address));
+            }
+            table = entry.address();
+        }
+        Err(MapError::NotMapped(address))
     }
 
     /// Map a device's registers, and hand back the claim on them.
@@ -784,6 +902,62 @@ impl StackArena {
             }
         }
         None
+    }
+}
+
+/// Frames taken out of an address space, and the invalidation they owe.
+///
+/// D-70 rule 9: unmap returns a token rather than flushing, so a caller taking
+/// several mappings away pays for one invalidation rather than one each — and
+/// so that the SMP shootdown, when it exists, has something to batch.
+///
+/// **The frames are not free until the invalidation has run**, and that is a
+/// soundness property rather than a convenience. A CPU may still hold a cached
+/// translation to them; handing them back before it is dropped would let the
+/// allocator give away memory a stale entry still reaches. So the frames live
+/// *inside* this token and leave only through [`flush`](Self::flush) or the
+/// `Drop` that does the same thing.
+///
+/// Leaking one with `mem::forget` is therefore safe, which matters: leaking is
+/// safe in Rust, so no soundness argument may rest on `Drop` running. The cost
+/// of a leak is the frames, not correctness.
+#[derive(Debug)]
+#[must_use = "the frames are not returned to the allocator until this is flushed or dropped"]
+pub struct Unmapped {
+    base: u64,
+    pages: u64,
+    frames: Option<Segment>,
+}
+
+impl Unmapped {
+    /// Invalidate the range, and hand back the frames it owned.
+    ///
+    /// The order is the whole point: the cached translations go first, and
+    /// only then does anything else become able to allocate these frames.
+    pub fn flush(mut self) -> Option<Segment> {
+        self.invalidate();
+        self.frames.take()
+    }
+
+    /// How many pages this took away.
+    pub const fn pages(&self) -> u64 {
+        self.pages
+    }
+
+    /// Drop this CPU's cached translations for the range.
+    fn invalidate(&self) {
+        for page in 0..self.pages {
+            cpu::invalidate_page(self.base + page * PAGE_SIZE);
+        }
+    }
+}
+
+impl Drop for Unmapped {
+    /// Invalidate, then let the frames go back. A token that is simply dropped
+    /// is as correct as one that is flushed; it just returns the frames to the
+    /// allocator instead of to the caller.
+    fn drop(&mut self) {
+        self.invalidate();
     }
 }
 

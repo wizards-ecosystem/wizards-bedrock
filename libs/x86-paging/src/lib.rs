@@ -85,6 +85,17 @@ impl Flags {
     /// built.
     pub const NO_EXECUTE: Self = Self(1 << 63);
 
+    /// This mapping owns the frame beneath it, so unmapping returns that
+    /// frame to the allocator (D-88).
+    ///
+    /// Bit 9 is one of the three the architecture leaves to software in a page
+    /// entry (Intel SDM Vol. 3A ch. 4, the `AVL` bits); the CPU ignores it. It
+    /// is provenance written where the mapping is, which is the only place
+    /// that survives every path an unmap can be reached by — a frame the
+    /// allocator handed out must come back, and one the firmware placed must
+    /// not, and nothing outside the entry knows which is which.
+    pub const OWNED: Self = Self(1 << 9);
+
     /// No flags at all.
     pub const NONE: Self = Self(0);
 
@@ -207,6 +218,12 @@ impl Entry {
     pub const fn bits(self) -> u64 {
         self.0
     }
+
+    /// An entry that maps nothing.
+    ///
+    /// What an unmapped slot holds: all zero, so `PRESENT` is clear and every
+    /// other bit with it. Writing this is how a mapping is taken away (D-88).
+    pub const ABSENT: Self = Self(0);
 
     /// A leaf entry at `level` mapping a page at `address` with `flags`.
     ///
@@ -914,5 +931,62 @@ mod tests {
             Entry::page(Level::Pt, 0x1000, Flags::PRESENT | Flags::NO_EXECUTE).expect("aligned");
         assert_eq!(format!("{entry:?}"), "Entry(0x1000 present no-execute)");
         assert_eq!(format!("{:?}", Flags::NONE), "none");
+    }
+
+    /// The owned bit is software-only: the CPU never sees it, and it survives
+    /// a round trip through an entry.
+    ///
+    /// It sits in the architecture's `AVL` window (bits 9..11), clear of every
+    /// flag the hardware defines and clear of the address field, so setting it
+    /// changes neither where a mapping points nor what it permits.
+    #[test]
+    fn the_owned_bit_is_software_only_and_survives_an_entry() {
+        const AVL: u64 = 0b111 << 9;
+        assert_eq!(Flags::OWNED.bits() & AVL, Flags::OWNED.bits());
+
+        for hardware in [
+            Flags::PRESENT,
+            Flags::WRITABLE,
+            Flags::USER,
+            Flags::WRITE_THROUGH,
+            Flags::NO_CACHE,
+            Flags::ACCESSED,
+            Flags::DIRTY,
+            Flags::HUGE,
+            Flags::GLOBAL,
+            Flags::NO_EXECUTE,
+        ] {
+            assert_eq!(
+                Flags::OWNED.bits() & hardware.bits(),
+                0,
+                "the owned bit overlaps a hardware flag"
+            );
+        }
+
+        let address = 0x1234_5000;
+        let flags = Flags::PRESENT.union(Flags::WRITABLE).union(Flags::OWNED);
+        let entry = Entry::page(Level::Pt, address, flags).expect("a page entry");
+        assert_eq!(entry.address(), address, "the owned bit moved the address");
+        assert!(entry.flags().contains(Flags::OWNED));
+        assert!(entry.is_present());
+
+        let unowned =
+            Entry::page(Level::Pt, address, flags.difference(Flags::OWNED)).expect("a page entry");
+        assert!(!unowned.flags().contains(Flags::OWNED));
+        assert_eq!(
+            entry.address(),
+            unowned.address(),
+            "ownership changed where the mapping points"
+        );
+    }
+
+    /// An absent entry maps nothing and permits nothing.
+    #[test]
+    fn an_absent_entry_is_present_to_nobody() {
+        assert!(!Entry::ABSENT.is_present());
+        assert!(!Entry::ABSENT.is_huge());
+        assert_eq!(Entry::ABSENT.address(), 0);
+        assert_eq!(Entry::ABSENT.flags().bits(), 0);
+        assert!(!Entry::ABSENT.flags().contains(Flags::OWNED));
     }
 }

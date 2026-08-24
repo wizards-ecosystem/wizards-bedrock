@@ -266,10 +266,92 @@ fn a_mapping_added_after_the_switch_is_live() -> bool {
         return false;
     }
 
-    let translated = paging::translate(PROBE) == Some((physical, wanted.union(Flags::PRESENT)));
+    // `OWNED` is in the expectation because `map_owned` writes it: the entry
+    // is where provenance lives, so unmap can tell the allocator's frames from
+    // the firmware's (D-88).
+    let expected = wanted.union(Flags::PRESENT).union(Flags::OWNED);
+    let translated = paging::translate(PROBE) == Some((physical, expected));
     let on_the_live_root = paging::active_root() == cpu::page_table_base();
 
     unmapped_before && translated && on_the_live_root
+}
+
+/// An unmapped range gives its frames back, and not before the invalidation.
+///
+/// The debt D-86 named and left open: while nothing unmapped, a frame put into
+/// the live space could never be returned, because freeing it would hand the
+/// allocator a page a live mapping still reached. `unmap` closes it, and the
+/// shape that makes it sound is that the frames live *inside* the token until
+/// its invalidation has run (D-88) — so this counts free frames before and
+/// after, and the count only comes back once the token is spent.
+fn an_unmapped_range_returns_its_frames() -> bool {
+    /// Clear of the direct map, the stack arena and the device window.
+    const PROBE: u64 = 0xffff_fd00_0001_0000;
+    /// More than one page, so the walk covers a run rather than a single slot.
+    const PAGES: u64 = 4;
+
+    let Some(run) = mm::allocate_contiguous(PAGES as usize, 1) else {
+        return false;
+    };
+    let physical = run.address();
+    let before = mm::free_frames();
+
+    let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+    let mapped =
+        mem::with_active_space(&mut context(), |space| space.map_owned(PROBE, run, wanted));
+    if !matches!(mapped, Some(Ok(()))) {
+        return false;
+    }
+    let mapped_here = paging::translate(PROBE).map(|(frame, _)| frame) == Some(physical);
+
+    let Some(Ok(token)) = mem::with_active_space(&mut context(), |space| {
+        space.unmap(PROBE, PAGES * PAGE_SIZE)
+    }) else {
+        return false;
+    };
+
+    // The entries are gone the moment `unmap` returns...
+    let gone = paging::translate(PROBE).is_none();
+    // ...but the frames are not the allocator's yet.
+    let withheld = mm::free_frames() == before && token.pages() == PAGES;
+
+    let returned = token.flush().is_some_and(|segment| {
+        let same = segment.address() == physical && segment.frames() == PAGES as usize;
+        drop(segment);
+        same
+    });
+    let counted = mm::free_frames() == before + PAGES as usize;
+
+    mapped_here && gone && withheld && returned && counted
+}
+
+/// Unmapping refuses everything it cannot prove it owns.
+///
+/// Four ways to ask for something that is not a run of owned four-kilobyte
+/// pages, and four refusals. The direct map is the interesting one: it is
+/// mapped in two-megabyte pages on purpose (D-45), splitting it is not offered,
+/// and the measurement in `010` §8 says keeping it that way is right.
+fn unmapping_refuses_what_it_does_not_own() -> bool {
+    // The kernel's own text: mapped, and never the allocator's.
+    let direct = boot::sections().text.start;
+    /// Never mapped by anything.
+    const HOLE: u64 = 0xffff_fd00_0002_0000;
+
+    mem::with_active_space(&mut context(), |space| {
+        // A hole.
+        matches!(space.unmap(HOLE, PAGE_SIZE), Err(MapError::NotMapped(_)))
+            // Not page-aligned.
+            && matches!(space.unmap(HOLE + 1, PAGE_SIZE), Err(MapError::Misaligned(_)))
+            // Zero length.
+            && matches!(space.unmap(HOLE, 0), Err(MapError::Misaligned(_)))
+            // The kernel's own text: mapped, but not the allocator's to have,
+            // and this is the refusal that matters most.
+            && matches!(
+                space.unmap(direct, PAGE_SIZE),
+                Err(MapError::NotOwned(_)) | Err(MapError::Unsplittable(_))
+            )
+    })
+    .unwrap_or(false)
 }
 
 /// A mapping cannot be silently re-pointed; an identical rewrite is the one
@@ -1156,7 +1238,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 82;
+const EXPECTED_CHECKS: usize = 84;
 
 impl Report {
     const fn new() -> Self {
@@ -1243,6 +1325,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a second address space is refused",
         a_second_switch_is_refused(),
+    );
+    report.check(
+        "an unmapped range returns its frames",
+        an_unmapped_range_returns_its_frames(),
+    );
+    report.check(
+        "unmapping refuses what it does not own",
+        unmapping_refuses_what_it_does_not_own(),
     );
     report.check(
         "an undescribed range cannot be mapped",
