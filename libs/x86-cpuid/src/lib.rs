@@ -28,6 +28,8 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod xstate;
+
 /// `cpuid` leaf 7 subleaf 0, `EDX` bit 29: `IA32_ARCH_CAPABILITIES` exists.
 pub const ARCH_CAPABILITIES_BIT: u32 = 1 << 29;
 
