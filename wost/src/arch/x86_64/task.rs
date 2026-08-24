@@ -75,6 +75,10 @@ pub enum TaskError {
     Uninterruptible,
     /// [`switch_from_trap`] was called outside a trap handler.
     NotInTrap,
+    /// The frame handed to [`switch_from_trap`] is not the one the live
+    /// handler was entered with, so nothing it claims about the interrupted
+    /// code is evidence.
+    ForeignFrame,
 }
 
 impl fmt::Display for TaskError {
@@ -92,6 +96,7 @@ impl fmt::Display for TaskError {
             Self::Boot => f.write_str("the boot slot cannot be fabricated"),
             Self::Uninterruptible => f.write_str("the interrupted code holds a critical section"),
             Self::NotInTrap => f.write_str("not inside a trap handler"),
+            Self::ForeignFrame => f.write_str("not the frame the live handler was entered with"),
         }
     }
 }
@@ -242,7 +247,7 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
 
     let top = table.slots[slot].stack_top;
     let base = top - FRAME_BYTES;
-    let frame: [u64; FRAME_WORDS] = [0, 0, 0, 0, 0, 0, thread_start as *const () as u64];
+    let frame: [u64; FRAME_WORDS] = [0, 0, 0, 0, 0, 0, thread_start as *const () as u64, 0];
     // SAFETY: `init` walked this stack's top page and found it mapped
     // writable; `base` is `FRAME_BYTES` below the top, inside that page, and
     // eight-byte aligned because the top is page-aligned. Nothing else is
@@ -299,7 +304,8 @@ pub fn switch_to(slot: usize) -> Result<(), TaskError> {
 /// The handler's frame stays on the preempted thread's own stack; what this
 /// saves is the handler's path down to here. Two things make it safe to do
 /// from a handler at all. The interrupted code must have been accepting
-/// interrupts — `frame` is the evidence, and code that was not (a lock
+/// interrupts — `frame` is the evidence, accepted only if it is the frame the
+/// live handler was entered with, and code that was not accepting (a lock
 /// holder, D-34) is refused, so no critical section is ever switched out of.
 /// And the trap depth goes with the thread: the one switched to runs at its
 /// own depth, and this one gets its back on resumption (D-55).
@@ -310,18 +316,22 @@ pub fn switch_to(slot: usize) -> Result<(), TaskError> {
 /// # Errors
 ///
 /// [`TaskError::Uninterruptible`] if the interrupted code had the flag
-/// clear, [`TaskError::NotInTrap`] outside a handler, and otherwise as
-/// [`switch_to`].
+/// clear, [`TaskError::NotInTrap`] outside a handler,
+/// [`TaskError::ForeignFrame`] for a frame the live handler was not entered
+/// with, and otherwise as [`switch_to`].
 pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
     if !interrupt::in_trap() {
         return Err(TaskError::NotInTrap);
+    }
+    if !interrupt::is_live_frame(frame) {
+        return Err(TaskError::ForeignFrame);
     }
     if frame.flags & interrupt::FLAGS_INTERRUPT == 0 {
         return Err(TaskError::Uninterruptible);
     }
 
     let saved = interrupt::disable();
-    let depth = interrupt::suspend_trap();
+    let suspended = interrupt::suspend_trap();
     let result = prepare(slot, State::Alive).map(|(save, load)| {
         // SAFETY: as in `switch_to` — `prepare` vouches for both pointers and
         // the flag is clear. The handler's own frame is below the saved
@@ -329,7 +339,7 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
         // that will ever unwind it.
         unsafe { switch(save, load) };
     });
-    interrupt::resume_trap(depth);
+    interrupt::resume_trap(suspended);
     saved.restore();
     result
 }
@@ -409,12 +419,12 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
 
 /// Bytes the fabricated frame occupies below the stack top.
 ///
-/// Six callee-saved registers and a return address: `ret` pops the last,
-/// leaving the stack pointer eight below the top, which is the alignment the
-/// ABI promises a function on entry.
+/// Six callee-saved registers, the return address, and one padding word: the
+/// pops and the `ret` consume seven, leaving `rsp` eight below the
+/// page-aligned top — the entry alignment the ABI promises.
 const FRAME_BYTES: u64 = FRAME_WORDS as u64 * 8;
 
-const FRAME_WORDS: usize = 7;
+const FRAME_WORDS: usize = 8;
 
 /// Where every fabricated thread begins: on its own stack, with nothing in its
 /// registers, and the interrupt flag its creator had.

@@ -138,23 +138,26 @@ pub fn managed_frames() -> usize {
     FRAMES.lock().managed_count()
 }
 
-/// Read-only access to `len` bytes of physical memory at `address`.
+/// Copy physical memory at `address` into `buffer`, for firmware tables.
 ///
-/// For firmware tables. The range must be described by the memory map, must
-/// not be allocatable — that would alias a [`Frame`] — and, once the kernel
-/// installs its own tables, must lie in regions
-/// [`MemoryKind::is_direct_mapped`](crate::boot::MemoryKind::is_direct_mapped)
-/// names. The bootloader's map covers everything it described; the kernel's
-/// covers less.
-pub fn read_physical(address: Paddr, len: usize) -> Option<&'static [u8]> {
+/// The range must be described by the memory map, not allocatable, and — once
+/// the kernel's own tables are in force — direct-mapped. A copy rather than a
+/// reference: some of those regions hold memory the kernel itself writes, and
+/// a reference over that would alias the writes; volatile reads do not.
+pub fn read_physical(address: Paddr, buffer: &mut [u8]) -> bool {
+    let len = buffer.len();
     if len == 0 {
-        return None;
+        return false;
     }
-    let end = address.checked_add(len as u64)?;
+    let Some(end) = address.checked_add(len as u64) else {
+        return false;
+    };
     let narrowed = NARROWED.is_claimed();
 
     let guard = MAP.lock();
-    let map = guard.as_ref()?;
+    let Some(map) = guard.as_ref() else {
+        return false;
+    };
     let overlaps = |region: &MemoryRegion| {
         address < region.base.saturating_add(region.len) && region.base < end
     };
@@ -166,17 +169,20 @@ pub fn read_physical(address: Paddr, len: usize) -> Option<&'static [u8]> {
     drop(guard);
 
     if refused || !described {
-        return None;
+        return false;
     }
 
-    let base = direct_pointer(address, len as u64)?;
-    // SAFETY: every byte of this range lies in a region the bootloader
-    // described, none of it is allocatable — so no `Frame` can ever name it
-    // and nothing else in the kernel writes it — and the direct map in force
-    // reaches all of it, which is what the two checks above establish between
-    // them. A shared reference to memory only firmware ever wrote is sound,
-    // and such regions are never freed, which is what the `'static` rests on.
-    Some(unsafe { core::slice::from_raw_parts(base.cast_const(), len) })
+    let Some(base) = direct_pointer(address, len as u64) else {
+        return false;
+    };
+    for (index, slot) in buffer.iter_mut().enumerate() {
+        // SAFETY: `index` is below `len`, which the checks above bounded.
+        let byte = unsafe { base.add(index) };
+        // SAFETY: the range is described by the map and the direct map in
+        // force reaches it; volatile, because the kernel may be writing it.
+        *slot = unsafe { byte.read_volatile() };
+    }
+    true
 }
 
 /// Set once the kernel's own tables are the ones in force.

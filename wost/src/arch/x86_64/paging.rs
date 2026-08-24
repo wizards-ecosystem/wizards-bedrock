@@ -90,6 +90,9 @@ pub enum ActivateError {
     StackUnmapped(u64),
     /// The new tables map the stack without write permission.
     StackReadOnly(u64),
+    /// The new tables do not give this address of the direct map the writable,
+    /// never-executable mapping every frame access assumes.
+    DirectMapGap(u64),
 }
 
 impl fmt::Display for ActivateError {
@@ -104,6 +107,9 @@ impl fmt::Display for ActivateError {
             }
             Self::StackUnmapped(address) => write!(f, "the stack at {address:#x} is unmapped"),
             Self::StackReadOnly(address) => write!(f, "the stack at {address:#x} is read-only"),
+            Self::DirectMapGap(address) => {
+                write!(f, "the direct map at {address:#x} is missing or wrong")
+            }
         }
     }
 }
@@ -240,6 +246,7 @@ impl AddressSpace {
         Ok(DeviceMapping {
             address: virtual_base + offset,
             len,
+            root: self.root,
         })
     }
 
@@ -317,9 +324,15 @@ impl AddressSpace {
                 let entry = Entry::page(physical, flags)?;
                 // SAFETY: `entry_pointer` confirmed the slot is inside a table
                 // frame this space owns and reachable through the direct map.
-                // Nothing else writes these tables: `map` takes `&mut self`,
-                // and `activate` consumes the space so no mapping can follow
-                // the switch.
+                let current = unsafe { slot.read_volatile() };
+                // Only an identical rewrite is allowed: anything else would
+                // re-point a mapping some handle is evidence of.
+                if current.is_present() && current != entry {
+                    return Err(MapError::Conflict(virtual_address));
+                }
+                // SAFETY: as above. Nothing else writes these tables: `map`
+                // takes `&mut self`, and `activate` consumes the space so no
+                // mapping can follow the switch.
                 unsafe { slot.write_volatile(entry) };
                 return Ok(());
             }
@@ -416,6 +429,10 @@ pub fn activate(space: AddressSpace) -> Result<(), ActivateError> {
         }
     }
 
+    if let Some(gap) = direct_map_gap(space.root) {
+        return Err(ActivateError::DirectMapGap(gap));
+    }
+
     if !ACTIVE.claim() {
         return Err(ActivateError::AlreadyActive);
     }
@@ -436,6 +453,42 @@ pub fn activate(space: AddressSpace) -> Result<(), ActivateError> {
     // bug this design must not permit. Taking the space by value is about the
     // *caller* — it no longer has anything to call `map` on.
     Ok(())
+}
+
+/// The first direct-map address `root` gets wrong, if any: every frame access
+/// after the switch is raw arithmetic against this mapping, so a gap must be
+/// refused while the refusal can still be a `Result`.
+fn direct_map_gap(root: Paddr) -> Option<u64> {
+    let offset = mm::direct_map()?.offset();
+    mm::with_memory_map(|map| {
+        for region in map
+            .regions()
+            .filter(|region| region.kind.is_direct_mapped())
+        {
+            let base = region.base & !(PAGE_SIZE - 1);
+            let end = region
+                .base
+                .saturating_add(region.len)
+                .next_multiple_of(PAGE_SIZE);
+            let mut physical = base;
+            while physical < end {
+                let Some(virtual_address) = offset.checked_add(physical) else {
+                    return Some(physical);
+                };
+                match walk(root, virtual_address) {
+                    Some((mapped, flags, span))
+                        if mapped == physical
+                            && flags.contains(Flags::WRITABLE)
+                            && flags.contains(Flags::NO_EXECUTE) =>
+                    {
+                        physical += span - (virtual_address & (span - 1));
+                    }
+                    _ => return Some(virtual_address),
+                }
+            }
+        }
+        None
+    })?
 }
 
 /// Whether the kernel is running on tables it built itself.
@@ -462,6 +515,12 @@ pub fn translate(virtual_address: u64) -> Option<(Paddr, Flags)> {
 
 /// Walk `root` for `virtual_address`, returning the frame and the leaf's flags.
 fn translate_in(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags)> {
+    walk(root, virtual_address).map(|(physical, flags, _)| (physical, flags))
+}
+
+/// As [`translate_in`], but also naming the leaf's span, so a sweep can step
+/// by whole entries.
+fn walk(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags, u64)> {
     if !x86_paging::is_canonical(virtual_address) {
         return None;
     }
@@ -481,7 +540,7 @@ fn translate_in(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags)> {
         // level is checked first.
         if level == Level::Pt || entry.is_huge() {
             let offset = virtual_address & (level.span() - 1);
-            return Some((entry.address() + offset, entry.flags()));
+            return Some((entry.address() + offset, entry.flags(), level.span()));
         }
         table = entry.address();
     }
@@ -521,11 +580,14 @@ impl StackArena {
 /// Held rather than used until the space is active — the mapping does not
 /// exist for the CPU until then. Not `Copy` or `Clone` on purpose: it is the
 /// evidence that exactly one caller owns this device's window, which is what
-/// makes [`claim`](Self::claim) safe to expose without an obligation.
+/// makes [`claim`](Self::claim) safe to expose without an obligation. The
+/// root ties the claim to the space that minted it: window addresses collide
+/// across spaces, so a stale claim must not cover the installed space's.
 #[derive(Debug)]
 pub struct DeviceMapping {
     address: u64,
     len: u64,
+    root: Paddr,
 }
 
 impl DeviceMapping {
@@ -538,15 +600,16 @@ impl DeviceMapping {
     ///
     /// Safe because `MmioRegion::new`'s contract holds by construction: the
     /// mapping is permanent, and this value cannot be copied, so no second
-    /// region can cover the same bytes. `None` until the space is active.
+    /// region can cover the same bytes. `None` until the space is active, and
+    /// `None` forever for a claim minted by a space that never became it.
     pub fn claim(self) -> Option<MmioRegion> {
-        if !is_active() || translate(self.address).is_none() {
+        if !is_active() || active_root() != self.root || translate(self.address).is_none() {
             return None;
         }
-        // SAFETY: the walk above confirmed the mapping is live; it is exclusive
-        // because `self` cannot be copied, permanent because nothing unmaps,
-        // and four-byte aligned because `map_device_with` refused a device
-        // whose registers were not, and the window preserves that offset.
+        // SAFETY: the walk confirmed the mapping is live in the tables that
+        // minted this claim; exclusive because `self` cannot be copied and
+        // only the minting space's claims pass the root comparison; permanent
+        // because nothing unmaps; four-byte aligned by `map_device_with`.
         Some(unsafe { MmioRegion::new(self.address as *mut u8, self.len as usize) })
     }
 }

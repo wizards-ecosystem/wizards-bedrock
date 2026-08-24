@@ -112,22 +112,41 @@ static INIT: Once = Once::new();
 /// thread that owns it, so the thread switched *to* sees its own.
 static TRAP_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
+/// The frame the innermost live handler was entered with — a `TrapFrame` is
+/// plain data, so only this pointer makes one evidence.
+static LIVE_FRAME: AtomicPtr<TrapFrame> = AtomicPtr::new(core::ptr::null_mut());
+
 /// Whether this CPU is inside a trap handler.
 pub fn in_trap() -> bool {
     TRAP_DEPTH.load(Ordering::Relaxed) != 0
 }
 
-/// Take this context's trap depth off the CPU, for a switch to another.
-///
-/// Paired with [`resume_trap`] on the way back; between them the CPU runs a
-/// thread whose depth is its own.
-pub(crate) fn suspend_trap() -> usize {
-    TRAP_DEPTH.swap(0, Ordering::Relaxed)
+/// Whether `frame` is the one the innermost live handler was entered with.
+pub(crate) fn is_live_frame(frame: &TrapFrame) -> bool {
+    core::ptr::eq(LIVE_FRAME.load(Ordering::Relaxed), frame)
 }
 
-/// Put back the depth [`suspend_trap`] took.
-pub(crate) fn resume_trap(depth: usize) {
-    TRAP_DEPTH.store(depth, Ordering::Relaxed);
+/// Take this context's trap state off the CPU, for a switch to another.
+///
+/// Paired with [`resume_trap`] on the way back; between them the CPU runs a
+/// thread whose depth and live frame are its own.
+pub(crate) fn suspend_trap() -> TrapSuspension {
+    TrapSuspension {
+        depth: TRAP_DEPTH.swap(0, Ordering::Relaxed),
+        frame: LIVE_FRAME.swap(core::ptr::null_mut(), Ordering::Relaxed),
+    }
+}
+
+/// Put back the state [`suspend_trap`] took.
+pub(crate) fn resume_trap(suspended: TrapSuspension) {
+    TRAP_DEPTH.store(suspended.depth, Ordering::Relaxed);
+    LIVE_FRAME.store(suspended.frame, Ordering::Relaxed);
+}
+
+/// One context's trap state, parked on its own stack across a switch.
+pub(crate) struct TrapSuspension {
+    depth: usize,
+    frame: *mut TrapFrame,
 }
 
 /// Fill the interrupt descriptor table and load it, routing every vector to
@@ -351,8 +370,12 @@ fn flags() -> u64 {
 /// deliberately and returned from: the saved instruction pointer is already
 /// past the instruction that caused it.
 pub fn breakpoint() {
-    // SAFETY: `int3` raises vector 3, whose gate is present. No options are
-    // given because the handler may do anything a Rust function may do.
+    assert!(
+        table_is_loaded(),
+        "load the interrupt table before raising a breakpoint"
+    );
+    // SAFETY: `int3` raises vector 3, whose gate the assert confirmed loaded.
+    // No options, because the handler may do anything a Rust function may do.
     unsafe { asm!("int3") };
 }
 
@@ -375,7 +398,10 @@ extern "C" fn dispatch(frame: *mut TrapFrame) {
     let frame = unsafe { &mut *frame };
 
     TRAP_DEPTH.fetch_add(1, Ordering::Relaxed);
+    // Swapped so a nested trap restores its outer frame on the way out.
+    let outer = LIVE_FRAME.swap(frame, Ordering::Relaxed);
     handler(frame);
+    LIVE_FRAME.store(outer, Ordering::Relaxed);
     TRAP_DEPTH.fetch_sub(1, Ordering::Relaxed);
 }
 

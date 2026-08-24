@@ -9,6 +9,8 @@
 //! (D-49).
 
 use acpi_tables::{MadtEntries, MadtEntry, Rsdp, Sdt, SdtPointers};
+use alloc::vec;
+use alloc::vec::Vec;
 use wost::mm;
 
 use crate::{debug, warn};
@@ -68,7 +70,7 @@ impl Interrupts {
 /// revision 4 guarantees is inside the direct map.
 pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
     let root = read_at_virtual(rsdp, 36)?;
-    let root = match Rsdp::parse(root) {
+    let root = match Rsdp::parse(&root) {
         Ok(root) => root,
         Err(reason) => {
             warn!("acpi: root pointer unusable: {reason}");
@@ -77,11 +79,11 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
     };
 
     let madt = find_madt(root)?;
-    let header = Sdt::parse(madt).ok()?;
+    let header = Sdt::parse(&madt).ok()?;
 
     let mut io_apic = None;
     let mut overrides = [None; LEGACY_IRQS];
-    for entry in MadtEntries::new(madt, header) {
+    for entry in MadtEntries::new(&madt, header) {
         match entry {
             MadtEntry::IoApic {
                 id,
@@ -110,7 +112,7 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
 }
 
 /// The MADT, found by walking whichever root table the RSDP offers.
-fn find_madt(root: Rsdp) -> Option<&'static [u8]> {
+fn find_madt(root: Rsdp) -> Option<Vec<u8>> {
     let (address, extended) = match (root.xsdt(), root.rsdt()) {
         // The XSDT wherever it exists: the RSDT's entries are 32-bit and
         // cannot name a table above 4 GiB.
@@ -123,18 +125,18 @@ fn find_madt(root: Rsdp) -> Option<&'static [u8]> {
     };
 
     let root_table = read_table(address)?;
-    let root_header = Sdt::parse(root_table).ok()?;
+    let root_header = Sdt::parse(&root_table).ok()?;
     let pointers = if extended {
-        SdtPointers::xsdt(root_table, root_header)
+        SdtPointers::xsdt(&root_table, root_header)
     } else {
-        SdtPointers::rsdt(root_table, root_header)
+        SdtPointers::rsdt(&root_table, root_header)
     };
 
     for entry in pointers {
         let Some(table) = read_table(entry) else {
             continue;
         };
-        if let Ok(header) = Sdt::parse(table)
+        if let Ok(header) = Sdt::parse(&table)
             && header.signature() == Sdt::MADT
         {
             return Some(table);
@@ -149,14 +151,19 @@ fn find_madt(root: Rsdp) -> Option<&'static [u8]> {
 /// The header must be read before the length is known, and the length is what
 /// says how much to read — so a header is fetched first and then the whole
 /// table, which is also what lets `Sdt::parse` checksum every byte.
-fn read_table(address: u64) -> Option<&'static [u8]> {
-    let header = mm::read_physical(address, Sdt::LEN)?;
-    let length = Sdt::parse_length(header)?;
-    mm::read_physical(address, length)
+fn read_table(address: u64) -> Option<Vec<u8>> {
+    let mut header = [0; Sdt::LEN];
+    if !mm::read_physical(address, &mut header) {
+        return None;
+    }
+    let length = Sdt::parse_length(&header)?;
+    let mut table = vec![0; length];
+    mm::read_physical(address, &mut table).then_some(table)
 }
 
 /// Bytes at a direct-map virtual address.
-fn read_at_virtual(address: u64, len: usize) -> Option<&'static [u8]> {
+fn read_at_virtual(address: u64, len: usize) -> Option<Vec<u8>> {
     let offset = mm::direct_map()?.offset();
-    mm::read_physical(address.checked_sub(offset)?, len)
+    let mut bytes = vec![0; len];
+    mm::read_physical(address.checked_sub(offset)?, &mut bytes).then_some(bytes)
 }

@@ -47,6 +47,10 @@ pub fn enter(
     rsdp: &'static RsdpRequest,
     kernel_main: fn(BootInfo) -> !,
 ) -> ! {
+    // A second caller would mint a second framebuffer over live device memory.
+    static ENTERED: crate::sync::Once = crate::sync::Once::new();
+    assert!(ENTERED.claim(), "the kernel has already been entered");
+
     kernel_main(BootInfo {
         base_revision_supported: base_revision.is_supported(),
         framebuffer: take_framebuffer(framebuffer),

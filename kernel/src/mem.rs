@@ -158,6 +158,9 @@ pub(crate) fn init_paging(
         }
     });
 
+    // Before the switch: the CR3 load is the flush the PAT rewrite needs.
+    let write_combining = cpu::enable_write_combining();
+
     match paging::activate(space) {
         Ok(()) => info!("paging: running on our own tables"),
         Err(reason) => {
@@ -173,9 +176,7 @@ pub(crate) fn init_paging(
         }
     }
 
-    if cpu::enable_write_combining()
-        && let Some(region) = framebuffer.and_then(DeviceMapping::claim)
-    {
+    if write_combining && let Some(region) = framebuffer.and_then(DeviceMapping::claim) {
         dev::remap_framebuffer(region);
         info!("framebuffer: write-combining");
     }

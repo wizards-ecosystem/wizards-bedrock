@@ -309,6 +309,10 @@ fn read_cr4() -> u64 {
 /// Reports whether the processor has a PAT at all. Safe for the same reason
 /// [`enable_protections`] is: the worst an unexpected value can do here is
 /// make a mapping slower or uncached, never unsound.
+///
+/// Call before the tables whose mappings select the entry are activated: the
+/// manual asks for a TLB flush after repurposing a live PAT entry, and the
+/// `CR3` load in `activate` is exactly that.
 pub fn enable_write_combining() -> bool {
     /// The page attribute table.
     const PAT: u32 = 0x277;

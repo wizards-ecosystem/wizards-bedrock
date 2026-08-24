@@ -19,7 +19,7 @@ use core::hint::spin_loop;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use wost::arch::current::cpu::{self, Protections};
-use wost::arch::current::paging::{self, ActivateError, AddressSpace};
+use wost::arch::current::paging::{self, ActivateError, AddressSpace, MapError};
 use wost::arch::current::{apic, interrupt, pic, port, segment};
 use wost::boot::{self, FramebufferInfo, Rgb};
 use wost::mm;
@@ -194,10 +194,11 @@ fn physical_reads_are_bounded() -> bool {
         return false;
     };
 
-    mm::read_physical(usable, WORD).is_none()
-        && mm::read_physical(undescribed, WORD).is_none()
-        && mm::read_physical(unreachable, WORD).is_none()
-        && mm::read_physical(readable, WORD).is_some()
+    let mut buffer = [0; WORD];
+    !mm::read_physical(usable, &mut buffer)
+        && !mm::read_physical(undescribed, &mut buffer)
+        && !mm::read_physical(unreachable, &mut buffer)
+        && mm::read_physical(readable, &mut buffer)
 }
 
 /// A second switch is refused.
@@ -210,6 +211,37 @@ fn a_second_switch_is_refused() -> bool {
         Ok(space) => paging::activate(space) == Err(ActivateError::AlreadyActive),
         Err(_) => false,
     }
+}
+
+/// A mapping cannot be silently re-pointed; an identical rewrite is the one
+/// rewrite allowed, because the direct map's outward rounding produces it.
+fn a_differing_remap_is_refused() -> bool {
+    /// Canonical, and far from anything a fresh space would map.
+    const PROBE: u64 = 0xffff_8800_0000_0000;
+
+    let Ok(mut space) = AddressSpace::new() else {
+        return false;
+    };
+    let first = space.map(PROBE, 4096, 4096, Flags::NO_EXECUTE);
+    let again = space.map(PROBE, 4096, 4096, Flags::NO_EXECUTE);
+    let differing = space.map(PROBE, 8192, 4096, Flags::NO_EXECUTE);
+    first.is_ok() && again.is_ok() && differing == Err(MapError::Conflict(PROBE))
+}
+
+/// A device claim minted by a space that was never installed is refused —
+/// window addresses collide across spaces, so honouring it would cover
+/// whatever the installed space put there (D-49).
+fn a_stale_device_claim_is_refused() -> bool {
+    let mapping = {
+        let Ok(mut space) = AddressSpace::new() else {
+            return false;
+        };
+        match space.map_device(0xfec0_0000, 4096) {
+            Ok(mapping) => mapping,
+            Err(_) => return false,
+        }
+    };
+    mapping.claim().is_none()
 }
 
 /// Backspace erases and Enter starts a line, as a person pressing them expects.
@@ -581,6 +613,39 @@ fn a_new_thread_is_interruptible() -> bool {
     let exited = yields_until(|| thread::free_slots() == free);
 
     ran && exited && FIRST_RUN_FLAG.load(Ordering::Acquire) == 1
+}
+
+/// Where [`report_a_local_address`] leaves its probe, or zero until it runs.
+static ALIGNMENT_PROBE: AtomicUsize = AtomicUsize::new(0);
+
+/// Report the address of a sixteen-byte-aligned local. `black_box` because
+/// the compiler believes the ABI and would otherwise answer at compile time.
+fn report_a_local_address() {
+    #[repr(align(16))]
+    struct Probe {
+        _pad: [u8; 16],
+    }
+
+    let probe = Probe { _pad: [0; 16] };
+    ALIGNMENT_PROBE.store(
+        core::hint::black_box(&raw const probe as usize),
+        Ordering::Release,
+    );
+}
+
+/// A thread's stack is aligned as the ABI promises: the fabricated first
+/// switch is the one place a stack pointer is invented rather than saved.
+fn a_thread_starts_aligned() -> bool {
+    ALIGNMENT_PROBE.store(0, Ordering::Release);
+    let free = thread::free_slots();
+    if thread::spawn("aligned", report_a_local_address).is_err() {
+        return false;
+    }
+
+    let ran = yields_until(|| ALIGNMENT_PROBE.load(Ordering::Acquire) != 0);
+    let exited = yields_until(|| thread::free_slots() == free);
+
+    ran && exited && ALIGNMENT_PROBE.load(Ordering::Acquire).is_multiple_of(16)
 }
 
 fn leave_at_once() {}
@@ -988,6 +1053,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_second_switch_is_refused(),
     );
     report.check(
+        "a differing remap is refused",
+        a_differing_remap_is_refused(),
+    );
+    report.check(
+        "a stale device claim is refused",
+        a_stale_device_claim_is_refused(),
+    );
+    report.check(
         "a physical read is refused for memory the direct map may not reach",
         physical_reads_are_bounded(),
     );
@@ -1022,6 +1095,7 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "callee-saved registers survive a switch",
         registers_survive_a_switch(),
     );
+    report.check("a thread starts aligned", a_thread_starts_aligned());
     report.check("an exited slot is reused", an_exited_slot_is_reused());
     report.check(
         "a new thread runs with interrupts accepted",

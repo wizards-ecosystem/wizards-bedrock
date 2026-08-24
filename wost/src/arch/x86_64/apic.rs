@@ -348,10 +348,9 @@ fn write(register: Register, value: u64) {
     // SAFETY: the processor is in x2APIC mode, which is what makes this
     // register number one it implements — `REGISTERS_READY` says so, and only
     // `enter_extended_mode` sets it, after reading the mode back. Every value
-    // written comes from an encoding in `x86_apic`, which is where the
-    // reserved bits that would fault are accounted for — or is the timer's
-    // initial count, for which the architecture defines all thirty-two bits
-    // and reserves none.
+    // written comes from an encoding in `x86_apic`, is the timer's initial
+    // count (all thirty-two bits defined), or is the zero the architecture
+    // accepts for the task priority and mandates for the error status.
     unsafe { msr::write(register.msr(), value) };
 }
 

@@ -56,9 +56,9 @@ pub struct MmioRegion {
     len: usize,
 }
 
-// SAFETY: `MmioRegion` is a base pointer plus a length, and every access goes
-// through `&mut self`. Moving that pair to another CPU is sound provided the
-// mapping is global, which `new`'s contract requires.
+// SAFETY: `MmioRegion` is a base pointer plus a length, and the raw pointer
+// keeps it `!Sync`, so accesses cannot race across CPUs. Moving the pair is
+// sound provided the mapping is global, which `new`'s contract requires.
 unsafe impl Send for MmioRegion {}
 
 impl MmioRegion {
