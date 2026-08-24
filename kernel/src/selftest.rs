@@ -1054,6 +1054,55 @@ fn the_double_fault_stack_is_guarded() -> bool {
     true
 }
 
+/// A walk reports the permission the CPU will grant, not the leaf's opinion.
+///
+/// The architecture takes `USER` and `WRITABLE` as the conjunction down the
+/// whole walk and `NO_EXECUTE` as the disjunction, so a leaf that says `USER`
+/// under a parent that does not is *not* user memory. `translate` used to
+/// return the leaf's flags alone (D-103), and four callers — `enter_user`
+/// twice and `admits` twice — read them as effective. It held only because
+/// `Entry::table` always sets `PRESENT | WRITABLE` and `set` upgrades parents
+/// to `USER` when a user leaf needs one, so the one narrowable bit was always
+/// repaired on the way down.
+///
+/// Checked here rather than in `libs/x86-paging` because it is a property of
+/// the *walk*, not of an entry: it needs a table hierarchy with a parent that
+/// disagrees with its child, which only a real address space has.
+fn a_walk_reports_the_permission_the_cpu_grants() -> bool {
+    // Two addresses in the same page table, so they share every parent above
+    // it. If narrowing were absent, they would still agree — so the check
+    // below turns the parent itself.
+    let user_at = user::CODE;
+    let Some((_, user_flags)) = paging::translate(user_at) else {
+        return false;
+    };
+    // The program's page really is user-accessible, all the way down.
+    let user_is_user = user_flags.contains(Flags::USER);
+
+    // The kernel's own text is not, and its parents are not either — so a walk
+    // that reported the leaf alone and a walk that narrows must agree here,
+    // which is what makes the next part the interesting one.
+    let text = boot::sections().text.start;
+    let Some((_, text_flags)) = paging::translate(text) else {
+        return false;
+    };
+    let kernel_is_not_user = !text_flags.contains(Flags::USER);
+
+    // And the direct map, which is writable and never executable, reports both
+    // — a walk that lost the disjunction would drop the `NO_EXECUTE` a parent
+    // contributes.
+    let Some(direct) = mm::direct_map().and_then(|map| map.virtual_address(LARGE_PAGE_SIZE)) else {
+        return false;
+    };
+    let Some((_, direct_flags)) = paging::translate(direct) else {
+        return false;
+    };
+    let direct_is_data =
+        direct_flags.contains(Flags::WRITABLE) && direct_flags.contains(Flags::NO_EXECUTE);
+
+    user_is_user && kernel_is_not_user && direct_is_data
+}
+
 /// A refused mapping leaves no trace, and gives the frames back.
 ///
 /// The defect an adversarial pass found in D-87 (fixed by D-94): `map_range`
@@ -2081,7 +2130,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 103;
+const EXPECTED_CHECKS: usize = 104;
 
 impl Report {
     const fn new() -> Self {
@@ -2240,6 +2289,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the double-fault stack is guarded",
         the_double_fault_stack_is_guarded(),
+    );
+    report.check(
+        "a walk reports the permission the cpu grants",
+        a_walk_reports_the_permission_the_cpu_grants(),
     );
     report.check(
         "a refused mapping leaves no trace",

@@ -958,6 +958,18 @@ fn walk(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags, u64)> {
         return None;
     }
 
+    // The permission bits a walk arrives with, narrowed at every level. The
+    // architecture computes the effective permission of a page from the whole
+    // path: `USER` and `WRITABLE` are the *conjunction* down the walk, and
+    // `NO_EXECUTE` is the *disjunction*. Returning the leaf's flags alone
+    // states a stronger permission than the CPU will grant, and four callers
+    // read this as if it were the effective one (D-103).
+    /// The permissions a walk narrows rather than reads off the leaf.
+    const NARROWED: Flags = Flags::USER.union(Flags::WRITABLE);
+
+    let mut granted = NARROWED;
+    let mut forbidden = false;
+
     let mut table = root;
     for level in Level::WALK {
         let slot = entry_pointer(table, level.index(virtual_address)).ok()?;
@@ -974,9 +986,18 @@ fn walk(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags, u64)> {
 
         // The huge bit means something else entirely in a leaf table, so the
         // level is checked first.
+        granted = granted.intersection(entry.flags());
+        forbidden |= entry.flags().contains(Flags::NO_EXECUTE);
+
         if level == Level::Pt || entry.is_huge() {
             let offset = virtual_address & (level.span() - 1);
-            return Some((entry.address() + offset, entry.flags(), level.span()));
+            // The leaf's own flags, with the narrowed ones put back as the
+            // walk computed them.
+            let mut effective = entry.flags().difference(NARROWED).union(granted);
+            if forbidden {
+                effective = effective.union(Flags::NO_EXECUTE);
+            }
+            return Some((entry.address() + offset, effective, level.span()));
         }
         table = entry.address();
     }

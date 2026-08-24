@@ -104,6 +104,16 @@ impl Flags {
         self.0
     }
 
+    /// Only the flags in both.
+    ///
+    /// What a page walk needs to compute an *effective* permission: the
+    /// architecture grants `USER` and `WRITABLE` only where every level of the
+    /// walk grants them, so the answer is a conjunction rather than the leaf's
+    /// own opinion (D-103).
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+
     /// Both sets of flags together.
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -988,5 +998,35 @@ mod tests {
         assert_eq!(Entry::ABSENT.address(), 0);
         assert_eq!(Entry::ABSENT.flags().bits(), 0);
         assert!(!Entry::ABSENT.flags().contains(Flags::OWNED));
+    }
+
+    /// Intersection keeps what both hold, and nothing else.
+    ///
+    /// The operation a walk uses to narrow a permission at every level, so it
+    /// is worth its own check: an implementation that returned the union, or
+    /// either operand, would make a walk report a permission the CPU does not
+    /// grant.
+    #[test]
+    fn intersection_keeps_only_what_both_hold() {
+        let user_write = Flags::USER.union(Flags::WRITABLE);
+        assert_eq!(user_write.intersection(Flags::USER), Flags::USER);
+        assert_eq!(
+            user_write.intersection(Flags::NONE).bits(),
+            0,
+            "intersecting with nothing kept something"
+        );
+        assert_eq!(user_write.intersection(user_write), user_write);
+        assert_eq!(
+            Flags::USER.intersection(Flags::WRITABLE).bits(),
+            0,
+            "disjoint flags intersected to something"
+        );
+
+        // And it narrows: the result is contained in both operands.
+        let left = Flags::USER.union(Flags::NO_EXECUTE).union(Flags::PRESENT);
+        let right = Flags::USER.union(Flags::WRITABLE);
+        let both = left.intersection(right);
+        assert!(left.contains(both) && right.contains(both));
+        assert_eq!(both, Flags::USER);
     }
 }
