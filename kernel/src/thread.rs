@@ -684,14 +684,28 @@ pub(crate) fn block(context: &mut ThreadContext) {
 /// forbids the heap. A set-but-not-blocked slot is skipped: a thread that
 /// registered and then found nothing to wait for is still registered.
 pub(crate) fn unblock(slots: u32) -> usize {
-    let mut threads = THREADS.lock_leaf();
-    let mut woken = 0;
-    for slot in 0..CAPACITY {
-        if slots & (1 << slot) == 0 || threads.threads[slot].state != State::Blocked {
-            continue;
+    let woken = {
+        let mut threads = THREADS.lock_leaf();
+        let mut woken = 0;
+        for slot in 0..CAPACITY {
+            if slots & (1 << slot) == 0 || threads.threads[slot].state != State::Blocked {
+                continue;
+            }
+            threads.make_ready(slot);
+            woken += 1;
         }
-        threads.make_ready(slot);
-        woken += 1;
+        woken
+    };
+
+    // A woken thread is runnable and nothing has been asked to run it. From a
+    // handler that is fine — the trap exit reschedules (D-54). From thread
+    // context nothing does, and on a tickless kernel there may be no timer
+    // armed at all (D-57), so the thread this call just made ready could wait
+    // for an unrelated interrupt that never comes. This module's own rule is
+    // that every path changing who is runnable ends by arming the timer; this
+    // one was not obeying it (D-93).
+    if woken > 0 && !interrupt::in_trap() {
+        reschedule_timer(Some(time::now_ns()));
     }
     woken
 }

@@ -124,6 +124,7 @@ version = "0.1.0"
 dependencies = [
  "acpi-tables",
  "eevdf",
+ "handle-space",
  "noto-sans-mono-bitmap",
  "ps2-keys",
  "stack-layout",

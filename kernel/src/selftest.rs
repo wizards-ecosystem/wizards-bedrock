@@ -13,11 +13,13 @@
 //! this, which the harness sees as a missing verdict.
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Write;
 use core::hint::spin_loop;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use handle_space::Rights;
 use wost::arch::current::cpu::{self, Protections};
 use wost::arch::current::paging::{self, ActivateError, AddressSpace, BootRegion, MapError};
 use wost::arch::current::{apic, interrupt, pic, port, segment};
@@ -31,6 +33,8 @@ use crate::arch::current::debug_exit;
 use crate::arch::current::trap::{self, Record};
 use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
+use crate::handle::{HandleError, HandleTable};
+use crate::object::{self, ObjectRef, ObjectType};
 use crate::thread::ThreadContext;
 use crate::{dev, error, info, input, mem, thread, time};
 
@@ -274,6 +278,244 @@ fn a_mapping_added_after_the_switch_is_live() -> bool {
     let on_the_live_root = paging::active_root() == cpu::page_table_base();
 
     unmapped_before && translated && on_the_live_root
+}
+
+/// A handle names its object, and a closed one names nothing.
+///
+/// The lifetime property the whole model rests on (D-78). A handle kept across
+/// a close must not name whatever takes the slot next, and the generation is
+/// what turns that use-after-free into a decode failure rather than a silent
+/// reference to someone else's object.
+fn a_closed_handle_names_nothing() -> bool {
+    let mut table = HandleTable::new(8);
+    let Ok(handle) = table.insert(object::event(), Rights::ALL) else {
+        return false;
+    };
+
+    let resolves = table.kind_of(handle) == Ok(ObjectType::Event);
+    let counted = table.live() == 1;
+
+    if table.close(handle).is_err() {
+        return false;
+    }
+    let stale = matches!(table.resolve(handle), Err(HandleError::Stale));
+    let closed_twice = table.close(handle) == Err(HandleError::Stale);
+    let emptied = table.live() == 0;
+
+    // And the slot's next tenant does not answer to the old handle, which is
+    // the case the generation exists for rather than the one above.
+    let Ok(next) = table.insert(object::event(), Rights::ALL) else {
+        return false;
+    };
+    let not_reused = next != handle && matches!(table.resolve(handle), Err(HandleError::Stale));
+
+    resolves && counted && stale && closed_twice && emptied && not_reused
+}
+
+/// A handle from one table is not a handle in another.
+///
+/// The single ownership comparison that makes a *global* arena safe to share
+/// between tables (D-78). A well-formed handle belonging to someone else is
+/// refused as theirs, and a value from another table usually does not decode
+/// at all, because the mixers differ.
+fn a_handle_does_not_cross_tables() -> bool {
+    let mut mine = HandleTable::new(4);
+    let theirs = HandleTable::new(4);
+    let Ok(handle) = mine.insert(object::event(), Rights::ALL) else {
+        return false;
+    };
+
+    let refused = matches!(
+        theirs.resolve(handle),
+        Err(HandleError::NotYours) | Err(HandleError::Malformed) | Err(HandleError::Stale)
+    );
+    let still_mine = mine.resolve(handle).is_ok();
+    refused && still_mine
+}
+
+/// Rights are checked, and duplication only ever narrows them.
+fn rights_are_checked_and_only_narrow() -> bool {
+    let mut table = HandleTable::new(8);
+    let readable = Rights::INSPECT.union(Rights::DUPLICATE).union(Rights::READ);
+    let Ok(handle) = table.insert(object::event(), readable) else {
+        return false;
+    };
+
+    let allowed = table.resolve_with(handle, Rights::READ).is_ok();
+    let denied = matches!(
+        table.resolve_with(handle, Rights::WRITE),
+        Err(HandleError::Denied)
+    );
+
+    let Ok(narrowed) = table.duplicate(handle, Rights::READ) else {
+        return false;
+    };
+    let narrowed_cannot_duplicate =
+        table.duplicate(narrowed, Rights::READ) == Err(HandleError::Denied);
+
+    let refused_widening =
+        table.duplicate(handle, readable.union(Rights::WRITE)) == Err(HandleError::Denied);
+
+    allowed && denied && narrowed_cannot_duplicate && refused_widening
+}
+
+/// A table cannot hold more than its quota, and closing makes room again.
+///
+/// D-44 put the kernel-memory bound at the handle layer rather than at the
+/// frame allocator, on the grounds that a quota is policy and stays revisable
+/// while making callers donate memory would have been an ABI decision and
+/// permanent.
+fn a_table_cannot_exceed_its_quota() -> bool {
+    const QUOTA: usize = 3;
+    let mut table = HandleTable::new(QUOTA);
+    let mut held = Vec::new();
+    for _ in 0..QUOTA {
+        match table.insert(object::event(), Rights::ALL) {
+            Ok(handle) => held.push(handle),
+            Err(_) => return false,
+        }
+    }
+
+    let refused = table.insert(object::event(), Rights::ALL) == Err(HandleError::QuotaExhausted);
+    let full = table.live() == QUOTA;
+
+    let Some(first) = held.first().copied() else {
+        return false;
+    };
+    if table.close(first).is_err() {
+        return false;
+    }
+    let room_again = table.insert(object::event(), Rights::ALL).is_ok();
+
+    refused && full && room_again
+}
+
+/// An object outlives every handle to it, and no longer.
+///
+/// `Arc` is the refcount (D-78 wants `inc_not_zero` from day one), so this is
+/// really a check that the table holds a reference rather than a pointer: two
+/// handles keep one object alive, and it dies when the second goes.
+fn an_object_lives_exactly_as_long_as_its_handles() -> bool {
+    let mut table = HandleTable::new(8);
+    let object = object::event();
+    let watcher = Arc::downgrade(&object);
+    let Ok(first) = table.insert(object, Rights::ALL) else {
+        return false;
+    };
+    let Ok(second) = table.duplicate(first, Rights::ALL) else {
+        return false;
+    };
+
+    let alive = watcher.upgrade().is_some();
+    if table.close(first).is_err() {
+        return false;
+    }
+    let still_alive = watcher.upgrade().is_some();
+    if table.close(second).is_err() {
+        return false;
+    }
+    let gone = watcher.upgrade().is_none();
+
+    alive && still_alive && gone
+}
+
+/// A table's death closes everything it held.
+///
+/// Which is the whole of a process's teardown once there are processes: its
+/// authority is its handles, so releasing them releases everything it could
+/// reach.
+fn a_dead_table_releases_its_objects() -> bool {
+    let object = object::event();
+    let watcher = Arc::downgrade(&object);
+    {
+        let mut table = HandleTable::new(4);
+        if table.insert(object, Rights::ALL).is_err() {
+            return false;
+        }
+        if watcher.upgrade().is_none() {
+            return false;
+        }
+    }
+    watcher.upgrade().is_none()
+}
+
+/// The object a handle names is shared with the thread that waits on it.
+static WAITED_EVENT: SpinLock<Option<ObjectRef>> = SpinLock::new(None);
+
+/// 0 before the waiter runs, 1 once it is about to block, 2 once it is woken.
+static EVENT_WAITER: AtomicUsize = AtomicUsize::new(0);
+
+/// Block on the shared event, and record having come back.
+fn wait_on_the_event() {
+    let Some(object) = WAITED_EVENT.lock_leaf().clone() else {
+        return;
+    };
+    let Some(event) = object.as_event() else {
+        return;
+    };
+    EVENT_WAITER.store(1, Ordering::Release);
+    event.wait(&mut context());
+    EVENT_WAITER.store(2, Ordering::Release);
+}
+
+/// A thread waiting on an event is off the run queue, and a signal wakes it.
+///
+/// The first object doing what it exists for, reached the way everything will
+/// be reached: through a handle carrying the right to wait on it. `WAIT` is a
+/// right rather than a syscall name because being allowed to observe an
+/// object's signals is a distinction the kernel genuinely makes about it
+/// (D-78's rule).
+///
+/// The signal is sticky, which is what makes the waiter's check-then-block
+/// safe: a signal landing between the two sets a state the loop re-reads,
+/// rather than delivering a wakeup that can be missed.
+fn a_signal_wakes_a_thread_waiting_on_a_handle() -> bool {
+    let mut table = HandleTable::new(4);
+    let Ok(handle) = table.insert(object::event(), Rights::WAIT.union(Rights::INSPECT)) else {
+        return false;
+    };
+    let Ok(object) = table.resolve_with(handle, Rights::WAIT) else {
+        return false;
+    };
+    let Some(event) = object.as_event() else {
+        return false;
+    };
+    if event.is_signalled() {
+        return false;
+    }
+
+    *WAITED_EVENT.lock_leaf() = Some(Arc::clone(&object));
+    EVENT_WAITER.store(0, Ordering::Release);
+    let free_before = thread::free_slots();
+    let blocks_before = thread::blocks();
+    if thread::spawn("event-waiter", wait_on_the_event).is_err() {
+        return false;
+    }
+
+    // Wait for the *block*, not for the flag the waiter sets on its way in.
+    // Signalling between those two would leave nothing on the queue to wake,
+    // and this check would pass on a thread that never slept — which is the
+    // shape D-49 caught lying, and which the first version of this check had.
+    if !runs_until(200, || thread::blocks() > blocks_before) {
+        return false;
+    }
+    let blocked = EVENT_WAITER.load(Ordering::Acquire) == 1;
+
+    let woke_count = event.signal();
+    let came_back = runs_until(200, || EVENT_WAITER.load(Ordering::Acquire) == 2);
+
+    // A waiter arriving after the signal does not block at all, which is what
+    // sticky means and what a condition variable would get wrong.
+    let late_blocks = thread::blocks();
+    event.wait(&mut context());
+    let late_did_not_block = thread::blocks() == late_blocks;
+
+    // Leave nothing running: a thread still exiting perturbs whatever check
+    // comes next, and the alternation check is sensitive to exactly that.
+    let settled = runs_until(200, || thread::free_slots() == free_before);
+    *WAITED_EVENT.lock_leaf() = None;
+
+    blocked && woke_count >= 1 && came_back && late_did_not_block && settled
 }
 
 /// The boot thread stands on a guarded stack, and not the bootloader's.
@@ -1334,7 +1576,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 86;
+const EXPECTED_CHECKS: usize = 93;
 
 impl Report {
     const fn new() -> Self {
@@ -1421,6 +1663,34 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a second address space is refused",
         a_second_switch_is_refused(),
+    );
+    report.check(
+        "a signal wakes a thread waiting on a handle",
+        a_signal_wakes_a_thread_waiting_on_a_handle(),
+    );
+    report.check(
+        "a closed handle names nothing",
+        a_closed_handle_names_nothing(),
+    );
+    report.check(
+        "a handle does not cross tables",
+        a_handle_does_not_cross_tables(),
+    );
+    report.check(
+        "rights are checked and only narrow",
+        rights_are_checked_and_only_narrow(),
+    );
+    report.check(
+        "a table cannot exceed its quota",
+        a_table_cannot_exceed_its_quota(),
+    );
+    report.check(
+        "an object lives exactly as long as its handles",
+        an_object_lives_exactly_as_long_as_its_handles(),
+    );
+    report.check(
+        "a dead table releases its objects",
+        a_dead_table_releases_its_objects(),
     );
     report.check(
         "the boot thread stands on a guarded stack",

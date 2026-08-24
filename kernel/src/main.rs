@@ -19,9 +19,16 @@ mod arch;
 mod banner;
 mod console;
 mod dev;
+// Built and proven before anything ships it, which is the order the charter
+// forced: handles need objects and objects need a process to belong to, so the
+// first shipped caller is `spawn` in slice 7 and the gate comes off with it.
+#[cfg(feature = "selftest")]
+mod handle;
 mod input;
 mod log;
 mod mem;
+#[cfg(feature = "selftest")]
+mod object;
 mod panic;
 #[cfg(feature = "selftest")]
 mod selftest;

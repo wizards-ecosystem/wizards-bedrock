@@ -142,7 +142,7 @@ impl Slot {
     pub const fn reused(self) -> Self {
         Self {
             index: self.index,
-            generation: (self.generation + 1) % GENERATIONS,
+            generation: next_generation(self.generation),
         }
     }
 
@@ -170,6 +170,15 @@ impl Slot {
         let base = base >> RESERVED_BITS;
         Self::new(base & (SLOTS - 1), base >> INDEX_BITS)
     }
+}
+
+/// The generation a slot moves to when its handle is closed.
+///
+/// Free-standing as well as on [`Slot`] because a table advancing a slot it is
+/// tearing down has a raw counter and no handle to reuse — and open-coding the
+/// wrap in two places is how the two stop agreeing.
+pub const fn next_generation(generation: u32) -> u32 {
+    (generation + 1) % GENERATIONS
 }
 
 /// What a handle permits.
