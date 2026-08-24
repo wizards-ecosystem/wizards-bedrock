@@ -14,8 +14,12 @@
 //!   allocation and, per the Scalable Commutativity Rule, is the difference
 //!   between an interface that scales and one that cannot. sv6 measured the
 //!   unordered alternative scaling linearly with **no single-core penalty**.
-//!   It also means a small integer like `3` or `0` is never a valid handle,
-//!   so the commonest way to fabricate one by accident fails closed.
+//!   Zero is never a handle, whatever the mixer, which closes the commonest
+//!   way to fabricate one by accident. Small integers with the reserved bits
+//!   set — `3`, `7`, `11` — *do* decode, to slots that are almost never in
+//!   the arena; it is the bounds and generation checks that refuse them, not
+//!   the encoding. An earlier version of this sentence claimed otherwise
+//!   (D-95).
 //! - **A generation counter shares the word with the index.** Reusing a slot
 //!   changes the value, so a handle kept across a close does not name whatever
 //!   took the slot next. That is use-after-free turned into a decode failure.
@@ -92,8 +96,29 @@ impl Mixer {
     ///
     /// The low [`RESERVED_BITS`] are cleared, because mixing them would break
     /// the one property every decode checks first.
+    ///
+    /// A seed of zero yields the identity, which is a mixer that mixes
+    /// nothing — legal, and never what a table wants. [`for_table`] is the
+    /// constructor a table should use.
+    ///
+    /// [`for_table`]: Self::for_table
     pub const fn new(seed: u32) -> Self {
         Self(seed & !RESERVED)
+    }
+
+    /// A mixer for table number `id`, distinct and never the identity.
+    ///
+    /// The kernel derived this itself and got `Mixer(0)` for the first table,
+    /// so its handles were unmixed and its first one was the literal integer
+    /// three (D-95). The odd constant is added *after* the multiply so that
+    /// `id` zero is not a fixed point.
+    pub const fn for_table(id: u32) -> Self {
+        Self::new(id.wrapping_mul(0x9E37_79B9).wrapping_add(0x7F4A_7C15))
+    }
+
+    /// Whether this mixer actually mixes.
+    pub const fn is_identity(self) -> bool {
+        self.0 == 0
     }
 
     /// The constant itself.
@@ -283,6 +308,17 @@ impl Rights {
         self.0 & other.0 == other.0
     }
 
+    /// Whether every right here is one that can mean something for an object
+    /// with `per_type` as its per-type set.
+    ///
+    /// D-78's rule is that a right names a distinction the kernel makes about
+    /// *that object*. Nothing enforced it, and the first object shipped with
+    /// `READ`, `WRITE`, `EXECUTE` and `MAP` granted on an `Event` — which has
+    /// no pages for any of them to mean anything about (D-95).
+    pub const fn are_meaningful_for(self, per_type: Self) -> bool {
+        self.difference(Self::UNIVERSAL).difference(per_type).0 == 0
+    }
+
     /// Attenuate to `wanted`, or `None` if that asks for more than is held.
     ///
     /// The whole of rights attenuation, and it only ever narrows. Zircon's
@@ -342,15 +378,16 @@ mod tests {
     /// count, a length, a negative-looking word.
     #[test]
     fn a_malformed_value_never_decodes() {
+        // Every value whose reserved bits are broken, and the `continue` that
+        // used to be here skipped exactly the ones where the property is
+        // interesting — so the cases it kept were the ones that could not
+        // fail (D-95). They are now asserted from the other side.
         for value in [0, 1, 2, 4, 8, 16, 100, u32::MAX / 2, u32::MAX - 1] {
-            let raw = value ^ MIXER.bits();
-            if raw & RESERVED == RESERVED {
-                continue;
-            }
+            let broken = (value ^ MIXER.bits()) & RESERVED != RESERVED;
             assert_eq!(
-                Slot::decode(value, MIXER),
-                None,
-                "{value:#x} decoded despite broken reserved bits"
+                Slot::decode(value, MIXER).is_none(),
+                broken,
+                "{value:#x} disagreed about being well formed"
             );
         }
 
@@ -574,5 +611,34 @@ mod rights_tests {
         assert!(!held.contains(Rights::READ.union(Rights::EXECUTE)));
         assert!(Rights::ALL.contains(held));
         assert!(held.contains(Rights::NONE), "everything contains nothing");
+    }
+
+    /// A right that means nothing for an object type is refused for it.
+    ///
+    /// The rule D-78 states and nothing checked: `READ` on an event is not a
+    /// narrower permission, it is a category error.
+    #[test]
+    fn a_right_that_means_nothing_for_a_type_is_not_meaningful() {
+        // An object with no per-type rights at all, which is what an event is.
+        let none = Rights::NONE;
+        assert!(Rights::UNIVERSAL.are_meaningful_for(none));
+        assert!(Rights::DUPLICATE.are_meaningful_for(none));
+        assert!(
+            !Rights::READ.are_meaningful_for(none),
+            "read means nothing here"
+        );
+        assert!(!Rights::ALL.are_meaningful_for(none));
+
+        // One with the memory rights, which is what a memory object will be.
+        let memory = Rights::READ
+            .union(Rights::WRITE)
+            .union(Rights::EXECUTE)
+            .union(Rights::MAP);
+        assert!(Rights::ALL.are_meaningful_for(memory));
+        assert!(Rights::READ.union(Rights::WAIT).are_meaningful_for(memory));
+
+        // Universal rights are always meaningful, which is what makes them
+        // universal.
+        assert!(Rights::UNIVERSAL.are_meaningful_for(Rights::NONE));
     }
 }

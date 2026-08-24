@@ -280,6 +280,72 @@ fn a_mapping_added_after_the_switch_is_live() -> bool {
     unmapped_before && translated && on_the_live_root
 }
 
+/// The event whose already-signalled state the re-check must find.
+static REREAD_EVENT: SpinLock<Option<ObjectRef>> = SpinLock::new(None);
+
+/// 0 before the thread runs, 1 once it has come back through `wait_unless`.
+static REREAD_RETURNED: AtomicUsize = AtomicUsize::new(0);
+
+/// Wait on an event that is *already* signalled, and record coming back.
+fn wait_on_a_signalled_event() {
+    let Some(object) = REREAD_EVENT.lock_leaf().clone() else {
+        return;
+    };
+    let Some(event) = object.as_event() else {
+        return;
+    };
+    // Straight at `wait_unless`, not through `Event::wait` — that one tests
+    // the state before it calls in, so it would never reach the re-check this
+    // is about, and a broken re-check would sail past unnoticed.
+    event
+        .waiters_for_test()
+        .wait_unless(&mut context(), || event.is_signalled());
+    REREAD_RETURNED.store(1, Ordering::Release);
+}
+
+/// A waiter re-reads its condition after registering, and does not block if it
+/// has become true.
+///
+/// The half of the lost-wakeup fix that one CPU can observe (D-95). The
+/// condition is evaluated under the same queue lock a waker must take, so a
+/// signal cannot land between the read and the registration — they are one
+/// step. The earlier shape read the condition *outside* that lock, and a signal
+/// in the gap woke an empty queue while the waiter went on to sleep for ever.
+///
+/// Run on a spawned thread so that failure is a timeout here rather than a
+/// hang: without the re-check the waiter blocks on an event nobody will signal
+/// again, and a check that blocks *itself* can only stop the machine. Phase 4's
+/// lesson about breaks that crash, applied to where the check runs.
+///
+/// What this cannot show is the race itself. On one CPU, with the flag clear
+/// and the lock held, there is no interleaving left to drive — and the
+/// predicate must not touch the queue either, since signalling from inside it
+/// deadlocks against the lock it already holds, which is how the first version
+/// of this check hung the machine instead of failing it. The race is D-70 rule
+/// 6's, and slice 9's model is what will check it.
+fn a_waiter_rereads_its_condition_before_blocking() -> bool {
+    let event = object::event();
+    let Some(inner) = event.as_event() else {
+        return false;
+    };
+    inner.signal();
+
+    *REREAD_EVENT.lock_leaf() = Some(Arc::clone(&event));
+    REREAD_RETURNED.store(0, Ordering::Release);
+    let free_before = thread::free_slots();
+    if thread::spawn("event-rereader", wait_on_a_signalled_event).is_err() {
+        return false;
+    }
+
+    let came_back = runs_until(200, || REREAD_RETURNED.load(Ordering::Acquire) == 1);
+    let settled = runs_until(200, || thread::free_slots() == free_before);
+    *REREAD_EVENT.lock_leaf() = None;
+
+    // And nothing is left registered, so a later wake cannot name a thread
+    // that is no longer waiting here.
+    came_back && settled && inner.waiters_for_test().is_idle()
+}
+
 /// A handle names its object, and a closed one names nothing.
 ///
 /// The lifetime property the whole model rests on (D-78). A handle kept across
@@ -288,7 +354,7 @@ fn a_mapping_added_after_the_switch_is_live() -> bool {
 /// reference to someone else's object.
 fn a_closed_handle_names_nothing() -> bool {
     let mut table = HandleTable::new(8);
-    let Ok(handle) = table.insert(object::event(), Rights::ALL) else {
+    let Ok(handle) = table.insert(object::event(), Rights::UNIVERSAL) else {
         return false;
     };
 
@@ -304,12 +370,38 @@ fn a_closed_handle_names_nothing() -> bool {
 
     // And the slot's next tenant does not answer to the old handle, which is
     // the case the generation exists for rather than the one above.
-    let Ok(next) = table.insert(object::event(), Rights::ALL) else {
+    let Ok(next) = table.insert(object::event(), Rights::UNIVERSAL) else {
         return false;
     };
     let not_reused = next != handle && matches!(table.resolve(handle), Err(HandleError::Stale));
 
     resolves && counted && stale && closed_twice && emptied && not_reused
+}
+
+/// A right that means nothing for an object type is refused for it.
+///
+/// D-78's one rule — *a right must correspond to a distinction the kernel
+/// actually makes about that object, never to a syscall name* — enforced
+/// rather than stated. It was neither, until an adversarial pass noticed that
+/// the first object shipped with `READ`, `WRITE`, `EXECUTE` and `MAP` granted
+/// on an event, and that the check named for rights used that as its fixture
+/// (D-95).
+///
+/// An event has no pages. `READ` on one is a category error, not a narrower
+/// permission, and granting it would make the rights word mean less every time
+/// an object type was added.
+fn a_meaningless_right_is_refused() -> bool {
+    let mut table = HandleTable::new(4);
+
+    let refused = table.insert(object::event(), Rights::READ) == Err(HandleError::Meaningless);
+    let also_refused = table.insert(object::event(), Rights::ALL) == Err(HandleError::Meaningless);
+
+    // The universal four mean the same for everything, so they are always
+    // available — that is what makes them universal.
+    let allowed = table.insert(object::event(), Rights::UNIVERSAL).is_ok();
+    let nothing_is_allowed = table.insert(object::event(), Rights::NONE).is_ok();
+
+    refused && also_refused && allowed && nothing_is_allowed && table.live() == 2
 }
 
 /// A handle from one table is not a handle in another.
@@ -321,40 +413,56 @@ fn a_closed_handle_names_nothing() -> bool {
 fn a_handle_does_not_cross_tables() -> bool {
     let mut mine = HandleTable::new(4);
     let theirs = HandleTable::new(4);
-    let Ok(handle) = mine.insert(object::event(), Rights::ALL) else {
+    let Ok(handle) = mine.insert(object::event(), Rights::UNIVERSAL) else {
         return false;
     };
 
-    let refused = matches!(
+    // Forged deliberately, because the accident does not reach the comparison.
+    // Two mixers differ, so `mine`'s handle decodes in `theirs` to an index
+    // that is almost never in the arena — and the bounds check refuses it
+    // before the owner is ever looked at. An earlier version accepted any of
+    // three errors and so passed with the ownership comparison deleted (D-95).
+    let Some(slot) = mine.slot_of(handle) else {
+        return false;
+    };
+    let forged = theirs.handle_for(slot);
+    let refused = theirs.resolve(forged).err() == Some(HandleError::NotYours);
+
+    // The accidental case is refused too, however it happens to land.
+    let stray = matches!(
         theirs.resolve(handle),
         Err(HandleError::NotYours) | Err(HandleError::Malformed) | Err(HandleError::Stale)
     );
     let still_mine = mine.resolve(handle).is_ok();
-    refused && still_mine
+    refused && stray && still_mine
 }
 
 /// Rights are checked, and duplication only ever narrows them.
 fn rights_are_checked_and_only_narrow() -> bool {
     let mut table = HandleTable::new(8);
-    let readable = Rights::INSPECT.union(Rights::DUPLICATE).union(Rights::READ);
+    // `WAIT` rather than `READ`: an event has no pages, so a memory right on
+    // one is a category error rather than a narrower permission (D-95). This
+    // fixture used to grant `READ` on an event and check it was honoured,
+    // which baked the violation of D-78's rule into the check named for it.
+    let readable = Rights::INSPECT.union(Rights::DUPLICATE).union(Rights::WAIT);
     let Ok(handle) = table.insert(object::event(), readable) else {
         return false;
     };
 
-    let allowed = table.resolve_with(handle, Rights::READ).is_ok();
+    let allowed = table.resolve_with(handle, Rights::WAIT).is_ok();
     let denied = matches!(
-        table.resolve_with(handle, Rights::WRITE),
+        table.resolve_with(handle, Rights::TRANSFER),
         Err(HandleError::Denied)
     );
 
-    let Ok(narrowed) = table.duplicate(handle, Rights::READ) else {
+    let Ok(narrowed) = table.duplicate(handle, Rights::WAIT) else {
         return false;
     };
     let narrowed_cannot_duplicate =
-        table.duplicate(narrowed, Rights::READ) == Err(HandleError::Denied);
+        table.duplicate(narrowed, Rights::WAIT) == Err(HandleError::Denied);
 
     let refused_widening =
-        table.duplicate(handle, readable.union(Rights::WRITE)) == Err(HandleError::Denied);
+        table.duplicate(handle, readable.union(Rights::TRANSFER)) == Err(HandleError::Denied);
 
     allowed && denied && narrowed_cannot_duplicate && refused_widening
 }
@@ -370,13 +478,14 @@ fn a_table_cannot_exceed_its_quota() -> bool {
     let mut table = HandleTable::new(QUOTA);
     let mut held = Vec::new();
     for _ in 0..QUOTA {
-        match table.insert(object::event(), Rights::ALL) {
+        match table.insert(object::event(), Rights::UNIVERSAL) {
             Ok(handle) => held.push(handle),
             Err(_) => return false,
         }
     }
 
-    let refused = table.insert(object::event(), Rights::ALL) == Err(HandleError::QuotaExhausted);
+    let refused =
+        table.insert(object::event(), Rights::UNIVERSAL) == Err(HandleError::QuotaExhausted);
     let full = table.live() == QUOTA;
 
     let Some(first) = held.first().copied() else {
@@ -385,7 +494,7 @@ fn a_table_cannot_exceed_its_quota() -> bool {
     if table.close(first).is_err() {
         return false;
     }
-    let room_again = table.insert(object::event(), Rights::ALL).is_ok();
+    let room_again = table.insert(object::event(), Rights::UNIVERSAL).is_ok();
 
     refused && full && room_again
 }
@@ -399,10 +508,10 @@ fn an_object_lives_exactly_as_long_as_its_handles() -> bool {
     let mut table = HandleTable::new(8);
     let object = object::event();
     let watcher = Arc::downgrade(&object);
-    let Ok(first) = table.insert(object, Rights::ALL) else {
+    let Ok(first) = table.insert(object, Rights::UNIVERSAL) else {
         return false;
     };
-    let Ok(second) = table.duplicate(first, Rights::ALL) else {
+    let Ok(second) = table.duplicate(first, Rights::UNIVERSAL) else {
         return false;
     };
 
@@ -429,7 +538,7 @@ fn a_dead_table_releases_its_objects() -> bool {
     let watcher = Arc::downgrade(&object);
     {
         let mut table = HandleTable::new(4);
-        if table.insert(object, Rights::ALL).is_err() {
+        if table.insert(object, Rights::UNIVERSAL).is_err() {
             return false;
         }
         if watcher.upgrade().is_none() {
@@ -1644,7 +1753,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 94;
+const EXPECTED_CHECKS: usize = 96;
 
 impl Report {
     const fn new() -> Self {
@@ -1737,8 +1846,16 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_signal_wakes_a_thread_waiting_on_a_handle(),
     );
     report.check(
+        "a waiter rereads its condition before blocking",
+        a_waiter_rereads_its_condition_before_blocking(),
+    );
+    report.check(
         "a closed handle names nothing",
         a_closed_handle_names_nothing(),
+    );
+    report.check(
+        "a meaningless right is refused",
+        a_meaningless_right_is_refused(),
     );
     report.check(
         "a handle does not cross tables",

@@ -84,7 +84,7 @@ message shape. mlibc needs an ABI to sit on.
 | 3 | The address space that grows: two-way mapping, mappings that carry their evidence, unmap returning a flush token, the double-fault stack guarded | ✅ 2026-08-24 |
 | 4 | Trap entry, FRED-shaped: `libs/trap-cause` and table dispatch, the boot thread's own guarded stack, eIBRS and the speculation report, x2APIC as a checked precondition | ✅ 2026-08-24 |
 | 5 | Ring 3: user descriptors, `syscall`/`sysret`, `arch::percpu` and `swapgs`, the SMAP copy guard, `VERW` on the way out, trap stacks as an enum, the XSAVE table in `libs/x86-cpuid` | |
-| 6 | The handle table: `libs/handle-space`, rights in one `u32`, a refcounted table, the object header, per-process quota | |
+| 6 | The handle table: `libs/handle-space`, rights in one `u32`, a refcounted table, the object header, per-process quota | ✅ 2026-08-24 |
 | 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, `UFrame`, stacks that arrive with their thread, two processes, exactly one handle each at spawn, and `THREADS` split into a thread table and a run queue | |
 | 8 | Channels: bytes and handles, attenuate-on-send, rights declared per field with no defaults | |
 | 9 | The async queue ABI: the model before the protocol, `libs/ring-proto` under shuttle and proptest, reservation backpressure, exactly one terminal completion | |
@@ -308,9 +308,17 @@ held and may not be held across a block. Never write "disable interrupts" where
 "disable preemption" is meant — the single most-cited breakage across the SMP
 survey, and the conflation this kernel currently has.
 
-Slices 6 through 9 add the handle table, the object arena, and each ring. Their
-order relative to the above is fixed when each lands, and the rule for all of
-them is the one D-70 rule 5 already binds: **interrupt handlers never block**.
+**`ARENA` is a leaf**, added by slice 6. Every acquisition is
+take-mutate-return, and the two places that were not — growing the slot vector,
+and collecting objects in `HandleTable::drop` — both called the allocator under
+the guard, which rebuilt the `ARENA → HEAP → FRAMES` order D-85 had just
+deleted. Growth is reserved outside the lock now and the drop buffer is sized
+before it is taken (D-95). An object's last reference is always released *after*
+the guard is gone, because dropping one can reach the frame allocator.
+
+Slices 7 through 9 add the remaining objects and each ring. Their order relative
+to the above is fixed when each lands, and the rule for all of them is the one
+D-70 rule 5 already binds: **interrupt handlers never block**.
 
 ## How it will be checked
 

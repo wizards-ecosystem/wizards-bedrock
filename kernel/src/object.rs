@@ -14,6 +14,8 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use handle_space::Rights;
+
 use crate::thread::ThreadContext;
 use crate::wait::WaitQueue;
 
@@ -28,6 +30,20 @@ use crate::wait::WaitQueue;
 pub(crate) enum ObjectType {
     /// A thing that can be signalled and waited on.
     Event,
+}
+
+impl ObjectType {
+    /// The rights that mean something for this kind of object.
+    ///
+    /// Beyond the universal four, which mean the same for everything. D-78's
+    /// rule made checkable: a right must name a distinction the kernel makes
+    /// about *this* object, and an event has no pages, so none of the memory
+    /// rights apply to one (D-95).
+    pub(crate) const fn per_type_rights(self) -> Rights {
+        match self {
+            Self::Event => Rights::NONE,
+        }
+    }
 }
 
 /// A kernel object.
@@ -60,10 +76,11 @@ impl Object {
 /// address space — which is why it is first: it exercises the handle table,
 /// rights, refcounting and lifetime without waiting on ring 3.
 ///
-/// Signalling is **sticky**. A waiter that arrives after the signal does not
-/// block, which is the difference between an event and a condition variable
-/// and the reason this one cannot lose a wakeup: the state is the record, and
-/// the queue is only how sleepers are told about it.
+/// Signalling is **sticky**: a waiter that arrives after the signal does not
+/// block at all, which is the difference between an event and a condition
+/// variable. That is a useful property and it is *not* what makes the wait
+/// free of lost wakeups — [`WaitQueue::wait_unless`] is, by registering before
+/// it re-reads the state (D-95).
 #[derive(Debug)]
 pub(crate) struct Event {
     signalled: AtomicU32,
@@ -84,6 +101,12 @@ impl Event {
         self.signalled.load(Ordering::Acquire) != 0
     }
 
+    /// The queue behind this event, for the check that drives its wait window.
+    #[cfg(feature = "selftest")]
+    pub(crate) const fn waiters_for_test(&self) -> &WaitQueue {
+        &self.waiters
+    }
+
     /// Signal it, waking everything waiting. Reports how many woke.
     ///
     /// The store is `Release` and the wait's load is `Acquire`, so a waiter
@@ -96,13 +119,15 @@ impl Event {
 
     /// Block until it is signalled, returning at once if it already is.
     ///
-    /// The check-then-wait is safe here for a reason the wait queue alone does
-    /// not give: the signal is sticky, so a signal landing between the check
-    /// and the block sets a state this loop re-reads rather than delivering a
-    /// wakeup that can be missed.
+    /// The re-check happens **after** registering and with the interrupt flag
+    /// clear, which is what makes it safe. An earlier version checked first
+    /// and claimed stickiness covered the window; it does not, because the
+    /// state can only be re-read once a block *returns*, and it returns only
+    /// on a wake. A signal landing in that window woke nobody and the thread
+    /// slept for ever (D-95).
     pub(crate) fn wait(&self, context: &mut ThreadContext) {
         while !self.is_signalled() {
-            self.waiters.wait(context);
+            self.waiters.wait_unless(context, || self.is_signalled());
         }
     }
 }

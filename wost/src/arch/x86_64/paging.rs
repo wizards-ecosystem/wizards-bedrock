@@ -289,6 +289,14 @@ impl AddressSpace {
 
     /// Clear the first `written` bytes of `range`, undoing a partial mapping.
     ///
+    /// One narrow case is *not* undone cleanly: `set` permits an idempotent
+    /// rewrite of an entry that already held exactly this mapping, so a range
+    /// overlapping an identical pre-existing one walks through it, and clearing
+    /// that entry here removes something the call did not create. Only the
+    /// direct map's outward rounding can produce identical overlaps, and a
+    /// failure there aborts the whole space — but the day something recovers
+    /// from a `map_range` error, this is the case to fix (D-95).
+    ///
     /// Tables allocated on the way are **not** freed. They are zeroed frames
     /// with no entries pointing anywhere, so the next mapping through them is
     /// correct; reclaiming them would mean proving no sibling entry survives,
@@ -302,6 +310,14 @@ impl AddressSpace {
                 // space owns, reachable through the direct map, at the level
                 // the forward walk wrote.
                 unsafe { slot.write_volatile(Entry::ABSENT) };
+                // And the CPU is told, because these entries were live: this
+                // runs against the *active* space, and `map_owned` gives the
+                // frames straight back to the allocator afterwards. Leaving a
+                // cached translation to them is the hazard `Unmapped` exists
+                // to prevent, arriving by the other door (D-95).
+                if is_active() && active_root() == self.root {
+                    cpu::invalidate_page(virtual_address);
+                }
             }
             offset += level.span();
         }

@@ -178,31 +178,43 @@ mod tests {
 
     /// The interrupt-stack entries sit where the architecture puts them.
     ///
-    /// Intel SDM Vol. 3A figure 8-11: `IST1` begins at offset 0x24, and each
-    /// entry is eight bytes. Transcribed from the manual rather than computed
-    /// from the struct, so a field reordered by accident fails here instead of
-    /// agreeing with itself.
+    /// Intel SDM Vol. 3A figure 8-11: `IST1` begins at offset 0x24 and each
+    /// entry is eight bytes. The transcribed number is checked against the
+    /// **compiler's** view of the layout via `offset_of!`, so a reordered or
+    /// re-`repr`'d field disagrees with the manual instead of agreeing with
+    /// whatever the struct happens to be.
+    ///
+    /// An earlier version wrote the value into a zeroed array at the offset it
+    /// was testing and read it back from the same place — an identity that
+    /// would have passed under any layout at all (D-95).
     #[test]
     fn interrupt_stacks_sit_where_the_manual_says() {
         assert_eq!(TaskState::interrupt_stack_offset(1), 0x24);
         assert_eq!(TaskState::interrupt_stack_offset(7), 0x24 + 6 * 8);
 
-        // And the offset really is where the value lands.
-        let mut task_state = TaskState::new();
-        task_state.set_interrupt_stack(1, 0xDEAD_BEEF_0000_1000);
-        let bytes: [u8; size_of::<TaskState>()] =
-            // SAFETY-free: `TaskState` is plain data, so a byte view of a copy
-            // is just a transcription. Done through `to_ne_bytes` on the read
-            // value rather than a transmute, which this crate could not write.
-            {
-                let mut view = [0u8; size_of::<TaskState>()];
-                let at = TaskState::interrupt_stack_offset(1);
-                view[at..at + 8].copy_from_slice(&task_state.interrupt_stack(1).to_ne_bytes());
-                view
-            };
         assert_eq!(
-            u64::from_ne_bytes(bytes[0x24..0x2C].try_into().expect("eight bytes")),
-            0xDEAD_BEEF_0000_1000
+            core::mem::offset_of!(TaskState, interrupt_stacks),
+            0x24,
+            "the compiler places the interrupt stacks somewhere else"
         );
+        for index in 1..=INTERRUPT_STACKS {
+            assert_eq!(
+                TaskState::interrupt_stack_offset(index),
+                core::mem::offset_of!(TaskState, interrupt_stacks) + (index - 1) * 8,
+                "entry {index} is not where the offset says"
+            );
+        }
+    }
+
+    /// The offset a targeted store uses is four-mod-eight.
+    ///
+    /// Not a curiosity: it is why `wost` pads its task-state segment. An
+    /// eight-byte store to `IST1` in a segment on an eight-byte boundary would
+    /// be misaligned, and the padding is what makes it sound (D-95). If the
+    /// architecture's offset ever stopped being four-mod-eight the padding
+    /// would be wrong, so the fact is pinned here.
+    #[test]
+    fn the_interrupt_stack_offset_is_four_modulo_eight() {
+        assert_eq!(TaskState::interrupt_stack_offset(1) % 8, 4);
     }
 }

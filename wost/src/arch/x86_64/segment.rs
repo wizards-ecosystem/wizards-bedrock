@@ -42,7 +42,37 @@ const FAULT_STACK_BYTES: usize = 16 * 1024;
 struct FaultStack([u8; FAULT_STACK_BYTES]);
 
 static GDT: HardwareCell<[u64; ENTRIES]> = HardwareCell::new([0; ENTRIES]);
-static TASK_STATE_SEGMENT: HardwareCell<TaskState> = HardwareCell::new(TaskState::new());
+/// The task-state segment, placed so its interrupt-stack entries are
+/// eight-byte aligned.
+///
+/// The architecture puts `IST1` at offset `0x24`, and `TaskState` is
+/// `packed(4)` because the first stack pointer is at offset 4. Together those
+/// mean that in a segment on an eight-byte boundary, `IST1` sits at four *past*
+/// one — so an eight-byte store to it is misaligned, which is undefined
+/// behaviour however well x86 tolerates it in practice.
+///
+/// Four bytes of padding in front moves the whole segment to four-mod-eight,
+/// which puts `0x24` back on a boundary. That is what makes
+/// [`set_double_fault_stack`]'s store both sound and atomic, and a host test
+/// in `x86-tables` pins the offset it depends on (D-95).
+#[repr(C, align(8))]
+struct AlignedTaskState {
+    /// Never read. Its only job is to shift `state` off the boundary.
+    _leading: u32,
+    state: TaskState,
+}
+
+static TASK_STATE_SEGMENT: HardwareCell<AlignedTaskState> = HardwareCell::new(AlignedTaskState {
+    _leading: 0,
+    state: TaskState::new(),
+});
+
+/// The task-state segment itself, past the padding.
+fn task_state_pointer() -> *mut TaskState {
+    // SAFETY: `AlignedTaskState` is `repr(C)`, so this projects to a field of
+    // the live static rather than deriving a pointer from an integer.
+    unsafe { &raw mut (*TASK_STATE_SEGMENT.as_mut_ptr()).state }
+}
 static FAULT_STACK: HardwareCell<FaultStack> =
     HardwareCell::new(FaultStack([0; FAULT_STACK_BYTES]));
 static INIT: Once = Once::new();
@@ -64,10 +94,10 @@ pub fn init() {
     task_state.set_interrupt_stack(DOUBLE_FAULT_STACK as usize, fault_stack_top());
     // SAFETY: `INIT` admitted this caller alone, and nothing reads the segment
     // until the `ltr` below, so no reference to it can exist yet.
-    unsafe { TASK_STATE_SEGMENT.as_mut_ptr().write(task_state) };
+    unsafe { task_state_pointer().write(task_state) };
 
     let task_state_descriptor =
-        SystemDescriptor::task_state(TASK_STATE_SEGMENT.address(), size_of::<TaskState>() as u16);
+        SystemDescriptor::task_state(task_state_pointer() as u64, size_of::<TaskState>() as u16);
 
     let mut entries = [0u64; ENTRIES];
     entries[0] = Descriptor::NULL.bits();
@@ -196,10 +226,21 @@ pub fn set_double_fault_stack(stack: &MappedStack) -> bool {
     // never a mixture. Both are mapped: the `.bss` array `init` installed is
     // in the kernel image and is never unmapped.
     let at = TaskState::interrupt_stack_offset(DOUBLE_FAULT_STACK as usize);
+    // The alignment this store needs is arranged by `AlignedTaskState`, not
+    // assumed: `IST1` is at `0x24`, which is four-mod-eight, so the segment is
+    // deliberately placed four-mod-eight to compensate. Asserted rather than
+    // trusted, because the two facts live in different crates.
+    debug_assert!(
+        task_state_pointer()
+            .addr()
+            .wrapping_add(at)
+            .is_multiple_of(8),
+        "the interrupt-stack entry is not eight-byte aligned"
+    );
     // SAFETY: `at` is a byte offset inside the segment, from the crate that
-    // owns its layout and checks it against the manual, and the entry there is
-    // eight bytes on an eight-byte boundary.
-    let entry = unsafe { TASK_STATE_SEGMENT.as_mut_ptr().cast::<u8>().add(at) }.cast::<u64>();
+    // owns its layout and checks it against the manual, and the assertion
+    // above establishes the alignment this cast promises.
+    let entry = unsafe { task_state_pointer().cast::<u8>().add(at) }.cast::<u64>();
     // SAFETY: as above; a naturally aligned eight-byte store, so the CPU reads
     // one value or the other and never a mixture.
     unsafe { entry.write_volatile(stack.top()) };
@@ -215,7 +256,7 @@ pub fn double_fault_stack() -> u64 {
 fn read_task_state() -> TaskState {
     // SAFETY: `init` wrote a valid `TaskState` here before the `ltr`, and
     // nothing writes it except this module on this CPU.
-    unsafe { TASK_STATE_SEGMENT.as_mut_ptr().read_volatile() }
+    unsafe { task_state_pointer().read_volatile() }
 }
 
 /// The address the double-fault stack grows down from.
