@@ -268,7 +268,12 @@ pub(super) fn has_x2apic() -> bool {
 /// development loop this function always takes its earliest return and the
 /// write below is never reached (D-91).
 pub fn enable_speculation_controls() -> Speculation {
-    let posture = Speculation::read(cpuid(7, 0).edx, msr::read);
+    // Leaf 7 is only meaningful where the processor reports it. Without this,
+    // a machine whose highest basic leaf is below 7 answers with some other
+    // leaf's registers, and a stray bit 29 sends the read below to an MSR that
+    // does not exist — which is a `#GP`, not a wrong answer (D-94).
+    let leaf_7_edx = if max_leaf(0) >= 7 { cpuid(7, 0).edx } else { 0 };
+    let posture = Speculation::read(leaf_7_edx, msr::read);
     if !posture.wants_boot_ibrs() {
         return posture;
     }

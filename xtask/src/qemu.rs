@@ -143,7 +143,7 @@ const SELFTEST_FAILED: i32 = 35;
 /// The serial verdict contract shared with `kernel/src/selftest.rs`.
 const SELFTEST_VERDICT_PREFIX: &str = "selftest: verdict ";
 const SELFTEST_VERDICT_VERSION: &str = "v1";
-const EXPECTED_SELFTEST_CHECKS: usize = 93;
+const EXPECTED_SELFTEST_CHECKS: usize = 94;
 
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
@@ -816,7 +816,7 @@ pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Resu
     outcome?;
     if !refused.load(Ordering::Acquire) {
         bail!(
-            "the kernel settled without reporting the missing x2apic              ({NO_X2APIC_MARKER:?}): the precondition is not being checked"
+            "the kernel settled without reporting {NO_X2APIC_MARKER:?}: the x2apic precondition is not being checked"
         );
     }
     println!("[xtask] degraded kernel reports the missing x2apic and settles");

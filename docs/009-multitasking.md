@@ -114,7 +114,9 @@ describes Phase 4 as it was built and is kept for that; two things in it are no
 longer true. D-85 replaced the prose discipline with the borrow checker and
 made `lock_leaf` the acquisition a `Drop` can take, and it retired
 `HEAP → FRAMES` altogether by moving the heap's refill out from under its own
-guard. This kernel now holds no lock across a call inside `wost` at all.
+guard. What remains inside `wost` are the closure-taking accessors —
+`mm::with_memory_map` is the one that matters — where the obligation is on the
+caller's closure rather than on the type.
 
 D-47 established `HEAP → FRAMES`: the heap takes the frame allocator's lock
 during a slab refill, never the reverse. The kernel's thread table, `THREADS`, enters

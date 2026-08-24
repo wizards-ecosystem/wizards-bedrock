@@ -47,7 +47,6 @@ impl Heap {
         }
     }
 
-    /// Take a slot of `class`, carving a new slab if the list is empty.
     /// Take a slot of `class`, or null if this class's free list is empty.
     ///
     /// Refilling is the caller's job, done with this lock *dropped* — which is

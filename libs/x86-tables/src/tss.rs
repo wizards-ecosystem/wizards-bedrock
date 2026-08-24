@@ -32,6 +32,32 @@ pub struct TaskState {
 }
 
 impl TaskState {
+    /// Byte offset of interrupt-stack entry `index` inside the segment.
+    ///
+    /// Exists so a caller can rewrite one entry rather than the whole
+    /// structure. That distinction is not cosmetic: the entry is eight bytes
+    /// and naturally aligned, so a targeted store is atomic against a double
+    /// fault arriving mid-write, while a whole-segment `write_volatile` is a
+    /// memcpy that can be observed torn (D-94).
+    ///
+    /// # Panics
+    ///
+    /// Outside 1..=[`INTERRUPT_STACKS`], as [`set_interrupt_stack`] does — the
+    /// table is indexed from one because zero means "no stack switch".
+    ///
+    /// [`set_interrupt_stack`]: Self::set_interrupt_stack
+    pub const fn interrupt_stack_offset(index: usize) -> usize {
+        assert!(
+            index.wrapping_sub(1) < INTERRUPT_STACKS,
+            "the interrupt stack table is indexed from 1 and has seven entries"
+        );
+        // reserved_start, then the privilege stacks, then a reserved word.
+        size_of::<u32>()
+            + PRIVILEGE_STACKS * size_of::<u64>()
+            + size_of::<u64>()
+            + (index - 1) * size_of::<u64>()
+    }
+
     /// An empty task-state segment with no I/O permission bitmap.
     ///
     /// `iomap_base` is set to the size of the segment, which puts the bitmap
@@ -148,5 +174,35 @@ mod tests {
     #[should_panic(expected = "indexed from 1")]
     fn there_is_no_eighth_interrupt_stack() {
         TaskState::new().set_interrupt_stack(8, 0x1000);
+    }
+
+    /// The interrupt-stack entries sit where the architecture puts them.
+    ///
+    /// Intel SDM Vol. 3A figure 8-11: `IST1` begins at offset 0x24, and each
+    /// entry is eight bytes. Transcribed from the manual rather than computed
+    /// from the struct, so a field reordered by accident fails here instead of
+    /// agreeing with itself.
+    #[test]
+    fn interrupt_stacks_sit_where_the_manual_says() {
+        assert_eq!(TaskState::interrupt_stack_offset(1), 0x24);
+        assert_eq!(TaskState::interrupt_stack_offset(7), 0x24 + 6 * 8);
+
+        // And the offset really is where the value lands.
+        let mut task_state = TaskState::new();
+        task_state.set_interrupt_stack(1, 0xDEAD_BEEF_0000_1000);
+        let bytes: [u8; size_of::<TaskState>()] =
+            // SAFETY-free: `TaskState` is plain data, so a byte view of a copy
+            // is just a transcription. Done through `to_ne_bytes` on the read
+            // value rather than a transmute, which this crate could not write.
+            {
+                let mut view = [0u8; size_of::<TaskState>()];
+                let at = TaskState::interrupt_stack_offset(1);
+                view[at..at + 8].copy_from_slice(&task_state.interrupt_stack(1).to_ne_bytes());
+                view
+            };
+        assert_eq!(
+            u64::from_ne_bytes(bytes[0x24..0x2C].try_into().expect("eight bytes")),
+            0xDEAD_BEEF_0000_1000
+        );
     }
 }

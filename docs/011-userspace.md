@@ -274,14 +274,33 @@ Phase 4 left `HEAP → FRAMES` (D-47) with the thread table and each wait queue
 as leaves, and a rule between lock *kinds*: a `ThreadLock` may never be taken
 while a `SpinLock` is held (D-63), checked by a count.
 
-Slice 2 changes what enforces all of it. `SpinLock::lock` takes
-`&'a mut ThreadContext` and the guard borrows it, so taking two spin locks is
-`E0499` and blocking with one held is `E0499` — the ordering stops being a
-document and becomes a compile error (D-69). Where nesting is genuinely needed
-the second acquisition takes the *guard*, and a type-level rank in
-`libs/lock-rank` says which nesting is legal. The runtime assert is not
-removed: two independent checks is what OSTD ships, and the assert covers the
-paths the borrow checker cannot see.
+Slice 2 changed what enforces most of it, and D-85 records how the shape
+differed from what D-69 predicted. `SpinLock::lock` takes
+`&'a mut ThreadContext` and the guard borrows it, so **while one token is in
+scope**, taking a second lock with it or blocking with the guard live are both
+`E0499`. `lock_leaf` is the second level, for an acquisition that is the whole
+operation — the only one a `Drop` impl can perform, since `drop` takes no
+arguments. `libs/lock-rank` was not written: a rank with one non-trivial pair
+is not an abstraction.
+
+**The compile-time half is a strong default, not a proof, and the difference
+matters.** `ThreadContext::claim` mints a token wherever the interrupt flag
+says thread context, so a second one can be minted inside a live guard and the
+borrow says nothing about it. That is one visible, greppable line — the same
+shape as an `unsafe` block, and audited the same way — but it is not the
+`E0499` this section used to claim. What still holds unconditionally is the
+runtime side: D-66's assert refuses a context switch with a guard live, and
+`ThreadLock` refuses to be taken while a spin lock is held. Two independent
+checks is what OSTD ships, and here the second is the one that cannot be
+side-stepped.
+
+**A closure taken under a leaf guard is the live hole**, and there are three:
+`mm::with_memory_map`, `dev::with_io_apic` and `mem::with_active_space` all run
+caller-supplied code with a lock held. The obligation is on the closure and
+nothing checks it — a closure that logs takes the console's `ThreadLock` and
+trips D-63's assert, which is how this was found rather than reasoned. Closing
+it properly means a guard type that forbids calls, and that is a decision this
+phase has not taken.
 
 The preempt-only lock is a third kind and sits below both: it disables
 preemption and leaves interrupts on, so it may be taken while nothing else is

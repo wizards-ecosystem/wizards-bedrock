@@ -26,7 +26,7 @@ use wost::arch::current::{apic, interrupt, pic, port, segment};
 use wost::boot::{self, FramebufferInfo, Rgb};
 use wost::mm;
 use wost::sync::{Once, SpinLock};
-use x86_paging::{Flags, PAGE_SIZE};
+use x86_paging::{Flags, LARGE_PAGE_SIZE, PAGE_SIZE};
 use x86_tables::exception;
 
 use crate::arch::current::debug_exit;
@@ -609,9 +609,58 @@ fn the_double_fault_stack_is_guarded() -> bool {
         page += PAGE_SIZE;
     }
 
-    // And it is not the `.bss` array any more: that one lives in the kernel
-    // image, far below the stack window.
-    slot.stack_top() >= layout.base()
+    // It used to end by comparing the stack top against the layout base, which
+    // is true of every layout ever built — the failure path was unreachable,
+    // which is D-77's own corrected mistake reappearing. The property that
+    // matters is the one checked above: the interrupt-stack entry points at
+    // *this* region, which the `.bss` array it replaced never satisfies.
+    true
+}
+
+/// A refused mapping leaves no trace, and gives the frames back.
+///
+/// The defect an adversarial pass found in D-87 (fixed by D-94): `map_range`
+/// wrote entries as it walked, so a range that failed part-way left the
+/// earlier pages mapped — while `map_owned`, believing nothing had been
+/// mapped, dropped the run and handed those very frames back to the allocator.
+/// A live writable mapping onto reallocated memory, reachable from safe code.
+///
+/// Checked from both ends, because either alone would have passed before the
+/// fix: the address must be unmapped afterwards, *and* the frames must be back.
+fn a_refused_mapping_leaves_no_trace() -> bool {
+    /// Two pages clear of every other probe here, in a page table that this
+    /// check populates itself rather than inheriting from whatever ran first.
+    const BASE: u64 = 0xffff_fd00_0002_0000;
+    let blocker = BASE + PAGE_SIZE;
+    let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+
+    // Occupy the *second* page of the range, so the mapping below gets one
+    // page in before it is refused.
+    let Some(taken) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    let placed = mem::with_active_space(&mut context(), |space| {
+        space.map_owned(blocker, taken, wanted)
+    });
+    if !matches!(placed, Some(Ok(()))) {
+        return false;
+    }
+
+    // From here the page table exists, so nothing below allocates one and the
+    // frame count means what it looks like.
+    let free_before = mm::free_frames();
+    let Some(run) = mm::allocate_contiguous(2, 1) else {
+        return false;
+    };
+    let refused =
+        mem::with_active_space(&mut context(), |space| space.map_owned(BASE, run, wanted));
+
+    let rejected = matches!(refused, Some(Err(MapError::Conflict(address))) if address == blocker);
+    let no_trace = paging::translate(BASE).is_none();
+    let returned = mm::free_frames() == free_before;
+    let blocker_intact = paging::translate(blocker).is_some();
+
+    rejected && no_trace && returned && blocker_intact
 }
 
 /// An unmapped range gives its frames back, and not before the invalidation.
@@ -632,7 +681,6 @@ fn an_unmapped_range_returns_its_frames() -> bool {
         return false;
     };
     let physical = run.address();
-    let before = mm::free_frames();
 
     let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
     let mapped =
@@ -641,6 +689,11 @@ fn an_unmapped_range_returns_its_frames() -> bool {
         return false;
     }
     let mapped_here = paging::translate(PROBE).map(|(frame, _)| frame) == Some(physical);
+
+    // Counted *after* the mapping, so the page-table frames it may have taken
+    // are already spent and this measures only the run. Taking it earlier made
+    // the check depend on whether a previous one had built the same table.
+    let before = mm::free_frames();
 
     let Some(Ok(token)) = mem::with_active_space(&mut context(), |space| {
         space.unmap(PROBE, PAGES * PAGE_SIZE)
@@ -659,6 +712,7 @@ fn an_unmapped_range_returns_its_frames() -> bool {
         same
     });
     let counted = mm::free_frames() == before + PAGES as usize;
+    let _ = physical;
 
     mapped_here && gone && withheld && returned && counted
 }
@@ -670,24 +724,38 @@ fn an_unmapped_range_returns_its_frames() -> bool {
 /// mapped in two-megabyte pages on purpose (D-45), splitting it is not offered,
 /// and the measurement in `010` §8 says keeping it that way is right.
 fn unmapping_refuses_what_it_does_not_own() -> bool {
-    // The kernel's own text: mapped, and never the allocator's.
-    let direct = boot::sections().text.start;
     /// Never mapped by anything.
-    const HOLE: u64 = 0xffff_fd00_0002_0000;
+    const HOLE: u64 = 0xffff_fd00_0004_0000;
+
+    // The kernel's own text, at its linked address: mapped in four-kilobyte
+    // pages, and never the allocator's to hand back.
+    let text = boot::sections().text.start;
+
+    // And a direct-map address, which is mapped in *two-megabyte* pages on
+    // purpose (D-45). Each is a distinct refusal with a distinct reason, and
+    // an earlier version of this check accepted either from one address —
+    // which could not tell which mechanism had fired.
+    // Two megabytes up, not one: the direct map rounds small low regions out
+    // to four-kilobyte pages, so an address below the first aligned stretch is
+    // *not* in a large page and would test the wrong refusal. Probed rather
+    // than assumed.
+    let Some(direct) = mm::direct_map().and_then(|map| map.virtual_address(LARGE_PAGE_SIZE)) else {
+        return false;
+    };
 
     mem::with_active_space(&mut context(), |space| {
-        // A hole.
         matches!(space.unmap(HOLE, PAGE_SIZE), Err(MapError::NotMapped(_)))
-            // Not page-aligned.
             && matches!(space.unmap(HOLE + 1, PAGE_SIZE), Err(MapError::Misaligned(_)))
-            // Zero length.
             && matches!(space.unmap(HOLE, 0), Err(MapError::Misaligned(_)))
-            // The kernel's own text: mapped, but not the allocator's to have,
-            // and this is the refusal that matters most.
+            // A low-half alias of a higher-half address walks the same tables
+            // once the top bits are masked, and the invalidation that followed
+            // would name an address `invlpg` ignores (D-94).
             && matches!(
-                space.unmap(direct, PAGE_SIZE),
-                Err(MapError::NotOwned(_)) | Err(MapError::Unsplittable(_))
+                space.unmap(HOLE & 0x0000_ffff_ffff_ffff, PAGE_SIZE),
+                Err(MapError::NonCanonical(_))
             )
+            && matches!(space.unmap(text, PAGE_SIZE), Err(MapError::NotOwned(_)))
+            && matches!(space.unmap(direct, PAGE_SIZE), Err(MapError::Unsplittable(_)))
     })
     .unwrap_or(false)
 }
@@ -1576,7 +1644,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 93;
+const EXPECTED_CHECKS: usize = 94;
 
 impl Report {
     const fn new() -> Self {
@@ -1699,6 +1767,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the double-fault stack is guarded",
         the_double_fault_stack_is_guarded(),
+    );
+    report.check(
+        "a refused mapping leaves no trace",
+        a_refused_mapping_leaves_no_trace(),
     );
     report.check(
         "an unmapped range returns its frames",

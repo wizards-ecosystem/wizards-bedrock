@@ -15,7 +15,7 @@
 //! rewrite of a present entry: nothing the running kernel stands on can be
 //! re-pointed, and a translation that was not present was never cached, so a
 //! new mapping owes no invalidation (D-86). Unmapping is the operation that
-//! would owe one, and it does not exist yet.
+//! owes one, and [`Unmapped`] is how it is paid (D-88).
 //!
 //! And a mapping carries its evidence (D-87). There is no entry taking a bare
 //! physical address: [`AddressSpace::map_owned`] takes frames the caller owns,
@@ -195,9 +195,10 @@ impl core::error::Error for ActivateError {}
 /// A four-level page table under construction.
 ///
 /// Every table in it is a frame permanently owned by the structure: they are
-/// deliberately leaked from the frame allocator rather than tracked, because
-/// nothing unmaps and a table freed underneath a live `CR3` is the one bug
-/// this design must not permit.
+/// deliberately leaked from the frame allocator rather than tracked. `unmap`
+/// clears leaf entries and leaves the tables above them (D-88), because
+/// reclaiming one means proving no sibling entry survives — and a table freed
+/// underneath a live `CR3` is the one bug this design must not permit.
 #[derive(Debug)]
 pub struct AddressSpace {
     root: Paddr,
@@ -245,24 +246,88 @@ impl AddressSpace {
         physical_base: Paddr,
         len: u64,
         flags: Flags,
+        grain: Grain,
     ) -> Result<(), MapError> {
         let range = MappingRange::new(virtual_base, physical_base, len)?;
         let flags = flags.union(Flags::PRESENT);
 
         let mut offset = 0;
         while offset < range.len() {
-            let virtual_address = range.virtual_base() + offset;
-            let physical = range.physical_base() + offset;
-
-            let large = range.len() - offset >= LARGE_PAGE_SIZE
-                && virtual_address.is_multiple_of(LARGE_PAGE_SIZE)
-                && physical.is_multiple_of(LARGE_PAGE_SIZE);
-            let level = if large { Level::Pd } else { Level::Pt };
-
-            self.set(virtual_address, physical, flags, level)?;
+            let (virtual_address, physical, level) = Self::step(&range, offset, grain);
+            if let Err(error) = self.set(virtual_address, physical, flags, level) {
+                // Everything written so far is taken back, so a refused
+                // mapping leaves the space exactly as it was found (D-94).
+                // Without this, a caller that owns the frames — which is every
+                // `map_owned` caller — frees a run some entries still map, and
+                // the allocator hands out memory this space can still write.
+                self.undo(&range, offset, grain);
+                return Err(error);
+            }
             offset += level.span();
         }
         Ok(())
+    }
+
+    /// Where the mapping of `range` at `offset` goes, and at what size.
+    ///
+    /// Split out so [`undo`](Self::undo) retraces exactly the same steps: a
+    /// rollback that disagreed with the walk about where a large page began
+    /// would clear the wrong entry.
+    fn step(range: &MappingRange, offset: u64, grain: Grain) -> (u64, Paddr, Level) {
+        let virtual_address = range.virtual_base() + offset;
+        let physical = range.physical_base() + offset;
+        let large = grain == Grain::Largest
+            && range.len() - offset >= LARGE_PAGE_SIZE
+            && virtual_address.is_multiple_of(LARGE_PAGE_SIZE)
+            && physical.is_multiple_of(LARGE_PAGE_SIZE);
+        (
+            virtual_address,
+            physical,
+            if large { Level::Pd } else { Level::Pt },
+        )
+    }
+
+    /// Clear the first `written` bytes of `range`, undoing a partial mapping.
+    ///
+    /// Tables allocated on the way are **not** freed. They are zeroed frames
+    /// with no entries pointing anywhere, so the next mapping through them is
+    /// correct; reclaiming them would mean proving no sibling entry survives,
+    /// which is work for the day something unmaps enough to care.
+    fn undo(&mut self, range: &MappingRange, written: u64, grain: Grain) {
+        let mut offset = 0;
+        while offset < written {
+            let (virtual_address, _, level) = Self::step(range, offset, grain);
+            if let Ok(slot) = self.slot_at(virtual_address, level) {
+                // SAFETY: `slot_at` returns a pointer into a table frame this
+                // space owns, reachable through the direct map, at the level
+                // the forward walk wrote.
+                unsafe { slot.write_volatile(Entry::ABSENT) };
+            }
+            offset += level.span();
+        }
+    }
+
+    /// The existing entry slot for `virtual_address` at `target`, allocating
+    /// nothing.
+    ///
+    /// [`MapError::NotMapped`] where the walk runs out of tables, which during
+    /// a rollback means the forward walk never got that far.
+    fn slot_at(&self, virtual_address: u64, target: Level) -> Result<*mut Entry, MapError> {
+        let mut table = self.root;
+        for level in Level::WALK {
+            let slot = entry_pointer(table, level.index(virtual_address))?;
+            if level == target {
+                return Ok(slot);
+            }
+            // SAFETY: `entry_pointer` confirmed the slot is inside a table
+            // frame this space owns and reachable through the direct map.
+            let entry = unsafe { slot.read_volatile() };
+            if !entry.is_present() || entry.is_huge() {
+                return Err(MapError::NotMapped(virtual_address));
+            }
+            table = entry.address();
+        }
+        Err(MapError::NotMapped(virtual_address))
     }
 
     /// Map memory the boot handoff described, at `virtual_base`.
@@ -282,7 +347,7 @@ impl AddressSpace {
         region: BootRegion,
         flags: Flags,
     ) -> Result<(), MapError> {
-        self.map_range(virtual_base, region.base, region.len, flags)
+        self.map_range(virtual_base, region.base, region.len, flags, Grain::Largest)
     }
 
     /// Map a run of frames this caller owns, at `virtual_base`.
@@ -311,11 +376,17 @@ impl AddressSpace {
         // allocator's to have back (D-88). It is written in the entry rather
         // than tracked beside it because the entry is the one thing every path
         // to an unmap can see.
+        // Four-kilobyte pages only, whatever the run's size and alignment.
+        // A large page carrying `OWNED` would be a mapping `unmap` must refuse
+        // for ever — it does not split (D-45) — so the frames could never come
+        // back. Better to spend a few more entries than to make a leak
+        // unreachable (D-94).
         self.map_range(
             virtual_base,
             run.address(),
             run.len(),
             flags.union(Flags::OWNED),
+            Grain::Pages,
         )?;
         // The run belongs to the mapping now; `unmap` is what gives it back.
         core::mem::forget(run);
@@ -392,6 +463,17 @@ impl AddressSpace {
     pub fn unmap(&mut self, virtual_base: u64, len: u64) -> Result<Unmapped, MapError> {
         if !virtual_base.is_multiple_of(PAGE_SIZE) || len == 0 || !len.is_multiple_of(PAGE_SIZE) {
             return Err(MapError::Misaligned(virtual_base));
+        }
+        // Both ends, because a walk masks bits 48 and above: without this, the
+        // low-half alias of a higher-half address reaches the same tables, and
+        // the `invlpg` that follows would name the non-canonical form — which
+        // faults on nothing and invalidates nothing, leaving a live TLB entry
+        // for frames this call is about to hand back (D-94).
+        let end = virtual_base
+            .checked_add(len)
+            .ok_or(MapError::NonCanonical(virtual_base))?;
+        if !x86_paging::is_canonical(virtual_base) || !x86_paging::is_canonical(end - 1) {
+            return Err(MapError::NonCanonical(virtual_base));
         }
         let pages = len / PAGE_SIZE;
 
@@ -530,6 +612,7 @@ impl AddressSpace {
             base,
             pages,
             Flags::WRITABLE.union(Flags::NO_EXECUTE).union(memory_type),
+            Grain::Pages,
         )?;
         self.device_next = virtual_base
             .checked_add(pages)
@@ -863,8 +946,11 @@ fn walk(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags, u64)> {
     for level in Level::WALK {
         let slot = entry_pointer(table, level.index(virtual_address)).ok()?;
         // SAFETY: `entry_pointer` confirmed the slot is inside a table
-        // reachable through the direct map. Reading an entry cannot alias
-        // anything: the tables are only written before activation.
+        // reachable through the direct map. An entry is eight bytes on an
+        // eight-byte boundary, so a volatile read of one yields some value
+        // that was written there and never a tear — which is what this needs,
+        // because live tables *are* written now (D-86, D-88) and the older
+        // justification, that nothing writes them after activation, is gone.
         let entry = unsafe { slot.read_volatile() };
         if !entry.is_present() {
             return None;
@@ -1038,6 +1124,21 @@ impl Drop for Unmapped {
     }
 }
 
+/// How large the pages of a mapping may be.
+///
+/// Not a `bool`, because the two cases are not more-and-less of one thing
+/// (`005`, C-CUSTOM-TYPE): one is "use the biggest page that fits", which the
+/// direct map wants, and the other is "four kilobytes, always", which anything
+/// that must be unmappable wants — because a large page is one `unmap` refuses
+/// to split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Grain {
+    /// The largest page each aligned stretch allows.
+    Largest,
+    /// Four kilobytes throughout.
+    Pages,
+}
+
 /// Evidence that a physical range is one the boot handoff described.
 ///
 /// The only way to reach [`AddressSpace::map_boot`], and constructible only
@@ -1114,7 +1215,9 @@ impl DeviceMapping {
         // SAFETY: the walk confirmed the mapping is live in the tables that
         // minted this claim; exclusive because `self` cannot be copied and
         // only the minting space's claims pass the root comparison; permanent
-        // because nothing unmaps; four-byte aligned by `map_device_with`.
+        // because `unmap` refuses any entry without `OWNED` and a device
+        // mapping never carries it (D-88); four-byte aligned by
+        // `map_device_with`.
         Some(unsafe { MmioRegion::new(self.address as *mut u8, self.len) })
     }
 }

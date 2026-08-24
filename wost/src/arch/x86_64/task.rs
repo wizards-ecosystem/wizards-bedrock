@@ -468,6 +468,13 @@ pub fn continue_on_stack(stack: MappedStack, continuation: Entry, arg: usize) ->
         stack.is_installed(),
         "a stack from another address space cannot be stood on"
     );
+    // The same rule `prepare` enforces before a context switch, for the same
+    // reason: a guard live on the stack being abandoned is a lock nothing can
+    // ever release, because the frame that would drop it is gone (D-66, D-94).
+    assert!(
+        crate::sync::spinlocks_held() == 0,
+        "a spin lock is held, so the stack being abandoned would strand it"
+    );
     // No interrupt may arrive between the load and the first push: the frame
     // it would build belongs to whichever stack the CPU thinks it is on.
     let _disabled = interrupt::disable();

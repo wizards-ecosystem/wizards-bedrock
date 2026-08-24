@@ -85,25 +85,17 @@ pub(crate) fn with_active_space<T>(
 fn guard_the_fault_stack() -> Result<u64, MapError> {
     let layout = thread::fault_stack_layout().ok_or(MapError::OutOfMemory)?;
     let slot = layout.slot(0).ok_or(MapError::OutOfMemory)?;
-    let pages = slot.stack_len().div_ceil(FRAME_SIZE) as usize;
 
-    let mut run = mm::allocate_contiguous(pages, 1).ok_or(MapError::OutOfMemory)?;
-    if !run.zero() {
-        return Err(MapError::Unreachable(run.address()));
-    }
-
+    // Through `map_stack` rather than by hand, so the guard below it is
+    // *verified* absent at map time rather than only in a build that runs the
+    // self-checks (D-94). Doing this by hand was the first version, and the
+    // difference is exactly the evidence.
     let mut context = ThreadContext::require();
-    with_active_space(&mut context, |space| {
-        space.map_owned(
-            slot.stack_base(),
-            run,
-            Flags::WRITABLE.union(Flags::NO_EXECUTE),
-        )
-    })
-    .ok_or(MapError::OutOfMemory)??;
+    let stack = with_active_space(&mut context, |space| space.map_stack(&slot))
+        .ok_or(MapError::OutOfMemory)??;
 
-    let top = slot.stack_top();
-    if !segment::set_double_fault_stack(top) {
+    let top = stack.top();
+    if !segment::set_double_fault_stack(&stack) {
         return Err(MapError::Misaligned(top));
     }
     Ok(top)

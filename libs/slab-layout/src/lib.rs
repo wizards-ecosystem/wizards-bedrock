@@ -345,36 +345,53 @@ mod tests {
     /// Every slot a frame is carved into is distinct, ordered, and wholly
     /// inside the frame.
     ///
-    /// The arithmetic half of "a refill never hands out a slot twice". It
-    /// lives here rather than on the machine because breaking it there
+    /// **Against transcribed numbers, not against the formula.** An earlier
+    /// version asserted `offset >= previous + bytes()`, which reduces to
+    /// `n*b >= n*b` and holds for every input — true by algebra rather than by
+    /// the code being right, which is the pattern `x86-paging`'s module doc
+    /// names as the thing to avoid. The counts and offsets below are worked
+    /// out from `FRAME_SIZE` by hand, so a rewritten `offset_of` or
+    /// `slots_per_frame` disagrees with them instead of agreeing with itself.
+    ///
+    /// It lives here rather than on the machine because breaking it there
     /// corrupts the allocator every later check depends on, and a break that
     /// crashes proves less than one that fails (D-28, D-85).
     #[test]
     fn no_two_slots_of_any_class_overlap() {
-        for index in 0..CLASSES {
+        // (class size, slots in a 4096-byte frame, offset of the last slot),
+        // transcribed rather than derived.
+        const EXPECTED: [(usize, usize, usize); CLASSES] = [
+            (16, 256, 4080),
+            (32, 128, 4064),
+            (64, 64, 4032),
+            (128, 32, 3968),
+            (256, 16, 3840),
+            (512, 8, 3584),
+            (1024, 4, 3072),
+            (2048, 2, 2048),
+        ];
+
+        for (index, (bytes, slots, last)) in EXPECTED.into_iter().enumerate() {
             let Some(class) = SizeClass::from_index(index) else {
                 panic!("class {index} is within CLASSES but does not exist");
             };
-            let slots = class.slots_per_frame();
-            assert!(slots > 0, "class {} carves no slots", class.bytes());
+            assert_eq!(class.bytes(), bytes, "class {index} is the wrong size");
+            assert_eq!(class.slots_per_frame(), slots, "class {bytes} miscounts");
+            assert_eq!(class.offset_of(0), 0, "class {bytes} starts late");
+            assert_eq!(class.offset_of(slots - 1), last, "class {bytes} ends wrong");
 
-            let mut previous = None;
-            for slot in 0..slots {
-                let offset = class.offset_of(slot);
-                assert!(
-                    offset + class.bytes() <= FRAME_SIZE,
-                    "class {} slot {slot} runs past the frame",
-                    class.bytes()
-                );
-                if let Some(previous) = previous {
-                    assert!(
-                        offset >= previous + class.bytes(),
-                        "class {} slot {slot} overlaps the one before it",
-                        class.bytes()
-                    );
-                }
-                previous = Some(offset);
-            }
+            // Distinctness the one way that cannot restate the formula:
+            // collect every offset and compare them all against each other.
+            let offsets: Vec<usize> = (0..slots).map(|slot| class.offset_of(slot)).collect();
+            let mut sorted = offsets.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), slots, "class {bytes} repeats an offset");
+            assert_eq!(offsets, sorted, "class {bytes} hands them out unordered");
+            assert!(
+                sorted.last().is_some_and(|end| end + bytes <= FRAME_SIZE),
+                "class {bytes} runs past the frame"
+            );
         }
     }
 }

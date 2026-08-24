@@ -12,6 +12,7 @@ use x86_tables::Selector;
 use x86_tables::gdt::{Descriptor, SystemDescriptor};
 use x86_tables::tss::TaskState;
 
+use super::paging::MappedStack;
 use super::table::TablePointer;
 use crate::cell::HardwareCell;
 use crate::sync::Once;
@@ -181,18 +182,27 @@ fn reload_selectors() {
 /// it is in the kernel image — so there is no window in which the losing
 /// value is invalid.
 ///
-/// `false` if `top` is not sixteen-byte aligned, which the ABI requires of any
-/// stack the CPU switches to.
-pub fn set_double_fault_stack(top: u64) -> bool {
-    if !top.is_multiple_of(16) {
+/// `false` if the stack does not belong to the address space this CPU is
+/// walking, which would point the handler at memory it cannot reach.
+pub fn set_double_fault_stack(stack: &MappedStack) -> bool {
+    if !stack.is_installed() {
         return false;
     }
-    let mut task_state = read_task_state();
-    task_state.set_interrupt_stack(DOUBLE_FAULT_STACK as usize, top);
-    // SAFETY: the segment is live and this CPU is the only writer; the field
-    // written is eight bytes, naturally aligned, so the CPU reads one value or
-    // the other and never a mixture.
-    unsafe { TASK_STATE_SEGMENT.as_mut_ptr().write_volatile(task_state) };
+    // SAFETY: `MappedStack` is evidence that this region was mapped writable
+    // with its guard verified absent, `is_installed` has just confirmed the
+    // CPU walks the space that mapped it, and the field written is the
+    // interrupt-stack entry alone — eight bytes, naturally aligned, so a
+    // double fault arriving mid-store reads the old stack or the new one and
+    // never a mixture. Both are mapped: the `.bss` array `init` installed is
+    // in the kernel image and is never unmapped.
+    let at = TaskState::interrupt_stack_offset(DOUBLE_FAULT_STACK as usize);
+    // SAFETY: `at` is a byte offset inside the segment, from the crate that
+    // owns its layout and checks it against the manual, and the entry there is
+    // eight bytes on an eight-byte boundary.
+    let entry = unsafe { TASK_STATE_SEGMENT.as_mut_ptr().cast::<u8>().add(at) }.cast::<u64>();
+    // SAFETY: as above; a naturally aligned eight-byte store, so the CPU reads
+    // one value or the other and never a mixture.
+    unsafe { entry.write_volatile(stack.top()) };
     true
 }
 
