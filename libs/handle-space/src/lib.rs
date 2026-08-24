@@ -172,6 +172,122 @@ impl Slot {
     }
 }
 
+/// What a handle permits.
+///
+/// D-78: sixteen to twenty-four rights in a single `u32`, universal split from
+/// per-type, under one rule that is easy to state and easy to violate:
+///
+/// > A right must correspond to a distinction the kernel actually makes about
+/// > that object — never to a syscall name.
+///
+/// That is the rule WASI's rights broke, and deleting them in Preview 2 was
+/// the cost. It is also why the memory rights below are exactly the page
+/// permissions: the kernel really does treat a readable mapping differently
+/// from a writable one, and `MAP` is separate because being allowed to *place*
+/// a page in an address space is a different power from being allowed to read
+/// what is already there.
+///
+/// The evidence for keeping the number small is one-directional. seL4 has 4,
+/// Zircon 25, CloudABI 31, Capsicum about 81 — and Capsicum's outgrew a machine
+/// word and broke its ABI, so `cap_rights_t` is now a multi-word struct
+/// spending seven of every sixty-four bits on metadata. managarm, adding
+/// fine-grained rights ten years in, landed on about fourteen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rights(u32);
+
+impl Rights {
+    /// None at all. A handle with no rights is still a reference — it keeps
+    /// the object alive — and that is deliberate.
+    pub const NONE: Self = Self(0);
+
+    /// May be duplicated, at these rights or fewer.
+    pub const DUPLICATE: Self = Self(1 << 0);
+
+    /// May be sent through a channel.
+    ///
+    /// Strippable on its own, which is the point: removing it yields a handle
+    /// the holder can use and cannot pass on, and that is one bit rather than
+    /// a mechanism (D-78).
+    pub const TRANSFER: Self = Self(1 << 1);
+
+    /// May be waited on for the object's signals.
+    pub const WAIT: Self = Self(1 << 2);
+
+    /// May be asked what it is.
+    pub const INSPECT: Self = Self(1 << 3);
+
+    /// Every right that means the same thing for every object type.
+    ///
+    /// Zircon's `RIGHTS_BASIC`. Splitting these from per-type rights is what
+    /// keeps a right's meaning from depending on what it is attached to.
+    pub const UNIVERSAL: Self = Self(0b1111);
+
+    /// The memory behind it may be read.
+    pub const READ: Self = Self(1 << 8);
+
+    /// The memory behind it may be written.
+    pub const WRITE: Self = Self(1 << 9);
+
+    /// The memory behind it may be executed.
+    ///
+    /// Never held together with [`WRITE`](Self::WRITE) in a mapping: W^X is a
+    /// property of the page tables (D-12), and this right is what a caller
+    /// must present to ask for it at all.
+    pub const EXECUTE: Self = Self(1 << 10);
+
+    /// May be placed into an address space.
+    pub const MAP: Self = Self(1 << 11);
+
+    /// Rights from raw bits, or `None` if any undefined bit is set.
+    ///
+    /// Undefined bits are refused rather than masked away. Masking would make
+    /// a caller asking for a right this kernel does not have yet succeed
+    /// quietly, and the whole point of a rights word is that what it does not
+    /// grant, it denies.
+    pub const fn from_bits(bits: u32) -> Option<Self> {
+        if bits & !Self::ALL.0 != 0 {
+            return None;
+        }
+        Some(Self(bits))
+    }
+
+    /// Every right this kernel defines.
+    pub const ALL: Self = Self(0b1111 | (0b1111 << 8));
+
+    /// The bits themselves.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// Both sets together.
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// This set without `other`.
+    pub const fn difference(self, other: Self) -> Self {
+        Self(self.0 & !other.0)
+    }
+
+    /// Whether every right in `other` is held here.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Attenuate to `wanted`, or `None` if that asks for more than is held.
+    ///
+    /// The whole of rights attenuation, and it only ever narrows. Zircon's
+    /// `zx_channel_write_etc` can strip rights during a transfer — including
+    /// stripping `TRANSFER` itself — which costs about four percent and makes
+    /// least privilege the default rather than an option (D-78).
+    pub const fn attenuate(self, wanted: Self) -> Option<Self> {
+        if !self.contains(wanted) {
+            return None;
+        }
+        Some(wanted)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,5 +455,115 @@ mod tests {
     /// A tiny set, so the crate needs no dependency to test uniqueness.
     fn alloc_set() -> std::collections::HashSet<u32> {
         std::collections::HashSet::new()
+    }
+}
+
+#[cfg(test)]
+mod rights_tests {
+    use super::*;
+
+    /// Universal and per-type rights occupy disjoint bits, and `ALL` is
+    /// exactly their union.
+    ///
+    /// A right that appeared in both halves would mean the same bit answered
+    /// two questions, which is how a taxonomy starts drifting toward
+    /// Capsicum's.
+    #[test]
+    fn the_two_halves_do_not_overlap() {
+        let universal = [
+            Rights::DUPLICATE,
+            Rights::TRANSFER,
+            Rights::WAIT,
+            Rights::INSPECT,
+        ];
+        let per_type = [Rights::READ, Rights::WRITE, Rights::EXECUTE, Rights::MAP];
+
+        let mut seen = 0u32;
+        for right in universal.iter().chain(per_type.iter()) {
+            assert_eq!(right.bits().count_ones(), 1, "a right is one bit");
+            assert_eq!(seen & right.bits(), 0, "two rights share a bit");
+            seen |= right.bits();
+        }
+        assert_eq!(seen, Rights::ALL.bits());
+
+        let universal_bits = universal.iter().fold(0, |bits, r| bits | r.bits());
+        assert_eq!(universal_bits, Rights::UNIVERSAL.bits());
+        assert_eq!(
+            universal_bits & per_type.iter().fold(0, |b, r| b | r.bits()),
+            0
+        );
+    }
+
+    /// An undefined bit is refused, not masked away.
+    ///
+    /// Masking would let a caller ask for a right this kernel does not have
+    /// yet and be told yes.
+    #[test]
+    fn an_undefined_right_is_refused() {
+        assert_eq!(Rights::from_bits(1 << 31), None);
+        assert_eq!(Rights::from_bits(1 << 4), None);
+        assert_eq!(Rights::from_bits(Rights::ALL.bits() | 1 << 12), None);
+        assert_eq!(Rights::from_bits(Rights::ALL.bits()), Some(Rights::ALL));
+        assert_eq!(Rights::from_bits(0), Some(Rights::NONE));
+    }
+
+    /// Attenuation only ever narrows, and asking for more is refused rather
+    /// than clamped.
+    ///
+    /// Clamping would turn "give me more than I have" into a silent success,
+    /// which is the shape of every privilege-escalation bug that ever looked
+    /// like a convenience.
+    #[test]
+    fn attenuation_only_narrows() {
+        let held = Rights::READ.union(Rights::WRITE).union(Rights::TRANSFER);
+
+        assert_eq!(held.attenuate(Rights::READ), Some(Rights::READ));
+        assert_eq!(held.attenuate(Rights::NONE), Some(Rights::NONE));
+        assert_eq!(held.attenuate(held), Some(held));
+
+        assert_eq!(held.attenuate(Rights::EXECUTE), None, "gained a right");
+        assert_eq!(
+            held.attenuate(held.union(Rights::MAP)),
+            None,
+            "gained a right by asking for everything plus one"
+        );
+
+        // Whatever comes back is a subset of what was held — the invariant,
+        // over every combination of the defined rights.
+        for bits in 0..=Rights::ALL.bits() {
+            let Some(wanted) = Rights::from_bits(bits) else {
+                continue;
+            };
+            if let Some(got) = held.attenuate(wanted) {
+                assert!(held.contains(got), "attenuation widened {bits:#x}");
+            }
+        }
+    }
+
+    /// Stripping `TRANSFER` yields a usable, non-delegatable handle.
+    ///
+    /// The one-bit version of a mechanism, and worth checking on its own
+    /// because it is the case D-78 cites for attenuate-on-send.
+    #[test]
+    fn transfer_can_be_stripped_on_its_own() {
+        let held = Rights::READ.union(Rights::TRANSFER).union(Rights::WAIT);
+        let confined = held.difference(Rights::TRANSFER);
+
+        assert!(!confined.contains(Rights::TRANSFER));
+        assert!(confined.contains(Rights::READ) && confined.contains(Rights::WAIT));
+        assert_eq!(held.attenuate(confined), Some(confined));
+    }
+
+    /// `contains` is subset, not intersection.
+    ///
+    /// The mistake that makes a check pass when *any* right matches instead of
+    /// all of them, which reads identically and grants everything.
+    #[test]
+    fn contains_means_every_one() {
+        let held = Rights::READ.union(Rights::WRITE);
+        assert!(held.contains(Rights::READ.union(Rights::WRITE)));
+        assert!(!held.contains(Rights::READ.union(Rights::EXECUTE)));
+        assert!(Rights::ALL.contains(held));
+        assert!(held.contains(Rights::NONE), "everything contains nothing");
     }
 }
