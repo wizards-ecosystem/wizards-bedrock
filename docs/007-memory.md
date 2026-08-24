@@ -260,6 +260,14 @@ no-dependency principle: none of the surveyed crates would have known to
 allocate this way, because none of them knows this kernel made mapping
 one-way.
 
+*Superseded in Phase 5, and the reasoning is worth keeping.* D-86 found that
+the property making `map` safe was never `activate`'s signature but `set`'s
+refusal to re-point a present entry, so mapping is no longer one-way. The heap
+did not move: the direct map needs no table walk and no invalidation, which is
+what a slab refill wants, so the constraint left and the choice stayed. What
+did change is that `HEAP` no longer takes `FRAMES` — D-85 moved the refill out
+from under the guard, retiring the one lock order this kernel had.
+
 `libs/slab-layout` carries the class arithmetic — eleven host tests, including
 one that asserts the invariant the whole design rests on, over every slot of
 every class: alignment is met by *choosing a class*, never by padding.

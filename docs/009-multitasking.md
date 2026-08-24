@@ -77,7 +77,9 @@ Held open deliberately; each becomes an ADR when taken.
   the most battle-tested assembly in the repo, and converting it is churn
   with no behavioural gain. Take the pattern for the new code; decide about
   the old on the record.
-- **Stack provisioning under one-way mapping.** D-45 made `activate` consume
+- **Stack provisioning under one-way mapping.** *(Answered for Phase 4 by
+  D-52; the constraint itself was retired in Phase 5 by D-86.)* D-45 made
+  `activate` consume
   the address space, so a stack cannot be mapped at spawn time. Boot-time
   arena, direct-map stacks without hardware guards, or a post-activation
   mapping API that weakens D-45? The guard question rides along: `008` §4.1
@@ -107,7 +109,12 @@ Held open deliberately; each becomes an ADR when taken.
 
 ## The lock order
 
-This section is the authority; module docs restate it, the ADRs cite it.
+**Superseded by `011-userspace.md`'s section of the same name.** What is below
+describes Phase 4 as it was built and is kept for that; two things in it are no
+longer true. D-85 replaced the prose discipline with the borrow checker and
+made `lock_leaf` the acquisition a `Drop` can take, and it retired
+`HEAP → FRAMES` altogether by moving the heap's refill out from under its own
+guard. This kernel now holds no lock across a call inside `wost` at all.
 
 D-47 established `HEAP → FRAMES`: the heap takes the frame allocator's lock
 during a slab refill, never the reverse. The kernel's thread table, `THREADS`, enters

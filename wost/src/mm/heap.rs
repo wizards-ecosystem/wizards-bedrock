@@ -5,9 +5,12 @@
 //! `slab_layout`, host-tested. What is here needs raw pointers: the free
 //! lists live inside the free slots themselves.
 //!
-//! It allocates out of the direct map rather than mapping pages, because
-//! `activate` made mapping one-way (D-47). Slab frames are never returned;
-//! [`stats`] reports the numbers that would justify changing that.
+//! It allocates out of the direct map rather than mapping pages. That began
+//! as a constraint — `activate` made mapping one-way (D-47) — and D-86 removed
+//! the constraint without changing the choice: the direct map needs no table
+//! walk and no invalidation, which is what a slab refill wants. Slab frames are
+//! never returned; [`stats`] reports the numbers that would justify changing
+//! that.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;

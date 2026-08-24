@@ -32,9 +32,11 @@ use crate::time::{self, NANOSECONDS_PER_MS};
 
 /// Threads that can exist at once, besides the boot thread.
 ///
-/// A real cap: stacks are committed at table-build time because mapping is
-/// one-way (D-45), so this is how many the arena holds. Revisable, and
-/// Phase 5's address-space growth is where it stops being a constant.
+/// How many the arena holds. It was a real cap while mapping was one-way
+/// (D-45); since D-86 and D-88 a stack could be mapped at spawn and unmapped
+/// at exit, so this is now a default rather than a ceiling. Changing it is
+/// slice 7's, with the processes that give a thread table its second reason to
+/// change.
 pub(crate) const STACK_SLOTS: usize = 16;
 
 /// Bytes of stack per thread.

@@ -160,10 +160,9 @@ pub(crate) fn init_paging(
         return None;
     };
 
-    // ACPI is read *before* the tables are built, and the ordering is forced:
-    // D-45 made mapping one-way, so a device's window has to be known while
-    // the tables are still being written. The tables are readable now because
-    // the bootloader's direct map still covers them (D-49).
+    // ACPI is read *before* the tables are built. D-45 forced that while
+    // mapping was one-way; D-86 lifted the force and left the order, because
+    // the bootloader's direct map still covers the tables here (D-49).
     let interrupts = match rsdp {
         Ok(rsdp) => crate::acpi::interrupts(rsdp),
         Err(reason) => {

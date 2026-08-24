@@ -4,9 +4,10 @@
 //! interrupt a legacy IRQ arrives on. Parsing is `acpi_tables`, host-tested;
 //! the bytes come through `wost`'s ACPI-only physical reader.
 //!
-//! Read before the page tables are built, because D-45 made mapping one-way
-//! and a device window must be known while the tables are still writable
-//! (D-49).
+//! Read before the page tables are built. That was forced while mapping was
+//! one-way (D-45, D-49); since D-86 it is merely the simplest order, because
+//! the bootloader's direct map still covers the tables at that point and
+//! nothing has had to be mapped to reach them.
 
 use acpi_tables::{MadtEntries, MadtEntry, Rsdp, Sdt, SdtPointers};
 use alloc::vec::Vec;

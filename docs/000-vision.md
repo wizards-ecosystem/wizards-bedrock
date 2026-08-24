@@ -61,7 +61,9 @@ reference — not followed linearly). Docs are numbered in creation order.
    ✅ implementation (2026-08-22; the dated Phase-3 VMware result was not
    recorded) — *the grown boot handoff and the frame allocator; the
    kernel's own W^X-correct tables and a `CR3` switch that refuses to go
-   blind; the heap, in the direct map so that mapping stays one-way; the
+   blind; the heap, in the direct map because mapping was then one-way
+   (D-86 later lifted that, and the heap stayed where it was on its own
+   merits); the
    console back buffer; the I/O APIC, which retires the polled keyboard
    (D-37) and takes down D-33's wall; write-combining. KASLR is deferred to
    Phase 12 with its cost named (D-46). Guarding the boot and double-fault
