@@ -58,6 +58,7 @@ pub const fn name(vector: u8) -> Option<&'static str> {
         19 => "simd floating point error",
         20 => "virtualisation exception",
         21 => "control protection exception",
+        28 => "hypervisor injection exception",
         29 => "vmm communication exception",
         30 => "security exception",
         _ => return None,

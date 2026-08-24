@@ -9,10 +9,10 @@
 use core::fmt;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+use trap_cause::TrapCause;
 use wost::arch::current::apic;
 use wost::arch::current::cpu;
 use wost::arch::current::interrupt::{self, TrapFrame};
-use x86_tables::exception;
 
 use super::vector;
 
@@ -30,15 +30,20 @@ pub(crate) fn init() {
 /// because it force-unlocks the consoles first; everything that has to survive
 /// is recorded into atomics and printed by whoever reads them.
 fn on_trap(frame: &TrapFrame) {
-    match frame.vector() as u8 {
-        exception::BREAKPOINT => LAST_BREAKPOINT.record(frame),
+    // Dispatched on the decoded cause rather than the raw vector (D-81): the
+    // architecture's meaning is read once, in `libs/trap-cause`, where a host
+    // test walks all 256 of them — instead of being re-derived by every arm
+    // that tests a number.
+    let cause = TrapCause::decode(frame.vector() as u8, frame.error_code());
+    match cause {
+        TrapCause::Fault(trap_cause::Fault::Breakpoint) => LAST_BREAKPOINT.record(frame),
 
-        vector::PING => {
+        TrapCause::Interrupt(vector::PING) => {
             LAST_PING.record(frame);
             apic::end_of_interrupt();
         }
 
-        vector::TIMER => {
+        TrapCause::Interrupt(vector::TIMER) => {
             crate::time::on_expiry();
             // Dismissed before any switch: the APIC holds this priority class
             // until the end-of-interrupt, and another thread running inside
@@ -47,7 +52,7 @@ fn on_trap(frame: &TrapFrame) {
             crate::thread::reschedule(frame);
         }
 
-        vector::KEYBOARD => {
+        TrapCause::Interrupt(vector::KEYBOARD) => {
             let woke = crate::input::on_interrupt();
             apic::end_of_interrupt();
             // A thread woken by a keystroke must not wait for the next
@@ -60,17 +65,17 @@ fn on_trap(frame: &TrapFrame) {
         // Deliberately not dismissed: a spurious interrupt is the APIC saying
         // it had nothing to deliver, so it never set an in-service bit and
         // dismissing one would retire a real interrupt underneath it.
-        vector::SPURIOUS => {
+        TrapCause::Interrupt(vector::SPURIOUS) => {
             SPURIOUS.fetch_add(1, Ordering::Relaxed);
         }
 
-        vector::ERROR => panic!(
+        TrapCause::Interrupt(vector::ERROR) => panic!(
             "local apic error {:#x} at {:#018x}",
             apic::error_status(),
             frame.instruction_pointer()
         ),
 
-        _ => panic!("{}", Fault(frame)),
+        _ => panic!("{}", Report { frame, cause }),
     }
 }
 
@@ -82,17 +87,20 @@ fn on_trap(frame: &TrapFrame) {
 static SPURIOUS: AtomicUsize = AtomicUsize::new(0);
 
 /// A fault formatted for the panic message.
-struct Fault<'a>(&'a TrapFrame);
+struct Report<'a> {
+    frame: &'a TrapFrame,
+    cause: TrapCause,
+}
 
-impl fmt::Display for Fault<'_> {
+impl fmt::Display for Report<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let frame = self.0;
-        let vector = frame.vector() as u8;
-        let name = exception::name(vector).unwrap_or("unexpected interrupt");
+        let frame = self.frame;
 
         write!(
             f,
-            "{name} (vector {vector}, error {:#x}) at {:#018x}, cs {:#x}, flags {:#x}, rsp {:#018x}",
+            "{} (vector {}, error {:#x}) at {:#018x}, cs {:#x}, flags {:#x}, rsp {:#018x}",
+            self.cause.name(),
+            self.cause.vector(),
             frame.error_code(),
             frame.instruction_pointer(),
             frame.code_selector(),
@@ -100,10 +108,17 @@ impl fmt::Display for Fault<'_> {
             frame.stack_pointer(),
         )?;
 
-        // The address is the whole content of a page fault report; every other
-        // vector leaves CR2 holding whatever the last one did.
-        if vector == exception::PAGE_FAULT {
-            write!(f, ", faulting address {:#018x}", cpu::faulting_address())?;
+        // A page fault is the one vector whose error code says something, and
+        // saying it is why the decode exists: a missing mapping and a refused
+        // one are different bugs, and this report could not tell them apart
+        // before. CR2 is only this fault's address for this vector; every
+        // other leaves whatever the last one put there.
+        if let TrapCause::Fault(trap_cause::Fault::PageFault(fault)) = self.cause {
+            write!(
+                f,
+                ", faulting address {:#018x}: {fault:?}",
+                cpu::faulting_address()
+            )?;
         }
 
         Ok(())

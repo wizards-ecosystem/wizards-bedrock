@@ -108,6 +108,13 @@ name = "timebase"
 version = "0.1.0"
 
 [[package]]
+name = "trap-cause"
+version = "0.1.0"
+dependencies = [
+ "x86-tables",
+]
+
+[[package]]
 name = "wizard-kernel"
 version = "0.1.0"
 dependencies = [
@@ -117,6 +124,7 @@ dependencies = [
  "ps2-keys",
  "stack-layout",
  "timebase",
+ "trap-cause",
  "wost",
  "x86-apic",
  "x86-paging",

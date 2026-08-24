@@ -1,0 +1,11 @@
+[package]
+name = "trap-cause"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+x86-tables = { workspace = true }
+
+[lints]
+workspace = true

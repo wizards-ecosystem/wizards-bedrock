@@ -15,6 +15,7 @@ members = [
     "libs/slab-layout",
     "libs/stack-layout",
     "libs/timebase",
+    "libs/trap-cause",
     "libs/x86-apic",
     "libs/x86-paging",
     "libs/x86-pit",
@@ -37,6 +38,7 @@ default-members = [
     "libs/slab-layout",
     "libs/stack-layout",
     "libs/timebase",
+    "libs/trap-cause",
     "libs/x86-apic",
     "libs/x86-paging",
     "libs/x86-pit",
@@ -63,6 +65,7 @@ ps2-keys = { path = "libs/ps2-keys" }
 slab-layout = { path = "libs/slab-layout" }
 stack-layout = { path = "libs/stack-layout" }
 timebase = { path = "libs/timebase" }
+trap-cause = { path = "libs/trap-cause" }
 x86-apic = { path = "libs/x86-apic" }
 x86-paging = { path = "libs/x86-paging" }
 x86-pit = { path = "libs/x86-pit" }

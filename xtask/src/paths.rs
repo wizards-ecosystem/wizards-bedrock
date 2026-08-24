@@ -30,6 +30,7 @@ pub const HOST_PACKAGES: &[&str] = &[
     "slab-layout",
     "stack-layout",
     "timebase",
+    "trap-cause",
     "x86-apic",
     "x86-paging",
     "x86-pit",
