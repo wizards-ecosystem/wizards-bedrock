@@ -3334,3 +3334,15 @@ break until it was fixed.
 What the audit did *not* reach, recorded so the next one knows where to start:
 xtask's FAT, MBR and GPT writers, `qmp.rs`, `vmware.rs`, the `pixel` packing
 arithmetic, and the GDT and IDT bit encodings beyond the TSS.
+
+The 2026-08-23 evening sweep — the one that closed the phase — reached them:
+the MBR sizing, QMP token scanning, VMware geometry, `pixel`, `sha256` (NIST
+vectors) and the GDT/IDT/APIC encodings were verified against independent
+constants and survived; `frame-space`, `eevdf`, `x86-paging` and the ELF gate
+each gave up a real defect (the hint-straddling run, the weight past which a
+clock stood still, the huge entry whose bit 12 was the PAT, the partially
+file-backed `.bss`); and the `wost` soundness pass became D-76. Known and
+deliberately unfixed: xtask's QEMU monitor port is probed then rebound (a
+race only another local process could exploit), and a repository path
+containing a comma would garble the QEMU drive argument — both single-user
+tooling risks, neither worth their fix's weight yet.
