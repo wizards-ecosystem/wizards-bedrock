@@ -681,3 +681,67 @@ kernels.
 `global_asm!` is written down (D-81) and not written: nothing enables kernel
 IBT, so today it would be an instruction with no effect and no way to tell if
 it were wrong. It arrives with the first thing that turns IBT on.
+
+## Slice 6 — the handle table (2026-08-24)
+
+Recorded as built, per the charter above.
+
+**A handle is arithmetic** (`libs/handle-space`, D-78). Reserved low bits, a
+generation sharing the word with the index, a per-table mixer. Each property
+earns its place: the reserved bits make the encoding non-dense, so no
+implementation of this interface *can* promise the lowest free handle even if a
+later author wanted to; the generation turns use-after-close into a decode
+failure; the mixer means a value that leaked from one table is not a handle in
+another.
+
+The generation **wraps** rather than saturating, and that is the interesting
+choice. A saturating counter would make one slot's last generation permanent,
+so every later handle for it would decode as valid for ever — the failure the
+counter exists to prevent, made permanent instead of transient.
+
+**One arena, and one ownership comparison.** Lookup is decode, bounds,
+generation, owner. A table is a refcounted object rather than a field of a
+process, because Zircon's strict per-process invariant was the first casualty
+of its own compatibility layer. `Arc` is the refcount: D-78 wants
+`inc_not_zero` from day one, and `Weak::upgrade` is that operation with the
+atomics already audited.
+
+**`Event` is the first object** — no memory, no address space — so it exercises
+the table, rights, refcounting and lifetime without waiting on ring 3.
+
+**Building it found a bug in Phase 4** (D-93). `unblock` changed who was
+runnable and armed no timer, which this kernel's own module doc forbids. Nobody
+noticed because the only waker was an interrupt handler, where the trap exit
+reschedules anyway; the first waker in *thread* context left the woken thread
+Ready with nothing to run it, on a tickless kernel where there may be no timer
+at all. The check that found it timed out rather than failed, twice, before it
+was sharp enough to say so.
+
+**And an adversarial pass found four more** (D-95), of which two matter most.
+`Event::wait` checked its condition before registering, so a signal in the gap
+woke an empty queue and the waiter slept for ever — and three doc comments said
+that could not happen. `WaitQueue::wait_unless` does both under the lock a
+waker must take. Separately, `ARENA` held its leaf guard across `Vec` growth,
+quietly rebuilding the `ARENA → HEAP → FRAMES` order D-85 had just deleted.
+
+**D-78's own rule was being broken by the first object.** *A right must
+correspond to a distinction the kernel actually makes about that object* — and
+an event shipped with `READ`, `WRITE`, `EXECUTE` and `MAP` granted, with the
+check named for rights using that grant as its fixture. An event has no pages.
+`Rights::are_meaningful_for` and a per-type mask make the rule enforceable, and
+`insert` refuses the rest.
+
+**Eight machine checks and fifteen host tests.** The two D-28 singles out as
+most likely to be silently unfailable — *the invalid value never decodes* and
+*a reused slot never yields the same value twice* — were broken first. So was
+`attenuate`, whose clamping form reads like a convenience and turns "give me
+more than I have" into a silent success, and `contains`, whose any-of form
+reads identically to subset and grants everything.
+
+**Still owed by this slice's neighbours.** `mod handle` and `mod object` are
+`#[cfg(feature = "selftest")]`: they are built and proven and nothing ships
+them, because the first shipped caller is `spawn`. The gate comes off in slice
+7 with it. And `NotYours` versus `Stale` is an occupancy oracle over a global
+arena — a table can learn which slots another holds. Zircon collapses both to
+one error for that reason, and it is a decision for the slice that has a
+syscall to surface them through.
