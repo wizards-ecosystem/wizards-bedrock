@@ -195,7 +195,28 @@ fn start_interrupts() {
     // One MSR write, at boot, where it is trivial (D-81). The report is the
     // point as much as the write: what a machine claims about speculation
     // varies enormously in 2026, and this is the only place it is visible.
-    info!("cpu: {}", cpu::enable_speculation_controls());
+    let speculation = cpu::enable_speculation_controls();
+    info!("cpu: {speculation}");
+
+    // The flush on the way back to ring 3, armed unless the processor says it
+    // is unnecessary (D-98). Not gated on `MD_CLEAR`: `verw` exists on every
+    // x86-64, and that bit says only whether it *also* clears the buffers — so
+    // a machine whose capability word cannot be read gets the instruction
+    // rather than the assumption, which is the direction to be wrong in.
+    // `MDS_NO` is the one claim that makes it pointless.
+    if speculation.mds_no() {
+        info!("cpu: no buffer clear on return to ring 3; the processor reports mds_no");
+    } else {
+        interrupt::enable_buffer_clear();
+        info!(
+            "cpu: buffers cleared on every return to ring 3{}",
+            if cpu::has_buffer_clear() {
+                ""
+            } else {
+                " (md_clear unreported, so the flush may buy nothing here)"
+            }
+        );
+    }
 
     match apic::init(vector::LOCAL_APIC) {
         Ok(local) => info!("apic: {local}"),

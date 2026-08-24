@@ -46,6 +46,9 @@ pub const USER_CODE: Selector = Selector::new(6, 3);
 /// pushed.
 pub(super) const USER_DATA_BITS: u16 = USER_DATA.bits();
 
+/// [`KERNEL_DATA`]'s bits, for the `verw` operand on the return path.
+pub(super) const KERNEL_DATA_BITS: u16 = KERNEL_DATA.bits();
+
 /// [`USER_CODE`]'s bits, for the same reason.
 pub(super) const USER_CODE_BITS: u16 = USER_CODE.bits();
 

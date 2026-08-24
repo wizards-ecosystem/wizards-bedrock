@@ -387,6 +387,31 @@ pub fn gate_privilege(vector: u8) -> u8 {
     gates[vector as usize].privilege()
 }
 
+/// Whether the return path should flush before entering ring 3.
+///
+/// A plain byte rather than an atomic because the entry stub reads it with one
+/// instruction and nothing writes it after boot. Set from `cpuid`, so a
+/// processor reporting `MDS_NO` pays nothing.
+#[unsafe(no_mangle)]
+static mut MDS_CLEAR: u8 = 0;
+
+/// Turn on the buffer flush that precedes every return to ring 3.
+///
+/// Idempotent, and meant to be called once before any user code exists. Where
+/// the processor reports `MDS_NO` this is never called and the return path
+/// skips the instruction entirely (D-98).
+pub fn enable_buffer_clear() {
+    // SAFETY: written once during boot, before ring 3 exists and therefore
+    // before any return path can read it, on the one CPU there is.
+    unsafe { MDS_CLEAR = 1 };
+}
+
+/// Whether the buffer flush is armed.
+pub fn buffer_clear_is_armed() -> bool {
+    // SAFETY: a one-byte read of a value only ever written during boot.
+    unsafe { MDS_CLEAR == 1 }
+}
+
 /// Whether the CPU's interrupt descriptor table register points at the table
 /// [`init`] built, with the limit it wrote.
 pub fn table_is_loaded() -> bool {
@@ -683,8 +708,27 @@ global_asm!(
     "pop rbx",
     "pop rax",
     "add rsp, 16",
+    // Returning to ring 3? The saved `CS` is at `[rsp + 8]` now that the
+    // vector and error code have been stepped over, and its low two bits are
+    // the privilege the CPU will return to.
+    "test byte ptr [rsp + 8], 3",
+    "jz 2f",
+    // `VERW` on a data selector flushes the microarchitectural buffers MDS
+    // reads from, and this is the last instruction before the boundary. One
+    // instruction, on the path that is painful to modify once mature, which is
+    // why D-81 asked for it now — and skipped where the processor says it is
+    // not needed (D-98).
+    "cmp byte ptr [rip + {clear}], 0",
+    "je 2f",
+    "sub rsp, 8",
+    "mov word ptr [rsp], {kernel_data}",
+    "verw word ptr [rsp]",
+    "add rsp, 8",
+    "2:",
     "iretq",
     stub_bytes = const STUB_BYTES,
+    clear = sym MDS_CLEAR,
+    kernel_data = const (segment::KERNEL_DATA_BITS as u32),
     architectural = const exception::COUNT,
     interrupts = const idt::TABLE_LEN - exception::COUNT as usize,
     error_code_vectors = const exception::ERROR_CODE_VECTORS,

@@ -256,6 +256,19 @@ pub(super) fn has_x2apic() -> bool {
     cpuid(1, 0).ecx & X2APIC != 0
 }
 
+/// Whether this processor implements `MD_CLEAR`, the `VERW` buffer flush.
+///
+/// `cpuid` leaf 7 subleaf 0, `EDX` bit 10. Separate from [`Speculation`]
+/// because it is a *capability* rather than a claim about immunity: a machine
+/// may have the instruction and also report `MDS_NO`, in which case using it
+/// buys nothing (D-98).
+pub fn has_buffer_clear() -> bool {
+    /// `cpuid` leaf 7 subleaf 0, `EDX` bit 10.
+    const MD_CLEAR: u32 = 1 << 10;
+
+    max_leaf(0) >= 7 && cpuid(7, 0).edx & MD_CLEAR != 0
+}
+
 /// Read the machine's speculation posture and enable enhanced IBRS if it has
 /// it.
 ///

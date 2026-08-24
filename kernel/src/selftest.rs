@@ -398,6 +398,32 @@ fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
     from_user && through_the_gate && only_gate && on_a_user_stack && retired
 }
 
+/// The return to ring 3 clears the buffers, and the crossing happened with it
+/// armed.
+///
+/// D-81 asked for `VERW` on the way out because it is one instruction on a
+/// path that is painful to modify once mature. D-98 arms it unless the
+/// processor reports `MDS_NO`, rather than gating on `MD_CLEAR` — `verw`
+/// exists on every x86-64, and that bit says only whether it also flushes, so
+/// a machine whose capability word cannot be read gets the instruction rather
+/// than the assumption.
+///
+/// That policy is what makes this checkable at all. QEMU reports no capability
+/// word (D-91), so gating on `MD_CLEAR` would have left the instruction
+/// unreachable here — the same hole eIBRS is still in.
+///
+/// What the check cannot show is that the flush *flushes*: nothing observable
+/// changes. What it shows is that the branch is armed and that a ring-3 return
+/// was taken through it, which is the part that could crash and the part a
+/// later edit could break.
+fn the_return_to_ring_three_clears_buffers() -> bool {
+    let armed = interrupt::buffer_clear_is_armed();
+    // The crossing already happened, and it happened after boot armed this —
+    // so the path with the flush in it is a path this machine has run.
+    let crossed = trap::last_syscall().count > 0;
+    armed && crossed
+}
+
 /// Bytes cross the boundary in both directions, and every way they must not
 /// is refused.
 ///
@@ -1869,7 +1895,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 98;
+const EXPECTED_CHECKS: usize = 99;
 
 impl Report {
     const fn new() -> Self {
@@ -1960,6 +1986,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a thread crosses into ring three and calls back",
         a_thread_crosses_into_ring_three_and_calls_back(),
+    );
+    report.check(
+        "the return to ring three clears buffers",
+        the_return_to_ring_three_clears_buffers(),
     );
     report.check(
         "bytes cross the boundary only where they may",
