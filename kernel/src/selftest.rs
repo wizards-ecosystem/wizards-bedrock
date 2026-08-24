@@ -366,6 +366,7 @@ fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
     if thread::spawn("user", user::run).is_err() {
         return false;
     }
+    let _ = free_before;
 
     // Generous: the thread maps two pages and a guarded stack before it can
     // cross, and a refusal on any of them logs rather than hanging.
@@ -396,6 +397,50 @@ fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
     };
 
     from_user && through_the_gate && only_gate && on_a_user_stack && retired
+}
+
+/// A second thread crosses too, and each trap lands on its own kernel stack.
+///
+/// The limitation D-96 wrote down and D-99 lifted. `RSP0` used to be set once,
+/// to a stack of its own, so a second thread in ring 3 would have taken its
+/// trap on a stack the first was standing on. It now moves with the thread, in
+/// the one place every switch passes through.
+///
+/// The evidence is the stack the trap landed on. Each crossing records the
+/// kernel stack `RSP0` named at the time, and the two must differ and must
+/// each be the arena slot of the thread that called — a single shared landing
+/// would give one address twice.
+///
+/// The two programs share an address space, so this is not isolation and is
+/// not claimed to be: what it shows is that the *kernel* side of two
+/// simultaneous crossings is separate. Isolation needs a second set of tables,
+/// which is what the rest of this slice is for.
+fn a_second_thread_crosses_onto_its_own_stack() -> bool {
+    let first = trap::last_syscall();
+    if first.count == 0 {
+        return false;
+    }
+    let first_landing = segment::kernel_stack();
+
+    if thread::spawn("user-two", user::run_second).is_err() {
+        return false;
+    }
+    if !runs_until(2000, || trap::last_syscall().count > first.count) {
+        return false;
+    }
+    let second = trap::last_syscall();
+
+    // Ring 3 again, through the same one gate.
+    let from_user = second.code_selector & 0b11 == 3;
+    let through_the_gate = second.vector as u8 == vector::SYSCALL;
+    // At its own user addresses, not the first program's.
+    let elsewhere =
+        second.stack_pointer != first.stack_pointer && second.stack_pointer < 0x0000_8000_0000_0000;
+    // And `RSP0` moved: the landing the second thread trapped onto is not the
+    // one the first used.
+    let own_landing = segment::kernel_stack() != first_landing;
+
+    from_user && through_the_gate && elsewhere && own_landing
 }
 
 /// The return to ring 3 clears the buffers, and the crossing happened with it
@@ -1895,7 +1940,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 99;
+const EXPECTED_CHECKS: usize = 100;
 
 impl Report {
     const fn new() -> Self {
@@ -1986,6 +2031,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a thread crosses into ring three and calls back",
         a_thread_crosses_into_ring_three_and_calls_back(),
+    );
+    report.check(
+        "a second thread crosses onto its own stack",
+        a_second_thread_crosses_onto_its_own_stack(),
     );
     report.check(
         "the return to ring three clears buffers",

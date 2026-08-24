@@ -400,6 +400,20 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     table.slots[current].state = leaving;
     CURRENT.store(slot, Ordering::Release);
 
+    // The stack a trap from ring 3 will land on, moved with the thread. Set
+    // here rather than by the kernel because this is the one place every
+    // switch passes through, and a thread that entered ring 3 while `RSP0`
+    // still named someone else's stack would take its next trap on a stack
+    // another thread is standing on (D-99).
+    //
+    // The boot thread's slot has no arena stack, and its zero would name
+    // nothing — it is also the one thread that cannot be in ring 3, since it
+    // is the one that put every other thread there.
+    let landing = table.slots[slot].stack_top;
+    if landing != 0 {
+        super::segment::write_kernel_stack(landing);
+    }
+
     let contexts = CONTEXTS.as_mut_ptr().cast::<u64>();
     // SAFETY: both indices are below `MAX_TASKS`; the lock is held and the
     // flag is clear, so the assembly that also touches these words is not

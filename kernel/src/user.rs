@@ -10,23 +10,30 @@
 //! `spawn`; this is the layer underneath, and keeping them apart means a
 //! failure here is a failure of the boundary rather than of a parser.
 
-use wost::arch::current::paging::MappedStack;
-use wost::arch::current::{segment, task};
+use wost::arch::current::task;
 use wost::mm;
 use x86_paging::{Flags, PAGE_SIZE};
 
 use crate::thread::ThreadContext;
 use crate::{info, mem, warn};
 
-/// Where the user program's single page of code goes.
+/// Where the first user program's page of code goes.
 ///
 /// Low half, far from anything the kernel maps: an address a user mapping can
 /// occupy is by definition one the kernel does not, and the split is bit 63
 /// (`010` §10's LASS note).
 pub(crate) const CODE: u64 = 0x0000_4000_0000_0000;
 
-/// Where its stack goes, a page below the code so a run-off hits nothing.
+/// Where its stack goes, well away from the code so a run-off hits nothing.
 pub(crate) const STACK: u64 = 0x0000_3000_0000_0000;
+
+/// How far apart two programs' pages sit.
+///
+/// They share one address space until slice 7 gives each a table of its own,
+/// so for now "another program" means "another pair of addresses". That is not
+/// isolation and is not claimed to be — what the second one proves is that
+/// `RSP0` follows the thread (D-99).
+const APART: u64 = 0x1_0000;
 
 /// Bytes of stack, which is one page: it makes one call and never returns.
 const STACK_BYTES: u64 = PAGE_SIZE;
@@ -52,7 +59,10 @@ pub(crate) const PROGRAM: [u8; 4] = [0xCD, 0x80, 0xEB, 0xFE];
 /// the code page is read-only and executable, the stack is writable and never
 /// executable. W^X is not relaxed for user memory — it is the reason user
 /// memory exists (D-12).
-fn place(context: &mut ThreadContext) -> Option<()> {
+fn place(context: &mut ThreadContext, which: u64) -> Option<(u64, u64)> {
+    let code_at = CODE + which * APART;
+    let stack_at = STACK + which * APART;
+
     let mut code = mm::allocate_contiguous(1, 1)?;
     if !code.zero() || !code.write_at(0, &PROGRAM) {
         return None;
@@ -64,49 +74,47 @@ fn place(context: &mut ThreadContext) -> Option<()> {
 
     mem::with_active_space(context, |space| {
         space
-            .map_owned(CODE, code, Flags::USER)
+            .map_owned(code_at, code, Flags::USER)
             .and_then(|()| {
                 space.map_owned(
-                    STACK,
+                    stack_at,
                     stack,
                     Flags::USER.union(Flags::WRITABLE).union(Flags::NO_EXECUTE),
                 )
             })
             .ok()
-    })?
-}
-
-/// Where the trap out of ring 3 lands.
-///
-/// A stack of its own rather than the calling thread's, and that is a
-/// limitation rather than a design: `RSP0` is set once here, so **one thread
-/// may be in ring 3 at a time**. Per-thread `RSP0`, updated by the scheduler
-/// on every switch, arrives with the processes that need it in slice 7.
-fn kernel_landing(context: &mut ThreadContext) -> Option<MappedStack> {
-    mem::map_guarded_stack(context, crate::thread::user_trap_stack_layout()?)
+    })??;
+    Some((code_at, stack_at))
 }
 
 /// Cross into ring 3, and never come back on this thread.
 ///
-/// Runs as an ordinary kernel thread until its last instruction. The thread is
-/// retired by the syscall handler, from the far side of the boundary.
-pub(crate) fn run() {
+/// Runs as an ordinary kernel thread until its last instruction, and is retired
+/// by the syscall handler from the far side of the boundary.
+///
+/// No stack is arranged for the trap out: the context switch that scheduled
+/// this thread already pointed `RSP0` at its own kernel stack, and will point
+/// it somewhere else the moment another thread runs (D-99). That is what lets
+/// there be more than one of these.
+fn cross(which: u64) {
     let mut context = ThreadContext::require();
 
-    if place(&mut context).is_none() {
-        warn!("user: could not map the program");
-        return;
-    }
-    let Some(landing) = kernel_landing(&mut context) else {
-        warn!("user: could not map a stack for its traps");
+    let Some((code, stack)) = place(&mut context, which) else {
+        warn!("user {which}: could not map the program");
         return;
     };
-    if !segment::set_kernel_stack(&landing) {
-        warn!("user: the trap stack is not in the installed space");
-        return;
-    }
 
-    info!("user: entering ring 3 at {CODE:#x}");
-    let refused = task::enter_user(CODE, STACK + STACK_BYTES);
-    warn!("user: refused entry to ring 3: {refused}");
+    info!("user {which}: entering ring 3 at {code:#x}");
+    let refused = task::enter_user(code, stack + STACK_BYTES);
+    warn!("user {which}: refused entry to ring 3: {refused}");
+}
+
+/// The first user program.
+pub(crate) fn run() {
+    cross(0);
+}
+
+/// A second one, at its own addresses, to show `RSP0` moves with the thread.
+pub(crate) fn run_second() {
+    cross(1);
 }

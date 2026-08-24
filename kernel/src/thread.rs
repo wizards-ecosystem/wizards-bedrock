@@ -83,16 +83,6 @@ pub(crate) fn boot_stack_layout() -> Option<StackLayout> {
     StackLayout::new(fault_stack_layout()?.end(), STACK_BYTES, GUARD_BYTES, 1)
 }
 
-/// Where a trap out of ring 3 lands.
-///
-/// The fourth window derived from the arena's end, and the last one that will
-/// be: per-thread `RSP0` replaces it in slice 7, when more than one thread may
-/// be in ring 3 (D-96).
-#[cfg(feature = "selftest")]
-pub(crate) fn user_trap_stack_layout() -> Option<StackLayout> {
-    StackLayout::new(boot_stack_layout()?.end(), STACK_BYTES, GUARD_BYTES, 1)
-}
-
 /// Why a thread could not be spawned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]

@@ -241,6 +241,20 @@ pub fn set_kernel_stack(stack: &MappedStack) -> bool {
     if !stack.is_installed() {
         return false;
     }
+    write_kernel_stack(stack.top());
+    true
+}
+
+/// Point `RSP0` at `top`, with no evidence asked for.
+///
+/// `pub(super)` and no further: the only caller is the context switch, and the
+/// proof it stands on is one this module cannot express in a type — `task::init`
+/// walked every stack in the arena and confirmed it mapped, guarded, writable
+/// and never executable before it would fabricate on one (D-52), and these are
+/// those stacks. A bare address from *outside* the arch module is exactly what
+/// D-95 refused; from inside it, with that walk behind it, it is the same
+/// evidence by a different route (D-99).
+pub(super) fn write_kernel_stack(top: u64) {
     let at = TaskState::privilege_stack_offset(0);
     debug_assert!(
         task_state_pointer()
@@ -254,9 +268,9 @@ pub fn set_kernel_stack(stack: &MappedStack) -> bool {
     // boundary — `RSP0` is at offset 4, and the segment is placed
     // four-mod-eight so that it lands on one (D-95).
     let entry = unsafe { task_state_pointer().cast::<u8>().add(at) }.cast::<u64>();
-    // SAFETY: as above; a naturally aligned eight-byte store.
-    unsafe { entry.write_volatile(stack.top()) };
-    true
+    // SAFETY: as above; a naturally aligned eight-byte store, so a trap
+    // arriving mid-switch reads one stack or the other and never a mixture.
+    unsafe { entry.write_volatile(top) };
 }
 
 /// Where a trap from ring 3 will land.
