@@ -46,10 +46,11 @@ const STACK_BYTES: u64 = PAGE_SIZE;
 /// The program's first four bytes, for the check that reads them back across
 /// the boundary.
 ///
-/// `pushfq` and the start of the `or` that sets `AC` (D-101). Written by
-/// `xtask` into the image (D-100) rather than by the kernel, so this is a
-/// statement about the initrd and not a copy of something the kernel placed.
-pub(crate) const PROGRAM: [u8; 4] = [0x9C, 0x48, 0x81, 0x0C];
+/// `pop rax` and the `test` that follows it — the program reading the argument
+/// the kernel left on its stack (D-102). Written by `xtask` into the image
+/// (D-100) rather than by the kernel, so this is a statement about the initrd
+/// and not a copy of something the kernel placed.
+pub(crate) const PROGRAM: [u8; 4] = [0x58, 0x48, 0x85, 0xC0];
 
 /// Map the program and its stack, and report where to enter.
 ///
@@ -234,7 +235,7 @@ pub(crate) fn load_image(
 /// this thread already pointed `RSP0` at its own kernel stack, and will point
 /// it somewhere else the moment another thread runs (D-99). That is what lets
 /// there be more than one of these.
-fn cross(which: u64) {
+fn cross(which: u64, argument: u64) {
     let mut context = ThreadContext::require();
 
     // The program comes off the initrd through the same reader `xtask` builds
@@ -252,17 +253,39 @@ fn cross(which: u64) {
         return;
     };
 
-    info!("user {which}: entering ring 3 at {entry:#x}");
-    let refused = task::enter_user(entry, stack + STACK_BYTES);
+    // One word of argument, on the program's own stack, written across the
+    // boundary with the checked copy (D-97) — which is how a program will get
+    // everything it is ever given. Sixteen bytes down so the pointer handed to
+    // `iretq` is aligned as the ABI wants; the program's first instruction
+    // pops it.
+    let top = stack + STACK_BYTES - 16;
+    if usercopy::copy_to_user(top, &argument.to_le_bytes()).is_err() {
+        warn!("user {which}: could not write its argument");
+        return;
+    }
+
+    info!("user {which}: entering ring 3 at {entry:#x} with {argument}");
+    let refused = task::enter_user(entry, top);
     warn!("user {which}: refused entry to ring 3: {refused}");
 }
 
-/// The first user program.
+/// The first user program, which calls the kernel.
 pub(crate) fn run() {
-    cross(0);
+    cross(0, BEHAVE);
 }
 
 /// A second one, at its own addresses, to show `RSP0` moves with the thread.
 pub(crate) fn run_second() {
-    cross(1);
+    cross(1, BEHAVE);
 }
+
+/// A third that faults on purpose, to show the machine survives it.
+pub(crate) fn run_faulting() {
+    cross(2, FAULT);
+}
+
+/// The argument that makes the program call the kernel.
+const BEHAVE: u64 = 0;
+
+/// The argument that makes it execute `ud2` instead.
+const FAULT: u64 = 1;

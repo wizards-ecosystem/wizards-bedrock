@@ -425,6 +425,48 @@ fn a_program_cannot_bring_smap_down_with_it() -> bool {
     the_program_tried && the_kernel_undid_it && interrupt::access_clear_is_armed()
 }
 
+/// A program that faults dies, and the machine does not.
+///
+/// D-31 made a fault terminal when a fault was necessarily a kernel bug. Since
+/// ring 3 exists it can be a program bug, and D-97 already reasons from the
+/// right premise for the copy path — *the program is the untrusted party*.
+/// D-102 applies it to the trap path: a fault from CPL 3 retires the caller.
+///
+/// The program executes `ud2` on purpose, chosen by the argument word the
+/// kernel wrote onto its stack. That the fault is deliberate is what makes
+/// this a check rather than a hope: an accidental fault would be indeterminate
+/// about *which* fault, and `#UD` is the one nothing else in this kernel
+/// raises.
+///
+/// Three things are asserted, and the first is the one that would otherwise be
+/// assumed: the fault must have come from ring 3, by the selector the CPU
+/// pushed. A kernel `ud2` retired instead of reported would be a kernel bug
+/// swallowed, which is worse than the panic this replaces.
+fn a_faulting_program_dies_alone() -> bool {
+    let before = trap::last_user_fault();
+    let retirements_before = thread::retirements();
+    if thread::spawn("user-fault", user::run_faulting).is_err() {
+        return false;
+    }
+
+    if !runs_until(2000, || trap::last_user_fault().count > before.count) {
+        return false;
+    }
+    let fault = trap::last_user_fault();
+
+    // From ring 3, by the CPU's own account.
+    let from_user = fault.code_selector & 0b11 == 3;
+    // The fault the program chose, and no other.
+    let it_was_the_ud2 = fault.vector == u64::from(exception::INVALID_OPCODE);
+    // Its instruction pointer is in user memory, not the kernel's.
+    let in_user_memory = fault.stack_pointer < usercopy::USER_END;
+    // The thread was retired rather than the machine stopped — and the machine
+    // is plainly still here, since this line runs.
+    let retired = runs_until(500, || thread::retirements() > retirements_before);
+
+    from_user && it_was_the_ud2 && in_user_memory && retired
+}
+
 /// The loader refuses an image that asks for what it may not map.
 ///
 /// The half of a loader that matters. An image is bytes a program supplied,
@@ -2039,7 +2081,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 102;
+const EXPECTED_CHECKS: usize = 103;
 
 impl Report {
     const fn new() -> Self {
@@ -2134,6 +2176,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a program cannot bring smap down with it",
         a_program_cannot_bring_smap_down_with_it(),
+    );
+    report.check(
+        "a faulting program dies alone",
+        a_faulting_program_dies_alone(),
     );
     report.check(
         "the loader refuses what it may not map",

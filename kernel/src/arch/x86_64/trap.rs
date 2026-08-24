@@ -89,8 +89,45 @@ fn on_trap(frame: &TrapFrame) {
             frame.instruction_pointer()
         ),
 
+        // A fault the *program* caused kills the program, not the machine.
+        //
+        // D-31 made a fault terminal when a fault was necessarily a kernel
+        // bug. Since ring 3 exists it can be a program bug — a `ud2`, a
+        // division by zero, a touch of a page that is not there — and D-97
+        // already reasons from the right premise for the copy path: the
+        // program is the untrusted party. This is the same premise applied to
+        // the trap path (D-102).
+        //
+        // The privilege in the saved `CS` is the CPU's own account of where
+        // the fault happened, so it cannot be forged by kernel code that
+        // merely looks like a program.
+        TrapCause::Fault(fault) if is_the_programs(frame, fault) => {
+            LAST_USER_FAULT.record(frame);
+            if !crate::thread::retire_from_trap(frame) {
+                panic!("{}", Report { frame, cause });
+            }
+        }
+
         _ => panic!("{}", Report { frame, cause }),
     }
+}
+
+/// Whether this fault is a program's to die of rather than the machine's.
+///
+/// Two conditions, and both are needed. It must have come from ring 3 — the
+/// kernel faulting is still a kernel bug and still terminal. And it must be a
+/// fault a program can cause and the machine can survive: a double fault means
+/// the fault path itself failed, and a machine check is the hardware reporting
+/// its own failure. Neither becomes survivable because a program was running.
+fn is_the_programs(frame: &TrapFrame, fault: trap_cause::Fault) -> bool {
+    let from_ring_three = frame.code_selector() & 0b11 == 3;
+    let survivable = !matches!(
+        fault,
+        trap_cause::Fault::DoubleFault
+            | trap_cause::Fault::MachineCheck
+            | trap_cause::Fault::NonMaskable
+    );
+    from_ring_three && survivable
 }
 
 /// How many spurious interrupts have been delivered.
@@ -137,6 +174,15 @@ impl fmt::Display for Report<'_> {
 
         Ok(())
     }
+}
+
+/// What the last fault from ring 3 looked like.
+static LAST_USER_FAULT: Recorder = Recorder::new();
+
+/// The frame of the last fault a program caused.
+#[cfg(feature = "selftest")]
+pub(crate) fn last_user_fault() -> Record {
+    LAST_USER_FAULT.read()
 }
 
 /// One if SMAP was still on when the last ring-3 call reached the handler.

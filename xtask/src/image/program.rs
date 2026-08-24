@@ -17,27 +17,40 @@ use elf64::{HEADER_BYTES, PROGRAM_HEADER_BYTES};
 /// Where the program is linked, and where the kernel maps it.
 pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 
-/// The program: set `EFLAGS.AC`, then call the kernel.
+/// The program: read one word of argument, then either call the kernel or
+/// fault deliberately.
 ///
 /// ```text
-///   9c              pushfq
-///   48 81 0c 24 00 00 04 00   or qword ptr [rsp], 0x40000   ; AC, bit 18
-///   9d              popfq
-///   cd 80           int 0x80
-///   eb fe           jmp .
+///   58                       pop rax                     ; the kernel's word
+///   48 85 c0                 test rax, rax
+///   74 02                    jz  +2                      ; zero: behave
+///   0f 0b                    ud2                         ; anything else: die
+///   9c                       pushfq
+///   48 81 0c 24 00 00 04 00  or qword ptr [rsp], 0x40000 ; set AC, bit 18
+///   9d                       popfq
+///   cd 80                    int 0x80
+///   eb fe                    jmp .
 /// ```
 ///
-/// The `AC` is the point. Interrupt delivery clears `TF`, `NT`, `RF` and `VM`
-/// and **not** `AC`, and `AC` is writable at CPL 3 — so a program that sets it
-/// hands the kernel a trap with SMAP already off, for the whole handler and
-/// for every thread switched to afterwards. The entry path clears it (D-101),
-/// and this is what proves the clearing runs: a hostile program, in the image,
-/// doing the hostile thing.
+/// Two behaviours from one image, chosen by a word the kernel writes onto the
+/// program's stack with `copy_to_user` — which is how a program will get its
+/// arguments, and means the boundary API is exercised on the way in as well as
+/// out (D-102).
 ///
-/// The trailing jump is unreachable while the kernel retires the caller, and
+/// The `ud2` is the point of the second behaviour: a fault a program causes
+/// must kill the program, not the machine. The `AC` is the point of the first:
+/// interrupt delivery does not clear it, so a program that sets it hands the
+/// kernel a trap with SMAP already off unless the entry path clears it
+/// (D-101).
+///
+/// The trailing jump is unreachable while the kernel retires its callers, and
 /// it is there because a program whose last instruction falls forwards
 /// executes whatever the page holds.
-const CODE: [u8; 14] = [
+const CODE: [u8; 22] = [
+    0x58, // pop rax
+    0x48, 0x85, 0xC0, // test rax, rax
+    0x74, 0x02, // jz +2
+    0x0F, 0x0B, // ud2
     0x9C, // pushfq
     0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00, // or qword [rsp], 1 << 18
     0x9D, // popfq

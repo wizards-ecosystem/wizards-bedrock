@@ -12,6 +12,10 @@ pub const COUNT: u8 = 32;
 /// pointer is already past it.
 pub const BREAKPOINT: u8 = 3;
 
+/// `ud2` and every opcode the CPU does not implement in this mode. The one
+/// fault a program can raise deliberately and unambiguously.
+pub const INVALID_OPCODE: u8 = 6;
+
 /// Raised when handling one exception raised another. Overwhelmingly it means
 /// the stack is unusable, so it is the one vector that needs a stack of its own.
 pub const DOUBLE_FAULT: u8 = 8;
