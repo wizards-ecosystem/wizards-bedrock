@@ -15,6 +15,12 @@ mod bit {
     pub(super) const EXECUTABLE: u64 = 1 << 43;
     /// Code or data rather than a system descriptor.
     pub(super) const CODE_OR_DATA: u64 = 1 << 44;
+    /// Descriptor privilege level three: ring 3 may load it.
+    ///
+    /// Both bits, because the field is two wide and ring 3 is the only
+    /// non-zero level this kernel uses — there is no ring 1 or 2 here, and
+    /// leaving one bit set would name a level nothing runs at.
+    pub(super) const RING_THREE: u64 = 0b11 << 45;
     /// The descriptor is usable.
     pub(super) const PRESENT: u64 = 1 << 47;
     /// 64-bit code. Must be clear for data, and pairs with a clear default-size
@@ -42,6 +48,34 @@ impl Descriptor {
     /// `SS` must name one of these even in 64-bit mode, where `iretq` reloads it
     /// on every return from an exception.
     pub const KERNEL_DATA: Self = Self(bit::PRESENT | bit::CODE_OR_DATA | bit::ACCESS);
+
+    /// Ring 3 code: present, executable, readable, 64-bit, DPL 3.
+    ///
+    /// `sysret` and `iretq` both require the user descriptors to sit at
+    /// specific indices relative to each other, which is why the order in the
+    /// table is fixed rather than incidental (D-96).
+    pub const USER_CODE: Self = Self(
+        bit::PRESENT
+            | bit::CODE_OR_DATA
+            | bit::EXECUTABLE
+            | bit::ACCESS
+            | bit::LONG_MODE
+            | bit::RING_THREE,
+    );
+
+    /// Ring 3 data: present, writable, DPL 3.
+    pub const USER_DATA: Self =
+        Self(bit::PRESENT | bit::CODE_OR_DATA | bit::ACCESS | bit::RING_THREE);
+
+    /// The privilege level that may load this descriptor.
+    pub const fn privilege(self) -> u8 {
+        ((self.0 >> 45) & 0b11) as u8
+    }
+
+    /// Whether it is a code segment rather than data.
+    pub const fn is_executable(self) -> bool {
+        self.0 & bit::EXECUTABLE != 0
+    }
 
     /// Build a descriptor from raw bits.
     pub const fn from_bits(bits: u64) -> Self {
@@ -161,5 +195,57 @@ mod tests {
     #[should_panic(expected = "cannot be empty")]
     fn a_task_state_descriptor_rejects_a_zero_size() {
         let _ = SystemDescriptor::task_state(0x1000, 0);
+    }
+
+    /// The user descriptors differ from the kernel ones by the privilege field
+    /// and nothing else.
+    ///
+    /// Transcribed against the kernel pair rather than re-derived: a user code
+    /// segment that also differed in, say, the long-mode bit would be a
+    /// different kind of segment wearing ring 3's number, and the difference
+    /// would be invisible in a boot that worked (D-96).
+    #[test]
+    fn the_user_descriptors_are_the_kernel_ones_at_ring_three() {
+        assert_eq!(
+            Descriptor::USER_CODE.bits(),
+            Descriptor::KERNEL_CODE.bits() | (0b11 << 45)
+        );
+        assert_eq!(
+            Descriptor::USER_DATA.bits(),
+            Descriptor::KERNEL_DATA.bits() | (0b11 << 45)
+        );
+    }
+
+    /// Privilege reads back, and only the user pair is ring 3.
+    #[test]
+    fn only_the_user_descriptors_are_ring_three() {
+        assert_eq!(Descriptor::KERNEL_CODE.privilege(), 0);
+        assert_eq!(Descriptor::KERNEL_DATA.privilege(), 0);
+        assert_eq!(Descriptor::USER_CODE.privilege(), 3);
+        assert_eq!(Descriptor::USER_DATA.privilege(), 3);
+        assert_eq!(Descriptor::NULL.privilege(), 0);
+    }
+
+    /// Code is executable and data is not, at both privilege levels.
+    ///
+    /// A data descriptor with the executable bit set is a code segment the CPU
+    /// will happily jump into, and at ring 3 that is a privilege boundary.
+    #[test]
+    fn only_the_code_descriptors_are_executable() {
+        assert!(Descriptor::KERNEL_CODE.is_executable());
+        assert!(Descriptor::USER_CODE.is_executable());
+        assert!(!Descriptor::KERNEL_DATA.is_executable());
+        assert!(!Descriptor::USER_DATA.is_executable());
+    }
+
+    /// The long-mode bit is set for code and clear for data, at ring 3 too.
+    ///
+    /// A data descriptor with `L` set is reserved, and the manual says the
+    /// result is undefined rather than ignored.
+    #[test]
+    fn long_mode_is_a_code_only_bit_at_every_level() {
+        const LONG_MODE: u64 = 1 << 53;
+        assert_ne!(Descriptor::USER_CODE.bits() & LONG_MODE, 0);
+        assert_eq!(Descriptor::USER_DATA.bits() & LONG_MODE, 0);
     }
 }

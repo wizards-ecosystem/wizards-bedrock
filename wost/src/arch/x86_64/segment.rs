@@ -27,11 +27,33 @@ pub const KERNEL_DATA: Selector = Selector::new(2, 0);
 /// occupies this entry and the one after it.
 pub const TASK_STATE: Selector = Selector::new(3, 0);
 
+/// Ring 3 data. Loaded into `SS` by the `iretq` that enters user code.
+///
+/// Placed **before** the user code segment, which looks backwards and is what
+/// `sysret` requires: it derives `CS` from `STAR` + 16 and `SS` from
+/// `STAR` + 8, so the data descriptor has to come first. Nothing uses `sysret`
+/// yet and the order is fixed now anyway, because moving a descriptor later
+/// means moving every selector that names it (D-96).
+pub const USER_DATA: Selector = Selector::new(5, 3);
+
+/// Ring 3 code.
+pub const USER_CODE: Selector = Selector::new(6, 3);
+
+/// [`USER_DATA`]'s bits, for the `iretq` frame that enters ring 3.
+///
+/// A `const` operand in inline assembly must be an integer, and `Selector` is
+/// not one — so the value is named here rather than open-coded where it is
+/// pushed.
+pub(super) const USER_DATA_BITS: u16 = USER_DATA.bits();
+
+/// [`USER_CODE`]'s bits, for the same reason.
+pub(super) const USER_CODE_BITS: u16 = USER_CODE.bits();
+
 /// Interrupt stack table entry holding the double-fault stack.
 pub const DOUBLE_FAULT_STACK: u8 = 1;
 
-/// Null, code, data, and two for the task-state segment.
-const ENTRIES: usize = 5;
+/// Null, code, data, two for the task-state segment, then the user pair.
+const ENTRIES: usize = 7;
 
 /// Stack reserved for the double-fault handler. Generous because the fault it
 /// handles is usually "the last stack ran out".
@@ -105,6 +127,8 @@ pub fn init() {
     entries[KERNEL_DATA.index() as usize] = Descriptor::KERNEL_DATA.bits();
     entries[TASK_STATE.index() as usize] = task_state_descriptor.low;
     entries[TASK_STATE.index() as usize + 1] = task_state_descriptor.high;
+    entries[USER_DATA.index() as usize] = Descriptor::USER_DATA.bits();
+    entries[USER_CODE.index() as usize] = Descriptor::USER_CODE.bits();
     // SAFETY: as above — one writer, and the CPU is not pointed at the table
     // until the `lgdt` below.
     unsafe { GDT.as_mut_ptr().write(entries) };
@@ -196,6 +220,45 @@ fn reload_selectors() {
             options(nomem, nostack, preserves_flags),
         );
     }
+}
+
+/// Point the CPU at the stack a trap from ring 3 should switch to.
+///
+/// `RSP0` in the task-state segment, which the hardware loads when an
+/// interrupt crosses from ring 3 to ring 0. Without it a trap from user code
+/// would keep running on the user stack — which the user chose, and which is
+/// why every privilege boundary starts here.
+///
+/// Takes a [`MappedStack`] for the same reason
+/// [`set_double_fault_stack`] does: an address alone is not evidence that a
+/// stack is there.
+///
+/// `false` if the stack belongs to an address space this CPU is not walking.
+pub fn set_kernel_stack(stack: &MappedStack) -> bool {
+    if !stack.is_installed() {
+        return false;
+    }
+    let at = TaskState::privilege_stack_offset(0);
+    debug_assert!(
+        task_state_pointer()
+            .addr()
+            .wrapping_add(at)
+            .is_multiple_of(8),
+        "the privilege-stack entry is not eight-byte aligned"
+    );
+    // SAFETY: `at` is a byte offset inside the segment, from the crate that
+    // owns its layout, and the entry there is eight bytes on an eight-byte
+    // boundary — `RSP0` is at offset 4, and the segment is placed
+    // four-mod-eight so that it lands on one (D-95).
+    let entry = unsafe { task_state_pointer().cast::<u8>().add(at) }.cast::<u64>();
+    // SAFETY: as above; a naturally aligned eight-byte store.
+    unsafe { entry.write_volatile(stack.top()) };
+    true
+}
+
+/// Where a trap from ring 3 will land.
+pub fn kernel_stack() -> u64 {
+    read_task_state().privilege_stack(0)
 }
 
 /// Move the double-fault handler onto a guarded stack.

@@ -4,6 +4,7 @@
 //! pointer, so it is `wost`'s (D-43). What is here is the part that needs no
 //! privilege: deciding whether the handoff is usable at all, and saying so.
 
+use stack_layout::StackLayout;
 use wost::arch::current::cpu;
 use wost::arch::current::paging::{self, AddressSpace, BootRegion, MapError, MappedStack};
 use wost::arch::current::segment;
@@ -107,13 +108,25 @@ fn guard_the_fault_stack() -> Result<u64, MapError> {
 /// bootloader's stack is the kernel every earlier phase shipped, so this
 /// declining is a lost guard rather than a lost boot.
 pub(crate) fn map_boot_stack() -> Option<MappedStack> {
-    let layout = thread::boot_stack_layout()?;
-    let slot = layout.slot(0)?;
     let mut context = ThreadContext::require();
-    match with_active_space(&mut context, |space| space.map_stack(&slot))? {
+    map_guarded_stack(&mut context, thread::boot_stack_layout()?)
+}
+
+/// Map the one guarded stack `layout` describes.
+///
+/// The shared half of every stack this kernel maps after the switch: allocate,
+/// zero, map writable and never executable, and verify the guard below is
+/// absent — the last of which is `map_stack`'s and is why it is used rather
+/// than open-coded (D-94).
+pub(crate) fn map_guarded_stack(
+    context: &mut ThreadContext,
+    layout: StackLayout,
+) -> Option<MappedStack> {
+    let slot = layout.slot(0)?;
+    match with_active_space(context, |space| space.map_stack(&slot))? {
         Ok(stack) => Some(stack),
         Err(reason) => {
-            warn!("boot: stack not mapped: {reason}");
+            warn!("stacks: {:#x} not mapped: {reason}", slot.stack_base());
             None
         }
     }

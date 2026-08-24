@@ -323,7 +323,7 @@ pub(crate) struct TrapSuspension {
 /// Panics if the global descriptor table has not been installed — the gates
 /// name its code selector — or if the generated stub table is not the size the
 /// indexing assumes.
-pub fn init(handler: Handler) {
+pub fn init(handler: Handler, user_gate: Option<u8>) {
     if !INIT.claim() {
         return;
     }
@@ -352,11 +352,16 @@ pub fn init(handler: Handler) {
         } else {
             0
         };
-        *gate = Gate::interrupt(
-            (base + vector * STUB_BYTES) as u64,
-            segment::KERNEL_CODE,
-            stack,
-        );
+        let address = (base + vector * STUB_BYTES) as u64;
+        // Exactly one gate may be reached from ring 3, and it is named rather
+        // than defaulted: every other vector raises a general-protection fault
+        // when user code says `int`, because a device's line is not a service
+        // (D-96).
+        *gate = if user_gate == Some(vector as u8) {
+            Gate::callable_from_user(address, segment::KERNEL_CODE, stack)
+        } else {
+            Gate::interrupt(address, segment::KERNEL_CODE, stack)
+        };
     }
 
     let pointer = TablePointer::new(IDT.address(), idt::TABLE_LIMIT);
@@ -370,6 +375,16 @@ pub fn init(handler: Handler) {
             options(readonly, nostack, preserves_flags),
         );
     }
+}
+
+/// The privilege level that may reach `vector` with `int`.
+///
+/// Read back from the table the CPU is walking, not from what was asked for.
+pub fn gate_privilege(vector: u8) -> u8 {
+    // SAFETY: the table is written once by `init` and never again, and this
+    // reads one gate of it by value.
+    let gates = unsafe { &*IDT.as_mut_ptr() };
+    gates[vector as usize].privilege()
 }
 
 /// Whether the CPU's interrupt descriptor table register points at the table

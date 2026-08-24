@@ -36,6 +36,7 @@ use crate::arch::current::vector;
 use crate::handle::{HandleError, HandleTable};
 use crate::object::{self, ObjectRef, ObjectType};
 use crate::thread::ThreadContext;
+use crate::user;
 use crate::{dev, error, info, input, mem, thread, time};
 
 /// A frame's handle releases it, and the allocator notices.
@@ -344,6 +345,56 @@ fn a_waiter_rereads_its_condition_before_blocking() -> bool {
     // And nothing is left registered, so a later wake cannot name a thread
     // that is no longer waiting here.
     came_back && settled && inner.waiters_for_test().is_idle()
+}
+
+/// A thread crosses into ring 3, calls back through the one gate that admits
+/// it, and is retired from the far side.
+///
+/// The boundary this whole phase is for, proved end to end rather than in
+/// parts: the ring-3 descriptors, the privilege stack, the `iretq` frame, the
+/// user-callable gate, and the return path all have to agree, and any one of
+/// them being wrong is a fault in a privilege level that cannot report it.
+///
+/// The evidence is the saved code selector. `CS` in the trap frame is the one
+/// the *CPU* pushed when it took the interrupt, so a ring-3 value there cannot
+/// be produced by a kernel thread saying `int 0x80` — the number in it is the
+/// hardware's account of where the caller was (D-96).
+fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
+    let before = trap::last_syscall();
+    let free_before = thread::free_slots();
+    if thread::spawn("user", user::run).is_err() {
+        return false;
+    }
+
+    // Generous: the thread maps two pages and a guarded stack before it can
+    // cross, and a refusal on any of them logs rather than hanging.
+    if !runs_until(2000, || trap::last_syscall().count > before.count) {
+        return false;
+    }
+    let call = trap::last_syscall();
+
+    // Ring 3, by the selector the CPU pushed.
+    let from_user = call.code_selector & 0b11 == 3;
+    // And through the gate meant for it.
+    let through_the_gate = call.vector as u8 == vector::SYSCALL;
+    // Which is the only one ring 3 may reach.
+    let only_gate = interrupt::gate_privilege(vector::SYSCALL) == 3
+        && interrupt::gate_privilege(vector::TIMER) == 0
+        && interrupt::gate_privilege(vector::KEYBOARD) == 0
+        && interrupt::gate_privilege(exception::PAGE_FAULT) == 0;
+    // Its stack was the user one: ring 3 in the selector, and a low-half
+    // address, which is the half the kernel never maps.
+    let on_a_user_stack =
+        call.stack_selector & 0b11 == 3 && call.stack_pointer < 0x0000_8000_0000_0000;
+    // And the thread is gone: retired from trap context, its slot still held
+    // but never runnable again.
+    let retired = runs_until(500, || thread::free_slots() == free_before) || {
+        // A retired thread keeps its slot, so the count does not come back —
+        // what must be true is that nothing is still running it.
+        thread::current_name() != "user"
+    };
+
+    from_user && through_the_gate && only_gate && on_a_user_stack && retired
 }
 
 /// A handle names its object, and a closed one names nothing.
@@ -1753,7 +1804,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 96;
+const EXPECTED_CHECKS: usize = 97;
 
 impl Report {
     const fn new() -> Self {
@@ -1840,6 +1891,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a second address space is refused",
         a_second_switch_is_refused(),
+    );
+    report.check(
+        "a thread crosses into ring three and calls back",
+        a_thread_crosses_into_ring_three_and_calls_back(),
     );
     report.check(
         "a signal wakes a thread waiting on a handle",

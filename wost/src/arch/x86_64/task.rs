@@ -27,6 +27,7 @@ use super::paging::{self, MappedStack, StackArena};
 use crate::cell::HardwareCell;
 use crate::panic::PanicToken;
 use crate::sync::{Once, SpinLock};
+use x86_paging::Flags;
 
 /// Slots the table holds, the boot thread's among them.
 ///
@@ -441,6 +442,127 @@ extern "C" fn thread_start() -> ! {
         interrupt::enable();
     }
     entry(arg)
+}
+
+/// Why the CPU would not be sent to ring 3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UserError {
+    /// The kernel's own tables are not installed.
+    Inactive,
+    /// Nothing is mapped at the entry point, or it is not user-executable.
+    EntryNotExecutable(u64),
+    /// The stack is not mapped, or not user-writable, or executable.
+    StackNotWritable(u64),
+    /// The stack pointer is not sixteen-byte aligned, which the ABI requires.
+    StackMisaligned(u64),
+    /// No ring-0 stack is set, so a trap out of ring 3 would have nowhere to
+    /// land.
+    NoKernelStack,
+}
+
+impl fmt::Display for UserError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Inactive => f.write_str("the kernel's tables are not installed"),
+            Self::EntryNotExecutable(at) => {
+                write!(f, "{at:#x} is not executable from ring 3")
+            }
+            Self::StackNotWritable(at) => write!(f, "{at:#x} is not writable from ring 3"),
+            Self::StackMisaligned(at) => write!(f, "{at:#x} is not sixteen-byte aligned"),
+            Self::NoKernelStack => f.write_str("no ring-0 stack is set for traps from ring 3"),
+        }
+    }
+}
+
+impl core::error::Error for UserError {}
+
+/// Enter ring 3 at `entry`, on `stack_top`. Returns only on refusal.
+///
+/// Safe, and the whole of why is that it **checks** rather than trusts. The
+/// `iretq` underneath will happily send the CPU to an unmapped address in a
+/// privilege level that cannot report it, so every precondition is walked
+/// first: the tables are live, the entry is present and user-executable, the
+/// stack is present and user-writable and not executable, the stack pointer is
+/// aligned, and `RSP0` names somewhere for a trap to land. A caller that gets
+/// any of them wrong is told, rather than triple-faulting (D-96).
+///
+/// Interrupts are enabled in the frame that is pushed, because a ring-3 thread
+/// that cannot be preempted is a ring-3 thread that owns the machine.
+///
+/// # Errors
+///
+/// See [`UserError`]. On success this never returns: the only way back is a
+/// trap.
+pub fn enter_user(entry: u64, stack_top: u64) -> UserError {
+    if !paging::is_active() {
+        return UserError::Inactive;
+    }
+    match paging::translate(entry) {
+        Some((_, flags)) if flags.contains(Flags::USER) && !flags.contains(Flags::NO_EXECUTE) => {}
+        _ => return UserError::EntryNotExecutable(entry),
+    }
+    if !stack_top.is_multiple_of(16) {
+        return UserError::StackMisaligned(stack_top);
+    }
+    // The page the first push lands in, which is below the top.
+    let first_push = stack_top.wrapping_sub(8);
+    match paging::translate(first_push) {
+        Some((_, flags))
+            if flags.contains(Flags::USER)
+                && flags.contains(Flags::WRITABLE)
+                && flags.contains(Flags::NO_EXECUTE) => {}
+        _ => return UserError::StackNotWritable(first_push),
+    }
+    if super::segment::kernel_stack() == 0 {
+        return UserError::NoKernelStack;
+    }
+
+    // SAFETY: the walks above establish exactly what `iretq` needs — an
+    // executable user mapping at `entry` and a writable user mapping under
+    // `stack_top` — in the tables this CPU is walking, with a ring-0 stack for
+    // the trap that brings it back.
+    unsafe { leave_for_user(entry, stack_top) }
+}
+
+/// Push a ring-3 frame and `iretq` into it.
+///
+/// # Safety
+///
+/// `entry` must be user-executable and `stack_top` user-writable in the live
+/// tables, and `RSP0` must name a mapped ring-0 stack.
+#[unsafe(naked)]
+unsafe extern "C" fn leave_for_user(entry: u64, stack_top: u64) -> ! {
+    naked_asm!(
+        // The frame `iretq` pops, top down: SS, RSP, RFLAGS, CS, RIP.
+        "push {user_data}",
+        "push rsi",
+        // Bit 1 is reserved and must be set; bit 9 is the interrupt flag, so
+        // ring 3 is preemptible from its first instruction.
+        "push 0x202",
+        "push {user_code}",
+        "push rdi",
+        // Nothing of the kernel's goes with it: a register left set is a
+        // pointer handed to ring 3.
+        "xor rax, rax",
+        "xor rbx, rbx",
+        "xor rcx, rcx",
+        "xor rdx, rdx",
+        "xor rsi, rsi",
+        "xor rdi, rdi",
+        "xor rbp, rbp",
+        "xor r8, r8",
+        "xor r9, r9",
+        "xor r10, r10",
+        "xor r11, r11",
+        "xor r12, r12",
+        "xor r13, r13",
+        "xor r14, r14",
+        "xor r15, r15",
+        "iretq",
+        user_data = const (super::segment::USER_DATA_BITS as u64),
+        user_code = const (super::segment::USER_CODE_BITS as u64),
+    )
 }
 
 /// Abandon the current stack and continue on `stack`, never returning.

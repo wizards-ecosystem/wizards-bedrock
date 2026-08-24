@@ -18,7 +18,7 @@ use super::vector;
 
 /// Route every vector to this module.
 pub(crate) fn init() {
-    interrupt::init(on_trap);
+    interrupt::init(on_trap, Some(vector::SYSCALL));
 }
 
 /// The kernel's response to every vector.
@@ -65,6 +65,16 @@ fn on_trap(frame: &TrapFrame) {
         // Deliberately not dismissed: a spurious interrupt is the APIC saying
         // it had nothing to deliver, so it never set an in-service bit and
         // dismissing one would retire a real interrupt underneath it.
+        // The one entry ring 3 has. Nothing is served yet: what is proved is
+        // that a thread can cross into user mode, come back through a gate
+        // meant for it, and be retired from the far side (D-96).
+        TrapCause::Interrupt(vector::SYSCALL) => {
+            LAST_SYSCALL.record(frame);
+            if !crate::thread::retire_from_trap(frame) {
+                panic!("a ring 3 thread called in and could not be retired");
+            }
+        }
+
         TrapCause::Interrupt(vector::SPURIOUS) => {
             SPURIOUS.fetch_add(1, Ordering::Relaxed);
         }
@@ -123,6 +133,15 @@ impl fmt::Display for Report<'_> {
 
         Ok(())
     }
+}
+
+/// What the last call from ring 3 looked like.
+static LAST_SYSCALL: Recorder = Recorder::new();
+
+/// The frame of the last call from ring 3.
+#[cfg(feature = "selftest")]
+pub(crate) fn last_syscall() -> Record {
+    LAST_SYSCALL.read()
 }
 
 /// What the last vector of one kind saw.

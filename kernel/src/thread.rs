@@ -83,6 +83,16 @@ pub(crate) fn boot_stack_layout() -> Option<StackLayout> {
     StackLayout::new(fault_stack_layout()?.end(), STACK_BYTES, GUARD_BYTES, 1)
 }
 
+/// Where a trap out of ring 3 lands.
+///
+/// The fourth window derived from the arena's end, and the last one that will
+/// be: per-thread `RSP0` replaces it in slice 7, when more than one thread may
+/// be in ring 3 (D-96).
+#[cfg(feature = "selftest")]
+pub(crate) fn user_trap_stack_layout() -> Option<StackLayout> {
+    StackLayout::new(boot_stack_layout()?.end(), STACK_BYTES, GUARD_BYTES, 1)
+}
+
 /// Why a thread could not be spawned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -658,6 +668,42 @@ fn park(context: &mut ThreadContext, leaving: State, until: Option<u64>) {
             interrupt::enable_and_halt();
             let _disabled = interrupt::disable();
         }
+    }
+}
+
+/// Take the trapping thread off the run queue for good, from trap context.
+///
+/// What a thread that has crossed into ring 3 and called back needs: it cannot
+/// `park`, because that wants a [`ThreadContext`] and trap context cannot mint
+/// one by construction (D-62). So this is `park`'s trap-side twin — mark the
+/// caller blocked with nothing that will ever wake it, and switch away at trap
+/// exit exactly as preemption does (D-54).
+///
+/// `false` if there is nobody to switch to, which cannot happen once the idle
+/// thread exists, or if `wost` refuses the switch.
+pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
+    let now = time::now_ns();
+    let (next, event) = {
+        let mut threads = THREADS.lock_leaf();
+        let current = task::current();
+        threads.charge(current, now);
+        threads.wake_due(now);
+        threads.park(current);
+        threads.threads[current].state = State::Blocked;
+        match threads.choose(current, false) {
+            Some(next) => {
+                threads.threads[next].state = State::Running;
+                threads.threads[next].started = now;
+                (Some(next), threads.next_event(next, now))
+            }
+            None => (None, None),
+        }
+    };
+
+    reschedule_timer(event);
+    match next {
+        Some(next) => task::switch_from_trap(next, frame).is_ok(),
+        None => false,
     }
 }
 

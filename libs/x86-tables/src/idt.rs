@@ -78,6 +78,33 @@ impl Gate {
         }
     }
 
+    /// An interrupt gate ring 3 may invoke with `int`.
+    ///
+    /// The same gate in every respect but its descriptor privilege level.
+    /// A gate at DPL 0 raises a general-protection fault when user code names
+    /// it, which is what every vector in this table should do — a device's
+    /// line is not a service. Exactly one gate is opened this way, and it is
+    /// the kernel's entry (D-96).
+    ///
+    /// Still an *interrupt* gate rather than a trap gate: the interrupt flag
+    /// is cleared on entry either way here, because a handler that could be
+    /// preempted before it has established a kernel stack discipline is the
+    /// hazard this kernel spent Phase 2 removing.
+    ///
+    /// # Panics
+    ///
+    /// As [`interrupt`](Self::interrupt).
+    pub const fn callable_from_user(handler: u64, selector: Selector, stack: u8) -> Self {
+        let mut gate = Self::interrupt(handler, selector, stack);
+        gate.attributes |= 0b11 << 5;
+        gate
+    }
+
+    /// The privilege level that may reach this gate with `int`.
+    pub const fn privilege(self) -> u8 {
+        (self.attributes >> 5) & 0b11
+    }
+
     /// The handler address, reassembled from its three fields.
     pub const fn handler_address(self) -> u64 {
         self.offset_low as u64 | (self.offset_middle as u64) << 16 | (self.offset_high as u64) << 32
@@ -151,5 +178,41 @@ mod tests {
     #[should_panic(expected = "seven entries")]
     fn a_gate_rejects_a_stack_outside_the_table() {
         let _ = Gate::interrupt(0x1000, KERNEL_CODE, 8);
+    }
+
+    /// A user-callable gate differs from an ordinary one by its privilege and
+    /// nothing else.
+    ///
+    /// The bit that lets ring 3 in is the only one that may change. A gate
+    /// that also became a trap gate, or lost its stack, would be a different
+    /// kind of entry wearing the same name — and it would work, which is what
+    /// makes it worth checking (D-96).
+    #[test]
+    fn a_user_callable_gate_differs_only_in_privilege() {
+        let selector = Selector::new(1, 0);
+        let ordinary = Gate::interrupt(0xffff_8000_0000_1234, selector, 0);
+        let callable = Gate::callable_from_user(0xffff_8000_0000_1234, selector, 0);
+
+        assert_eq!(ordinary.privilege(), 0, "an ordinary gate admits ring 3");
+        assert_eq!(callable.privilege(), 3);
+        assert_eq!(callable.handler_address(), ordinary.handler_address());
+        assert_eq!(callable.selector().bits(), ordinary.selector().bits());
+        assert_eq!(callable.interrupt_stack(), ordinary.interrupt_stack());
+        assert!(callable.is_present() && ordinary.is_present());
+
+        // And the two differ in exactly the two privilege bits.
+        let difference = callable.attributes ^ ordinary.attributes;
+        assert_eq!(
+            difference,
+            0b11 << 5,
+            "something other than privilege moved"
+        );
+    }
+
+    /// The missing gate admits nobody.
+    #[test]
+    fn the_missing_gate_is_not_user_callable() {
+        assert_eq!(Gate::MISSING.privilege(), 0);
+        assert!(!Gate::MISSING.is_present());
     }
 }

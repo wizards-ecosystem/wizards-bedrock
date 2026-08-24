@@ -32,6 +32,41 @@ pub struct TaskState {
 }
 
 impl TaskState {
+    /// The stack the CPU switches to when an interrupt raises privilege to
+    /// ring `level`.
+    ///
+    /// # Panics
+    ///
+    /// Above ring 2. There is no `RSP3`: the CPU never switches *to* ring 3.
+    pub const fn set_privilege_stack(&mut self, level: usize, top: u64) {
+        assert!(level < PRIVILEGE_STACKS, "there are three privilege stacks");
+        self.privilege_stacks[level] = top;
+    }
+
+    /// The stack for ring `level`.
+    ///
+    /// # Panics
+    ///
+    /// As [`set_privilege_stack`](Self::set_privilege_stack).
+    pub const fn privilege_stack(&self, level: usize) -> u64 {
+        assert!(level < PRIVILEGE_STACKS, "there are three privilege stacks");
+        self.privilege_stacks[level]
+    }
+
+    /// Byte offset of privilege-stack entry `level` inside the segment.
+    ///
+    /// Exists for the same reason the interrupt-stack one does: a targeted
+    /// eight-byte store rather than a rewrite of the whole structure, so a
+    /// trap arriving mid-update reads one stack or the other (D-95).
+    ///
+    /// # Panics
+    ///
+    /// As [`set_privilege_stack`](Self::set_privilege_stack).
+    pub const fn privilege_stack_offset(level: usize) -> usize {
+        assert!(level < PRIVILEGE_STACKS, "there are three privilege stacks");
+        size_of::<u32>() + level * size_of::<u64>()
+    }
+
     /// Byte offset of interrupt-stack entry `index` inside the segment.
     ///
     /// Exists so a caller can rewrite one entry rather than the whole
@@ -216,5 +251,53 @@ mod tests {
     #[test]
     fn the_interrupt_stack_offset_is_four_modulo_eight() {
         assert_eq!(TaskState::interrupt_stack_offset(1) % 8, 4);
+    }
+
+    /// The privilege stacks sit where the architecture puts them, and `RSP0`
+    /// is eight-byte aligned once the segment is placed four-mod-eight.
+    ///
+    /// `RSP0` is at offset 4 (SDM Vol. 3A figure 8-11), which is four-mod-eight
+    /// exactly as `IST1` is — so the same padding that makes one store sound
+    /// makes the other one sound too, and both facts are pinned here rather
+    /// than in the crate that depends on them (D-96).
+    #[test]
+    fn the_privilege_stacks_sit_where_the_manual_says() {
+        assert_eq!(TaskState::privilege_stack_offset(0), 4);
+        assert_eq!(TaskState::privilege_stack_offset(1), 12);
+        assert_eq!(TaskState::privilege_stack_offset(2), 20);
+        assert_eq!(TaskState::privilege_stack_offset(0) % 8, 4);
+
+        assert_eq!(
+            core::mem::offset_of!(TaskState, privilege_stacks),
+            4,
+            "the compiler places the privilege stacks somewhere else"
+        );
+        for level in 0..PRIVILEGE_STACKS {
+            assert_eq!(
+                TaskState::privilege_stack_offset(level),
+                core::mem::offset_of!(TaskState, privilege_stacks) + level * 8
+            );
+        }
+    }
+
+    /// A privilege stack round-trips, and the three are independent.
+    #[test]
+    fn privilege_stacks_do_not_share_a_slot() {
+        let mut task_state = TaskState::new();
+        task_state.set_privilege_stack(0, 0x1111_0000);
+        task_state.set_privilege_stack(2, 0x3333_0000);
+        assert_eq!(task_state.privilege_stack(0), 0x1111_0000);
+        assert_eq!(task_state.privilege_stack(1), 0, "a neighbour was written");
+        assert_eq!(task_state.privilege_stack(2), 0x3333_0000);
+
+        // And they do not overlap the interrupt stacks.
+        assert_eq!(task_state.interrupt_stack(1), 0);
+    }
+
+    /// There is no stack for ring 3, because the CPU never switches to it.
+    #[test]
+    #[should_panic(expected = "three privilege stacks")]
+    fn ring_three_has_no_privilege_stack() {
+        let _ = TaskState::privilege_stack_offset(3);
     }
 }

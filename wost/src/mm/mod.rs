@@ -298,6 +298,39 @@ impl Frame {
         self.fill(0)
     }
 
+    /// Write `bytes` at `offset` within the frame.
+    ///
+    /// The one way to put chosen content into a frame from safe code, and the
+    /// reason it exists: loading a program means copying its image somewhere,
+    /// and the kernel may not hold a raw pointer to do it (D-13). Written
+    /// through the direct map, so the frame need not be mapped anywhere else
+    /// yet — which is what lets a page be filled *before* it is mapped
+    /// read-only and executable, rather than mapped writable and then
+    /// demoted (D-96).
+    ///
+    /// `false` if the write would run past the frame, or if the direct map
+    /// cannot reach it.
+    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
+        let Some(end) = offset.checked_add(bytes.len()) else {
+            return false;
+        };
+        if end > FRAME_SIZE as usize {
+            return false;
+        }
+        let Some(base) = direct_map_pointer(self.address()) else {
+            return false;
+        };
+        // SAFETY: the bounds check above places `offset` inside the frame, so
+        // this stays within the allocation `direct_map_pointer` vouched for.
+        let destination = unsafe { base.add(offset) };
+        // SAFETY: `self` owns this frame — the allocator hands out one handle
+        // per frame and this takes `&mut self` — and `bytes` ends inside it,
+        // so the destination is a live range nothing else can name. The two
+        // cannot overlap: `bytes` is the caller's and this is a frame.
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
+        true
+    }
+
     /// Whether every byte of the frame is zero, or `None` if the direct map
     /// cannot reach it.
     ///
@@ -384,6 +417,36 @@ impl Segment {
     /// Fill the run with zeros.
     pub fn zero(&mut self) -> bool {
         self.fill(0)
+    }
+
+    /// Write `bytes` at `offset` within the run.
+    ///
+    /// The one way to put chosen content into frames from safe code, and what
+    /// loading a program is made of: the kernel may not hold a raw pointer
+    /// (D-13), and the image has to be in the pages *before* they are mapped
+    /// read-only and executable rather than mapped writable and demoted
+    /// afterwards (D-96).
+    ///
+    /// `false` if the write would run past the run, or if the direct map
+    /// cannot reach it.
+    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
+        let Some(end) = offset.checked_add(bytes.len()) else {
+            return false;
+        };
+        if end as u64 > self.len() {
+            return false;
+        }
+        let Some(base) = direct_pointer(self.address(), self.len()) else {
+            return false;
+        };
+        // SAFETY: the bounds check above places `offset` inside the run, which
+        // `direct_pointer` confirmed the map covers in full.
+        let destination = unsafe { base.add(offset) };
+        // SAFETY: `self` owns every frame in the run — one handle per run, and
+        // this takes `&mut self` — and `bytes` ends inside it. The two cannot
+        // overlap: `bytes` is the caller's and this is the run.
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
+        true
     }
 }
 

@@ -35,6 +35,8 @@ mod selftest;
 mod theme;
 mod thread;
 mod time;
+#[cfg(feature = "selftest")]
+mod user;
 mod wait;
 
 use core::fmt::Write;
