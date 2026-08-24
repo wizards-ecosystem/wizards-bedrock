@@ -30,6 +30,7 @@ CHECK TASKS:
     test              run the host test suite
     test-boot         boot a self-test kernel in QEMU and require its verdict
     boot-check        boot the shipped kernel and require it to settle
+    degraded-check    boot without x2apic and require the kernel to report it
     verify-vendor     check vendored binaries against boot/limine/CHECKSUMS
     ci                every check above, in the order that fails fastest
 
@@ -82,6 +83,8 @@ pub enum Task {
     TestBoot(Profile),
     /// Boot the shipped kernel and require it to settle without panicking.
     BootCheck(Profile),
+    /// Boot on a machine with no x2APIC and require the kernel to report it.
+    DegradedCheck(Profile),
     /// Check vendored binaries against their recorded digests.
     VerifyVendor,
     /// Everything CI runs.
@@ -170,6 +173,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         "test" => Ok(Task::Test),
         "test-boot" => Ok(Task::TestBoot(profile)),
         "boot-check" => Ok(Task::BootCheck(profile)),
+        "degraded-check" => Ok(Task::DegradedCheck(profile)),
         "verify-vendor" => Ok(Task::VerifyVendor),
         "ci" => Ok(Task::Ci),
         "clean" => Ok(Task::Clean(if all {
@@ -291,6 +295,7 @@ mod tests {
             "test",
             "test-boot",
             "boot-check",
+            "degraded-check",
             "verify-vendor",
             "ci",
             "clean",

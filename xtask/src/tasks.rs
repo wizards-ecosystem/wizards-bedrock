@@ -119,6 +119,12 @@ pub fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
     qemu::run_boot_check(paths, &image, BOOT_SETTLE)
 }
 
+/// Boot on a machine missing x2APIC, and require the kernel to say so.
+pub fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
+    let image = image::build(paths, profile, &[])?;
+    qemu::run_degraded_check(paths, &image, BOOT_SETTLE)
+}
+
 /// Seconds of running after the kernel says it has settled, so one that dies
 /// on its first interrupt is still caught.
 const BOOT_SETTLE: Duration = Duration::from_secs(5);
@@ -135,6 +141,9 @@ pub fn ci(paths: &Paths) -> Result<()> {
     test_boot(paths, Profile::Dev)?;
     // The only step that runs the image the disk gets.
     boot_check(paths, Profile::Release)?;
+    // And the only one that runs it on a machine it cannot fully use: every
+    // other boot has every feature, so nothing else exercises a refusal (D-90).
+    degraded_check(paths, Profile::Release)?;
     println!("[xtask] ci passed");
     Ok(())
 }

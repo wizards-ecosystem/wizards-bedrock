@@ -701,6 +701,7 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
         Arc::clone(&settled),
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
+        None,
     );
 
     // Reach the idle loop, prove a fresh device interrupt wakes it, then keep
@@ -735,6 +736,92 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
 
 /// How long to allow for a cold start before the marker must have appeared.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// A processor with no x2APIC, and none of the protection bits `-cpu max` has.
+///
+/// The last `-cpu` wins, so this overrides [`MACHINE`]'s.
+const DEGRADED_CPU: [&str; 2] = ["-cpu", "qemu64,-x2apic"];
+
+/// What the kernel must say when it finds no x2APIC.
+///
+/// The refusal D-33 chose and D-90 made a gate check: xAPIC needs page tables
+/// that do not exist when the APIC is brought up, so there is no fallback —
+/// only a diagnosis.
+const NO_X2APIC_MARKER: &str = "no x2apic mode";
+
+/// Boot on a machine the kernel cannot fully use, and require it to say so.
+///
+/// The negative half of D-32 and D-33: every other boot in the gate runs on
+/// `-cpu max`, where every feature is present, so nothing exercises what the
+/// kernel does when one is missing. A precondition that is only ever met is
+/// indistinguishable from one that is never checked (D-90).
+///
+/// The bar is deliberately not "it works": it is that the kernel *reports* the
+/// missing feature and still reaches its steady state, rather than
+/// triple-faulting on a register that is not there.
+pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
+    let qemu_dir = locate()?;
+    let code = firmware(&qemu_dir, CODE_FIRMWARE)?;
+    let vars_template = firmware(&qemu_dir, VARS_FIRMWARE)?;
+    let vars = paths.efi_vars();
+    std::fs::copy(&vars_template, &vars)
+        .with_context(|| format!("copying {} to {}", vars_template.display(), vars.display()))?;
+
+    let emulator = qemu_dir.join(exe_name("qemu-system-x86_64"));
+    println!("[xtask] booting a kernel with no x2apic");
+
+    let mut child = Command::new(&emulator)
+        .args(MACHINE)
+        .args(DEGRADED_CPU)
+        .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
+        .args(drive(&format!(
+            "if=pflash,format=raw,readonly=on,file={}",
+            code.display()
+        )))
+        .args(drive(&format!(
+            "if=pflash,format=raw,file={}",
+            vars.display()
+        )))
+        .args(drive(&format!("format=raw,file={}", image.display())))
+        .stdout(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("could not launch {}", emulator.display()))?;
+
+    let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
+    let settled = Arc::new(AtomicBool::new(false));
+    let panicked = Arc::new(AtomicBool::new(false));
+    let serial_failed = Arc::new(AtomicBool::new(false));
+    let refused = Arc::new(AtomicBool::new(false));
+    let forwarder = watch_serial(
+        stdout,
+        Arc::clone(&settled),
+        Arc::clone(&panicked),
+        Arc::clone(&serial_failed),
+        Some((NO_X2APIC_MARKER, Arc::clone(&refused))),
+    );
+
+    let outcome = watch(
+        &mut child,
+        &panicked,
+        &serial_failed,
+        BOOT_TIMEOUT,
+        Some(&settled),
+    )
+    .and_then(|()| watch(&mut child, &panicked, &serial_failed, settle, None));
+
+    let _ = child.kill();
+    let serial_outcome = finish_boot_serial(forwarder);
+
+    serial_outcome?;
+    outcome?;
+    if !refused.load(Ordering::Acquire) {
+        bail!(
+            "the kernel settled without reporting the missing x2apic              ({NO_X2APIC_MARKER:?}): the precondition is not being checked"
+        );
+    }
+    println!("[xtask] degraded kernel reports the missing x2apic and settles");
+    Ok(())
+}
 
 /// Watch the serial flags for `window`, failing on a panic or an early exit.
 ///
@@ -775,6 +862,7 @@ fn watch_serial(
     settled: Arc<AtomicBool>,
     panicked: Arc<AtomicBool>,
     serial_failed: Arc<AtomicBool>,
+    extra: Option<(&'static str, Arc<AtomicBool>)>,
 ) -> JoinHandle<Result<()>> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
@@ -800,6 +888,11 @@ fn watch_serial(
             let _ = std::io::stdout().flush();
             if text.contains(SETTLED_MARKER) {
                 settled.store(true, Ordering::Release);
+            }
+            if let Some((marker, seen)) = extra.as_ref()
+                && text.contains(marker)
+            {
+                seen.store(true, Ordering::Release);
             }
             if text.contains(PANIC_MARKER) {
                 panicked.store(true, Ordering::Release);

@@ -52,6 +52,7 @@ pub fn run(task: Task) -> Result<()> {
         Task::Test => tasks::test(&paths),
         Task::TestBoot(profile) => tasks::test_boot(&paths, profile),
         Task::BootCheck(profile) => tasks::boot_check(&paths, profile),
+        Task::DegradedCheck(profile) => tasks::degraded_check(&paths, profile),
         Task::VerifyVendor => vendor::verify(&paths),
         Task::Ci => tasks::ci(&paths),
         Task::Clean(scope) => tasks::clean(&paths, scope),
