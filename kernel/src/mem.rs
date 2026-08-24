@@ -8,10 +8,13 @@ use wost::arch::current::cpu;
 use wost::arch::current::paging::{self, AddressSpace, MapError};
 use wost::boot::{self, DirectMap, HandoffError, ImageAddress, MemoryKind, MemoryMap};
 use wost::mm;
+use wost::sync::SpinLock;
 use x86_paging::Flags;
 
 use crate::acpi::Interrupts;
 use crate::arch::current::ioapic::IoApic;
+#[cfg(feature = "selftest")]
+use crate::thread::ThreadContext;
 use crate::{debug, info, thread, warn};
 
 /// Bytes in a page frame.
@@ -47,6 +50,30 @@ pub(crate) fn init(map: Result<MemoryMap, HandoffError>, direct: Result<DirectMa
         return;
     }
     info!("memory: {report}");
+}
+
+/// The kernel's own address space, kept live after the switch.
+///
+/// D-45 made `activate` consume the space, so everything the kernel would ever
+/// map had to be decided while the tables were still being built. D-86 ended
+/// that; this is where the space lives afterwards.
+static SPACE: SpinLock<Option<AddressSpace>> = SpinLock::new(None);
+
+/// Run `f` against the kernel's live address space, if there is one.
+///
+/// A token-bearing acquisition (D-85): `f` is arbitrary, so this is not a leaf,
+/// and the borrow means nothing that can block is reachable from inside it. The
+/// frame allocation a new table needs is a leaf underneath, which is exactly
+/// the nesting the two levels exist to make sound.
+///
+/// Reached only by the boot-time check so far, so it exists only where that
+/// does; its first shipped caller is the stack that arrives with its thread.
+#[cfg(feature = "selftest")]
+pub(crate) fn with_active_space<T>(
+    context: &mut ThreadContext,
+    f: impl FnOnce(&mut AddressSpace) -> T,
+) -> Option<T> {
+    SPACE.lock(context).as_mut().map(f)
 }
 
 /// Log every region the bootloader described.
@@ -148,13 +175,18 @@ pub(crate) fn init_paging(
     // Before the switch: the CR3 load is the flush the PAT rewrite needs.
     let write_combining = cpu::enable_write_combining();
 
-    match paging::activate(space) {
+    match paging::activate(&mut space) {
         Ok(()) => info!("paging: running on our own tables"),
         Err(reason) => {
             warn!("paging: refused to switch: {reason}");
             return None;
         }
     }
+
+    // Kept rather than dropped, which is the whole of D-86: the tables stay
+    // reachable, so a mapping can arrive with the thread or the process that
+    // needs it instead of being guessed while they are being built.
+    *SPACE.lock_leaf() = Some(space);
 
     if let Some(arena) = arena {
         match thread::init(arena) {

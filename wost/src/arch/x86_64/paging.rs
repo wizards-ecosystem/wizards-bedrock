@@ -377,8 +377,8 @@ impl AddressSpace {
                     return Err(MapError::Conflict(virtual_address));
                 }
                 // SAFETY: as above. Nothing else writes these tables: `map`
-                // takes `&mut self`, and `activate` consumes the space so no
-                // mapping can follow the switch.
+                // takes `&mut self`, and the check above means a live mapping
+                // is never re-pointed, only an absent one filled in.
                 unsafe { slot.write_volatile(entry) };
                 return Ok(());
             }
@@ -453,7 +453,7 @@ static ACTIVE_ROOT: AtomicU64 = AtomicU64::new(0);
 ///
 /// [`ActivateError`] naming which address the new tables would have lost, or
 /// [`ActivateError::AlreadyActive`] on a second call.
-pub fn activate(space: AddressSpace) -> Result<(), ActivateError> {
+pub fn activate(space: &mut AddressSpace) -> Result<(), ActivateError> {
     /// Headroom below the stack pointer that must also be mapped, so the
     /// first push after the switch has somewhere to go.
     const STACK_HEADROOM: u64 = PAGE_SIZE;
@@ -515,11 +515,11 @@ pub fn activate(space: AddressSpace) -> Result<(), ActivateError> {
     unsafe { cpu::set_page_table_base(space.root) };
     ACTIVE_ROOT.store(space.root, Ordering::Release);
 
-    // `space` is dropped here, and that is correct: an `AddressSpace` owns no
-    // frame it would give back. Its tables were leaked when they were taken,
-    // because nothing unmaps and a table freed under a live `CR3` is the one
-    // bug this design must not permit. Taking the space by value is about the
-    // *caller* — it no longer has anything to call `map` on.
+    // The caller keeps the space, and may map into it from here on. What
+    // makes that sound is not this signature but `set`: a present entry
+    // accepts only an identical rewrite, so no mapping the running kernel
+    // stands on can be re-pointed, and a mapping that was not present cannot
+    // be one the CPU has cached (D-86).
     Ok(())
 }
 

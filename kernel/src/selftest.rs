@@ -24,7 +24,7 @@ use wost::arch::current::{apic, interrupt, pic, port, segment};
 use wost::boot::{self, FramebufferInfo, Rgb};
 use wost::mm;
 use wost::sync::{Once, SpinLock};
-use x86_paging::Flags;
+use x86_paging::{Flags, PAGE_SIZE};
 use x86_tables::exception;
 
 use crate::arch::current::debug_exit;
@@ -32,7 +32,7 @@ use crate::arch::current::trap::{self, Record};
 use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
 use crate::thread::ThreadContext;
-use crate::{dev, error, info, input, thread, time};
+use crate::{dev, error, info, input, mem, thread, time};
 
 /// A frame's handle releases it, and the allocator notices.
 ///
@@ -217,14 +217,62 @@ fn firmware_reads_are_bounded() -> bool {
 
 /// A second switch is refused.
 ///
-/// The property that makes `AddressSpace::map` safe: nothing can add a mapping
-/// to a table the CPU is already walking, because nothing can install a second
-/// table to map into.
+/// One `CR3` owner, still: the tables the CPU walks are the ones this kernel
+/// built, and no second set can displace them. What this *no longer* claims is
+/// that it is why `map` is safe — that was true while `activate` consumed the
+/// space, and D-86 replaced it with the property `set` actually enforces.
 fn a_second_switch_is_refused() -> bool {
     match AddressSpace::new() {
-        Ok(space) => paging::activate(space) == Err(ActivateError::AlreadyActive),
+        Ok(mut space) => paging::activate(&mut space) == Err(ActivateError::AlreadyActive),
         Err(_) => false,
     }
+}
+
+/// A mapping added after the switch lands in the tables the CPU is walking.
+///
+/// The capability D-86 opened, and the one Phase 5 is blocked on: until now
+/// `activate` consumed the address space, so stacks, the device window and the
+/// heap's backing all had to be decided while the tables were still being
+/// built (D-45, D-52). Mapping into the *running* space is what lets a stack
+/// arrive with the thread that needs it, and a memory object with the process.
+///
+/// `translate` is evidence rather than a read-back: it walks the physical
+/// tables through the direct map, so a `map` that wrote nothing, or wrote into
+/// a table `CR3` does not point at, fails here. What it cannot show is the
+/// TLB, and the architecture is what covers that — a translation that was not
+/// present was not cached, so no invalidation is owed for a new mapping.
+/// Touching the page to prove it would need a raw write, which this crate may
+/// not contain (D-13); the safe type for reaching a mapping arrives with
+/// memory objects in slice 7, and this check grows a second half there.
+fn a_mapping_added_after_the_switch_is_live() -> bool {
+    /// A page well clear of the direct map, the stack arena and the device
+    /// window, so a failure cannot land on anything the kernel is using.
+    const PROBE: u64 = 0xffff_fd00_0000_0000;
+
+    let unmapped_before = paging::translate(PROBE).is_none();
+
+    let Some(frame) = mm::allocate_zeroed() else {
+        return false;
+    };
+    let physical = frame.address();
+
+    let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+    let mapped = mem::with_active_space(&mut context(), |space| {
+        space.map(PROBE, physical, PAGE_SIZE, wanted)
+    });
+    if !matches!(mapped, Some(Ok(()))) {
+        return false;
+    }
+
+    let translated = paging::translate(PROBE) == Some((physical, wanted.union(Flags::PRESENT)));
+    let on_the_live_root = paging::active_root() == cpu::page_table_base();
+
+    // The frame stays mapped and is deliberately not returned: nothing unmaps
+    // yet, so freeing it would hand a live mapping's page back to the
+    // allocator. That is the debt the next slice pays.
+    core::mem::forget(frame);
+
+    unmapped_before && translated && on_the_live_root
 }
 
 /// A mapping cannot be silently re-pointed; an identical rewrite is the one
@@ -1084,7 +1132,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 80;
+const EXPECTED_CHECKS: usize = 81;
 
 impl Report {
     const fn new() -> Self {
@@ -1163,6 +1211,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the direct map is writable and never executable",
         the_direct_map_is_not_executable(),
+    );
+    report.check(
+        "a mapping added after the switch is live",
+        a_mapping_added_after_the_switch_is_live(),
     );
     report.check(
         "a second address space is refused",
