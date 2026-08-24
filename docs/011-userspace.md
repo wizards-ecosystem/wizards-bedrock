@@ -82,14 +82,14 @@ message shape. mlibc needs an ABI to sit on.
 | 1 | This charter: the handle-table layout and lifetime rules, the queue layout and wakeup semantics, the signal answer, and the ADRs that cost no code | ✅ 2026-08-24 |
 | 2 | The lock discipline in the borrow checker (D-69): `SpinLock::lock` borrows the context, and the leaf acquisition a `Drop` can take | ✅ 2026-08-24 |
 | 3 | The address space that grows: two-way mapping, mappings that carry their evidence, unmap returning a flush token, the double-fault stack guarded | ✅ 2026-08-24 |
-| 4 | Trap entry, FRED-shaped: `libs/trap-cause` and table dispatch, trap stacks as an enum, the boot thread's own guarded stack, `VERW` and eIBRS, x2APIC as a checked precondition, the Limine base-revision-5 bump | |
-| 5 | Ring 3: user descriptors, `syscall`/`sysret`, `arch::percpu` and `swapgs`, the SMAP copy guard, `libs/xstate` and eager compacted `XSAVES` | |
+| 4 | Trap entry, FRED-shaped: `libs/trap-cause` and table dispatch, the boot thread's own guarded stack, eIBRS and the speculation report, x2APIC as a checked precondition | ✅ 2026-08-24 |
+| 5 | Ring 3: user descriptors, `syscall`/`sysret`, `arch::percpu` and `swapgs`, the SMAP copy guard, `VERW` on the way out, trap stacks as an enum, the XSAVE table in `libs/x86-cpuid` | |
 | 6 | The handle table: `libs/handle-space`, rights in one `u32`, a refcounted table, the object header, per-process quota | |
 | 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, `UFrame`, stacks that arrive with their thread, two processes, exactly one handle each at spawn, and `THREADS` split into a thread table and a run queue | |
 | 8 | Channels: bytes and handles, attenuate-on-send, rights declared per field with no defaults | |
 | 9 | The async queue ABI: the model before the protocol, `libs/ring-proto` under shuttle and proptest, reservation backpressure, exactly one terminal completion | |
 | 10 | The stub mlibc sysdep (D-74), on a vendored clang | |
-| 11 | Phase close: the VMware boot (D-18), the adversarial audit (D-77), the roadmap and this file's closing section | |
+| 11 | Phase close: the VMware boot (D-18), the Limine base-revision-5 bump, the adversarial audit (D-77), the roadmap and this file's closing section | |
 
 ## The handle table
 
@@ -554,3 +554,79 @@ unmapped — that check is about the mapping being live, and it costs four pages
 for the life of a boot. `unmap` frees no intermediate page tables, so a space
 that maps and unmaps repeatedly keeps its tables; nothing does that yet, and the
 first thing that will is slice 7.
+
+## Slice 4 — trap entry, FRED-shaped (2026-08-24)
+
+Recorded as built, per the charter above.
+
+**The decode is one place now** (D-81's shape, `libs/trap-cause`). The handler
+matched on a raw vector number, which spreads the architecture's meaning across
+every arm that tests one — and it threw the page-fault error code away
+entirely, so a report could say *where* a fault happened but never *why*. A
+missing mapping, a refused one, an instruction fetch and a user access all
+looked identical. They do not now.
+
+The crate is host-tested over all 256 vectors, and its cross-check against
+`x86-tables` found a real gap on its first run: vector 28, hypervisor
+injection, had no name while 29 and 30 did. Two tables of the same thing had
+drifted, and the test that noticed is what keeps them together.
+
+**The gate boots a machine the kernel cannot fully use** (D-90). All three
+kernels D-65 added run on `-cpu max`, where every feature is present — so every
+precondition this kernel checks had only ever been met, which is
+indistinguishable from never checking one. A fourth boot runs on
+`-cpu qemu64,-x2apic` and requires the kernel to name the missing feature and
+still reach its prompt. D-33 left no fallback to test, so the diagnosis *is* the
+behaviour. The kernel already degraded correctly; what was missing was the
+evidence, and breaking it proved the gap was real.
+
+**QEMU decided where the speculation code lives** (D-91). D-81 wanted an eIBRS
+write at boot and `RDCL_NO` recorded as the reason KPTI is declined. TCG does
+not emulate `IA32_ARCH_CAPABILITIES` — asked directly, with two CPU models —
+so the branch that enables enhanced IBRS cannot run here at all. An unexercised
+branch inside the memory-safety TCB is the worst place to put one, so the
+decisions went to `libs/x86-cpuid` where synthetic capability words drive them,
+and `wost` kept a `cpuid` and two MSR accesses. Silence is not safety there:
+a processor with no capability word is a different value from one reporting all
+clear, because it is the majority case and the wrong answer for it.
+
+**And the last stack got its guard** (D-92). It could not be guarded where it
+was — the bootloader's stack lives inside the direct map, which is
+two-megabyte on purpose and which D-88 refuses to split — so the boot thread
+leaves it. `kernel_main` ends at the switch. The primitive is safe because its
+argument is the proof: `map_stack` maps the region and then *verifies the guard
+is absent*, and no caller could have told from the return value.
+
+The alignment had history. The continuation is entered by `jmp`, so nothing
+pushes a return address, and the eight bytes the ABI expects come off at the
+load — the same off-by-one word D-76 found in the fabricated first frame, where
+it was symptomless without SSE and invisible to every register check.
+
+**`002`'s security baseline now has no exceptions.** Every stack this kernel
+runs on has an unmapped page beneath it, and each has a check that goes red
+without it. `000`'s table says so too.
+
+**Four breaks, all red**: a fault reporting a vector that is not its own, the
+two vector tables drifting apart, the x2APIC refusal being swallowed, and the
+boot thread declining to move. Eighty-six checks, and the gate boots four
+kernels.
+
+**Three of this slice's items moved, each because it has no caller yet.**
+
+- **`VERW` on exit-to-user → slice 5.** D-81 paired it with eIBRS as a
+  one-liner, but one is a boot-time MSR write and the other is an instruction
+  on a return path this kernel does not have until ring 3. `libs/x86-cpuid`
+  already decodes the `MDS_NO` bit that gates it.
+- **Trap stacks as an enum → slice 5.** There is exactly one IST user, and an
+  enum with one variant is not an abstraction (`005`). Ring 3 is what adds the
+  second.
+- **The Limine base-revision-5 bump → slice 11.** It retires the
+  invariant-TSC warning and guarantees the EFI system table stays mapped, but
+  it means replacing a checksum-pinned bootloader binary (D-25) — a deliberate
+  change, and one whose only failure mode is not booting. It belongs with the
+  phase close, where a VMware boot is already being taken.
+
+**Still owed by this slice's neighbours.** `ENDBR64` on the indirect targets in
+`global_asm!` is written down (D-81) and not written: nothing enables kernel
+IBT, so today it would be an instruction with no effect and no way to tell if
+it were wrong. It arrives with the first thing that turns IBT on.
