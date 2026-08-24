@@ -61,7 +61,7 @@ wake-from-interrupt, which needs the preemption-era lock discipline settled.
 | 2 | The scheduler: `libs/eevdf` arithmetic host-tested, EEVDF policy behind a separable seam with round-robin fallback, timer preemption at trap exit, the lock order and the context token | ✅ 2026-08-22 |
 | 3 | Tickless: one-shot APIC programming, sleep queue and `sleep_ms`, the 100 Hz tick retired, uptime re-based | ✅ 2026-08-23 |
 | 4 | Blocking: `WaitQueue`, the keyboard read blocks a thread and the interrupt wakes it, idle becomes the idle thread, D-34's latency position taken | ✅ 2026-08-23 |
-| 5 | Phase close: VMware boot (D-18), roadmap and docs updated, this file's closing section | |
+| 5 | Phase close: VMware boot (D-18), the soundness audit (D-76), roadmap and docs updated, this file's closing section | ✅ 2026-08-23 |
 
 ## Decisions the phase must make (with their tensions)
 
@@ -152,14 +152,14 @@ reader wake — not a poll, which is the shape D-49 caught lying.
 - `wost/src/arch/x86_64/task.rs` — new: the saved context, the naked
   switch, the entry trampoline. Raw `rsp` manipulation is TCB (D-13).
 - `wost/src/arch/x86_64/paging.rs` — grows the stack-arena mapping,
-  built before `activate` like everything else; the `KernelStack` handle
+  built before `activate` like everything else; the `StackArena` handle
   follows `DeviceMapping`'s not-`Copy`-not-`Clone` precedent (D-49).
 - `libs/stack-layout`, `libs/eevdf`, `libs/timebase` — new host-tested
   crates; each joins `members`, `default-members`,
   `[workspace.dependencies]`, and `HOST_PACKAGES` in `xtask/src/paths.rs`.
-- `kernel/src/thread.rs`, `kernel/src/sched.rs` — new, safe code: the TCB
-  table, spawn/yield/exit, the ready list, the policy seam. Scheduling
-  policy is arithmetic, and arithmetic is the kernel's (D-43's pattern).
+- `kernel/src/thread.rs` — new, safe code: the TCB table, spawn/yield/exit,
+  the ready list, the policy seam. The `sched.rs` this line once promised
+  never existed: policy went to `libs/eevdf` and the seam stayed here.
 - `kernel/src/mem.rs` — `init_paging` maps the arena; the one place that
   knows how many threads the boot-time decision bought.
 - `kernel/src/arch/x86_64/trap.rs` — the TIMER arm grows the preemption
@@ -406,3 +406,28 @@ accumulating bitmasks instead. Sixty-nine checks on the machine.
 **Still owed.** A wait with a timeout, and a wait on two queues; neither has
 a caller yet. Slice 5 is the phase close: a VMware boot (D-18), and the
 roadmap.
+
+## Slice 5 — the phase close (2026-08-23)
+
+**The VMware boot settled** (D-18): the shipped kernel reached its keyboard
+prompt on VMware Workstation at 5 ms of uptime, with the TSC advertised
+invariant — the one machine where the calibration warning goes quiet. The
+same evening the gate ran its three boots clean, and four consecutive
+self-test boots shook out no flakes.
+
+**The close-out audit became D-76.** Asking D-13's question adversarially —
+could *any* safe caller break `wost`, not just this kernel — found five holes,
+one of them this phase's own: the fabricated first frame was a word short, so
+every spawned thread ran its whole life with `rsp` shifted eight from the
+ABI's promise. Symptomless without SSE, invisible to the register checks, and
+caught only by asking the machine where it actually put a sixteen-byte local.
+The frame grew its padding word, and `a thread starts aligned` now stands
+where the gap was. The other four, and the residue deliberately left for
+Phase 5's memory objects, are D-76's record. Seventy-five checks on the
+machine.
+
+**What the phase leaves open**, besides D-76's residue: a wait with a timeout
+and a wait on two queues (above); the boot and double-fault stacks are still
+unguarded, owed to Phase 5's stack story alongside CET's second region
+(`010` §10); and the weight plumbing beyond `spawn_weighted`, which waits for
+a caller with an opinion.

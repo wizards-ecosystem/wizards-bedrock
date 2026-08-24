@@ -67,6 +67,11 @@ reference — not followed linearly). Docs are numbered in creation order.
    still owed. Memory objects move to Phase 5 with D-44's untyped decision.
    Slice table in `007-memory.md`*
 4. Multitasking — kernel threads, EEVDF-style scheduler, tickless idle
+   ✅ (2026-08-23) — *threads and the naked switch, the EEVDF seam over
+   `libs/eevdf` 2026-08-22; tickless (the counter is the clock, the timer an
+   alarm), sleeping, blocking on a wait queue, the idle thread, and D-34's
+   latency debt paid 2026-08-23; closed by a settled VMware boot and the
+   D-76 soundness audit. Slice table in `009-multitasking.md`*
 5. Userspace — ring 3, **handle table + rights**, spawn, ELF loading,
    channels, **async queue ABI**, initrd. Closes with a **stub mlibc sysdep**
    (D-74): not to run software, but to prove a POSIX libc can sit on this ABI

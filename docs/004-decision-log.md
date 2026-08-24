@@ -28,10 +28,11 @@ lineage (os.phil-opp.com) and the rust-osdev crate ecosystem are Rust; the
 borrow checker eliminates the bug class (UAF, data races) that is hardest
 to debug in ring 0; Linux and Windows both accept Rust for new kernel
 code. Post-hoc, the research pass strengthened this: Asterinas (USENIX
-ATC'25, verified) demonstrates a Rust kernel with a ~14% memory-safety TCB
-at Linux-parity single-core performance, and its authors' verified lesson
-is that safety must be designed in clean-slate — exactly this project's
-position. C++ remains welcome in userspace later.
+ATC'25) demonstrates a Rust kernel with a small memory-safety TCB at
+Linux-parity single-core performance — its headline numbers are
+unreplicated (D-71, `010` §1), but its lesson that safety must be designed
+in clean-slate is exactly this project's position. C++ remains welcome in
+userspace later.
 
 **Consequences.** Isaac learns Rust alongside OS concepts (slower start,
 compounding payoff). Stable-channel discipline occasionally constrains
@@ -322,10 +323,13 @@ other kernel crate (scheduler, VFS, WizFS, network, drivers) is
 `#![forbid(unsafe_code)]` safe Rust written against `wost`'s safe
 abstractions.
 
-**Rationale.** Verified: this yields a microkernel-sized memory-safety
-TCB (~14% in Asterinas vs 43–66% in Tock/Theseus/RedLeaf) at
-Linux-parity single-core performance; the authors' verified lesson is
-that safe MMIO/port/DMA abstractions must exist from day one.
+**Rationale.** As published: a microkernel-sized memory-safety TCB (~14%
+in Asterinas vs 43–66% in Tock/Theseus/RedLeaf) at Linux-parity
+single-core performance; the authors' lesson is that safe MMIO/port/DMA
+abstractions must exist from day one. D-71 retracted the "Verified" label
+those numbers carried — no independent replication exists — which is why
+this ADR is Provisional; the containment *property* is verified on this
+codebase, the published *numbers* are not.
 
 **Consequences.** The existing Phase-0 kernel gets restructured into
 `wost` + service crates before Phase 2 lands significant code. Safe DMA
@@ -1682,9 +1686,10 @@ decision, and LASS, whose whole premise is a hard user/kernel address split
 
 **Consequences.** D-12's KASLR line remains outstanding and is now the only
 part of the security baseline still owed. `001-boot.md`'s known limitation
-stands. W^X, NX, SMEP, SMAP, UMIP, guard pages and zero-on-allocate are all
-done, so this is the last one — which is itself an argument for not letting it
-drift much further.
+stands. W^X, NX, SMEP, SMAP, UMIP, zero-on-allocate and thread-stack guard
+pages (D-52; the boot and IST stacks wait on Phase 5) are all done, so this
+is the last one — which is itself an argument for not letting it drift much
+further.
 
 ---
 
@@ -2129,7 +2134,7 @@ safe point (another state to keep consistent); a switch from inside the
 timer's handler, gated on whether the interrupted code could be interrupted.
 
 **Decision.** The tick handler dismisses the interrupt and then calls
-`thread::preempt` with the trap frame. It switches only if the frame's
+`thread::reschedule` with the trap frame. It switches only if the frame's
 interrupt flag was set. That test is free and exact: D-34 clears the flag
 while any lock is held, and the scheduler itself clears it from decision to
 switch, so every critical section in the kernel is unpreemptible without a
@@ -2755,6 +2760,8 @@ that simply forgot the attribute would permit `unsafe` in silence.
 every member through the `[lints] workspace = true` they already declare;
 `wost` lifts it with a single `#![allow(unsafe_code)]` at its crate root.
 `libs/` keeps `forbid`, which is stricter and cannot be lifted locally.
+`xtask`, which takes no workspace lints (D-22), carries `#![forbid]` in-source
+— found unguarded by the 2026-08-23 audit and closed the same day.
 
 **Rationale.** The default now matches the rule. The exception becomes one
 greppable line in the crate whose whole purpose is to be that exception,
@@ -3287,8 +3294,8 @@ mechanisms changed shape; their decisions stand.
   deferred here, the slice proposal, and the decisions still open (each
   becomes an ADR as it is taken)
 - `009-multitasking.md` — Phase 4 charter: the debts D-15, D-34, D-36 and
-  D-47 deferred here, the lock order, and the decisions still open
-  (D-51..D-65)
+  D-47 deferred here, the lock order, and the decisions the phase produced
+  (D-51..D-66, plus D-76 at its close)
 - `008-research-notes-2.md` — the second research pass, opening Phase 3:
   what the stable toolchain now allows, the evidence behind the decisions
   `007` holds open, and the proposed additions to `005`. Its marks are its

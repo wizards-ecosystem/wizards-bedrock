@@ -54,16 +54,17 @@ for evidence and citations behind the choices marked ★.
    EEVDF-inspired virtual-deadline scheduler, small static binaries,
    no daemons-by-default. Measure size and wakeups as features.
 
-5. **Framekernel discipline.** ★ (Adopted from Asterinas, USENIX ATC'25 —
-   the strongest verified result of the research pass.) The kernel is one
-   address space with monolithic performance, but ALL `unsafe` Rust is
-   confined to a small privileged framework crate (`wost` — Wizard OS
-   Standard, our OSTD analogue: boot, paging, MMIO, port I/O, DMA,
-   context switch, interrupt entry). Every other kernel crate — scheduler,
-   VFS, WizFS, network, drivers — is `#![forbid(unsafe_code)]` safe Rust
-   against `wost`'s safe abstractions. Asterinas proved this yields a
+5. **Framekernel discipline.** ★ (Adopted from Asterinas, USENIX ATC'25.)
+   The kernel is one address space with monolithic performance, but ALL
+   `unsafe` Rust is confined to a small privileged framework crate (`wost`
+   — Wizard OS Standard, our OSTD analogue: boot, paging, MMIO, port I/O,
+   DMA, context switch, interrupt entry). Every other kernel crate —
+   scheduler, VFS, WizFS, network, drivers — is `#![forbid(unsafe_code)]`
+   safe Rust against `wost`'s safe abstractions. Asterinas reports a
    microkernel-sized memory-safety TCB (~14%) at Linux-parity single-core
-   performance, and its authors' verified lesson is that safe MMIO/DMA
+   performance — numbers no one has independently replicated, which is why
+   D-13 is Provisional (D-71, `010` §1). The containment property itself is
+   verified here daily, and the authors' lesson stands: safe MMIO/DMA
    abstractions must be designed in from day one, not retrofitted.
 
    *Implemented 2026-08-12 (D-21). One amendment learned in the doing: the
@@ -96,11 +97,15 @@ discipline applies at the ABI boundary, not via userspace servers.
 
 ## Security baseline
 
-On from the start, and all of it live since Phase 3:
+On from the start:
 
-- W^X for all mappings (no page ever writable+executable), NX enforced
-- SMEP + SMAP + UMIP enabled in CR4 during early boot
-- Guard pages under every stack; zero-on-allocate pages
+- W^X for all mappings (no page ever writable+executable), NX enforced —
+  live since Phase 3
+- SMEP + SMAP + UMIP enabled in CR4 during early boot — live since Phase 2
+- Zero-on-allocate pages (Phase 3); guard pages under every *thread* stack
+  (Phase 4, D-52). Two stacks remain unguarded: the boot thread's, which is
+  the bootloader's, and the double-fault IST stack in `.bss` — both owed to
+  Phase 5's stack story
 
 Deferred, each with its cost named where it was deferred:
 

@@ -79,9 +79,10 @@ lock and the instruction — `port_space::PortSpace` under
 **Every lock in a `static` is on the panic path's list.** A fault is not masked
 by the interrupt flag, so any lock can be held by the code a panic interrupted,
 and a handler that blocks on one reports nothing. `wost::panic::reclaim` takes
-back everything `wost` owns; `dev::force_unlock` and `input::force_unlock` do
-the same for the kernel's. A new `static` lock that is not added to one of
-those three is a deadlock waiting for its first panic.
+back everything `wost` owns; `dev::force_unlock`, `input::force_unlock`,
+`input::force_unlock_watch` and `thread::force_unlock` do the same for the
+kernel's. A new `static` lock that is not added to that list is a deadlock
+waiting for its first panic.
 
 `kernel/` uses `deny`, not `forbid`, for exactly one reason: `wost::entry!`
 expands `#[allow(unsafe_code)]` boot glue into the binary crate, and `forbid`
@@ -155,8 +156,9 @@ it manufactures noise on every helper.
 
 C-EXAMPLE is adopted **only in `libs/`**, and the split is a fact about where
 doctests can run rather than a preference (D-41). The floor is one runnable
-example in every `libs/` crate's module doc, and all thirteen carry one; more
-go on any item whose encoding an example states better than prose. Not "an
+example per `libs/` crate — on the module doc or its central item — and all
+thirteen carry one; more go on any item whose encoding an example states
+better than prose. Not "an
 example on every item", which the rule used to say and no crate has ever
 done. `wost` and `kernel` are `no_std` and cross-compiled, so their doctests
 cannot execute and an unrunnable example rots unnoticed. A `libs/` crate

@@ -6,6 +6,10 @@
 //!
 //! Run `cargo xtask help` for the task list.
 
+// In-source because xtask takes no workspace lints (D-22); D-67's rule that
+// unsafe is permitted nowhere in silence still applies here.
+#![forbid(unsafe_code)]
+
 pub mod cargo;
 pub mod cli;
 pub mod elf;

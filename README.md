@@ -4,9 +4,11 @@ A from-scratch operating system: Rust kernel, x86_64, UEFI, booted by
 [Limine](https://github.com/limine-bootloader/limine). **Capability-based
 and async-first** — handles + submission/completion queues are the native
 ABI (POSIX is just a translation layer for ports), `spawn()` not `fork()`,
-CoW checksummed filesystem (WizFS), WASI components as first-class apps.
+CoW checksummed filesystem (WizFS), WebAssembly + `wasip1` as first-class
+apps (D-72).
 Multi-year project; destination: a full userspace with our own compositor,
-a ported Python, and a web browser. See [docs/002-architecture.md](docs/002-architecture.md).
+a ported Python, and NetSurf rendering the document web (D-75).
+See [docs/002-architecture.md](docs/002-architecture.md).
 
 Design docs live in [docs/](docs/) — one per subsystem, written before the
 code (design-first). Start with the
@@ -43,12 +45,15 @@ override that.
 
 ```
 cargo xtask ci       # the gate: fmt --check, clippy, doc, tests, vendor digests,
-                     #   test-boot, image
+                     #   then three boots — test-boot (release), test-boot
+                     #   (debug, overflow checks on), boot-check (D-65)
 ```
 
 `ci` is the only gate — there is no hosted CI (D-26). Individual pieces:
 `cargo xtask fmt`, `cargo xtask clippy`, `cargo xtask doc`, `cargo xtask test`,
-`cargo xtask test-boot`, `cargo xtask verify-vendor`, `cargo xtask clean [--all]`.
+`cargo xtask test-boot`, `cargo xtask boot-check`, `cargo xtask verify-vendor`,
+`cargo xtask clean [--all]`. `boot-check` boots the shipped kernel and requires
+it to settle at its prompt.
 
 `test` runs the host suite; `test-boot` boots a kernel built with the
 `selftest` feature headless in QEMU, injects a keystroke over QMP when the
@@ -93,8 +98,9 @@ triple and reports phantom errors across every kernel file.
 ```
 wost/       privileged kernel framework — the only crate that may write `unsafe`
 kernel/     the kernel binary (no_std, #![deny(unsafe_code)], higher-half)
-libs/       shared no_std crates: pure logic, host-testable (pixel, port-space,
-            ps2-keys, eevdf, timebase, x86-apic, x86-pit, x86-tables)
+libs/       shared no_std crates: pure logic, host-testable (acpi-tables, eevdf,
+            frame-space, pixel, port-space, ps2-keys, slab-layout, stack-layout,
+            timebase, x86-apic, x86-paging, x86-pit, x86-tables)
 xtask/      build orchestrator: pure-Rust disk imaging, QEMU/VMware runners
 boot/       limine.conf + vendored Limine UEFI binary (digest-pinned)
 docs/       design docs (design-first: docs before code)

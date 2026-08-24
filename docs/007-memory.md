@@ -55,7 +55,7 @@ switch has survived.
 | Slice | Contents | Status |
 |---|---|---|
 | 1 | Boot handoff grows the memory map + HHDM; physical frame allocator | ✅ 2026-08-22 |
-| 2 | Page-table encoding in `libs/`; `wost` builds its own tables (kernel, stacks with guard pages, framebuffer, direct map), W^X-correct; CR3 switch | ✅ 2026-08-22 |
+| 2 | Page-table encoding in `libs/`; `wost` builds its own tables (kernel image, framebuffer, direct map), W^X-correct; CR3 switch. Guarded thread stacks followed in Phase 4 (D-52) | ✅ 2026-08-22 |
 | 3 | Protection completion: W^X verified by read-back, zero-on-allocate; KASLR decision executed or deferred on the record | ✅ 2026-08-22 |
 | 4 | Kernel heap (`alloc` enabled); console back-buffer retires the scroll read-back | ✅ 2026-08-22 |
 | 5 | Device mappings: I/O APIC up, IRQ 1 routed, polled keyboard drain retires (D-37) | ✅ 2026-08-22 |

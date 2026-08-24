@@ -66,7 +66,8 @@ x86-pit = { path = "libs/x86-pit" }
 x86-tables = { path = "libs/x86-tables" }
 
 # Kernel side (no_std). 0.6.x of limine requires nightly (ptr_metadata);
-# 0.5 (base revision 3) builds on stable.
+# 0.5.0 builds on stable, and requests base revision 4 through
+# `with_revision` (D-42) — crate version and protocol revision are distinct.
 limine = "=0.5.0"
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = [
     "regular",

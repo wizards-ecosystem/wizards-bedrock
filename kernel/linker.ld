@@ -15,7 +15,7 @@ SECTIONS
     /* Top 2 GiB of the address space, as the kernel code model requires. */
     . = 0xffffffff80000000;
 
-    /* The three symbols below bound each protection class of the loaded image,
+    /* The symbol pairs below bound each protection class of the loaded image,
        so `wost` can map its own tables W^X-correct without guessing where one
        ends and the next begins (D-45). Each section is already aligned to
        MAXPAGESIZE, so every _start lands on a page boundary; the _end symbols
