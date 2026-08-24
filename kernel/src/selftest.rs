@@ -22,6 +22,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use handle_space::Rights;
 use wost::arch::current::cpu::{self, Protections};
 use wost::arch::current::paging::{self, ActivateError, AddressSpace, BootRegion, MapError};
+use wost::arch::current::usercopy::{self, UserCopyError};
 use wost::arch::current::{apic, interrupt, pic, port, segment};
 use wost::boot::{self, FramebufferInfo, Rgb};
 use wost::mm;
@@ -395,6 +396,70 @@ fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
     };
 
     from_user && through_the_gate && only_gate && on_a_user_stack && retired
+}
+
+/// Bytes cross the boundary in both directions, and every way they must not
+/// is refused.
+///
+/// The user-copy ABI (D-81, D-97). It runs after the ring-3 check, so the
+/// program's pages are mapped and this reads the very instructions the CPU
+/// executed — which is stronger than a round trip through memory the kernel
+/// also wrote, because it is the *user* mapping being reached through.
+///
+/// The refusals are the half that matters. A user pointer naming kernel
+/// memory, a range that runs off the end of user space, a range that wraps,
+/// an unmapped page, and a write to a page that is user-readable but not
+/// user-writable — the last being the code page, which is executable and
+/// read-only precisely so that W^X holds for user memory too.
+fn bytes_cross_the_boundary_only_where_they_may() -> bool {
+    let mut read = [0u8; user::PROGRAM.len()];
+    if usercopy::copy_from_user(user::CODE, &mut read).is_err() {
+        return false;
+    }
+    let program_matches = read == user::PROGRAM;
+
+    // A round trip through the user stack, which is writable.
+    let written = [0xA5u8; 8];
+    let mut echoed = [0u8; 8];
+    let round_trip = usercopy::copy_to_user(user::STACK, &written).is_ok()
+        && usercopy::copy_from_user(user::STACK, &mut echoed).is_ok()
+        && echoed == written;
+
+    let mut scratch = [0u8; 8];
+    // Kernel memory, named as if it were the user's.
+    let kernel_refused = matches!(
+        usercopy::copy_from_user(boot::sections().text.start, &mut scratch),
+        Err(UserCopyError::NotUserMemory(_))
+    );
+    // A range that starts inside user space and ends outside it.
+    let straddling_refused = matches!(
+        usercopy::copy_from_user(usercopy::USER_END - 4, &mut scratch),
+        Err(UserCopyError::NotUserMemory(_))
+    );
+    // One that wraps rather than describing a span at all.
+    let wrap_refused = matches!(
+        usercopy::copy_from_user(u64::MAX - 2, &mut scratch),
+        Err(UserCopyError::Wraps(_))
+    );
+    // User memory that is not there.
+    let hole_refused = matches!(
+        usercopy::copy_from_user(0x0000_2000_0000_0000, &mut scratch),
+        Err(UserCopyError::Unmapped(_))
+    );
+    // And a write to the program's own page, which ring 3 may execute and
+    // neither ring may write.
+    let read_only_refused = matches!(
+        usercopy::copy_to_user(user::CODE, &written),
+        Err(UserCopyError::ReadOnly(_))
+    );
+
+    program_matches
+        && round_trip
+        && kernel_refused
+        && straddling_refused
+        && wrap_refused
+        && hole_refused
+        && read_only_refused
 }
 
 /// A handle names its object, and a closed one names nothing.
@@ -1804,7 +1869,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 97;
+const EXPECTED_CHECKS: usize = 98;
 
 impl Report {
     const fn new() -> Self {
@@ -1895,6 +1960,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a thread crosses into ring three and calls back",
         a_thread_crosses_into_ring_three_and_calls_back(),
+    );
+    report.check(
+        "bytes cross the boundary only where they may",
+        bytes_cross_the_boundary_only_where_they_may(),
     );
     report.check(
         "a signal wakes a thread waiting on a handle",

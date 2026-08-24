@@ -8,6 +8,7 @@ pub mod pic;
 pub mod port;
 pub mod segment;
 pub mod task;
+pub mod usercopy;
 
 mod msr;
 mod table;

@@ -23,10 +23,10 @@ use crate::{info, mem, warn};
 /// Low half, far from anything the kernel maps: an address a user mapping can
 /// occupy is by definition one the kernel does not, and the split is bit 63
 /// (`010` §10's LASS note).
-const CODE: u64 = 0x0000_4000_0000_0000;
+pub(crate) const CODE: u64 = 0x0000_4000_0000_0000;
 
 /// Where its stack goes, a page below the code so a run-off hits nothing.
-const STACK: u64 = 0x0000_3000_0000_0000;
+pub(crate) const STACK: u64 = 0x0000_3000_0000_0000;
 
 /// Bytes of stack, which is one page: it makes one call and never returns.
 const STACK_BYTES: u64 = PAGE_SIZE;
@@ -44,7 +44,7 @@ const STACK_BYTES: u64 = PAGE_SIZE;
 /// a program that executes whatever the page happens to contain, and this page
 /// is zeroed, which decodes as `add [rax], al` and faults on a null write.
 /// Stopping deliberately is cheaper than reasoning about that.
-const PROGRAM: [u8; 4] = [0xCD, 0x80, 0xEB, 0xFE];
+pub(crate) const PROGRAM: [u8; 4] = [0xCD, 0x80, 0xEB, 0xFE];
 
 /// Map the program and its stack, and report where to enter.
 ///
