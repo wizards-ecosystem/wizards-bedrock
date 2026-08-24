@@ -387,13 +387,37 @@ pub fn gate_privilege(vector: u8) -> u8 {
     gates[vector as usize].privilege()
 }
 
+/// Whether `clac` may be executed on the way in.
+///
+/// A plain byte for the same reason [`MDS_CLEAR`] is one: the entry stub reads
+/// it with a single instruction and nothing writes it after boot. Zero until
+/// the kernel has established that this processor has SMAP, because `clac` is
+/// a `#UD` without it.
+#[unsafe(no_mangle)]
+static mut SMAP_ARMED: u8 = 0;
+
+/// Let the entry path clear `AC` on the way in.
+///
+/// Called once, after `CR4.SMAP` is on and before ring 3 exists.
+pub fn arm_access_clear() {
+    // SAFETY: written once during boot, before any trap can be taken from
+    // ring 3 and on the one CPU there is.
+    unsafe { SMAP_ARMED = 1 };
+}
+
+/// Whether the entry path clears `AC`.
+pub fn access_clear_is_armed() -> bool {
+    // SAFETY: a one-byte read of a value only ever written during boot.
+    unsafe { SMAP_ARMED == 1 }
+}
+
 /// Whether the return path should flush before entering ring 3.
 ///
 /// A plain byte rather than an atomic because the entry stub reads it with one
 /// instruction and nothing writes it after boot. Set from `cpuid`, so a
 /// processor reporting `MDS_NO` pays nothing.
 #[unsafe(no_mangle)]
-static mut MDS_CLEAR: u8 = 0;
+pub(super) static mut MDS_CLEAR: u8 = 0;
 
 /// Turn on the buffer flush that precedes every return to ring 3.
 ///
@@ -672,6 +696,21 @@ global_asm!(
     // SSE and cannot disturb it.
     "wost_interrupt_entry:",
     "cld",
+    // And `clac`, because `AC` is *not* one of the flags interrupt delivery
+    // clears — and it is writable at CPL 3. A ring-3 thread that sets it walks
+    // into this handler with SMAP disabled, and it stays disabled for every
+    // thread switched to afterwards, because a context switch restores no
+    // flags. That is the mitigation this phase is built around, defeated from
+    // the far side of the boundary by three instructions (D-101). Linux emits
+    // `ASM_CLAC` at the top of every entry point for exactly this reason.
+    //
+    // Branched rather than patched: `clac` is a `#UD` where SMAP is absent,
+    // which the degraded boot exercises (D-90), and this kernel has no
+    // instruction-patching machinery to make it free.
+    "cmp byte ptr [rip + {smap}], 0",
+    "je 3f",
+    "clac",
+    "3:",
     "push rax",
     "push rbx",
     "push rcx",
@@ -728,6 +767,7 @@ global_asm!(
     "iretq",
     stub_bytes = const STUB_BYTES,
     clear = sym MDS_CLEAR,
+    smap = sym SMAP_ARMED,
     kernel_data = const (segment::KERNEL_DATA_BITS as u32),
     architectural = const exception::COUNT,
     interrupts = const idt::TABLE_LEN - exception::COUNT as usize,

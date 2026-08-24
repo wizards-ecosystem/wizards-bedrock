@@ -73,7 +73,16 @@ fn kernel_main(boot: BootInfo) -> ! {
     segment::init();
     arch::current::trap::init();
     info!("cpu: descriptor tables installed");
-    info!("cpu: protections {}", cpu::enable_protections());
+    let protections = cpu::enable_protections();
+    info!("cpu: protections {protections}");
+
+    // Before anything can enter ring 3, and only where the instruction exists:
+    // `AC` survives interrupt delivery and is writable at CPL 3, so a ring-3
+    // thread can otherwise hand the kernel a trap with SMAP already off
+    // (D-101).
+    if protections.smap {
+        interrupt::arm_access_clear();
+    }
 
     // After the fault path, because the first write through the direct map is
     // the first time this kernel touches an address the bootloader chose rather

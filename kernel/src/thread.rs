@@ -692,9 +692,25 @@ pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
 
     reschedule_timer(event);
     match next {
-        Some(next) => task::switch_from_trap(next, frame).is_ok(),
+        Some(next) => {
+            RETIREMENTS.fetch_add(1, Ordering::AcqRel);
+            task::switch_from_trap(next, frame).is_ok()
+        }
         None => false,
     }
+}
+
+/// How many threads have been retired from trap context.
+///
+/// A count rather than a state to inspect, because the retired thread's slot
+/// stays taken and looks no different from a blocked one — which is what made
+/// the first version of the check for this unable to fail (D-101).
+static RETIREMENTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Threads retired from trap context since boot.
+#[cfg(feature = "selftest")]
+pub(crate) fn retirements() -> usize {
+    RETIREMENTS.load(Ordering::Acquire)
 }
 
 /// The sooner of two deadlines, either of which may be absent.

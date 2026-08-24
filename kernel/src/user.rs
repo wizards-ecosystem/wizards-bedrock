@@ -43,13 +43,13 @@ const APART: u64 = 0x1_0000;
 /// Bytes of stack, which is one page: it makes one call and never returns.
 const STACK_BYTES: u64 = PAGE_SIZE;
 
-/// What the program's first instructions are, for the check that reads them
-/// back across the boundary.
+/// The program's first four bytes, for the check that reads them back across
+/// the boundary.
 ///
-/// `int 0x80`, then a jump to itself. Written by `xtask` into the image
-/// (D-100) rather than by the kernel, so this is a statement about the initrd
-/// and not a copy of something the kernel placed.
-pub(crate) const PROGRAM: [u8; 4] = [0xCD, 0x80, 0xEB, 0xFE];
+/// `pushfq` and the start of the `or` that sets `AC` (D-101). Written by
+/// `xtask` into the image (D-100) rather than by the kernel, so this is a
+/// statement about the initrd and not a copy of something the kernel placed.
+pub(crate) const PROGRAM: [u8; 4] = [0x9C, 0x48, 0x81, 0x0C];
 
 /// Map the program and its stack, and report where to enter.
 ///
@@ -177,7 +177,15 @@ pub(crate) fn load_image(
             return Err(LoadError::WriteExecute(segment.address()));
         }
 
-        let at = segment.address() + shift;
+        // Checked, because both halves are the image's: `p_vaddr` near the top
+        // of the range wraps into a low address and walks straight past the
+        // refusal below, and in a debug build it panics the kernel on bytes a
+        // program supplied (D-101). `contents_fit` does this correctly one
+        // function away, in `libs/elf64`.
+        let at = segment
+            .address()
+            .checked_add(shift)
+            .ok_or(LoadError::NotUserMemory(segment.address()))?;
         let end = at
             .checked_add(segment.memory_size())
             .ok_or(LoadError::NotUserMemory(at))?;
@@ -212,7 +220,9 @@ pub(crate) fn load_image(
     if loaded == 0 {
         return Err(LoadError::Empty);
     }
-    Ok(elf.entry() + shift)
+    elf.entry()
+        .checked_add(shift)
+        .ok_or(LoadError::NotUserMemory(elf.entry()))
 }
 
 /// Cross into ring 3, and never come back on this thread.

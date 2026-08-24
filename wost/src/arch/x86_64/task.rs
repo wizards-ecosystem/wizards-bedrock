@@ -528,9 +528,23 @@ pub fn enter_user(entry: u64, stack_top: u64) -> UserError {
                 && flags.contains(Flags::NO_EXECUTE) => {}
         _ => return UserError::StackNotWritable(first_push),
     }
-    if super::segment::kernel_stack() == 0 {
+    // *This* thread's stack, not merely a non-zero one. `prepare` skips the
+    // write for a slot with no arena stack — the boot thread's — so after a
+    // switch to it, `RSP0` still names whichever arena thread ran last. A
+    // caller entering ring 3 then would take its first trap on a stack another
+    // thread may be standing on, which is the corruption D-99 was written to
+    // prevent and which its prose, not its code, was preventing (D-101).
+    let mine = TABLE.lock_leaf().slots[current()].stack_top;
+    if mine == 0 || super::segment::kernel_stack() != mine {
         return UserError::NoKernelStack;
     }
+    // The same rule `prepare` and `continue_on_stack` enforce, and for the
+    // strongest reason of the three: this call never returns, so a guard live
+    // in the caller's frame is a lock nothing can ever release.
+    assert!(
+        crate::sync::spinlocks_held() == 0,
+        "a spin lock is held, so entering ring 3 would strand it"
+    );
 
     // SAFETY: the walks above establish exactly what `iretq` needs — an
     // executable user mapping at `entry` and a writable user mapping under
@@ -573,9 +587,23 @@ unsafe extern "C" fn leave_for_user(entry: u64, stack_top: u64) -> ! {
         "xor r13, r13",
         "xor r14, r14",
         "xor r15, r15",
+        // The buffer flush belongs here as much as on the return path, and
+        // more: the kernel has just parsed an initrd, walked page tables and
+        // touched the frame allocator. D-98 put it only in the entry stub's
+        // tail, which is reached on a *return* to ring 3 — and this kernel
+        // retires its callers, so there are almost none (D-101).
+        "cmp byte ptr [rip + {clear}], 0",
+        "je 2f",
+        "sub rsp, 8",
+        "mov word ptr [rsp], {kernel_data}",
+        "verw word ptr [rsp]",
+        "add rsp, 8",
+        "2:",
         "iretq",
         user_data = const (super::segment::USER_DATA_BITS as u64),
         user_code = const (super::segment::USER_CODE_BITS as u64),
+        kernel_data = const (super::segment::KERNEL_DATA_BITS as u32),
+        clear = sym super::interrupt::MDS_CLEAR,
     )
 }
 

@@ -17,12 +17,33 @@ use elf64::{HEADER_BYTES, PROGRAM_HEADER_BYTES};
 /// Where the program is linked, and where the kernel maps it.
 pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 
-/// `int 0x80`, then a jump to itself.
+/// The program: set `EFLAGS.AC`, then call the kernel.
 ///
-/// The second instruction is unreachable while the kernel retires the caller,
-/// and it is there because a program whose last instruction falls forwards
+/// ```text
+///   9c              pushfq
+///   48 81 0c 24 00 00 04 00   or qword ptr [rsp], 0x40000   ; AC, bit 18
+///   9d              popfq
+///   cd 80           int 0x80
+///   eb fe           jmp .
+/// ```
+///
+/// The `AC` is the point. Interrupt delivery clears `TF`, `NT`, `RF` and `VM`
+/// and **not** `AC`, and `AC` is writable at CPL 3 — so a program that sets it
+/// hands the kernel a trap with SMAP already off, for the whole handler and
+/// for every thread switched to afterwards. The entry path clears it (D-101),
+/// and this is what proves the clearing runs: a hostile program, in the image,
+/// doing the hostile thing.
+///
+/// The trailing jump is unreachable while the kernel retires the caller, and
+/// it is there because a program whose last instruction falls forwards
 /// executes whatever the page holds.
-const CODE: [u8; 4] = [0xCD, 0x80, 0xEB, 0xFE];
+const CODE: [u8; 14] = [
+    0x9C, // pushfq
+    0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00, // or qword [rsp], 1 << 18
+    0x9D, // popfq
+    0xCD, 0x80, // int 0x80
+    0xEB, 0xFE, // jmp .
+];
 
 /// `PT_LOAD`.
 const PT_LOAD: u32 = 1;
@@ -33,10 +54,15 @@ const PF_READ_EXECUTE: u32 = 0b101;
 
 /// Build the program image.
 ///
-/// One loadable segment holding the code, at [`LOAD_ADDRESS`], with the file
-/// offset chosen so the segment's bytes are congruent to its virtual address
-/// modulo a page — which is what any loader that maps rather than copies
-/// requires, and what a hand-built ELF gets wrong first.
+/// One loadable segment holding the code, at [`LOAD_ADDRESS`].
+///
+/// `p_align` is one, and deliberately: this kernel's loader *copies* into
+/// fresh frames rather than mapping the file, so it needs no congruence
+/// between file offset and virtual address. An earlier version of this comment
+/// claimed the offset was chosen to hold that congruence, which it is not —
+/// `p_offset` is 120 and `p_vaddr` is page-aligned (D-101). A loader that
+/// mapped the image directly would need both the congruence and an alignment
+/// that says so.
 pub fn build() -> Vec<u8> {
     let mut image = vec![0u8; HEADER_BYTES + PROGRAM_HEADER_BYTES + CODE.len()];
 

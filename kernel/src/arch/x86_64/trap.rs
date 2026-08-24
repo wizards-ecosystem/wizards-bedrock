@@ -70,6 +70,10 @@ fn on_trap(frame: &TrapFrame) {
         // meant for it, and be retired from the far side (D-96).
         TrapCause::Interrupt(vector::SYSCALL) => {
             LAST_SYSCALL.record(frame);
+            // Whether SMAP is on *inside the handler*, which is the thing
+            // D-101 is about: the caller's flags are in the frame, and this is
+            // the CPU's own state now that the entry path has run.
+            SMAP_ON_ENTRY.store(u64::from(!cpu::access_check_is_off()), Ordering::Release);
             if !crate::thread::retire_from_trap(frame) {
                 panic!("a ring 3 thread called in and could not be retired");
             }
@@ -133,6 +137,15 @@ impl fmt::Display for Report<'_> {
 
         Ok(())
     }
+}
+
+/// One if SMAP was still on when the last ring-3 call reached the handler.
+static SMAP_ON_ENTRY: AtomicU64 = AtomicU64::new(0);
+
+/// Whether the last call from ring 3 arrived with SMAP still on.
+#[cfg(feature = "selftest")]
+pub(crate) fn smap_survived_the_last_syscall() -> bool {
+    SMAP_ON_ENTRY.load(Ordering::Acquire) == 1
 }
 
 /// What the last call from ring 3 looked like.

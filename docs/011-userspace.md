@@ -750,7 +750,7 @@ syscall to surface them through.
 
 Recorded as built, per the charter above.
 
-**A trap gate, and not for the reason D-81 expected.** It left the
+**A gate of its own, and not for the reason D-81 expected.** It left the
 `syscall`-versus-trap-gate question open and said the measurement that would
 settle it is meaningless under TCG. It is settled on something else: `syscall`
 needs `swapgs`, `swapgs` needs a per-CPU block, and that is two unproven
@@ -804,10 +804,20 @@ capability word cannot be read gets the instruction rather than the assumption.
 - **Eager XSAVE save and restore** → **slice 7**. D-82's arithmetic is done and
   host-tested, including the APX case that broke Linux's monotonicity
   assumption. What is missing is per-thread buffers and a save on every switch,
-  and it is not reachable yet: `RSP0` is set once, so **one thread may be in
-  ring 3 at a time**, and one thread cannot corrupt another's floating-point
-  state. Per-thread `RSP0` and eager XSAVE arrive together, with the processes
-  that need both.
+  and **D-99 made it reachable**: `RSP0` follows the thread now, so two can be
+  in ring 3 and two can have floating-point state to lose. Nothing does yet —
+  the program is fourteen bytes and touches no SSE — but the gap is real from
+  D-99 onward rather than hypothetical, and it arrives with the processes in
+  the rest of this slice.
+
+**A ring-3 fault still stops the machine, and that is now the largest thing
+owed here.** D-31 made a fault terminal when a fault was necessarily a kernel
+bug. After D-96 it can be a *program* bug: a `ud2`, a division by zero, or a
+touch of an unmapped page in ring 3 panics the kernel. D-97 reasons from
+exactly the right premise for the copy path — *the program is the untrusted
+party* — and the trap path does not yet distinguish. The fix is that a fault
+from CPL 3 retires the thread instead, which is `retire_from_trap` with a
+different reason, and it wants the fixup table below as its neighbour.
 
 **Still owed by this slice's neighbours.** A fault *during* a user copy is
 terminal, where a real kernel would recover and return an error — that needs a

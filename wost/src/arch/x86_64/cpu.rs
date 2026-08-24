@@ -256,6 +256,25 @@ pub(super) fn has_x2apic() -> bool {
     cpuid(1, 0).ecx & X2APIC != 0
 }
 
+/// Whether `EFLAGS.AC` is set right now — that is, whether SMAP is currently
+/// letting ring 0 touch user pages.
+///
+/// Read rather than assumed, because the whole point of D-101 is that ring 3
+/// can set this bit and interrupt delivery does not clear it.
+pub fn access_check_is_off() -> bool {
+    /// `EFLAGS.AC`.
+    const AC: u64 = 1 << 18;
+
+    let flags: u64;
+    // SAFETY: `pushfq` and `pop` read the flags register into a general
+    // register; neither touches memory the compiler owns beyond the stack slot
+    // it is told about.
+    unsafe {
+        core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags))
+    };
+    flags & AC != 0
+}
+
 /// Whether this processor implements `MD_CLEAR`, the `VERW` buffer flush.
 ///
 /// `cpuid` leaf 7 subleaf 0, `EDX` bit 10. Separate from [`Speculation`]

@@ -362,11 +362,10 @@ fn a_waiter_rereads_its_condition_before_blocking() -> bool {
 /// hardware's account of where the caller was (D-96).
 fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
     let before = trap::last_syscall();
-    let free_before = thread::free_slots();
+    let retirements_before = thread::retirements();
     if thread::spawn("user", user::run).is_err() {
         return false;
     }
-    let _ = free_before;
 
     // Generous: the thread maps two pages and a guarded stack before it can
     // cross, and a refusal on any of them logs rather than hanging.
@@ -387,19 +386,46 @@ fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
     // Its stack was the user one: ring 3 in the selector, and a low-half
     // address, which is the half the kernel never maps.
     let on_a_user_stack =
-        call.stack_selector & 0b11 == 3 && call.stack_pointer < 0x0000_8000_0000_0000;
-    // And the thread is gone: retired from trap context, its slot still held
-    // but never runnable again.
-    let retired = runs_until(500, || thread::free_slots() == free_before) || {
-        // A retired thread keeps its slot, so the count does not come back —
-        // what must be true is that nothing is still running it.
-        thread::current_name() != "user"
-    };
+        call.stack_selector & 0b11 == 3 && call.stack_pointer < usercopy::USER_END;
+    // And the thread is gone, counted rather than inferred. The first version
+    // of this waited for a slot to come back — which a retired thread never
+    // returns — and fell back to a comparison that is true of the checking
+    // thread whatever happened, so it could not fail at all (D-101).
+    let retired = thread::retirements() > retirements_before;
 
     from_user && through_the_gate && only_gate && on_a_user_stack && retired
 }
 
-/// The loader refuses an image that asks for what it may not have.
+/// A ring-3 program cannot bring SMAP down with it.
+///
+/// The hole a third adversarial pass found (D-101), and the reason the program
+/// in the image is hostile: `EFLAGS.AC` is writable at CPL 3, and interrupt
+/// delivery clears `TF`, `NT`, `RF` and `VM` but **not** `AC`. So a program
+/// that sets it hands the kernel a trap with SMAP already off — for the whole
+/// handler, and for every thread switched to afterwards, since a context
+/// switch restores no flags.
+///
+/// Both halves are asserted, because either alone would pass for the wrong
+/// reason. The saved flags must show the program really did set `AC` — a
+/// program that failed to would make the second half true trivially. And the
+/// handler must have been running with it clear.
+fn a_program_cannot_bring_smap_down_with_it() -> bool {
+    /// `EFLAGS.AC`.
+    const AC: u64 = 1 << 18;
+
+    let call = trap::last_syscall();
+    if call.count == 0 {
+        return false;
+    }
+    // The program set it, so this check is about something that happened.
+    let the_program_tried = call.flags & AC != 0;
+    // And the entry path took it away again.
+    let the_kernel_undid_it = trap::smap_survived_the_last_syscall();
+
+    the_program_tried && the_kernel_undid_it && interrupt::access_clear_is_armed()
+}
+
+/// The loader refuses an image that asks for what it may not map.
 ///
 /// The half of a loader that matters. An image is bytes a program supplied,
 /// and every one of these is a way of asking the kernel to map something it
@@ -508,7 +534,7 @@ fn a_second_thread_crosses_onto_its_own_stack() -> bool {
     let through_the_gate = second.vector as u8 == vector::SYSCALL;
     // At its own user addresses, not the first program's.
     let elsewhere =
-        second.stack_pointer != first.stack_pointer && second.stack_pointer < 0x0000_8000_0000_0000;
+        second.stack_pointer != first.stack_pointer && second.stack_pointer < usercopy::USER_END;
     // And `RSP0` moved: the landing the second thread trapped onto is not the
     // one the first used.
     let own_landing = segment::kernel_stack() != first_landing;
@@ -2013,7 +2039,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 101;
+const EXPECTED_CHECKS: usize = 102;
 
 impl Report {
     const fn new() -> Self {
@@ -2104,6 +2130,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a thread crosses into ring three and calls back",
         a_thread_crosses_into_ring_three_and_calls_back(),
+    );
+    report.check(
+        "a program cannot bring smap down with it",
+        a_program_cannot_bring_smap_down_with_it(),
     );
     report.check(
         "the loader refuses what it may not map",
