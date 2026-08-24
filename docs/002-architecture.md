@@ -105,19 +105,18 @@ On from the start:
 - W^X for all mappings (no page ever writable+executable), NX enforced —
   live since Phase 3
 - SMEP + SMAP + UMIP enabled in CR4 during early boot — live since Phase 2
-- Zero-on-allocate pages (Phase 3); guard pages under every *thread* stack
-  (Phase 4, D-52) and under the double-fault stack (Phase 5, D-89). One stack
-  remains unguarded: the boot thread's, which is the bootloader's and sits
-  inside the deliberately unsplittable direct map, so guarding it means moving
-  the boot thread onto a stack of its own — slice 4's work, with its cost named
-  in D-89
+- Zero-on-allocate pages (Phase 3); **guard pages under every stack this
+  kernel runs on** — thread stacks (Phase 4, D-52), the double-fault stack
+  (D-89), and the boot thread's, which could not be guarded where the
+  bootloader left it and so was left instead (D-92). No exceptions remain, and
+  each has a check that goes red without it
 
 Deferred, each with its cost named where it was deferred:
 
 - **KASLR** via Limine (`kaslr: yes`) — waits on the hardcoded load address in
   `linker.ld`; deferred to Phase 12 with its interest recorded (D-46). It is
   the only D-12 item deferred as far as Phase 12, and it is *not* "on from the
-  start". The remaining unguarded stack above is separate Phase-5 debt.
+  start". The stack exceptions this list used to carry are closed (D-89, D-92).
 - Intel CET shadow stacks, signed boot chain, measured boot. CET is the one
   that constrains earlier work: a shadow stack is a second region per thread,
   so the Phase 5 stack allocator should not foreclose it (`010` §10).

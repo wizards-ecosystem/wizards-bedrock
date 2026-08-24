@@ -5,7 +5,7 @@
 //! privilege: deciding whether the handoff is usable at all, and saying so.
 
 use wost::arch::current::cpu;
-use wost::arch::current::paging::{self, AddressSpace, BootRegion, MapError};
+use wost::arch::current::paging::{self, AddressSpace, BootRegion, MapError, MappedStack};
 use wost::arch::current::segment;
 use wost::boot::{self, DirectMap, HandoffError, ImageAddress, MemoryKind, MemoryMap};
 use wost::mm;
@@ -107,6 +107,24 @@ fn guard_the_fault_stack() -> Result<u64, MapError> {
         return Err(MapError::Misaligned(top));
     }
     Ok(top)
+}
+
+/// Map the boot thread's own guarded stack.
+///
+/// `None` rather than an error when it cannot be had: a kernel that keeps the
+/// bootloader's stack is the kernel every earlier phase shipped, so this
+/// declining is a lost guard rather than a lost boot.
+pub(crate) fn map_boot_stack() -> Option<MappedStack> {
+    let layout = thread::boot_stack_layout()?;
+    let slot = layout.slot(0)?;
+    let mut context = ThreadContext::require();
+    match with_active_space(&mut context, |space| space.map_stack(&slot))? {
+        Ok(stack) => Some(stack),
+        Err(reason) => {
+            warn!("boot: stack not mapped: {reason}");
+            None
+        }
+    }
 }
 
 /// Log every region the bootloader described.

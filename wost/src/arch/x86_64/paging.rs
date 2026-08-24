@@ -25,7 +25,7 @@
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use stack_layout::StackLayout;
+use stack_layout::{Slot, StackLayout};
 use x86_paging::{
     ENTRIES, Entry, EntryError, Flags, LARGE_PAGE_SIZE, Level, MappingRange, MappingRangeError,
     PAGE_SIZE, TablePrivilege,
@@ -320,6 +320,56 @@ impl AddressSpace {
         // The run belongs to the mapping now; `unmap` is what gives it back.
         core::mem::forget(run);
         Ok(())
+    }
+
+    /// Map one guarded stack, and hand back the evidence that it is one.
+    ///
+    /// Allocates the frames, zeroes them, maps them writable and never
+    /// executable at `slot`'s stack range, and then **verifies the guard**: the
+    /// pages below the stack must be absent in these tables. A stack whose
+    /// guard is mapped is not a guarded stack, and the caller has no way to
+    /// tell by looking at the return value, so it is checked here.
+    ///
+    /// The returned [`MappedStack`] is what makes
+    /// [`task::continue_on_stack`](super::task::continue_on_stack) safe to
+    /// expose: it is the proof that the region is mapped, writable, aligned
+    /// and guarded, and it cannot be made any other way.
+    ///
+    /// # Errors
+    ///
+    /// As [`map_owned`](Self::map_owned), plus [`MapError::Conflict`] naming
+    /// the first guard page that turned out to be mapped.
+    pub fn map_stack(&mut self, slot: &Slot) -> Result<MappedStack, MapError> {
+        let pages = slot.stack_len().div_ceil(PAGE_SIZE) as usize;
+        let mut run = mm::allocate_contiguous(pages, 1).ok_or(MapError::OutOfMemory)?;
+        if !run.zero() {
+            return Err(MapError::Unreachable(run.address()));
+        }
+        self.map_owned(
+            slot.stack_base(),
+            run,
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+        )?;
+
+        let mut guard = slot.guard_base();
+        while guard < slot.stack_base() {
+            if self.translate_here(guard).is_some() {
+                return Err(MapError::Conflict(guard));
+            }
+            guard = guard
+                .checked_add(PAGE_SIZE)
+                .ok_or(MapError::Conflict(guard))?;
+        }
+
+        Ok(MappedStack {
+            top: slot.stack_top(),
+            root: self.root,
+        })
+    }
+
+    /// Translate through this space's tables, active or not.
+    fn translate_here(&self, virtual_address: u64) -> Option<(Paddr, Flags)> {
+        translate_in(self.root, virtual_address)
     }
 
     /// Take a mapping away, and hand back what it owned.
@@ -902,6 +952,33 @@ impl StackArena {
             }
         }
         None
+    }
+}
+
+/// A stack this address space mapped, with its guard verified absent.
+///
+/// Not `Copy` or `Clone`, for the reason [`DeviceMapping`] is not: it is the
+/// evidence that exactly one caller owns this region. The root ties it to the
+/// space that made it, because a stack address means nothing without one.
+#[derive(Debug)]
+pub struct MappedStack {
+    top: u64,
+    root: Paddr,
+}
+
+impl MappedStack {
+    /// The address the stack grows down from, sixteen-byte aligned.
+    pub const fn top(&self) -> u64 {
+        self.top
+    }
+
+    /// Whether this stack belongs to the space the CPU is walking now.
+    ///
+    /// A stack mapped into a space that was never installed is not a stack
+    /// this CPU can stand on, and the addresses collide across spaces, so the
+    /// root is the only thing that can tell them apart.
+    pub fn is_installed(&self) -> bool {
+        is_active() && active_root() == self.root
     }
 }
 

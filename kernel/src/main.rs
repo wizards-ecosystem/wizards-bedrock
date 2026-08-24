@@ -32,8 +32,10 @@ mod wait;
 
 use core::fmt::Write;
 
-use wost::arch::current::{apic, cpu, interrupt, pic, segment};
+use crate::arch::current::uart::UartError;
+use wost::arch::current::{apic, cpu, interrupt, pic, segment, task};
 use wost::boot::BootInfo;
+use wost::sync::SpinLock;
 
 use crate::arch::current::{ioapic, vector};
 
@@ -70,6 +72,41 @@ fn kernel_main(boot: BootInfo) -> ! {
     // anything may want a frame.
     mem::init(boot.memory_map, boot.direct_map);
     let routing = mem::init_paging(boot.memory_map, boot.direct_map, boot.image, boot.rsdp);
+
+    // The boot thread leaves the bootloader's stack here, which is the only way
+    // to guard it: that stack has nothing below it and lives inside the direct
+    // map, which is two-megabyte on purpose (D-92). Everything after this point
+    // runs in `boot_continue`, on a stack with an unmapped page beneath it.
+    *HANDOFF.lock_leaf() = Some(Handoff { serial, routing });
+    match mem::map_boot_stack() {
+        Some(stack) => task::continue_on_stack(stack, boot_continue, 0),
+        None => {
+            warn!("boot: staying on the bootloader's stack, which has no guard");
+            boot_continue(0)
+        }
+    }
+}
+
+/// What the boot thread carries across the change of stack.
+///
+/// A static rather than an argument because the old stack is abandoned: a
+/// pointer into it would be a pointer into memory nothing owns any more.
+struct Handoff {
+    serial: Result<(), UartError>,
+    routing: Option<mem::Routing>,
+}
+
+static HANDOFF: SpinLock<Option<Handoff>> = SpinLock::new(None);
+
+/// The rest of the boot, on a guarded stack.
+///
+/// # Panics
+///
+/// If the handoff is missing, which would mean this ran twice.
+extern "C" fn boot_continue(_arg: usize) -> ! {
+    let Some(Handoff { serial, routing }) = HANDOFF.lock_leaf().take() else {
+        panic!("the boot handoff is gone; boot_continue ran twice");
+    };
 
     // The heap exists from here, and the console is its first consumer: a
     // shadow in RAM is what stops every scroll reading uncached device memory

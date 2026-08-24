@@ -23,7 +23,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::interrupt::{self, TrapFrame};
-use super::paging::{self, StackArena};
+use super::paging::{self, MappedStack, StackArena};
 use crate::cell::HardwareCell;
 use crate::panic::PanicToken;
 use crate::sync::{Once, SpinLock};
@@ -441,6 +441,64 @@ extern "C" fn thread_start() -> ! {
         interrupt::enable();
     }
     entry(arg)
+}
+
+/// Abandon the current stack and continue on `stack`, never returning.
+///
+/// The boot thread runs on the bootloader's stack, which has nothing below it
+/// and sits inside the two-megabyte direct map, so it cannot be guarded where
+/// it is (D-89). This moves the flow of control onto a stack that is guarded,
+/// and the frames below the call are simply abandoned — the bootloader's stack
+/// is reclaimable memory and nothing returns to it.
+///
+/// Safe, on the same grounds as `switch`: everything the load needs is proved
+/// by its arguments. [`MappedStack`] can only come from
+/// [`AddressSpace::map_stack`](super::paging::AddressSpace::map_stack), which
+/// mapped the region writable and confirmed its guard is absent, and
+/// [`is_installed`](MappedStack::is_installed) confirms it belongs to the
+/// space this CPU is actually walking. `continuation` cannot return, so there
+/// is no return address to be missing.
+///
+/// # Panics
+///
+/// If the stack belongs to an address space that is not installed, which would
+/// otherwise be a jump onto memory this CPU cannot reach.
+pub fn continue_on_stack(stack: MappedStack, continuation: Entry, arg: usize) -> ! {
+    assert!(
+        stack.is_installed(),
+        "a stack from another address space cannot be stood on"
+    );
+    // No interrupt may arrive between the load and the first push: the frame
+    // it would build belongs to whichever stack the CPU thinks it is on.
+    let _disabled = interrupt::disable();
+
+    // SAFETY: `stack` is evidence that its top is the top of a mapped,
+    // writable, guarded region that nothing else holds, and `is_installed`
+    // has just confirmed the CPU walks the space that mapped it.
+    // `continuation` never returns, so no return address is owed.
+    unsafe { load_stack(stack.top(), continuation, arg) }
+}
+
+/// Load `stack_top` into `rsp` and jump to `continuation(arg)`.
+///
+/// # Safety
+///
+/// `stack_top` must be the sixteen-byte-aligned top of a mapped, writable
+/// region nothing else is using, reachable in the live tables.
+#[unsafe(naked)]
+unsafe extern "C" fn load_stack(stack_top: u64, continuation: Entry, arg: usize) -> ! {
+    naked_asm!(
+        // The ABI wants `rsp + 8` sixteen-byte aligned at a function's first
+        // instruction, because a `call` would have pushed eight bytes. This
+        // arrives by `jmp`, so the eight bytes are subtracted here instead —
+        // the same off-by-one-word that D-76 found in the fabricated frame.
+        "lea rsp, [rdi - 8]",
+        // Nothing above this frame: a walker that follows `rbp` stops here
+        // rather than wandering into the abandoned stack.
+        "xor rbp, rbp",
+        "mov rdi, rdx",
+        "jmp rsi",
+    )
 }
 
 /// Save the callee-saved registers and the stack pointer, then load another

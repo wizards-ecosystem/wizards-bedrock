@@ -73,6 +73,16 @@ pub(crate) fn fault_stack_layout() -> Option<StackLayout> {
     StackLayout::new(layout()?.end(), STACK_BYTES, GUARD_BYTES, 1)
 }
 
+/// Where the boot thread's own guarded stack goes.
+///
+/// Above the fault stack and derived from it, for the same reason: no new
+/// hardcoded window, and no entry on D-46's ledger. The boot thread starts on
+/// the bootloader's stack, which has nothing below it and lives inside the
+/// unsplittable direct map, so the only way to guard it is to leave it (D-92).
+pub(crate) fn boot_stack_layout() -> Option<StackLayout> {
+    StackLayout::new(fault_stack_layout()?.end(), STACK_BYTES, GUARD_BYTES, 1)
+}
+
 /// Why a thread could not be spawned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]

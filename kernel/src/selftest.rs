@@ -276,6 +276,54 @@ fn a_mapping_added_after_the_switch_is_live() -> bool {
     unmapped_before && translated && on_the_live_root
 }
 
+/// The boot thread stands on a guarded stack, and not the bootloader's.
+///
+/// The last of the three stacks `002`'s security baseline named. It could not
+/// be fixed where it was: the bootloader's stack lives inside the direct map,
+/// which is two-megabyte on purpose (D-45), so guarding it would mean
+/// splitting a large page — which D-88 refuses. The boot thread therefore
+/// leaves it instead (D-92).
+///
+/// This check runs *on* that stack, which is what makes it more than
+/// structural: the stack pointer under it must be inside the mapped region,
+/// so a switch that silently did not happen fails here rather than passing on
+/// the strength of the tables alone.
+fn the_boot_thread_stands_on_a_guarded_stack() -> bool {
+    let Some(layout) = thread::boot_stack_layout() else {
+        return false;
+    };
+    let Some(slot) = layout.slot(0) else {
+        return false;
+    };
+
+    // Where this check is actually running.
+    let pointer = cpu::stack_pointer();
+    if pointer < slot.stack_base() || pointer >= slot.stack_top() {
+        return false;
+    }
+
+    // Every guard page below it is absent.
+    let mut guard = slot.guard_base();
+    while guard < slot.stack_base() {
+        if paging::translate(guard).is_some() {
+            return false;
+        }
+        guard += PAGE_SIZE;
+    }
+
+    // And every page it stands on is writable and never executable.
+    let mut page = slot.stack_base();
+    while page < slot.stack_top() {
+        match paging::translate(page) {
+            Some((_, flags))
+                if flags.contains(Flags::WRITABLE) && flags.contains(Flags::NO_EXECUTE) => {}
+            _ => return false,
+        }
+        page += PAGE_SIZE;
+    }
+    true
+}
+
 /// The double-fault handler stands on a guarded stack.
 ///
 /// One of the two stacks `002`'s security baseline recorded as having nothing
@@ -1286,7 +1334,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 85;
+const EXPECTED_CHECKS: usize = 86;
 
 impl Report {
     const fn new() -> Self {
@@ -1373,6 +1421,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a second address space is refused",
         a_second_switch_is_refused(),
+    );
+    report.check(
+        "the boot thread stands on a guarded stack",
+        the_boot_thread_stands_on_a_guarded_stack(),
     );
     report.check(
         "the double-fault stack is guarded",

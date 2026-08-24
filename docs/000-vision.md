@@ -34,7 +34,7 @@ A full OS with userspace that can, eventually:
 | Process model | `spawn()` only — no native `fork()` (compat-fork gated for the POSIX layer) |
 | Filesystem | VFS first, then a read-only third-party format; WizFS = **CoW B-tree, checksummed, snapshots** in a phase of its own, late (D-73) |
 | App formats | ELF64 native + **core Wasm/`wasip1`** first-class; the Component Model is a watch item (D-72) |
-| Security | W^X, NX, SMEP/SMAP/UMIP live; ordinary thread stacks guarded, boot + double-fault guards owed in Phase 5; KASLR deferred to Phase 12 with its cost named (D-46) |
+| Security | W^X, NX, SMEP/SMAP/UMIP live; **every stack guarded** — thread (D-52), double-fault (D-89) and boot (D-92); KASLR deferred to Phase 12 with its cost named (D-46) |
 | Scheduler | EEVDF-inspired virtual deadlines, tickless |
 | Theme | Wizard/magic at product level (app names, shell personality); conventional naming in code |
 | Dev loop | QEMU (UEFI, serial stdio) minute-to-minute; VMware Workstation as milestone target |
