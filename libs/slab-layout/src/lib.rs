@@ -341,4 +341,40 @@ mod tests {
             );
         }
     }
+
+    /// Every slot a frame is carved into is distinct, ordered, and wholly
+    /// inside the frame.
+    ///
+    /// The arithmetic half of "a refill never hands out a slot twice". It
+    /// lives here rather than on the machine because breaking it there
+    /// corrupts the allocator every later check depends on, and a break that
+    /// crashes proves less than one that fails (D-28, D-85).
+    #[test]
+    fn no_two_slots_of_any_class_overlap() {
+        for index in 0..CLASSES {
+            let Some(class) = SizeClass::from_index(index) else {
+                panic!("class {index} is within CLASSES but does not exist");
+            };
+            let slots = class.slots_per_frame();
+            assert!(slots > 0, "class {} carves no slots", class.bytes());
+
+            let mut previous = None;
+            for slot in 0..slots {
+                let offset = class.offset_of(slot);
+                assert!(
+                    offset + class.bytes() <= FRAME_SIZE,
+                    "class {} slot {slot} runs past the frame",
+                    class.bytes()
+                );
+                if let Some(previous) = previous {
+                    assert!(
+                        offset >= previous + class.bytes(),
+                        "class {} slot {slot} overlaps the one before it",
+                        class.bytes()
+                    );
+                }
+                previous = Some(offset);
+            }
+        }
+    }
 }

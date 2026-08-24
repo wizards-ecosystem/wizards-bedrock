@@ -22,9 +22,41 @@ static SPINLOCKS_HELD: AtomicUsize = AtomicUsize::new(0);
 ///
 /// For the two invariants that read it from outside this module: setting the
 /// interrupt flag with one held, and switching threads with one held, are both
-/// ways to strand a lock on a context that can never resume (D-66).
+/// ways to strand a lock on a context that can never resume (D-66). The borrow
+/// checker rules out both statically now (D-69); this stays as the backstop
+/// for the paths it cannot see.
 pub fn spinlocks_held() -> usize {
     SPINLOCKS_HELD.load(Ordering::Relaxed)
+}
+
+/// Evidence that the caller is in thread context, not inside a trap handler.
+///
+/// D-62 introduced it as the token every call that can block takes. D-69 gave
+/// it a second job: [`SpinLock::lock`] borrows one for the guard's life, so
+/// taking a second lock, or blocking with one held, is a borrow error rather
+/// than a rule. Neither `Send` nor `Sync`, so it cannot be stashed in a
+/// `static` and produced later.
+#[derive(Debug)]
+pub struct ThreadContext(PhantomData<*const ()>);
+
+impl ThreadContext {
+    /// Mint one, or `None` inside a trap handler.
+    pub fn claim() -> Option<Self> {
+        (!interrupt::in_trap()).then_some(Self(PhantomData))
+    }
+
+    /// Mint one, panicking inside a trap handler.
+    ///
+    /// # Panics
+    ///
+    /// From trap context, where a block would carry the handler's stack frame
+    /// away with it (D-55).
+    pub fn require() -> Self {
+        match Self::claim() {
+            Some(context) => context,
+            None => panic!("thread context required, but a handler is on the stack"),
+        }
+    }
 }
 
 /// A latch that admits exactly one caller.
@@ -108,9 +140,17 @@ impl<T> SpinLock<T> {
     /// with interrupts off would mean waiting for a holder that cannot be
     /// scheduled and cannot be interrupted, which on one CPU is a hang and on
     /// several is merely slow.
-    pub fn lock(&self) -> SpinLockGuard<'_, T> {
+    ///
+    /// The guard borrows `context` for its life, which is what makes taking a
+    /// second lock, or calling anything that can block, a borrow error while
+    /// this one is held (D-69). Where a nesting is genuinely wanted, the
+    /// caller drops this guard, acquires what it needs, and re-checks.
+    pub fn lock<'a>(&'a self, context: &'a mut ThreadContext) -> SpinLockGuard<'a, T> {
+        // The discipline is the signature: `'a` ties this borrow to the
+        // guard's life, so the token is unavailable until the guard drops.
+        let _ = context;
         loop {
-            if let Some(guard) = self.try_lock() {
+            if let Some(guard) = self.acquire() {
                 return guard;
             }
             while self.is_locked() {
@@ -120,7 +160,78 @@ impl<T> SpinLock<T> {
     }
 
     /// Acquire the lock if it is free, without spinning.
-    pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
+    pub fn try_lock<'a>(&'a self, context: &'a mut ThreadContext) -> Option<SpinLockGuard<'a, T>> {
+        let _ = context;
+        self.acquire()
+    }
+
+    /// Acquire the lock for an operation that is over before it returns.
+    ///
+    /// The second of this kernel's two lock levels. A *leaf* lock guards data
+    /// whose every acquisition is take-mutate-return: no call is made while
+    /// the guard is live, so no second lock can be taken and nothing can
+    /// block. That makes a token meaningless — there is nothing for it to
+    /// exclude — and it is the only acquisition a `Drop` impl can perform,
+    /// since `drop` takes no arguments and a freed `Frame` must reach the
+    /// allocator from wherever it dies.
+    ///
+    /// The obligation is on the *body*, not the caller, and it is short enough
+    /// to read: **nothing is called while this guard is live.** A leaf lock
+    /// may therefore be taken while a token-bearing lock is held, which is
+    /// what makes D-47's `HEAP` → `FRAMES` order sound rather than an
+    /// exception to D-69.
+    pub fn lock_leaf(&self) -> SpinLockGuard<'_, T> {
+        loop {
+            if let Some(guard) = self.acquire() {
+                return guard;
+            }
+            while self.is_locked() {
+                spin_loop();
+            }
+        }
+    }
+
+    /// Acquire a leaf lock if it is free, without spinning.
+    pub fn try_lock_leaf(&self) -> Option<SpinLockGuard<'_, T>> {
+        self.acquire()
+    }
+
+    /// Acquire the lock from a trap handler, spinning until it is free.
+    ///
+    /// The token is not a compromise here: in a handler the interrupt flag is
+    /// already clear, so "cannot block here" is enforced by the machine and a
+    /// token would prove something already true. Asserting the context makes
+    /// this and [`lock`](Self::lock) mutually exclusive by construction.
+    ///
+    /// # Panics
+    ///
+    /// Outside trap context, where [`lock`](Self::lock) is the entry point and
+    /// its borrow is the discipline.
+    pub fn lock_from_trap(&self) -> SpinLockGuard<'_, T> {
+        assert!(
+            interrupt::in_trap() || crate::panic::is_panicking(),
+            "lock_from_trap outside a trap handler"
+        );
+        loop {
+            if let Some(guard) = self.acquire() {
+                return guard;
+            }
+            while self.is_locked() {
+                spin_loop();
+            }
+        }
+    }
+
+    /// Acquire the lock if it is free, from a trap handler or the panic path.
+    ///
+    /// Context-free because it cannot wait, which is what a handler needs and
+    /// what a `Debug` impl that must never block needs too.
+    pub fn try_lock_from_trap(&self) -> Option<SpinLockGuard<'_, T>> {
+        self.acquire()
+    }
+
+    /// The acquisition itself, with no discipline attached.
+    fn acquire(&self) -> Option<SpinLockGuard<'_, T>> {
         // Disabling first: taking an interrupt between the exchange and the
         // disable would leave this CPU holding the lock with interrupts on,
         // which is the state the whole design exists to rule out.
@@ -169,7 +280,7 @@ impl<T: fmt::Debug> fmt::Debug for SpinLock<T> {
     /// most likely to be printing it, the panic handler.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut out = f.debug_struct("SpinLock");
-        match self.try_lock() {
+        match self.try_lock_from_trap() {
             Some(guard) => out.field("value", &*guard),
             None => out.field("value", &format_args!("<locked>")),
         }
@@ -264,12 +375,18 @@ impl<T> ThreadLock<T> {
 
     /// Acquire the lock, spinning until it is free.
     ///
+    /// A leaf acquisition, as [`SpinLock::lock_leaf`] is: the caller does not
+    /// block while holding it. There is no token-bearing form because nothing
+    /// wants one — the only holders are the two consoles, whose work is to
+    /// format bytes and return.
+    ///
     /// # Panics
     ///
-    /// Panics if called from a trap handler, outside the panic path. That is
-    /// the whole discipline of this type, checked rather than documented:
-    /// a handler that took this lock could be the interrupt that landed on
-    /// the holder, and it would spin for ever against itself.
+    /// If called from a trap handler, or with a spin lock held, outside the
+    /// panic path. A handler that took this lock could be the interrupt that
+    /// landed on the holder and would spin for ever against itself; and a
+    /// waiter holding a spin lock has interrupts off, so the preempted holder
+    /// is never scheduled again.
     pub fn lock(&self) -> ThreadLockGuard<'_, T> {
         assert!(
             !interrupt::in_trap() || crate::panic::is_panicking(),
@@ -280,7 +397,7 @@ impl<T> ThreadLock<T> {
             "a spin lock is held, so waiting for a thread lock could never end"
         );
         loop {
-            if let Some(guard) = self.try_lock() {
+            if let Some(guard) = self.acquire() {
                 return guard;
             }
             while self.is_locked() {
@@ -293,8 +410,14 @@ impl<T> ThreadLock<T> {
     ///
     /// Context-free because it cannot wait: a handler that finds the lock
     /// taken is told so and moves on, which is the one way a handler may
-    /// touch one of these at all.
+    /// touch one of these at all. It is also what a `Debug` impl needs, and
+    /// what the panic path reports through.
     pub fn try_lock(&self) -> Option<ThreadLockGuard<'_, T>> {
+        self.acquire()
+    }
+
+    /// The acquisition itself, with no discipline attached.
+    fn acquire(&self) -> Option<ThreadLockGuard<'_, T>> {
         match self
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)

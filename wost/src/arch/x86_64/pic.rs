@@ -87,7 +87,7 @@ impl core::error::Error for PicError {}
 ///
 /// Does nothing after the first successful call.
 pub fn silence() -> Result<(), PicError> {
-    let mut controllers = CONTROLLERS.lock();
+    let mut controllers = CONTROLLERS.lock_leaf();
     if controllers.is_some() {
         return Ok(());
     }
@@ -104,7 +104,7 @@ pub fn silence() -> Result<(), PicError> {
 
 /// Whether [`silence`] has run to completion.
 pub fn is_silenced() -> bool {
-    CONTROLLERS.lock().is_some()
+    CONTROLLERS.lock_leaf().is_some()
 }
 
 /// The interrupt mask each controller holds, read back from the hardware, or
@@ -113,7 +113,7 @@ pub fn is_silenced() -> bool {
 /// Read back rather than remembered: the point of asking is to find out whether
 /// the write landed.
 pub fn masks() -> Option<(u8, u8)> {
-    let mut controllers = CONTROLLERS.lock();
+    let mut controllers = CONTROLLERS.lock_leaf();
     let pair = controllers.as_mut()?;
     Some((
         pair.primary.read(register::DATA),

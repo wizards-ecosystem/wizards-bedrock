@@ -102,10 +102,10 @@ pub fn init(map: &MemoryMap, direct: DirectMap) -> Report {
     }
 
     DIRECT_MAP_OFFSET.store(direct.offset(), Ordering::Release);
-    *MAP.lock() = Some(*map);
+    *MAP.lock_leaf() = Some(*map);
 
     let mut ignored = 0;
-    let mut frames = FRAMES.lock();
+    let mut frames = FRAMES.lock_leaf();
     for region in map.regions().filter(|region| region.kind.is_allocatable()) {
         ignored += frames.insert(region.base, region.len).ignored;
     }
@@ -121,7 +121,7 @@ pub fn init(map: &MemoryMap, direct: DirectMap) -> Report {
 
 /// Frames managed and free, right now.
 fn report() -> Report {
-    let frames = FRAMES.lock();
+    let frames = FRAMES.lock_leaf();
     Report {
         managed: frames.managed_count(),
         ..Report::default()
@@ -130,12 +130,12 @@ fn report() -> Report {
 
 /// Frames available to allocate.
 pub fn free_frames() -> usize {
-    FRAMES.lock().free_count()
+    FRAMES.lock_leaf().free_count()
 }
 
 /// Frames under management, allocated or not.
 pub fn managed_frames() -> usize {
-    FRAMES.lock().managed_count()
+    FRAMES.lock_leaf().managed_count()
 }
 
 /// Read-only access to physical firmware tables.
@@ -158,7 +158,7 @@ impl FirmwareMemory {
         let Some(end) = address.checked_add(len) else {
             return false;
         };
-        let guard = MAP.lock();
+        let guard = MAP.lock_leaf();
         let Some(map) = guard.as_ref() else {
             return false;
         };
@@ -194,7 +194,7 @@ impl FirmwareMemory {
 
 /// Acquire the narrow reader after the memory map and direct map exist.
 pub fn firmware_memory() -> Option<FirmwareMemory> {
-    (MAP.lock().is_some() && DIRECT_MAP_OFFSET.load(Ordering::Acquire) != 0)
+    (MAP.lock_leaf().is_some() && DIRECT_MAP_OFFSET.load(Ordering::Acquire) != 0)
         .then_some(FirmwareMemory(()))
 }
 
@@ -203,7 +203,7 @@ pub(crate) fn device_range_is_eligible(start: Paddr, end: Paddr) -> bool {
     if start >= end {
         return false;
     }
-    let guard = MAP.lock();
+    let guard = MAP.lock_leaf();
     let Some(map) = guard.as_ref() else {
         return false;
     };
@@ -224,7 +224,7 @@ static MAP: SpinLock<Option<MemoryMap>> = SpinLock::new(None);
 ///
 /// The lock is held for the call, so `f` must not try to acquire it again.
 pub fn with_memory_map<T>(f: impl FnOnce(&MemoryMap) -> T) -> Option<T> {
-    MAP.lock().as_ref().map(f)
+    MAP.lock_leaf().as_ref().map(f)
 }
 
 /// The direct map [`init`] recorded, or `None` before it has run.
@@ -329,7 +329,7 @@ impl Drop for Frame {
         // A refusal here means the bookkeeping disagrees with the handle, which
         // is a bug this crate cannot correct from a `Drop`. Leaking the frame
         // is the safe half of the choice.
-        let _ = FRAMES.lock().free(self.index);
+        let _ = FRAMES.lock_leaf().free(self.index);
     }
 }
 
@@ -408,13 +408,13 @@ impl Drop for Segment {
     fn drop(&mut self) {
         // As for `Frame`: a refusal means the bookkeeping disagrees with the
         // handle, which a `Drop` cannot correct. Leaking is the safe half.
-        let _ = FRAMES.lock().free_contiguous(self.first, self.count);
+        let _ = FRAMES.lock_leaf().free_contiguous(self.first, self.count);
     }
 }
 
 /// Allocate one frame, with unspecified contents.
 pub fn allocate() -> Option<Frame> {
-    let index = FRAMES.lock().allocate()?;
+    let index = FRAMES.lock_leaf().allocate()?;
     Some(Frame { index })
 }
 
@@ -423,7 +423,7 @@ pub fn allocate() -> Option<Frame> {
 /// `align` is rounded up to a power of two. A 2 MiB page wants
 /// `allocate_contiguous(512, 512)`.
 pub fn allocate_contiguous(count: usize, align: usize) -> Option<Segment> {
-    let first = FRAMES.lock().allocate_contiguous(count, align)?;
+    let first = FRAMES.lock_leaf().allocate_contiguous(count, align)?;
     Some(Segment { first, count })
 }
 

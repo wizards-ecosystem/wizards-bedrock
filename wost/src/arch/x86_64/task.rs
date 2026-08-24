@@ -176,7 +176,7 @@ pub fn init(arena: StackArena) -> Result<usize, TaskError> {
         return Err(TaskError::TooMany(layout.slots()));
     }
 
-    let mut table = TABLE.lock();
+    let mut table = TABLE.lock_leaf();
     if !INIT.claim() {
         return Err(TaskError::NotInitialised);
     }
@@ -197,7 +197,7 @@ pub fn current() -> usize {
 
 /// Slots in the table, the boot slot included; zero before [`init`].
 pub fn count() -> usize {
-    TABLE.lock().count
+    TABLE.lock_leaf().count
 }
 
 /// Give `slot` a fresh thread that will begin at `entry(arg)`.
@@ -225,7 +225,7 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
     // Before the lock, which clears the flag: what is wanted is the caller's
     // own, not the one taking this lock leaves behind.
     let starts_interruptible = interrupt::are_enabled();
-    let mut table = TABLE.lock();
+    let mut table = TABLE.lock_leaf();
     if table.count == 0 {
         return Err(TaskError::NotInitialised);
     }
@@ -379,7 +379,7 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
         crate::sync::spinlocks_held() == 0,
         "a spin lock is held, so the thread left behind could never release it"
     );
-    let mut table = TABLE.lock();
+    let mut table = TABLE.lock_leaf();
     if table.count == 0 {
         return Err(TaskError::NotInitialised);
     }
@@ -428,7 +428,7 @@ const FRAME_WORDS: usize = 8;
 extern "C" fn thread_start() -> ! {
     let slot = current();
     let (entry, interruptible) = {
-        let table = TABLE.lock();
+        let table = TABLE.lock_leaf();
         (
             table.slots[slot].entry,
             table.slots[slot].starts_interruptible,

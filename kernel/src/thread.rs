@@ -25,6 +25,7 @@ use wost::arch::current::cpu;
 use wost::arch::current::interrupt::{self, TrapFrame};
 use wost::arch::current::paging::StackArena;
 use wost::arch::current::task::{self, BOOT, TaskError};
+pub(crate) use wost::sync::ThreadContext;
 use wost::sync::{Once, SpinLock};
 
 use crate::time::{self, NANOSECONDS_PER_MS};
@@ -48,34 +49,6 @@ const WINDOW: u64 = 0xffff_fe00_0000_0000;
 
 /// Slots in the table, the boot thread's among them.
 pub(crate) const CAPACITY: usize = STACK_SLOTS + 1;
-
-/// Evidence that the caller is in thread context, not inside a trap handler.
-///
-/// D-62. Every call that can block takes one, so the rule they used to assert
-/// at run time is one the compiler keeps. Neither `Send` nor `Sync`, so it
-/// cannot be stashed in a `static` and produced later.
-#[derive(Debug)]
-pub(crate) struct ThreadContext(core::marker::PhantomData<*const ()>);
-
-impl ThreadContext {
-    /// Mint one, or `None` inside a trap handler.
-    pub(crate) fn claim() -> Option<Self> {
-        (!interrupt::in_trap()).then_some(Self(core::marker::PhantomData))
-    }
-
-    /// Mint one, panicking inside a trap handler.
-    ///
-    /// # Panics
-    ///
-    /// From trap context, where a block would carry the handler's stack frame
-    /// away with it (D-55).
-    pub(crate) fn require() -> Self {
-        match Self::claim() {
-            Some(context) => context,
-            None => panic!("thread context required, but a handler is on the stack"),
-        }
-    }
-}
 
 /// Real time a thread may run before its deadline moves, in nanoseconds.
 ///
@@ -368,7 +341,7 @@ static IDLE_STARTED: Once = Once::new();
 /// Whatever `wost` found wrong with the arena.
 pub(crate) fn init(arena: StackArena) -> Result<usize, TaskError> {
     let spawnable = task::init(arena)?;
-    let mut threads = THREADS.lock();
+    let mut threads = THREADS.lock_leaf();
     threads.spawnable = spawnable.min(STACK_SLOTS);
     let mut entity = Entity::new(BASE_WEIGHT);
     entity.place(0, 0, SLICE_NS);
@@ -384,13 +357,13 @@ pub(crate) fn init(arena: StackArena) -> Result<usize, TaskError> {
 
 /// Whether threads can be spawned at all.
 pub(crate) fn is_available() -> bool {
-    THREADS.lock().spawnable > 0
+    THREADS.lock_leaf().spawnable > 0
 }
 
 /// Slots with no live thread in them.
 #[cfg(feature = "selftest")]
 pub(crate) fn free_slots() -> usize {
-    let threads = THREADS.lock();
+    let threads = THREADS.lock_leaf();
     threads.threads[1..=threads.spawnable]
         .iter()
         .filter(|thread| thread.state == State::Free)
@@ -424,7 +397,7 @@ pub(crate) fn idle_halts() -> usize {
 /// Whether the idle thread is running.
 #[cfg(feature = "selftest")]
 pub(crate) fn idle_is_started() -> bool {
-    IDLE_STARTED.is_claimed() && THREADS.lock().idle().is_some()
+    IDLE_STARTED.is_claimed() && THREADS.lock_leaf().idle().is_some()
 }
 
 /// Start the thread that runs when nothing else can.
@@ -440,7 +413,7 @@ pub(crate) fn start_idle() {
     let Ok(slot) = spawn("idle", idle_loop) else {
         return;
     };
-    THREADS.lock().threads[slot].class = Class::Idle;
+    THREADS.lock_leaf().threads[slot].class = Class::Idle;
 }
 
 /// What the idle thread does: nothing, as cheaply as the hardware allows.
@@ -484,7 +457,7 @@ pub(crate) fn spawn_weighted(
     weight: u32,
 ) -> Result<usize, SpawnError> {
     let slot = {
-        let mut threads = THREADS.lock();
+        let mut threads = THREADS.lock_leaf();
         if threads.spawnable == 0 {
             return Err(SpawnError::Unavailable);
         }
@@ -505,7 +478,7 @@ pub(crate) fn spawn_weighted(
     // leaf. The slot is reserved, so no other spawn can choose it and no
     // expiry can pick it.
     if let Err(error) = task::fabricate(slot, start, slot) {
-        THREADS.lock().threads[slot] = Thread::FREE;
+        THREADS.lock_leaf().threads[slot] = Thread::FREE;
         return Err(SpawnError::Task(error));
     }
 
@@ -515,7 +488,7 @@ pub(crate) fn spawn_weighted(
     let saved = interrupt::disable();
     let now = time::now_ns();
     let event = {
-        let mut threads = THREADS.lock();
+        let mut threads = THREADS.lock_leaf();
         let average = threads.average().unwrap_or(0);
         threads.threads[slot].entity.place(average, 0, SLICE_NS);
         threads.threads[slot].state = State::Ready;
@@ -540,13 +513,13 @@ pub(crate) fn spawn_weighted(
 /// Panics from trap context, where a switch would carry the handler's stack
 /// frame away with it (D-55), or if `wost` refuses the switch: the two
 /// tables disagree, which is a bug and not a condition.
-pub(crate) fn yield_now(_context: &ThreadContext) {
+pub(crate) fn yield_now(context: &mut ThreadContext) {
     // Flag clear from decision to switch, so an expiry cannot preempt between
     // them and act on a table that says `next` is running when it is not.
     let saved = interrupt::disable();
     let now = time::now_ns();
     let (next, event) = {
-        let mut threads = THREADS.lock();
+        let mut threads = THREADS.lock(context);
         let current = task::current();
         threads.charge(current, now);
         threads.wake_due(now);
@@ -580,7 +553,7 @@ pub(crate) fn yield_now(_context: &ThreadContext) {
 ///
 /// Panics from trap context, where a switch would carry the handler's stack
 /// frame away with it (D-55), or if `wost` refuses a switch.
-pub(crate) fn sleep_ms(context: &ThreadContext, milliseconds: u64) {
+pub(crate) fn sleep_ms(context: &mut ThreadContext, milliseconds: u64) {
     sleep_ns(context, milliseconds.saturating_mul(NANOSECONDS_PER_MS));
 }
 
@@ -589,7 +562,7 @@ pub(crate) fn sleep_ms(context: &ThreadContext, milliseconds: u64) {
 /// # Panics
 ///
 /// As [`sleep_ms`].
-pub(crate) fn sleep_ns(context: &ThreadContext, nanoseconds: u64) {
+pub(crate) fn sleep_ns(context: &mut ThreadContext, nanoseconds: u64) {
     if !time::is_calibrated() {
         return;
     }
@@ -600,7 +573,7 @@ pub(crate) fn sleep_ns(context: &ThreadContext, nanoseconds: u64) {
     // than its own deadline — the halt below returns on any interrupt — and
     // the deadline, not the wakeup, is what this promised.
     while time::now_ns() < wake_at {
-        THREADS.lock().threads[task::current()].wake_at = wake_at;
+        THREADS.lock(context).threads[task::current()].wake_at = wake_at;
         park(context, State::Sleeping, Some(wake_at));
     }
     saved.restore();
@@ -615,10 +588,10 @@ pub(crate) fn sleep_ns(context: &ThreadContext, nanoseconds: u64) {
 /// `until` bounds the arming, so a sleeper halting alone is woken by its own
 /// timer. Called with the flag already clear, and it stays clear until after
 /// the switch.
-fn park(_context: &ThreadContext, leaving: State, until: Option<u64>) {
+fn park(context: &mut ThreadContext, leaving: State, until: Option<u64>) {
     let now = time::now_ns();
     let (next, event) = {
-        let mut threads = THREADS.lock();
+        let mut threads = THREADS.lock(context);
         let current = task::current();
         threads.charge(current, now);
         threads.wake_due(now);
@@ -678,7 +651,7 @@ fn earliest(one: Option<u64>, other: Option<u64>) -> Option<u64> {
 ///
 /// The wait-queue half of [`park`]: no deadline, so nothing is armed and a
 /// machine with nothing else to do takes no interrupts until the event.
-pub(crate) fn block(context: &ThreadContext) {
+pub(crate) fn block(context: &mut ThreadContext) {
     park(context, State::Blocked, None);
 }
 
@@ -689,7 +662,7 @@ pub(crate) fn block(context: &ThreadContext) {
 /// forbids the heap. A set-but-not-blocked slot is skipped: a thread that
 /// registered and then found nothing to wait for is still registered.
 pub(crate) fn unblock(slots: u32) -> usize {
-    let mut threads = THREADS.lock();
+    let mut threads = THREADS.lock_leaf();
     let mut woken = 0;
     for slot in 0..CAPACITY {
         if slots & (1 << slot) == 0 || threads.threads[slot].state != State::Blocked {
@@ -712,7 +685,7 @@ pub(crate) fn current_slot() -> usize {
 /// by the code holding this.
 pub(crate) fn current_name() -> &'static str {
     let slot = task::current();
-    match THREADS.try_lock() {
+    match THREADS.try_lock_leaf() {
         Some(threads) if !threads.threads[slot].name.is_empty() => threads.threads[slot].name,
         Some(_) => "unnamed",
         None => "unknown",
@@ -733,7 +706,7 @@ pub(crate) fn reschedule(frame: &TrapFrame) {
     let now = time::now_ns();
     let switchable = frame.flags() & INTERRUPT_FLAG != 0;
     let (next, event) = {
-        let mut threads = THREADS.lock();
+        let mut threads = THREADS.lock_leaf();
         if threads.spawnable == 0 {
             return;
         }
@@ -788,7 +761,7 @@ pub(crate) fn exit() -> ! {
     let _off = interrupt::disable();
     let now = time::now_ns();
     let (next, event) = {
-        let mut threads = THREADS.lock();
+        let mut threads = THREADS.lock_leaf();
         let current = task::current();
         assert!(current != BOOT, "the boot thread cannot exit");
         threads.threads[current] = Thread::FREE;
@@ -807,7 +780,7 @@ pub(crate) fn exit() -> ! {
 
 /// Where every spawned thread begins: run its entry, then leave.
 extern "C" fn start(slot: usize) -> ! {
-    let entry = THREADS.lock().threads[slot].entry;
+    let entry = THREADS.lock_leaf().threads[slot].entry;
     match entry {
         Some(entry) => entry(),
         None => panic!("slot {slot} started with no entry"),

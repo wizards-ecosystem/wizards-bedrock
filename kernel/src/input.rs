@@ -76,7 +76,7 @@ const BATCH: usize = 8;
 pub(crate) fn init() {
     match Controller::new() {
         Ok(controller) => {
-            *KEYBOARD.lock() = Some(Keyboard {
+            *KEYBOARD.lock_leaf() = Some(Keyboard {
                 controller,
                 decoder: Decoder::new(),
                 shift: Shift::new(),
@@ -124,7 +124,7 @@ pub(crate) fn poll() -> usize {
 /// Decode up to one batch under the lock, resolving each event's character
 /// against the shift state as it stood at that event.
 fn drain_batch(keystrokes: &mut [Option<Keystroke>; BATCH]) -> usize {
-    let mut guard = KEYBOARD.lock();
+    let mut guard = KEYBOARD.lock_leaf();
     let Some(keyboard) = guard.as_mut() else {
         return 0;
     };
@@ -148,8 +148,8 @@ fn drain_batch(keystrokes: &mut [Option<Keystroke>; BATCH]) -> usize {
 /// Touches no output device: the console lock is one a handler is now refused
 /// (D-63), and a glyph can cost a scroll.
 fn deliver(keystroke: Keystroke) {
-    WATCH.lock().observe(keystroke.event);
-    EVENTS.lock().push(keystroke);
+    WATCH.lock_leaf().observe(keystroke.event);
+    EVENTS.lock_leaf().push(keystroke);
 }
 
 /// Decoded events waiting for a reader.
@@ -211,13 +211,13 @@ static READERS: WaitQueue = WaitQueue::new();
 /// The check and the registration happen with the flag clear, together: a
 /// wakeup arriving between "empty" and "waiting" is the classic way to lose
 /// one for good.
-pub(crate) fn read_key(context: &ThreadContext) -> Keystroke {
+pub(crate) fn read_key(context: &mut ThreadContext) -> Keystroke {
     loop {
         let saved = interrupt::disable();
         // A statement of its own: held across the restore below, this guard
         // would leave the queue locked with the flag set, and the next
         // keyboard interrupt would spin on it for ever (D-66).
-        let keystroke = EVENTS.lock().pop();
+        let keystroke = EVENTS.lock(context).pop();
         if let Some(keystroke) = keystroke {
             saved.restore();
             return keystroke;
@@ -230,7 +230,7 @@ pub(crate) fn read_key(context: &ThreadContext) -> Keystroke {
 /// Events dropped because no reader kept up. See [`Events::dropped`].
 #[cfg(feature = "selftest")]
 pub(crate) fn dropped_events() -> usize {
-    EVENTS.lock().dropped
+    EVENTS.lock_leaf().dropped
 }
 
 /// Whether anything is waiting for a keystroke.
@@ -267,7 +267,7 @@ const FOREVER: usize = usize::MAX;
 
 /// Drain, wait, drain again — the whole of the fallback.
 fn poll_forever() {
-    let context = ThreadContext::require();
+    let mut context = ThreadContext::require();
     // `then`, not `then_some`: the latter evaluates the subtraction even at
     // zero, which wraps in release and panics in debug.
     while POLLER_ROUNDS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |rounds| {
@@ -282,7 +282,7 @@ fn poll_forever() {
     {
         poll();
         POLLER_PASSES.fetch_add(1, Ordering::Relaxed);
-        crate::thread::sleep_ms(&context, POLL_INTERVAL_MS);
+        crate::thread::sleep_ms(&mut context, POLL_INTERVAL_MS);
     }
 }
 
@@ -306,13 +306,13 @@ pub(crate) fn start_bounded_poller(rounds: usize) -> bool {
 /// Whether the controller came up.
 #[cfg(feature = "selftest")]
 pub(crate) fn is_ready() -> bool {
-    KEYBOARD.lock().is_some()
+    KEYBOARD.lock_leaf().is_some()
 }
 
 /// The controller's configuration byte, read live from the hardware.
 #[cfg(feature = "selftest")]
 pub(crate) fn controller_config() -> Option<u8> {
-    let mut guard = KEYBOARD.lock();
+    let mut guard = KEYBOARD.lock_leaf();
     guard
         .as_mut()
         .and_then(|keyboard| keyboard.controller.config())
@@ -321,7 +321,7 @@ pub(crate) fn controller_config() -> Option<u8> {
 /// Whether an echo command round-trips to the keyboard and back.
 #[cfg(feature = "selftest")]
 pub(crate) fn echo_roundtrips() -> bool {
-    let mut guard = KEYBOARD.lock();
+    let mut guard = KEYBOARD.lock_leaf();
     guard
         .as_mut()
         .is_some_and(|keyboard| keyboard.controller.echo_roundtrips())
@@ -330,7 +330,7 @@ pub(crate) fn echo_roundtrips() -> bool {
 /// The scancode set the keyboard reports itself speaking.
 #[cfg(feature = "selftest")]
 pub(crate) fn scancode_set() -> Option<u8> {
-    let mut guard = KEYBOARD.lock();
+    let mut guard = KEYBOARD.lock_leaf();
     guard
         .as_mut()
         .and_then(|keyboard| keyboard.controller.scancode_set())
@@ -363,14 +363,14 @@ pub(crate) fn await_key(key: Key) -> bool {
         // keystroke the interrupt path never saw, which is the one thing this
         // check exists to rule out.
         if is_interrupt_driven() {
-            if WATCH.lock().saw(key) {
+            if WATCH.lock_leaf().saw(key) {
                 return true;
             }
             core::hint::spin_loop();
             continue;
         }
 
-        let mut guard = KEYBOARD.lock();
+        let mut guard = KEYBOARD.lock_leaf();
         let Some(keyboard) = guard.as_mut() else {
             return false;
         };
@@ -472,7 +472,7 @@ static WATCH: SpinLock<Watch> = SpinLock::new(Watch {
 ///
 /// Called only after the I/O APIC has been given somewhere to send it.
 pub(crate) fn enable_interrupts() -> bool {
-    let mut guard = KEYBOARD.lock();
+    let mut guard = KEYBOARD.lock_leaf();
     guard
         .as_mut()
         .is_some_and(|keyboard| keyboard.controller.enable_interrupt())

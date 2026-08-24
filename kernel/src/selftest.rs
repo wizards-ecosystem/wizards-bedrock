@@ -432,6 +432,54 @@ fn the_heap_reuses_a_freed_slot() -> bool {
     taken && after.live == before.live && after.slab_frames == before.slab_frames
 }
 
+/// A refill happens with the heap's own lock dropped, and the accounting
+/// balances across the window that opens.
+///
+/// D-85 moved the frame allocation out from under `HEAP`'s guard, which
+/// deletes D-47's lock order and creates a window: between observing an empty
+/// free list and re-acquiring, this thread can be preempted and another can
+/// refill the same class. The cost is meant to be at most one spare slab
+/// frame — never a lost frame, and never an unbalanced `live`.
+///
+/// The *other* half of the claim, that no slot is handed out twice, is checked
+/// as arithmetic in `libs/slab-layout` instead. Breaking it here corrupts the
+/// allocator every later check runs on, so the break is a general-protection
+/// fault rather than a red verdict, and a break that crashes proves less than
+/// one that fails (D-28, and Phase 4 learned it twice).
+///
+/// Preemption is on by this point and the count is chosen to force several
+/// refills, so the window is crossed rather than assumed.
+fn a_refill_costs_one_frame_and_balances() -> bool {
+    /// Enough allocations of one class to span several slab frames.
+    const TAKEN: usize = 512;
+
+    // The vector's own buffer is allocated before the first snapshot and
+    // released after the last, so all three see the same one allocation and
+    // what moves between them is only the slots under test.
+    let mut held: Vec<Box<[u8; 64]>> = Vec::with_capacity(TAKEN);
+    let before = mm::heap::stats();
+    for index in 0..TAKEN {
+        held.push(Box::new([index as u8; 64]));
+    }
+    let after_taking = mm::heap::stats();
+
+    // Each slot still holds what it was given, which is what a slot handed out
+    // twice would have overwritten.
+    let intact = held
+        .iter()
+        .enumerate()
+        .all(|(index, slot)| slot.iter().all(|byte| *byte == index as u8));
+
+    held.clear();
+    let after = mm::heap::stats();
+
+    let refilled = after_taking.slab_frames > before.slab_frames;
+    let took_every_one = after_taking.live == before.live + TAKEN;
+    let balanced = after.live == before.live && after.slab_frames == after_taking.slab_frames;
+
+    refilled && took_every_one && intact && balanced
+}
+
 /// A heap allocation is writable, and holds what was written.
 fn heap_memory_holds_what_it_is_given() -> bool {
     let mut values: Vec<u32> = (0..1024).collect();
@@ -488,7 +536,7 @@ fn take_turns(mine: usize) {
             TURN.store(1 - mine, Ordering::Release);
         } else {
             budget -= 1;
-            thread::yield_now(&context());
+            thread::yield_now(&mut context());
         }
     }
 }
@@ -504,7 +552,7 @@ fn second_turns() {
 /// Yield until `done`, or until the budget runs out.
 fn yields_until(done: impl Fn() -> bool) -> bool {
     (0..YIELD_BUDGET).any(|_| {
-        thread::yield_now(&context());
+        thread::yield_now(&mut context());
         done()
     })
 }
@@ -560,7 +608,7 @@ fn churn(seed: u64) -> bool {
         c = c.wrapping_mul(MULTIPLIER).wrapping_add(b);
         d = d.wrapping_mul(MULTIPLIER).wrapping_add(c);
         e = e.wrapping_mul(MULTIPLIER).wrapping_add(d);
-        thread::yield_now(&context());
+        thread::yield_now(&mut context());
     }
 
     let (mut p, mut q, mut r, mut s, mut t) = (
@@ -857,9 +905,9 @@ static READER_BLOCKED: AtomicUsize = AtomicUsize::new(0);
 
 /// Block on the keyboard, and record the first key that arrives.
 fn read_one_key() {
-    let context = context();
+    let mut context = context();
     let blocks = thread::blocks();
-    let keystroke = input::read_key(&context);
+    let keystroke = input::read_key(&mut context);
     READER_BLOCKED.store(
         if thread::blocks() > blocks { 1 } else { 2 },
         Ordering::Release,
@@ -921,7 +969,7 @@ fn the_polled_fallback_drains_and_sleeps() -> bool {
         return false;
     }
     // Its own sleeps are what let this thread run, so waiting is a sleep too.
-    thread::sleep_ms(&context(), (ROUNDS as u64 + 2) * 10);
+    thread::sleep_ms(&mut context(), (ROUNDS as u64 + 2) * 10);
 
     let passes = input::poller_passes() - before;
     let exited = yields_until(|| thread::free_slots() == free);
@@ -939,7 +987,7 @@ fn the_idle_thread_runs_only_when_nothing_else_can() -> bool {
     // is runnable the idle thread must not run — which is the very thing the
     // second half checks.
     let idled = thread::idle_halts();
-    thread::sleep_ms(&context(), 20);
+    thread::sleep_ms(&mut context(), 20);
     let ran_when_free = thread::idle_halts() > idled;
 
     STOP_SPINNING.store(0, Ordering::Release);
@@ -1036,7 +1084,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 79;
+const EXPECTED_CHECKS: usize = 80;
 
 impl Report {
     const fn new() -> Self {
@@ -1148,6 +1196,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the heap reuses a freed slot",
         the_heap_reuses_a_freed_slot(),
+    );
+    report.check(
+        "a refill costs one frame and balances",
+        a_refill_costs_one_frame_and_balances(),
     );
     report.check(
         "heap memory holds what it is given",
@@ -1465,10 +1517,10 @@ fn a_claim_covers_the_width_it_drives() -> bool {
 
 fn lock_excludes() -> bool {
     let lock = SpinLock::new(0u32);
-    let held = lock.lock();
-    let refused = lock.try_lock().is_none();
+    let held = lock.lock_leaf();
+    let refused = lock.try_lock_leaf().is_none();
     drop(held);
-    refused && lock.try_lock().is_some()
+    refused && lock.try_lock_leaf().is_some()
 }
 
 fn latch_admits_one() -> bool {
@@ -1490,10 +1542,10 @@ fn a_lock_excludes_interrupts() -> bool {
     let inner = SpinLock::new(0u32);
 
     let before = interrupt::are_enabled();
-    let outer_guard = outer.lock();
+    let outer_guard = outer.lock_leaf();
     let excluded = !interrupt::are_enabled();
 
-    let inner_guard = inner.lock();
+    let inner_guard = inner.lock_leaf();
     drop(inner_guard);
     let still_excluded = !interrupt::are_enabled();
 
@@ -1569,7 +1621,7 @@ fn sweep_clock() -> ClockSweep {
     for attempt in 0..ATTEMPTS {
         let sample = if attempt == 0 {
             let lock = SpinLock::new(0u32);
-            let held = lock.lock();
+            let held = lock.lock_leaf();
             let sample = time::now_ns();
             drop(held);
             sample
@@ -1664,7 +1716,7 @@ fn a_sleeper_wakes_on_time_and_quietly() -> bool {
 
     let expiries = time::expiries();
     let before = time::uptime_ms();
-    thread::sleep_ms(&context(), SLEEP_MS);
+    thread::sleep_ms(&mut context(), SLEEP_MS);
     let slept = time::uptime_ms() - before;
     let spent = time::expiries() - expiries;
 
@@ -1694,7 +1746,7 @@ fn sleeping_hands_the_cpu_over() -> bool {
     }
 
     let woke = thread::wakes();
-    thread::sleep_ms(&context(), SLEEP_MS);
+    thread::sleep_ms(&mut context(), SLEEP_MS);
     let progressed = LIGHT_SPINS.load(Ordering::Relaxed) >= PROGRESS;
     let woken = thread::wakes() == woke + 1;
     STOP_SPINNING.store(1, Ordering::Release);

@@ -125,7 +125,7 @@ static IO_APIC: SpinLock<Option<IoApic>> = SpinLock::new(None);
 /// system interrupt, and a check that assumed the identity would be reading
 /// somebody else's entry.
 pub(crate) fn keep_io_apic(io_apic: IoApic, gsi: u32) {
-    *IO_APIC.lock() = Some(io_apic);
+    *IO_APIC.lock_leaf() = Some(io_apic);
     KEYBOARD_GSI.store(gsi, core::sync::atomic::Ordering::Release);
 }
 
@@ -141,7 +141,7 @@ static KEYBOARD_GSI: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU
 /// Ask the I/O APIC something, if there is one.
 #[cfg(feature = "selftest")]
 pub(crate) fn with_io_apic<T>(f: impl FnOnce(&mut IoApic) -> T) -> Option<T> {
-    IO_APIC.lock().as_mut().map(f)
+    IO_APIC.lock_leaf().as_mut().map(f)
 }
 
 /// Where the console's framebuffer is reachable now.

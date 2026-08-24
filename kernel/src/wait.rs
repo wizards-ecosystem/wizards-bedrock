@@ -44,11 +44,11 @@ impl WaitQueue {
     /// # Panics
     ///
     /// Panics if `wost` refuses the switch: the two tables disagree.
-    pub(crate) fn wait(&self, context: &ThreadContext) {
+    pub(crate) fn wait(&self, context: &mut ThreadContext) {
         let slot = thread::current_slot();
         let saved = wost::arch::current::interrupt::disable();
         {
-            let mut waiters = self.waiters.lock();
+            let mut waiters = self.waiters.lock(context);
             *waiters |= 1 << slot;
         }
         thread::block(context);
@@ -60,7 +60,7 @@ impl WaitQueue {
     /// Safe from a trap handler, and meant to be.
     pub(crate) fn wake_all(&self) -> usize {
         let waiting = {
-            let mut waiters = self.waiters.lock();
+            let mut waiters = self.waiters.lock_leaf();
             core::mem::take(&mut *waiters)
         };
         if waiting == 0 {
@@ -72,6 +72,6 @@ impl WaitQueue {
     /// Whether anything is waiting here.
     #[cfg(feature = "selftest")]
     pub(crate) fn is_idle(&self) -> bool {
-        *self.waiters.lock() == 0
+        *self.waiters.lock_leaf() == 0
     }
 }

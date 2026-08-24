@@ -24,7 +24,7 @@ static CLAIMED: SpinLock<PortSpace> = SpinLock::new(PortSpace::new());
 
 /// Record `len` ports from `number` as claimed, all or nothing.
 fn reserve(number: u16, len: usize) -> bool {
-    CLAIMED.lock().reserve(number as usize, len)
+    CLAIMED.lock_leaf().reserve(number as usize, len)
 }
 
 /// Claim exclusive access to port `number` and the ports a `T`-wide access

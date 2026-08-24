@@ -115,9 +115,9 @@ fn kernel_main(boot: BootInfo) -> ! {
 /// Drawing is here rather than in the handler because a glyph can cost a
 /// scroll (D-63).
 fn echo_keystrokes() -> ! {
-    let context = thread::ThreadContext::require();
+    let mut context = thread::ThreadContext::require();
     loop {
-        let keystroke = input::read_key(&context);
+        let keystroke = input::read_key(&mut context);
         debug!("key: {:?} {:?}", keystroke.event.key, keystroke.event.state);
         if let Some(character) = keystroke.character {
             dev::with_console(|console| {
