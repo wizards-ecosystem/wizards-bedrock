@@ -83,9 +83,9 @@ message shape. mlibc needs an ABI to sit on.
 | 2 | The lock discipline in the borrow checker (D-69): `SpinLock::lock` borrows the context, and the leaf acquisition a `Drop` can take | ✅ 2026-08-24 |
 | 3 | The address space that grows: two-way mapping, mappings that carry their evidence, unmap returning a flush token, the double-fault stack guarded | ✅ 2026-08-24 |
 | 4 | Trap entry, FRED-shaped: `libs/trap-cause` and table dispatch, the boot thread's own guarded stack, eIBRS and the speculation report, x2APIC as a checked precondition | ✅ 2026-08-24 |
-| 5 | Ring 3: user descriptors, `syscall`/`sysret`, `arch::percpu` and `swapgs`, the SMAP copy guard, `VERW` on the way out, trap stacks as an enum, the XSAVE table in `libs/x86-cpuid` | |
+| 5 | Ring 3: user descriptors, a trap gate, the SMAP copy guard, `VERW` on the way out, the XSAVE layout in `libs/x86-cpuid` | ✅ 2026-08-24 |
 | 6 | The handle table: `libs/handle-space`, rights in one `u32`, a refcounted table, the object header, per-process quota | ✅ 2026-08-24 |
-| 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, `UFrame`, stacks that arrive with their thread, two processes, exactly one handle each at spawn, and `THREADS` split into a thread table and a run queue | |
+| 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, `UFrame`, per-thread `RSP0` and eager XSAVE, stacks that arrive with their thread, two processes, exactly one handle each at spawn, and `THREADS` split into a thread table and a run queue | |
 | 8 | Channels: bytes and handles, attenuate-on-send, rights declared per field with no defaults | |
 | 9 | The async queue ABI: the model before the protocol, `libs/ring-proto` under shuttle and proptest, reservation backpressure, exactly one terminal completion | |
 | 10 | The stub mlibc sysdep (D-74), on a vendored clang | |
@@ -745,3 +745,73 @@ them, because the first shipped caller is `spawn`. The gate comes off in slice
 arena — a table can learn which slots another holds. Zircon collapses both to
 one error for that reason, and it is a decision for the slice that has a
 syscall to surface them through.
+
+## Slice 5 — ring 3 (2026-08-24)
+
+Recorded as built, per the charter above.
+
+**A trap gate, and not for the reason D-81 expected.** It left the
+`syscall`-versus-trap-gate question open and said the measurement that would
+settle it is meaningless under TCG. It is settled on something else: `syscall`
+needs `swapgs`, `swapgs` needs a per-CPU block, and that is two unproven
+mechanisms in the commit that establishes a privilege boundary. A trap gate
+needs neither — the CPU loads `RSP0` from the task-state segment itself. So the
+boundary goes up on the simplest thing that can hold it, and `syscall` becomes
+an optimisation with something working to compare against, on hardware, where
+the comparison means something.
+
+Exactly one gate admits ring 3, and it is named rather than defaulted. Every
+other vector faults when user code says `int`, because a device's line is not a
+service.
+
+**`enter_user` is safe because it checks** (D-96). `iretq` will send the CPU to
+an unmapped address in a privilege level that cannot report it, so the tables,
+the entry's user-executability, the stack's user-writability, the alignment and
+`RSP0` are all walked first. Breaking the code page's `USER` bit produces a
+sentence and a red check where it would otherwise produce a triple fault.
+
+**The evidence is the selector the CPU pushed.** A ring-3 `CS` in the trap
+frame cannot be manufactured by a kernel thread saying `int 0x80` — the number
+is the hardware's account of where the caller was. And when the gate is closed,
+the machine confirms the whole boundary at once: *general protection fault,
+error 0x402* — IDT entry `0x80` refused — *at cs 0x33, rsp 0x300000001000*.
+
+**The user copy is the boundary** (D-97), and the release build found the bug
+the debug build could not. `stac` and `clac` were given `nomem` and
+`preserves_flags`; both are lies. `stac` changes whether a *later* access
+faults, so `nomem` let the optimiser move the copy out of the window — and the
+flag it sets is `EFLAGS.AC`. Debug passed. Release took a protection violation
+reading the page it had just been given permission for. D-65 made the gate boot
+both profiles for overflow checks; this is the same lesson through a different
+door.
+
+**`VERW`'s gate moved so that it could be reached** (D-98). D-81 wanted it
+gated on `MD_CLEAR`, which QEMU does not report — so gated that way the
+instruction would have shipped unexecuted, in the state eIBRS is still in. It
+is armed unless the processor claims `MDS_NO` instead, because `verw` exists on
+every x86-64 and `MD_CLEAR` says only whether it also flushes. A machine whose
+capability word cannot be read gets the instruction rather than the assumption.
+
+**Three items moved, each with a reason rather than a shrug.**
+
+- **`syscall`/`sysret`, `arch::percpu` and `swapgs`** → the slice that measures
+  them. The descriptor order is fixed for `sysret` already: `USER_DATA` sits
+  *before* `USER_CODE`, which looks backwards and is what `STAR + 8` and
+  `STAR + 16` require. Moving a descriptor later means moving every selector
+  that names it, so the order is settled now and the mechanism is not.
+- **Trap stacks as an enum** → still one IST user. An enum with one variant is
+  not an abstraction (`005`).
+- **Eager XSAVE save and restore** → **slice 7**. D-82's arithmetic is done and
+  host-tested, including the APX case that broke Linux's monotonicity
+  assumption. What is missing is per-thread buffers and a save on every switch,
+  and it is not reachable yet: `RSP0` is set once, so **one thread may be in
+  ring 3 at a time**, and one thread cannot corrupt another's floating-point
+  state. Per-thread `RSP0` and eager XSAVE arrive together, with the processes
+  that need both.
+
+**Still owed by this slice's neighbours.** A fault *during* a user copy is
+terminal, where a real kernel would recover and return an error — that needs a
+fixup table keyed on the faulting instruction pointer, and the trap dispatch
+D-81 built is what would consult one. And the retired ring-3 thread keeps its
+slot and its two pages for the life of the boot; nothing reclaims a retired
+thread until `spawn` has a counterpart.
