@@ -52,11 +52,11 @@ session finds them collected.
 | The untyped split `UFrame`, "absent on purpose" until something can map a frame into a second address space | D-44; `wost/src/mm/mod.rs` | Slice 3 gives it its first real caller |
 | Port claims prove exclusivity but not device entitlement | D-77 | **Not this phase.** The user-memory half is slice 3's; the device half is Phase 6's, with PCI discovery |
 | XSAVE, deferred until "there is a scheduler" | D-29 | Slice 5: eager, compacted, boot-sized, with the offset arithmetic in `libs/` |
-| `swapgs` and the GS base, left for ring 3 | D-29 | Slice 2 builds the accessor; slice 5 is its first user |
+| `swapgs` and the GS base, left for ring 3 | D-29 | Slice 5, which is where `arch::percpu` gets its first real caller |
 | There are no ring-3 descriptors | `006` | Slice 5 |
-| The lock discipline belongs in the borrow checker — 13 statics, 73 call sites | D-69 | Slice 2, first, so nothing in this phase is written twice |
-| There is no preempt-disable mechanism; `SpinLock`'s `cli` is doing that job | D-70 rule 2 | Slice 2: a preempt-only lock on the per-CPU word |
-| The per-CPU word widens; `SPINLOCKS_HELD` is still a global | D-56, D-70 | Slice 2: `arch::percpu`, reached through `gs:` |
+| The lock discipline belongs in the borrow checker — 13 statics, 73 call sites | D-69 | ✅ Slice 2, first, so nothing in this phase was written twice — and D-85 records where its shape was wrong |
+| There is no preempt-disable mechanism; `SpinLock`'s `cli` is doing that job | D-70 rule 2 | A preempt-only lock, with its first caller: every lock a handler can reach must keep disabling interrupts, and today that is all of them |
+| The per-CPU word widens; `SPINLOCKS_HELD` is still a global | D-56, D-70 | Slice 5: `arch::percpu`, reached through `gs:`, alongside `swapgs` |
 | Per-process quota accounting for kernel-memory DoS — "Phase 5's handle-table doc inherits the quota obligation" | D-44 | Slice 6, at the handle layer, which is where the ADR said it belongs |
 | A wait with a timeout, and a wait on two queues | `009` slice 4 | Slice 9: both fall out of the completion queue, which is why neither was built early |
 | The thread cap of sixteen is a real cap | D-52; `kernel/src/thread.rs` | Slice 3, when stacks stop being committed at table-build time |
@@ -79,13 +79,13 @@ message shape. mlibc needs an ABI to sit on.
 
 | Slice | Contents | Status |
 |---|---|---|
-| 1 | This charter: the handle-table layout and lifetime rules, the queue layout and wakeup semantics, the signal answer, and the ADRs that cost no code | |
-| 2 | The lock discipline in the borrow checker (D-69): `SpinLock::lock` borrows the context, `lock_from_trap`, `libs/lock-rank`, a preempt-only lock, `arch::percpu` behind `gs:`, `THREADS` split into a thread table and a run queue | |
+| 1 | This charter: the handle-table layout and lifetime rules, the queue layout and wakeup semantics, the signal answer, and the ADRs that cost no code | ✅ 2026-08-24 |
+| 2 | The lock discipline in the borrow checker (D-69): `SpinLock::lock` borrows the context, and the leaf acquisition a `Drop` can take | ✅ 2026-08-24 |
 | 3 | The address space that grows: two-way mapping, mappings that take owned frames, `UFrame`, unmap returning a flush token, the boot and double-fault stack guards, a stack allocator with a second region slot | |
 | 4 | Trap entry, FRED-shaped: `libs/trap-cause` and table dispatch, trap stacks as an enum, `VERW` and eIBRS, x2APIC as a checked precondition, the Limine base-revision-5 bump | |
-| 5 | Ring 3: user descriptors, `syscall`/`sysret`, `swapgs`, the SMAP copy guard, `libs/xstate` and eager compacted `XSAVES` | |
+| 5 | Ring 3: user descriptors, `syscall`/`sysret`, `arch::percpu` and `swapgs`, the SMAP copy guard, `libs/xstate` and eager compacted `XSAVES` | |
 | 6 | The handle table: `libs/handle-space`, rights in one `u32`, a refcounted table, the object header, per-process quota | |
-| 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, two processes, exactly one handle each at spawn | |
+| 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, two processes, exactly one handle each at spawn, and `THREADS` split into a thread table and a run queue | |
 | 8 | Channels: bytes and handles, attenuate-on-send, rights declared per field with no defaults | |
 | 9 | The async queue ABI: the model before the protocol, `libs/ring-proto` under shuttle and proptest, reservation backpressure, exactly one terminal completion | |
 | 10 | The stub mlibc sysdep (D-74), on a vendored clang | |
@@ -386,3 +386,79 @@ takes up front are those where writing code first would waste the most work.
 - **What the mlibc slice does if it cannot compile.** The vendored clang is the
   plan; the fallback is authored sources and a recorded wall. Decide the
   threshold before starting, not while overrunning.
+
+## Slice 2 — the lock discipline in the borrow checker (2026-08-24)
+
+Recorded as built, per the charter above.
+
+**D-69's counts were exact and its shape was not** (D-85). Thirteen statics,
+seventy-three call sites, as predicted. But a `Drop` impl cannot receive a
+token — `Frame` and `Segment` free themselves back to the physical allocator
+from wherever they die, and `drop` takes no arguments — so `FRAMES` could never
+be a token-bearing lock whatever the discipline said. The same is true of
+`GlobalAlloc::alloc`, whose signature is the language's.
+
+So a lock has **two levels**, not a rank lattice. `lock(&mut ThreadContext)`
+borrows the token for the guard's life. `lock_leaf()` is for an acquisition
+that is the whole operation — take, mutate, return, calling nothing — and it is
+the one a `Drop` can take. A leaf may be taken while a token-bearing lock is
+held, which is what makes a nested acquisition sound rather than an exception.
+
+**Sixty-eight of the seventy-three sites were already leaves.** Phase 4's
+scoping, forced by D-66's assert refusing a switch with a guard live, had
+already produced the property D-69 wanted to enforce — everywhere. The token
+earns its keep on the five blocking paths, and `libs/lock-rank` went unwritten
+because a rank with one non-trivial pair is not an abstraction. So did
+`lock_from_trap`: every acquisition a handler makes is a leaf, so it would have
+been a second name for `lock_leaf` with no caller.
+
+**The heap stopped nesting, which deleted a lock order instead of proving it
+safe.** `HEAP` was the one lock held across a call: `take_slot` refilled from
+inside the guard, and refilling takes `FRAMES`. It now returns null on an empty
+free list and the caller allocates the frame with the lock *dropped*,
+re-acquires and carves. `HEAP → FRAMES` is no longer an order this kernel has,
+and `wost` holds no lock across a call at all — every non-leaf lock in this
+kernel is the kernel's own.
+
+**The break was the counter-intuitive one, and it worked.** `let _a =
+a.lock(&mut cx); let _b = b.lock(&mut cx)` and `let _g = a.lock(&mut cx);
+sleep_ms(&mut cx, 1)` are both `E0499`, and the legal ordering compiles. Then,
+per D-69's warning: **delete `Drop for SpinLockGuard` and both errors vanish**,
+because without a `Drop` impl NLL ends the borrow at the call. The guarantee is
+`Drop`-dependent. Breaking the lock instead would have proved nothing about it.
+
+**Where a check goes was decided by which break tells the truth.** The
+restructure earned a machine check — a refill costs a frame and the accounting
+balances across the window the dropped guard opens. Its other half, that no
+slot is handed out twice, went to `libs/slab-layout` as arithmetic, because
+breaking it on the machine corrupts the allocator every later check runs on and
+produces a general-protection fault rather than a red verdict. Phase 4 learned
+twice that a break which crashes proves less than one that fails; this is the
+first time that lesson chose a check's *address*. The machine check found a
+flaw in itself on its first boot, too: the vector holding the allocations was
+built inside the snapshot window, so its own buffer counted. Eighty checks.
+
+**Four things this slice was scoped to carry now belong with their first
+callers**, which is `005`'s no-speculative-API rule applied to a slice plan
+rather than to an API:
+
+- `arch::percpu` behind `gs:` → **slice 5**, where `swapgs` is its first real
+  caller. `010` §4 said "provide the accessor when Phase 5 sets up `swapgs`",
+  and that is slice 5, not this one.
+- The preempt-only lock → its first caller. Every kernel lock reachable from a
+  handler must keep disabling interrupts, and today that is all of them; the
+  candidates arrive with the handle table and channels.
+- The full barrier on the lost-wakeup re-check (D-70 rule 6) → **slice 9**. The
+  wait queue is subsumed by the completion queue there, the fix is a
+  restructure rather than a fence, and the TLA+ model is the only thing that
+  can check it — a single CPU cannot, by the same argument that put the rule in
+  D-70.
+- `THREADS` split into a thread table and a run queue → **slice 7**, where
+  processes give the table a second reason to change and the split happens
+  once rather than twice.
+
+**Still owed by this slice's neighbours.** The compile-time property has no
+automated check and cannot have one where it lives: `wost` is cross-compiled,
+so a `compile_fail` doctest cannot run against it (D-41), and a copy in `libs/`
+would drift. It is verified by hand, recorded in D-85, and re-verifying it is a
+manual step when the guard types change.
