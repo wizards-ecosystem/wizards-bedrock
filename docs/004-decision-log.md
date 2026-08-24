@@ -3,7 +3,9 @@
 Architecture Decision Records for The Wizard's OS. Each entry captures the
 context, the options weighed, the decision, and its consequences. Statuses:
 **Accepted** (settled), **Verified** (settled + supported by the
-adversarially-verified research in `003-research-notes.md`).
+adversarially-verified research in `003-research-notes.md`), and
+**Provisional** (settled and built upon, but resting on evidence that has not
+been independently confirmed — carries a falsification condition, D-71).
 
 All decisions below were made 2026-07-18 during the founding design
 sessions unless noted.
@@ -187,7 +189,7 @@ path; native software uses spawn and is better for it.
 
 ---
 
-## D-08 Filesystem: custom WizFS, CoW from the start — Status: Accepted (design rules from research)
+## D-08 Filesystem: custom WizFS, CoW from the start — Status: Provisional (2026-08-23; see D-73, which moves it out of Phase 6)
 
 **Context.** Isaac chose a custom filesystem over adopting ext2, at the
 "straight to custom FS" level, then raised the bar to 2026 standards.
@@ -225,7 +227,7 @@ data when wrong); mitigations above are non-negotiable discipline.
 
 ---
 
-## D-09 App formats: ELF64 + WASI 0.3 components as first-class — Status: Accepted
+## D-09 App formats: ELF64 + WASI 0.3 components as first-class — Status: Provisional (2026-08-23; restated by D-72 as wasip1-first)
 
 **Context.** "Ahead of its time" directive; sandboxing story needed.
 
@@ -307,7 +309,7 @@ size; costs everything later.
 
 ---
 
-## D-13 Framekernel discipline: all `unsafe` in one privileged crate — Status: Verified
+## D-13 Framekernel discipline: all `unsafe` in one privileged crate — Status: Provisional (2026-08-23; the containment property is verified, the published numbers are unreplicated — see D-71 and `010` §1)
 
 **Context.** Research pass, strongest verified result (Asterinas,
 USENIX ATC'25).
@@ -2740,6 +2742,468 @@ already does a locked increment.
 
 ---
 
+## D-67 The `unsafe_code` default is deny, and `wost` lifts it in one visible place — Status: Accepted (2026-08-23)
+
+**Context.** D-13 confines `unsafe` to `wost`, and every crate carried the
+attribute that says so: thirteen `libs/` crates `forbid`, `kernel` denies,
+`wost` said nothing. The gap the 2026-08-23 research pass found is that
+`unsafe_code` is *allow*-by-default in rustc, so the discipline was thirteen
+separate opt-ins rather than a property of the workspace. A crate added later
+that simply forgot the attribute would permit `unsafe` in silence.
+
+**Decision.** `unsafe_code = "deny"` in `[workspace.lints.rust]`, inherited by
+every member through the `[lints] workspace = true` they already declare;
+`wost` lifts it with a single `#![allow(unsafe_code)]` at its crate root.
+`libs/` keeps `forbid`, which is stricter and cannot be lifted locally.
+
+**Rationale.** The default now matches the rule. The exception becomes one
+greppable line in the crate whose whole purpose is to be that exception,
+rather than an absence of lines everywhere else. Verified in both directions
+before the change was made: with the workspace lint, an `unsafe` block in a
+crate missing `forbid` is an error; without it, the same code compiles clean.
+
+`forbid` at the workspace level was considered and rejected — `kernel` cannot
+use it, because `wost::entry!` expands `#[allow(unsafe_code)]` boot glue there
+and `forbid` cannot be lifted by an `allow` even inside a macro expansion.
+That is D-21's finding, unchanged.
+
+**Consequences.**
+
+- A new `libs/` crate that forgets `#![forbid(unsafe_code)]` is now caught by
+  the workspace rather than by review. Broken once to prove it.
+- The `Cargo.toml` comment about per-crate escalation now names both directions
+  — the `forbid` in `libs/` and the one `allow` in `wost`.
+- `wost`'s crate root gains an attribute that reads as a confession, which is
+  the intent.
+
+---
+
+## D-68 A lock guard cannot leave the CPU that took it — Status: Accepted (2026-08-23)
+
+**Context.** `SpinLockGuard` holds an `InterruptState` and restores it on drop;
+`ThreadLockGuard` holds a borrow of its lock. Both were `Send`, because
+everything they contain is. Nothing in the type system stopped a guard being
+moved to another thread and released there.
+
+On one CPU this is latent — there is nowhere else for it to go. On several it
+is the bug the whole interrupt-flag design exists to prevent: the flag restored
+would belong to the CPU that cleared it, leaving that CPU interruptible inside
+its own critical section while another CPU releases a lock it never took.
+
+**Decision.** Both guards carry a private `PhantomData<*const ()>`, which makes
+them `!Send` and `!Sync`.
+
+**Rationale.** One line each, no runtime cost, and it closes a class before it
+can open. The idiom is already in this codebase — `ThreadContext` is built the
+same way (D-62) — and it is the stable-Rust form of what Asterinas states as a
+safety principle with `impl !Send`, which needs nightly.
+
+Verified before adoption: `assert_send::<SpinLockGuard<'_, u32>>()` compiled
+before the change and is `E0277` after it.
+
+**Consequences.**
+
+- Guards are now pinned to their acquiring context by the type system, not by
+  the absence of a second CPU. The SMP debt in D-56 shrinks by one item.
+- The two construction sites gain a field. Nothing else changes; no caller
+  moved a guard across threads, because there are no threads to move it to.
+- Broken once, as D-28 requires: a `Send` assertion on the guard fails to
+  compile.
+
+---
+
+## D-69 The lock discipline belongs in the borrow checker — Status: Accepted (2026-08-23), implemented in Phase 5
+
+**Context.** D-66 made "a spin lock is held" a runtime assert, checked at every
+point where the interrupt flag is set or a thread is switched. It works, and it
+caught the bug it was written for. But it is a runtime check for a property the
+compiler could prove, and Phase 5 is about to multiply the number of places it
+must hold.
+
+The 2026-08-23 research found that Rust-for-Linux considered exactly this
+pattern and rejected it, for reasons that do not apply here: a million-line C
+call graph, C callers invoking Rust callbacks, and a maintainer preference
+against runtime checks. Their answer was **klint**, an out-of-tree compile-time
+preemption-count analyser pinned to a specific nightly — unavailable to a
+stable-only project (D-01), and in maintenance mode since 2023.
+
+**Decision.** `SpinLock::lock` will take `&'a mut ThreadContext` and return a
+guard borrowing it for the guard's life, so that nothing requiring the token —
+that is, anything that may block — can be called while a spin lock is held.
+Trap context, which cannot mint a token by construction (D-62), gets a separate
+`lock_from_trap()`. The runtime assert stays as the backstop for paths the
+borrow checker cannot see.
+
+The change is recorded now and made in Phase 5, alongside the lock work that
+phase brings, rather than as a separate pass over 13 statics and 73 call sites.
+
+**Rationale.** This is what klint exists to do, obtained on stable from the
+borrow checker — and it is *stronger* in three ways klint's own documentation
+concedes: it sees through trait objects and function pointers, which klint
+assumes are sleepable; it handles `Drop` and drop flags, which are klint's worst
+limitation; and it models `try_lock`, which klint cannot represent.
+
+Verified on the pinned toolchain before being recorded. `lock(cx); drop(g);
+sleep(cx)` compiles; `let _g = lock(cx); sleep(cx)` and `let _a = A.lock(cx);
+let _b = B.lock(cx)` are both `E0499`.
+
+**Two things testing found that reading did not.**
+
+The guarantee **depends on the guard having a `Drop` impl**. Without one, NLL
+ends the borrow at the call and both violations compile silently — the first
+attempt at this proof was a false green for exactly that reason. Our guards do
+have `Drop`, so the property holds; but the break-test for this ADR is
+*delete the `Drop` impl and watch the compile error disappear*, not the more
+obvious one.
+
+And the trap-context path is not a compromise. In a handler the flag is already
+clear, so "cannot block here" is enforced by the machine; the token would be
+proving something already true. `lock_from_trap` can assert `in_trap()`, which
+makes the two entry points mutually exclusive by construction.
+
+**Consequences.**
+
+- Two spin locks at once becomes a borrow error. Where nesting is genuinely
+  needed, the second acquisition takes the *guard*, and that is where a
+  type-level lock rank belongs — pure arithmetic, so `libs/` per D-41.
+- Phase 5's lock work is larger by this refactor and smaller by every deadlock
+  it forecloses.
+- The runtime assert is not removed. Two independent checks is what OSTD ships,
+  and the assert covers what the borrow checker cannot.
+
+---
+
+## D-70 SMP: the target model, and the rules that cost nothing now — Status: Accepted (2026-08-23)
+
+**Context.** SMP is Phase 12. The 2026-08-23 research asked whether that is a
+foundational mistake and answered: deferring the *bring-up* is correct, and
+deferring the *design discipline* past Phase 5 is not — because Phase 5 fixes
+the handle table and the queue ABI, the two most SMP-sensitive interfaces a
+kernel has.
+
+The decade-long retrofits usually cited were retrofits of large kernels with
+frozen ABIs. Small kernels do it in months: Maestro in eleven weeks, Theseus in
+twenty-four days, seL4 in one release behind a big kernel lock.
+
+Two of the three reasons to think this untestable turn out to be false. Lock
+*ordering* is observable on one CPU — lockdep's own documentation says complex
+multi-CPU deadlocks "can be detected on a plain, lightly loaded single-CPU
+system as well". The one bug class a single CPU genuinely cannot show is
+Store→Load reordering, which is exactly the lost-wakeup re-check `002` already
+lists as owed before Phase 5.
+
+**Decision.** No SMP code this side of Phase 12. These rules, which cost
+nothing to hold now and are expensive to retrofit:
+
+1. **The target model is one big kernel lock at first bring-up, with per-CPU
+   run queues and correct shootdown.** Today's coarse locking is therefore the
+   plan, not debt.
+2. **Never write "disable interrupts" where "disable preemption" is meant.** We
+   currently have no preempt-disable mechanism at all — the only gate on
+   preemption is the frame's interrupt flag, so `SpinLock`'s `cli` is doing
+   that job. A preempt-disabled-interrupts-on lock is the common case and much
+   cheaper; it arrives in Phase 5 with the per-CPU word D-56 anticipates.
+3. **No lock guard live across a context switch.** Already enforced by D-66's
+   assert in `prepare()`. Recorded here so the SMP rationale is attached to it:
+   Redox's September-2025 multi-core hang was fixed with 292 lines of scoping
+   for precisely this, and someone weakening the assert later should know it
+   guards two things.
+4. **`Relaxed` requires justification the way `unsafe` does.** `Acquire` and
+   `Release` are identical codegen to `Relaxed` on x86-64, so correctness here
+   is free today and unobtainable later.
+5. **Interrupt handlers never block.** FreeBSD's opposite answer touched every
+   driver.
+6. **A full barrier on both sides of the lost-wakeup re-check** — one locked
+   instruction on the block/wake slow path.
+
+And three interface rules for Phase 5, from the Scalable Commutativity Rule
+(Clements et al., SOSP'13), whose decisive property is that it is analysable
+before an implementation exists and before the hardware is available:
+
+7. **The handle table must not promise "lowest free handle."** sv6 measured the
+   unordered alternative scaling linearly with *no* single-core penalty.
+8. **The queue ABI must not promise global FIFO across submitters.**
+9. **Unmap, close and release must not promise global visibility on return.**
+
+**Rationale.** Every item above is either free or already true; what they buy is
+that Phase 12 becomes a bring-up rather than a redesign. The mechanical SMP
+debts were already tracked in D-45, D-56 and D-60; the semantic ones — lock
+ordering, memory ordering, deferred reclamation, interface commutativity — were
+on no list, and this is that list.
+
+**Consequences.**
+
+- `THREADS` should be split into a thread table and a run queue: a struct
+  boundary now, a scheduler rewrite avoided later. `libs/eevdf` is already
+  domain-agnostic and `Entity::place(average, lag, slice)` is the migration
+  hook. Redox measured a *global* EEVDF run queue at four cores being three
+  times slower than one.
+- Rust does not save us here. Converos (ATC'25) model-checked twelve Asterinas
+  concurrency modules and found twenty bugs in the safe code.
+- `SPINLOCKS_HELD` is still a global, which stays on D-56's per-CPU list.
+
+---
+
+## D-71 An ADR may be Provisional, and a Provisional ADR names what would refute it — Status: Accepted (2026-08-23)
+
+**Context.** This log has two statuses: **Accepted**, and **Verified** for
+decisions supported by `003`'s adversarially-verified tier. The 2026-08-23
+research pass found that the strongest label was doing work the evidence could
+not support. D-13 — the framekernel, the most structural decision in the
+project — is marked **Verified** on the strength of a single paper for which
+*no independent replication exists*, and whose headline TCB figure does not
+survive scrutiny. `008` §7 already recorded that honestly; the ADR did not.
+
+**Decision.** A third status, **Provisional**: accepted and built upon, but
+resting on evidence that has not been independently confirmed. A Provisional
+ADR must state a **falsification condition** — what would have to be observed
+for it to be revisited.
+
+Applied now to three:
+
+- **D-13** (framekernel) — refuted if independent measurement shows the
+  discipline's cost materially exceeds the paper's, or if the containment
+  property fails to hold at scale in a project not authored by its proponents.
+- **D-09** (WASI) — see D-72, which restates it; the watch condition is the
+  Component Model reaching Phase 4, or an interpreter shipping support.
+- **D-08** (WizFS) — see D-73; refuted if the crash harness proves
+  unbuildable before the format is frozen.
+
+**Rationale.** "Verified" should mean verified. Marking a decision Provisional
+costs nothing, changes no code, and prevents the specific failure where a
+project defends a choice because its own log says the question is settled. The
+falsification condition is the load-bearing half: no foundational ADR here
+previously stated what would change its mind.
+
+**Consequences.**
+
+- D-13's status changes from Verified to Provisional. This is not a retreat
+  from the framekernel — §1 of `010` finds the containment property *better*
+  evidenced than before — it is an accurate label on the evidence behind it.
+- `003`'s tiers still govern what "Verified" means. Provisional sits below it.
+
+---
+
+## D-72 WASI: `wasip1` is the target, and the Component Model is a watch item — Status: Provisional (2026-08-23), amends D-09
+
+**Context.** D-09 made WASI 0.3 components a first-class app format with
+**wasmi** as the runtime. WASI 0.3.0 did ship, on 2026-06-11. Everything else
+in that sentence has a problem.
+
+The Component Model is still a **Phase 1 proposal** in the W3C WebAssembly CG,
+the lowest active phase of five. "Component Model 1.0" is a roadmap article
+whose open workstreams include transitioning the ABI away from eager
+allocation, and "simplifying the spec… to reduce implementation burden" — the
+Bytecode Alliance saying its own specification is too hard to implement and its
+ABI is going to change. WASI 0.3 is implemented by Wasmtime and jco only, and
+D-09 already rejects Wasmtime as unusable in-kernel.
+
+And wasmi has no Component Model and no plans for one. Its maintainer, in
+September 2025: *"an absolutely huge proposal and therefore an enormous
+undertaking for any Wasm runtime to implement… it remains uncertain if a Wasm
+interpreter will ever even profit."* Its tracking issue has been open since
+January 2024 and was removed from the planned list in February 2025.
+
+The scale, measured: the Component Model spec is ~12,200 lines on top of core
+Wasm, and Wasmtime's implementation of it is ~40,900 lines of Rust — larger
+than wasmi's entire core interpreter. The published component ecosystem is
+three sample HTTP servers and seven micro-utilities.
+
+**Decision.** Core Wasm plus **`wasip1`** on a wasmi-class interpreter, with the
+WASI host bindings written directly over native handles. The Component Model
+becomes a watch item with a named trigger: **it reaches Phase 4, or an
+interpreter ships support.**
+
+**Rationale.** Both reasons D-09 exists survive intact and are delivered by
+`wasip1`: WASI's capability model maps onto our handles with no impedance
+mismatch — a descriptor *is* a handle grant — and a component compiled for this
+OS survives an architecture port. What the Component Model adds beyond that is
+cross-language typed *composition*, which is an ecosystem feature, and the
+ecosystem is ten components.
+
+`008` §4.5 asked for the "wasmi 1.0" pin to be softened and it was never
+actioned; this supersedes that. Runtime selection happens when Phase 7 starts.
+
+**Consequences.**
+
+- Phase 7's WASI work shrinks from "implement the Component Model" — costed at
+  zero in the original plan — to "wasip1 host bindings over handles".
+- `002-architecture.md`'s app-formats section is restated to match.
+- Provisional, per D-71: revisit on the trigger above.
+
+---
+
+## D-73 The filesystem is a destination, not a phase — Status: Provisional (2026-08-23), amends D-08
+
+**Context.** D-08 chose a CoW B-tree with checksums and snapshots, and `003`
+set its design rules from bcachefs, btrfs, ZFS and BetrFS. The 2026-08-23
+research confirmed almost every rule against primary sources — and then
+established what the schedule costs.
+
+bcachefs: announced "more or less feature complete" in August 2015; the
+experimental label came off in **June 2026**. Ten years and ten months, by one
+exceptional full-time funded engineer — and in between, all 117,000 lines were
+removed from Linux 6.18. btrfs: mainline 2009, on-disk format stable late 2013,
+and Red Hat *removed* it from RHEL 8 in 2019. ZFS: about five years and a team
+growing past twelve paid senior engineers.
+
+And the claim that CoW is the easier road to crash consistency is half false.
+OSDI '18: *"btrfs maintains its metadata… in the form of various copy-on-write
+B+ trees. This makes achieving crash consistency tricky, as the updates have to
+be propagated to several trees."* Of twenty-six crash-consistency bugs studied,
+btrfs accounted for twenty-four. CoW makes the *argument* simpler and the
+*implementation* harder, and the difference lands in allocation, multi-tree
+update ordering, and ENOSPC.
+
+**Decision.** WizFS stops being Phase 6 and becomes a destination reached in a
+phase of its own, later. Phases 7–11 run on a **read-only FAT32 or ext2 driver
+behind the VFS**. The crash harness is built before the format is frozen.
+WizFS's own phase has a definition of done that includes crash injection and a
+repair tool.
+
+Two corrections to `003`'s rules while they are open:
+
+- **Strike the blind-upsert ABI rule.** BetrFS states the precondition problem
+  and then dissolves it: *"the OS cache of file and directory information was
+  able to answer these queries, enabling file creation etc. to run at the full
+  speed of upserts."* The technique is sound and ABI-independent; the rule
+  solved a problem its own source measured as already solved.
+- **The reason to skip parity RAID changes.** ZFS's RAID-Z *eliminates* the
+  write hole; it is btrfs's RAID56 and classic RAID5 that carry it. We
+  conflated them. The correct reason is that every correct solution needs
+  buckets, copying GC and backpointers first.
+
+And one addition that should have been in the rules from the start: **bcachefs
+is not a pure CoW B-tree — its btree updates are journalled**, which is what
+buys prefix consistency, removes any need for a btrfs-style log tree, and makes
+small random metadata updates affordable.
+
+**Rationale.** The design was never the expensive part. Read-only FAT32 makes
+virtio-blk, the VFS and the buffer plumbing honest at zero on-disk-write risk —
+and its real argument is that *the oracle already exists*: mount the image on
+three mature operating systems and let them judge the writer. For a project
+whose rule is that every change lands with the check that proves it, that is
+categorically stronger than anything buildable for WizFS in one phase.
+
+For calibration, SerenityOS ships ext2 and FAT with hundreds of contributors;
+Redox has been committing to `redoxfs` since 2016.
+
+**Consequences.**
+
+- `000-vision.md`'s Phase 6 becomes VFS plus a read-only third-party format;
+  WizFS moves to its own later phase.
+- **Free, and do it in v0:** put the `snapshot` field in the key from the
+  first format version, always zero. Adding a key field later is a format
+  break; reserving four bytes is not.
+- Not in v0: 128–256K log-structured nodes, and no copying collector.
+- Provisional per D-71: refuted if the crash harness proves unbuildable before
+  the format is frozen.
+
+---
+
+## D-74 mlibc arrives with the ABI, not after the userland — Status: Accepted (2026-08-23), amends D-10
+
+**Context.** D-10 makes POSIX a userspace translation layer over mlibc, and the
+roadmap put it in Phase 9 — after a native userland in Phase 7. The
+2026-08-23 research priced that ordering and found it means writing the
+userland twice.
+
+It also priced the translation layer itself, which the plan had costed at zero.
+Fuchsia ran this exact experiment — capability handles with POSIX confined to a
+userspace layer — and reversed: RFC-0082 records that POSIX Lite omits *"parts
+of POSIX that imply mutable global state… because Fuchsia is designed around an
+object-capability discipline"*, and the answer was Starnix, a Linux kernel in
+userspace at ≥15 MB of Rust and 493 syscall-table entries, which implements
+`fork`. Plan 9's APE hit the identical wall thirty years earlier — uid/gid,
+umask, controlling tty, `link`, `sigprocmask` — and Pike's estimate of the tax
+was that *"90–95% of the work in Plan 9 was directly or indirectly to honor
+externally imposed standards."*
+
+mlibc's own numbers: 296 sysdep tags, 16 mandatory ("enough for a basic
+statically-linked hello world"), and real ports implement 147 to 202. Every one
+implements `Fork`, `Sigaction`, `Ioctl`, `Termios`, `Poll` and `Waitpid`.
+
+**Decision.** A stub-heavy mlibc sysdep is written immediately after the Phase 5
+ABI stabilises — not to run real software, but to answer *"can a POSIX libc sit
+on this ABI?"* while the ABI is still cheap to change. mlibc ships a five-file
+skeleton to start from. Pin a release tag, not `master`, per mlibc's own
+warning.
+
+**Rationale.** The strongest single correlation in the retrospective evidence is
+**conform at the boundary, innovate inside**. Zinnia — one person, started
+January 2024 — reached a Wayland desktop in about 2.5 years on mlibc, with a
+sysdep of thirteen files. Asterinas reached a Linux-compatible userland in about
+three years by adopting the Linux ABI outright. Against that: ToaruOS, fifteen
+years solo under a strict no-third-party rule, still not self-hosting; HelenOS,
+twenty-plus years, elegant, with no path to third-party software.
+
+This does not weaken the capability ABI. Redox is eleven years in and
+*retrofitting* capabilities underneath POSIX, which is strictly harder. It says
+the translation layer should arrive early enough to shape the ABI rather than
+inherit it.
+
+**Consequences.**
+
+- The question to answer before the queue ABI is fixed: **how does a signal
+  interrupt a blocking queue wait?** It is the one that is hardest to answer
+  late, and `002` currently does not mention signals at all.
+- Adopting mlibc means adopting `abis/linux`, so the *userspace-visible* ABI
+  becomes Linux's. The native ABI is unaffected; the claim in `002` that POSIX
+  is "only a translation layer" stays true and gets more specific.
+- A POSIX conformance lane — os-test and the Open POSIX Test Suite, counts
+  recorded over time — arrives with the mlibc slice as a third check location
+  beside `libs/` and `selftest.rs`. Both Redox and managarm converged on this
+  independently, and it is D-28 extended past the kernel boundary.
+- `subprocess` in CPython takes its fork path whenever `cwd` is set, among
+  other conditions, so a spawn-only OS needs a `posix_spawn` richer than the
+  POSIX baseline. Phase 9's business, recorded here because D-07 is what makes
+  it true.
+
+---
+
+## D-75 Phase 11 is an integration milestone, not a browser — Status: Accepted (2026-08-23)
+
+**Context.** `000-vision.md` promises the OS will "browse the web", and Phase 11
+is "port NetSurf". The 2026-08-23 research checked what that buys.
+
+NetSurf's last release is **3.11, 2023-12-28**. Its own documentation says it
+has *"only primitive and incomplete support for JavaScript, which we disable by
+default"* and that full support is *"a long way off"*; its engine is Duktape,
+ES5.1-era, and `UnimplementedJavascript.md` lists **1,539** missing bindings.
+Its baseline is HTML 4.01 and CSS 2.1.
+
+The porting cost is genuinely modest — a new frontend is about 1,000 lines
+minimal, 7,000 basic, and the framebuffer frontend has "no particular operating
+system or GUI toolkit requirements". Redox ships it.
+
+**Decision.** NetSurf stays the Phase 11 target. The milestone is described by
+what it proves — that the libc, the windowing system, the network stack and TLS
+work together against a real third-party codebase — and "browse the web" comes
+out of `000-vision.md`.
+
+**Rationale.** It is a good, right-sized integration trophy and it is
+demonstrably achievable; it is not web access, and a roadmap that promises the
+second while delivering the first will be read as a failure at exactly the
+moment it should be read as a success.
+
+The alternatives were weighed. Servo: Redox launched it in October 2025 and
+reported it crashes when a second page loads. Ladybird: pre-alpha after 25,000
+commits of funded full-time work, targeting a stable release in 2028, requiring
+Qt 6.9+, Skia and Mesa, and closed to outside contributions since June 2026.
+Nobody solo has a working browser; SerenityOS needed 421 contributors and then
+had to spin its browser out into a funded nonprofit.
+
+**Consequences.**
+
+- `000-vision.md`'s destination list says what NetSurf renders.
+- The genuinely novel engineering in Phase 11 is coupling NetSurf's `schedule`
+  operation to the async ring. Nobody in the surveyed record has done that
+  combination, so it is unknown territory rather than a port.
+- `links` stays the Phase 9 text-browser milestone. It needs pthreads or fork
+  for its async DNS; its DOS port runs fully synchronous and still works.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap
@@ -2761,6 +3225,13 @@ already does a locked increment.
   what the stable toolchain now allows, the evidence behind the decisions
   `007` holds open, and the proposed additions to `005`. Its marks are its
   own; `003`'s tiers still govern what counts as Verified here
+- `010-research-notes-3.md` — the third pass, closing Phase 4: verification
+  rather than survey. It re-checked `003`'s Tier-2 claims, found no
+  independent replication of the Asterinas numbers, answered the framekernel
+  SMP question, and produced D-67..D-75. Two of its findings correct earlier
+  docs rather than extending them — `002`'s claim about channel delegation was
+  false, and `008` §5's Atmosphere proof-to-code ratio of 7.5:1 should be
+  3.32:1
 
 The 2026-08-22 adversarial audit closed the gaps recorded in D-39, D-40, and
 the amendments to D-22 and D-25. Its two standing lessons, worth reading

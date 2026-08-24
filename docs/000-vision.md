@@ -10,10 +10,17 @@ ourselves from primary references.
 A full OS with userspace that can, eventually:
 
 - run **Python** — RustPython early, a real CPython port later
-- browse the web — ported `links` (text) first, then **NetSurf** (graphical)
+- render the web — ported `links` (text) first, then **NetSurf** (graphical).
+  NetSurf renders documents, not applications: HTML 4.01 and CSS 2.1, with
+  JavaScript disabled by default and 1,539 bindings unimplemented upstream.
+  The milestone proves the libc, the window system, the network stack and TLS
+  work together against a real third-party codebase — which is worth having,
+  and is not the same claim as browsing the 2026 web (D-75)
 - run its own **compositor + window system** (Wayland-inspired protocol,
   possibly more custom) with a native widget toolkit
-- store files on **WizFS**, our own filesystem, behind a VFS layer
+- store files on **WizFS**, our own filesystem, behind a VFS layer — reached
+  late and deliberately; the phases before it run on a read-only third-party
+  format (D-73)
 
 ## Core decisions
 
@@ -25,9 +32,9 @@ A full OS with userspace that can, eventually:
 | Kernel shape | Monolithic, modular |
 | ABI | **Capability handles + async submission/completion queues** (native); POSIX only as an mlibc translation layer for ports — see `002-architecture.md` |
 | Process model | `spawn()` only — no native `fork()` (compat-fork gated for the POSIX layer) |
-| Filesystem | VFS first; WizFS = **CoW B-tree, checksummed, snapshots** (see `002-architecture.md`) |
-| App formats | ELF64 native + **WASI Component Model** first-class (runtime mid-project) |
-| Security | W^X, NX, SMEP/SMAP, KASLR, guard pages as baseline, not retrofit |
+| Filesystem | VFS first, then a read-only third-party format; WizFS = **CoW B-tree, checksummed, snapshots** in a phase of its own, late (D-73) |
+| App formats | ELF64 native + **core Wasm/`wasip1`** first-class; the Component Model is a watch item (D-72) |
+| Security | W^X, NX, SMEP/SMAP/UMIP, guard pages as baseline, not retrofit; KASLR deferred to Phase 12 with its cost named (D-46) |
 | Scheduler | EEVDF-inspired virtual deadlines, tickless |
 | Theme | Wizard/magic at product level (app names, shell personality); conventional naming in code |
 | Dev loop | QEMU (UEFI, serial stdio) minute-to-minute; VMware Workstation as milestone target |
@@ -61,16 +68,31 @@ reference — not followed linearly). Docs are numbered in creation order.
    Slice table in `007-memory.md`*
 4. Multitasking — kernel threads, EEVDF-style scheduler, tickless idle
 5. Userspace — ring 3, **handle table + rights**, spawn, ELF loading,
-   channels, **async queue ABI**, initrd
-6. VFS + WizFS — VFS over handles, tmpfs/devfs; **WizFS CoW B-tree**
-   (checksums, snapshots) + virtio-blk/AHCI
+   channels, **async queue ABI**, initrd. Closes with a **stub mlibc sysdep**
+   (D-74): not to run software, but to prove a POSIX libc can sit on this ABI
+   while the ABI is still cheap to change
+6. VFS + storage — VFS over handles, tmpfs/devfs, and a **read-only
+   third-party format** (FAT32 or ext2) over NVMe, so the block path and the
+   buffer plumbing are honest at zero on-disk-write risk. WizFS is not here
+   (D-73)
 7. Userland — shell, coreutils, TTY; **RustPython milestone**;
-   **WASI runtime** (interpreter-class) — first sandboxed component apps
+   **Wasm runtime** (interpreter-class, `wasip1`) — first sandboxed apps
 8. Network — NIC drivers, smoltcp, async socket handles, TLS (rustls)
-9. POSIX gateway — mlibc over the translation layer, compat-fork,
-   cross-toolchain; **links + CPython milestones**
+9. POSIX gateway — mlibc grown from Phase 5's stub to a real sysdep set,
+   compat-fork, cross-toolchain; **links + CPython milestones**, with
+   *CPython's test suite passing* as the definition of done
 10. Pixels — GPU drivers, compositor (channels + shared memory objects),
     GPU-first toolkit, terminal app
-11. Graphical web — **NetSurf milestone**
+11. Document web — **NetSurf milestone** (D-75): a framebuffer frontend, and
+    the integration proof that libc, windowing, networking and TLS hold
+    together under a real third-party codebase
 12. Side-quests — own bootloader, SMP, USB, sound, CET shadow stacks,
     signed/measured boot, real hardware boot
+13. **WizFS** — the CoW B-tree, in a phase of its own, with crash injection
+    and a repair tool in its definition of done (D-73). Last because the
+    schedule evidence says so, not because it matters least: bcachefs took ten
+    years and ten months, and every phase above it can run on Phase 6's
+    read-only format meanwhile
+
+Phase numbers 0–12 are unchanged, so earlier ADRs that defer to "Phase 12"
+(KASLR in D-46, SMP in D-70, CET) still mean the side-quests phase.

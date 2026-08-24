@@ -1216,6 +1216,38 @@ built before the format is).
 Proposals, not decisions — the same convention `008` used. Each becomes an ADR
 only if taken. Ordered by when the door closes.
 
+**Decided 2026-08-23, the same day.** Isaac took the list and answered it;
+what follows is the record of which proposals became decisions, so this
+section reads as history rather than as an open question.
+
+| Proposal | Outcome |
+|---|---|
+| 2 — workspace `unsafe_code = deny` | **Taken** — D-67, applied |
+| 3 — `!Send` lock guards | **Taken** — D-68, applied |
+| 4 — the doc-hygiene items | **Taken** — applied to `000` and `002` |
+| 5 — borrow-based lock token | **Taken as an ADR** — D-69, implemented in Phase 5 |
+| 9 — SMP discipline ADRs | **Taken** — D-70; the cheap code and an early `-smp 2` were declined for now |
+| 13 — restate D-09 | **Taken** — D-72, `wasip1` first-class |
+| 14 — demote WizFS | **Taken** — D-73, it becomes Phase 13 |
+| 17 — move mlibc forward | **Taken** — D-74, a stub sysdep closes Phase 5 |
+| 20 — NVMe before virtio | **Recorded**, decided at Phase 6 |
+| 21 — rename the Phase 11 milestone | **Taken** — D-75 |
+| 23 — update Limine | **Recorded** as a Phase 5 item |
+| 25 — `Provisional` ADR status | **Taken** — D-71; D-08, D-09 and D-13 reclassified |
+| 27 — conformance lane | **Taken**, arriving with the mlibc slice (D-74) |
+| 1, 30–33 — the verification tooling | **Staged** — see below |
+| 6–8, 10–12, 15–16, 18–19, 22, 24, 26, 28–29 | Open, or Phase 5's business |
+
+**On the verification tooling**, decided by judgement rather than by
+preference. `proptest` works on this machine today with a `getrandom` pin and
+has existing callers — the arithmetic in `libs/eevdf`, `libs/timebase`,
+`libs/frame-space` and `libs/port-space` — so it is the one to adopt first. The
+rest are staged to their first real use, per D-41's rule that an API is written
+alongside its first caller: **the vendored binutils and loom when Phase 5 has a
+ring protocol to check, TLA+ at the start of Phase 5 to model that protocol
+before it is written, and the Verus spike when there is a bound worth proving.**
+Adopting them now would be tooling in search of a subject.
+
 ### Highest value per minute
 
 1. **Vendor MinGW binutils into `tools/`** (§9). It clears the missing-`as.exe`
