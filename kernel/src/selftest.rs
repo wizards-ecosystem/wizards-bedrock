@@ -19,7 +19,7 @@ use core::hint::spin_loop;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use wost::arch::current::cpu::{self, Protections};
-use wost::arch::current::paging::{self, ActivateError, AddressSpace, MapError};
+use wost::arch::current::paging::{self, ActivateError, AddressSpace, BootRegion, MapError};
 use wost::arch::current::{apic, interrupt, pic, port, segment};
 use wost::boot::{self, FramebufferInfo, Rgb};
 use wost::mm;
@@ -251,26 +251,23 @@ fn a_mapping_added_after_the_switch_is_live() -> bool {
 
     let unmapped_before = paging::translate(PROBE).is_none();
 
-    let Some(frame) = mm::allocate_zeroed() else {
+    let Some(run) = mm::allocate_contiguous(1, 1) else {
         return false;
     };
-    let physical = frame.address();
+    let physical = run.address();
 
+    // Ownership of the frame moves into the space (D-87). Nothing unmaps yet,
+    // so it stays there for the life of the kernel — deliberately, and the
+    // debt the next slice pays.
     let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-    let mapped = mem::with_active_space(&mut context(), |space| {
-        space.map(PROBE, physical, PAGE_SIZE, wanted)
-    });
+    let mapped =
+        mem::with_active_space(&mut context(), |space| space.map_owned(PROBE, run, wanted));
     if !matches!(mapped, Some(Ok(()))) {
         return false;
     }
 
     let translated = paging::translate(PROBE) == Some((physical, wanted.union(Flags::PRESENT)));
     let on_the_live_root = paging::active_root() == cpu::page_table_base();
-
-    // The frame stays mapped and is deliberately not returned: nothing unmaps
-    // yet, so freeing it would hand a live mapping's page back to the
-    // allocator. That is the debt the next slice pays.
-    core::mem::forget(frame);
 
     unmapped_before && translated && on_the_live_root
 }
@@ -284,10 +281,37 @@ fn a_differing_remap_is_refused() -> bool {
     let Ok(mut space) = AddressSpace::new() else {
         return false;
     };
-    let first = space.map(PROBE, 4096, 4096, Flags::NO_EXECUTE);
-    let again = space.map(PROBE, 4096, 4096, Flags::NO_EXECUTE);
-    let differing = space.map(PROBE, 8192, 4096, Flags::NO_EXECUTE);
+    let (Some(here), Some(again_here), Some(elsewhere)) = (
+        BootRegion::describe(PAGE_SIZE, PAGE_SIZE),
+        BootRegion::describe(PAGE_SIZE, PAGE_SIZE),
+        BootRegion::describe(2 * PAGE_SIZE, PAGE_SIZE),
+    ) else {
+        return false;
+    };
+    let first = space.map_boot(PROBE, here, Flags::NO_EXECUTE);
+    let again = space.map_boot(PROBE, again_here, Flags::NO_EXECUTE);
+    let differing = space.map_boot(PROBE, elsewhere, Flags::NO_EXECUTE);
     first.is_ok() && again.is_ok() && differing == Err(MapError::Conflict(PROBE))
+}
+
+/// A physical range the boot handoff never described cannot be mapped at all.
+///
+/// D-76 left `map` able to name any physical address, and D-77 recorded it as
+/// an authority debt for "the phase that introduces the needed owner types".
+/// This is that debt paid on the memory side (D-87): the public entries take
+/// either frames the caller owns or a [`BootRegion`], and a `BootRegion`
+/// exists only where the bootloader's map says there is memory.
+fn an_undescribed_range_cannot_be_mapped() -> bool {
+    /// Far above anything a PC memory map describes, and above `mm::CEILING`.
+    const NOWHERE: u64 = 0x0000_7000_0000_0000;
+
+    BootRegion::describe(NOWHERE, PAGE_SIZE).is_none()
+        // Unaligned and empty ranges are refused before the map is consulted.
+        && BootRegion::describe(PAGE_SIZE + 1, PAGE_SIZE).is_none()
+        && BootRegion::describe(PAGE_SIZE, 0).is_none()
+        // And a range that runs off the end of physical space cannot overflow
+        // its way into looking described.
+        && BootRegion::describe(u64::MAX - PAGE_SIZE + 1, PAGE_SIZE).is_none()
 }
 
 /// Two virtual windows cannot confer ownership of the same physical device.
@@ -1132,7 +1156,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 81;
+const EXPECTED_CHECKS: usize = 82;
 
 impl Report {
     const fn new() -> Self {
@@ -1219,6 +1243,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a second address space is refused",
         a_second_switch_is_refused(),
+    );
+    report.check(
+        "an undescribed range cannot be mapped",
+        an_undescribed_range_cannot_be_mapped(),
     );
     report.check(
         "a differing remap is refused",

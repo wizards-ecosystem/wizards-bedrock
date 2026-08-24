@@ -5,7 +5,7 @@
 //! privilege: deciding whether the handoff is usable at all, and saying so.
 
 use wost::arch::current::cpu;
-use wost::arch::current::paging::{self, AddressSpace, MapError};
+use wost::arch::current::paging::{self, AddressSpace, BootRegion, MapError};
 use wost::boot::{self, DirectMap, HandoffError, ImageAddress, MemoryKind, MemoryMap};
 use wost::mm;
 use wost::sync::SpinLock;
@@ -255,7 +255,9 @@ fn build(
         let physical = image
             .to_physical(section.start)
             .ok_or(MapError::Misaligned(section.start))?;
-        space.map(section.start, physical, section.mapped_len(), flags)?;
+        let region = BootRegion::describe(physical, section.mapped_len())
+            .ok_or(MapError::Undescribed(physical))?;
+        space.map_boot(section.start, region, flags)?;
         debug!(
             "paging: {name} {:#x}..{:#x} -> {physical:#x} {flags:?}",
             section.start,
@@ -328,7 +330,9 @@ fn build(
             let virtual_base = direct
                 .virtual_address(cursor)
                 .ok_or(MapError::NonCanonical(cursor))?;
-            space.map(virtual_base, cursor, next - cursor, flags)?;
+            let region =
+                BootRegion::describe(cursor, next - cursor).ok_or(MapError::Undescribed(cursor))?;
+            space.map_boot(virtual_base, region, flags)?;
             mapped += next - cursor;
             cursor = next;
         }

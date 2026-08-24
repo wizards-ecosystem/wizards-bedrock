@@ -6,12 +6,21 @@
 //! what needs a raw pointer: walking a table through the direct map, and the
 //! `mov cr3` itself.
 //!
-//! Two design points that the signatures alone do not give away. [`activate`]
-//! is safe because it walks the new tables for its own code and stack before
+//! Three design points the signatures alone do not give away. [`activate`] is
+//! safe because it walks the new tables for its own code and stack before
 //! loading them, so a table that would not survive the switch is refused
-//! rather than triple-faulting. And it takes the space *by value*, which is
-//! what keeps [`AddressSpace::map`] safe — nothing can map into a table the
-//! CPU is already walking.
+//! rather than triple-faulting.
+//!
+//! Mapping into a *live* space is safe because `set` accepts only an identical
+//! rewrite of a present entry: nothing the running kernel stands on can be
+//! re-pointed, and a translation that was not present was never cached, so a
+//! new mapping owes no invalidation (D-86). Unmapping is the operation that
+//! would owe one, and it does not exist yet.
+//!
+//! And a mapping carries its evidence (D-87). There is no entry taking a bare
+//! physical address: [`AddressSpace::map_owned`] takes frames the caller owns,
+//! [`AddressSpace::map_boot`] takes a [`BootRegion`] the memory map covers, and
+//! [`AddressSpace::map_device`] refuses anything that is not a device hole.
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -23,7 +32,7 @@ use x86_paging::{
 };
 
 use super::cpu;
-use crate::mm::{self, Paddr};
+use crate::mm::{self, Paddr, Segment};
 use crate::mmio::MmioRegion;
 use crate::sync::Once;
 
@@ -57,6 +66,9 @@ pub enum MapError {
     DeviceOverlap(Paddr),
     /// The bounded device-ownership table is full.
     TooManyDevices,
+    /// The boot handoff never described this physical range, so there is no
+    /// evidence it is memory rather than a guess (D-87).
+    Undescribed(Paddr),
 }
 
 impl From<EntryError> for MapError {
@@ -91,6 +103,9 @@ impl fmt::Display for MapError {
             Self::InvalidRange(error) => write!(f, "{error}"),
             Self::InvalidDeviceRange(address) => {
                 write!(f, "device range at {address:#x} is empty or overflows")
+            }
+            Self::Undescribed(address) => {
+                write!(f, "{address:#x} is not described by the memory map")
             }
             Self::NotDeviceMemory(address) => {
                 write!(f, "device range at {address:#x} overlaps ordinary memory")
@@ -203,7 +218,7 @@ impl AddressSpace {
     /// [`MapError::NonCanonical`] if the virtual range leaves canonical space,
     /// [`MapError::Conflict`] if a larger page already covers part of the
     /// range, and [`MapError::OutOfMemory`] if a table cannot be allocated.
-    pub fn map(
+    fn map_range(
         &mut self,
         virtual_base: u64,
         physical_base: Paddr,
@@ -229,6 +244,55 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Map memory the boot handoff described, at `virtual_base`.
+    ///
+    /// The evidence is the [`BootRegion`], which exists only for a range the
+    /// bootloader's memory map covers. This is the entry the direct map and
+    /// the kernel image use, and the reason there is no longer a public `map`
+    /// taking a bare physical address (D-87): a bound stated in prose is not a
+    /// bound, and this one is the shape D-64 gave physical reads.
+    ///
+    /// # Errors
+    ///
+    /// As [`map_owned`](Self::map_owned).
+    pub fn map_boot(
+        &mut self,
+        virtual_base: u64,
+        region: BootRegion,
+        flags: Flags,
+    ) -> Result<(), MapError> {
+        self.map_range(virtual_base, region.base, region.len, flags)
+    }
+
+    /// Map a run of frames this caller owns, at `virtual_base`.
+    ///
+    /// Ownership moves into the address space: the frames are not freed while
+    /// the mapping stands, which is D-44's type discipline applied to the
+    /// mapping API and the discharge of D-76's first authority debt.
+    ///
+    /// On failure nothing was mapped — the whole range is preflighted before
+    /// any entry is written (D-77) — so `run` is dropped here and its frames
+    /// go back to the allocator, which is what the caller wants.
+    ///
+    /// # Errors
+    ///
+    /// [`MapError::Misaligned`] unless `virtual_base` is page-aligned,
+    /// [`MapError::NonCanonical`] if the range leaves canonical space,
+    /// [`MapError::Conflict`] if any page of it is already mapped to something
+    /// else, and [`MapError::OutOfMemory`] if a table cannot be allocated.
+    pub fn map_owned(
+        &mut self,
+        virtual_base: u64,
+        run: Segment,
+        flags: Flags,
+    ) -> Result<(), MapError> {
+        self.map_range(virtual_base, run.address(), run.len(), flags)?;
+        // The run belongs to the mapping now. Nothing unmaps yet, so nothing
+        // gives it back; when unmap arrives it is what hands these over.
+        core::mem::forget(run);
+        Ok(())
+    }
+
     /// Map a device's registers, and hand back the claim on them.
     ///
     /// Uncacheable and never executable, at an address in the device window
@@ -236,7 +300,7 @@ impl AddressSpace {
     ///
     /// # Errors
     ///
-    /// As [`map`](Self::map), plus [`MapError::OutOfMemory`] if the device
+    /// As [`map_owned`](Self::map_owned), plus [`MapError::OutOfMemory`] if the device
     /// window is exhausted.
     pub fn map_device(&mut self, physical: Paddr, len: u64) -> Result<DeviceMapping, MapError> {
         self.map_device_with(physical, len, Flags::NO_CACHE)
@@ -293,7 +357,7 @@ impl AddressSpace {
             .map(|_| self.device_next)
             .ok_or(MapError::OutOfMemory)?;
 
-        self.map(
+        self.map_range(
             virtual_base,
             base,
             pages,
@@ -325,7 +389,7 @@ impl AddressSpace {
     ///
     /// # Errors
     ///
-    /// As [`map`](Self::map), plus [`MapError::OutOfMemory`] if any slot's
+    /// As [`map_owned`](Self::map_owned), plus [`MapError::OutOfMemory`] if any slot's
     /// frames cannot be allocated. Frames already committed stay committed —
     /// the space that failed is abandoned whole, exactly as a failed
     /// [`activate`] abandons it.
@@ -337,15 +401,11 @@ impl AddressSpace {
             if !run.zero() {
                 return Err(MapError::Unreachable(run.address()));
             }
-            self.map(
+            self.map_owned(
                 slot.stack_base(),
-                run.address(),
-                slot.stack_len(),
+                run,
                 Flags::WRITABLE.union(Flags::NO_EXECUTE),
             )?;
-            // The frames belong to the mapping for the life of the kernel,
-            // like the tables themselves: nothing unmaps.
-            core::mem::forget(run);
         }
         Ok(StackArena {
             layout: *layout,
@@ -724,6 +784,35 @@ impl StackArena {
             }
         }
         None
+    }
+}
+
+/// Evidence that a physical range is one the boot handoff described.
+///
+/// The only way to reach [`AddressSpace::map_boot`], and constructible only
+/// from a range the bootloader's memory map covers. Not `Copy`: it is a
+/// statement about one range, made once, and a copy would let a caller reuse
+/// the evidence for a range nobody checked.
+#[derive(Debug)]
+pub struct BootRegion {
+    base: Paddr,
+    len: u64,
+}
+
+impl BootRegion {
+    /// Describe `len` bytes at `base`, or `None` if the memory map does not
+    /// cover all of it.
+    ///
+    /// `None` also before the map is up, which is the honest answer: until
+    /// then nothing has described anything.
+    pub fn describe(base: Paddr, len: u64) -> Option<Self> {
+        let end = base.checked_add(len)?;
+        if len == 0 || !base.is_multiple_of(PAGE_SIZE) {
+            return None;
+        }
+        crate::mm::with_memory_map(|map| map.covers(base, end))
+            .unwrap_or(false)
+            .then_some(Self { base, len })
     }
 }
 
