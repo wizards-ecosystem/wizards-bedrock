@@ -3390,6 +3390,443 @@ next phase would build user authority on unsound kernel authority).
 
 ---
 
+## D-78 The handle table is one arena, and a handle is arithmetic — Status: Accepted (2026-08-24)
+
+**Context.** `002-architecture.md` listed "handle table representation and
+rights taxonomy" as owed before Phase 5. `010` §3 answered the taxonomy half —
+16–24 rights in one `u32`, and a right must name a distinction the kernel makes
+about the object rather than a syscall. What remained was the layout and the
+lifetime rules, and they must be settled before the first object exists,
+because the first caller freezes them.
+
+**Decision.** One global arena, not a per-process array. A slot's base value is
+`generation ‖ arena_index`; the value a process sees is
+`(base_value << 2 | 0b11) ^ per_table_mixer`. Lookup is arithmetic plus one
+ownership comparison. The encode/decode arithmetic goes to `libs/handle-space`;
+the kernel keeps the arena and the lock.
+
+- **No lowest-free promise.** The reserved low bits forbid a dense encoding, so
+  the promise is unmakeable rather than merely unmade.
+- **`HandleTable { table: AtomicPtr<HandleArray> }`** — Linux's
+  `files_struct`/`fdtable` split, so readers can go lock-free later without
+  touching a call site.
+- **The table is a refcounted object**, not an inline field of `Process`.
+- **Rights are 16–24 bits of one `u32`**, universal (`DUPLICATE`, `TRANSFER`,
+  `WAIT`, `INSPECT`) split from per-type.
+- **Type encodings have headroom for 64 object types.** Policy is monotonic and
+  frozen — tighten-only, immutable once a process has children — with bits
+  encoded so adding a type never renumbers an existing one.
+- **Refcounts use `inc_not_zero` from day one.** Close does not promise global
+  visibility on return.
+- **No revocation.**
+- The per-process **quota** D-44 assigned to this doc is answered at this
+  layer: a process's kernel memory is bounded by what its handle table can
+  name.
+
+**Rationale.** The encoding is Zircon's, and two independent research angles
+converged on copying it without sight of each other — one for security, because
+generation tagging kills use-after-free on handle reuse; one for scalability,
+via the Scalable Commutativity Rule. Zircon's contract commutes *by
+construction*. POSIX's "lowest free descriptor" does not: it is an ordering
+promise that serialises allocation, and sv6 measured the unordered alternative
+scaling linearly with **no single-core penalty** — "at one core, both cases
+perform identically." That is the rare case where the scalable choice is free
+today, which is why it is taken now rather than in Phase 12.
+
+The rights number is settled by one-directional evidence: seL4 has 4, Zircon
+25, CloudABI 31, Capsicum ~81. Capsicum's taxonomy outgrew a machine word and
+broke its ABI — `cap_rights_t` is a multi-word struct spending 7 of every 64
+bits on metadata, with an `init`/`set`/`is_set` API because two rights can no
+longer be OR'd. WASI deleted its rights system entirely in Preview 2 for
+creating "a lot of ambiguity about how it mapped to POSIX semantics", which is
+exactly what the "a right is a distinction, not a syscall" rule prevents.
+managarm, adding fine-grained rights ten years in, landed on ~14.
+
+The refcounted table is a hedge with a named precedent: Zircon's strict
+per-process invariant was the first casualty of its own compatibility layer
+(RFC-0261 shares handle tables for Starnix). Free now; a redesign later.
+
+No revocation, because the one system that has it paid for it. seL4's recursive
+revocation is preemptible and resumable with progress stored in a zombie
+capability, and a pre-mitigation worst-case execution time of about one second,
+reduced to 436 µs computed and 81 µs observed. Object death plus a strippable
+`TRANSFER` right covers the real cases, and if revocation is ever needed, a
+per-object **epoch bump is O(1)** — no traversal, no preemption points, no
+zombies — and the epoch already exists as the generation counter.
+
+**Alternatives.** A per-process array with dense indices (rejected: it is the
+POSIX promise, it serialises allocation, and Zircon does not have one); rights
+as a multi-word struct with room to grow (rejected: that is Capsicum's outcome,
+not its plan, and the growth is what broke the ABI); revocation now (rejected on
+seL4's own numbers); the handle table inline in `Process` (rejected on
+RFC-0261); quota at the frame layer (rejected by D-44 — making callers donate
+memory is an ABI decision and permanent, while a quota is policy and stays
+revisable).
+
+**Consequences.**
+
+- `libs/handle-space` joins the `port_space`/`frame_space` pattern, host-tested
+  with doctests. Per D-28 the two checks most likely to be silently unfailable
+  are *the invalid value never decodes* and *a reused slot never yields the
+  same value twice*; both get broken deliberately.
+- The arena lives in `kernel`, not `wost`: it holds no raw pointer and touches
+  no hardware, which is `005`'s own test.
+- D-70 rules 7 and 9 are discharged for this interface.
+- `002`'s open-questions list loses its first entry.
+
+---
+
+## D-79 The queue is one mechanism, and overflow is impossible by construction — Status: Accepted (2026-08-24)
+
+**Context.** The second doc `002` owed before Phase 5. D-06 chose
+submission/completion rings and `010` §2 refuted the rationale recorded for
+them while confirming the decision, then supplied answers to the four problems
+that decide whether a ring ABI is safe.
+
+**Decision.** One ring mechanism, kernel-allocated pages, single owner.
+
+- **Every operation posts exactly one terminal completion, always** —
+  cancellation included. Cancellation is advisory.
+- **The kernel owns the buffer.**
+- **Completion-queue space is reserved at submission.** The CQ is a power of
+  two and at least twice the SQ size.
+- **Each entry is copied out exactly once and then validated**, enforced by the
+  shape of the API rather than by discipline: the validated copy is the only
+  thing the kernel can reach.
+- **Ports and completion queues are the same object.** Zircon's four semantic
+  wins move into the CQ: one-shot arming by default, edge-versus-level as an
+  explicit flag, cancellation that purges already-queued entries, and exactly
+  one waiter released per entry.
+- Ring structures carry **explicit version fields**; the opcode surface stays
+  minimal; there are **no privileged opcodes**.
+- **No global FIFO across submitters.**
+- The rationale recorded in D-06 is replaced by the measured ordering:
+  structural asynchrony ≈ 10×, total trap elimination ≈ 1.3× and it costs a
+  dedicated core.
+
+**Rationale.** Each rule has a named failure behind it. `-EALREADY` in
+io_uring's own manual means "the caller must wait for the canceled request to
+post its completion event", so any design where cancellation might suppress a
+completion has two exit paths for one operation. Blocking in `Drop` is unsound
+because leaking is safe, so a userspace-owned buffer has no sound lifetime;
+Windows RIO states the rule kernel-side. io_uring's `CQ_NODROP` took an
+unbounded kernel-memory liability for a misbehaving application, while RIO's
+reservation-based admission control makes overflow *structurally impossible* —
+one of these is a mitigation and the other is a proof. And the double fetch is
+not theoretical: CVE-2025-39816 is literally "always use `READ_ONCE()` to read
+ring pointers."
+
+Building ports *and* completion queues would give userspace two event planes to
+join, which is precisely why io_uring grew `poll_add`, `futex`, `waitid` and
+`msg_ring`. A Zircon port already *is* a completion queue whose entries are
+events.
+
+The austerity is io_uring's security record read correctly. The ~60% kernelCTF
+figure is confirmed and Google still disables io_uring in 2026, but the
+statistic is frozen *because* they disabled it. NVD returns 143 io_uring CVEs
+and rising — 38 in 2024, 40 in 2025, 36 by partial 2026 — clustering in
+**newly added** surface: `zcrx`, provided buffers, `ublk`, passthrough. By
+class: 50 race/TOCTOU, 23 use-after-free, 10 refcount. The lesson is feature
+velocity on a ring surface, not io_uring the name.
+
+No global FIFO is the Scalable Commutativity Rule again: sv6's mail-server
+benchmark shows an ordered socket forces one shared queue while an unordered
+one allows per-core queues.
+
+**Alternatives.** io_uring's overflow list (rejected: unbounded kernel memory
+for a misbehaving process); userspace-registered buffers (rejected: no sound
+lifetime in Rust, because leaking is safe); separate ports and completion
+queues (rejected: two event planes is the defect io_uring spent four features
+patching); validating in place instead of copying out (rejected: that is the
+double fetch, and it has a 2025 CVE); a rich opcode surface (rejected on the
+CVE clustering).
+
+**Consequences.**
+
+- Slice 9 writes a TLA+ model before the implementation, per D-84.
+- `libs/ring-proto` owns the index arithmetic and the protocol state machine.
+- A wait with a timeout and a wait on two queues — both left open by Phase 4 —
+  fall out of this mechanism rather than being built separately.
+- **If the native ABI is a ring, "observe the syscalls" is not a valid basis
+  for auditing, sandboxing or introspection.** ARMO's 2025 "Curing" rootkit did
+  command and control without making a single system call, and Falco, Tetragon
+  and Microsoft Defender were all blind to it. Every observability mechanism
+  this kernel will ever want must be a ring feature, designed in from the
+  start.
+- `002`'s open-questions list loses its second entry.
+
+---
+
+## D-80 A signal is a completion entry — Status: Accepted (2026-08-24)
+
+**Context.** D-74 named this the question hardest to answer late, and the
+reason mlibc moved forward to Phase 5. `002` does not mention signals at all.
+The native ABI would never raise it; a POSIX libc raises it immediately.
+
+**Decision.** A signal is an entry posted to the completion queue. A blocking
+wait is interruptible because a wakeup is indistinguishable from a completion.
+There is no in-kernel signal frame, no kernel signal mask, and no
+restart-after-interrupt semantics in the kernel.
+
+**Rationale.** It is the same argument that unified ports and completion queues
+in D-79: a second delivery mechanism means two event planes and a join problem,
+and the join problem is where the bugs are. Making the signal an ordinary entry
+means the interruptible-wait behaviour is a property of the queue that already
+has to be correct, rather than a second path that has to be kept correct
+alongside it.
+
+**Alternatives.** A kernel-delivered signal frame on the user stack (rejected:
+it is a second event plane, it needs its own reentrancy rules, and it puts
+kernel-written data on a stack the process controls); a signal-specific wakeup
+that aborts a queue wait (rejected: the abort has no completion, which
+contradicts D-79's one-terminal-completion rule).
+
+**Consequences.**
+
+- mlibc's `Sigaction` becomes a userspace dispatch loop over CQ entries.
+- The POSIX behaviours that assume a kernel-delivered signal interrupting an
+  arbitrary instruction — `EINTR` on a blocking call, signal-safe reentrancy,
+  a `SIGSEGV` handler that resumes — are either emulated in the libc or
+  unimplementable. That is the same cluster Plan 9's APE could not implement
+  and Fuchsia excluded from POSIX Lite. **Slice 10's job is to find out which
+  half each falls in, and to record the count** rather than discover it in
+  Phase 9.
+- `002`'s open-questions list loses its third entry.
+
+---
+
+## D-81 The trap entry is FRED-shaped, and FRED is not implemented — Status: Accepted (2026-08-24)
+
+**Context.** FRED shipped on Panther Lake 2026-01-27 and is default-on in Linux
+7.1. It replaces IDT delivery and `IRET` with `ERETS`/`ERETU`, replaces IST
+with four reentrant stack levels, makes `SWAPGS` a `#UD` in favour of `LKGS`,
+and delivers a uniform frame regardless of event — and it is the mechanism that
+finally makes supervisor shadow stacks tractable. `010` §10 checked whether
+QEMU emulates it: QEMU 11.0.50 lists `fred`, `lkgs` and `wrmsrns` among its
+known CPU features and accepts `-cpu max,fred=on`. That moves FRED from
+unverifiable to testable, but not to implemented.
+
+**Decision.** Phase 5 builds the *shape* and not the mechanism:
+
+- **Dispatch from a table on a decoded `TrapCause`**, rather than 256 IDT stubs
+  that each know their own vector. The decode is pure arithmetic and goes to
+  `libs/trap-cause`.
+- An **opaque `TrapContext`** at call sites, in place of raw frame field access.
+- **`swapgs` behind `arch::percpu`**, never open-coded.
+- **`iretq` behind `arch::trap::return_to_user`.**
+- **Trap stacks as an enum**, mapped onto IST today and onto FRED's four levels
+  later.
+
+Alongside, three entry-path items that are one-liners now and near-impossible
+to retrofit gracefully: **`VERW` on exit-to-user** gated on `MD_CLEAR`, an
+**eIBRS MSR write at boot**, and **`ENDBR64` on every indirect target in
+`global_asm!`** so the naked switch does not break when kernel IBT is enabled.
+KPTI is decided *against*, with `RDCL_NO` recorded as the reason.
+
+**Rationale.** Every item is an improvement on its own terms, which is the test
+that separates shaping from speculation. The decoded cause is what an aarch64
+port would need, which is a strong signal it is the right abstraction rather
+than speculative generality. The opaque context is what D-77 already forced for
+the frame. `arch::percpu` has to exist for ring 3 regardless. And a table
+dispatch is smaller than 256 stubs.
+
+The three one-liners are shaped by cost asymmetry rather than by likelihood:
+`VERW` is one instruction on a return path that is painful to modify once
+mature, and eIBRS is one MSR write at boot. KPTI is declined because its cost
+scales with syscall rate — under 0.5% below 10k/s/CPU, ~5% at 75k, and PCID cut
+it from 2.1% to 0.5% — and this kernel's target hardware reports `RDCL_NO`.
+
+**Alternatives.** Implement FRED now (rejected: the transitions are not proven
+emulated, the hardware is one generation old, and the shape captures the design
+benefit at a fraction of the cost); keep the 256 stubs and grow into them
+(rejected: the entry path is rebuilt exactly once, and this is the phase that
+rebuilds it); defer `VERW` and eIBRS to a security pass (rejected on retrofit
+cost, which is the only reason they are here).
+
+**Consequences.**
+
+- `libs/trap-cause` is a new host-tested crate, checked over the whole vector
+  space including the reserved range.
+- The existing `global_asm!` trampoline — the most battle-tested assembly in
+  the repo, which Phase 4 declined to convert once already (D-51) — is
+  converted here, because the table dispatch is what it feeds.
+- Whether `syscall`/`sysret` or a trap gate carries the synchronous call set is
+  **not** decided here. `sysret`'s non-canonical `RCX` hazard is a real CVE
+  class costing a branch on every return, a trap gate costs more per call, and
+  the measurement that would settle it is meaningless under TCG. It is decided
+  in slice 5 on safety and revisited on real hardware.
+
+---
+
+## D-82 Extended state is eager, compacted, and sized at boot — Status: Accepted (2026-08-24)
+
+**Context.** D-29 deferred XSAVE until there was a scheduler. Ring 3 arrives in
+Phase 5, so the decision is due. It is not only a context-switch decision: the
+saved size leaks into per-thread stack arithmetic, so it has to be settled
+before the stack allocator is.
+
+**Decision.** Eager, compacted, boot-sized, out-of-line, CPUID-derived, with
+the arithmetic in `libs/xstate`.
+
+- **Eager only. Never lazy.**
+- **`XSAVES` → `XSAVEC` → `XSAVE`, and never `XSAVEOPT`.**
+- **`XCR0` = x87 + SSE + AVX.** No AVX-512, no AMX.
+- **`XstateBuf` out-of-line and growable**, 64-byte aligned, sized at boot from
+  the mask — never a fixed array inside the thread struct.
+- **Offsets are computed from `CPUID.0DH` into a table** in `libs/xstate`,
+  host-tested against synthetic CPUID snapshots. `wost` keeps the four
+  instructions and the MSR writes.
+- **`#NM` (vector 7) is reserved** for a future XFD-based allocator; nothing is
+  built.
+- **`+soft-float` stays, and the gate checks that it stays.**
+
+**Rationale.** Lazy FPU restore is CVE-2018-3665 and Linux went eager in 2016;
+recording it here is what stops someone re-optimising it back in. `XSAVEOPT`'s
+modified-optimisation is a correctness hazard while the init-optimisation that
+`XSAVEC`/`XSAVES` provide is the one that pays, and `XSAVES` is preferred even
+with no supervisor state today because it shares the compacted format with
+`XSAVEC` — and CET's shadow-stack pointers live in supervisor xstate, so
+wanting CET later means wanting `XSAVES` now.
+
+Every enabled `XCR0` bit is per-thread memory forever, and AMX's `XTILEDATA`
+alone is 8 KiB today and up to 64 KiB architecturally. A fixed array inside the
+thread struct is precisely what would make AMX or a future component impossible
+to add.
+
+The offset table is not defensive generality. **APX is state component 19 but
+sits at offset 960** in the non-compacted format, in deprecated MPX's hole — a
+higher index at a lower offset. Linux had to add a dynamic ordering table and
+delete its monotonicity assertions in 6.16. A host test against a synthetic
+CPUID snapshot with the APX case is the cheapest possible way to not repeat
+that.
+
+`+soft-float` is what makes trap entry never touch extended state; only a task
+switch does. It is a gate check because it is a build flag nobody would notice
+losing.
+
+**Alternatives.** Lazy restore (rejected: CVE-2018-3665); `XSAVEOPT` (rejected:
+modified-optimisation correctness hazard); enabling AVX-512 or AMX (rejected:
+per-thread memory forever, for no caller); a fixed-size buffer in the thread
+struct (rejected: forecloses growth, and the size is not known at compile
+time); assuming component offsets increase with index (rejected: APX).
+
+**Consequences.**
+
+- `libs/xstate` is a new host-tested crate; the APX snapshot is one of its
+  tests, and the break-test is widening `XCR0` by a bit and confirming the size
+  arithmetic notices.
+- The stack allocator in slice 3 must know the boot-computed size, and must
+  also leave a second region slot per thread so CET's shadow stack is not
+  foreclosed (`010` §10). Slices 3 and 5 are coupled by this number.
+- D-29's deferral is discharged.
+
+---
+
+## D-83 Two rules that cost nothing and keep three options open — Status: Accepted (2026-08-24)
+
+**Context.** `010` §10 surveyed the 2026 hardware security features against
+what Phase 5 is about to freeze. Most need nothing. Three — PKS, LAM and its
+successor ChkTag — are foreclosed by ordinary-looking code written without
+them in mind, and the cost of not foreclosing them is two rules.
+
+**Decision.**
+
+1. **Reserve PTE bits 62:59.** Build nothing on them.
+2. **Range-check user pointers. Never test `>> 47 == 0`.**
+
+**Rationale.** PKS is Sapphire Rapids and Intel-only and was **never merged**
+into Linux, so building on it would be speculative — but the bits it uses are
+in the PTE, and a page-table encoding that spends them is a format change
+later. Reserving four bits is not a design.
+
+The pointer rule is about a different kind of breakage. `>> 47 == 0` is the
+idiom everyone writes, it is correct today, and it is wrong under LAM, wrong
+under 5-level paging, and wrong under ChkTag — all of which put non-address
+bits in the top of a pointer. LAM itself is being superseded by ChkTag and is
+not worth building for; the rule is worth holding anyway, because a range check
+is the same length as the shift and is right in every case. `010` §10's own
+phrasing: range-check user pointers, never `>> 47 == 0`.
+
+**Alternatives.** Build PKS support (rejected: never merged upstream, Intel
+only, no caller); say nothing and let the idiom appear (rejected: it is the
+default thing to write, and it appears once per user-pointer path).
+
+**Consequences.**
+
+- `libs/x86-paging` documents bits 62:59 as reserved.
+- Slice 3's user-pointer validation is a range check, and slice 5's
+  `copy_from_user`/`copy_to_user` call it before taking the SMAP guard.
+- LASS needs discipline only — the split is exactly bit 63, and `#GP` becomes
+  the null-deref reporter — which the range check already gives.
+
+---
+
+## D-84 The ring protocol is modelled before it is written — Status: Accepted (2026-08-24)
+
+**Context.** `010` §9 reported that the verification tier is closer than `008`
+assumed: Verus runs on this machine on stable today, `shuttle` 0.9 builds
+unpinned, and `proptest` builds with two version pins. It also found the wall
+and named it precisely — rustup's GNU toolchain ships no `as.exe`, so any crate
+reaching `getrandom >= 0.3.2` or `windows-sys >= 0.61` fails to build. And §12
+#35 put the sharper point: NrOS paid 13.3:1 and Atmosphere 4.3:1 in
+proof-to-code for the same page-table logic, and the difference was the data
+layout — a choice made when the ring and handle table are written, not
+afterwards.
+
+**Decision.** Two verification tiers are adopted in Phase 5, both scoped to the
+ring protocol:
+
+1. **A TLA+ model, checked before the protocol is implemented.**
+   `tla2tools.jar` is vendored and checksum-pinned under D-25, and
+   `cargo xtask model-check` runs it.
+2. **`libs/ring-proto` under `shuttle` and `proptest`** on the host, with
+   `proptest` taking `default-features = false` and `getrandom = "=0.3.1"`.
+
+Both tiers get a break-test, and the break is the point:
+
+- The model's break is a deliberately weakened invariant that **must** produce
+  a counterexample.
+- The concurrency tier's break is a variant using `Relaxed` where the protocol
+  needs `Acquire`/`Release`, which **must** fail under shuttle.
+
+**Rationale.** The Scalable Commutativity Rule's decisive property is that it
+is analysable "before an implementation exists and before the necessary
+hardware is available", and that is the situation this project is in: the
+hardware that would show a ring protocol's ordering bugs is in Phase 12. The
+one bug class a single CPU genuinely cannot show is Store→Load reordering,
+whose shape is exactly the lost-wakeup re-check the ring depends on. A model is
+the only thing that can see it today.
+
+Rust does not save us here, and there is a measurement: Converos (ATC'25)
+model-checked twelve Asterinas concurrency modules and found twenty bugs — in
+the safe code.
+
+The cost is small and already paid for. Java 21 is on the development machine,
+so the model tier costs a vendored jar and an xtask. The pins are known and
+measured rather than guessed.
+
+**Alternatives.** Write the protocol and test it (rejected: single-CPU testing
+cannot observe the one reordering that matters, and the interface is frozen by
+its first caller); Verus on the ring (rejected for now: it runs here, but the
+proof-to-code ratios above are for page-table logic with a settled layout, and
+a protocol still being designed is the wrong first target); nothing, with the
+tier recorded as debt (rejected: the whole argument for doing this in Phase 5
+is that afterwards the layout is fixed).
+
+**Consequences.**
+
+- `cargo xtask model-check` is a new task. It joins `ci` only if it runs fast
+  enough not to damage the loop; if it does not, it is a named task the slice
+  runs and this ADR is amended to say so.
+- The two `proptest` pins are a recorded tax under D-16. Slice 10's vendored
+  clang is what eventually retires them, by supplying the missing assembler.
+- A third and fourth check location join `libs/` and `selftest.rs`. `005`'s
+  test-placement table grows two rows.
+- Verus stays unadopted, with `010` §9's corrected cost on the record so the
+  next pass does not re-derive it.
+
+---
+
 ## Cross-references
 
 - `000-vision.md` — destination + phase roadmap
@@ -3407,6 +3844,10 @@ next phase would build user authority on unsound kernel authority).
 - `009-multitasking.md` — Phase 4 charter: the debts D-15, D-34, D-36 and
   D-47 deferred here, the lock order, and the decisions the phase produced
   (D-51..D-66, plus D-76 at its close)
+- `011-userspace.md` — Phase 5 charter: the debts D-29, D-44, D-45, D-52, D-56
+  and D-69 deferred here, the handle-table and queue designs `002` owed before
+  the phase, the lock order that supersedes `009`'s, and the decisions the
+  phase still holds open (D-78.. as each is taken)
 - `008-research-notes-2.md` — the second research pass, opening Phase 3:
   what the stable toolchain now allows, the evidence behind the decisions
   `007` holds open, and the proposed additions to `005`. Its marks are its

@@ -206,21 +206,22 @@ targeting virtio-gpu in VMs, with a dumb-framebuffer fallback.
 
 Still open:
 
-- **Handle table representation & rights taxonomy** (doc before Phase 5). The
-  taxonomy half is now answered — 16–24 rights in one `u32`, and a right must
-  name a distinction the kernel makes about the object, never a syscall
-  (`010` §3). What the doc still owes is the layout and the lifetime rules.
-- **Queue memory layout & wakeup semantics** (doc before Phase 5); kernel
-  executor follows waker discipline: no allocation in IRQ handlers,
-  lost-wakeup re-check pattern, `Pin` for self-referential futures. `010` §2
-  adds the austerity rules and the four hard problems this doc must answer.
-- **How a signal interrupts a blocking queue wait** — the question that is
-  hardest to answer late, and the reason mlibc moved forward (D-74).
 - **WizFS on-disk format specifics** (before its own phase, D-73)
 - **Compat-fork mechanics for mlibc** (before Phase 9)
 
 Closed since this list was written:
 
+- *Handle table representation & rights taxonomy* — the taxonomy half by
+  `010` §3, the layout and lifetime rules by **D-78** and
+  `011-userspace.md`'s handle-table section: one global arena, generation-tagged
+  arithmetic, no lowest-free promise, a refcounted table, and no revocation.
+- *Queue memory layout & wakeup semantics* — answered by **D-79** and
+  `011`'s queue section: one terminal completion per operation, kernel-owned
+  buffers, reservation-based backpressure, copy-out-then-validate, and ports
+  unified into the completion queue.
+- *How a signal interrupts a blocking queue wait* — answered by **D-80**: a
+  signal is a completion entry, so a wakeup is indistinguishable from a
+  completion and there is no second event plane.
 - *Kernel-memory accounting, untyped-retype or not* — answered by **D-44**:
   rejected as an accounting mechanism, adopted as a type discipline.
 - *CHERI/CET/PKS hardware security pass* — closed by `008` §6, and updated by
