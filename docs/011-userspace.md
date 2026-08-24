@@ -369,6 +369,30 @@ claim because it is checkable:
 
 Slice 7 fixes `002` and lands the check in the same commit.
 
+## Known holes, carried deliberately
+
+Each was found by an adversarial pass (D-94) and each is a design decision
+rather than a repair, so each is written down instead of patched over.
+
+- **A closure taken under a leaf guard.** `mm::with_memory_map`,
+  `dev::with_io_apic` and `mem::with_active_space` all run caller-supplied code
+  with a lock held, which is exactly what `lock_leaf`'s obligation forbids. The
+  obligation is on the closure and nothing checks it: a closure that logs takes
+  the console's `ThreadLock` under a `SpinLock` and trips D-63's assert — which
+  is how this was found, not by reasoning. Closing it means a guard type that
+  forbids calls, and that shape wants a phase that has more callers to test it
+  against.
+- **`mem::forget` on a `SpinLockGuard` strands the interrupt flag.** Leaking is
+  safe, so a safe caller can leave interrupts off for the life of the kernel and
+  `SPINLOCKS_HELD` permanently non-zero. Not undefined behaviour, but
+  `Unmapped`'s own doc states the principle this violates — *no soundness
+  argument may rest on `Drop` running* — and the guard's interrupt invariant
+  rests on exactly that.
+- **`MappedStack` can be invalidated while it is still evidence.** `unmap` will
+  clear a range `map_stack` mapped, since it carries `OWNED`, leaving a live
+  token that claims a stack is there. The result is a fault rather than
+  corruption, which is why it is here rather than in D-94's fixes.
+
 ## Decisions the phase must make (with their tensions)
 
 Held open deliberately; each becomes an ADR when taken. The ones this charter
