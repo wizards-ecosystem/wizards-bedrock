@@ -46,9 +46,16 @@ pub const BASE_WEIGHT: u32 = 1024;
 /// of those at twice the base weight would truncate to nothing. Scaling by
 /// this first is what keeps a heavy thread's clock moving; the fairness test
 /// below is the one that found it standing still. It also buys the headroom
-/// [`Entity::remaining_slice`] converts back through, which is why the
-/// round-trip is lossless at every weight the tests try.
+/// [`Entity::remaining_slice`] converts back through: the round trip loses at
+/// most one unit of real time, at any weight up to [`MAX_WEIGHT`].
 pub const RESOLUTION: u64 = 1024;
+
+/// The largest weight a thread may carry — [`RESOLUTION`] × [`BASE_WEIGHT`].
+///
+/// Past it a one-unit charge truncates to no virtual time at all: the clock
+/// stops, the thread is always eligible, and everyone else starves.
+/// [`Entity::new`] clamps to it.
+pub const MAX_WEIGHT: u32 = RESOLUTION as u32 * BASE_WEIGHT;
 
 /// Whether virtual time `a` comes before `b`, across a wrap.
 pub const fn before(a: u64, b: u64) -> bool {
@@ -66,13 +73,20 @@ pub struct Entity {
 impl Entity {
     /// A thread of `weight` at virtual time zero, with no slice yet.
     ///
-    /// A zero weight is taken as one: it has no meaning, and dividing by it
-    /// would have less.
+    /// A zero weight is taken as one, and a weight above [`MAX_WEIGHT`] as
+    /// [`MAX_WEIGHT`]: outside that range the arithmetic stops meaning
+    /// anything.
     pub const fn new(weight: u32) -> Self {
         Self {
             vruntime: 0,
             deadline: 0,
-            weight: if weight == 0 { 1 } else { weight },
+            weight: if weight == 0 {
+                1
+            } else if weight > MAX_WEIGHT {
+                MAX_WEIGHT
+            } else {
+                weight
+            },
         }
     }
 
@@ -110,7 +124,8 @@ impl Entity {
     /// What a tickless kernel arms its timer for: the answer says when this
     /// thread stops being the earliest deadline, so there is no reason to
     /// interrupt it before then. Zero once the slice is spent, which is the
-    /// honest answer to "how long until now".
+    /// honest answer to "how long until now". May under-report by one unit at
+    /// weights that do not divide the scale — an early wake, never a late one.
     pub const fn remaining_slice(&self) -> u64 {
         if self.slice_is_spent() {
             return 0;
@@ -232,6 +247,39 @@ mod tests {
         assert_eq!(base.vruntime(), 100 * RESOLUTION);
         assert_eq!(double.vruntime(), 50 * RESOLUTION);
         assert_eq!(half.vruntime(), 200 * RESOLUTION);
+    }
+
+    #[test]
+    fn a_gigantic_weight_still_pays() {
+        let mut entity = Entity::new(u32::MAX);
+        entity.charge(1);
+        assert_eq!(entity.weight(), MAX_WEIGHT);
+        assert_eq!(entity.vruntime(), 1, "the clock must never stand still");
+    }
+
+    #[test]
+    fn a_round_trip_loses_at_most_one_unit_at_any_weight() {
+        for weight in [
+            1,
+            2,
+            3,
+            819,
+            820,
+            1277,
+            BASE_WEIGHT,
+            8 * BASE_WEIGHT,
+            MAX_WEIGHT,
+        ] {
+            let mut entity = Entity::new(weight);
+            for slice in [1, 5, 1_000, 3_000_000] {
+                entity.renew_deadline(slice);
+                let remaining = entity.remaining_slice();
+                assert!(
+                    remaining <= slice && remaining + 1 >= slice,
+                    "weight {weight}, slice {slice}: remaining {remaining}"
+                );
+            }
+        }
     }
 
     #[test]

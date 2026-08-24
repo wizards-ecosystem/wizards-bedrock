@@ -204,10 +204,17 @@ impl Entry {
     ///
     /// # Errors
     ///
-    /// [`EntryError::Misaligned`] unless `address` is page-aligned, and
+    /// [`EntryError::Misaligned`] unless `address` is aligned to the page the
+    /// entry maps — in a `HUGE` entry bit 12 is the PAT select, not address,
+    /// so a 4 KiB-aligned frame would silently encode both wrong — and
     /// [`EntryError::OutOfRange`] if it needs more than 52 bits.
     pub const fn page(address: u64, flags: Flags) -> Result<Self, EntryError> {
-        if !address.is_multiple_of(PAGE_SIZE) {
+        let alignment = if flags.contains(Flags::HUGE) {
+            Level::Pd.span()
+        } else {
+            PAGE_SIZE
+        };
+        if !address.is_multiple_of(alignment) {
             return Err(EntryError::Misaligned(address));
         }
         if address & !ADDRESS_MASK != 0 {
@@ -533,6 +540,17 @@ mod tests {
             table.address(),
             "same target, different kind"
         );
+    }
+
+    #[test]
+    fn a_huge_entry_refuses_a_merely_page_aligned_address() {
+        // Bit 12 of a huge entry selects the PAT, so 4 KiB alignment would
+        // encode a different frame and a different memory type.
+        assert_eq!(
+            Entry::page(0x1000, Flags::PRESENT | Flags::HUGE),
+            Err(EntryError::Misaligned(0x1000))
+        );
+        assert!(Entry::page(0x1000, Flags::PRESENT).is_ok());
     }
 
     #[test]

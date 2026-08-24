@@ -44,7 +44,7 @@ const FRAMES_PER_WORD: usize = u64::BITS as usize;
 /// The const argument a [`FrameSpace`] takes: `FrameSpace<{ words_for(16 << 30) }>`
 /// covers 16 GiB and occupies 2 MiB of `.bss`, two bits per frame.
 pub const fn words_for(bytes: u64) -> usize {
-    (bytes / FRAME_SIZE) as usize / FRAMES_PER_WORD
+    (bytes.div_ceil(FRAME_SIZE) as usize).div_ceil(FRAMES_PER_WORD)
 }
 
 /// The bit standing for `frame` within its word.
@@ -154,11 +154,11 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
 
         let first = base.div_ceil(FRAME_SIZE);
         let last = end / FRAME_SIZE;
-        for frame in first..last {
-            if frame >= Self::FRAME_COUNT as u64 {
-                inserted.ignored += 1;
-                continue;
-            }
+        // Counted arithmetically: a corrupt region length must not become a
+        // quadrillion-iteration loop.
+        let clamp = last.min(Self::FRAME_COUNT as u64);
+        inserted.ignored = last.saturating_sub(clamp.max(first)) as usize;
+        for frame in first..clamp {
             let frame = frame as usize;
             if self.is_managed(frame) {
                 continue;
@@ -219,9 +219,12 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
         }
         let align = align.max(1).next_power_of_two();
 
+        // The wrap pass reaches `count - 1` past the hint, so a free run
+        // straddling it is still found.
+        let wrap_end = self.hint.saturating_add(count - 1).min(Self::FRAME_COUNT);
         let found = self
             .search(self.hint, Self::FRAME_COUNT, count, align)
-            .or_else(|| self.search(0, self.hint.min(Self::FRAME_COUNT), count, align))?;
+            .or_else(|| self.search(0, wrap_end, count, align))?;
 
         for frame in found..found + count {
             self.take(frame);
@@ -331,6 +334,9 @@ mod tests {
     fn words_for_converts_bytes_to_bitmap_words() {
         assert_eq!(words_for(FRAME_SIZE * 64), 1);
         assert_eq!(words_for(16 << 30), 65_536);
+        // A partial word still needs covering.
+        assert_eq!(words_for(FRAME_SIZE * 65), 2);
+        assert_eq!(words_for(FRAME_SIZE * 64 + 1), 2);
         assert_eq!(Small::FRAME_COUNT, 64);
         assert_eq!(Small::CEILING, FRAME_SIZE * 64);
     }
@@ -552,6 +558,35 @@ mod tests {
         // Release the lowest frame; the hint is now past it and must wrap.
         space.free(frames[0]).expect("allocated");
         assert_eq!(space.allocate(), Some(frames[0]));
+    }
+
+    #[test]
+    fn a_free_run_straddling_the_hint_is_found() {
+        let mut space = Small::new();
+        space.insert(0, Small::CEILING);
+        // Drain everything so the hint wraps to zero, then leave the hint in
+        // the middle of a free run.
+        while space.allocate().is_some() {}
+        for frame in 30..34 {
+            space.free(frame).expect("allocated");
+        }
+        assert_eq!(space.allocate_contiguous(2, 1), Some(30));
+        space.free(30).expect("allocated");
+        space.free(31).expect("allocated");
+
+        // Frames 30..34 are free; the hint sits at 32, inside the run.
+        assert_eq!(space.allocate_contiguous(4, 1), Some(30));
+    }
+
+    #[test]
+    fn insert_of_a_vast_range_returns_promptly() {
+        let mut space = Small::new();
+        let inserted = space.insert(0, u64::MAX - 1);
+        assert_eq!(inserted.added, Small::FRAME_COUNT);
+        assert_eq!(
+            inserted.ignored,
+            ((u64::MAX - 1) / FRAME_SIZE) as usize - Small::FRAME_COUNT
+        );
     }
 
     #[test]

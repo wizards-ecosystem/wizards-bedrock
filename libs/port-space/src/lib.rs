@@ -73,6 +73,7 @@ impl PortSpace {
     /// False — and nothing recorded — if any of them is already reserved, if
     /// the span would run past the end of the space, or if `len` is zero, which
     /// would reserve nothing while reporting success.
+    #[must_use = "ignoring a refused reservation means driving ports something else owns"]
     pub fn reserve(&mut self, port: usize, len: usize) -> bool {
         let Some(span) = self.span(port, len) else {
             return false;

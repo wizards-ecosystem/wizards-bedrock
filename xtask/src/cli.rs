@@ -290,6 +290,7 @@ mod tests {
             "fmt",
             "test",
             "test-boot",
+            "boot-check",
             "verify-vendor",
             "ci",
             "clean",

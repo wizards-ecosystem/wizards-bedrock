@@ -227,10 +227,13 @@ impl Image {
                 });
                 continue;
             };
-            if section.is_nobits() && segment.file_size >= segment.memory_size {
+            // File-backed bytes reaching past the section's start put it in
+            // the file, whether or not they cover the whole segment.
+            let file_end = segment.vaddr + segment.file_size;
+            if section.is_nobits() && section.addr < file_end {
                 faults.push(ImageError::NobitsInFile {
                     name: section.name.clone(),
-                    wasted: section.size,
+                    wasted: (file_end - section.addr).min(section.size),
                 });
             }
         }
@@ -485,6 +488,24 @@ mod tests {
                     addr: HIGHER_HALF + 0x1a000,
                 },
             ]
+        );
+    }
+
+    /// The subtler shape of the same defect: file bytes reach only part-way
+    /// into `.bss`, so `memsz > filesz` still holds and the whole-segment
+    /// comparison would look fine.
+    #[test]
+    fn a_partially_file_backed_bss_is_caught() {
+        let mut image = good_image();
+        let data = image.segments.last_mut().expect("three segments");
+        data.file_size = 0x200;
+
+        assert_eq!(
+            image.verify(),
+            [ImageError::NobitsInFile {
+                name: ".bss".to_string(),
+                wasted: 0x100,
+            }]
         );
     }
 
