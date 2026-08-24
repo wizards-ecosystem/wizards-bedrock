@@ -13,6 +13,7 @@ members = [
     "libs/pixel",
     "libs/port-space",
     "libs/ps2-keys",
+    "libs/ring-proto",
     "libs/slab-layout",
     "libs/stack-layout",
     "libs/timebase",
@@ -38,6 +39,7 @@ default-members = [
     "libs/pixel",
     "libs/port-space",
     "libs/ps2-keys",
+    "libs/ring-proto",
     "libs/slab-layout",
     "libs/stack-layout",
     "libs/timebase",
@@ -67,6 +69,7 @@ mmio-range = { path = "libs/mmio-range" }
 pixel = { path = "libs/pixel" }
 port-space = { path = "libs/port-space" }
 ps2-keys = { path = "libs/ps2-keys" }
+ring-proto = { path = "libs/ring-proto" }
 slab-layout = { path = "libs/slab-layout" }
 stack-layout = { path = "libs/stack-layout" }
 timebase = { path = "libs/timebase" }

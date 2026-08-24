@@ -100,6 +100,10 @@ name = "ps2-keys"
 version = "0.1.0"
 
 [[package]]
+name = "ring-proto"
+version = "0.1.0"
+
+[[package]]
 name = "slab-layout"
 version = "0.1.0"
 
