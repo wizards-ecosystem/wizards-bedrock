@@ -81,11 +81,11 @@ message shape. mlibc needs an ABI to sit on.
 |---|---|---|
 | 1 | This charter: the handle-table layout and lifetime rules, the queue layout and wakeup semantics, the signal answer, and the ADRs that cost no code | ✅ 2026-08-24 |
 | 2 | The lock discipline in the borrow checker (D-69): `SpinLock::lock` borrows the context, and the leaf acquisition a `Drop` can take | ✅ 2026-08-24 |
-| 3 | The address space that grows: two-way mapping, mappings that take owned frames, `UFrame`, unmap returning a flush token, the boot and double-fault stack guards, a stack allocator with a second region slot | |
-| 4 | Trap entry, FRED-shaped: `libs/trap-cause` and table dispatch, trap stacks as an enum, `VERW` and eIBRS, x2APIC as a checked precondition, the Limine base-revision-5 bump | |
+| 3 | The address space that grows: two-way mapping, mappings that carry their evidence, unmap returning a flush token, the double-fault stack guarded | ✅ 2026-08-24 |
+| 4 | Trap entry, FRED-shaped: `libs/trap-cause` and table dispatch, trap stacks as an enum, the boot thread's own guarded stack, `VERW` and eIBRS, x2APIC as a checked precondition, the Limine base-revision-5 bump | |
 | 5 | Ring 3: user descriptors, `syscall`/`sysret`, `arch::percpu` and `swapgs`, the SMAP copy guard, `libs/xstate` and eager compacted `XSAVES` | |
 | 6 | The handle table: `libs/handle-space`, rights in one `u32`, a refcounted table, the object header, per-process quota | |
-| 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, two processes, exactly one handle each at spawn, and `THREADS` split into a thread table and a run queue | |
+| 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, `UFrame`, stacks that arrive with their thread, two processes, exactly one handle each at spawn, and `THREADS` split into a thread table and a run queue | |
 | 8 | Channels: bytes and handles, attenuate-on-send, rights declared per field with no defaults | |
 | 9 | The async queue ABI: the model before the protocol, `libs/ring-proto` under shuttle and proptest, reservation backpressure, exactly one terminal completion | |
 | 10 | The stub mlibc sysdep (D-74), on a vendored clang | |
@@ -462,3 +462,95 @@ automated check and cannot have one where it lives: `wost` is cross-compiled,
 so a `compile_fail` doctest cannot run against it (D-41), and a copy in `libs/`
 would drift. It is verified by hand, recorded in D-85, and re-verifying it is a
 manual step when the guard types change.
+
+## Slice 3 — the address space that grows (2026-08-24)
+
+Recorded as built, per the charter above.
+
+**The constraint was already redundant, and D-77 is why we could tell** (D-86).
+D-45 kept `AddressSpace::map` sound by making it unreachable: `activate` took
+the space by value, so once the tables were live nothing held anything to map
+into. Three phases were shaped by that. But D-77's adversarial pass had already
+hardened `set` so that a present entry accepts only an identical rewrite — and
+*that* is what stops a live mapping moving under the running kernel. Taking the
+space by value was guarding a hazard the entry check had closed. So `activate`
+borrows, the kernel keeps its space, and mapping into a running space is safe
+for a reason that is checked rather than promised.
+
+Two shapes were available and both are known failures. An
+`ActiveSpace`/`InactiveSpace` typestate is the obvious Rust answer, and `010`
+§4 names it: *Theseus's `ActivePageTable`/`InactivePageTable` typestate was
+simply wrong once two cores existed.* A `wost`-held global behind a closure
+would have put a lock where the kernel's policy belongs, against D-43.
+
+**A mapping carries its evidence** (D-87), which is D-76's first authority debt
+paid and the reason D-77 left it: *"Phase 5 must replace the first with owned
+user-memory mappings."* There is no public entry taking a bare physical address
+any more. `map_owned` takes frames the caller owns and moves them in;
+`map_boot` takes a `BootRegion`, which exists only for a range the bootloader's
+map covers, page-aligned, non-empty and non-overflowing; `map_device` was
+already the narrowest.
+
+The two cases genuinely differ and neither collapses into the other. The direct
+map and the kernel image are nobody's frames — firmware placed them — so
+demanding ownership there would be a fiction. What can honestly be demanded is
+that the handoff described them, which is the bound D-64 gave physical reads.
+
+**Unmap gives frames back, and the token owns them until it has flushed**
+(D-88). A CPU may still hold a cached translation to a cleared entry, so the
+allocator must not see the frame first; the frames therefore live *inside* the
+token and leave only through `flush` or the `Drop` that does the same work.
+That also survives Rust's leak rule, which is the part that decides the design:
+`mem::forget` on a token costs the frames and not correctness, so no soundness
+argument rests on `Drop` running. It is the same reasoning D-79 applies to ring
+buffers, in the other direction.
+
+Provenance is bit 9 of the page entry, one of the three the architecture leaves
+to software. A frame the allocator handed out must come back and one the
+firmware placed must not, and the entry is the only thing every path to an
+unmap can see. Large pages are not split: the direct map is two-megabyte on
+purpose (D-45), and `010` §8 measured that as right.
+
+**Half of `002`'s stack debt is paid** (D-89). The double-fault handler stood
+on a `.bss` array with nothing below it — the worst of the three to leave bare,
+because an overrun there corrupts its neighbour *while the fault handler is
+running*. It now stands on a guarded region whose geometry is the thread
+arena's own, placed at its end, so there is no new hardcoded window and no
+entry to D-46's ledger. That is also the first shipped caller of
+`with_active_space`: an unsafe-boundary change whose only user is its own test
+is one to be suspicious of.
+
+**Five breaks, all red.** Dropping the space again as D-45 left it; making
+`BootRegion::describe` assume rather than ask; releasing unmapped frames before
+the flush; assuming provenance instead of reading it; and mapping the fault
+stack starting at its guard. Eighty-five checks.
+
+**Two of this slice's charter items moved, and one was assessed rather than
+built.**
+
+- `UFrame` → **slice 7**. D-44 is precise about when it arrives: *with the
+  first caller that can map a frame into a second address space*. There is
+  still only one, so building it now would be the type without the caller that
+  gives it meaning.
+- Stacks that arrive with their thread → **slice 7**. The cap is already a
+  default rather than a ceiling — D-86 and D-88 between them make a spawn-time
+  map and an exit-time unmap possible — and the remaining work is in `wost`'s
+  task table, which slice 7 reshapes anyway for processes.
+- The boot thread's stack → **slice 4**. It sits inside the direct map, which
+  is deliberately unsplittable, so guarding it means moving the boot thread
+  onto a stack of its own rather than splitting a page. That is a naked
+  function that never returns, and it belongs with the trap-entry rework.
+- **CET's second region is not foreclosed, and needed no code to keep open.**
+  `010` §10's requirement is that the stack allocator not make a shadow stack
+  impossible to add. `libs/stack-layout` computes every address from
+  `(base, stack_len, guard_len, slots)` and hands back a `Slot`; a second
+  region per thread is a field on `Slot` and a term in the stride, in a
+  host-tested crate with no hardware in it. Building an unused slot now would
+  be the speculative API `005` forbids; recording that the arithmetic is
+  parameterised is the whole of what was owed.
+
+**Still owed by this slice's neighbours.** The frame D-86's check maps is never
+unmapped — that check is about the mapping being live, and it costs four pages
+for the life of a boot. `unmap` frees no intermediate page tables, so a space
+that maps and unmaps repeatedly keeps its tables; nothing does that yet, and the
+first thing that will is slice 7.
