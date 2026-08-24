@@ -6,6 +6,7 @@
 
 use wost::arch::current::cpu;
 use wost::arch::current::paging::{self, AddressSpace, BootRegion, MapError};
+use wost::arch::current::segment;
 use wost::boot::{self, DirectMap, HandoffError, ImageAddress, MemoryKind, MemoryMap};
 use wost::mm;
 use wost::sync::SpinLock;
@@ -13,7 +14,6 @@ use x86_paging::Flags;
 
 use crate::acpi::Interrupts;
 use crate::arch::current::ioapic::IoApic;
-#[cfg(feature = "selftest")]
 use crate::thread::ThreadContext;
 use crate::{debug, info, thread, warn};
 
@@ -66,14 +66,47 @@ static SPACE: SpinLock<Option<AddressSpace>> = SpinLock::new(None);
 /// frame allocation a new table needs is a leaf underneath, which is exactly
 /// the nesting the two levels exist to make sound.
 ///
-/// Reached only by the boot-time check so far, so it exists only where that
-/// does; its first shipped caller is the stack that arrives with its thread.
-#[cfg(feature = "selftest")]
 pub(crate) fn with_active_space<T>(
     context: &mut ThreadContext,
     f: impl FnOnce(&mut AddressSpace) -> T,
 ) -> Option<T> {
     SPACE.lock(context).as_mut().map(f)
+}
+
+/// Move the double-fault handler onto a guarded stack.
+///
+/// `002`'s security baseline records two stacks with nothing below them: the
+/// boot thread's, which is the bootloader's, and this one, a `.bss` array. This
+/// is the half that can be fixed now — a region mapped after the switch, with
+/// the page below it deliberately absent, and the handler pointed at it (D-89).
+///
+/// The first shipped caller of [`with_active_space`], and the reason D-86 is
+/// load-bearing rather than a capability waiting for one.
+fn guard_the_fault_stack() -> Result<u64, MapError> {
+    let layout = thread::fault_stack_layout().ok_or(MapError::OutOfMemory)?;
+    let slot = layout.slot(0).ok_or(MapError::OutOfMemory)?;
+    let pages = slot.stack_len().div_ceil(FRAME_SIZE) as usize;
+
+    let mut run = mm::allocate_contiguous(pages, 1).ok_or(MapError::OutOfMemory)?;
+    if !run.zero() {
+        return Err(MapError::Unreachable(run.address()));
+    }
+
+    let mut context = ThreadContext::require();
+    with_active_space(&mut context, |space| {
+        space.map_owned(
+            slot.stack_base(),
+            run,
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+        )
+    })
+    .ok_or(MapError::OutOfMemory)??;
+
+    let top = slot.stack_top();
+    if !segment::set_double_fault_stack(top) {
+        return Err(MapError::Misaligned(top));
+    }
+    Ok(top)
 }
 
 /// Log every region the bootloader described.
@@ -187,6 +220,11 @@ pub(crate) fn init_paging(
     // reachable, so a mapping can arrive with the thread or the process that
     // needs it instead of being guessed while they are being built.
     *SPACE.lock_leaf() = Some(space);
+
+    match guard_the_fault_stack() {
+        Ok(top) => info!("faults: double-fault stack guarded, top {top:#x}"),
+        Err(reason) => warn!("faults: double-fault stack left unguarded: {reason}"),
+    }
 
     if let Some(arena) = arena {
         match thread::init(arena) {

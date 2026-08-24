@@ -61,6 +61,16 @@ pub(crate) fn layout() -> Option<StackLayout> {
     StackLayout::new(WINDOW, STACK_BYTES, GUARD_BYTES, STACK_SLOTS)
 }
 
+/// Where the double-fault handler's guarded stack goes.
+///
+/// Immediately above the thread arena and derived from it, so this adds no new
+/// hardcoded window and no entry to D-46's KASLR ledger. The geometry is the
+/// arena's own — one slot, one guard gap below it — which is arithmetic
+/// `libs/stack-layout` already has tests for.
+pub(crate) fn fault_stack_layout() -> Option<StackLayout> {
+    StackLayout::new(layout()?.end(), STACK_BYTES, GUARD_BYTES, 1)
+}
+
 /// Why a thread could not be spawned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]

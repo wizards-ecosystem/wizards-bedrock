@@ -276,6 +276,54 @@ fn a_mapping_added_after_the_switch_is_live() -> bool {
     unmapped_before && translated && on_the_live_root
 }
 
+/// The double-fault handler stands on a guarded stack.
+///
+/// One of the two stacks `002`'s security baseline recorded as having nothing
+/// below them. It used to be a `.bss` array, so an overrun ran into whatever
+/// the linker put next — silently, on the one path that exists because the
+/// kernel is already in trouble.
+///
+/// Structural, like every guard check here: the fault itself is terminal, so
+/// what is asserted is what the tables say (D-52). The interrupt-stack entry
+/// must point at the top of the mapped region, every page of it must be
+/// writable and never executable, and the page below must be absent.
+fn the_double_fault_stack_is_guarded() -> bool {
+    let Some(layout) = thread::fault_stack_layout() else {
+        return false;
+    };
+    let Some(slot) = layout.slot(0) else {
+        return false;
+    };
+
+    if segment::double_fault_stack() != slot.stack_top() {
+        return false;
+    }
+
+    // Every guard page below it is absent.
+    let mut guard = slot.guard_base();
+    while guard < slot.stack_base() {
+        if paging::translate(guard).is_some() {
+            return false;
+        }
+        guard += PAGE_SIZE;
+    }
+
+    // Every stack page is present, writable and never executable.
+    let mut page = slot.stack_base();
+    while page < slot.stack_top() {
+        match paging::translate(page) {
+            Some((_, flags))
+                if flags.contains(Flags::WRITABLE) && flags.contains(Flags::NO_EXECUTE) => {}
+            _ => return false,
+        }
+        page += PAGE_SIZE;
+    }
+
+    // And it is not the `.bss` array any more: that one lives in the kernel
+    // image, far below the stack window.
+    slot.stack_top() >= layout.base()
+}
+
 /// An unmapped range gives its frames back, and not before the invalidation.
 ///
 /// The debt D-86 named and left open: while nothing unmapped, a frame put into
@@ -1238,7 +1286,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 84;
+const EXPECTED_CHECKS: usize = 85;
 
 impl Report {
     const fn new() -> Self {
@@ -1325,6 +1373,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a second address space is refused",
         a_second_switch_is_refused(),
+    );
+    report.check(
+        "the double-fault stack is guarded",
+        the_double_fault_stack_is_guarded(),
     );
     report.check(
         "an unmapped range returns its frames",

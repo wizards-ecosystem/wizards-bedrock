@@ -167,6 +167,47 @@ fn reload_selectors() {
     }
 }
 
+/// Move the double-fault handler onto a guarded stack.
+///
+/// The stack `init` installs is a `.bss` array with nothing below it, which
+/// `002`'s security baseline records as owed: a double fault that overruns it
+/// runs into whatever the linker put next, silently. Once the tables are live a
+/// guarded region can be mapped and the handler pointed at it (D-89).
+///
+/// Safe, and the reason is the width. The interrupt-stack table entry is a
+/// single naturally-aligned eight-byte field, so this store is atomic on
+/// x86-64: a double fault arriving during it sees either the old stack or the
+/// new one, and both are mapped and writable. The old one is never unmapped —
+/// it is in the kernel image — so there is no window in which the losing
+/// value is invalid.
+///
+/// `false` if `top` is not sixteen-byte aligned, which the ABI requires of any
+/// stack the CPU switches to.
+pub fn set_double_fault_stack(top: u64) -> bool {
+    if !top.is_multiple_of(16) {
+        return false;
+    }
+    let mut task_state = read_task_state();
+    task_state.set_interrupt_stack(DOUBLE_FAULT_STACK as usize, top);
+    // SAFETY: the segment is live and this CPU is the only writer; the field
+    // written is eight bytes, naturally aligned, so the CPU reads one value or
+    // the other and never a mixture.
+    unsafe { TASK_STATE_SEGMENT.as_mut_ptr().write_volatile(task_state) };
+    true
+}
+
+/// Where the double-fault handler's stack currently starts.
+pub fn double_fault_stack() -> u64 {
+    read_task_state().interrupt_stack(DOUBLE_FAULT_STACK as usize)
+}
+
+/// A copy of the live task-state segment.
+fn read_task_state() -> TaskState {
+    // SAFETY: `init` wrote a valid `TaskState` here before the `ltr`, and
+    // nothing writes it except this module on this CPU.
+    unsafe { TASK_STATE_SEGMENT.as_mut_ptr().read_volatile() }
+}
+
 /// The address the double-fault stack grows down from.
 fn fault_stack_top() -> u64 {
     FAULT_STACK.address() + FAULT_STACK_BYTES as u64
