@@ -4,6 +4,9 @@
 //! other kernel crate is safe Rust built on the abstractions exported here.
 //! See `docs/002-architecture.md` pillar 5 and `docs/005-code-conventions.md`.
 
+// `wost` is the exception the workspace default exists to make visible: the
+// deny lives in `Cargo.toml`, and this is the one place it is lifted (D-67).
+#![allow(unsafe_code)]
 #![no_std]
 
 extern crate alloc;

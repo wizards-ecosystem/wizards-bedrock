@@ -3,6 +3,7 @@
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::hint::spin_loop;
+use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -133,6 +134,7 @@ impl<T> SpinLock<T> {
                 Some(SpinLockGuard {
                     lock: self,
                     interrupts,
+                    stays_here: PhantomData,
                 })
             }
             Err(_) => {
@@ -176,9 +178,14 @@ impl<T: fmt::Debug> fmt::Debug for SpinLock<T> {
 }
 
 /// Exclusive access to a [`SpinLock`]'s value, released on drop.
+///
+/// Not `Send`: the flag this guard restores belongs to the CPU that cleared
+/// it, so releasing on another one would leave the first interruptible inside
+/// its own critical section (D-68).
 pub struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
     interrupts: InterruptState,
+    stays_here: PhantomData<*const ()>,
 }
 
 impl<T: fmt::Debug> fmt::Debug for SpinLockGuard<'_, T> {
@@ -292,7 +299,10 @@ impl<T> ThreadLock<T> {
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         {
-            Ok(_) => Some(ThreadLockGuard { lock: self }),
+            Ok(_) => Some(ThreadLockGuard {
+                lock: self,
+                stays_here: PhantomData,
+            }),
             Err(_) => None,
         }
     }
@@ -326,9 +336,13 @@ impl<T: fmt::Debug> fmt::Debug for ThreadLock<T> {
 }
 
 /// Exclusive access to a [`ThreadLock`]'s value, released on drop.
+///
+/// Not `Send`, as [`SpinLockGuard`] is not: a lock acquired on one CPU is
+/// released on that one (D-68).
 #[derive(Debug)]
 pub struct ThreadLockGuard<'a, T> {
     lock: &'a ThreadLock<T>,
+    stays_here: PhantomData<*const ()>,
 }
 
 impl<T> Deref for ThreadLockGuard<'_, T> {

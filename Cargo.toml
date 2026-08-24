@@ -82,8 +82,10 @@ fscommon = "0.1"
 
 # Members opt in with `[lints] workspace = true`. Cargo rejects mixing that with
 # sibling lint tables in the same manifest, so per-crate escalation lives in
-# source attributes instead — see `#![deny(unsafe_code)]` in kernel/src/main.rs.
+# source attributes instead — see `#![forbid(unsafe_code)]` in every `libs/`
+# crate, and the one `#![allow(unsafe_code)]` in `wost` (D-67).
 [workspace.lints.rust]
+unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"
 missing_debug_implementations = "warn"
