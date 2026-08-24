@@ -12,7 +12,6 @@
 //! registering and blocking one step is the interrupt flag, clear across
 //! both; SMP owes this pair a second look.
 
-use wost::panic::PanicToken;
 use wost::sync::SpinLock;
 
 use crate::thread::{self, CAPACITY, ThreadContext};
@@ -74,10 +73,5 @@ impl WaitQueue {
     #[cfg(feature = "selftest")]
     pub(crate) fn is_idle(&self) -> bool {
         *self.waiters.lock() == 0
-    }
-
-    /// Reclaim this queue's lock on the terminal panic path.
-    pub(crate) fn force_unlock(&self, token: &PanicToken) {
-        self.waiters.force_unlock(token);
     }
 }

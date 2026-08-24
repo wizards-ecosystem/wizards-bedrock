@@ -1,5 +1,10 @@
 # 008 — Deep Research II: Rust Practice, Kernel Design & the State of the Art
 
+> **Historical pre-Phase-3 snapshot.** `010` re-checks this pass and records the
+> current conclusions. In particular, it corrects Atmosphere's proof-to-code
+> ratio, replaces the WASI target, and stages verification tooling differently.
+> Normative choices live in `004-decision-log.md`.
+
 Produced 2026-08-22, opening Phase 3. Where `003-research-notes.md` surveyed
 architecture before the code existed, this pass is aimed: it closes the gaps
 `003` flagged, and it arms the decisions `007-memory.md` holds open.
@@ -539,10 +544,11 @@ lot, and two of the results are about *exactly* the subsystem Phase 3 builds.
 - **Atmosphere** (SOSP '25, Mars Research) — a full verified microkernel in
   Rust with Verus: functional correctness by refinement from a high-level
   specification, verified memory allocation, verified intrusive data
-  structures, and proofs about page tables. **Proof-to-code ratio 7.5:1**, with
+  structures, and proofs about page tables. **Proof-to-code ratio 3.32:1**, with
   6K lines of executable code verified in **under 2.5 person-years**. The
   ratio is the headline — far cheaper than the seL4-era numbers that made
-  verification a research-programme-sized commitment.
+  verification a research-programme-sized commitment. (`010` §9 corrects the
+  7.5:1 figure inherited from the earlier KISV'23 workshop paper.)
 - **Asterinas × CertiK** are verifying OSTD's **page tables** with Verus, and
   the work found real bugs — including a race that could free a page-table
   node prematurely. The most directly relevant precedent available: the same

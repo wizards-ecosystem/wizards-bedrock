@@ -8,6 +8,7 @@ members = [
     "libs/acpi-tables",
     "libs/eevdf",
     "libs/frame-space",
+    "libs/mmio-range",
     "libs/pixel",
     "libs/port-space",
     "libs/ps2-keys",
@@ -29,6 +30,7 @@ default-members = [
     "libs/acpi-tables",
     "libs/eevdf",
     "libs/frame-space",
+    "libs/mmio-range",
     "libs/pixel",
     "libs/port-space",
     "libs/ps2-keys",
@@ -54,6 +56,7 @@ repository = "https://github.com/limbwizard/the-wizards-os"
 acpi-tables = { path = "libs/acpi-tables" }
 eevdf = { path = "libs/eevdf" }
 frame-space = { path = "libs/frame-space" }
+mmio-range = { path = "libs/mmio-range" }
 pixel = { path = "libs/pixel" }
 port-space = { path = "libs/port-space" }
 ps2-keys = { path = "libs/ps2-keys" }

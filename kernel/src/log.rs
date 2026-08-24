@@ -10,6 +10,7 @@ use crate::dev;
 /// Severity of a log record, most severe first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Level {
+    #[cfg(feature = "selftest")]
     Error,
     Warn,
     Info,
@@ -20,6 +21,7 @@ impl Level {
     /// Fixed-width tag, so records line up in the serial log.
     const fn tag(self) -> &'static str {
         match self {
+            #[cfg(feature = "selftest")]
             Self::Error => "error",
             Self::Warn => "warn ",
             Self::Info => "info ",

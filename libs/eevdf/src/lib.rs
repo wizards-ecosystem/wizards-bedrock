@@ -11,8 +11,9 @@
 //!
 //! Virtual time wraps. Every comparison is the signed difference of two
 //! `u64`s, the `vruntime` idiom Linux uses, so a clock that has been running
-//! for longer than a `u64` holds keeps ordering correctly — the test below
-//! says so explicitly rather than trusting it.
+//! for longer than a `u64` holds keeps ordering correctly. Related times must
+//! stay less than half the ring apart; exactly half is deliberately unordered,
+//! and slice construction caps its distance before it can cross that boundary.
 //!
 //! # Examples
 //!
@@ -57,9 +58,17 @@ pub const RESOLUTION: u64 = 1024;
 /// [`Entity::new`] clamps to it.
 pub const MAX_WEIGHT: u32 = RESOLUTION as u32 * BASE_WEIGHT;
 
+/// Largest virtual-time distance the wrapping order can distinguish.
+const MAX_ORDERED_DELTA: u64 = i64::MAX as u64;
+
 /// Whether virtual time `a` comes before `b`, across a wrap.
+///
+/// Times exactly half the `u64` ring apart are ambiguous, so neither comes
+/// before the other. Scheduler state keeps every meaningful comparison inside
+/// that open half-range.
 pub const fn before(a: u64, b: u64) -> bool {
-    (a.wrapping_sub(b) as i64) < 0
+    let difference = a.wrapping_sub(b);
+    difference != 1u64 << 63 && (difference as i64) < 0
 }
 
 /// One schedulable thread's share of virtual time.
@@ -107,9 +116,24 @@ impl Entity {
 
     /// Convert `real` units of time into this thread's virtual time.
     const fn virtual_units(&self, real: u64) -> u64 {
+        self.virtual_units_wide(real) as u64
+    }
+
+    /// Convert without discarding wraps, for distances that must stay ordered.
+    const fn virtual_units_wide(&self, real: u64) -> u128 {
         // Widened so that a large charge at a small weight cannot overflow
         // before the division brings it back down.
-        ((real as u128 * RESOLUTION as u128 * BASE_WEIGHT as u128) / self.weight as u128) as u64
+        (real as u128 * RESOLUTION as u128 * BASE_WEIGHT as u128) / self.weight as u128
+    }
+
+    /// A virtual duration that cannot make the wrapping order ambiguous.
+    const fn ordered_virtual_units(&self, real: u64) -> u64 {
+        let units = self.virtual_units_wide(real);
+        if units > MAX_ORDERED_DELTA as u128 {
+            MAX_ORDERED_DELTA
+        } else {
+            units as u64
+        }
     }
 
     /// Convert this thread's virtual time back into real units.
@@ -152,13 +176,14 @@ impl Entity {
     /// Put the thread on the queue at `average` adjusted by `lag`, and give
     /// it a fresh slice.
     ///
-    /// The lag is clamped to one `slice` either way. That clamp is the
+    /// The lag is clamped to one `slice` either way. A slice too large for the
+    /// wrapping order is itself capped at `i64::MAX` virtual units. That clamp is the
     /// anti-gaming rule `008-research-notes-2.md` §4.4 warns is easy to omit:
     /// a thread that sleeps cannot bank unbounded credit, and one that sleeps
     /// briefly does not shed a debt — it comes back exactly as far behind as
     /// it left.
     pub fn place(&mut self, average: u64, lag: i64, slice: u64) {
-        let bound = i64::try_from(self.virtual_units(slice)).unwrap_or(i64::MAX);
+        let bound = self.ordered_virtual_units(slice) as i64;
         let lag = lag.clamp(-bound, bound);
         self.vruntime = average.wrapping_sub(lag as u64);
         self.renew_deadline(slice);
@@ -170,8 +195,13 @@ impl Entity {
     }
 
     /// Start a new slice from where the thread now stands.
+    ///
+    /// A duration reaching half the virtual-time ring is capped just below it,
+    /// where the wrapping order remains unambiguous.
     pub fn renew_deadline(&mut self, slice: u64) {
-        self.deadline = self.vruntime.wrapping_add(self.virtual_units(slice));
+        self.deadline = self
+            .vruntime
+            .wrapping_add(self.ordered_virtual_units(slice));
     }
 }
 
@@ -234,6 +264,13 @@ mod tests {
             "just before the wrap is before just after it"
         );
         assert!(!before(1, u64::MAX));
+    }
+
+    #[test]
+    fn times_half_a_ring_apart_are_not_cyclically_ordered() {
+        let half = 1u64 << 63;
+        assert!(!before(0, half));
+        assert!(!before(half, 0));
     }
 
     #[test]
@@ -448,6 +485,16 @@ mod tests {
         assert!(entity.slice_is_spent());
         entity.renew_deadline(SLICE);
         assert!(!entity.slice_is_spent());
+    }
+
+    #[test]
+    fn a_slice_cannot_cross_the_wrapping_orders_half_range() {
+        let mut entity = Entity::new(MAX_WEIGHT);
+        entity.renew_deadline(u64::MAX);
+
+        assert_eq!(entity.deadline(), MAX_ORDERED_DELTA);
+        assert!(!entity.slice_is_spent());
+        assert_eq!(entity.remaining_slice(), MAX_ORDERED_DELTA);
     }
 
     /// Drive the policy the way the kernel will: one unit of time per step,

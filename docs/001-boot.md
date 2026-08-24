@@ -167,8 +167,10 @@ staying blank.
 
 ## Known limitations
 
-Things that work today and will not survive the next phase. Each is a
-deliberate choice to keep Phase 1 finishable, not an oversight.
+This began as the Phase-1 close-out snapshot. Struck entries were retired by
+later phases; unstruck entries remain current limitations. The wording below is
+kept with each entry so the original debt and its eventual resolution stay
+visible.
 
 - ~~**`wost::sync::SpinLock` does not touch the interrupt flag.**~~ Fixed in
   Phase 2 slice 2, in `SpinLock` rather than at the call sites, as this entry
@@ -197,5 +199,6 @@ deliberate choice to keep Phase 1 finishable, not an oversight.
   we move to nightly for other reasons
 - ~~Grow `kernel/src/selftest.rs` as Phase 2 lands~~ — done: the phase closed
   at 34 checks, every new one broken once to prove it can go red, and the
-  harness itself grew a hand — it can press a key (D-38). The 2026-08-22
-  audit added a 35th, for the port claim width D-39 fixed.
+  harness itself grew a hand — it can press a key (D-38). Those are historical
+  Phase-2 totals, not the current suite size. The 2026-08-22 audit added a
+  35th, for the port claim width D-39 fixed.

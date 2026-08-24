@@ -25,6 +25,9 @@ datasheet; OSDev wiki GDT/IDT/APIC; Osdev-Notes' interrupt chapter.
 > is the record of what its phase built; the decision log is where to look for
 > what happened afterwards.
 
+Check totals below are dated slice-close snapshots, not the current suite size;
+the latest completed phase records the current total.
+
 ## Order of work
 
 Each slice boots, is checked on the machine, and leaves the tree green. The
@@ -135,10 +138,12 @@ asserts the span is exactly `256 × 16` bytes.
 
 The common tail pushes the fifteen general-purpose registers, clears `DF` (the
 System V ABI requires it and an interrupt does not), points `RDI` at the saved
-frame, and calls the dispatcher. On return it pops, drops the vector and error
-code, and `iretq`s. The stack is 16-byte aligned at the `call` by construction:
-the CPU aligns to 16 before pushing its five words, and error code + vector +
-fifteen registers restore that alignment exactly.
+frame, explicitly aligns the stack, and calls the dispatcher. On return it
+restores the saved stack pointer, pops, drops the vector and error code, and
+`iretq`s. Interrupt entry does not promise the interrupted stack's alignment,
+and a same-privilege entry saves five architectural words on this machine; the
+live probe and compile-time offsets therefore both cover the full 22-word
+frame rather than relying on a convenient caller.
 
 `TrapFrame` is `#[repr(C)]` in the order the pushes leave in memory, which is
 the reverse of the order they are written. It is the only place in the kernel
@@ -156,13 +161,16 @@ the code that first makes ring 3 reachable.
 
 ### What a fault does
 
-The kernel's handler is a safe `fn(&mut TrapFrame)` registered at init. It:
+The kernel's handler is a safe `fn(&TrapFrame)` registered at init. Frame
+fields are private and exposed through read-only accessors, so safe handler
+code cannot redirect `iretq` or forge the evidence used by trap switching. It:
 
 - **Vector 3 (breakpoint)** — records the frame and returns. `int3` is a
   deliberate trap: `RIP` already points past it, so returning resumes.
 - **Everything else** — panics, with the vector name, the error code, and
-  `RIP`/`CS`/`RFLAGS`/`RSP` in the message. The panic handler force-unlocks the
-  consoles and halts, so a fault taken while the log was locked still prints.
+  `RIP`/`CS`/`RFLAGS`/`RSP` in the message. Panic reporting tries each console
+  without waiting and halts, so a fault taken while one was locked still has a
+  chance to reach the other without breaking that lock's live guard.
 
 Nothing is recovered and nothing is retried. That is D-14 applied literally: a
 fault in ring 0 is a kernel bug, and the containment mechanism is supervised
@@ -172,8 +180,8 @@ one branch, in the one place faults arrive.
 
 The handler must not log. Taking the console lock in trap context deadlocks
 against interrupted code that already holds it — the hazard `001-boot.md`
-records against `SpinLock`. The panic path is exempt because it force-unlocks
-first; the breakpoint path records into atomics and lets its caller do the
+records against `SpinLock`. The terminal panic path uses only non-blocking
+reporters; the breakpoint path records into atomics and lets its caller do the
 printing.
 
 ### Security baseline

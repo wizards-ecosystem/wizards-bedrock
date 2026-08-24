@@ -5,14 +5,14 @@
 //! privilege: deciding whether the handoff is usable at all, and saying so.
 
 use wost::arch::current::cpu;
-use wost::arch::current::paging::{self, AddressSpace, DeviceMapping, MapError};
+use wost::arch::current::paging::{self, AddressSpace, MapError};
 use wost::boot::{self, DirectMap, HandoffError, ImageAddress, MemoryKind, MemoryMap};
 use wost::mm;
 use x86_paging::Flags;
 
 use crate::acpi::Interrupts;
 use crate::arch::current::ioapic::IoApic;
-use crate::{debug, dev, info, thread, warn};
+use crate::{debug, info, thread, warn};
 
 /// Bytes in a page frame.
 const FRAME_SIZE: u64 = 4096;
@@ -120,19 +120,6 @@ pub(crate) fn init_paging(
         }
     };
 
-    // The framebuffer, mapped again by us so it can be write-combining. The
-    // direct map already covers it write-back; this is a second mapping of the
-    // same pixels with a memory type that suits a device nobody reads (D-50).
-    let framebuffer = dev::framebuffer_extent(direct).and_then(|(physical, len)| {
-        match space.map_device_write_combining(physical, len) {
-            Ok(mapping) => Some(mapping),
-            Err(reason) => {
-                warn!("framebuffer: not remapped: {reason}; staying write-back");
-                None
-            }
-        }
-    });
-
     // Thread stacks, committed now because nothing can be mapped later
     // (D-45, D-52). The guards between them are the pages this never maps.
     let arena = match thread::layout().map(|layout| space.map_stacks(&layout)) {
@@ -176,8 +163,7 @@ pub(crate) fn init_paging(
         }
     }
 
-    if write_combining && let Some(region) = framebuffer.and_then(DeviceMapping::claim) {
-        dev::remap_framebuffer(region);
+    if write_combining.is_some_and(|transition| transition.commit()) {
         info!("framebuffer: write-combining");
     }
 
@@ -245,6 +231,30 @@ fn build(
         );
     }
 
+    let image_ranges = [
+        (
+            image
+                .to_physical(sections.text.start)
+                .ok_or(MapError::Misaligned(sections.text.start))?,
+            sections.text.mapped_len(),
+            Flags::NONE,
+        ),
+        (
+            image
+                .to_physical(sections.rodata.start)
+                .ok_or(MapError::Misaligned(sections.rodata.start))?,
+            sections.rodata.mapped_len(),
+            Flags::NO_EXECUTE,
+        ),
+        (
+            image
+                .to_physical(sections.data.start)
+                .ok_or(MapError::Misaligned(sections.data.start))?,
+            sections.data.mapped_len(),
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+        ),
+    ];
+
     let mut mapped = 0;
     for region in map
         .regions()
@@ -258,16 +268,38 @@ fn build(
             .base
             .saturating_add(region.len)
             .next_multiple_of(FRAME_SIZE);
-        let Some(virtual_base) = direct.virtual_address(base) else {
-            continue;
-        };
-        space.map(
-            virtual_base,
-            base,
-            end - base,
-            Flags::WRITABLE.union(Flags::NO_EXECUTE),
-        )?;
-        mapped += end - base;
+        let default_flags = Flags::WRITABLE.union(Flags::NO_EXECUTE).union(
+            if region.kind == MemoryKind::Framebuffer {
+                Flags::WRITE_THROUGH
+            } else {
+                Flags::NONE
+            },
+        );
+        let mut cursor = base;
+        while cursor < end {
+            let image_range = image_ranges.iter().find_map(|(start, len, flags)| {
+                let image_end = start.checked_add(*len)?;
+                (*start <= cursor && cursor < image_end).then_some((image_end, *flags))
+            });
+            let (next, flags) = match image_range {
+                Some((image_end, flags)) => (end.min(image_end), flags),
+                None => {
+                    let next_image = image_ranges
+                        .iter()
+                        .map(|(start, _, _)| *start)
+                        .filter(|start| *start > cursor)
+                        .min()
+                        .unwrap_or(end);
+                    (end.min(next_image), default_flags)
+                }
+            };
+            let virtual_base = direct
+                .virtual_address(cursor)
+                .ok_or(MapError::NonCanonical(cursor))?;
+            space.map(virtual_base, cursor, next - cursor, flags)?;
+            mapped += next - cursor;
+            cursor = next;
+        }
     }
     info!(
         "paging: direct map covers {} MiB at {:#x}",

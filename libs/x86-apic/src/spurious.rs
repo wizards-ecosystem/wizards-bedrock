@@ -5,6 +5,8 @@
 //! say, and the bit that software-enables the controller. Writing the second is
 //! what turns the APIC on, so it is written once everything else is configured.
 
+use crate::FIRST_VECTOR;
+
 /// Bit 8: the APIC delivers nothing at all while this is clear.
 const ENABLE: u32 = 1 << 8;
 
@@ -23,11 +25,16 @@ impl Spurious {
     ///
     /// # Panics
     ///
-    /// Panics unless the low four bits of `vector` are all set. P6 and Pentium
-    /// APICs hardwire them, so any other vector would silently become a
-    /// different one there — and a spurious interrupt arriving on a vector
-    /// nobody is expecting is the hardest kind of fault to read.
+    /// Panics if `vector` is below [`FIRST_VECTOR`] or unless its low four bits
+    /// are all set. P6 and Pentium APICs hardwire those bits, so any other
+    /// vector would silently become a different one there — and a spurious
+    /// interrupt arriving on a vector nobody is expecting is the hardest kind
+    /// of fault to read.
     pub const fn enabled(vector: u8) -> Self {
+        assert!(
+            vector >= FIRST_VECTOR,
+            "the local APIC will not deliver a vector below 16"
+        );
         assert!(
             vector & HARDWIRED_LOW_BITS == HARDWIRED_LOW_BITS,
             "a spurious vector must have its low four bits set"
@@ -89,5 +96,11 @@ mod tests {
     #[should_panic(expected = "low four bits")]
     fn a_vector_the_hardware_would_alter_is_refused() {
         let _ = Spurious::enabled(0x20);
+    }
+
+    #[test]
+    #[should_panic(expected = "below 16")]
+    fn a_spurious_vector_below_the_architectural_range_is_refused() {
+        let _ = Spurious::enabled(0x0F);
     }
 }

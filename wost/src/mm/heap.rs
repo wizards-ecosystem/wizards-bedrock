@@ -149,8 +149,8 @@ unsafe impl GlobalAlloc for KernelAllocator {
         // because a silent null here would be blamed on memory.
         assert!(!interrupt::in_trap(), "allocation in trap context");
         match place(layout.size(), layout.align()) {
-            Placement::Slot(class) => HEAP.lock().take_slot(class),
-            Placement::Frames { count, align } => {
+            Ok(Placement::Slot(class)) => HEAP.lock().take_slot(class),
+            Ok(Placement::Frames { count, align }) => {
                 let Some(run) = super::allocate_contiguous(count, align) else {
                     return ptr::null_mut();
                 };
@@ -166,6 +166,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 heap.live += 1;
                 address
             }
+            Err(_) => core::ptr::null_mut(),
         }
     }
 
@@ -177,8 +178,8 @@ unsafe impl GlobalAlloc for KernelAllocator {
             // SAFETY: `GlobalAlloc`'s contract is that `pointer` came from
             // `alloc` with this same layout, so it is a live slot of exactly
             // this class.
-            Placement::Slot(class) => unsafe { HEAP.lock().give_slot(pointer, class) },
-            Placement::Frames { count, .. } => {
+            Ok(Placement::Slot(class)) => unsafe { HEAP.lock().give_slot(pointer, class) },
+            Ok(Placement::Frames { count, .. }) => {
                 let Some(physical) = physical_of(pointer) else {
                     return;
                 };
@@ -192,6 +193,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 // are exactly the run allocated for it and not since freed.
                 drop(unsafe { Segment::from_raw(physical, count) });
             }
+            Err(_) => {}
         }
     }
 }

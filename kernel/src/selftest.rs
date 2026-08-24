@@ -109,6 +109,9 @@ fn the_loaded_table_is_ours() -> bool {
 /// pages can be correct at the edges and wrong between them.
 fn the_image_obeys_write_xor_execute() -> bool {
     let sections = boot::sections();
+    let Some(direct) = mm::direct_map() else {
+        return false;
+    };
 
     [
         (sections.text, false, true),
@@ -123,13 +126,21 @@ fn the_image_obeys_write_xor_execute() -> bool {
         let middle = section.start + ((len / 2) & !4095);
         [section.start, middle, section.start + len - 4096]
             .into_iter()
-            .all(|address| match paging::translate(address) {
-                None => false,
-                Some((_, flags)) => {
+            .all(|address| {
+                let Some((physical, flags)) = paging::translate(address) else {
+                    return false;
+                };
+                let Some(alias) = direct.virtual_address(physical) else {
+                    return false;
+                };
+                let Some((alias_physical, alias_flags)) = paging::translate(alias) else {
+                    return false;
+                };
+                [flags, alias_flags].into_iter().all(|flags| {
                     !flags.is_write_execute()
                         && flags.contains(Flags::WRITABLE) == writable
                         && !flags.contains(Flags::NO_EXECUTE) == executable
-                }
+                }) && alias_physical == physical
             })
     })
 }
@@ -160,14 +171,14 @@ fn the_direct_map_is_not_executable() -> bool {
     }
 }
 
-/// Physical reads are refused for anything the direct map may not reach.
+/// Firmware reads are confined to immutable ACPI storage.
 ///
 /// Three refusals and one acceptance: a check that only saw refusals would
 /// pass against a function that returned `None` for everything.
-fn physical_reads_are_bounded() -> bool {
+fn firmware_reads_are_bounded() -> bool {
     const WORD: usize = 8;
 
-    // Chosen under the map's lock, used outside it: `read_physical` takes it.
+    // Chosen under the map's lock, used outside it: the reader takes it again.
     let addresses = mm::with_memory_map(|map| {
         let pick = |wanted: fn(&wost::boot::MemoryRegion) -> bool| {
             map.regions()
@@ -183,8 +194,8 @@ fn physical_reads_are_bounded() -> bool {
             .map(|top| top.next_multiple_of(4096));
         (
             pick(|region| region.kind.is_allocatable()),
-            pick(|region| !region.kind.is_direct_mapped()),
-            pick(|region| region.kind.is_direct_mapped() && !region.kind.is_allocatable()),
+            pick(|region| !region.kind.is_firmware_table() && !region.kind.is_allocatable()),
+            pick(|region| region.kind.is_firmware_table()),
             undescribed,
         )
     });
@@ -194,11 +205,14 @@ fn physical_reads_are_bounded() -> bool {
         return false;
     };
 
+    let Some(firmware) = mm::firmware_memory() else {
+        return false;
+    };
     let mut buffer = [0; WORD];
-    !mm::read_physical(usable, &mut buffer)
-        && !mm::read_physical(undescribed, &mut buffer)
-        && !mm::read_physical(unreachable, &mut buffer)
-        && mm::read_physical(readable, &mut buffer)
+    !firmware.read(usable, &mut buffer)
+        && !firmware.read(undescribed, &mut buffer)
+        && !firmware.read(unreachable, &mut buffer)
+        && firmware.read(readable, &mut buffer)
 }
 
 /// A second switch is refused.
@@ -226,6 +240,50 @@ fn a_differing_remap_is_refused() -> bool {
     let again = space.map(PROBE, 4096, 4096, Flags::NO_EXECUTE);
     let differing = space.map(PROBE, 8192, 4096, Flags::NO_EXECUTE);
     first.is_ok() && again.is_ok() && differing == Err(MapError::Conflict(PROBE))
+}
+
+/// Two virtual windows cannot confer ownership of the same physical device.
+fn device_mappings_are_physically_exclusive() -> bool {
+    const PROBE: u64 = 0xfee0_0000;
+    let Ok(mut space) = AddressSpace::new() else {
+        return false;
+    };
+    if space.map_device(PROBE, 4096).is_err() {
+        return false;
+    }
+    matches!(
+        space.map_device(PROBE, 4096),
+        Err(MapError::DeviceOverlap(PROBE))
+    )
+}
+
+/// Device authority never aliases a frame the allocator can hand out.
+fn device_mappings_refuse_allocatable_ram() -> bool {
+    let Some(frame) = mm::allocate() else {
+        return false;
+    };
+    let address = frame.address();
+    let Ok(mut space) = AddressSpace::new() else {
+        return false;
+    };
+    matches!(
+        space.map_device(address, 4),
+        Err(MapError::NotDeviceMemory(found)) if found == address
+    )
+}
+
+/// Empty and wrapping MMIO extents are rejected before a page is installed.
+fn malformed_device_extents_are_refused() -> bool {
+    let Ok(mut space) = AddressSpace::new() else {
+        return false;
+    };
+    matches!(
+        space.map_device(0xfee0_0000, 0),
+        Err(MapError::InvalidDeviceRange(0xfee0_0000))
+    ) && matches!(
+        space.map_device(4, u64::MAX),
+        Err(MapError::InvalidDeviceRange(4))
+    )
 }
 
 /// A device claim minted by a space that was never installed is refused —
@@ -562,9 +620,9 @@ fn thread_stacks_are_guarded() -> bool {
         let Some(slot) = layout.slot(index) else {
             return false;
         };
-        let guard_absent = paging::translate(slot.guard_base).is_none()
-            && paging::translate(slot.stack_base - 8).is_none();
-        let stack_present = [slot.stack_base, slot.stack_top() - 8]
+        let guard_absent = paging::translate(slot.guard_base()).is_none()
+            && paging::translate(slot.stack_base() - 8).is_none();
+        let stack_present = [slot.stack_base(), slot.stack_top() - 8]
             .into_iter()
             .all(|address| match paging::translate(address) {
                 Some((_, flags)) => {
@@ -971,6 +1029,15 @@ struct Report {
     failed: usize,
 }
 
+/// Bumped whenever the machine-to-harness verdict grammar changes.
+const VERDICT_VERSION: usize = 1;
+
+/// Every check in [`run`], including checks whose prerequisite is absent.
+///
+/// Keeping this independent from the tally makes deleting, skipping, or
+/// accidentally bypassing a check turn the final verdict red.
+const EXPECTED_CHECKS: usize = 79;
+
 impl Report {
     const fn new() -> Self {
         Self {
@@ -998,13 +1065,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check("serial console came up", serial.is_ok());
     report.check("framebuffer console came up", geometry.is_some());
 
-    if let Some(geometry) = geometry {
-        report.check("framebuffer geometry is sane", geometry_is_sane(geometry));
-        report.check(
-            "colour channels do not overlap",
-            channels_are_disjoint(geometry),
-        );
-    }
+    report.check(
+        "framebuffer geometry is sane",
+        geometry.is_some_and(geometry_is_sane),
+    );
+    report.check(
+        "colour channels do not overlap",
+        geometry.is_some_and(channels_are_disjoint),
+    );
 
     report.check(
         "a claimed port cannot be claimed twice",
@@ -1057,12 +1125,24 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_differing_remap_is_refused(),
     );
     report.check(
+        "device mappings are physically exclusive",
+        device_mappings_are_physically_exclusive(),
+    );
+    report.check(
+        "device mappings refuse allocatable ram",
+        device_mappings_refuse_allocatable_ram(),
+    );
+    report.check(
+        "malformed device extents are refused",
+        malformed_device_extents_are_refused(),
+    );
+    report.check(
         "a stale device claim is refused",
         a_stale_device_claim_is_refused(),
     );
     report.check(
-        "a physical read is refused for memory the direct map may not reach",
-        physical_reads_are_bounded(),
+        "firmware reads are confined to acpi storage",
+        firmware_reads_are_bounded(),
     );
 
     report.check(
@@ -1128,7 +1208,6 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     );
 
     let before = trap::last_breakpoint();
-    let stack_pointer = cpu::stack_pointer();
     interrupt::breakpoint();
     let taken = trap::last_breakpoint();
 
@@ -1138,7 +1217,11 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     );
     report.check(
         "the saved frame is the frame the CPU pushed",
-        frame_is_consistent(taken, stack_pointer),
+        frame_is_consistent(taken),
+    );
+    report.check(
+        "interrupt entry aligns the Rust call boundary",
+        interrupt::last_call_alignment() == 0,
     );
 
     report.check(
@@ -1316,13 +1399,17 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         apic::error_status() == 0,
     );
 
-    let passed = report.failed == 0;
+    let checked = report.passed + report.failed;
+    let passed = report.failed == 0 && checked == EXPECTED_CHECKS && EXPECTED_CHECKS > 0;
     if passed {
-        info!("selftest: {} checks passed", report.passed);
+        info!(
+            "selftest: verdict v{} PASS passed={} failed={} expected={}",
+            VERDICT_VERSION, report.passed, report.failed, EXPECTED_CHECKS
+        );
     } else {
         error!(
-            "selftest: {} passed, {} FAILED",
-            report.passed, report.failed
+            "selftest: verdict v{} FAIL passed={} failed={} expected={}",
+            VERDICT_VERSION, report.passed, report.failed, EXPECTED_CHECKS
         );
     }
     debug_exit::report(passed);
@@ -1663,19 +1750,16 @@ fn ping_is_consistent(ping: Record) -> bool {
 /// listing have to agree, and the compiler cannot check it. If the pushes and
 /// the fields drift apart, these values are what turn to nonsense.
 ///
-/// `stack_pointer` is the caller's, taken immediately before the breakpoint: the
-/// saved one belongs to a frame or two deeper, so it is checked for proximity
-/// rather than equality.
-fn frame_is_consistent(breakpoint: Record, stack_pointer: u64) -> bool {
+/// `breakpoint` copies its interrupted `rsp` into `rax`, so equality distinguishes
+/// the processor's saved stack pointer from whatever happened to be adjacent.
+fn frame_is_consistent(breakpoint: Record) -> bool {
     /// Bit 1 of the flags register reads as one on every x86 ever made.
     const RESERVED_FLAG: u64 = 1 << 1;
-
-    /// How far the saved stack pointer may be from the one measured beside it.
-    const STACK_SLACK: u64 = 4096;
 
     breakpoint.vector == u64::from(exception::BREAKPOINT)
         && breakpoint.error_code == 0
         && breakpoint.code_selector == u64::from(segment::KERNEL_CODE.bits())
+        && breakpoint.stack_selector == u64::from(segment::KERNEL_DATA.bits())
         && breakpoint.flags & RESERVED_FLAG != 0
-        && breakpoint.stack_pointer.abs_diff(stack_pointer) < STACK_SLACK
+        && breakpoint.stack_pointer == breakpoint.rax
 }

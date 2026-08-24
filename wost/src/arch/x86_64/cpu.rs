@@ -41,7 +41,7 @@ pub fn halt() {
 /// This is the kernel's terminal state: used by the panic handler and by the
 /// idle path before a scheduler exists.
 pub fn halt_forever() -> ! {
-    interrupt::disable();
+    let _disabled = interrupt::disable();
     loop {
         halt();
     }
@@ -297,6 +297,40 @@ fn read_cr4() -> u64 {
     value
 }
 
+/// A reversible change to the page attribute table.
+#[derive(Debug)]
+#[must_use = "dropping the transition restores the previous PAT entry"]
+pub struct WriteCombining {
+    previous: u8,
+    restore: bool,
+}
+
+impl WriteCombining {
+    /// Keep the new entry after the page tables selecting it are active.
+    pub fn commit(mut self) -> bool {
+        let enabled = write_combining_is_enabled();
+        if enabled {
+            self.restore = false;
+        }
+        enabled
+    }
+}
+
+impl Drop for WriteCombining {
+    fn drop(&mut self) {
+        if !self.restore {
+            return;
+        }
+        const PAT: u32 = 0x277;
+        let current = msr::read(PAT);
+        let restored = (current & !(0xff << 8)) | (u64::from(self.previous) << 8);
+        // SAFETY: only PAT entry 1 is restored to the byte read from it before
+        // this transition. All other entries retain their current values.
+        unsafe { msr::write(PAT, restored) };
+        reload_page_table();
+    }
+}
+
 /// Give page tables a write-combining memory type to select.
 ///
 /// The page attribute table holds eight memory types, and a mapping picks one
@@ -313,31 +347,36 @@ fn read_cr4() -> u64 {
 /// Call before the tables whose mappings select the entry are activated: the
 /// manual asks for a TLB flush after repurposing a live PAT entry, and the
 /// `CR3` load in `activate` is exactly that.
-pub fn enable_write_combining() -> bool {
+pub fn enable_write_combining() -> Option<WriteCombining> {
     /// The page attribute table.
     const PAT: u32 = 0x277;
-
-    /// Architectural default: WB, WT, UC-, UC, then the same four again.
-    const DEFAULT: u64 = 0x0007_0406_0007_0406;
-
-    /// The same, with entry 1 changed from write-through to write-combining.
-    const WITH_WRITE_COMBINING: u64 = 0x0007_0406_0007_0106;
 
     /// `cpuid` leaf 1, `EDX` bit 16.
     const SUPPORTED: u32 = 1 << 16;
 
     if cpuid(1, 0).edx & SUPPORTED == 0 {
-        return false;
+        return None;
     }
 
-    // SAFETY: the only register named is the PAT, and the value differs from
-    // the architectural default in one entry, which is set to an encoding the
-    // manual defines. Memory types cannot produce undefined behaviour: a wrong
-    // one is a correctness or performance problem for the mappings that select
-    // it, and nothing selects this entry until something asks for it.
-    unsafe { msr::write(PAT, WITH_WRITE_COMBINING) };
-    let _ = DEFAULT;
-    true
+    let current = msr::read(PAT);
+    let previous = ((current >> 8) & 0xff) as u8;
+    let updated = (current & !(0xff << 8)) | (1 << 8);
+    // SAFETY: only entry 1 changes, to the architectural WC encoding. The
+    // transition restores this exact byte unless the caller commits it.
+    unsafe { msr::write(PAT, updated) };
+    reload_page_table();
+    Some(WriteCombining {
+        previous,
+        restore: true,
+    })
+}
+
+/// Reload the current root so a PAT change cannot leave cached translations.
+fn reload_page_table() {
+    let root = page_table_base();
+    // SAFETY: `root` is the page table the processor is executing through now,
+    // so reloading it preserves every live translation and flushes the TLB.
+    unsafe { set_page_table_base(root) };
 }
 
 /// Whether the page attribute table's second entry is write-combining.

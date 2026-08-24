@@ -25,7 +25,6 @@ use wost::arch::current::cpu;
 use wost::arch::current::interrupt::{self, TrapFrame};
 use wost::arch::current::paging::StackArena;
 use wost::arch::current::task::{self, BOOT, TaskError};
-use wost::panic::PanicToken;
 use wost::sync::{Once, SpinLock};
 
 use crate::time::{self, NANOSECONDS_PER_MS};
@@ -662,7 +661,7 @@ fn park(_context: &ThreadContext, leaving: State, until: Option<u64>) {
             // was going to end the wait can land in between and leave the CPU
             // halted with nothing left to wake it.
             interrupt::enable_and_halt();
-            interrupt::disable();
+            let _disabled = interrupt::disable();
         }
     }
 }
@@ -732,7 +731,7 @@ pub(crate) fn current_name() -> &'static str {
 /// has passed has no other appointment. Nothing here logs (D-31).
 pub(crate) fn reschedule(frame: &TrapFrame) {
     let now = time::now_ns();
-    let switchable = frame.flags & INTERRUPT_FLAG != 0;
+    let switchable = frame.flags() & INTERRUPT_FLAG != 0;
     let (next, event) = {
         let mut threads = THREADS.lock();
         if threads.spawnable == 0 {
@@ -814,9 +813,4 @@ extern "C" fn start(slot: usize) -> ! {
         None => panic!("slot {slot} started with no entry"),
     }
     exit()
-}
-
-/// Reclaim the thread table's lock on the terminal panic path.
-pub(crate) fn force_unlock(token: &PanicToken) {
-    THREADS.force_unlock(token);
 }

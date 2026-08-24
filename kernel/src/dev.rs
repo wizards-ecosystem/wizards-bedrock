@@ -9,7 +9,6 @@
 //! rule (D-31) and is now a lock that panics rather than a comment.
 
 use wost::boot::Framebuffer;
-use wost::panic::PanicToken;
 use wost::sync::{SpinLock, ThreadLock};
 
 use crate::arch::current::ioapic::IoApic;
@@ -58,22 +57,29 @@ pub(crate) fn with_console(f: impl FnOnce(&mut Console)) {
     }
 }
 
+/// Use the serial console only if no interrupted code holds its lock.
+pub(crate) fn try_with_uart(f: impl FnOnce(&mut Uart)) {
+    if let Some(mut guard) = UART.try_lock()
+        && let Some(uart) = guard.as_mut()
+    {
+        f(uart);
+    }
+}
+
+/// Use the framebuffer console only if no interrupted code holds its lock.
+pub(crate) fn try_with_console(f: impl FnOnce(&mut Console)) {
+    if let Some(mut guard) = CONSOLE.try_lock()
+        && let Some(console) = guard.as_mut()
+    {
+        f(console);
+    }
+}
+
 /// Geometry of the framebuffer console, if one came up.
 #[cfg(feature = "selftest")]
 pub(crate) fn console_geometry() -> Option<wost::boot::FramebufferInfo> {
     let guard = CONSOLE.lock();
     guard.as_ref().map(Console::geometry)
-}
-
-/// Reclaim both output-device locks on the terminal panic path.
-///
-/// This module's two; the keyboard's is `input`'s and `wost`'s are reclaimed
-/// by [`wost::panic::reclaim`]. All three are called together from the panic
-/// handler.
-pub(crate) fn force_unlock(token: &PanicToken) {
-    UART.force_unlock(token);
-    CONSOLE.force_unlock(token);
-    IO_APIC.force_unlock(token);
 }
 
 /// Give the console's framebuffer a shadow in RAM.
@@ -108,8 +114,7 @@ pub(crate) fn console_has_back_buffer() -> bool {
 /// The I/O APIC, once a line has been routed through it.
 ///
 /// Kept because the controller owns its register window for the life of the
-/// kernel and the boot-time checks read routing back out of it. On the panic
-/// path's list like every other `static` lock.
+/// kernel and the boot-time checks read routing back out of it.
 static IO_APIC: SpinLock<Option<IoApic>> = SpinLock::new(None);
 
 /// Keep the controller the keyboard was just routed through, and the global
@@ -137,28 +142,6 @@ static KEYBOARD_GSI: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU
 #[cfg(feature = "selftest")]
 pub(crate) fn with_io_apic<T>(f: impl FnOnce(&mut IoApic) -> T) -> Option<T> {
     IO_APIC.lock().as_mut().map(f)
-}
-
-/// Point the console's framebuffer at a better mapping of the same pixels.
-///
-/// The bootloader's mapping is write-back; the kernel's own is
-/// write-combining, which is what makes a screenful of writes cost a handful
-/// of bus transactions instead of one each (D-50). Safe to do live because the
-/// back buffer already holds every pixel — nothing is read through either
-/// mapping to make the change.
-pub(crate) fn remap_framebuffer(region: wost::mmio::MmioRegion) {
-    let mut guard = CONSOLE.lock();
-    if let Some(console) = guard.as_mut() {
-        console.remap_framebuffer(region);
-    }
-}
-
-/// Where the console's framebuffer is in physical memory, and how big.
-///
-/// So the kernel can map the same pixels again with a memory type that suits
-/// them. `None` if there is no console.
-pub(crate) fn framebuffer_extent(direct: wost::boot::DirectMap) -> Option<(u64, u64)> {
-    CONSOLE.lock().as_ref()?.framebuffer_extent(direct)
 }
 
 /// Where the console's framebuffer is reachable now.

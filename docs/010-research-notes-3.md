@@ -683,15 +683,17 @@ to `redoxfs` since 2016 — ten years on something simpler than WizFS.
 Run Phases 7–11 on something boring, and give WizFS its own later phase whose
 definition of done includes crash injection and a repair tool. Within that:
 
-- **6a — a read-only FAT32 or ext2 driver.** This makes virtio-blk, the VFS and
-  the buffer plumbing honest at **zero on-disk-write risk**, and a real image
-  the project did not generate is an excellent independent parser test. FAT32's
-  real argument is *the oracle already exists*: mount the image on Windows,
-  Linux and macOS and let three mature implementations judge the writer. For a
-  project whose rule is "every change lands with the check that proves it," that
-  is categorically stronger than anything buildable for WizFS in one phase.
-- **6b — the crash harness, before WizFS has a format** (see §9).
-- **6c — WizFS v0**: one btree, 4K nodes, journalled updates, no snapshots, no
+- **Phase 6 — a read-only FAT32 or ext2 driver.** This makes the NVMe block
+  path, the VFS, and the buffer plumbing honest at **zero on-disk-write risk**;
+  NVMe supersedes the original virtio-blk wording because VMware has no virtio
+  (§10). A real image the project did not generate is an excellent independent
+  parser test. FAT32's real argument is *the oracle already exists*: mount the
+  image on Windows, Linux and macOS and let three mature implementations judge
+  the writer. For a project whose rule is "every change lands with the check
+  that proves it," that is categorically stronger than anything buildable for
+  WizFS in one phase.
+- **Before Phase 13 — the crash harness, before WizFS has a format** (see §9).
+- **Phase 13, WizFS v0**: one btree, 4K nodes, journalled updates, no snapshots, no
   checksums, no GC, and *"simply fails when it runs out of blocks"*. But the v0
   *format* carries the expensive-to-retrofit bits.
 - **Free, do it now**: put the `snapshot` field in the key from v0, always zero.
@@ -919,11 +921,11 @@ second** (35 states). Delete the producer's free-slot check and TLC reports
 trace. JDK 21 is already present on this machine, so the cost is one vendored
 JAR.
 
-**Model the Phase 5 ring protocol before writing it**, and the Phase 6
-crash-consistency protocol before freezing the on-disk format. Ten minutes to
-write, sub-second to check.
+**Model the Phase 5 ring protocol before writing it**, and the Phase 13
+crash-consistency protocol before freezing the WizFS on-disk format. Ten
+minutes to write, sub-second to check.
 
-### The crash harness for Phase 6
+### The crash harness for WizFS (before Phase 13)
 
 **Every academic filesystem crash-testing tool is abandoned** — CrashMonkey,
 Hydra, FSCQ and Yggdrasil were all last touched in 2022, and all test a
@@ -993,7 +995,7 @@ mechanises D-28** — it would have caught the Phase 3 slice-1 incident where a
 check passed with the code it tested deleted — and is blocked only by the
 binutils wall; and **SquirrelFS** uses typestate for crash ordering, which fits
 this project's aesthetic better than any external tool and is worth reading
-before Phase 6.
+before Phase 13.
 
 ---
 ## 10. Platform — what to assume, and what not to foreclose
@@ -1189,9 +1191,9 @@ be replaced rather than chased. The third, #16 (the queue-austerity checklist),
 is pending rather than overdue, because the Phase 5 queue doc does not exist
 yet.
 
-**One correction to `008` itself**, recorded here so the number does not
-propagate further: §5's Atmosphere proof-to-code ratio of **7.5:1 is wrong**.
-The SOSP'25 paper says **3.32:1**; 7.5:1 comes from the earlier KISV'23
+**One correction to `008` itself**, now applied there so the number does not
+propagate further: §5's Atmosphere proof-to-code ratio was **7.5:1**, which is
+wrong. The SOSP'25 paper says **3.32:1**; 7.5:1 comes from the earlier KISV'23
 workshop paper, and the project page still repeats it (§9).
 
 **A structural suggestion, not a correction.** `008` §7 records the Asterinas
@@ -1224,18 +1226,19 @@ section reads as history rather than as an open question.
 |---|---|
 | 2 — workspace `unsafe_code = deny` | **Taken** — D-67, applied |
 | 3 — `!Send` lock guards | **Taken** — D-68, applied |
-| 4 — the doc-hygiene items | **Taken** — applied to `000` and `002` |
-| 5 — borrow-based lock token | **Taken as an ADR** — D-69, implemented in Phase 5 |
+| 4 — the doc-hygiene items | **Taken** — applied across the current docs; historical passes are labelled |
+| 5 — borrow-based lock token | **Taken as an ADR** — D-69; implementation deferred to Phase 5 |
 | 9 — SMP discipline ADRs | **Taken** — D-70; the cheap code and an early `-smp 2` were declined for now |
 | 13 — restate D-09 | **Taken** — D-72, `wasip1` first-class |
 | 14 — demote WizFS | **Taken** — D-73, it becomes Phase 13 |
 | 17 — move mlibc forward | **Taken** — D-74, a stub sysdep closes Phase 5 |
-| 20 — NVMe before virtio | **Recorded**, decided at Phase 6 |
+| 20 — NVMe before virtio | **Direction recorded**; the implementation ADR is due in Phase 6 |
 | 21 — rename the Phase 11 milestone | **Taken** — D-75 |
 | 23 — update Limine | **Recorded** as a Phase 5 item |
 | 25 — `Provisional` ADR status | **Taken** — D-71; D-08, D-09 and D-13 reclassified |
 | 27 — conformance lane | **Taken**, arriving with the mlibc slice (D-74) |
 | 1, 30–33 — the verification tooling | **Staged** — see below |
+| 34 — correct the Atmosphere ratio in `008` | **Taken** — corrected to 3.32:1 |
 | 6–8, 10–12, 15–16, 18–19, 22, 24, 26, 28–29 | Open, or Phase 5's business |
 
 **On the verification tooling**, decided by judgement rather than by
@@ -1372,8 +1375,8 @@ Adopting them now would be tooling in search of a subject.
 ### Verification, staged (§9)
 
 30. **Vendor `tla2tools.jar` and add `cargo xtask model-check`** — then model
-    the Phase 5 ring protocol *before writing it*, and the Phase 6
-    crash-consistency protocol before freezing the format. Measured at
+    the Phase 5 ring protocol *before writing it*, and the Phase 13
+    crash-consistency protocol before freezing the WizFS format. Measured at
     sub-second checking on a 39-line spec; JDK 21 is already present.
 31. **`libs/ring-proto`, generic over its atomics** — checked by **shuttle for
     interleavings and loom for memory ordering**, which are complements rather
@@ -1389,8 +1392,8 @@ Adopting them now would be tooling in search of a subject.
     lines, and expect `by(nonlinear_arith)` to be needed wherever the
     arithmetic multiplies or divides — which is EEVDF's and ring indexing's
     shape exactly.
-34. **Correct `008` §5's Atmosphere figure**: the proof-to-code ratio is
-    **3.32:1**, not 7.5:1 — the stale number is from the KISV'23 workshop paper.
+34. **Correct `008` §5's Atmosphere figure**: **done**. The proof-to-code ratio
+    is **3.32:1**, not 7.5:1 — the stale number is from the KISV'23 workshop paper.
     Note also the three clean-slate rewrites and the ~3,000-line trusted TCB
     the headline omits.
 35. **Treat design-for-verifiability as a Phase 5 decision.** NrOS paid 13.3:1

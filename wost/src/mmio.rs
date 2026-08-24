@@ -6,6 +6,7 @@
 //! a stray write into whatever follows the device.
 
 use core::fmt;
+use mmio_range::{AccessError, AccessRange};
 
 /// Why an [`MmioRegion`] access was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +28,13 @@ pub enum MmioError {
         /// Alignment the access required.
         align: usize,
     },
+    /// Repeated-access arithmetic overflowed before a range could be formed.
+    Overflow {
+        /// Byte offset the access started at.
+        offset: usize,
+        /// Number of words requested.
+        count: usize,
+    },
 }
 
 impl fmt::Display for MmioError {
@@ -42,6 +50,9 @@ impl fmt::Display for MmioError {
             ),
             Self::Misaligned { offset, align } => {
                 write!(f, "offset {offset} is not {align}-byte aligned")
+            }
+            Self::Overflow { offset, count } => {
+                write!(f, "{count} words at offset {offset} cannot be represented")
             }
         }
     }
@@ -84,7 +95,7 @@ impl MmioRegion {
 
     /// Write one 32-bit word at `offset`.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
-        self.check(offset, WORD)?;
+        self.check_words(offset, 1)?;
         // SAFETY: `check` confirmed the word is in bounds and 4-byte aligned.
         unsafe { self.write_word_unchecked(offset, value) };
         Ok(())
@@ -92,7 +103,7 @@ impl MmioRegion {
 
     /// Read one 32-bit word at `offset`.
     pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
-        self.check(offset, WORD)?;
+        self.check_words(offset, 1)?;
         // SAFETY: `check` confirmed the word is inside the region, so the
         // result stays within the mapping `new`'s contract promised.
         let word = unsafe { self.base.add(offset) }.cast::<u32>();
@@ -103,38 +114,41 @@ impl MmioRegion {
 
     /// Write `count` copies of a 32-bit word starting at `offset`.
     pub fn fill_u32(&mut self, offset: usize, count: usize, value: u32) -> Result<(), MmioError> {
-        self.check(offset, count.saturating_mul(WORD))?;
-        for index in 0..count {
+        let span = self.check_words(offset, count)?;
+        let mut cursor = span.offset();
+        for _ in 0..count {
             // SAFETY: `check` confirmed the whole span is in bounds and the
             // start is 4-byte aligned, so every word within it is too.
-            unsafe { self.write_word_unchecked(offset + index * WORD, value) };
+            unsafe { self.write_word_unchecked(cursor, value) };
+            cursor += WORD;
         }
         Ok(())
     }
 
-    /// Confirm that a `len`-byte access at `offset` is in bounds and aligned.
-    fn check(&self, offset: usize, len: usize) -> Result<(), MmioError> {
-        if !offset.is_multiple_of(WORD) {
-            return Err(MmioError::Misaligned {
+    /// Confirm repeated word accesses are in bounds and aligned.
+    fn check_words(&self, offset: usize, count: usize) -> Result<AccessRange, MmioError> {
+        AccessRange::repeated(offset, count, WORD, self.len).map_err(|error| match error {
+            AccessError::Misaligned { offset, align } => MmioError::Misaligned { offset, align },
+            AccessError::OutOfBounds {
                 offset,
-                align: WORD,
-            });
-        }
-        let out_of_bounds = MmioError::OutOfBounds {
-            offset,
-            len,
-            region_len: self.len,
-        };
-        match offset.checked_add(len) {
-            Some(end) if end <= self.len => Ok(()),
-            _ => Err(out_of_bounds),
-        }
+                len,
+                region_len,
+            } => MmioError::OutOfBounds {
+                offset,
+                len,
+                region_len,
+            },
+            AccessError::LengthOverflow { .. }
+            | AccessError::EndOverflow { .. }
+            | AccessError::InvalidWidth(_) => MmioError::Overflow { offset, count },
+            _ => MmioError::Overflow { offset, count },
+        })
     }
 
     /// # Safety
     ///
     /// `offset` must be 4-byte aligned and `offset + 4` must be within the
-    /// region — that is, [`Self::check`] must have accepted it.
+    /// region — that is, [`Self::check_words`] must have accepted it.
     unsafe fn write_word_unchecked(&mut self, offset: usize, value: u32) {
         // SAFETY: the caller guarantees `offset` is inside the region, so the
         // result stays within the mapping `new`'s contract promised.

@@ -36,6 +36,14 @@ mod protocol {
     pub(super) const OVERRUN: u8 = 0x00;
     /// Keyboard error.
     pub(super) const ERROR: u8 = 0xFF;
+
+    /// Whether `byte` is a command reply or device report, not key data.
+    pub(super) const fn is_reply(byte: u8) -> bool {
+        matches!(
+            byte,
+            ACK | SELF_TEST_PASSED | ECHO | RESEND | OVERRUN | ERROR
+        )
+    }
 }
 
 /// The two codes PrintScreen and the navigation cluster wrap around
@@ -79,8 +87,12 @@ impl Decoder {
     ///
     /// Total: every byte in every state has a defined transition, and a byte
     /// that fits no sequence resets the machine to idle so the next key
-    /// still decodes.
+    /// still decodes. Protocol replies are transparent wherever they arrive:
+    /// they produce no event and leave an in-flight key sequence intact.
     pub fn feed(&mut self, byte: u8) -> Option<KeyEvent> {
+        if protocol::is_reply(byte) {
+            return None;
+        }
         let (state, event) = self.transition(byte);
         self.state = state;
         event
@@ -92,12 +104,6 @@ impl Decoder {
                 protocol::BREAK => (State::Break, None),
                 protocol::EXTENDED => (State::Extended, None),
                 protocol::PAUSE => (State::Pause(1), None),
-                protocol::ACK
-                | protocol::SELF_TEST_PASSED
-                | protocol::ECHO
-                | protocol::RESEND
-                | protocol::OVERRUN
-                | protocol::ERROR => (State::Idle, None),
                 code => (State::Idle, pressed(table::key_for(code))),
             },
             State::Break => (State::Idle, released(table::key_for(byte))),
@@ -245,13 +251,45 @@ mod tests {
         assert_eq!(decoder.feed(0x1C), event(Key::A, KeyState::Pressed));
     }
 
-    /// A protocol byte where a release code belongs is garbage; the machine
-    /// must reset rather than staying half-way into a break.
     #[test]
-    fn a_protocol_byte_after_a_break_prefix_recovers() {
-        let mut decoder = Decoder::new();
-        assert_eq!(decode(&mut decoder, &[0xF0, 0xFA]), None);
-        assert_eq!(decoder.feed(0x1C), event(Key::A, KeyState::Pressed));
+    fn protocol_replies_are_transparent_inside_every_sequence() {
+        let replies = [0xFA, 0xAA, 0xEE, 0xFE, 0x00, 0xFF];
+
+        for reply in replies {
+            let mut decoder = Decoder::new();
+            assert_eq!(decoder.feed(0xF0), None);
+            assert_eq!(decoder.feed(reply), None);
+            assert_eq!(decoder.feed(0x1C), event(Key::A, KeyState::Released));
+
+            let mut decoder = Decoder::new();
+            assert_eq!(decoder.feed(0xE0), None);
+            assert_eq!(decoder.feed(reply), None);
+            assert_eq!(
+                decoder.feed(0x74),
+                event(Key::ArrowRight, KeyState::Pressed)
+            );
+
+            let mut decoder = Decoder::new();
+            assert_eq!(decode(&mut decoder, &[0xE0, 0xF0]), None);
+            assert_eq!(decoder.feed(reply), None);
+            assert_eq!(
+                decoder.feed(0x74),
+                event(Key::ArrowRight, KeyState::Released)
+            );
+
+            for split in 1..PAUSE_SEQUENCE.len() {
+                let mut decoder = Decoder::new();
+                for byte in &PAUSE_SEQUENCE[..split] {
+                    assert_eq!(decoder.feed(*byte), None);
+                }
+                assert_eq!(decoder.feed(reply), None);
+                assert_eq!(
+                    decode(&mut decoder, &PAUSE_SEQUENCE[split..]),
+                    event(Key::Pause, KeyState::Pressed),
+                    "reply {reply:#04x} after {split} Pause bytes"
+                );
+            }
+        }
     }
 
     #[test]

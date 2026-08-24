@@ -159,7 +159,7 @@ impl<T> SpinLock<T> {
     ///
     /// The interrupt flag is left alone. Obtaining a [`PanicToken`] cleared it,
     /// and the machine is not going to need it back.
-    pub fn force_unlock(&self, _panic: &PanicToken) {
+    pub(crate) fn force_unlock(&self, _panic: &PanicToken) {
         self.locked.store(false, Ordering::Release);
     }
 }
@@ -218,7 +218,7 @@ impl<T> Drop for SpinLockGuard<'_, T> {
     fn drop(&mut self) {
         SPINLOCKS_HELD.fetch_sub(1, Ordering::Relaxed);
         self.lock.locked.store(false, Ordering::Release);
-        self.interrupts.restore();
+        self.interrupts.restore_in_place();
     }
 }
 
@@ -310,12 +310,6 @@ impl<T> ThreadLock<T> {
     /// Whether the lock is currently held.
     pub fn is_locked(&self) -> bool {
         self.locked.load(Ordering::Relaxed)
-    }
-
-    /// Release the lock regardless of who holds it. As
-    /// [`SpinLock::force_unlock`].
-    pub fn force_unlock(&self, _panic: &PanicToken) {
-        self.locked.store(false, Ordering::Release);
     }
 }
 

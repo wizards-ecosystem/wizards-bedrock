@@ -28,11 +28,12 @@ lineage (os.phil-opp.com) and the rust-osdev crate ecosystem are Rust; the
 borrow checker eliminates the bug class (UAF, data races) that is hardest
 to debug in ring 0; Linux and Windows both accept Rust for new kernel
 code. Post-hoc, the research pass strengthened this: Asterinas (USENIX
-ATC'25) demonstrates a Rust kernel with a small memory-safety TCB at
-Linux-parity single-core performance — its headline numbers are
-unreplicated (D-71, `010` §1), but its lesson that safety must be designed
-in clean-slate is exactly this project's position. C++ remains welcome in
-userspace later.
+ATC'25) demonstrates a Rust framekernel at real-system scale. Its containment
+property is verified; its percentage-based TCB and broad performance headlines
+are not evidence this project relies on, and only single-core syscall dispatch
+is a defensible performance summary (D-71, `010` §1). Its lesson that safety
+must be designed in clean-slate is exactly this project's position. C++ remains
+welcome in userspace later.
 
 **Consequences.** Isaac learns Rust alongside OS concepts (slower start,
 compounding payoff). Stable-channel discipline occasionally constrains
@@ -83,7 +84,7 @@ the kernel?"). Deferring preserves the learning goal at the point where
 we'll know precisely what a loader must provide.
 
 **Consequences.** UEFI-only disk layout (no BIOS fallback); dependency on
-Limine's boot protocol (base revision 3 — see D-17); `limine.conf` +
+Limine's boot protocol (base revision 4 since D-42); `limine.conf` +
 `BOOTX64.EFI` are repo artifacts.
 
 ---
@@ -100,11 +101,11 @@ IPC tax on the core path.
 
 **Rationale.** Fastest route to a working full OS for one person; the
 capability discipline (D-06) applies at the ABI boundary rather than via
-process isolation of subsystems. The research pass upgraded rather than
-overturned this: the framekernel result (D-13) shows how to get
-microkernel-grade safety TCB inside a monolithic design, and Capsicum's
-measurements (unverified tier) found direct capability-checked syscalls
-cost only a few percent — supporting "fast path over message passing."
+process isolation of subsystems. The framekernel evidence supports containing
+unsafe code inside a monolithic design; `010` §1 withdrew the percentage-based
+TCB and broad performance claims while leaving that containment result intact.
+Capsicum's measurements (unverified tier) found direct capability-checked
+syscalls cost only a few percent — supporting "fast path over message passing."
 
 **Consequences.** In-kernel bugs can take down the system (mitigated by
 D-13/D-14); no seL4-style formal isolation story.
@@ -129,6 +130,10 @@ powers early; links proves the network stack before graphics exist.
 **Consequences.** Demands the POSIX translation layer (D-10) no matter
 how novel the native ABI is.
 
+**Amended by D-75.** NetSurf remains the integration target, but "browser" and
+"web browsing" are historical shorthand. The current milestone is document-web
+rendering and proof that libc, windowing, networking, and TLS compose.
+
 ---
 
 ## D-06 Native ABI: capability handles + async submission/completion queues — Status: Verified (handle model)
@@ -147,12 +152,14 @@ synchronous syscall set covers setup, handle operations, mapping, and
 waits. A per-process **policy layer** governs handle-less calls (object
 creation, ring setup).
 
-**Rationale.** io_uring is the 2026 performance standard and FlexSC
-(OSDI'10) explains why (batching + cache locality, not trap avoidance —
-unverified tier). Zircon's handle-centric authorization is verified as
-Fuchsia's deployed design; the policy escape hatch mirrors Zircon Job
-policy (verified caveat). Capsicum independently converged on
-capabilities + no global namespaces (unverified tier).
+**Rationale, amended 2026-08-23 by `010` §2.** The original entry contrasted
+batching and cache locality with trap avoidance. FlexSC does not support that
+contrast: batching reduces both direct mode-switch cost and indirect cache
+cost. The larger result is structural asynchrony; eliminating the trap is a
+smaller additional gain and can cost a dedicated core. Zircon's handle-centric
+authorization remains verified as Fuchsia's deployed design; the policy escape
+hatch mirrors Zircon Job policy (verified caveat). Capsicum independently
+converged on capabilities + no global namespaces (unverified tier).
 
 **Ring-ABI rules adopted from io_uring's security record** (Google
 kernelCTF disables io_uring; ~60% of exploit submissions targeted it —
@@ -225,6 +232,11 @@ semantics (permissions, symlinks, timestamps) or the D-10 ports suffer.
 
 **Consequences.** Highest-risk subsystem in the project (custom FS eats
 data when wrong); mitigations above are non-negotiable discipline.
+
+**Amended by D-73.** The bullets above preserve the founding decision. The
+current plan strikes blind upserts as an ABI rule, rejects parity RAID because
+its prerequisites are out of scope rather than because RAID-Z has a write hole,
+and moves WizFS from Phase 6 to Phase 13.
 
 ---
 
@@ -323,13 +335,14 @@ other kernel crate (scheduler, VFS, WizFS, network, drivers) is
 `#![forbid(unsafe_code)]` safe Rust written against `wost`'s safe
 abstractions.
 
-**Rationale.** As published: a microkernel-sized memory-safety TCB (~14%
-in Asterinas vs 43–66% in Tock/Theseus/RedLeaf) at Linux-parity
-single-core performance; the authors' lesson is that safe MMIO/port/DMA
-abstractions must exist from day one. D-71 retracted the "Verified" label
-those numbers carried — no independent replication exists — which is why
-this ADR is Provisional; the containment *property* is verified on this
-codebase, the published *numbers* are not.
+**Rationale, amended by D-71 and `010` §1.** The paper reported a ~14% TCB ratio
+and broad Linux-parity single-core results. Those numbers are retained here as
+historical context, not as evidence: absolute TCB size is the relevant audit
+cost, and only single-core syscall dispatch is a defensible performance
+summary. No independent replication exists, which is why this ADR is
+Provisional. The containment *property* is verified on this codebase, and the
+authors' lesson that safe MMIO/port/DMA abstractions must exist from day one
+still stands.
 
 **Consequences.** The existing Phase-0 kernel gets restructured into
 `wost` + service crates before Phase 2 lands significant code. Safe DMA
@@ -399,15 +412,18 @@ install.
 ## D-17 Toolchain pins and workarounds — Status: Accepted (revisit periodically)
 
 - **Rust 1.97.1**, pinned exactly via `rust-toolchain.toml`
-  (`profile = "minimal"`, `rustfmt`/`clippy`/`rust-mingw`, the
-  `x86_64-unknown-none` target).
+  (`profile = "minimal"`, `rustfmt`/`clippy`, the `x86_64-unknown-none`
+  target). `rust-mingw` is deliberately absent from the component list; rustup
+  supplies it with a Windows-GNU host, while naming it breaks other hosts
+  (D-24).
   *Corrected 2026-08-12: this bullet previously read "stable (1.97.x), pinned"
   while the file actually said `channel = "stable"` — a floating channel. See
   D-24.*
 - **`limine` crate = 0.5.0 exactly**: 0.6.x requires nightly
-  (`ptr_metadata`). 0.5's base revision 3 is confirmed working against
-  the vendored Limine v10 binary (verified by boot on QEMU + VMware).
-  Revisit when 0.6's requirement lands on stable or if we adopt nightly.
+  (`ptr_metadata`). The pinned crate requests protocol base revision 4 through
+  `with_revision` (D-42), confirmed against the vendored Limine v10 binary by
+  booting QEMU and VMware. Revisit the crate pin when 0.6's requirement lands
+  on stable or if we adopt nightly; crate and protocol revisions are separate.
 - **`fatfs` without its `chrono` feature**: chrono's Windows bindings
   need `dlltool.exe`, absent from the self-bundled GNU toolchain. Disk
   images get fixed timestamps — irrelevant for boot media.
@@ -428,10 +444,11 @@ is the minute-to-minute dev loop: `cargo xtask run`. VMware Workstation
 `vmrun`) is the end-of-phase "does it feel real" gate: `cargo xtask
 vmware`. Every phase's definition-of-done includes a VMware boot.
 
-**Consequences.** Two firmware/NIC/GPU stacks exercised continuously
-(e1000 + SVGA-II on VMware, virtio on QEMU) — drivers get two targets
-from day one. GDB-stub debugging is an open item (no native Windows
-gdb yet).
+**Consequences.** Two firmware and framebuffer paths are exercised
+continuously: EDK2/QEMU and VMware EFI/SVGA-II. NIC, GPU, and storage drivers
+do not yet exist, so their two-target obligations begin with their own phases;
+VMware has no virtio, which is why Phase 6 chooses NVMe for storage (`010`
+§10). GDB-stub debugging is an open item (no native Windows gdb yet).
 
 ---
 
@@ -451,7 +468,7 @@ Theme-in-code ages badly; theme-in-product is charm.
 
 ---
 
-## D-20 Networking plan: smoltcp + rustls in-kernel — Status: Accepted (planned)
+## D-20 Networking plan: smoltcp in-kernel, rustls in userspace — Status: Accepted (planned)
 
 **Decision.** The TCP/IP stack is [smoltcp](https://github.com/smoltcp-rs/smoltcp)
 (production bare-metal Rust, also Asterinas's choice) integrated
@@ -747,10 +764,11 @@ and context switching — all of which arrive in the next two phases.
 `debug_exit::report` is a no-op when the device is absent, so a self-test kernel
 booted on real hardware still reaches its idle loop rather than hanging. The
 harness treats a hang as a failure via its own timeout, which is what a panic
-during boot looks like from outside. Six checks exist today — serial and console
-bring-up, framebuffer geometry, non-overlapping colour masks, port-claim
-exclusivity, and lock exclusion; the harness was verified by breaking one and
-confirming it goes red.
+during boot looks like from outside. **At adoption**, six checks existed —
+serial and console bring-up, framebuffer geometry, non-overlapping colour
+masks, port-claim exclusivity, and lock exclusion. That total is a historical
+snapshot; the latest phase close records the current total. The harness was
+verified by breaking one and confirming it goes red.
 
 **Not covered.** Anything whose failure is visual rather than logical. The
 VMware boot of D-18 remains the definition of done for a phase.
@@ -824,7 +842,7 @@ generates the stubs — so the two cannot drift.
 
 ---
 
-## D-31 A fault is terminal and reported; a breakpoint resumes — Status: Accepted (2026-08-13)
+## D-31 A fault is terminal and reported; a breakpoint resumes — Status: Accepted (2026-08-13) (amended by D-77)
 
 **Context.** With an IDT installed, something has to decide what a fault means.
 
@@ -840,11 +858,11 @@ in the one place faults arrive.
 
 **Consequences.** The handler logs nothing. Taking a console lock in trap
 context deadlocks against interrupted code that already holds it, which is the
-hazard `001-boot.md` records against `SpinLock`; the panic path is exempt only
-because it force-unlocks the consoles first. Breakpoints are recorded into
-atomics for the same reason. The recording is unconditional — a trap handler is
-no place for conditional compilation — while the accessor that reads it is
-behind the `selftest` feature.
+hazard `001-boot.md` records against `SpinLock`; the terminal panic path tries
+reporters without blocking instead of invalidating a live guard. Breakpoints
+are recorded into atomics for the same reason. The recording is unconditional
+— a trap handler is no place for conditional compilation — while the accessor
+that reads it is behind the `selftest` feature.
 
 ---
 
@@ -928,7 +946,7 @@ older hardware.
 
 ---
 
-## D-34 A spin lock holds the interrupt flag — Status: Accepted (2026-08-14)
+## D-34 A spin lock holds the interrupt flag — Status: Accepted (2026-08-14) (amended by D-77)
 
 **Context.** `001-boot.md` recorded the hazard when `SpinLock` was written: a
 lock taken in ordinary kernel context and also taken from an interrupt handler
@@ -958,8 +976,9 @@ value.
 - Interrupt latency is now bounded by the longest critical section. Scrolling
   the framebuffer console holds a lock across a screenful of pixel copies.
   Acceptable with no scheduler; revisit with one.
-- `force_unlock` leaves the flag alone: obtaining a `PanicToken` cleared it, and
-  the machine is not going to need it back.
+- Recovery is private to `wost`'s non-returning panic boundary. Kernel panic
+  reporting never waits for or forcibly releases a kernel lock; a busy output
+  channel may be omitted.
 
 ---
 
@@ -978,8 +997,8 @@ the reason it is safe. A private `set_flag` serves both it and
 
 **Rationale.** `005` requires that a `wost` abstraction make the unsafe
 operation underneath it *checkable*, not merely wrapped — the rule behind
-`MmioRegion`'s bounds checks, `port::claim`'s registry, and `force_unlock`'s
-`PanicToken`. This is the same rule applied to an instruction. Both
+`MmioRegion`'s bounds checks, `port::claim`'s registry, and the private terminal
+panic boundary. This is the same rule applied to an instruction. Both
 preconditions are already values something can read: `table_is_loaded()` asks
 the CPU, and `pic::is_silenced()` asks the driver. The third — that locks are
 IRQ-safe — is a property of the code rather than a runtime state, and is D-34.
@@ -1684,12 +1703,12 @@ taken in the same breath: CET shadow stacks, which are a per-stack allocation
 decision, and LASS, whose whole premise is a hard user/kernel address split
 (`008-research-notes-2.md` §6).
 
-**Consequences.** D-12's KASLR line remains outstanding and is now the only
-part of the security baseline still owed. `001-boot.md`'s known limitation
-stands. W^X, NX, SMEP, SMAP, UMIP, zero-on-allocate and thread-stack guard
-pages (D-52; the boot and IST stacks wait on Phase 5) are all done, so this
-is the last one — which is itself an argument for not letting it drift much
-further.
+**Consequences.** D-12's KASLR line remains outstanding and is the only
+baseline item deferred as far as Phase 12. `001-boot.md`'s known limitation
+stands. W^X, NX, SMEP, SMAP, UMIP, zero-on-allocate, and ordinary thread-stack
+guard pages (D-52) are done. The boot and double-fault IST stacks remain a
+separate Phase-5 guard-page debt, so KASLR is not literally the only unfinished
+line of D-12.
 
 ---
 
@@ -1818,7 +1837,7 @@ words. WC in slice 5 will make the device half of every write cheaper still.
 
 ---
 
-## D-49 Devices are mapped before the switch, and the keyboard interrupts — Status: Accepted (2026-08-22) (amended by D-76)
+## D-49 Devices are mapped before the switch, and the keyboard interrupts — Status: Accepted (2026-08-22) (amended by D-76 and D-77)
 
 **Context.** `007-memory.md`'s slice 5 owes three things: the I/O APIC up,
 IRQ 1 routed, and D-37's polled keyboard drain retired. D-33 called the
@@ -1848,8 +1867,10 @@ map below and the image above. It returns a `DeviceMapping`, which is neither
 `Copy` nor `Clone` — and that is what makes `DeviceMapping::claim` a safe
 function returning an `MmioRegion`. Every clause of `MmioRegion::new`'s
 contract is discharged by construction: the mapping is live (checked against
-the active tables), permanent (nothing unmaps), and exclusive (the token
-cannot be duplicated). This is the sensitivity discipline `008` §4.1 took from
+the active tables), permanent (nothing unmaps), and exclusive in both virtual
+and physical interval registries (the token cannot be duplicated). RAM and
+firmware-backed storage are ineligible for device mapping. This is the
+sensitivity discipline `008` §4.1 took from
 Asterinas, in the form this kernel can actually enforce: `port::claim` answers
 "may two drivers have this?", and ownership of a `DeviceMapping` answers
 "may anyone have it at all?"
@@ -1857,12 +1878,11 @@ Asterinas, in the form this kernel can actually enforce: `port::claim` answers
 **The parsing is host-tested, and that mattered.** `libs/acpi-tables` reads
 the RSDP, the XSDT and the MADT from `&[u8]`, validating both RSDP checksums
 and every table's, and refuses rather than panics on anything malformed.
-Firmware is the least trustworthy input the kernel has: seventeen tests cover
+Firmware is the least trustworthy input the kernel has: the host suite covers
 truncated tables, corrupt checksums, an entry claiming zero length (which would
 otherwise loop forever), an entry running past the table, and a truncated entry
-of a known kind. `wost::mm::read_physical` supplies the bytes and is safe for a
-checkable reason — it refuses any range the memory map says is allocatable, so
-a slice can never alias a `Frame`.
+of a known kind. `wost::mm::FirmwareMemory` copies only from ACPI storage, and
+the parser refuses a corrupt tail before exposing a valid prefix.
 
 **Routing does not assume `irq == gsi`.** The MADT's interrupt source
 overrides are read and honoured, with the MPS INTI polarity and trigger
@@ -1906,7 +1926,7 @@ deliberately rather than by accident.
 
 ---
 
-## D-50 The framebuffer is write-combining — Status: Accepted (2026-08-22)
+## D-50 The framebuffer is write-combining — Status: Accepted (2026-08-22) (amended by D-77)
 
 **Context.** `008-research-notes-2.md` §3.4 argued that write-combining and the
 console back buffer are one decision, with numbers: Linux's own MTRR
@@ -1918,16 +1938,10 @@ D-49 built.
 
 **Decision.** The page attribute table's second entry is changed from
 write-through, which this kernel never asks for, to write-combining; every
-other entry keeps its architectural default, so no existing mapping changes
-meaning. The framebuffer is then mapped a *second* time by
-`map_device_write_combining`, which selects that entry with `WRITE_THROUGH`
-alone, and the console is re-pointed at it.
-
-A second mapping rather than a change to the first: the direct map covers the
-framebuffer region write-back because D-45 requires the direct map to cover
-everything that is memory, and re-typing part of it would put a hole in a
-contract that is currently simple. Two mappings of one device, with different
-memory types, is what the device window exists for.
+other entry is preserved from the value the machine supplied. The
+framebuffer's only direct-map alias selects that entry. The transition writes
+PAT before activating the new tables, reloads `CR3`, and restores the prior
+PAT byte and reloads again if activation fails.
 
 **Rationale.** WC coalesces writes in a fill buffer instead of putting each on
 the bus, and makes reads dramatically worse — which is exactly the trade a
@@ -1935,9 +1949,9 @@ framebuffer wants and exactly why it could not be taken before slice 4. After
 the back buffer, the console reads the device precisely once, when the shadow
 is seeded.
 
-Re-pointing live is safe for the same reason: the shadow already holds every
-pixel, so nothing is read through either mapping to make the change. The
-console keeps drawing across it.
+The shadow already holds every pixel, so after attachment nothing reads the WC
+mapping. Keeping one physical alias also avoids the undefined cache-type
+conflict the original two-alias design admitted.
 
 **Consequences.** One on-machine check, and it has two halves for a reason. The
 PAT entry must actually be write-combining — a hypervisor may decline the MSR
@@ -1945,10 +1959,10 @@ write, which is why `write_combining_is_enabled` reads it back rather than
 remembering what was written — *and* the mapping must select it. Either alone
 leaves writes crossing the bus one at a time while the log claims otherwise.
 
-`enable_write_combining` is a safe function on the same grounds as
-`enable_protections`: a memory type cannot produce undefined behaviour. The
-worst a wrong one does is make a mapping slower or uncached, and nothing
-selects this entry until something asks for it.
+The old claim that a wrong memory type could only be slow was false: conflicting
+cache types for aliases can violate the processor's rules. Safety now rests on
+one alias, a checked framebuffer extent and format, a read-modify PAT update,
+and an activation guard that either commits or restores the transition.
 
 Phase 3's slice 6 closes with this, and with it the phase: every debt
 `007-memory.md` collected is paid except D-46's KASLR, which is deferred to
@@ -1956,7 +1970,7 @@ Phase 12 with its cost named.
 
 ---
 
-## D-51 The context switch is a naked function, and a switch is a safe call — Status: Accepted (2026-08-22) (amended by D-76)
+## D-51 The context switch is a naked function, and a switch is a safe call — Status: Accepted (2026-08-22) (amended by D-59 and D-76)
 
 **Context.** `008-research-notes-2.md` §1 verified `#[unsafe(naked)]` and
 `naked_asm!` against the pinned toolchain and named Phase 4's context switch
@@ -1997,13 +2011,13 @@ it. The naked function is the right shape for the assembly for the reasons
 
 **Consequences.**
 
-- The interrupt flag is clear across every switch and restored by the
-  context that resumes; a thread on its first run inherits the switcher's
-  flag, the rule a lock guard follows. Nothing runs between the bookkeeping
-  and the switch, which is what makes a single `CURRENT` word sufficient.
-- A fabricated frame is six zero words and `thread_start`'s address, placed
-  so that `ret` leaves the stack eight below the top — what the ABI promises a
-  function on entry. Seven words, and the alignment argument is in the code.
+- The interrupt flag is clear across every switch and restored by a context
+  that resumes. The founding implementation gave a new thread the switcher's
+  flag; D-59 supersedes that rule and captures the creator's flag in
+  `fabricate` instead.
+- The founding fabricated frame was six zero words plus `thread_start`'s
+  address. D-76 found that seven-word frame misaligned every new thread and
+  added an eighth padding word; the current ABI argument is in D-76.
 - The first break-once attempt — deleting the `r12` push and pop — did not
   test what it meant to: it changed the frame size, so the fabricated frame's
   `ret` popped a zero and the machine faulted. Saving `rax` in `r12`'s place
@@ -2597,7 +2611,7 @@ longest operation in the kernel stop being everyone's latency floor.
 
 ---
 
-## D-64 A physical read is bounded by the memory map, not by a comment — Status: Accepted (2026-08-23) (amended by D-76)
+## D-64 A physical read is bounded by the memory map, not by a comment — Status: Accepted (2026-08-23) (amended by D-76 and D-77)
 
 **Context.** The phase 0–4 audit found two `// SAFETY:` comments asserting
 checks that no code performed. `mm::read_physical` said `direct_pointer` had
@@ -2611,31 +2625,28 @@ bootloader's map covers everything; every device this kernel maps happens to
 be page-aligned. Both were one firmware quirk from being real, and
 `read_physical`'s length comes from a firmware table's own header.
 
-**Decision.** `read_physical` requires the range to be described by the memory
-map, to touch nothing allocatable, and — once `activate` has called
-`mm::narrow_direct_map` — to lie only in regions `is_direct_mapped` names. A
-device whose registers are not four-byte aligned is refused at map time, with
-an error that says so.
+**Decision.** There is no general safe physical-read operation. A
+`FirmwareMemory` capability copies with volatile reads only from ACPI
+reclaimable or ACPI NVS regions, and refuses overflow, gaps, every other memory
+kind, and buffers outside a one-megabyte table budget. ACPI parsers also enforce
+their declared length, containing buffer, checksum, fixed header and complete
+entry stream before exposing any entry. A device whose registers are not
+four-byte aligned is refused at map time, with an error that says so.
 
 **Rationale.** The previous audit's standing lesson was that an abstraction
 promising a bound must be given something that can check it. A safety comment
-is not that thing. The narrowing latch exists because the invariant genuinely
-changes at `activate` — the bootloader's map covers strictly more than the
-kernel's — and a function whose soundness turns on which map is in force has
-to be able to ask.
+is not that thing, and a memory-map description is not authority to read live
+kernel data. The capability names both the permitted provenance and the copy
+semantics; the parser supplies the second, hostile-input bound.
 
 **Consequences.**
 
-- One check, broken three ways: the narrowed refusal, the described-range
-  requirement, and the acceptance. The third matters most — a check that only
-  ever saw refusals would pass against a function returning `None` for
-  everything. The undescribed probe had to be moved off the top of the address
-  space, where an overflow guard was refusing it before the map was consulted.
-- `MemoryMap::covers` walks rather than looking for one containing region, so
-  a span crossing two adjacent regions is still described. It lives in `wost`
-  rather than a `libs/` crate, which is a departure from D-30 and the reason
-  its only test is on the machine; extracting the map is the follow-up if that
-  ever costs anything.
+- The machine check proves both acceptance of the real firmware bytes and
+  refusal of non-ACPI storage. Host checks separately break every ACPI length,
+  checksum and entry-stream bound.
+- `FirmwareMemory::contains` walks adjacent regions but permits only the two
+  ACPI kinds throughout the span. No safe caller can borrow an alias to the
+  underlying physical bytes.
 - The `Frame` methods kept their claim but got the true argument for it: a
   frame is allocatable memory, and every allocatable region is direct-mapped.
 
@@ -2819,7 +2830,7 @@ before the change and is `E0277` after it.
 
 ---
 
-## D-69 The lock discipline belongs in the borrow checker — Status: Accepted (2026-08-23), implemented in Phase 5
+## D-69 The lock discipline belongs in the borrow checker — Status: Accepted (2026-08-23), implementation deferred to Phase 5
 
 **Context.** D-66 made "a spin lock is held" a runtime assert, checked at every
 point where the interrupt flag is set or a thread is switched. It works, and it
@@ -3086,11 +3097,13 @@ buys prefix consistency, removes any need for a btrfs-style log tree, and makes
 small random metadata updates affordable.
 
 **Rationale.** The design was never the expensive part. Read-only FAT32 makes
-virtio-blk, the VFS and the buffer plumbing honest at zero on-disk-write risk —
-and its real argument is that *the oracle already exists*: mount the image on
-three mature operating systems and let them judge the writer. For a project
-whose rule is that every change lands with the check that proves it, that is
-categorically stronger than anything buildable for WizFS in one phase.
+the NVMe block path, the VFS, and the buffer plumbing honest at zero
+on-disk-write risk — NVMe supersedes the earlier virtio-blk wording because
+VMware, the milestone target, has no virtio (`010` §10). FAT32's deeper argument
+is that *the oracle already exists*: mount the image on mature operating
+systems and let them judge the writer. For a project whose rule is that every
+change lands with the check that proves it, that is categorically stronger than
+anything buildable for WizFS in one phase.
 
 For calibration, SerenityOS ships ext2 and FAT with hundreds of contributors;
 Redox has been committing to `redoxfs` since 2016.
@@ -3211,7 +3224,7 @@ had to spin its browser out into a funded nonprofit.
 
 ---
 
-## D-76 The unsafe boundary holds against every safe caller, not just this kernel — Status: Accepted (2026-08-23)
+## D-76 The unsafe boundary holds against every safe caller, not just this kernel — Status: Accepted (2026-08-23) (amended by D-77)
 
 **Context.** A soundness review of `wost` asked D-13's question the hard way:
 not "does the kernel misuse these APIs" but "*could* any safe caller". Five
@@ -3225,12 +3238,13 @@ justifying the seven miscounted the `ret`.
 
 **Decision.** Five contracts hardened, each behind a check that went red first:
 
-- `mm::read_physical` **copies instead of lending**. The `&'static [u8]` it
+- The then-current `mm::read_physical` **copied instead of lending**. The `&'static [u8]` it
   returned could cover memory the kernel itself writes — its own `.data`, the
   boot stack, the framebuffer — and a reference over concurrently written
   memory is an aliasing lie whatever the kind filter says. Volatile reads into
   a caller's buffer are defined for every region the map describes, so the
-  kind rules stay what D-64 set and the lifetime lie is gone.
+  kind rules stayed what D-64 set and the lifetime lie was gone. D-77 removed
+  this general capability entirely and replaced it with ACPI-only authority.
 - `AddressSpace::set` **refuses to re-point a present entry** (identical
   rewrites stay legal — the direct map's outward rounding produces them).
   Silent overwrite let safe code revoke what a `StackArena` or `DeviceMapping`
@@ -3246,16 +3260,16 @@ justifying the seven miscounted the `ret`.
   into a refusal that is still a `Result`. Stepping by leaf spans keeps it to
   hundreds of walks.
 - `switch_from_trap` **accepts only the frame the live handler was entered
-  with** (`ForeignFrame` otherwise). A `TrapFrame` is plain data, so its flags
-  were forgeable evidence; the dispatcher now records the frame it passes, and
-  the pointer identity — parked and restored across switches exactly like the
-  trap depth — is what makes it evidence again. `fabricate`'s frame gained its
-  eighth word, and the machine now checks a spawned thread's actual stack
-  alignment, a claim broken from slice 1 that no register test could see.
+  with** (`ForeignFrame` otherwise). The dispatcher records the frame it
+  passes, and pointer identity — parked and restored across switches exactly
+  like the trap depth — makes it evidence. D-77 additionally made frame state
+  private and read-only to safe handlers. `fabricate`'s frame gained its eighth
+  word, and the machine now checks a spawned thread's actual stack alignment,
+  a claim broken from slice 1 that no register test could see.
 
 Three smaller closures rode along: `boot::enter` is once-only (a second call
-could mint a second `Framebuffer` over the same device), the PAT is rewritten
-*before* `activate` so the `CR3` load is the flush the manual asks for, and
+could mint a second `Framebuffer` over the same device), the PAT was rewritten
+*before* `activate` so the `CR3` load was the flush the manual asks for, and
 three `SAFETY` comments now say true things (`MmioRegion: Send` rests on
 `!Sync`, not a `&mut` discipline it never had; `breakpoint` asserts the table
 it claimed; `apic::write` accounts for its two zero-writes).
@@ -3267,15 +3281,98 @@ mechanisms changed shape; their decisions stand.
 
 **Consequences.**
 
-- Machine checks: `a thread starts aligned`, `a differing remap is refused`,
-  `a stale device claim is refused`; the direct-map walk was broken once by
-  skipping a region and refused the switch on cue. 75 on-machine checks.
+- Machine checks at this checkpoint were `a thread starts aligned`, `a
+  differing remap is refused`, and `a stale device claim is refused`; the
+  direct-map walk was broken once by skipping a region and refused the switch
+  on cue. The checkpoint had 75 on-machine checks; D-77 raises the current
+  total.
 - **Known residue, deliberate:** `AddressSpace::map` still accepts any
   physical address without ownership evidence, so a hostile safe caller could
   alias a live frame into a fresh space before activating it. Closing that
   means mappings take owned frames — D-44's type discipline applied to the
   mapping API — which reshapes `map`'s signature and waits for Phase 5's
   memory objects rather than being bolted on here.
+
+---
+
+## D-77 The completed-phase audit treats green as a claim to attack — Status: Accepted (2026-08-24)
+
+**Context.** A fresh adversarial pass covered every implemented Phase 0–4
+boundary: pure arithmetic, boot handoff, interrupt entry and return, physical
+memory, page-table construction and activation, device mapping, firmware
+parsing, panic recovery, scheduler state, input protocols, and the host gate.
+The baseline was green. It nevertheless admitted safe ways to invalidate live
+guards, rewrite an interrupt return frame, read arbitrary described physical
+memory, alias one device with conflicting cache types, map RAM as MMIO, and
+partially mutate page tables before rejecting malformed input. The gate also
+accepted ambiguous verdict streams and did not prove that the shipped keyboard
+path progressed by interrupt.
+
+**Decision.** The completed phases are hardened as one checkpoint:
+
+- The panic proof and lock-recovery operation are crate-private. `wost` enters
+  recovery only through a non-returning function-pointer boundary, and kernel
+  panic output uses `try_lock`; no safe caller can recover a lock and then
+  resume through a live guard.
+- Interrupt handlers receive `&TrapFrame`, whose fields are private and
+  read-only. The raw 22-word machine frame is checked at compile time and by a
+  live same-privilege probe, the assembly aligns every Rust call explicitly,
+  and `InterruptState` is a single-use, non-transferable restoration token.
+- Firmware access is an ACPI-only copying capability. RSDP, SDT, pointer-array
+  and MADT parsing each enforce both the caller's buffer and the structure's
+  declared budget before exposing a prefix.
+- Page mapping preflights the whole range before writing an entry. Activation
+  proves physical identity for the running code and stack, image permissions
+  across both linked and direct aliases, and every stack page and guard in the
+  candidate root. Parent tables become user-accessible only when a user leaf
+  requires it.
+- Device mappings use checked extent arithmetic, reject zero and malformed
+  spans, refuse RAM, boot, kernel, ACPI and framebuffer storage, reserve their
+  physical interval, and verify every claimed translation. The framebuffer's
+  validated geometry is mapped once with WC; PAT entry 1 is changed by a
+  reversible read-modify transition. Kernel text is not writable through the
+  direct map.
+- Hardware-free bounds moved into the relevant `libs/` crates. The pass fixed
+  frame-run search at region edges, pixel stride and format validation, slab
+  placement overflow, private stack-layout invariants, huge-page PAT encoding,
+  canonical mapping ranges, EEVDF's half-range ordering, PS/2 prefix state,
+  and the local APIC's legal spurious-vector floor. `libs/mmio-range` now owns
+  repeated-access alignment, multiplication and end-bound arithmetic.
+- A self-test verdict is exactly one well-formed versioned record with the
+  expected non-zero count; missing, duplicate and malformed records fail.
+  Serial read errors fail, debug-exit must agree with the record, and the
+  shipped boot receives a key and must show IRQ-driven input progress.
+
+**Rationale.** Each defect crossed an abstraction boundary whose prose was
+stronger than its evidence. Narrow capabilities, preflighted arithmetic and
+physical-identity checks make those claims executable. A second mapping with a
+different cache type, a public panic token, a mutable return frame, or a parser
+that yields a valid prefix after a corrupt tail cannot be made safe by asking
+today's caller to be careful.
+
+**Alternatives.** Keep the historical APIs and add call-site checks (rejected:
+another safe caller can omit them); treat the second framebuffer alias as a
+performance-only risk (rejected: cache-type conflicts are a correctness
+boundary); accept the first valid boot verdict (rejected: trailing or duplicate
+records then become invisible); postpone all changes to Phase 5 (rejected: the
+next phase would build user authority on unsound kernel authority).
+
+**Consequences.**
+
+- The current boot contract is 79 named machine checks. Every new refusal and
+  every new positive path was deliberately weakened once and observed to turn
+  the corresponding host or boot check red before restoration.
+- D-31, D-34, D-50, D-64 and D-76 are amended where their original mechanisms
+  were too broad. The decisions they protected — terminal kernel faults,
+  IRQ-safe locks, WC framebuffer output, bounded firmware input, and a sound
+  `wost` boundary — stand.
+- Two authority debts intentionally remain for the phase that introduces the
+  needed owner types: raw `AddressSpace::map` can still name a physical address,
+  and port claims prove exclusivity but not device entitlement. Phase 5 must
+  replace the first with owned user-memory mappings; PCI discovery in Phase 6
+  must narrow the second for dynamically discovered devices.
+- QEMU supplies the automated machine evidence. Phase 3 still lacks its dated
+  VMware close record, and no later audit may manufacture one retroactively.
 
 ---
 

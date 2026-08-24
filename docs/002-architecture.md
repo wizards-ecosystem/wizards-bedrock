@@ -32,8 +32,10 @@ for evidence and citations behind the choices marked ★.
    completion queues** shared with the kernel (io_uring lineage): userspace
    posts operations tagged with handles; the kernel completes them out of
    order; a small set of synchronous syscalls covers setup, handle ops,
-   memory mapping, and blocking waits (doorbell/`enter`). The win comes
-   from batching + cache locality (FlexSC), not from avoiding the trap.
+   memory mapping, and blocking waits (doorbell/`enter`). The large win comes
+   from making the caller structurally asynchronous; batching improves both
+   direct trap cost and indirect cache cost. Avoiding the trap entirely is a
+   smaller additional gain and can cost a dedicated core (`010` §2).
    Research-driven rules: **ring structures carry explicit version fields**
    (IoRing's improvement over io_uring); the opcode surface stays minimal
    with no privileged opcodes (io_uring's exploit record — Google
@@ -60,11 +62,12 @@ for evidence and citations behind the choices marked ★.
    — Wizard OS Standard, our OSTD analogue: boot, paging, MMIO, port I/O,
    DMA, context switch, interrupt entry). Every other kernel crate —
    scheduler, VFS, WizFS, network, drivers — is `#![forbid(unsafe_code)]`
-   safe Rust against `wost`'s safe abstractions. Asterinas reports a
-   microkernel-sized memory-safety TCB (~14%) at Linux-parity single-core
-   performance — numbers no one has independently replicated, which is why
-   D-13 is Provisional (D-71, `010` §1). The containment property itself is
-   verified here daily, and the authors' lesson stands: safe MMIO/DMA
+   safe Rust against `wost`'s safe abstractions. The containment property is
+   verified here daily, and D-13 is Provisional because the paper's broader
+   measurements have no independent replication (D-71, `010` §1). Its ~14%
+   TCB ratio is no longer used as evidence: absolute unsafe lines are the
+   relevant audit cost, and only single-core syscall dispatch is a defensible
+   performance summary. The authors' design lesson still stands: safe MMIO/DMA
    abstractions must be designed in from day one, not retrofitted.
 
    *Implemented 2026-08-12 (D-21). One amendment learned in the doing: the
@@ -111,7 +114,8 @@ Deferred, each with its cost named where it was deferred:
 
 - **KASLR** via Limine (`kaslr: yes`) — waits on the hardcoded load address in
   `linker.ld`; deferred to Phase 12 with its interest recorded (D-46). It is
-  the last of D-12's baseline still owed, and it is *not* "on from the start".
+  the only D-12 item deferred as far as Phase 12, and it is *not* "on from the
+  start". The two unguarded stacks above are separate Phase-5 debt.
 - Intel CET shadow stacks, signed boot chain, measured boot. CET is the one
   that constrains earlier work: a shadow stack is a second region per thread,
   so the Phase 5 stack allocator should not foreclose it (`010` §10).
@@ -135,11 +139,12 @@ Research-driven design rules ★ (bcachefs/btrfs/BetrFS evidence,
   with data (co-located checksums cannot detect lost writes/stale reads)
 - **journaled btree updates** with one totally ordered journal → prefix
   consistency after crash; big log-structured nodes, own node cache
-- **blind upserts in the native API**: POSIX preconditions force
-  read-before-write; our handle ABI doesn't — keep the write-optimized
-  fast path open (BetrFS lesson)
-- no parity RAID, ever (write hole); scrub/repair machinery is part of
-  the design, not an afterthought (ZFS lesson)
+- **write-optimized upserts internally**, without making blind upserts an ABI
+  rule: BetrFS showed the cache can satisfy POSIX preconditions without a disk
+  read, so the technique is ABI-independent (D-73)
+- no parity RAID in the initial design: correct parity needs buckets, copying
+  collection, and backpointers first; RAID-Z itself does not have the classic
+  write hole (D-73). Scrub/repair machinery remains part of the design
 
 Format lives in `libs/wizfs-format` (no_std, host-testable + fuzzable).
 

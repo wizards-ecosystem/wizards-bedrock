@@ -5,35 +5,32 @@
 //! provides is the proof that lets a handler reclaim locks safely on the way
 //! out — see `docs/002-architecture.md` pillar 6.
 
+use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::arch::current::interrupt;
+use crate::arch::current::{cpu, interrupt};
 
 static PANICKING: AtomicBool = AtomicBool::new(false);
 
-/// Proof that the machine is in its terminal panic path.
-///
-/// Obtainable only from [`enter`], which disables interrupts and admits a
-/// single caller for the life of the boot. Holding one means the code this CPU
-/// interrupted can never resume, which is what makes
-/// [`SpinLock::force_unlock`](crate::sync::SpinLock::force_unlock) sound.
+/// Proof kept inside the non-returning terminal boundary.
 #[derive(Debug)]
-pub struct PanicToken(());
+pub(crate) struct PanicToken(());
 
-/// Begin the terminal panic path.
+/// Enter the terminal panic path, reclaim this crate's locks, and report.
 ///
-/// Disables interrupts and yields a token the first time it is called. A second
-/// call — a panic raised while reporting a panic — yields `None`, and that
-/// caller must halt immediately rather than recurse through the same locks.
+/// A function pointer cannot carry a lock guard across reclamation. A second
+/// call halts rather than recurse through a reporter whose locks may be held.
 ///
 /// Single-CPU only: this stops the calling CPU from resuming interrupted code,
 /// but does not stop any other CPU. Revisit when SMP lands.
-pub fn enter() -> Option<PanicToken> {
-    interrupt::disable();
+pub fn terminate(info: &PanicInfo<'_>, report: fn(&PanicInfo<'_>) -> !) -> ! {
+    let _disabled = interrupt::disable();
     if PANICKING.swap(true, Ordering::Relaxed) {
-        return None;
+        cpu::halt_forever();
     }
-    Some(PanicToken(()))
+    let token = PanicToken(());
+    reclaim(&token);
+    report(info)
 }
 
 /// Whether the terminal panic path has been entered.
@@ -58,9 +55,8 @@ pub fn is_panicking() -> bool {
 ///
 /// **Every lock in a `static` inside this crate belongs in this function.** A
 /// new one that is not listed here is a deadlock waiting for the first panic
-/// raised while it is held, and nothing but this comment will catch it. The
-/// kernel reclaims its own locks separately; `wost` cannot see them.
-pub fn reclaim(panic: &PanicToken) {
+/// raised while it is held, and nothing but this comment will catch it.
+fn reclaim(panic: &PanicToken) {
     crate::arch::current::pic::force_unlock(panic);
     crate::arch::current::port::force_unlock(panic);
     crate::mm::force_unlock(panic);

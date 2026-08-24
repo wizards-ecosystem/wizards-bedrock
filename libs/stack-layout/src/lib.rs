@@ -31,9 +31,17 @@ pub const PAGE_SIZE: u64 = 4096;
 ///
 /// let layout = StackLayout::new(0x1000_0000, 16 * 1024, 4096, 4).unwrap();
 /// let slot = layout.slot(0).unwrap();
-/// assert_eq!(slot.guard_base, 0x1000_0000);
-/// assert_eq!(slot.stack_base, 0x1000_1000);
+/// assert_eq!(slot.guard_base(), 0x1000_0000);
+/// assert_eq!(slot.stack_base(), 0x1000_1000);
 /// assert_eq!(slot.stack_top(), 0x1000_5000);
+/// ```
+///
+/// A slot can only come from a checked layout; its bounds cannot be forged.
+///
+/// ```compile_fail
+/// let layout = stack_layout::StackLayout::new(0, 4096, 4096, 1).unwrap();
+/// let slot = layout.slot(0).unwrap();
+/// let _ = slot.stack_base;
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StackLayout {
@@ -47,14 +55,29 @@ pub struct StackLayout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Slot {
     /// First address of the guard gap. Never mapped.
-    pub guard_base: u64,
+    guard_base: u64,
     /// First address of the stack. Mapped writable, never executable.
-    pub stack_base: u64,
+    stack_base: u64,
     /// Bytes of stack.
-    pub stack_len: u64,
+    stack_len: u64,
 }
 
 impl Slot {
+    /// First address of the guard gap. Never mapped.
+    pub const fn guard_base(&self) -> u64 {
+        self.guard_base
+    }
+
+    /// First address of the stack. Mapped writable, never executable.
+    pub const fn stack_base(&self) -> u64 {
+        self.stack_base
+    }
+
+    /// Bytes of stack.
+    pub const fn stack_len(&self) -> u64 {
+        self.stack_len
+    }
+
     /// One past the stack's last byte — where a descending stack begins.
     pub const fn stack_top(&self) -> u64 {
         self.stack_base + self.stack_len
@@ -82,7 +105,11 @@ impl StackLayout {
         let Some(stride) = stack_len.checked_add(guard_len) else {
             return None;
         };
-        let Some(span) = stride.checked_mul(slots as u64) else {
+        let slot_count = slots as u64;
+        if slot_count as usize != slots {
+            return None;
+        }
+        let Some(span) = stride.checked_mul(slot_count) else {
             return None;
         };
         if base.checked_add(span).is_none() {
@@ -146,7 +173,7 @@ mod tests {
             let below = layout.slot(index - 1).expect("in range");
             let slot = layout.slot(index).expect("in range");
             assert!(
-                below.stack_top() <= slot.guard_base,
+                below.stack_top() <= slot.guard_base(),
                 "slot {index} begins before its neighbour ends"
             );
         }
@@ -157,8 +184,9 @@ mod tests {
         let layout = layout();
         for index in 0..layout.slots() {
             let slot = layout.slot(index).expect("in range");
-            assert_eq!(slot.guard_base + 4096, slot.stack_base);
-            assert_eq!(slot.stack_top() - slot.stack_base, 16 * 1024);
+            assert_eq!(slot.guard_base() + 4096, slot.stack_base());
+            assert_eq!(slot.stack_top() - slot.stack_base(), 16 * 1024);
+            assert_eq!(slot.stack_len(), 16 * 1024);
         }
     }
 

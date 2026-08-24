@@ -20,8 +20,7 @@
 //!
 //! // A space covering the first 64 frames of physical memory.
 //! let mut space: FrameSpace<1> = FrameSpace::new();
-//! space.insert(0, FRAME_SIZE * 8);
-//! space.reserve(0, FRAME_SIZE); // frame 0 belongs to something else
+//! space.insert(FRAME_SIZE, FRAME_SIZE * 7);
 //!
 //! let run = space.allocate_contiguous(2, 2).expect("frames 2 and 3 are free");
 //! assert_eq!(run, 2);
@@ -171,34 +170,6 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
         inserted
     }
 
-    /// Withhold the frames the byte range `base..base + len` touches.
-    ///
-    /// The mirror of [`insert`](Self::insert)'s narrowing: this rounds
-    /// *outward*, because a range that covers half a frame makes the whole
-    /// frame unavailable. Used for the kernel image, the bootloader's own
-    /// structures, and anything else that sits inside a usable region but is
-    /// not ours to hand out.
-    ///
-    /// Returns the number of frames this call took out of the free set.
-    pub fn reserve(&mut self, base: u64, len: u64) -> usize {
-        if len == 0 {
-            return 0;
-        }
-        let Some(end) = base.checked_add(len) else {
-            return 0;
-        };
-
-        let first = base / FRAME_SIZE;
-        let last = end.div_ceil(FRAME_SIZE).min(Self::FRAME_COUNT as u64);
-        let mut taken = 0;
-        for frame in first..last {
-            if self.take(frame as usize) {
-                taken += 1;
-            }
-        }
-        taken
-    }
-
     /// Allocate one frame.
     pub fn allocate(&mut self) -> Option<usize> {
         self.allocate_contiguous(1, 1)
@@ -214,10 +185,10 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     /// First-fit from a rotating hint, wrapping once. Nothing here promises a
     /// policy — see the module docs.
     pub fn allocate_contiguous(&mut self, count: usize, align: usize) -> Option<usize> {
-        if count == 0 {
+        if count == 0 || count > Self::FRAME_COUNT {
             return None;
         }
-        let align = align.max(1).next_power_of_two();
+        let align = align.max(1).checked_next_power_of_two()?;
 
         // The wrap pass reaches `count - 1` past the hint, so a free run
         // straddling it is still found.
@@ -225,11 +196,12 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
         let found = self
             .search(self.hint, Self::FRAME_COUNT, count, align)
             .or_else(|| self.search(0, wrap_end, count, align))?;
+        let end = found.checked_add(count)?;
 
-        for frame in found..found + count {
+        for frame in found..end {
             self.take(frame);
         }
-        self.hint = (found + count) % Self::FRAME_COUNT.max(1);
+        self.hint = end % Self::FRAME_COUNT;
         Some(found)
     }
 
@@ -240,10 +212,23 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     /// release would leave a caller's `Drop` believing it had given everything
     /// back.
     pub fn free_contiguous(&mut self, first: usize, count: usize) -> Result<(), FreeError> {
-        for frame in first..first + count {
+        if count == 0 {
+            return Ok(());
+        }
+        if first >= Self::FRAME_COUNT {
+            return Err(FreeError::NotManaged(first));
+        }
+        let Some(end) = first.checked_add(count) else {
+            return Err(FreeError::NotManaged(Self::FRAME_COUNT));
+        };
+        if end > Self::FRAME_COUNT {
+            return Err(FreeError::NotManaged(Self::FRAME_COUNT));
+        }
+
+        for frame in first..end {
             self.check_releasable(frame)?;
         }
-        for frame in first..first + count {
+        for frame in first..end {
             self.release(frame);
         }
         Ok(())
@@ -287,17 +272,29 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
 
     /// The first aligned run of `count` free frames in `from..to`.
     fn search(&self, from: usize, to: usize, count: usize, align: usize) -> Option<usize> {
-        let mut start = from.next_multiple_of(align);
-        while start + count <= to {
-            match (start..start + count).find(|&frame| !self.is_free(frame)) {
+        let mut start = align_up(from, align)?;
+        loop {
+            let end = start.checked_add(count)?;
+            if end > to {
+                return None;
+            }
+            match (start..end).find(|&frame| !self.is_free(frame)) {
                 // Every frame in the window is free.
                 None => return Some(start),
                 // Resume past the blocker: no run can straddle it, so the
                 // windows in between cannot succeed either.
-                Some(blocker) => start = (blocker + 1).next_multiple_of(align),
+                Some(blocker) => start = align_up(blocker.checked_add(1)?, align)?,
             }
         }
-        None
+    }
+}
+
+/// Round `value` up to non-zero power-of-two `align`, without wrapping.
+const fn align_up(value: usize, align: usize) -> Option<usize> {
+    let mask = align - 1;
+    match value.checked_add(mask) {
+        Some(sum) => Some(sum & !mask),
+        None => None,
     }
 }
 
@@ -388,39 +385,6 @@ mod tests {
     }
 
     #[test]
-    fn reserve_rounds_outward_to_every_frame_it_touches() {
-        let mut space = Small::new();
-        space.insert(0, FRAME_SIZE * 8);
-        // One byte either side of frame 3's lower boundary.
-        let taken = space.reserve(FRAME_SIZE * 3 - 1, 2);
-        assert_eq!(taken, 2, "the byte before frame 3 belongs to frame 2");
-        assert!(!space.is_free(2));
-        assert!(!space.is_free(3));
-        assert!(space.is_free(4));
-        assert!(
-            space.is_managed(2),
-            "reserving withholds a frame without disowning it"
-        );
-    }
-
-    #[test]
-    fn reserve_of_nothing_takes_nothing() {
-        let mut space = Small::new();
-        space.insert(0, FRAME_SIZE * 4);
-        assert_eq!(space.reserve(0, 0), 0);
-        assert_eq!(space.free_count(), 4);
-    }
-
-    #[test]
-    fn reserve_stops_at_the_ceiling() {
-        let mut space = Small::new();
-        space.insert(0, Small::CEILING);
-        // Runs well past the end of the space; must clamp, not wrap or panic.
-        assert_eq!(space.reserve(0, Small::CEILING * 4), 64);
-        assert_eq!(space.free_count(), 0);
-    }
-
-    #[test]
     fn allocation_hands_out_managed_frames_and_free_returns_them() {
         let mut space = Small::new();
         space.insert(0, FRAME_SIZE * 4);
@@ -465,8 +429,8 @@ mod tests {
     #[test]
     fn a_contiguous_run_skips_past_a_hole() {
         let mut space = Small::new();
-        space.insert(0, FRAME_SIZE * 16);
-        space.reserve(FRAME_SIZE * 2, FRAME_SIZE); // frame 2 is out
+        space.insert(0, FRAME_SIZE * 2);
+        space.insert(FRAME_SIZE * 3, FRAME_SIZE * 13);
 
         let run = space
             .allocate_contiguous(4, 1)
@@ -480,8 +444,7 @@ mod tests {
     #[test]
     fn a_contiguous_run_honours_alignment() {
         let mut space = TwoWord::new();
-        space.insert(0, FRAME_SIZE * 64);
-        space.reserve(0, FRAME_SIZE); // frame 0 is out, so 0 cannot serve
+        space.insert(FRAME_SIZE, FRAME_SIZE * 63);
 
         let run = space
             .allocate_contiguous(8, 8)
@@ -493,10 +456,9 @@ mod tests {
     #[test]
     fn a_run_may_cross_the_boundary_between_two_bitmap_words() {
         let mut space = TwoWord::new();
-        space.insert(0, TwoWord::CEILING);
-        // Everything below frame 60 is spoken for, so the only run of eight
-        // starts at 60 and spans the 64-frame word boundary.
-        space.reserve(0, FRAME_SIZE * 60);
+        // The only managed run starts at 60 and spans the 64-frame word
+        // boundary.
+        space.insert(FRAME_SIZE * 60, TwoWord::CEILING - FRAME_SIZE * 60);
 
         let run = space.allocate_contiguous(8, 1).expect("60..68 is free");
         assert_eq!(run, 60);
@@ -526,6 +488,38 @@ mod tests {
             None,
             "zero frames is not a run"
         );
+    }
+
+    #[test]
+    fn an_impossible_run_count_is_refused_without_wrapping() {
+        let mut space = Small::new();
+        space.insert(0, Small::CEILING);
+        assert_eq!(space.allocate(), Some(0), "leave a non-zero search hint");
+
+        assert_eq!(space.allocate_contiguous(usize::MAX, 1), None);
+        assert_eq!(space.free_count(), Small::FRAME_COUNT - 1);
+    }
+
+    #[test]
+    fn an_alignment_that_cannot_round_to_a_power_of_two_is_refused() {
+        let mut space = Small::new();
+        space.insert(0, Small::CEILING);
+        assert_eq!(space.allocate_contiguous(1, usize::MAX), None);
+        assert_eq!(space.free_count(), Small::FRAME_COUNT);
+    }
+
+    #[test]
+    fn a_release_range_that_wraps_is_refused() {
+        let mut space = Small::new();
+        space.insert(FRAME_SIZE, FRAME_SIZE);
+        let frame = space.allocate().expect("one frame is free");
+        assert_eq!(frame, 1);
+
+        assert_eq!(
+            space.free_contiguous(frame, usize::MAX),
+            Err(FreeError::NotManaged(Small::FRAME_COUNT))
+        );
+        assert!(!space.is_free(frame), "a refused release changes nothing");
     }
 
     #[test]

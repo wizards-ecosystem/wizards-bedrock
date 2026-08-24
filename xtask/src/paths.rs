@@ -23,6 +23,7 @@ pub const HOST_PACKAGES: &[&str] = &[
     "acpi-tables",
     "eevdf",
     "frame-space",
+    "mmio-range",
     "pixel",
     "port-space",
     "ps2-keys",

@@ -29,8 +29,8 @@ pub(crate) fn init() {
 /// `SpinLock` now excludes maskable interrupts. The panic path is exempt
 /// because it force-unlocks the consoles first; everything that has to survive
 /// is recorded into atomics and printed by whoever reads them.
-fn on_trap(frame: &mut TrapFrame) {
-    match frame.vector as u8 {
+fn on_trap(frame: &TrapFrame) {
+    match frame.vector() as u8 {
         exception::BREAKPOINT => LAST_BREAKPOINT.record(frame),
 
         vector::PING => {
@@ -67,7 +67,7 @@ fn on_trap(frame: &mut TrapFrame) {
         vector::ERROR => panic!(
             "local apic error {:#x} at {:#018x}",
             apic::error_status(),
-            frame.instruction_pointer
+            frame.instruction_pointer()
         ),
 
         _ => panic!("{}", Fault(frame)),
@@ -87,17 +87,17 @@ struct Fault<'a>(&'a TrapFrame);
 impl fmt::Display for Fault<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let frame = self.0;
-        let vector = frame.vector as u8;
+        let vector = frame.vector() as u8;
         let name = exception::name(vector).unwrap_or("unexpected interrupt");
 
         write!(
             f,
             "{name} (vector {vector}, error {:#x}) at {:#018x}, cs {:#x}, flags {:#x}, rsp {:#018x}",
-            frame.error_code,
-            frame.instruction_pointer,
-            frame.code_selector,
-            frame.flags,
-            frame.stack_pointer,
+            frame.error_code(),
+            frame.instruction_pointer(),
+            frame.code_selector(),
+            frame.flags(),
+            frame.stack_pointer(),
         )?;
 
         // The address is the whole content of a page fault report; every other
@@ -118,35 +118,42 @@ impl fmt::Display for Fault<'_> {
 /// because this is written from trap context.
 struct Recorder {
     count: AtomicUsize,
+    rax: AtomicU64,
     vector: AtomicU64,
     error_code: AtomicU64,
     code_selector: AtomicU64,
     flags: AtomicU64,
     stack_pointer: AtomicU64,
+    stack_selector: AtomicU64,
 }
 
 impl Recorder {
     const fn new() -> Self {
         Self {
             count: AtomicUsize::new(0),
+            rax: AtomicU64::new(0),
             vector: AtomicU64::new(0),
             error_code: AtomicU64::new(0),
             code_selector: AtomicU64::new(0),
             flags: AtomicU64::new(0),
             stack_pointer: AtomicU64::new(0),
+            stack_selector: AtomicU64::new(0),
         }
     }
 
     /// Record `frame`, publishing the count last so a reader that sees it sees
     /// the rest.
     fn record(&self, frame: &TrapFrame) {
-        self.vector.store(frame.vector, Ordering::Relaxed);
-        self.error_code.store(frame.error_code, Ordering::Relaxed);
+        self.rax.store(frame.rax(), Ordering::Relaxed);
+        self.vector.store(frame.vector(), Ordering::Relaxed);
+        self.error_code.store(frame.error_code(), Ordering::Relaxed);
         self.code_selector
-            .store(frame.code_selector, Ordering::Relaxed);
-        self.flags.store(frame.flags, Ordering::Relaxed);
+            .store(frame.code_selector(), Ordering::Relaxed);
+        self.flags.store(frame.flags(), Ordering::Relaxed);
         self.stack_pointer
-            .store(frame.stack_pointer, Ordering::Relaxed);
+            .store(frame.stack_pointer(), Ordering::Relaxed);
+        self.stack_selector
+            .store(frame.stack_selector(), Ordering::Relaxed);
         self.count.fetch_add(1, Ordering::Release);
     }
 
@@ -155,11 +162,13 @@ impl Recorder {
     fn read(&self) -> Record {
         Record {
             count: self.count.load(Ordering::Acquire),
+            rax: self.rax.load(Ordering::Relaxed),
             vector: self.vector.load(Ordering::Relaxed),
             error_code: self.error_code.load(Ordering::Relaxed),
             code_selector: self.code_selector.load(Ordering::Relaxed),
             flags: self.flags.load(Ordering::Relaxed),
             stack_pointer: self.stack_pointer.load(Ordering::Relaxed),
+            stack_selector: self.stack_selector.load(Ordering::Relaxed),
         }
     }
 }
@@ -173,6 +182,8 @@ static LAST_PING: Recorder = Recorder::new();
 pub(crate) struct Record {
     /// How many of this vector have been taken since boot.
     pub(crate) count: usize,
+    /// The general register loaded with the interrupted stack pointer.
+    pub(crate) rax: u64,
     /// The vector the handler was entered with.
     pub(crate) vector: u64,
     /// The error code slot, which neither of these vectors fills.
@@ -183,6 +194,8 @@ pub(crate) struct Record {
     pub(crate) flags: u64,
     /// The stack pointer at the point of the trap.
     pub(crate) stack_pointer: u64,
+    /// The stack selector at the point of the trap.
+    pub(crate) stack_selector: u64,
 }
 
 /// What the trap handler recorded for the most recent breakpoint.

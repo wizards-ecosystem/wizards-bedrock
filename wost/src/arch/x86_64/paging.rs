@@ -17,7 +17,10 @@ use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use stack_layout::StackLayout;
-use x86_paging::{ENTRIES, Entry, EntryError, Flags, LARGE_PAGE_SIZE, Level, PAGE_SIZE};
+use x86_paging::{
+    ENTRIES, Entry, EntryError, Flags, LARGE_PAGE_SIZE, Level, MappingRange, MappingRangeError,
+    PAGE_SIZE, TablePrivilege,
+};
 
 use super::cpu;
 use crate::mm::{self, Paddr};
@@ -44,11 +47,27 @@ pub enum MapError {
     UnalignedDevice(Paddr),
     /// A physical address did not fit the entry encoding.
     Encoding(EntryError),
+    /// The complete mapping range failed arithmetic or architecture checks.
+    InvalidRange(MappingRangeError),
+    /// A device range was empty or its page-rounded extent overflowed.
+    InvalidDeviceRange(Paddr),
+    /// The range overlaps RAM or firmware storage rather than a device hole.
+    NotDeviceMemory(Paddr),
+    /// Another mapping in this address space already owns physical bytes.
+    DeviceOverlap(Paddr),
+    /// The bounded device-ownership table is full.
+    TooManyDevices,
 }
 
 impl From<EntryError> for MapError {
     fn from(error: EntryError) -> Self {
         Self::Encoding(error)
+    }
+}
+
+impl From<MappingRangeError> for MapError {
+    fn from(error: MappingRangeError) -> Self {
+        Self::InvalidRange(error)
     }
 }
 
@@ -69,6 +88,17 @@ impl fmt::Display for MapError {
                 )
             }
             Self::Encoding(error) => write!(f, "{error}"),
+            Self::InvalidRange(error) => write!(f, "{error}"),
+            Self::InvalidDeviceRange(address) => {
+                write!(f, "device range at {address:#x} is empty or overflows")
+            }
+            Self::NotDeviceMemory(address) => {
+                write!(f, "device range at {address:#x} overlaps ordinary memory")
+            }
+            Self::DeviceOverlap(address) => {
+                write!(f, "device range at {address:#x} is already owned")
+            }
+            Self::TooManyDevices => f.write_str("device ownership table is full"),
         }
     }
 }
@@ -90,6 +120,10 @@ pub enum ActivateError {
     StackUnmapped(u64),
     /// The new tables map the stack without write permission.
     StackReadOnly(u64),
+    /// A live virtual address was redirected to different physical memory.
+    MappingChanged(u64),
+    /// A kernel-image page is missing or has the wrong protection class.
+    ImageChanged(u64),
     /// The new tables do not give this address of the direct map the writable,
     /// never-executable mapping every frame access assumes.
     DirectMapGap(u64),
@@ -107,6 +141,12 @@ impl fmt::Display for ActivateError {
             }
             Self::StackUnmapped(address) => write!(f, "the stack at {address:#x} is unmapped"),
             Self::StackReadOnly(address) => write!(f, "the stack at {address:#x} is read-only"),
+            Self::MappingChanged(address) => {
+                write!(f, "the mapping at {address:#x} changes physical memory")
+            }
+            Self::ImageChanged(address) => {
+                write!(f, "the kernel image mapping at {address:#x} is wrong")
+            }
             Self::DirectMapGap(address) => {
                 write!(f, "the direct map at {address:#x} is missing or wrong")
             }
@@ -127,6 +167,8 @@ pub struct AddressSpace {
     root: Paddr,
     /// Next free address in the device window.
     device_next: u64,
+    /// Physical ranges already promised to device mappings in this space.
+    devices: [Option<DeviceExtent>; MAX_DEVICE_MAPPINGS],
 }
 
 impl AddressSpace {
@@ -140,6 +182,7 @@ impl AddressSpace {
         Ok(Self {
             root,
             device_next: DEVICE_WINDOW_START,
+            devices: [None; MAX_DEVICE_MAPPINGS],
         })
     }
 
@@ -167,27 +210,15 @@ impl AddressSpace {
         len: u64,
         flags: Flags,
     ) -> Result<(), MapError> {
-        if !virtual_base.is_multiple_of(PAGE_SIZE) {
-            return Err(MapError::Misaligned(virtual_base));
-        }
-        if !physical_base.is_multiple_of(PAGE_SIZE) {
-            return Err(MapError::Misaligned(physical_base));
-        }
+        let range = MappingRange::new(virtual_base, physical_base, len)?;
         let flags = flags.union(Flags::PRESENT);
 
         let mut offset = 0;
-        while offset < len {
-            let virtual_address = virtual_base
-                .checked_add(offset)
-                .ok_or(MapError::NonCanonical(virtual_base))?;
-            let physical = physical_base
-                .checked_add(offset)
-                .ok_or(MapError::Encoding(EntryError::OutOfRange(physical_base)))?;
-            if !x86_paging::is_canonical(virtual_address) {
-                return Err(MapError::NonCanonical(virtual_address));
-            }
+        while offset < range.len() {
+            let virtual_address = range.virtual_base() + offset;
+            let physical = range.physical_base() + offset;
 
-            let large = len - offset >= LARGE_PAGE_SIZE
+            let large = range.len() - offset >= LARGE_PAGE_SIZE
                 && virtual_address.is_multiple_of(LARGE_PAGE_SIZE)
                 && physical.is_multiple_of(LARGE_PAGE_SIZE);
             let level = if large { Level::Pd } else { Level::Pt };
@@ -224,9 +255,36 @@ impl AddressSpace {
         if !physical.is_multiple_of(size_of::<u32>() as u64) {
             return Err(MapError::UnalignedDevice(physical));
         }
+        let len_usize = usize::try_from(len).map_err(|_| MapError::InvalidDeviceRange(physical))?;
+        let physical_end = physical
+            .checked_add(len)
+            .filter(|_| len != 0)
+            .ok_or(MapError::InvalidDeviceRange(physical))?;
+        if !mm::device_range_is_eligible(physical, physical_end) {
+            return Err(MapError::NotDeviceMemory(physical));
+        }
+        if self
+            .devices
+            .iter()
+            .flatten()
+            .any(|extent| physical < extent.end && extent.start < physical_end)
+        {
+            return Err(MapError::DeviceOverlap(physical));
+        }
+        let device_slot = self
+            .devices
+            .iter()
+            .position(Option::is_none)
+            .ok_or(MapError::TooManyDevices)?;
         let offset = physical % PAGE_SIZE;
         let base = physical - offset;
-        let pages = (len + offset).div_ceil(PAGE_SIZE) * PAGE_SIZE;
+        let covered = len
+            .checked_add(offset)
+            .ok_or(MapError::InvalidDeviceRange(physical))?;
+        let page_count = covered.div_ceil(PAGE_SIZE);
+        let pages = page_count
+            .checked_mul(PAGE_SIZE)
+            .ok_or(MapError::InvalidDeviceRange(physical))?;
 
         let virtual_base = self
             .device_next
@@ -241,30 +299,20 @@ impl AddressSpace {
             pages,
             Flags::WRITABLE.union(Flags::NO_EXECUTE).union(memory_type),
         )?;
-        self.device_next = virtual_base + pages;
+        self.device_next = virtual_base
+            .checked_add(pages)
+            .ok_or(MapError::InvalidDeviceRange(physical))?;
+        self.devices[device_slot] = Some(DeviceExtent {
+            start: physical,
+            end: physical_end,
+        });
 
         Ok(DeviceMapping {
             address: virtual_base + offset,
-            len,
+            physical,
+            len: len_usize,
             root: self.root,
         })
-    }
-
-    /// Map a device whose writes should coalesce rather than cross the bus one
-    /// at a time.
-    ///
-    /// Selects the entry [`super::cpu::enable_write_combining`] sets. A caller
-    /// that has not enabled it gets write-through: slow, never wrong.
-    ///
-    /// # Errors
-    ///
-    /// As [`map_device`](Self::map_device).
-    pub fn map_device_write_combining(
-        &mut self,
-        physical: Paddr,
-        len: u64,
-    ) -> Result<DeviceMapping, MapError> {
-        self.map_device_with(physical, len, Flags::WRITE_THROUGH)
     }
 
     /// Map every stack of `layout`, leaving every guard gap unmapped.
@@ -284,22 +332,25 @@ impl AddressSpace {
     pub fn map_stacks(&mut self, layout: &StackLayout) -> Result<StackArena, MapError> {
         for index in 0..layout.slots() {
             let slot = layout.slot(index).ok_or(MapError::OutOfMemory)?;
-            let frames = slot.stack_len.div_ceil(PAGE_SIZE) as usize;
+            let frames = slot.stack_len().div_ceil(PAGE_SIZE) as usize;
             let mut run = mm::allocate_contiguous(frames, 1).ok_or(MapError::OutOfMemory)?;
             if !run.zero() {
                 return Err(MapError::Unreachable(run.address()));
             }
             self.map(
-                slot.stack_base,
+                slot.stack_base(),
                 run.address(),
-                slot.stack_len,
+                slot.stack_len(),
                 Flags::WRITABLE.union(Flags::NO_EXECUTE),
             )?;
             // The frames belong to the mapping for the life of the kernel,
             // like the tables themselves: nothing unmaps.
             core::mem::forget(run);
         }
-        Ok(StackArena { layout: *layout })
+        Ok(StackArena {
+            layout: *layout,
+            root: self.root,
+        })
     }
 
     /// Install one entry at `target`, allocating the tables above it.
@@ -316,12 +367,7 @@ impl AddressSpace {
             let slot = entry_pointer(table, level.index(virtual_address))?;
 
             if level == target {
-                let flags = if target == Level::Pt {
-                    flags
-                } else {
-                    flags.union(Flags::HUGE)
-                };
-                let entry = Entry::page(physical, flags)?;
+                let entry = Entry::page(target, physical, flags)?;
                 // SAFETY: `entry_pointer` confirmed the slot is inside a table
                 // frame this space owns and reachable through the direct map.
                 let current = unsafe { slot.read_volatile() };
@@ -344,11 +390,22 @@ impl AddressSpace {
                 if current.is_huge() {
                     return Err(MapError::Conflict(virtual_address));
                 }
+                if flags.contains(Flags::USER) && !current.flags().contains(Flags::USER) {
+                    let entry = Entry::table(current.address(), TablePrivilege::User)?;
+                    // SAFETY: this space is still under exclusive construction.
+                    unsafe { slot.write_volatile(entry) };
+                }
                 current.address()
             } else {
                 let frame = take_table()?;
                 // SAFETY: as above.
-                unsafe { slot.write_volatile(Entry::table(frame)?) };
+                let privilege = if flags.contains(Flags::USER) {
+                    TablePrivilege::User
+                } else {
+                    TablePrivilege::Supervisor
+                };
+                // SAFETY: as above; this slot is in the exclusively built table.
+                unsafe { slot.write_volatile(Entry::table(frame, privilege)?) };
                 frame
             };
         }
@@ -409,13 +466,18 @@ pub fn activate(space: AddressSpace) -> Result<(), ActivateError> {
         return Err(ActivateError::AlreadyActive);
     }
 
+    let current_root = cpu::page_table_base();
     let code = activate as *const () as u64;
     match translate_in(space.root, code) {
         None => return Err(ActivateError::CodeUnmapped(code)),
         Some((_, flags)) if flags.contains(Flags::NO_EXECUTE) => {
             return Err(ActivateError::CodeNotExecutable(code));
         }
-        Some(_) => {}
+        Some((physical, _)) => {
+            if translate_in(current_root, code).map(|current| current.0) != Some(physical) {
+                return Err(ActivateError::MappingChanged(code));
+            }
+        }
     }
 
     let stack = cpu::stack_pointer();
@@ -425,8 +487,16 @@ pub fn activate(space: AddressSpace) -> Result<(), ActivateError> {
             Some((_, flags)) if !flags.contains(Flags::WRITABLE) => {
                 return Err(ActivateError::StackReadOnly(probe));
             }
-            Some(_) => {}
+            Some((physical, _)) => {
+                if translate_in(current_root, probe).map(|current| current.0) != Some(physical) {
+                    return Err(ActivateError::MappingChanged(probe));
+                }
+            }
         }
+    }
+
+    if let Some(gap) = kernel_image_gap(space.root, current_root) {
+        return Err(ActivateError::ImageChanged(gap));
     }
 
     if let Some(gap) = direct_map_gap(space.root) {
@@ -445,7 +515,6 @@ pub fn activate(space: AddressSpace) -> Result<(), ActivateError> {
     unsafe { cpu::set_page_table_base(space.root) };
     ACTIVE_ROOT.store(space.root, Ordering::Release);
     // The map in force covers strictly less than the bootloader's did.
-    mm::narrow_direct_map();
 
     // `space` is dropped here, and that is correct: an `AddressSpace` owns no
     // frame it would give back. Its tables were leaked when they were taken,
@@ -453,6 +522,41 @@ pub fn activate(space: AddressSpace) -> Result<(), ActivateError> {
     // bug this design must not permit. Taking the space by value is about the
     // *caller* — it no longer has anything to call `map` on.
     Ok(())
+}
+
+/// First kernel-image page redirected or assigned the wrong protection class.
+fn kernel_image_gap(candidate: Paddr, current: Paddr) -> Option<u64> {
+    let sections = crate::boot::sections();
+    for (section, writable, executable) in [
+        (sections.text, false, true),
+        (sections.rodata, false, false),
+        (sections.data, true, false),
+    ] {
+        let Some(end) = section.start.checked_add(section.mapped_len()) else {
+            return Some(section.start);
+        };
+        let mut address = section.start;
+        while address < end {
+            let Some((current_physical, _)) = translate_in(current, address) else {
+                return Some(address);
+            };
+            let Some((candidate_physical, flags)) = translate_in(candidate, address) else {
+                return Some(address);
+            };
+            if candidate_physical != current_physical
+                || flags.is_write_execute()
+                || flags.contains(Flags::WRITABLE) != writable
+                || !flags.contains(Flags::NO_EXECUTE) != executable
+            {
+                return Some(address);
+            }
+            let Some(next) = address.checked_add(PAGE_SIZE) else {
+                return Some(address);
+            };
+            address = next;
+        }
+    }
+    None
 }
 
 /// The first direct-map address `root` gets wrong, if any: every frame access
@@ -478,8 +582,11 @@ fn direct_map_gap(root: Paddr) -> Option<u64> {
                 match walk(root, virtual_address) {
                     Some((mapped, flags, span))
                         if mapped == physical
-                            && flags.contains(Flags::WRITABLE)
-                            && flags.contains(Flags::NO_EXECUTE) =>
+                            && if region.kind == crate::boot::MemoryKind::KernelAndModules {
+                                !flags.is_write_execute()
+                            } else {
+                                flags.contains(Flags::WRITABLE) && flags.contains(Flags::NO_EXECUTE)
+                            } =>
                     {
                         physical += span - (virtual_address & (span - 1));
                     }
@@ -556,6 +663,15 @@ const DEVICE_WINDOW_START: u64 = 0xffff_ff00_0000_0000;
 /// One page past the last address device registers may occupy.
 const DEVICE_WINDOW_END: u64 = 0xffff_ff01_0000_0000;
 
+/// Device ranges one address space can own before activation.
+const MAX_DEVICE_MAPPINGS: usize = 32;
+
+#[derive(Debug, Clone, Copy)]
+struct DeviceExtent {
+    start: Paddr,
+    end: Paddr,
+}
+
 /// The stacks [`AddressSpace::map_stacks`] committed, ready to run threads on.
 ///
 /// Held rather than used until the space is active, like [`DeviceMapping`],
@@ -566,12 +682,49 @@ const DEVICE_WINDOW_END: u64 = 0xffff_ff01_0000_0000;
 #[derive(Debug)]
 pub struct StackArena {
     layout: StackLayout,
+    root: Paddr,
 }
 
 impl StackArena {
     /// The layout the stacks were mapped to.
     pub(crate) const fn layout(&self) -> &StackLayout {
         &self.layout
+    }
+
+    /// First guard or stack page that disagrees with this arena's proof.
+    pub(crate) fn invalid_page(&self) -> Option<u64> {
+        if !is_active() || active_root() != self.root {
+            return Some(self.layout.base());
+        }
+        for index in 0..self.layout.slots() {
+            let Some(slot) = self.layout.slot(index) else {
+                return Some(self.layout.base());
+            };
+            let mut guard = slot.guard_base();
+            while guard < slot.stack_base() {
+                if translate(guard).is_some() {
+                    return Some(guard);
+                }
+                let Some(next) = guard.checked_add(PAGE_SIZE) else {
+                    return Some(guard);
+                };
+                guard = next;
+            }
+            let mut stack = slot.stack_base();
+            while stack < slot.stack_top() {
+                match translate(stack) {
+                    Some((_, flags))
+                        if flags.contains(Flags::WRITABLE) && flags.contains(Flags::NO_EXECUTE) => {
+                    }
+                    _ => return Some(stack),
+                }
+                let Some(next) = stack.checked_add(PAGE_SIZE) else {
+                    return Some(stack);
+                };
+                stack = next;
+            }
+        }
+        None
     }
 }
 
@@ -586,7 +739,8 @@ impl StackArena {
 #[derive(Debug)]
 pub struct DeviceMapping {
     address: u64,
-    len: u64,
+    physical: Paddr,
+    len: usize,
     root: Paddr,
 }
 
@@ -603,13 +757,25 @@ impl DeviceMapping {
     /// region can cover the same bytes. `None` until the space is active, and
     /// `None` forever for a claim minted by a space that never became it.
     pub fn claim(self) -> Option<MmioRegion> {
-        if !is_active() || active_root() != self.root || translate(self.address).is_none() {
+        if !is_active() || active_root() != self.root {
             return None;
+        }
+        let mut offset = 0usize;
+        while offset < self.len {
+            let virtual_address = self.address.checked_add(offset as u64)?;
+            let expected = self.physical.checked_add(offset as u64)?;
+            let (mapped, _, span) = walk(self.root, virtual_address)?;
+            if mapped != expected {
+                return None;
+            }
+            let inside_leaf = virtual_address & (span - 1);
+            let available = usize::try_from(span - inside_leaf).ok()?;
+            offset = offset.checked_add((self.len - offset).min(available))?;
         }
         // SAFETY: the walk confirmed the mapping is live in the tables that
         // minted this claim; exclusive because `self` cannot be copied and
         // only the minting space's claims pass the root comparison; permanent
         // because nothing unmaps; four-byte aligned by `map_device_with`.
-        Some(unsafe { MmioRegion::new(self.address as *mut u8, self.len as usize) })
+        Some(unsafe { MmioRegion::new(self.address as *mut u8, self.len) })
     }
 }

@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 frame-space.workspace = true
+mmio-range.workspace = true
 limine.workspace = true
 pixel.workspace = true
 slab-layout.workspace = true

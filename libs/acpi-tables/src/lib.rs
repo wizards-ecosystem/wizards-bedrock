@@ -47,6 +47,37 @@ pub enum AcpiError {
     BadChecksum,
     /// The table's own length field is impossible.
     BadLength(u32),
+    /// The table is structurally valid but exceeds the reader's allocation
+    /// budget.
+    TooLong {
+        /// Bytes the table declares.
+        declared: usize,
+        /// Largest table the caller will accept.
+        limit: usize,
+    },
+    /// A system-description table is not the kind a typed view requires.
+    WrongTable {
+        /// Signature the view accepts.
+        expected: [u8; 4],
+        /// Signature the table carries.
+        found: [u8; 4],
+    },
+    /// A fixed-width table body ends with a partial entry.
+    PartialEntry {
+        /// Bytes in each complete entry.
+        width: usize,
+        /// Bytes left after the last complete entry.
+        trailing: usize,
+    },
+    /// A MADT entry has a length that cannot describe the bytes it names.
+    MalformedEntry {
+        /// Byte offset of the entry in the table.
+        offset: usize,
+        /// Length in the entry header, if that header was complete.
+        length: usize,
+        /// Bytes available from `offset` to the table's end.
+        available: usize,
+    },
     /// The revision is one this kernel does not read.
     UnsupportedRevision(u8),
 }
@@ -60,6 +91,27 @@ impl fmt::Display for AcpiError {
             Self::BadSignature(_) => f.write_str("table signature is not the expected one"),
             Self::BadChecksum => f.write_str("table checksum does not sum to zero"),
             Self::BadLength(length) => write!(f, "table length {length} is impossible"),
+            Self::TooLong { declared, limit } => {
+                write!(
+                    f,
+                    "table declares {declared} bytes, above the {limit}-byte limit"
+                )
+            }
+            Self::WrongTable { expected, found } => {
+                write!(f, "table signature {found:?} does not match {expected:?}")
+            }
+            Self::PartialEntry { width, trailing } => write!(
+                f,
+                "table has {trailing} trailing bytes after {width}-byte entries"
+            ),
+            Self::MalformedEntry {
+                offset,
+                length,
+                available,
+            } => write!(
+                f,
+                "entry at byte {offset} declares {length} bytes with {available} available"
+            ),
             Self::UnsupportedRevision(revision) => {
                 write!(f, "table revision {revision} is not read by this kernel")
             }
@@ -112,10 +164,51 @@ impl Rsdp {
     pub const SIGNATURE: [u8; 8] = *b"RSD PTR ";
 
     /// Bytes in the original, revision-0 structure.
-    const V1_LEN: usize = 20;
+    pub const V1_LEN: usize = 20;
 
     /// Bytes in the extended structure, which adds the 64-bit XSDT pointer.
-    const V2_LEN: usize = 36;
+    pub const V2_LEN: usize = 36;
+
+    /// Read the extent a root pointer declares without allocating it.
+    ///
+    /// Revision zero has the fixed twenty-byte form. Revision two carries a
+    /// length field so compatible extensions remain inside the checksum.
+    /// Other revision values have no defined layout and are refused.
+    ///
+    /// # Errors
+    ///
+    /// [`AcpiError::TooShort`] if the bytes do not reach the needed field,
+    /// [`AcpiError::BadLength`] for an undersized extended pointer,
+    /// [`AcpiError::TooLong`] above `limit`, and
+    /// [`AcpiError::UnsupportedRevision`] for an unknown layout.
+    pub fn parse_length(bytes: &[u8], limit: usize) -> Result<usize, AcpiError> {
+        let head = bytes.get(..Self::V1_LEN).ok_or(AcpiError::TooShort {
+            needed: Self::V1_LEN,
+            available: bytes.len(),
+        })?;
+        let length = match head[15] {
+            0 => Self::V1_LEN,
+            2 => {
+                let prefix = bytes.get(..24).ok_or(AcpiError::TooShort {
+                    needed: 24,
+                    available: bytes.len(),
+                })?;
+                let declared = u32_at(prefix, 20).ok_or(AcpiError::BadChecksum)?;
+                if declared < Self::V2_LEN as u32 {
+                    return Err(AcpiError::BadLength(declared));
+                }
+                declared as usize
+            }
+            revision => return Err(AcpiError::UnsupportedRevision(revision)),
+        };
+        if length > limit {
+            return Err(AcpiError::TooLong {
+                declared: length,
+                limit,
+            });
+        }
+        Ok(length)
+    }
 
     /// Validate and read an RSDP.
     ///
@@ -129,10 +222,8 @@ impl Rsdp {
     /// [`AcpiError::TooShort`], [`AcpiError::BadSignature`] or
     /// [`AcpiError::BadChecksum`].
     pub fn parse(bytes: &[u8]) -> Result<Self, AcpiError> {
-        let head = bytes.get(..Self::V1_LEN).ok_or(AcpiError::TooShort {
-            needed: Self::V1_LEN,
-            available: bytes.len(),
-        })?;
+        let length = Self::parse_length(bytes, usize::MAX)?;
+        let head = &bytes[..Self::V1_LEN];
 
         let signature: [u8; 8] = head[..8].try_into().map_err(|_| AcpiError::BadChecksum)?;
         if signature != Self::SIGNATURE {
@@ -144,7 +235,7 @@ impl Rsdp {
 
         let revision = head[15];
         let rsdt = u32_at(head, 16).ok_or(AcpiError::BadChecksum)?;
-        if revision < 2 {
+        if revision == 0 {
             return Ok(Self {
                 revision,
                 rsdt,
@@ -152,8 +243,8 @@ impl Rsdp {
             });
         }
 
-        let full = bytes.get(..Self::V2_LEN).ok_or(AcpiError::TooShort {
-            needed: Self::V2_LEN,
+        let full = bytes.get(..length).ok_or(AcpiError::TooShort {
+            needed: length,
             available: bytes.len(),
         })?;
         if !checksum_is_valid(full) {
@@ -220,12 +311,31 @@ impl Sdt {
     /// The one field that has to be read before a table can be validated at
     /// all: the checksum covers exactly `length` bytes, so a reader must learn
     /// `length` from an unvalidated header in order to fetch the bytes
-    /// [`parse`](Self::parse) will then check. `None` if the buffer is shorter
-    /// than a header or the value is smaller than one, which are the two ways
-    /// that first read can go wrong.
-    pub fn parse_length(bytes: &[u8]) -> Option<usize> {
-        let length = u32_at(bytes.get(..Self::LEN)?, 4)? as usize;
-        (length >= Self::LEN).then_some(length)
+    /// [`parse`](Self::parse) will then check. `limit` is the reader's explicit
+    /// allocation budget, applied before any allocation follows this result.
+    ///
+    /// # Errors
+    ///
+    /// [`AcpiError::TooShort`] if the header is incomplete,
+    /// [`AcpiError::BadLength`] if the declared length is smaller than a
+    /// header, and [`AcpiError::TooLong`] above `limit`.
+    pub fn parse_length(bytes: &[u8], limit: usize) -> Result<usize, AcpiError> {
+        let head = bytes.get(..Self::LEN).ok_or(AcpiError::TooShort {
+            needed: Self::LEN,
+            available: bytes.len(),
+        })?;
+        let declared = u32_at(head, 4).ok_or(AcpiError::BadChecksum)?;
+        if declared < Self::LEN as u32 {
+            return Err(AcpiError::BadLength(declared));
+        }
+        let length = declared as usize;
+        if length > limit {
+            return Err(AcpiError::TooLong {
+                declared: length,
+                limit,
+            });
+        }
+        Ok(length)
     }
 
     /// Validate and read a table header.
@@ -294,25 +404,45 @@ pub struct SdtPointers<'a> {
 }
 
 impl<'a> SdtPointers<'a> {
-    /// The entries of an XSDT (`width` 8) or RSDT (`width` 4).
-    ///
-    /// `table` must be the whole table, already validated by [`Sdt::parse`].
-    fn new(table: &'a [u8], length: usize, width: usize) -> Self {
-        Self {
-            body: table.get(..length).unwrap_or(table),
+    /// Validate the table and bind its entry width to its signature.
+    fn new(table: &'a [u8], expected: [u8; 4], width: usize) -> Result<Self, AcpiError> {
+        let header = Sdt::parse(table)?;
+        if header.signature() != expected {
+            return Err(AcpiError::WrongTable {
+                expected,
+                found: header.signature(),
+            });
+        }
+        let length = header.length() as usize;
+        let trailing = (length - Sdt::LEN) % width;
+        if trailing != 0 {
+            return Err(AcpiError::PartialEntry { width, trailing });
+        }
+        Ok(Self {
+            body: &table[..length],
             width,
             offset: Sdt::LEN,
-        }
+        })
     }
 
     /// The entries of a validated XSDT.
-    pub fn xsdt(table: &'a [u8], header: Sdt) -> Self {
-        Self::new(table, header.length() as usize, 8)
+    ///
+    /// # Errors
+    ///
+    /// If the table fails validation, is not an XSDT, or ends in a partial
+    /// eight-byte pointer.
+    pub fn xsdt(table: &'a [u8]) -> Result<Self, AcpiError> {
+        Self::new(table, Sdt::XSDT, 8)
     }
 
     /// The entries of a validated RSDT.
-    pub fn rsdt(table: &'a [u8], header: Sdt) -> Self {
-        Self::new(table, header.length() as usize, 4)
+    ///
+    /// # Errors
+    ///
+    /// If the table fails validation, is not an RSDT, or ends in a partial
+    /// four-byte pointer.
+    pub fn rsdt(table: &'a [u8]) -> Result<Self, AcpiError> {
+        Self::new(table, Sdt::RSDT, 4)
     }
 }
 
@@ -389,17 +519,65 @@ impl<'a> MadtEntries<'a> {
     /// address and the flags word.
     const HEADER: usize = Sdt::LEN + 8;
 
-    /// Walk the entries of a MADT already validated by [`Sdt::parse`].
-    pub fn new(table: &'a [u8], header: Sdt) -> Self {
-        Self {
-            body: table.get(..header.length() as usize).unwrap_or(table),
-            offset: Self::HEADER,
+    /// Validate a MADT and walk its entries.
+    ///
+    /// Validation covers the MADT-specific header and every variable-length
+    /// entry before iteration starts. That makes a corrupt tail invalidate the
+    /// table as a whole instead of leaving callers with a trusted prefix.
+    ///
+    /// # Errors
+    ///
+    /// If the table is not a valid MADT or any entry is truncated, has a
+    /// non-advancing length, or is shorter than the fields of its known kind.
+    pub fn new(table: &'a [u8]) -> Result<Self, AcpiError> {
+        let header = Sdt::parse(table)?;
+        if header.signature() != Sdt::MADT {
+            return Err(AcpiError::WrongTable {
+                expected: Sdt::MADT,
+                found: header.signature(),
+            });
         }
+        let length = header.length() as usize;
+        if length < Self::HEADER {
+            return Err(AcpiError::BadLength(header.length()));
+        }
+        let body = &table[..length];
+        let mut offset = Self::HEADER;
+        while offset < body.len() {
+            let available = body.len() - offset;
+            let Some(prefix) = body.get(offset..offset.saturating_add(2)) else {
+                return Err(AcpiError::MalformedEntry {
+                    offset,
+                    length: 0,
+                    available,
+                });
+            };
+            let kind = prefix[0];
+            let entry_len = usize::from(prefix[1]);
+            let minimum = match kind {
+                0 => 8,
+                1 => 12,
+                2 => 10,
+                _ => 2,
+            };
+            if entry_len < minimum || entry_len > available {
+                return Err(AcpiError::MalformedEntry {
+                    offset,
+                    length: entry_len,
+                    available,
+                });
+            }
+            offset += entry_len;
+        }
+        Ok(Self {
+            body,
+            offset: Self::HEADER,
+        })
     }
 
     /// The physical address of the local APIC, as the MADT reports it.
-    pub fn local_apic_address(table: &[u8]) -> Option<u32> {
-        u32_at(table, Sdt::LEN)
+    pub fn local_apic_address(&self) -> u32 {
+        u32_at(self.body, Sdt::LEN).unwrap_or(0)
     }
 }
 
@@ -408,27 +586,22 @@ impl Iterator for MadtEntries<'_> {
 
     fn next(&mut self) -> Option<MadtEntry> {
         let kind = *self.body.get(self.offset)?;
-        let length = *self.body.get(self.offset + 1)? as usize;
-        // A zero length would never advance, and a corrupt table is exactly
-        // where that would happen. Stopping is the only safe answer.
-        if length < 2 {
-            return None;
-        }
+        let length = usize::from(*self.body.get(self.offset + 1)?);
         let entry = self.body.get(self.offset..self.offset + length)?;
         self.offset += length;
 
         Some(match kind {
-            0 if length >= 8 => MadtEntry::LocalApic {
+            0 => MadtEntry::LocalApic {
                 processor: entry[2],
                 id: entry[3],
                 enabled: u32_at(entry, 4).unwrap_or(0) & 1 != 0,
             },
-            1 if length >= 12 => MadtEntry::IoApic {
+            1 => MadtEntry::IoApic {
                 id: entry[2],
                 address: u32_at(entry, 4).unwrap_or(0),
                 gsi_base: u32_at(entry, 8).unwrap_or(0),
             },
-            2 if length >= 10 => MadtEntry::InterruptSourceOverride {
+            2 => MadtEntry::InterruptSourceOverride {
                 bus: entry[2],
                 source: entry[3],
                 gsi: u32_at(entry, 4).unwrap_or(0),
@@ -523,6 +696,53 @@ mod tests {
     }
 
     #[test]
+    fn undefined_rsdp_revisions_are_refused() {
+        assert_eq!(
+            Rsdp::parse(&rsdp(1)),
+            Err(AcpiError::UnsupportedRevision(1))
+        );
+        assert_eq!(
+            Rsdp::parse(&rsdp(3)),
+            Err(AcpiError::UnsupportedRevision(3))
+        );
+    }
+
+    #[test]
+    fn the_extended_rsdp_checksum_covers_its_declared_length() {
+        let mut bytes = rsdp(2);
+        bytes.resize(40, 0);
+        bytes[20..24].copy_from_slice(&40u32.to_le_bytes());
+        fix_checksum(&mut bytes[..Rsdp::V1_LEN], 9);
+        fix_checksum(&mut bytes, 32);
+        assert!(Rsdp::parse(&bytes).is_ok());
+
+        bytes[39] = 1;
+        assert_eq!(Rsdp::parse(&bytes), Err(AcpiError::BadChecksum));
+    }
+
+    #[test]
+    fn an_extended_rsdp_cannot_be_shorter_than_its_fixed_fields() {
+        let mut bytes = rsdp(2);
+        bytes[20..24].copy_from_slice(&24u32.to_le_bytes());
+
+        assert_eq!(Rsdp::parse(&bytes), Err(AcpiError::BadLength(24)));
+    }
+
+    #[test]
+    fn an_rsdp_length_cannot_exceed_the_readers_budget() {
+        let mut bytes = rsdp(2);
+        bytes[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        assert_eq!(
+            Rsdp::parse_length(&bytes, 4096),
+            Err(AcpiError::TooLong {
+                declared: u32::MAX as usize,
+                limit: 4096,
+            })
+        );
+    }
+
+    #[test]
     fn a_table_header_is_validated_against_its_whole_body() {
         let bytes = table(&Sdt::MADT, &[1, 2, 3, 4]);
         let header = Sdt::parse(&bytes).expect("well formed");
@@ -534,14 +754,37 @@ mod tests {
     #[test]
     fn a_length_can_be_read_before_the_table_is_validated() {
         let bytes = table(&Sdt::MADT, &[1, 2, 3, 4]);
-        assert_eq!(Sdt::parse_length(&bytes), Some(Sdt::LEN + 4));
+        assert_eq!(Sdt::parse_length(&bytes, usize::MAX), Ok(Sdt::LEN + 4));
         // Only the header is needed, which is the whole point.
-        assert_eq!(Sdt::parse_length(&bytes[..Sdt::LEN]), Some(Sdt::LEN + 4));
+        assert_eq!(
+            Sdt::parse_length(&bytes[..Sdt::LEN], usize::MAX),
+            Ok(Sdt::LEN + 4)
+        );
 
-        assert_eq!(Sdt::parse_length(&bytes[..Sdt::LEN - 1]), None);
+        assert!(matches!(
+            Sdt::parse_length(&bytes[..Sdt::LEN - 1], usize::MAX),
+            Err(AcpiError::TooShort { .. })
+        ));
         let mut short = bytes.clone();
         short[4..8].copy_from_slice(&8u32.to_le_bytes());
-        assert_eq!(Sdt::parse_length(&short), None, "shorter than a header");
+        assert_eq!(
+            Sdt::parse_length(&short, usize::MAX),
+            Err(AcpiError::BadLength(8))
+        );
+    }
+
+    #[test]
+    fn an_unvalidated_length_cannot_exceed_the_readers_budget() {
+        let mut header = [0u8; Sdt::LEN];
+        header[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        assert_eq!(
+            Sdt::parse_length(&header, 1 << 20),
+            Err(AcpiError::TooLong {
+                declared: u32::MAX as usize,
+                limit: 1 << 20,
+            })
+        );
     }
 
     #[test]
@@ -576,9 +819,7 @@ mod tests {
             body.extend_from_slice(&address.to_le_bytes());
         }
         let bytes = table(&Sdt::XSDT, &body);
-        let header = Sdt::parse(&bytes).expect("well formed");
-
-        let pointers: Vec<_> = SdtPointers::xsdt(&bytes, header).collect();
+        let pointers: Vec<_> = SdtPointers::xsdt(&bytes).expect("validated xsdt").collect();
         assert_eq!(pointers, [0x1000, 0x2000, 0x3000]);
     }
 
@@ -589,10 +830,34 @@ mod tests {
             body.extend_from_slice(&address.to_le_bytes());
         }
         let bytes = table(&Sdt::RSDT, &body);
-        let header = Sdt::parse(&bytes).expect("well formed");
-
-        let pointers: Vec<_> = SdtPointers::rsdt(&bytes, header).collect();
+        let pointers: Vec<_> = SdtPointers::rsdt(&bytes).expect("validated rsdt").collect();
         assert_eq!(pointers, [0x1000, 0x2000]);
+    }
+
+    #[test]
+    fn a_typed_pointer_view_refuses_the_wrong_table() {
+        let bytes = table(&Sdt::MADT, &[0; 8]);
+
+        assert!(matches!(
+            SdtPointers::xsdt(&bytes),
+            Err(AcpiError::WrongTable {
+                expected: Sdt::XSDT,
+                found: Sdt::MADT,
+            })
+        ));
+    }
+
+    #[test]
+    fn a_pointer_table_with_a_partial_tail_is_invalid() {
+        let bytes = table(&Sdt::XSDT, &[0; 9]);
+
+        assert_eq!(
+            SdtPointers::xsdt(&bytes).map(|pointers| pointers.count()),
+            Err(AcpiError::PartialEntry {
+                width: 8,
+                trailing: 1,
+            })
+        );
     }
 
     #[test]
@@ -600,10 +865,9 @@ mod tests {
         // Trailing bytes beyond the header's length must not be read as an
         // entry, even though the buffer holds them.
         let mut bytes = table(&Sdt::XSDT, &0x1000u64.to_le_bytes());
-        let header = Sdt::parse(&bytes).expect("well formed");
         bytes.extend_from_slice(&0xbadu64.to_le_bytes());
 
-        let pointers: Vec<_> = SdtPointers::xsdt(&bytes, header).collect();
+        let pointers: Vec<_> = SdtPointers::xsdt(&bytes).expect("validated xsdt").collect();
         assert_eq!(
             pointers,
             [0x1000],
@@ -626,14 +890,14 @@ mod tests {
         body.extend_from_slice(&[4, 6, 0, 0, 0, 0]); // an NMI entry, not ours
 
         let bytes = table(&Sdt::MADT, &body);
-        let header = Sdt::parse(&bytes).expect("well formed");
-        let entries: Vec<_> = MadtEntries::new(&bytes, header).collect();
+        let entries = MadtEntries::new(&bytes).expect("validated madt");
 
         assert_eq!(
-            MadtEntries::local_apic_address(&bytes),
-            Some(0xfee0_0000),
+            entries.local_apic_address(),
+            0xfee0_0000,
             "the MADT's own header carries the local APIC address"
         );
+        let entries: Vec<_> = entries.collect();
         assert_eq!(
             entries,
             [
@@ -659,39 +923,68 @@ mod tests {
     }
 
     #[test]
-    fn a_madt_entry_claiming_zero_length_stops_the_walk() {
+    fn a_madt_entry_claiming_zero_length_invalidates_the_table() {
         // The corrupt input that would otherwise loop forever: an entry whose
         // length never advances the cursor.
         let mut body = vec![0u8; 8];
         body.extend_from_slice(&[1, 0, 0, 0]);
         let bytes = table(&Sdt::MADT, &body);
-        let header = Sdt::parse(&bytes).expect("well formed");
-
-        assert_eq!(MadtEntries::new(&bytes, header).count(), 0);
+        assert!(matches!(
+            MadtEntries::new(&bytes),
+            Err(AcpiError::MalformedEntry { length: 0, .. })
+        ));
     }
 
     #[test]
-    fn a_madt_entry_running_past_the_table_is_dropped() {
+    fn a_madt_without_its_fixed_header_is_invalid() {
+        let bytes = table(&Sdt::MADT, &[]);
+
+        assert_eq!(
+            MadtEntries::new(&bytes).map(|entries| entries.count()),
+            Err(AcpiError::BadLength(Sdt::LEN as u32))
+        );
+    }
+
+    #[test]
+    fn a_corrupt_tail_invalidates_valid_madt_entries_before_it() {
+        let mut body = vec![0u8; 8];
+        body.extend_from_slice(&[1, 12, 2, 0]);
+        body.extend_from_slice(&0xfec0_0000u32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&[0, 0]);
+        let bytes = table(&Sdt::MADT, &body);
+
+        assert!(matches!(
+            MadtEntries::new(&bytes),
+            Err(AcpiError::MalformedEntry { length: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn a_madt_entry_running_past_the_table_invalidates_it() {
         let mut body = vec![0u8; 8];
         // Claims 40 bytes, of which only four are present.
         body.extend_from_slice(&[1, 40, 0, 0]);
         let bytes = table(&Sdt::MADT, &body);
-        let header = Sdt::parse(&bytes).expect("well formed");
-
-        assert_eq!(MadtEntries::new(&bytes, header).count(), 0);
+        assert!(matches!(
+            MadtEntries::new(&bytes),
+            Err(AcpiError::MalformedEntry {
+                length: 40,
+                available: 4,
+                ..
+            })
+        ));
     }
 
     #[test]
-    fn a_truncated_entry_of_a_known_kind_falls_back_to_other() {
+    fn a_truncated_entry_of_a_known_kind_invalidates_the_table() {
         // An I/O APIC entry two bytes short: its fields must not be read.
         let mut body = vec![0u8; 8];
         body.extend_from_slice(&[1, 10, 2, 0, 0, 0, 0, 0, 0, 0]);
         let bytes = table(&Sdt::MADT, &body);
-        let header = Sdt::parse(&bytes).expect("well formed");
-
-        assert_eq!(
-            MadtEntries::new(&bytes, header).next(),
-            Some(MadtEntry::Other { kind: 1 })
-        );
+        assert!(matches!(
+            MadtEntries::new(&bytes),
+            Err(AcpiError::MalformedEntry { length: 10, .. })
+        ));
     }
 }

@@ -14,16 +14,23 @@
 //! use slab_layout::{SizeClass, Placement, place};
 //!
 //! // A 20-byte request with 8-byte alignment fits the 32-byte class.
-//! let class = SizeClass::for_size_align(20, 8).expect("small enough");
+//! let class = SizeClass::for_size_align(20, 8)
+//!     .expect("valid alignment")
+//!     .expect("small enough");
 //! assert_eq!(class.bytes(), 32);
 //! assert_eq!(class.slots_per_frame(), 128);
 //!
 //! // A 64 KiB request is too big for any class and takes whole frames.
-//! assert_eq!(place(64 * 1024, 8), Placement::Frames { count: 16, align: 1 });
+//! assert_eq!(
+//!     place(64 * 1024, 8),
+//!     Ok(Placement::Frames { count: 16, align: 1 })
+//! );
 //! ```
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+
+use core::fmt;
 
 /// Bytes in a page frame — the unit a slab is carved from.
 pub const FRAME_SIZE: usize = 4096;
@@ -38,6 +45,26 @@ pub const MAX_CLASS: usize = 2048;
 
 /// Number of size classes, from [`MIN_CLASS`] to [`MAX_CLASS`].
 pub const CLASSES: usize = 8;
+
+/// Why a request cannot be placed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PlacementError {
+    /// Rust alignments are non-zero powers of two.
+    InvalidAlignment(usize),
+}
+
+impl fmt::Display for PlacementError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::InvalidAlignment(align) => {
+                write!(f, "alignment {align} is not a non-zero power of two")
+            }
+        }
+    }
+}
+
+impl core::error::Error for PlacementError {}
 
 /// One size class of the slab allocator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -89,20 +116,28 @@ impl SizeClass {
     /// class size, a slot is always aligned to its own class. So a request
     /// needing 64-byte alignment takes the 64-byte class at least, whatever
     /// its size.
-    pub const fn for_size_align(size: usize, align: usize) -> Option<Self> {
+    ///
+    /// # Errors
+    ///
+    /// [`PlacementError::InvalidAlignment`] unless `align` is a non-zero power
+    /// of two, as a [`core::alloc::Layout`] requires.
+    pub const fn for_size_align(size: usize, align: usize) -> Result<Option<Self>, PlacementError> {
+        if align == 0 || !align.is_power_of_two() {
+            return Err(PlacementError::InvalidAlignment(align));
+        }
         let needed = if size > align { size } else { align };
         if needed > MAX_CLASS {
-            return None;
+            return Ok(None);
         }
 
         let mut index = 0;
         while index < CLASSES {
             if MIN_CLASS << index >= needed {
-                return Some(Self { index });
+                return Ok(Some(Self { index }));
             }
             index += 1;
         }
-        None
+        Ok(None)
     }
 }
 
@@ -127,26 +162,40 @@ pub enum Placement {
 /// requires a unique non-null address back, and one slot is the cheapest way
 /// to provide one. An alignment too large for any class takes a frame, which
 /// is the same answer one byte at that alignment would get.
-pub const fn place(size: usize, align: usize) -> Placement {
+///
+/// # Errors
+///
+/// [`PlacementError::InvalidAlignment`] unless `align` is a non-zero power of
+/// two, as a [`core::alloc::Layout`] requires.
+pub const fn place(size: usize, align: usize) -> Result<Placement, PlacementError> {
     match SizeClass::for_size_align(size, align) {
-        Some(class) => Placement::Slot(class),
+        Err(error) => Err(error),
+        Ok(Some(class)) => Ok(Placement::Slot(class)),
         // At least one frame: a zero-sized request whose alignment is too
         // large for any class lands here, and `GlobalAlloc` owes it a unique
         // non-null address rather than a run of nothing.
-        None if size == 0 => Placement::Frames {
+        Ok(None) if size == 0 => Ok(Placement::Frames {
             count: 1,
             align: align.div_ceil(FRAME_SIZE),
-        },
-        None => Placement::Frames {
+        }),
+        Ok(None) => Ok(Placement::Frames {
             count: size.div_ceil(FRAME_SIZE),
             align: align.div_ceil(FRAME_SIZE),
-        },
+        }),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn size_class(size: usize, align: usize) -> Option<SizeClass> {
+        SizeClass::for_size_align(size, align).expect("valid test alignment")
+    }
+
+    fn placement(size: usize, align: usize) -> Placement {
+        place(size, align).expect("valid test alignment")
+    }
 
     #[test]
     fn classes_are_powers_of_two_from_sixteen_to_two_thousand_and_forty_eight() {
@@ -174,37 +223,22 @@ mod tests {
 
     #[test]
     fn a_request_takes_the_smallest_class_that_holds_it() {
-        assert_eq!(
-            SizeClass::for_size_align(1, 1).map(SizeClass::bytes),
-            Some(16)
-        );
-        assert_eq!(
-            SizeClass::for_size_align(16, 1).map(SizeClass::bytes),
-            Some(16)
-        );
-        assert_eq!(
-            SizeClass::for_size_align(17, 1).map(SizeClass::bytes),
-            Some(32)
-        );
-        assert_eq!(
-            SizeClass::for_size_align(2048, 1).map(SizeClass::bytes),
-            Some(2048)
-        );
-        assert_eq!(SizeClass::for_size_align(2049, 1), None);
+        assert_eq!(size_class(1, 1).map(SizeClass::bytes), Some(16));
+        assert_eq!(size_class(16, 1).map(SizeClass::bytes), Some(16));
+        assert_eq!(size_class(17, 1).map(SizeClass::bytes), Some(32));
+        assert_eq!(size_class(2048, 1).map(SizeClass::bytes), Some(2048));
+        assert_eq!(size_class(2049, 1), None);
     }
 
     #[test]
     fn alignment_is_met_by_taking_a_larger_class_not_by_padding() {
         // Eight bytes needing 64-byte alignment: the 16-byte class would place
         // it at a multiple of 16, which is not necessarily a multiple of 64.
-        let class = SizeClass::for_size_align(8, 64).expect("small enough");
+        let class = size_class(8, 64).expect("small enough");
         assert_eq!(class.bytes(), 64);
+        assert_eq!(size_class(8, 2048).map(SizeClass::bytes), Some(2048));
         assert_eq!(
-            SizeClass::for_size_align(8, 2048).map(SizeClass::bytes),
-            Some(2048)
-        );
-        assert_eq!(
-            SizeClass::for_size_align(8, 4096),
+            size_class(8, 4096),
             None,
             "an alignment past the largest class needs whole frames"
         );
@@ -226,7 +260,7 @@ mod tests {
 
     #[test]
     fn slot_offsets_fill_the_frame_without_overlapping() {
-        let class = SizeClass::for_size_align(256, 1).expect("a class");
+        let class = size_class(256, 1).expect("a class");
         let last = class.slots_per_frame() - 1;
         assert_eq!(class.offset_of(0), 0);
         assert_eq!(class.offset_of(last), FRAME_SIZE - class.bytes());
@@ -240,29 +274,29 @@ mod tests {
     #[test]
     #[should_panic(expected = "slot outside the slab")]
     fn a_slot_past_the_end_of_a_slab_panics() {
-        let class = SizeClass::for_size_align(16, 1).expect("a class");
+        let class = size_class(16, 1).expect("a class");
         let _ = class.offset_of(class.slots_per_frame());
     }
 
     #[test]
     fn a_small_request_is_placed_in_a_slot() {
         assert_eq!(
-            place(100, 8),
-            Placement::Slot(SizeClass::for_size_align(100, 8).expect("a class"))
+            placement(100, 8),
+            Placement::Slot(size_class(100, 8).expect("a class"))
         );
     }
 
     #[test]
     fn a_large_request_is_placed_in_whole_frames() {
-        assert_eq!(place(4096, 1), Placement::Frames { count: 1, align: 1 });
-        assert_eq!(place(4097, 1), Placement::Frames { count: 2, align: 1 });
+        assert_eq!(placement(4096, 1), Placement::Frames { count: 1, align: 1 });
+        assert_eq!(placement(4097, 1), Placement::Frames { count: 2, align: 1 });
         assert_eq!(
-            place(2049, 1),
+            placement(2049, 1),
             Placement::Frames { count: 1, align: 1 },
             "one byte past the largest class already needs a frame"
         );
         assert_eq!(
-            place(8192, 8192),
+            placement(8192, 8192),
             Placement::Frames { count: 2, align: 2 },
             "alignment is counted in frames, like the run itself"
         );
@@ -273,7 +307,7 @@ mod tests {
         // `GlobalAlloc` must return a unique non-null pointer, so zero bytes
         // are served rather than refused.
         assert_eq!(
-            place(0, 1),
+            placement(0, 1),
             Placement::Slot(SizeClass::from_index(0).expect("the smallest class"))
         );
     }
@@ -285,12 +319,26 @@ mod tests {
     #[test]
     fn a_zero_sized_request_too_aligned_for_a_class_still_gets_a_frame() {
         assert_eq!(
-            place(0, MAX_CLASS * 2),
+            placement(0, MAX_CLASS * 2),
             Placement::Frames { count: 1, align: 1 }
         );
         assert_eq!(
-            place(0, FRAME_SIZE * 4),
+            placement(0, FRAME_SIZE * 4),
             Placement::Frames { count: 1, align: 4 }
         );
+    }
+
+    #[test]
+    fn invalid_alignments_are_refused_before_placement_arithmetic() {
+        for align in [0, 3, usize::MAX] {
+            assert_eq!(
+                SizeClass::for_size_align(1, align),
+                Err(PlacementError::InvalidAlignment(align))
+            );
+            assert_eq!(
+                place(1, align),
+                Err(PlacementError::InvalidAlignment(align))
+            );
+        }
     }
 }

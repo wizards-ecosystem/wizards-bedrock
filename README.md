@@ -13,10 +13,12 @@ See [docs/002-architecture.md](docs/002-architecture.md).
 Design docs live in [docs/](docs/) — one per subsystem, written before the
 code (design-first). Start with the
 [decision log](docs/004-decision-log.md) (every choice, its alternatives,
-and rationale) and the [architecture](docs/002-architecture.md); research
-evidence behind them is in [research notes](docs/003-research-notes.md) and
-[the second research pass](docs/008-research-notes-2.md), and
-[code conventions](docs/005-code-conventions.md) covers how the code is written.
+and rationale) and the [architecture](docs/002-architecture.md). Research
+evidence behind them is in [the founding pass](docs/003-research-notes.md),
+[the second pass](docs/008-research-notes-2.md), and
+[the foundation-verification pass](docs/010-research-notes-3.md); later passes
+annotate corrections to the earlier historical snapshots.
+[Code conventions](docs/005-code-conventions.md) covers how the code is written.
 
 ## Building & running
 

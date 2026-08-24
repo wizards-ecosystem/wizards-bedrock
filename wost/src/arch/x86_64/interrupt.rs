@@ -13,6 +13,9 @@
 //! is loaded, and every one of its gates is present.
 
 use core::arch::{asm, global_asm};
+use core::fmt;
+use core::marker::PhantomData;
+use core::mem::size_of;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use x86_tables::exception;
@@ -36,59 +39,199 @@ pub(crate) const FLAGS_INTERRUPT: u64 = 1 << 9;
 /// trusting it.
 const STUB_BYTES: usize = 16;
 
-/// The registers a handler is given, in the order the entry path leaves them on
-/// the stack.
+/// The registers the entry path leaves on the stack.
 ///
 /// Field order is not a matter of taste: it mirrors the pushes in the entry
 /// sequence exactly, lowest address first. The selftest checks the two still
 /// agree on a live machine, because nothing else can.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
+struct RawTrapFrame {
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    r11: u64,
+    r10: u64,
+    r9: u64,
+    r8: u64,
+    rbp: u64,
+    rdi: u64,
+    rsi: u64,
+    rdx: u64,
+    rcx: u64,
+    rbx: u64,
+    rax: u64,
+    vector: u64,
+    error_code: u64,
+    instruction_pointer: u64,
+    code_selector: u64,
+    flags: u64,
+    stack_pointer: u64,
+    stack_selector: u64,
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<RawTrapFrame>() == 22 * size_of::<u64>());
+    assert!(core::mem::offset_of!(RawTrapFrame, r15) == 0);
+    assert!(core::mem::offset_of!(RawTrapFrame, r8) == 7 * size_of::<u64>());
+    assert!(core::mem::offset_of!(RawTrapFrame, rax) == 14 * size_of::<u64>());
+    assert!(core::mem::offset_of!(RawTrapFrame, vector) == 15 * size_of::<u64>());
+    assert!(core::mem::offset_of!(RawTrapFrame, flags) == 19 * size_of::<u64>());
+    assert!(core::mem::offset_of!(RawTrapFrame, stack_selector) == 21 * size_of::<u64>());
+};
+
+/// A read-only snapshot of the registers saved on interrupt entry.
+///
+/// The assembly-owned frame is deliberately not exposed. A handler can inspect
+/// where execution resumes, but safe code cannot redirect `iretq` or forge the
+/// frame identity accepted by the scheduler.
 pub struct TrapFrame {
+    raw: RawTrapFrame,
+    origin: *mut RawTrapFrame,
+    stays_here: PhantomData<*mut ()>,
+}
+
+impl TrapFrame {
     /// Saved `r15`.
-    pub r15: u64,
+    pub const fn r15(&self) -> u64 {
+        self.raw.r15
+    }
+
     /// Saved `r14`.
-    pub r14: u64,
+    pub const fn r14(&self) -> u64 {
+        self.raw.r14
+    }
+
     /// Saved `r13`.
-    pub r13: u64,
+    pub const fn r13(&self) -> u64 {
+        self.raw.r13
+    }
+
     /// Saved `r12`.
-    pub r12: u64,
+    pub const fn r12(&self) -> u64 {
+        self.raw.r12
+    }
+
     /// Saved `r11`.
-    pub r11: u64,
+    pub const fn r11(&self) -> u64 {
+        self.raw.r11
+    }
+
     /// Saved `r10`.
-    pub r10: u64,
+    pub const fn r10(&self) -> u64 {
+        self.raw.r10
+    }
+
     /// Saved `r9`.
-    pub r9: u64,
+    pub const fn r9(&self) -> u64 {
+        self.raw.r9
+    }
+
     /// Saved `r8`.
-    pub r8: u64,
+    pub const fn r8(&self) -> u64 {
+        self.raw.r8
+    }
+
     /// Saved `rbp`.
-    pub rbp: u64,
+    pub const fn rbp(&self) -> u64 {
+        self.raw.rbp
+    }
+
     /// Saved `rdi`.
-    pub rdi: u64,
+    pub const fn rdi(&self) -> u64 {
+        self.raw.rdi
+    }
+
     /// Saved `rsi`.
-    pub rsi: u64,
+    pub const fn rsi(&self) -> u64 {
+        self.raw.rsi
+    }
+
     /// Saved `rdx`.
-    pub rdx: u64,
+    pub const fn rdx(&self) -> u64 {
+        self.raw.rdx
+    }
+
     /// Saved `rcx`.
-    pub rcx: u64,
+    pub const fn rcx(&self) -> u64 {
+        self.raw.rcx
+    }
+
     /// Saved `rbx`.
-    pub rbx: u64,
+    pub const fn rbx(&self) -> u64 {
+        self.raw.rbx
+    }
+
     /// Saved `rax`.
-    pub rax: u64,
+    pub const fn rax(&self) -> u64 {
+        self.raw.rax
+    }
+
     /// Which vector was raised.
-    pub vector: u64,
+    pub const fn vector(&self) -> u64 {
+        self.raw.vector
+    }
+
     /// The error code the CPU pushed, or zero for a vector that pushes none.
-    pub error_code: u64,
+    pub const fn error_code(&self) -> u64 {
+        self.raw.error_code
+    }
+
     /// Where execution was, and where `iretq` resumes.
-    pub instruction_pointer: u64,
-    /// The code selector at the point of the fault.
-    pub code_selector: u64,
-    /// The flags register at the point of the fault.
-    pub flags: u64,
-    /// The stack pointer at the point of the fault.
-    pub stack_pointer: u64,
-    /// The stack selector at the point of the fault.
-    pub stack_selector: u64,
+    pub const fn instruction_pointer(&self) -> u64 {
+        self.raw.instruction_pointer
+    }
+
+    /// The code selector at the point of the trap.
+    pub const fn code_selector(&self) -> u64 {
+        self.raw.code_selector
+    }
+
+    /// The flags register at the point of the trap.
+    pub const fn flags(&self) -> u64 {
+        self.raw.flags
+    }
+
+    /// The stack pointer at the point of the trap.
+    pub const fn stack_pointer(&self) -> u64 {
+        self.raw.stack_pointer
+    }
+
+    /// The stack selector at the point of the trap.
+    pub const fn stack_selector(&self) -> u64 {
+        self.raw.stack_selector
+    }
+}
+
+impl fmt::Debug for TrapFrame {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TrapFrame")
+            .field("r15", &self.r15())
+            .field("r14", &self.r14())
+            .field("r13", &self.r13())
+            .field("r12", &self.r12())
+            .field("r11", &self.r11())
+            .field("r10", &self.r10())
+            .field("r9", &self.r9())
+            .field("r8", &self.r8())
+            .field("rbp", &self.rbp())
+            .field("rdi", &self.rdi())
+            .field("rsi", &self.rsi())
+            .field("rdx", &self.rdx())
+            .field("rcx", &self.rcx())
+            .field("rbx", &self.rbx())
+            .field("rax", &self.rax())
+            .field("vector", &self.vector())
+            .field("error_code", &self.error_code())
+            .field("instruction_pointer", &self.instruction_pointer())
+            .field("code_selector", &self.code_selector())
+            .field("flags", &self.flags())
+            .field("stack_pointer", &self.stack_pointer())
+            .field("stack_selector", &self.stack_selector())
+            .finish()
+    }
 }
 
 /// What the kernel does when a vector is raised.
@@ -97,7 +240,7 @@ pub struct TrapFrame {
 /// selected one from the task-state segment. Returning resumes the interrupted
 /// code, which is meaningful for a trap such as a breakpoint and is a loop for
 /// a fault, whose saved instruction pointer is the instruction that faulted.
-pub type Handler = fn(&mut TrapFrame);
+pub type Handler = fn(&TrapFrame);
 
 static IDT: HardwareCell<[Gate; idt::TABLE_LEN]> =
     HardwareCell::new([Gate::MISSING; idt::TABLE_LEN]);
@@ -112,18 +255,32 @@ static INIT: Once = Once::new();
 /// thread that owns it, so the thread switched *to* sees its own.
 static TRAP_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
-/// The frame the innermost live handler was entered with — a `TrapFrame` is
-/// plain data, so only this pointer makes one evidence.
-static LIVE_FRAME: AtomicPtr<TrapFrame> = AtomicPtr::new(core::ptr::null_mut());
+/// Low address bits at the most recent dispatcher call boundary.
+static CALL_ALIGNMENT: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// The assembly frame behind the innermost handler's read-only snapshot.
+///
+/// Its address is the evidence the scheduler needs; the snapshot's private
+/// origin is the only safe route back to it.
+static LIVE_FRAME: AtomicPtr<RawTrapFrame> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Whether this CPU is inside a trap handler.
 pub fn in_trap() -> bool {
     TRAP_DEPTH.load(Ordering::Relaxed) != 0
 }
 
+/// The stack alignment observed at the most recent dispatcher call boundary.
+///
+/// Zero is the System V x86-64 ABI requirement. The value is retained so the
+/// machine selftest can check assembly that Rust's type system cannot see.
+#[doc(hidden)]
+pub fn last_call_alignment() -> usize {
+    CALL_ALIGNMENT.load(Ordering::Relaxed)
+}
+
 /// Whether `frame` is the one the innermost live handler was entered with.
 pub(crate) fn is_live_frame(frame: &TrapFrame) -> bool {
-    core::ptr::eq(LIVE_FRAME.load(Ordering::Relaxed), frame)
+    LIVE_FRAME.load(Ordering::Relaxed) == frame.origin
 }
 
 /// Take this context's trap state off the CPU, for a switch to another.
@@ -146,7 +303,7 @@ pub(crate) fn resume_trap(suspended: TrapSuspension) {
 /// One context's trap state, parked on its own stack across a switch.
 pub(crate) struct TrapSuspension {
     depth: usize,
-    frame: *mut TrapFrame,
+    frame: *mut RawTrapFrame,
 }
 
 /// Fill the interrupt descriptor table and load it, routing every vector to
@@ -234,13 +391,22 @@ pub fn table_is_loaded() -> bool {
 /// Restoring rather than enabling is what makes nesting work: an inner section
 /// that saw the flag already clear puts back a clear flag, so the outer section
 /// keeps the exclusion it was relying on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InterruptState(bool);
+#[must_use = "dropping this state intentionally leaves interrupts disabled"]
+#[derive(Debug, PartialEq, Eq)]
+pub struct InterruptState {
+    was_enabled: bool,
+    stays_here: PhantomData<*mut ()>,
+}
 
 impl InterruptState {
     /// Put the interrupt flag back the way it was.
-    pub fn restore(self) {
-        if self.0 {
+    pub fn restore(mut self) {
+        self.restore_in_place();
+    }
+
+    /// Restore a state stored inside a guard that is itself being dropped.
+    pub(crate) fn restore_in_place(&mut self) {
+        if core::mem::replace(&mut self.was_enabled, false) {
             set_flag();
         }
     }
@@ -262,7 +428,10 @@ pub fn disable() -> InterruptState {
     // has no preconditions in ring 0. `preserves_flags` is deliberately absent —
     // modifying IF is the whole point.
     unsafe { asm!("cli", options(nomem, nostack)) };
-    InterruptState(previous)
+    InterruptState {
+        was_enabled: previous,
+        stays_here: PhantomData,
+    }
 }
 
 /// Begin accepting maskable interrupts on this CPU.
@@ -375,12 +544,13 @@ pub fn breakpoint() {
         "load the interrupt table before raising a breakpoint"
     );
     // SAFETY: `int3` raises vector 3, whose gate the assert confirmed loaded.
-    // No options, because the handler may do anything a Rust function may do.
-    unsafe { asm!("int3") };
+    // `rax` is caller-saved, and exposing the interrupted `rsp` through it
+    // lets the machine selftest distinguish a saved word from adjacent stack.
+    unsafe { asm!("mov rax, rsp", "int3", out("rax") _) };
 }
 
 /// Call the registered handler with the frame the entry path saved.
-extern "C" fn dispatch(frame: *mut TrapFrame) {
+extern "C" fn dispatch(raw: *mut RawTrapFrame, call_stack_pointer: usize) {
     let registered = HANDLER.load(Ordering::Acquire);
     if registered.is_null() {
         cpu::halt_forever();
@@ -391,16 +561,21 @@ extern "C" fn dispatch(frame: *mut TrapFrame) {
     // a data pointer are the same width on x86_64.
     let handler: Handler = unsafe { core::mem::transmute(registered) };
 
-    // SAFETY: the entry path passes the register block it has just pushed. It
-    // outlives this call, and nothing else can hold a reference to it: this CPU
-    // was interrupted, and it entered through a gate that cleared the interrupt
-    // flag.
-    let frame = unsafe { &mut *frame };
+    // SAFETY: the entry path passes a properly aligned, fully initialised
+    // register block with the exact `RawTrapFrame` layout. Copying it leaves
+    // the assembly-owned frame untouched for `iretq`.
+    let saved = unsafe { raw.read() };
+    let frame = TrapFrame {
+        raw: saved,
+        origin: raw,
+        stays_here: PhantomData,
+    };
 
     TRAP_DEPTH.fetch_add(1, Ordering::Relaxed);
     // Swapped so a nested trap restores its outer frame on the way out.
-    let outer = LIVE_FRAME.swap(frame, Ordering::Relaxed);
-    handler(frame);
+    let outer = LIVE_FRAME.swap(raw, Ordering::Relaxed);
+    CALL_ALIGNMENT.store(call_stack_pointer & 0xF, Ordering::Relaxed);
+    handler(&frame);
     LIVE_FRAME.store(outer, Ordering::Relaxed);
     TRAP_DEPTH.fetch_sub(1, Ordering::Relaxed);
 }
@@ -448,12 +623,11 @@ global_asm!(
     "wost_interrupt_stubs_end:",
 
     // The common tail. `cld` because the ABI requires a clear direction flag
-    // and an interrupt does not clear it; `mov rdi, rsp` because the frame the
-    // pushes just built is the dispatcher's argument. The stack is 16-byte
-    // aligned at the call by construction: the CPU aligns to 16 before pushing
-    // its five words, and the error code, the vector and fifteen registers put
-    // it back. Floating-point state is not saved because the kernel is built
-    // without SSE and cannot disturb it.
+    // and an interrupt does not clear it. An interrupted stack is not a Rust
+    // call boundary, so `rsp` is aligned explicitly; `rbx` is already saved and
+    // the called ABI preserves it, making it a stable route back to the frame.
+    // Floating-point state is not saved because the kernel is built without
+    // SSE and cannot disturb it.
     "wost_interrupt_entry:",
     "cld",
     "push rax",
@@ -472,7 +646,11 @@ global_asm!(
     "push r14",
     "push r15",
     "mov rdi, rsp",
+    "mov rbx, rsp",
+    "and rsp, -16",
+    "mov rsi, rsp",
     "call {dispatch}",
+    "mov rsp, rbx",
     "pop r15",
     "pop r14",
     "pop r13",

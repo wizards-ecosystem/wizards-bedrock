@@ -2,7 +2,7 @@
 
 use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 
 use crate::paths::Paths;
 use crate::qmp::Qmp;
@@ -140,6 +140,11 @@ fn drive(spec: &str) -> [String; 2] {
 const SELFTEST_PASSED: i32 = 33;
 const SELFTEST_FAILED: i32 = 35;
 
+/// The serial verdict contract shared with `kernel/src/selftest.rs`.
+const SELFTEST_VERDICT_PREFIX: &str = "selftest: verdict ";
+const SELFTEST_VERDICT_VERSION: &str = "v1";
+const EXPECTED_SELFTEST_CHECKS: usize = 79;
+
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
 const READY_MARKER: &str = "selftest: awaiting injected keystroke";
@@ -148,9 +153,32 @@ const READY_MARKER: &str = "selftest: awaiting injected keystroke";
 /// the one thing it does. Kept in step with `kernel/src/main.rs`.
 const SETTLED_MARKER: &str = "kernel: reading the keyboard";
 
+/// A shipped kernel must take this interrupt after announcing its idle loop.
+const SHIPPED_CHALLENGE_QCODE: &str = "a";
+const SHIPPED_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// What a kernel that has given up says. Watched for rather than inferred
 /// from an exit code: a panicking kernel halts, it does not exit.
 const PANIC_MARKER: &str = "KERNEL PANIC";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerdictStatus {
+    Pass,
+    Fail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SelftestVerdict {
+    status: VerdictStatus,
+    passed: usize,
+    failed: usize,
+    expected: usize,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SerialObservation {
+    verdict: Option<SelftestVerdict>,
+}
 
 /// The keys the harness injects, in order, once the marker appears.
 ///
@@ -159,6 +187,96 @@ const PANIC_MARKER: &str = "KERNEL PANIC";
 /// typed nothing at all, and Enter had no visible effect because the console
 /// drew no cursor. Both are checked on the machine now (D-51).
 const INJECTED_QCODES: &[&str] = &["a", "backspace", "ret"];
+
+fn parse_selftest_verdict(line: &str) -> Option<Result<SelftestVerdict>> {
+    let start = line.find(SELFTEST_VERDICT_PREFIX)?;
+    let mut fields = line[start + SELFTEST_VERDICT_PREFIX.len()..].split_whitespace();
+    let version = fields.next();
+    let status = fields.next();
+    let passed = fields.next();
+    let failed = fields.next();
+    let expected = fields.next();
+
+    let parsed = (|| {
+        if version != Some(SELFTEST_VERDICT_VERSION) {
+            bail!("unsupported self-test verdict version");
+        }
+        let status = match status {
+            Some("PASS") => VerdictStatus::Pass,
+            Some("FAIL") => VerdictStatus::Fail,
+            _ => bail!("invalid self-test verdict status"),
+        };
+        if fields.next().is_some() {
+            bail!("trailing fields in self-test verdict");
+        }
+
+        Ok(SelftestVerdict {
+            status,
+            passed: parse_verdict_count(passed, "passed=")?,
+            failed: parse_verdict_count(failed, "failed=")?,
+            expected: parse_verdict_count(expected, "expected=")?,
+        })
+    })();
+    Some(parsed)
+}
+
+fn parse_verdict_count(field: Option<&str>, name: &str) -> Result<usize> {
+    field
+        .and_then(|field| field.strip_prefix(name))
+        .context("missing self-test verdict count")?
+        .parse()
+        .context("invalid self-test verdict count")
+}
+
+fn observe_selftest_line(observation: &mut SerialObservation, line: &str) -> Result<()> {
+    let Some(verdict) = parse_selftest_verdict(line) else {
+        return Ok(());
+    };
+    let verdict = verdict?;
+    if observation.verdict.replace(verdict).is_some() {
+        bail!("the self-test kernel printed more than one final verdict");
+    }
+    Ok(())
+}
+
+fn correlate_selftest(exit_code: Option<i32>, observation: SerialObservation) -> Result<()> {
+    let verdict = observation
+        .verdict
+        .context("QEMU exited without a serial self-test verdict")?;
+    if verdict.expected != EXPECTED_SELFTEST_CHECKS {
+        bail!(
+            "self-test expected {} checks, harness requires {EXPECTED_SELFTEST_CHECKS}",
+            verdict.expected
+        );
+    }
+    let checked = verdict
+        .passed
+        .checked_add(verdict.failed)
+        .context("self-test verdict count overflowed")?;
+    if checked != verdict.expected || verdict.expected == 0 {
+        bail!(
+            "self-test verdict counted {checked} checks, expected {}",
+            verdict.expected
+        );
+    }
+
+    let counts_pass = verdict.failed == 0 && verdict.passed == verdict.expected;
+    if (verdict.status == VerdictStatus::Pass) != counts_pass {
+        bail!("self-test serial status contradicts its counts");
+    }
+
+    match (exit_code, verdict.status) {
+        (Some(SELFTEST_PASSED), VerdictStatus::Pass) => Ok(()),
+        (Some(SELFTEST_FAILED), VerdictStatus::Fail) => {
+            bail!("self-test reported failures - see the log above")
+        }
+        (Some(SELFTEST_PASSED | SELFTEST_FAILED), _) => {
+            bail!("self-test serial verdict contradicts its debug-exit status")
+        }
+        (Some(other), _) => bail!("QEMU exited with {other}; debug-exit gave no verdict"),
+        (None, _) => bail!("QEMU was terminated by a signal"),
+    }
+}
 
 /// Boot `image` headless, wait for the kernel's verdict, and report it.
 ///
@@ -169,7 +287,7 @@ const INJECTED_QCODES: &[&str] = &["a", "backspace", "ret"];
 /// instruction pointer and can disassemble around it, which is enough to name
 /// the loop: the interrupt flag in `RFLAGS` says whether it can ever end.
 fn report_hang(port: u16) {
-    let Some(state) = monitor(port, "info registers\n") else {
+    let Ok(state) = monitor(port, "info registers\n") else {
         println!("[xtask] no monitor: where the kernel hung is unknown");
         return;
     };
@@ -185,7 +303,7 @@ fn report_hang(port: u16) {
     else {
         return;
     };
-    let Some(code) = monitor(port, &format!("x/8i 0x{rip}\n")) else {
+    let Ok(code) = monitor(port, &format!("x/8i 0x{rip}\n")) else {
         return;
     };
     for line in code
@@ -200,21 +318,33 @@ fn report_hang(port: u16) {
 ///
 /// A fresh connection per command because the monitor serves one at a time,
 /// and every read is bounded: this runs when the machine is already wedged.
-fn monitor(port: u16, command: &str) -> Option<String> {
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
-    stream.set_read_timeout(Some(MONITOR_TIMEOUT)).ok()?;
-    stream.write_all(command.as_bytes()).ok()?;
+fn monitor(port: u16, command: &str) -> Result<String> {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let mut stream = TcpStream::connect_timeout(&address, MONITOR_TIMEOUT)
+        .context("connecting to the QEMU monitor")?;
+    stream
+        .set_read_timeout(Some(MONITOR_TIMEOUT))
+        .context("setting the QEMU monitor read timeout")?;
+    stream
+        .write_all(command.as_bytes())
+        .context("writing a QEMU monitor command")?;
 
     let mut text = String::new();
     let mut buffer = [0u8; 4096];
-    while let Ok(read) = stream.read(&mut buffer) {
+    loop {
         // The prompt appears once on connect and once after the reply.
-        if read == 0 || text.matches(MONITOR_PROMPT).count() >= 2 {
+        if text.matches(MONITOR_PROMPT).count() >= 2 {
             break;
+        }
+        let read = stream
+            .read(&mut buffer)
+            .context("reading a QEMU monitor reply")?;
+        if read == 0 {
+            bail!("QEMU monitor closed before completing its reply");
         }
         text.push_str(&String::from_utf8_lossy(&buffer[..read]));
     }
-    Some(text)
+    Ok(text)
 }
 
 /// Long enough for a reply, short enough not to extend a failing run.
@@ -289,7 +419,13 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
     let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
     let marker_seen = Arc::new(AtomicBool::new(false));
     let panicked = Arc::new(AtomicBool::new(false));
-    let forwarder = forward_serial(stdout, Arc::clone(&marker_seen), Arc::clone(&panicked));
+    let serial_failed = Arc::new(AtomicBool::new(false));
+    let forwarder = forward_serial(
+        stdout,
+        Arc::clone(&marker_seen),
+        Arc::clone(&panicked),
+        Arc::clone(&serial_failed),
+    );
     inject_on_marker(listener, marker_seen);
 
     let deadline = Instant::now() + timeout;
@@ -301,13 +437,18 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
         // would otherwise be the only way it ever ends.
         if panicked.load(Ordering::Acquire) {
             let _ = child.kill();
-            let _ = forwarder.join();
+            finish_selftest_serial(forwarder)?;
             bail!("the self-test kernel panicked — see the log above");
+        }
+        if serial_failed.load(Ordering::Acquire) {
+            let _ = child.kill();
+            finish_selftest_serial(forwarder)?;
+            unreachable!("a flagged serial failure returned success");
         }
         if Instant::now() >= deadline {
             report_hang(monitor_port);
             let _ = child.kill();
-            let _ = forwarder.join();
+            finish_selftest_serial(forwarder)?;
             bail!(
                 "self-test did not finish within {} seconds",
                 timeout.as_secs()
@@ -317,17 +458,11 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
     };
 
     // Trailing serial lines print before the verdict does.
-    let _ = forwarder.join();
+    let observation = finish_selftest_serial(forwarder)?;
 
-    match status.code() {
-        Some(SELFTEST_PASSED) => {
-            println!("[xtask] self-test passed");
-            Ok(())
-        }
-        Some(SELFTEST_FAILED) => bail!("self-test reported failures — see the log above"),
-        Some(other) => bail!("QEMU exited with {other}; the kernel never reported a verdict"),
-        None => bail!("QEMU was terminated by a signal"),
-    }
+    correlate_selftest(status.code(), observation)?;
+    println!("[xtask] self-test passed");
+    Ok(())
 }
 
 /// Forward every serial line to the console, flagging the ready marker.
@@ -338,17 +473,23 @@ fn forward_serial(
     stdout: ChildStdout,
     marker_seen: Arc<AtomicBool>,
     panicked: Arc<AtomicBool>,
-) -> JoinHandle<()> {
+    serial_failed: Arc<AtomicBool>,
+) -> JoinHandle<Result<SerialObservation>> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut line = Vec::new();
+        let mut observation = SerialObservation::default();
         loop {
             line.clear();
-            let Ok(read) = reader.read_until(b'\n', &mut line) else {
-                return;
+            let read = match reader.read_until(b'\n', &mut line) {
+                Ok(read) => read,
+                Err(error) => {
+                    serial_failed.store(true, Ordering::Release);
+                    return Err(error).context("reading QEMU's serial output");
+                }
             };
             if read == 0 {
-                return;
+                return Ok(observation);
             }
             // One print per line, so a message from another thread cannot
             // land between a dying kernel's last words and their newline.
@@ -365,8 +506,20 @@ fn forward_serial(
             if text.contains(PANIC_MARKER) {
                 panicked.store(true, Ordering::Release);
             }
+            if let Err(error) = observe_selftest_line(&mut observation, &text) {
+                serial_failed.store(true, Ordering::Release);
+                return Err(error).context("reading the kernel's self-test verdict");
+            }
         }
     })
+}
+
+fn finish_selftest_serial(
+    forwarder: JoinHandle<Result<SerialObservation>>,
+) -> Result<SerialObservation> {
+    forwarder
+        .join()
+        .map_err(|_| anyhow!("the self-test serial reader panicked"))?
 }
 
 /// Press the key on a thread of its own: accept when QEMU dials in, wait for
@@ -415,9 +568,75 @@ fn accept(listener: &TcpListener) -> Result<Qmp> {
     }
 }
 
+fn accept_before(listener: &TcpListener, deadline: Instant) -> Result<Qmp> {
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return Qmp::handshake(stream),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    bail!("QEMU did not open its QMP connection");
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            Err(error) => return Err(error).context("accepting QEMU's QMP connection"),
+        }
+    }
+}
+
 /// How often to check whether QEMU has exited. Short enough that a passing run
 /// is not padded noticeably, long enough not to spin.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+fn irq_count(report: &str, irq: u8) -> Option<u64> {
+    let mut recognized = false;
+    let mut total = 0u64;
+    for line in report.lines() {
+        if line.contains("IRQ statistics") {
+            recognized = true;
+            continue;
+        }
+        let Some((label, count)) = line.split_once(':') else {
+            continue;
+        };
+        let label = label.trim().strip_prefix("IRQ").unwrap_or(label.trim());
+        if label.trim().parse::<u8>().ok() != Some(irq) {
+            continue;
+        }
+        let count = count.split_whitespace().next()?.parse::<u64>().ok()?;
+        total = total.checked_add(count)?;
+    }
+    recognized.then_some(total)
+}
+
+fn keyboard_irq_count(port: u16) -> Result<u64> {
+    let report = monitor(port, "info irq\n").context("querying keyboard IRQ progress")?;
+    irq_count(&report, 1).context("QEMU monitor returned no IRQ statistics")
+}
+
+fn await_keyboard_irq(
+    child: &mut Child,
+    panicked: &AtomicBool,
+    serial_failed: &AtomicBool,
+    monitor_port: u16,
+    before: u64,
+) -> Result<u64> {
+    let deadline = Instant::now() + SHIPPED_CHALLENGE_TIMEOUT;
+    while Instant::now() < deadline {
+        watch(
+            child,
+            panicked,
+            serial_failed,
+            Duration::from_millis(1),
+            None,
+        )?;
+        let after = keyboard_irq_count(monitor_port)?;
+        if after > before {
+            return Ok(after);
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    bail!("the shipped kernel did not take the injected keyboard interrupt")
+}
 
 /// Boot the image the kernel ships and require it to reach its steady state.
 ///
@@ -432,12 +651,34 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
     std::fs::copy(&vars_template, &vars)
         .with_context(|| format!("copying {} to {}", vars_template.display(), vars.display()))?;
 
+    let listener =
+        TcpListener::bind(("127.0.0.1", 0)).context("binding the shipped QMP listener")?;
+    listener
+        .set_nonblocking(true)
+        .context("making the shipped QMP listener non-blocking")?;
+    let qmp_endpoint = format!(
+        "tcp:{}",
+        listener.local_addr().context("reading the QMP port")?
+    );
+    let monitor_port = {
+        let probe = TcpListener::bind(("127.0.0.1", 0)).context("probing for a monitor port")?;
+        probe
+            .local_addr()
+            .context("reading the monitor port")?
+            .port()
+    };
+
     let emulator = qemu_dir.join(exe_name("qemu-system-x86_64"));
     println!("[xtask] booting the shipped kernel");
 
     let mut child = Command::new(&emulator)
         .args(MACHINE)
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
+        .args(["-qmp", &qmp_endpoint])
+        .args([
+            "-monitor",
+            &format!("tcp:127.0.0.1:{monitor_port},server,nowait"),
+        ])
         .args(drive(&format!(
             "if=pflash,format=raw,readonly=on,file={}",
             code.display()
@@ -454,17 +695,41 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
     let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
     let settled = Arc::new(AtomicBool::new(false));
     let panicked = Arc::new(AtomicBool::new(false));
-    let forwarder = watch_serial(stdout, Arc::clone(&settled), Arc::clone(&panicked));
+    let serial_failed = Arc::new(AtomicBool::new(false));
+    let forwarder = watch_serial(
+        stdout,
+        Arc::clone(&settled),
+        Arc::clone(&panicked),
+        Arc::clone(&serial_failed),
+    );
 
-    // Two phases: reach the steady state, then stay in it.
-    let outcome = watch(&mut child, &panicked, BOOT_TIMEOUT, Some(&settled))
-        .and_then(|()| watch(&mut child, &panicked, settle, None));
+    // Reach the idle loop, prove a fresh device interrupt wakes it, then keep
+    // watching it long enough to catch a delayed panic.
+    let outcome = watch(
+        &mut child,
+        &panicked,
+        &serial_failed,
+        BOOT_TIMEOUT,
+        Some(&settled),
+    )
+    .and_then(|()| {
+        let before = keyboard_irq_count(monitor_port)?;
+        let mut qmp = accept_before(&listener, Instant::now() + SHIPPED_CHALLENGE_TIMEOUT)?;
+        qmp.inject_key(SHIPPED_CHALLENGE_QCODE)
+            .context("injecting the shipped-kernel liveness key")?;
+        let after =
+            await_keyboard_irq(&mut child, &panicked, &serial_failed, monitor_port, before)?;
+        println!("[xtask] shipped liveness: keyboard IRQ count {before} -> {after}");
+        Ok(())
+    })
+    .and_then(|()| watch(&mut child, &panicked, &serial_failed, settle, None));
 
     let _ = child.kill();
-    let _ = forwarder.join();
+    let serial_outcome = finish_boot_serial(forwarder);
 
+    serial_outcome?;
     outcome?;
-    println!("[xtask] shipped kernel boots and settles");
+    println!("[xtask] shipped kernel boots, responds, and settles");
     Ok(())
 }
 
@@ -478,6 +743,7 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(45);
 fn watch(
     child: &mut Child,
     panicked: &AtomicBool,
+    serial_failed: &AtomicBool,
     window: Duration,
     until: Option<&AtomicBool>,
 ) -> Result<()> {
@@ -488,6 +754,9 @@ fn watch(
         }
         if let Some(status) = child.try_wait().context("waiting for QEMU")? {
             bail!("the shipped kernel stopped early ({status})");
+        }
+        if serial_failed.load(Ordering::Acquire) {
+            bail!("the shipped kernel's serial reader stopped");
         }
         if until.is_some_and(|flag| flag.load(Ordering::Acquire)) {
             return Ok(());
@@ -505,17 +774,22 @@ fn watch_serial(
     stdout: ChildStdout,
     settled: Arc<AtomicBool>,
     panicked: Arc<AtomicBool>,
-) -> JoinHandle<()> {
+    serial_failed: Arc<AtomicBool>,
+) -> JoinHandle<Result<()>> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut line = Vec::new();
         loop {
             line.clear();
-            let Ok(read) = reader.read_until(b'\n', &mut line) else {
-                return;
+            let read = match reader.read_until(b'\n', &mut line) {
+                Ok(read) => read,
+                Err(error) => {
+                    serial_failed.store(true, Ordering::Release);
+                    return Err(error).context("reading shipped QEMU serial output");
+                }
             };
             if read == 0 {
-                return;
+                return Ok(());
             }
             let text = String::from_utf8_lossy(&line);
             if text.ends_with('\n') {
@@ -532,6 +806,12 @@ fn watch_serial(
             }
         }
     })
+}
+
+fn finish_boot_serial(forwarder: JoinHandle<Result<()>>) -> Result<()> {
+    forwarder
+        .join()
+        .map_err(|_| anyhow!("the shipped-kernel serial reader panicked"))?
 }
 #[cfg(test)]
 mod tests {
@@ -568,5 +848,123 @@ mod tests {
             drive("format=raw,file=disk.img"),
             ["-drive", "format=raw,file=disk.img"]
         );
+    }
+
+    fn passing_verdict() -> SelftestVerdict {
+        SelftestVerdict {
+            status: VerdictStatus::Pass,
+            passed: EXPECTED_SELFTEST_CHECKS,
+            failed: 0,
+            expected: EXPECTED_SELFTEST_CHECKS,
+        }
+    }
+
+    #[test]
+    fn versioned_verdict_is_parsed_from_a_log_record() {
+        let line = format!(
+            "[info ] selftest: verdict v1 PASS passed={} failed=0 expected={}\r\n",
+            EXPECTED_SELFTEST_CHECKS, EXPECTED_SELFTEST_CHECKS
+        );
+        assert_eq!(
+            parse_selftest_verdict(&line).unwrap().unwrap(),
+            passing_verdict()
+        );
+    }
+
+    #[test]
+    fn malformed_or_unknown_verdicts_are_rejected() {
+        for line in [
+            "selftest: verdict v2 PASS passed=76 failed=0 expected=76",
+            "selftest: verdict v1 MAYBE passed=76 failed=0 expected=76",
+            "selftest: verdict v1 PASS passed=many failed=0 expected=76",
+            "selftest: verdict v1 PASS passed=76 failed=0 expected=76 trailing",
+        ] {
+            assert!(parse_selftest_verdict(line).unwrap().is_err(), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_second_final_verdict_is_rejected() {
+        let line = format!(
+            "selftest: verdict v1 PASS passed={} failed=0 expected={}",
+            EXPECTED_SELFTEST_CHECKS, EXPECTED_SELFTEST_CHECKS
+        );
+        let mut observation = SerialObservation::default();
+        observe_selftest_line(&mut observation, &line).unwrap();
+        assert!(observe_selftest_line(&mut observation, &line).is_err());
+    }
+
+    #[test]
+    fn a_valid_serial_pass_must_match_debug_exit() {
+        let observation = SerialObservation {
+            verdict: Some(passing_verdict()),
+        };
+        assert!(correlate_selftest(Some(SELFTEST_PASSED), observation).is_ok());
+
+        let observation = SerialObservation {
+            verdict: Some(passing_verdict()),
+        };
+        let error = correlate_selftest(Some(SELFTEST_FAILED), observation).unwrap_err();
+        assert!(error.to_string().contains("debug-exit"));
+    }
+
+    #[test]
+    fn zero_or_skipped_checks_cannot_pass() {
+        for passed in [0, EXPECTED_SELFTEST_CHECKS - 1] {
+            let observation = SerialObservation {
+                verdict: Some(SelftestVerdict {
+                    status: VerdictStatus::Pass,
+                    passed,
+                    failed: 0,
+                    expected: EXPECTED_SELFTEST_CHECKS,
+                }),
+            };
+            let error = correlate_selftest(Some(SELFTEST_PASSED), observation).unwrap_err();
+            assert!(error.to_string().contains("counted"));
+        }
+    }
+
+    #[test]
+    fn harness_and_kernel_must_agree_on_the_expected_count() {
+        let observation = SerialObservation {
+            verdict: Some(SelftestVerdict {
+                expected: EXPECTED_SELFTEST_CHECKS - 1,
+                passed: EXPECTED_SELFTEST_CHECKS - 1,
+                ..passing_verdict()
+            }),
+        };
+        let error = correlate_selftest(Some(SELFTEST_PASSED), observation).unwrap_err();
+        assert!(error.to_string().contains("harness requires"));
+    }
+
+    #[test]
+    fn serial_status_must_agree_with_its_counts() {
+        let observation = SerialObservation {
+            verdict: Some(SelftestVerdict {
+                status: VerdictStatus::Fail,
+                ..passing_verdict()
+            }),
+        };
+        let error = correlate_selftest(Some(SELFTEST_FAILED), observation).unwrap_err();
+        assert!(error.to_string().contains("contradicts its counts"));
+    }
+
+    #[test]
+    fn a_debug_exit_without_a_serial_verdict_is_rejected() {
+        let error =
+            correlate_selftest(Some(SELFTEST_PASSED), SerialObservation::default()).unwrap_err();
+        assert!(error.to_string().contains("without a serial"));
+    }
+
+    #[test]
+    fn irq_statistics_sum_matching_controllers() {
+        let report = "IRQ statistics for i8259:\r\n 0: 12\r\n 1: 2\r\n\
+                      IRQ statistics for ioapic:\r\n IRQ1: 3\r\n 12: 99\r\n(qemu)";
+        assert_eq!(irq_count(report, 1), Some(5));
+    }
+
+    #[test]
+    fn non_irq_monitor_output_is_not_a_zero_count() {
+        assert_eq!(irq_count("unknown command: info irq\r\n(qemu)", 1), None);
     }
 }

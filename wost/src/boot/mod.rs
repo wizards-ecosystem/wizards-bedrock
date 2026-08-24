@@ -10,7 +10,8 @@ mod limine_glue;
 use core::fmt;
 
 pub use limine_glue::enter;
-pub use pixel::{PixelFormat, Rgb};
+use pixel::FramebufferLayout;
+pub use pixel::{FramebufferLayoutError, PixelFormat, PixelFormatError, Rgb};
 
 use crate::mmio::MmioRegion;
 
@@ -46,6 +47,7 @@ pub struct FramebufferInfo {
 pub struct Framebuffer {
     region: MmioRegion,
     info: FramebufferInfo,
+    layout: FramebufferLayout,
     /// One `u32` per pixel of the visible area, at the device's own stride, or
     /// empty before a back buffer is attached.
     back: alloc::vec::Vec<u32>,
@@ -53,26 +55,32 @@ pub struct Framebuffer {
 
 impl Framebuffer {
     /// Wrap a mapping the caller has vouched for, with no shadow yet.
-    pub(crate) const fn new(region: MmioRegion, info: FramebufferInfo) -> Self {
+    pub(crate) const fn new(
+        region: MmioRegion,
+        info: FramebufferInfo,
+        layout: FramebufferLayout,
+    ) -> Self {
         Self {
             region,
             info,
+            layout,
             back: alloc::vec::Vec::new(),
         }
-    }
-
-    /// Where these pixels are in physical memory, given the direct map the
-    /// bootloader placed them in.
-    ///
-    /// The bootloader reports a virtual address; mapping the framebuffer again
-    /// with a different memory type needs the physical one behind it.
-    pub fn physical_address(&self, direct: DirectMap) -> Option<u64> {
-        (self.region.base_address() as u64).checked_sub(direct.offset())
     }
 
     /// Geometry and pixel layout.
     pub const fn info(&self) -> FramebufferInfo {
         self.info
+    }
+
+    /// Bytes in the checked framebuffer mapping.
+    pub const fn len(&self) -> usize {
+        self.layout.span()
+    }
+
+    /// Whether the mapping contains no bytes. Always false for a framebuffer.
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Give the framebuffer a shadow copy in RAM.
@@ -100,23 +108,7 @@ impl Framebuffer {
         true
     }
 
-    /// Point the framebuffer at a different mapping of the same pixels.
-    ///
-    /// For replacing the bootloader's mapping with one of the kernel's own,
-    /// which is how the framebuffer becomes write-combining (D-50). The shadow
-    /// is untouched: it already holds every pixel, so nothing is read back
-    /// through either mapping to make the change.
-    ///
-    /// The caller owes that `region` covers the same pixels this framebuffer
-    /// already describes; nothing here can check that two mappings name the
-    /// same physical memory, which is why it takes an `MmioRegion` rather than
-    /// an address — only `wost` can make one.
-    pub fn remap(&mut self, region: MmioRegion) {
-        self.region = region;
-    }
-
-    /// Where the pixels are reachable now — which changes when the framebuffer
-    /// is remapped.
+    /// Where the pixels are reachable.
     pub fn address(&self) -> u64 {
         self.region.base_address() as u64
     }
@@ -128,7 +120,7 @@ impl Framebuffer {
 
     /// Words in the shadow: the device's stride times its visible height.
     fn words(&self) -> usize {
-        self.info.pitch / WORD * self.info.height
+        self.layout.span() / WORD
     }
 
     /// Record a word in the shadow, if there is one.
@@ -154,10 +146,9 @@ impl Framebuffer {
     /// legitimately runs off it. Anything that survives the clip is still
     /// bounds-checked by the underlying region.
     pub fn write_pixel(&mut self, x: usize, y: usize, colour: Rgb) {
-        if x >= self.info.width || y >= self.info.height {
+        let Some(offset) = self.layout.offset(x, y) else {
             return;
-        }
-        let offset = pixel::offset(x, y, self.info.pitch, self.info.bytes_per_pixel);
+        };
         let word = self.info.format.pack(colour);
         let _ = self.region.write_u32(offset, word);
         self.shadow(offset, word);
@@ -171,8 +162,10 @@ impl Framebuffer {
     /// Paint `rows` of pixels starting at row `y` one colour.
     pub fn fill_rows(&mut self, y: usize, rows: usize, colour: Rgb) {
         let word = self.info.format.pack(colour);
-        for row in y..(y + rows).min(self.info.height) {
-            let start = row * self.info.pitch;
+        for row in y..y.saturating_add(rows).min(self.info.height) {
+            let Some(start) = self.layout.offset(0, row) else {
+                continue;
+            };
             let _ = self.region.fill_u32(start, self.info.width, word);
             for column in 0..self.info.width {
                 self.shadow(start + column * WORD, word);
@@ -193,16 +186,21 @@ impl Framebuffer {
     pub fn copy_rows(&mut self, from_y: usize, to_y: usize, rows: usize) {
         assert!(to_y <= from_y, "copy_rows moves rows upward only");
 
-        let FramebufferInfo {
-            width,
-            pitch,
-            bytes_per_pixel,
-            ..
-        } = self.info;
+        let width = self.info.width;
         for row in 0..rows {
+            let Some(from_y) = from_y.checked_add(row) else {
+                break;
+            };
+            let Some(to_y) = to_y.checked_add(row) else {
+                break;
+            };
             for column in 0..width {
-                let from = pixel::offset(column, from_y + row, pitch, bytes_per_pixel);
-                let to = pixel::offset(column, to_y + row, pitch, bytes_per_pixel);
+                let Some(from) = self.layout.offset(column, from_y) else {
+                    continue;
+                };
+                let Some(to) = self.layout.offset(column, to_y) else {
+                    continue;
+                };
                 // From the shadow where there is one. Reading device memory to
                 // scroll is what this exists to stop.
                 if let Some(word) = self.word_at(from) {
@@ -226,12 +224,10 @@ pub enum FramebufferError {
     UnsupportedMemoryModel,
     /// Only 32 bits per pixel is implemented.
     UnsupportedBpp(u16),
-    /// The mapping does not start on a 4-byte boundary, so 32-bit pixel writes
-    /// would be misaligned.
-    MisalignedAddress,
-    /// The row pitch is not a multiple of four bytes, so every row after the
-    /// first would be misaligned.
-    MisalignedPitch(usize),
+    /// The reported geometry cannot bound the implemented pixel accesses.
+    InvalidGeometry(FramebufferLayoutError),
+    /// The reported colour channels overlap or leave the pixel word.
+    InvalidPixelFormat(PixelFormatError),
 }
 
 impl fmt::Display for FramebufferError {
@@ -241,10 +237,8 @@ impl fmt::Display for FramebufferError {
             Self::NoFramebuffer => f.write_str("bootloader listed no framebuffers"),
             Self::UnsupportedMemoryModel => f.write_str("framebuffer is not direct RGB"),
             Self::UnsupportedBpp(bpp) => write!(f, "unsupported depth: {bpp} bits per pixel"),
-            Self::MisalignedAddress => f.write_str("framebuffer is not 4-byte aligned"),
-            Self::MisalignedPitch(pitch) => {
-                write!(f, "row pitch of {pitch} bytes is not a multiple of four")
-            }
+            Self::InvalidGeometry(reason) => write!(f, "invalid framebuffer geometry: {reason}"),
+            Self::InvalidPixelFormat(reason) => write!(f, "invalid framebuffer format: {reason}"),
         }
     }
 }
@@ -291,6 +285,11 @@ impl MemoryKind {
     /// a later decision with a precondition attached, not a default.
     pub const fn is_allocatable(self) -> bool {
         matches!(self, Self::Usable)
+    }
+
+    /// Whether immutable firmware-table reads may reach this region.
+    pub const fn is_firmware_table(self) -> bool {
+        matches!(self, Self::AcpiReclaimable | Self::AcpiNvs)
     }
 
     /// Whether the kernel's own direct map should cover this region.

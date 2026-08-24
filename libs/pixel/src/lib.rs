@@ -8,19 +8,28 @@
 //! # Examples
 //!
 //! ```
-//! use pixel::{Channel, PixelFormat, Rgb, offset};
+//! use pixel::{Channel, FramebufferLayout, PixelFormat, Rgb, offset};
 //!
 //! // The layout QEMU and VMware both report: eight-bit channels, red high.
-//! let format = PixelFormat::new(Channel::new(16, 8), Channel::new(8, 8), Channel::new(0, 8));
+//! let format = PixelFormat::new(Channel::new(16, 8), Channel::new(8, 8), Channel::new(0, 8))
+//!     .expect("valid channel masks");
 //! let red = Rgb { red: 255, green: 0, blue: 0 };
 //! assert_eq!(format.pack(red), 0x00ff_0000);
 //!
 //! // A pixel lands at its row times the pitch, plus its column.
-//! assert_eq!(offset(2, 1, 4096, 4), 4104);
+//! assert_eq!(offset(2, 1, 4096, 4), Some(4104));
+//!
+//! let layout = FramebufferLayout::new(0x1000, 1280, 720, 5120, 4).unwrap();
+//! assert_eq!(layout.span(), 3_686_400);
 //! ```
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+
+use core::fmt;
+
+/// Bytes in the framebuffer access width.
+const WORD_SIZE: usize = size_of::<u32>();
 
 /// An 8-bit-per-channel colour, independent of any framebuffer's packing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,10 +116,116 @@ pub struct PixelFormat {
     blue: Channel,
 }
 
+/// Which component of a [`PixelFormat`] is malformed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColourChannel {
+    /// The red component.
+    Red,
+    /// The green component.
+    Green,
+    /// The blue component.
+    Blue,
+}
+
+impl fmt::Display for ColourChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Red => f.write_str("red"),
+            Self::Green => f.write_str("green"),
+            Self::Blue => f.write_str("blue"),
+        }
+    }
+}
+
+/// Why colour-channel masks cannot form a 32-bit pixel format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PixelFormatError {
+    /// A colour contributes no bits.
+    EmptyChannel(ColourChannel),
+    /// A channel reaches past bit 31.
+    ChannelOutOfRange {
+        /// The malformed component.
+        channel: ColourChannel,
+        /// Its lowest bit.
+        shift: u8,
+        /// Bits it occupies.
+        size: u8,
+    },
+    /// Two colour components claim at least one of the same bits.
+    OverlappingChannels {
+        /// One overlapping component.
+        first: ColourChannel,
+        /// The other overlapping component.
+        second: ColourChannel,
+    },
+}
+
+impl fmt::Display for PixelFormatError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::EmptyChannel(channel) => write!(f, "{channel} channel has no bits"),
+            Self::ChannelOutOfRange {
+                channel,
+                shift,
+                size,
+            } => write!(
+                f,
+                "{channel} channel at bit {shift} with width {size} leaves a 32-bit pixel"
+            ),
+            Self::OverlappingChannels { first, second } => {
+                write!(f, "{first} and {second} channels overlap")
+            }
+        }
+    }
+}
+
+impl core::error::Error for PixelFormatError {}
+
 impl PixelFormat {
-    /// A format with the given channel placements.
-    pub const fn new(red: Channel, green: Channel, blue: Channel) -> Self {
-        Self { red, green, blue }
+    /// A format with three non-empty, in-range, disjoint channel placements.
+    ///
+    /// # Errors
+    ///
+    /// [`PixelFormatError::EmptyChannel`] if any channel has no bits,
+    /// [`PixelFormatError::ChannelOutOfRange`] if one does not fit in a `u32`,
+    /// or [`PixelFormatError::OverlappingChannels`] if two share a bit.
+    pub const fn new(
+        red: Channel,
+        green: Channel,
+        blue: Channel,
+    ) -> Result<Self, PixelFormatError> {
+        let red_mask = match channel_mask(red, ColourChannel::Red) {
+            Ok(mask) => mask,
+            Err(error) => return Err(error),
+        };
+        let green_mask = match channel_mask(green, ColourChannel::Green) {
+            Ok(mask) => mask,
+            Err(error) => return Err(error),
+        };
+        let blue_mask = match channel_mask(blue, ColourChannel::Blue) {
+            Ok(mask) => mask,
+            Err(error) => return Err(error),
+        };
+        if red_mask & green_mask != 0 {
+            return Err(PixelFormatError::OverlappingChannels {
+                first: ColourChannel::Red,
+                second: ColourChannel::Green,
+            });
+        }
+        if red_mask & blue_mask != 0 {
+            return Err(PixelFormatError::OverlappingChannels {
+                first: ColourChannel::Red,
+                second: ColourChannel::Blue,
+            });
+        }
+        if green_mask & blue_mask != 0 {
+            return Err(PixelFormatError::OverlappingChannels {
+                first: ColourChannel::Green,
+                second: ColourChannel::Blue,
+            });
+        }
+        Ok(Self { red, green, blue })
     }
 
     /// Pack a colour into a framebuffer word.
@@ -121,12 +236,210 @@ impl PixelFormat {
     }
 }
 
-/// Byte offset of the pixel at (`x`, `y`).
+const fn channel_mask(channel: Channel, name: ColourChannel) -> Result<u32, PixelFormatError> {
+    let size = channel.size as u32;
+    let shift = channel.shift as u32;
+    if size == 0 {
+        return Err(PixelFormatError::EmptyChannel(name));
+    }
+    if shift >= u32::BITS || size > u32::BITS - shift {
+        return Err(PixelFormatError::ChannelOutOfRange {
+            channel: name,
+            shift: channel.shift,
+            size: channel.size,
+        });
+    }
+    let bits = if size == u32::BITS {
+        u32::MAX
+    } else {
+        (1 << size) - 1
+    };
+    Ok(bits << shift)
+}
+
+/// Checked geometry for a linear framebuffer accessed as 32-bit pixels.
+///
+/// Construction proves that every visible pixel begins at a 4-byte-aligned
+/// offset, every row fits within its pitch, and the complete mapping span can
+/// be represented without wrapping either its length or its address range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FramebufferLayout {
+    width: usize,
+    height: usize,
+    pitch: usize,
+    bytes_per_pixel: usize,
+    span: usize,
+}
+
+/// Why framebuffer geometry is not safe for 32-bit pixel accesses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FramebufferLayoutError {
+    /// A framebuffer must expose at least one pixel in each row.
+    ZeroWidth,
+    /// A framebuffer must expose at least one row.
+    ZeroHeight,
+    /// A pixel must occupy at least one byte.
+    ZeroBytesPerPixel,
+    /// This framebuffer implementation accesses exactly one `u32` per pixel.
+    UnsupportedBytesPerPixel(usize),
+    /// The visible bytes in a row do not fit in `usize`.
+    RowBytesOverflow,
+    /// The pitch ends before the visible pixels in a row do.
+    PitchTooSmall {
+        /// Bytes the visible pixels require.
+        row_bytes: usize,
+        /// Bytes the framebuffer provides per row.
+        pitch: usize,
+    },
+    /// The mapping base is not aligned for a `u32` access.
+    MisalignedBase(usize),
+    /// A row after the first would not begin on a `u32` boundary.
+    MisalignedPitch(usize),
+    /// The complete framebuffer span does not fit in `usize`.
+    SpanOverflow,
+    /// Adding the span to the mapping base would wrap the address space.
+    AddressRangeOverflow,
+}
+
+impl fmt::Display for FramebufferLayoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::ZeroWidth => f.write_str("framebuffer width is zero"),
+            Self::ZeroHeight => f.write_str("framebuffer height is zero"),
+            Self::ZeroBytesPerPixel => f.write_str("framebuffer bytes per pixel is zero"),
+            Self::UnsupportedBytesPerPixel(bytes) => {
+                write!(
+                    f,
+                    "framebuffer uses {bytes} bytes per pixel, expected {WORD_SIZE}"
+                )
+            }
+            Self::RowBytesOverflow => f.write_str("visible row byte count overflows"),
+            Self::PitchTooSmall { row_bytes, pitch } => {
+                write!(f, "row needs {row_bytes} bytes but pitch is {pitch}")
+            }
+            Self::MisalignedBase(address) => {
+                write!(
+                    f,
+                    "framebuffer base {address:#x} is not {WORD_SIZE}-byte aligned"
+                )
+            }
+            Self::MisalignedPitch(pitch) => {
+                write!(
+                    f,
+                    "framebuffer pitch {pitch} is not {WORD_SIZE}-byte aligned"
+                )
+            }
+            Self::SpanOverflow => f.write_str("framebuffer span overflows"),
+            Self::AddressRangeOverflow => f.write_str("framebuffer address range overflows"),
+        }
+    }
+}
+
+impl core::error::Error for FramebufferLayoutError {}
+
+impl FramebufferLayout {
+    /// Validate geometry for a framebuffer mapping starting at `base_address`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FramebufferLayoutError`] if a dimension is zero, pixels are
+    /// not 32 bits wide, visible rows exceed the pitch, any required
+    /// arithmetic wraps, or the mapping and its rows are not 4-byte aligned.
+    pub const fn new(
+        base_address: usize,
+        width: usize,
+        height: usize,
+        pitch: usize,
+        bytes_per_pixel: usize,
+    ) -> Result<Self, FramebufferLayoutError> {
+        if width == 0 {
+            return Err(FramebufferLayoutError::ZeroWidth);
+        }
+        if height == 0 {
+            return Err(FramebufferLayoutError::ZeroHeight);
+        }
+        if bytes_per_pixel == 0 {
+            return Err(FramebufferLayoutError::ZeroBytesPerPixel);
+        }
+        if bytes_per_pixel != WORD_SIZE {
+            return Err(FramebufferLayoutError::UnsupportedBytesPerPixel(
+                bytes_per_pixel,
+            ));
+        }
+        let Some(row_bytes) = width.checked_mul(bytes_per_pixel) else {
+            return Err(FramebufferLayoutError::RowBytesOverflow);
+        };
+        if row_bytes > pitch {
+            return Err(FramebufferLayoutError::PitchTooSmall { row_bytes, pitch });
+        }
+        if !base_address.is_multiple_of(WORD_SIZE) {
+            return Err(FramebufferLayoutError::MisalignedBase(base_address));
+        }
+        if !pitch.is_multiple_of(WORD_SIZE) {
+            return Err(FramebufferLayoutError::MisalignedPitch(pitch));
+        }
+        let Some(span) = pitch.checked_mul(height) else {
+            return Err(FramebufferLayoutError::SpanOverflow);
+        };
+        if base_address.checked_add(span).is_none() {
+            return Err(FramebufferLayoutError::AddressRangeOverflow);
+        }
+        Ok(Self {
+            width,
+            height,
+            pitch,
+            bytes_per_pixel,
+            span,
+        })
+    }
+
+    /// Visible pixels in one row.
+    pub const fn width(self) -> usize {
+        self.width
+    }
+
+    /// Visible rows in the framebuffer.
+    pub const fn height(self) -> usize {
+        self.height
+    }
+
+    /// Bytes from the start of one row to the next.
+    pub const fn pitch(self) -> usize {
+        self.pitch
+    }
+
+    /// Bytes occupied by one pixel.
+    pub const fn bytes_per_pixel(self) -> usize {
+        self.bytes_per_pixel
+    }
+
+    /// Bytes covered by the complete framebuffer mapping.
+    pub const fn span(self) -> usize {
+        self.span
+    }
+
+    /// Byte offset of a visible pixel, or `None` outside the visible area.
+    pub const fn offset(self, x: usize, y: usize) -> Option<usize> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        offset(x, y, self.pitch, self.bytes_per_pixel)
+    }
+}
+
+/// Byte offset of the pixel at (`x`, `y`), or `None` if it does not fit.
 ///
 /// `pitch` is the distance between the starts of consecutive rows, which is not
 /// always `width * bytes_per_pixel`.
-pub const fn offset(x: usize, y: usize, pitch: usize, bytes_per_pixel: usize) -> usize {
-    y * pitch + x * bytes_per_pixel
+pub const fn offset(x: usize, y: usize, pitch: usize, bytes_per_pixel: usize) -> Option<usize> {
+    let Some(row) = y.checked_mul(pitch) else {
+        return None;
+    };
+    let Some(column) = x.checked_mul(bytes_per_pixel) else {
+        return None;
+    };
+    row.checked_add(column)
 }
 
 #[cfg(test)]
@@ -136,15 +449,22 @@ mod tests {
     /// The layout QEMU and VMware both report: 8-bit channels, R high.
     fn rgb888() -> PixelFormat {
         PixelFormat::new(Channel::new(16, 8), Channel::new(8, 8), Channel::new(0, 8))
+            .expect("valid RGB888")
     }
 
     /// The same depth with the channels the other way round.
     fn bgr888() -> PixelFormat {
         PixelFormat::new(Channel::new(0, 8), Channel::new(8, 8), Channel::new(16, 8))
+            .expect("valid BGR888")
     }
 
     fn rgb565() -> PixelFormat {
         PixelFormat::new(Channel::new(11, 5), Channel::new(5, 6), Channel::new(0, 5))
+            .expect("valid RGB565")
+    }
+
+    fn layout() -> FramebufferLayout {
+        FramebufferLayout::new(0x1000, 1280, 720, 5120, 4).expect("valid layout")
     }
 
     #[test]
@@ -184,8 +504,101 @@ mod tests {
 
     #[test]
     fn a_zero_width_channel_contributes_nothing() {
-        let format = PixelFormat::new(Channel::new(0, 0), Channel::new(0, 8), Channel::new(8, 8));
-        assert_eq!(format.pack(Rgb::from_hex(0xFF_00_00)), 0);
+        assert_eq!(Channel::new(0, 0).encode(u8::MAX), 0);
+    }
+
+    #[test]
+    fn every_pixel_format_channel_must_be_nonempty() {
+        for (red, green, blue, empty) in [
+            (
+                Channel::new(16, 0),
+                Channel::new(8, 8),
+                Channel::new(0, 8),
+                ColourChannel::Red,
+            ),
+            (
+                Channel::new(16, 8),
+                Channel::new(8, 0),
+                Channel::new(0, 8),
+                ColourChannel::Green,
+            ),
+            (
+                Channel::new(16, 8),
+                Channel::new(8, 8),
+                Channel::new(0, 0),
+                ColourChannel::Blue,
+            ),
+        ] {
+            assert_eq!(
+                PixelFormat::new(red, green, blue),
+                Err(PixelFormatError::EmptyChannel(empty))
+            );
+        }
+    }
+
+    #[test]
+    fn every_pixel_format_channel_must_fit_the_word() {
+        for (red, green, blue, channel) in [
+            (
+                Channel::new(31, 2),
+                Channel::new(8, 8),
+                Channel::new(0, 8),
+                ColourChannel::Red,
+            ),
+            (
+                Channel::new(16, 8),
+                Channel::new(31, 2),
+                Channel::new(0, 8),
+                ColourChannel::Green,
+            ),
+            (
+                Channel::new(16, 8),
+                Channel::new(8, 8),
+                Channel::new(31, 2),
+                ColourChannel::Blue,
+            ),
+        ] {
+            assert_eq!(
+                PixelFormat::new(red, green, blue),
+                Err(PixelFormatError::ChannelOutOfRange {
+                    channel,
+                    shift: 31,
+                    size: 2,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn every_pixel_format_channel_pair_must_be_disjoint() {
+        for (red, green, blue, first, second) in [
+            (
+                Channel::new(16, 8),
+                Channel::new(16, 8),
+                Channel::new(0, 8),
+                ColourChannel::Red,
+                ColourChannel::Green,
+            ),
+            (
+                Channel::new(16, 8),
+                Channel::new(8, 8),
+                Channel::new(16, 8),
+                ColourChannel::Red,
+                ColourChannel::Blue,
+            ),
+            (
+                Channel::new(16, 8),
+                Channel::new(8, 8),
+                Channel::new(8, 8),
+                ColourChannel::Green,
+                ColourChannel::Blue,
+            ),
+        ] {
+            assert_eq!(
+                PixelFormat::new(red, green, blue),
+                Err(PixelFormatError::OverlappingChannels { first, second })
+            );
+        }
     }
 
     /// The 30-bit-colour layout real displays report — ten bits a channel in a
@@ -198,7 +611,8 @@ mod tests {
             Channel::new(20, 10),
             Channel::new(10, 10),
             Channel::new(0, 10),
-        );
+        )
+        .expect("valid 30-bit format");
 
         assert_eq!(xrgb2101010.pack(Rgb::from_hex(0xFF_FF_FF)), 0x3FFF_FFFF);
         assert_eq!(xrgb2101010.pack(Rgb::from_hex(0x00_00_00)), 0);
@@ -304,18 +718,129 @@ mod tests {
     }
 
     #[test]
+    fn checked_layout_preserves_geometry_and_bounds_offsets() {
+        let layout = layout();
+        assert_eq!(layout.width(), 1280);
+        assert_eq!(layout.height(), 720);
+        assert_eq!(layout.pitch(), 5120);
+        assert_eq!(layout.bytes_per_pixel(), 4);
+        assert_eq!(layout.span(), 5120 * 720);
+        assert_eq!(layout.offset(1279, 719), Some(719 * 5120 + 1279 * 4));
+        assert_eq!(layout.offset(1280, 0), None);
+        assert_eq!(layout.offset(0, 720), None);
+    }
+
+    #[test]
+    fn a_zero_width_is_refused() {
+        assert_eq!(
+            FramebufferLayout::new(0, 0, 1, 4, 4),
+            Err(FramebufferLayoutError::ZeroWidth)
+        );
+    }
+
+    #[test]
+    fn a_zero_height_is_refused() {
+        assert_eq!(
+            FramebufferLayout::new(0, 1, 0, 4, 4),
+            Err(FramebufferLayoutError::ZeroHeight)
+        );
+    }
+
+    #[test]
+    fn a_zero_pixel_size_is_refused() {
+        assert_eq!(
+            FramebufferLayout::new(0, 1, 1, 4, 0),
+            Err(FramebufferLayoutError::ZeroBytesPerPixel)
+        );
+    }
+
+    #[test]
+    fn a_non_u32_pixel_size_is_refused() {
+        assert_eq!(
+            FramebufferLayout::new(0, 1, 1, 8, 8),
+            Err(FramebufferLayoutError::UnsupportedBytesPerPixel(8))
+        );
+    }
+
+    #[test]
+    fn a_visible_row_that_overflows_is_refused() {
+        assert_eq!(
+            FramebufferLayout::new(0, usize::MAX, 1, usize::MAX, 4),
+            Err(FramebufferLayoutError::RowBytesOverflow)
+        );
+    }
+
+    #[test]
+    fn a_pitch_shorter_than_the_visible_row_is_refused() {
+        assert_eq!(
+            FramebufferLayout::new(0, 2, 1, 4, 4),
+            Err(FramebufferLayoutError::PitchTooSmall {
+                row_bytes: 8,
+                pitch: 4
+            })
+        );
+    }
+
+    #[test]
+    fn a_misaligned_mapping_base_is_refused() {
+        assert_eq!(
+            FramebufferLayout::new(1, 1, 1, 4, 4),
+            Err(FramebufferLayoutError::MisalignedBase(1))
+        );
+    }
+
+    #[test]
+    fn a_misaligned_pitch_is_refused() {
+        assert_eq!(
+            FramebufferLayout::new(0, 1, 1, 5, 4),
+            Err(FramebufferLayoutError::MisalignedPitch(5))
+        );
+    }
+
+    #[test]
+    fn a_framebuffer_span_that_overflows_is_refused() {
+        assert_eq!(
+            FramebufferLayout::new(0, 1, usize::MAX, 8, 4),
+            Err(FramebufferLayoutError::SpanOverflow)
+        );
+    }
+
+    #[test]
+    fn a_framebuffer_address_range_that_wraps_is_refused() {
+        assert_eq!(
+            FramebufferLayout::new(usize::MAX - 3, 1, 1, 4, 4),
+            Err(FramebufferLayoutError::AddressRangeOverflow)
+        );
+    }
+
+    #[test]
     fn offsets_follow_the_pitch_not_the_width() {
         // 1280 visible pixels but a 5120-byte pitch: row 1 starts at 5120.
-        assert_eq!(offset(0, 0, 5120, 4), 0);
-        assert_eq!(offset(1, 0, 5120, 4), 4);
-        assert_eq!(offset(0, 1, 5120, 4), 5120);
-        assert_eq!(offset(2, 3, 5120, 4), 3 * 5120 + 8);
+        assert_eq!(offset(0, 0, 5120, 4), Some(0));
+        assert_eq!(offset(1, 0, 5120, 4), Some(4));
+        assert_eq!(offset(0, 1, 5120, 4), Some(5120));
+        assert_eq!(offset(2, 3, 5120, 4), Some(3 * 5120 + 8));
     }
 
     #[test]
     fn offsets_respect_a_padded_pitch() {
         // A 100-pixel row padded to 512 bytes rather than 400.
-        assert_eq!(offset(0, 1, 512, 4), 512);
+        assert_eq!(offset(0, 1, 512, 4), Some(512));
         assert_ne!(offset(0, 1, 512, 4), offset(100, 0, 512, 4));
+    }
+
+    #[test]
+    fn an_offset_with_an_overflowing_column_is_refused() {
+        assert_eq!(offset(usize::MAX, 0, 0, 2), None, "column product");
+    }
+
+    #[test]
+    fn an_offset_with_an_overflowing_row_is_refused() {
+        assert_eq!(offset(0, usize::MAX, 2, 0), None, "row product");
+    }
+
+    #[test]
+    fn an_offset_with_an_overflowing_sum_is_refused() {
+        assert_eq!(offset(1, 1, usize::MAX - 1, 2), None, "row plus column");
     }
 }

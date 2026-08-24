@@ -17,7 +17,6 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ps2_keys::{Decoder, Key, KeyEvent, KeyState, Shift, us};
 use wost::arch::current::interrupt;
-use wost::panic::PanicToken;
 use wost::sync::{Once, SpinLock};
 
 use crate::arch::current::i8042::Controller;
@@ -304,17 +303,6 @@ pub(crate) fn start_bounded_poller(rounds: usize) -> bool {
     crate::thread::spawn("keyboard-poll-check", poll_forever).is_ok()
 }
 
-/// Reclaim the keyboard lock on the terminal panic path.
-///
-/// A panicking kernel has no use for its keyboard, but it does have a use for
-/// not deadlocking: the panic can have been raised by a fault taken while this
-/// lock was held, and a fault is not masked by the interrupt flag.
-pub(crate) fn force_unlock(token: &PanicToken) {
-    KEYBOARD.force_unlock(token);
-    EVENTS.force_unlock(token);
-    READERS.force_unlock(token);
-}
-
 /// Whether the controller came up.
 #[cfg(feature = "selftest")]
 pub(crate) fn is_ready() -> bool {
@@ -479,11 +467,6 @@ static WATCH: SpinLock<Watch> = SpinLock::new(Watch {
     pressed: 0,
     released: 0,
 });
-
-/// Reclaim the watch's lock on the terminal panic path.
-pub(crate) fn force_unlock_watch(token: &PanicToken) {
-    WATCH.force_unlock(token);
-}
 
 /// Ask the controller to raise its line when a byte arrives.
 ///

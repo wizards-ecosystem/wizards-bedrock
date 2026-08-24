@@ -22,8 +22,6 @@ use core::arch::naked_asm;
 use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use x86_paging::Flags;
-
 use super::interrupt::{self, TrapFrame};
 use super::paging::{self, StackArena};
 use crate::cell::HardwareCell;
@@ -170,6 +168,9 @@ pub fn init(arena: StackArena) -> Result<usize, TaskError> {
     if !paging::is_active() {
         return Err(TaskError::Inactive);
     }
+    if let Some(address) = arena.invalid_page() {
+        return Err(TaskError::Unmapped(address));
+    }
     let layout = arena.layout();
     if layout.slots() + 1 > MAX_TASKS {
         return Err(TaskError::TooMany(layout.slots()));
@@ -183,13 +184,6 @@ pub fn init(arena: StackArena) -> Result<usize, TaskError> {
     table.slots[BOOT].state = State::Alive;
     for index in 0..layout.slots() {
         let slot = layout.slot(index).ok_or(TaskError::OutOfRange(index))?;
-        for probe in [slot.stack_base, slot.stack_top() - FRAME_BYTES] {
-            match paging::translate(probe) {
-                Some((_, flags))
-                    if flags.contains(Flags::WRITABLE) && flags.contains(Flags::NO_EXECUTE) => {}
-                _ => return Err(TaskError::Unmapped(probe)),
-            }
-        }
         table.slots[index + 1].stack_top = slot.stack_top();
     }
     table.count = layout.slots() + 1;
@@ -326,7 +320,7 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
     if !interrupt::is_live_frame(frame) {
         return Err(TaskError::ForeignFrame);
     }
-    if frame.flags & interrupt::FLAGS_INTERRUPT == 0 {
+    if frame.flags() & interrupt::FLAGS_INTERRUPT == 0 {
         return Err(TaskError::Uninterruptible);
     }
 

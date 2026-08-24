@@ -31,7 +31,7 @@ session finds them collected.
 | Debt | Where recorded | What Phase 3 does |
 |---|---|---|
 | W^X for every mapping | D-12, D-32 ("waits for Phase 3") | Build the tables W^X-correct from the first CR3 write; NX has been on since slice 1 precisely so this is enforceable |
-| Guard pages under all stacks, zero-on-allocate | D-12 | Arrives with the frame allocator and the stack mappings |
+| Guard pages under all stacks, zero-on-allocate | D-12 | Zero-on-allocate lands here. Guarded ordinary thread stacks land in Phase 4 (D-52); the boot and double-fault stacks remain Phase-5 debt |
 | KASLR | D-12; `001-boot.md` known limitation | Blocked on a relocatable image (`linker.ld` hardcodes the base); decide in-phase whether to take the relocation work now or record the deferral |
 | The direct map, deleted with its false bound | D-33 ("Phase 3 adds it back with the code that can use it") | `BootInfo` grows the memory map and HHDM; the direct map returns as the mechanism for table-walking and frame access |
 | Device holes unmappable — the wall itself | D-33 | Once mappable: the I/O APIC becomes reachable; x2APIC remains the local-APIC choice on its own merits |
@@ -62,8 +62,8 @@ switch has survived.
 | 6 | Framebuffer write-combining, on slice 4's back buffer (D-48) | ✅ 2026-08-22 |
 
 Memory *objects* — the kernel-object substrate Phase 5's handles will name —
-are scoped at phase start: either a sixth slice here or the opening of
-Phase 5, decided when the untyped-retype question is answered.
+were moved to the opening of Phase 5 when D-44 answered the untyped-memory
+question. Slice 6 here became write-combining instead.
 
 ## Decisions the phase must make (with their tensions)
 
@@ -104,11 +104,11 @@ mechanism lands with an on-machine check in `kernel/src/selftest.rs`
 (D-28), each broken once to prove it can go red; QEMU is the loop and a
 VMware boot ends the phase (D-18). Expected machine checks, refined per
 slice: the loaded CR3 is ours; every executable mapping is read-only and
-every writable one NX (walked and read back, not assumed); a guard page
-faults — checked structurally by read-back, since the fault itself is
-terminal; allocation returns zeroed frames; heap alloc/free round-trips;
-the I/O APIC delivers IRQ 1 end to end, which inherits the QMP keystroke
-harness of D-38 unchanged.
+every writable one NX (walked and read back, not assumed); allocation returns
+zeroed frames; heap alloc/free round-trips; and the I/O APIC delivers IRQ 1 end
+to end, inheriting D-38's QMP keystroke harness. Guard-page read-back moved with
+ordinary thread stacks to Phase 4; the boot and double-fault guards remain due
+in Phase 5.
 
 ## Where the code changes (breadcrumbs for the next session)
 
@@ -238,9 +238,10 @@ probe computed a section's midpoint as `(start + last) / 2`, which overflows
 before testing its own already-active latch, so the second-switch check got a
 correct refusal for the wrong reason. Neither would have been found by reading.
 
-KASLR is deferred, on the record, with its cost named (D-46): it is now the
-only part of D-12's security baseline still owed, and every phase that adds a
-mapping makes the relocation work more expensive.
+KASLR is deferred, on the record, with its cost named (D-46): it is the only
+baseline item deferred as far as Phase 12, and every phase that adds a mapping
+makes the relocation work more expensive. Ordinary thread-stack guards arrive
+in Phase 4; the boot and double-fault guards remain Phase-5 debt.
 
 ## Slice 4 — the heap (2026-08-22)
 
@@ -344,29 +345,34 @@ passing check would still permit.
 ## Slice 6 — write-combining (2026-08-22)
 
 The page attribute table's second entry becomes write-combining — it held
-write-through, which this kernel never asks for — and the framebuffer is mapped
-a *second* time to select it (D-50). A second mapping rather than a change to
-the first, because the direct map covers the framebuffer write-back and D-45
-requires it to cover everything that is memory; putting a hole in that contract
-to save a page table would be a bad trade. Two mappings of one device with
-different memory types is what the device window exists for.
+write-through, which this kernel never asks for — and the framebuffer's one
+direct-map alias selects it (D-50, amended by D-77). The audit rejected the
+original second mapping: two simultaneous cache types for one physical page
+can violate the processor's aliasing rules. The transition changes only PAT
+entry 1, reloads the tables, and restores the previous entry if activation
+fails.
 
-Re-pointing the console live is safe for the reason that made the ordering work
-in the first place: the shadow already holds every pixel, so nothing is read
-through either mapping to make the change.
+The shadow still matters: after attachment, no console read goes to the
+write-combining device mapping.
 
 The check has two halves and needs both. The PAT entry must actually be
 write-combining — a hypervisor may decline the MSR write, so it is read back
 rather than remembered — and the mapping must select it. Either alone leaves
 writes crossing the bus one at a time while the log says otherwise.
 
-## The phase, closed
+## The implementation, closed; the VMware record missing
 
-Every debt this file collected is paid except one. W^X, guard pages,
+Every debt this file collected was either paid or explicitly transferred. W^X,
 zero-on-allocate, the direct map, device holes, the polled keyboard, the scroll
-read-back, the page-table crate, and the untyped-retype question all have
-answers on the record. **KASLR does not** — D-46 defers it to Phase 12 with its
-cost named, and it is now the only part of D-12's security baseline still owed.
+read-back, and the page-table crate landed here. D-44 answers untyped memory and
+moves memory objects to Phase 5. Ordinary thread-stack guards land in Phase 4;
+the boot and double-fault guards remain Phase-5 work. **KASLR remains deferred**
+to Phase 12 with its cost named by D-46.
+
+The close recorded QEMU checks but no dated VMware result. D-18 still makes a
+VMware boot part of the definition of done; the roadmap therefore labels this
+phase's implementation complete while preserving that documentary evidence
+gap rather than inventing a verification record after the fact.
 
 The phase's most transferable lesson is not about memory. Three separate checks
 hid defects in their own shape: D-43's zeroing check short-circuited on an

@@ -1,5 +1,11 @@
 # 003 — Deep Research: State-of-the-Art Kernel & OS Architecture (2026)
 
+> **Historical research snapshot.** This is the evidence available at the
+> founding design pass, not the current normative architecture. `010` re-checks
+> it and corrects the framekernel metric and performance claim, the async-ABI
+> rationale, Capsicum's rights count, the WASI target, and two WizFS rules.
+> Current decisions live in `004-decision-log.md` and `002-architecture.md`.
+
 Produced 2026-07-18 by a multi-agent research pass (5 search angles, 26
 sources fetched, 125 claims extracted, 25 adversarially verified: 11
 confirmed, 0 refuted, 14 unverified due to verification-infrastructure

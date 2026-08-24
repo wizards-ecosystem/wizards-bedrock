@@ -25,6 +25,10 @@ and LWN 969062; Asterinas OSTD's task/scheduler split (the framekernel
 precedent D-13 follows); Intel SDM Vol. 3A ch. 7 (hardware task management,
 for what is deliberately not used) and Vol. 3A ch. 11 (APIC timer modes).
 
+Check totals below are dated slice-close snapshots. The phase-close total is
+the current total at the end of Phase 4, not a promise that later phases retain
+the same number.
+
 ## What earlier phases left owing
 
 Every debt below is on the record elsewhere; this table is where a future

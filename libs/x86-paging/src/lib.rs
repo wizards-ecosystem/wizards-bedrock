@@ -10,10 +10,11 @@
 //! itself.
 //!
 //! ```
-//! use x86_paging::{Entry, Flags, Level, PAGE_SIZE};
+//! use x86_paging::{Entry, Flags, Level, MappingRange, PAGE_SIZE};
 //!
 //! // A read-only, executable mapping of physical 0x2000 — kernel text.
-//! let text = Entry::page(0x2000, Flags::PRESENT).expect("aligned and in range");
+//! let text = Entry::page(Level::Pt, 0x2000, Flags::PRESENT)
+//!     .expect("aligned and in range");
 //! assert!(text.flags().contains(Flags::PRESENT));
 //! assert!(!text.flags().contains(Flags::WRITABLE));
 //! assert_eq!(text.address(), 0x2000);
@@ -21,6 +22,9 @@
 //! // The slot a virtual address takes in the top-level table.
 //! assert_eq!(Level::Pml4.index(0xffff_ffff_8000_0000), 511);
 //! assert_eq!(PAGE_SIZE, 4096);
+//!
+//! let range = MappingRange::new(0xffff_8000_0000_0000, 0, PAGE_SIZE).unwrap();
+//! assert_eq!(range.pages(), 1);
 //! ```
 
 #![cfg_attr(not(test), no_std)]
@@ -70,8 +74,8 @@ impl Flags {
     pub const ACCESSED: Self = Self(1 << 5);
     /// The CPU has written through this entry since it was last cleared.
     pub const DIRTY: Self = Self(1 << 6);
-    /// At a page-directory level, this entry maps a large page directly
-    /// instead of pointing at the table below.
+    /// At a page-directory or page-directory-pointer level, this entry maps a
+    /// large page directly instead of pointing at the table below.
     pub const HUGE: Self = Self(1 << 7);
     /// The mapping survives a `CR3` reload. For pages the kernel keeps in
     /// every address space.
@@ -164,6 +168,10 @@ pub enum EntryError {
     Misaligned(u64),
     /// The physical address has bits above the 52 the encoding carries.
     OutOfRange(u64),
+    /// This table level cannot contain a leaf mapping.
+    CannotMapPage(Level),
+    /// [`Flags::HUGE`] is derived from the leaf level rather than supplied.
+    HugeFlagIsDerived,
 }
 
 impl fmt::Display for EntryError {
@@ -171,6 +179,10 @@ impl fmt::Display for EntryError {
         match *self {
             Self::Misaligned(address) => write!(f, "{address:#x} is not page-aligned"),
             Self::OutOfRange(address) => write!(f, "{address:#x} does not fit 52 bits"),
+            Self::CannotMapPage(level) => write!(f, "{level:?} cannot map a page"),
+            Self::HugeFlagIsDerived => {
+                f.write_str("the huge-page flag is derived from the leaf level")
+            }
         }
     }
 }
@@ -196,7 +208,7 @@ impl Entry {
         self.0
     }
 
-    /// An entry mapping a page at `address` with `flags`.
+    /// A leaf entry at `level` mapping a page at `address` with `flags`.
     ///
     /// `PRESENT` is not added for you: an entry whose caller forgot it is a
     /// mapping that silently does not exist, and that is worth a compile-time
@@ -204,38 +216,45 @@ impl Entry {
     ///
     /// # Errors
     ///
-    /// [`EntryError::Misaligned`] unless `address` is aligned to the page the
-    /// entry maps — in a `HUGE` entry bit 12 is the PAT select, not address,
-    /// so a 4 KiB-aligned frame would silently encode both wrong — and
-    /// [`EntryError::OutOfRange`] if it needs more than 52 bits.
-    pub const fn page(address: u64, flags: Flags) -> Result<Self, EntryError> {
-        let alignment = if flags.contains(Flags::HUGE) {
-            Level::Pd.span()
-        } else {
-            PAGE_SIZE
+    /// [`EntryError::CannotMapPage`] for [`Level::Pml4`],
+    /// [`EntryError::HugeFlagIsDerived`] if `flags` includes [`Flags::HUGE`],
+    /// [`EntryError::Misaligned`] unless `address` is aligned to the span of
+    /// `level`, and [`EntryError::OutOfRange`] if it needs more than 52 bits.
+    /// The huge-page bit is added for [`Level::Pd`] and [`Level::Pdpt`] and
+    /// omitted for [`Level::Pt`].
+    pub const fn page(level: Level, address: u64, flags: Flags) -> Result<Self, EntryError> {
+        if !level.can_map_page() {
+            return Err(EntryError::CannotMapPage(level));
+        }
+        if flags.contains(Flags::HUGE) {
+            return Err(EntryError::HugeFlagIsDerived);
+        }
+        let flags = match level {
+            Level::Pd | Level::Pdpt => flags.union(Flags::HUGE),
+            Level::Pt => flags,
+            Level::Pml4 => return Err(EntryError::CannotMapPage(level)),
         };
-        if !address.is_multiple_of(alignment) {
-            return Err(EntryError::Misaligned(address));
-        }
-        if address & !ADDRESS_MASK != 0 {
-            return Err(EntryError::OutOfRange(address));
-        }
-        Ok(Self(address | flags.bits()))
+        Self::encode(address, level.span(), flags)
     }
 
     /// An entry pointing at the table below.
     ///
-    /// Intermediate entries carry `PRESENT | WRITABLE` and never `NO_EXECUTE`:
-    /// the effective permission of a mapping is the *intersection* down the
-    /// walk, so a restrictive parent would silently cap every leaf beneath it.
-    /// W^X is therefore enforced at the leaves, which is where this kernel
-    /// checks it.
+    /// Intermediate entries carry `PRESENT | WRITABLE` and never `NO_EXECUTE`.
+    /// A [`TablePrivilege::User`] entry also carries [`Flags::USER`]; otherwise
+    /// a parent would silently make every user leaf beneath it supervisor-only.
+    /// The effective permission of a mapping is the intersection down the
+    /// walk, so W^X remains enforced at the leaves.
     ///
     /// # Errors
     ///
-    /// As [`page`](Self::page).
-    pub const fn table(address: u64) -> Result<Self, EntryError> {
-        Self::page(address, Flags::PRESENT.union(Flags::WRITABLE))
+    /// [`EntryError::Misaligned`] unless `address` is page-aligned, and
+    /// [`EntryError::OutOfRange`] if it needs more than 52 bits.
+    pub const fn table(address: u64, privilege: TablePrivilege) -> Result<Self, EntryError> {
+        let mut flags = Flags::PRESENT.union(Flags::WRITABLE);
+        if matches!(privilege, TablePrivilege::User) {
+            flags = flags.union(Flags::USER);
+        }
+        Self::encode(address, PAGE_SIZE, flags)
     }
 
     /// The physical address this entry names.
@@ -260,6 +279,16 @@ impl Entry {
     pub const fn is_huge(self) -> bool {
         self.flags().contains(Flags::HUGE)
     }
+
+    const fn encode(address: u64, alignment: u64, flags: Flags) -> Result<Self, EntryError> {
+        if !address.is_multiple_of(alignment) {
+            return Err(EntryError::Misaligned(address));
+        }
+        if address & !ADDRESS_MASK != 0 {
+            return Err(EntryError::OutOfRange(address));
+        }
+        Ok(Self(address | flags.bits()))
+    }
 }
 
 impl fmt::Debug for Entry {
@@ -269,6 +298,15 @@ impl fmt::Debug for Entry {
         }
         write!(f, "Entry({:#x} {:?})", self.address(), self.flags())
     }
+}
+
+/// Whether an intermediate table participates in supervisor or user mappings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TablePrivilege {
+    /// Every leaf below this table is supervisor-only.
+    Supervisor,
+    /// Leaves below this table may grant ring-3 access with [`Flags::USER`].
+    User,
 }
 
 /// A level of the four-level page table walk.
@@ -341,6 +379,168 @@ pub const fn canonicalise(address: u64) -> u64 {
     ((address as i64) << 16 >> 16) as u64
 }
 
+/// A mapping range whose complete arithmetic has been checked up front.
+///
+/// Construct this before allocating or writing page tables. Every address the
+/// range can produce is page-aligned, canonical on the virtual side, and
+/// encodable in an x86_64 entry on the physical side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MappingRange {
+    virtual_base: u64,
+    physical_base: u64,
+    len: u64,
+    last_virtual: u64,
+    last_physical: u64,
+}
+
+/// Why a complete mapping range cannot be represented safely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MappingRangeError {
+    /// An empty request does not describe a mapping.
+    ZeroLength,
+    /// The virtual base is not page-aligned.
+    MisalignedVirtualBase(u64),
+    /// The physical base is not page-aligned.
+    MisalignedPhysicalBase(u64),
+    /// The length is not a whole number of pages.
+    MisalignedLength(u64),
+    /// Computing the last virtual byte would wrap `u64`.
+    VirtualEndOverflow,
+    /// Computing the last physical byte would wrap `u64`.
+    PhysicalEndOverflow,
+    /// A virtual endpoint is not canonical.
+    NonCanonicalVirtual(u64),
+    /// Canonical endpoints lie on opposite sides of the noncanonical hole.
+    CrossesCanonicalHole,
+    /// A physical address needs bits outside the entry's address field.
+    PhysicalOutOfRange(u64),
+}
+
+impl fmt::Display for MappingRangeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::ZeroLength => f.write_str("mapping length is zero"),
+            Self::MisalignedVirtualBase(address) => {
+                write!(f, "virtual base {address:#x} is not page-aligned")
+            }
+            Self::MisalignedPhysicalBase(address) => {
+                write!(f, "physical base {address:#x} is not page-aligned")
+            }
+            Self::MisalignedLength(len) => {
+                write!(f, "mapping length {len} is not page-aligned")
+            }
+            Self::VirtualEndOverflow => f.write_str("virtual mapping end overflows"),
+            Self::PhysicalEndOverflow => f.write_str("physical mapping end overflows"),
+            Self::NonCanonicalVirtual(address) => {
+                write!(f, "virtual address {address:#x} is not canonical")
+            }
+            Self::CrossesCanonicalHole => {
+                f.write_str("virtual mapping crosses the noncanonical hole")
+            }
+            Self::PhysicalOutOfRange(address) => {
+                write!(f, "physical address {address:#x} does not fit 52 bits")
+            }
+        }
+    }
+}
+
+impl core::error::Error for MappingRangeError {}
+
+impl MappingRange {
+    /// Preflight a virtual-to-physical range before mutating page tables.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`MappingRangeError`] unless `len` is non-zero and all three
+    /// values describe whole pages, both inclusive ends can be calculated,
+    /// the virtual range stays within one canonical half, and the physical
+    /// range fits the entry encoding.
+    pub const fn new(
+        virtual_base: u64,
+        physical_base: u64,
+        len: u64,
+    ) -> Result<Self, MappingRangeError> {
+        if len == 0 {
+            return Err(MappingRangeError::ZeroLength);
+        }
+        if !virtual_base.is_multiple_of(PAGE_SIZE) {
+            return Err(MappingRangeError::MisalignedVirtualBase(virtual_base));
+        }
+        if !physical_base.is_multiple_of(PAGE_SIZE) {
+            return Err(MappingRangeError::MisalignedPhysicalBase(physical_base));
+        }
+        if !len.is_multiple_of(PAGE_SIZE) {
+            return Err(MappingRangeError::MisalignedLength(len));
+        }
+
+        let Some(last_virtual) = virtual_base.checked_add(len - 1) else {
+            return Err(MappingRangeError::VirtualEndOverflow);
+        };
+        let Some(last_physical) = physical_base.checked_add(len - 1) else {
+            return Err(MappingRangeError::PhysicalEndOverflow);
+        };
+        if !is_canonical(virtual_base) {
+            return Err(MappingRangeError::NonCanonicalVirtual(virtual_base));
+        }
+        if !is_canonical(last_virtual) {
+            return Err(MappingRangeError::NonCanonicalVirtual(last_virtual));
+        }
+        if (virtual_base ^ last_virtual) & (1 << 47) != 0 {
+            return Err(MappingRangeError::CrossesCanonicalHole);
+        }
+        if physical_base >= MAX_PHYSICAL {
+            return Err(MappingRangeError::PhysicalOutOfRange(physical_base));
+        }
+        if last_physical >= MAX_PHYSICAL {
+            return Err(MappingRangeError::PhysicalOutOfRange(last_physical));
+        }
+
+        Ok(Self {
+            virtual_base,
+            physical_base,
+            len,
+            last_virtual,
+            last_physical,
+        })
+    }
+
+    /// First virtual address in the range.
+    pub const fn virtual_base(self) -> u64 {
+        self.virtual_base
+    }
+
+    /// First physical address in the range.
+    pub const fn physical_base(self) -> u64 {
+        self.physical_base
+    }
+
+    /// Bytes in the range.
+    pub const fn len(self) -> u64 {
+        self.len
+    }
+
+    /// Whether the range is empty. A checked mapping range never is.
+    pub const fn is_empty(self) -> bool {
+        false
+    }
+
+    /// Number of pages in the range.
+    pub const fn pages(self) -> u64 {
+        self.len / PAGE_SIZE
+    }
+
+    /// Last virtual byte included in the range.
+    pub const fn last_virtual(self) -> u64 {
+        self.last_virtual
+    }
+
+    /// Last physical byte included in the range.
+    pub const fn last_physical(self) -> u64 {
+        self.last_physical
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,7 +572,7 @@ mod tests {
     #[test]
     fn an_entry_round_trips_its_address_and_flags() {
         let flags = Flags::PRESENT | Flags::WRITABLE | Flags::NO_EXECUTE;
-        let entry = Entry::page(0x1234_5000, flags).expect("aligned");
+        let entry = Entry::page(Level::Pt, 0x1234_5000, flags).expect("aligned");
 
         assert_eq!(entry.address(), 0x1234_5000);
         assert_eq!(entry.flags(), flags);
@@ -386,7 +586,7 @@ mod tests {
         // corrupt the other.
         let flags = Flags::PRESENT | Flags::NO_EXECUTE | Flags::GLOBAL;
         let top = MAX_PHYSICAL - PAGE_SIZE;
-        let entry = Entry::page(top, flags).expect("in range");
+        let entry = Entry::page(Level::Pt, top, flags).expect("in range");
 
         assert_eq!(entry.address(), top);
         assert_eq!(entry.flags(), flags);
@@ -395,11 +595,11 @@ mod tests {
     #[test]
     fn a_misaligned_or_oversized_address_is_refused() {
         assert_eq!(
-            Entry::page(0x1001, Flags::PRESENT),
+            Entry::page(Level::Pt, 0x1001, Flags::PRESENT),
             Err(EntryError::Misaligned(0x1001))
         );
         assert_eq!(
-            Entry::page(MAX_PHYSICAL, Flags::PRESENT),
+            Entry::page(Level::Pt, MAX_PHYSICAL, Flags::PRESENT),
             Err(EntryError::OutOfRange(MAX_PHYSICAL))
         );
     }
@@ -412,8 +612,8 @@ mod tests {
     }
 
     #[test]
-    fn an_intermediate_entry_is_permissive() {
-        let entry = Entry::table(0x3000).expect("aligned");
+    fn a_supervisor_table_does_not_grant_user_access() {
+        let entry = Entry::table(0x3000, TablePrivilege::Supervisor).expect("aligned");
 
         assert!(entry.is_present());
         assert!(entry.flags().contains(Flags::WRITABLE));
@@ -421,7 +621,15 @@ mod tests {
             !entry.flags().contains(Flags::NO_EXECUTE),
             "permissions intersect down the walk, so a parent must not restrict"
         );
-        assert!(!entry.flags().contains(Flags::USER), "kernel tables only");
+        assert!(!entry.flags().contains(Flags::USER));
+    }
+
+    #[test]
+    fn a_user_table_does_not_block_user_leaves() {
+        let user = Entry::table(0x3000, TablePrivilege::User).expect("aligned");
+        assert!(user.flags().contains(Flags::PRESENT));
+        assert!(user.flags().contains(Flags::WRITABLE));
+        assert!(user.flags().contains(Flags::USER));
     }
 
     #[test]
@@ -502,6 +710,117 @@ mod tests {
     }
 
     #[test]
+    fn a_mapping_range_preserves_checked_bounds() {
+        let range = MappingRange::new(
+            0xffff_8000_0000_0000,
+            MAX_PHYSICAL - 2 * PAGE_SIZE,
+            2 * PAGE_SIZE,
+        )
+        .expect("valid range");
+        assert_eq!(range.virtual_base(), 0xffff_8000_0000_0000);
+        assert_eq!(range.physical_base(), MAX_PHYSICAL - 2 * PAGE_SIZE);
+        assert_eq!(range.len(), 2 * PAGE_SIZE);
+        assert!(!range.is_empty());
+        assert_eq!(range.pages(), 2);
+        assert_eq!(range.last_virtual(), 0xffff_8000_0000_1fff);
+        assert_eq!(range.last_physical(), MAX_PHYSICAL - 1);
+
+        let low_edge = MappingRange::new(0x0000_7fff_ffff_f000, 0, PAGE_SIZE);
+        assert!(low_edge.is_ok(), "the last canonical low page is mappable");
+    }
+
+    #[test]
+    fn an_empty_mapping_range_is_refused() {
+        assert_eq!(
+            MappingRange::new(0, 0, 0),
+            Err(MappingRangeError::ZeroLength)
+        );
+    }
+
+    #[test]
+    fn a_misaligned_virtual_mapping_base_is_refused() {
+        assert_eq!(
+            MappingRange::new(1, 0, PAGE_SIZE),
+            Err(MappingRangeError::MisalignedVirtualBase(1))
+        );
+    }
+
+    #[test]
+    fn a_misaligned_physical_mapping_base_is_refused() {
+        assert_eq!(
+            MappingRange::new(0, 1, PAGE_SIZE),
+            Err(MappingRangeError::MisalignedPhysicalBase(1))
+        );
+    }
+
+    #[test]
+    fn a_partial_page_mapping_length_is_refused() {
+        assert_eq!(
+            MappingRange::new(0, 0, PAGE_SIZE + 1),
+            Err(MappingRangeError::MisalignedLength(PAGE_SIZE + 1))
+        );
+    }
+
+    #[test]
+    fn a_virtual_mapping_end_that_wraps_is_refused() {
+        assert_eq!(
+            MappingRange::new(u64::MAX - (PAGE_SIZE - 1), 0, 2 * PAGE_SIZE),
+            Err(MappingRangeError::VirtualEndOverflow)
+        );
+    }
+
+    #[test]
+    fn a_physical_mapping_end_that_wraps_is_refused() {
+        assert_eq!(
+            MappingRange::new(0, u64::MAX - (PAGE_SIZE - 1), 2 * PAGE_SIZE),
+            Err(MappingRangeError::PhysicalEndOverflow)
+        );
+    }
+
+    #[test]
+    fn a_noncanonical_mapping_start_is_refused() {
+        let start = 0x0000_8000_0000_0000;
+        assert_eq!(
+            MappingRange::new(start, 0, PAGE_SIZE),
+            Err(MappingRangeError::NonCanonicalVirtual(start))
+        );
+    }
+
+    #[test]
+    fn a_noncanonical_mapping_end_is_refused() {
+        let last = 0x0000_8000_0000_0fff;
+        assert_eq!(
+            MappingRange::new(0x0000_7fff_ffff_f000, 0, 2 * PAGE_SIZE),
+            Err(MappingRangeError::NonCanonicalVirtual(last))
+        );
+    }
+
+    #[test]
+    fn a_mapping_with_canonical_endpoints_that_crosses_the_hole_is_refused() {
+        assert_eq!(
+            MappingRange::new(0, 0, 0xffff_8000_0000_1000),
+            Err(MappingRangeError::CrossesCanonicalHole)
+        );
+    }
+
+    #[test]
+    fn a_physical_mapping_start_outside_the_entry_encoding_is_refused() {
+        assert_eq!(
+            MappingRange::new(0, MAX_PHYSICAL, PAGE_SIZE),
+            Err(MappingRangeError::PhysicalOutOfRange(MAX_PHYSICAL))
+        );
+    }
+
+    #[test]
+    fn a_physical_mapping_end_outside_the_entry_encoding_is_refused() {
+        let last = MAX_PHYSICAL + PAGE_SIZE - 1;
+        assert_eq!(
+            MappingRange::new(0, MAX_PHYSICAL - PAGE_SIZE, 2 * PAGE_SIZE),
+            Err(MappingRangeError::PhysicalOutOfRange(last))
+        );
+    }
+
+    #[test]
     fn canonical_addresses_are_sign_extended_from_bit_47() {
         assert!(is_canonical(0));
         assert!(is_canonical(0x0000_7fff_ffff_ffff), "top of the low half");
@@ -530,8 +849,8 @@ mod tests {
 
     #[test]
     fn a_huge_entry_is_distinguishable_from_a_table_pointer() {
-        let huge = Entry::page(0x20_0000, Flags::PRESENT | Flags::HUGE).expect("aligned");
-        let table = Entry::table(0x20_0000).expect("aligned");
+        let huge = Entry::page(Level::Pd, 0x20_0000, Flags::PRESENT).expect("aligned");
+        let table = Entry::table(0x20_0000, TablePrivilege::Supervisor).expect("aligned");
 
         assert!(huge.is_huge());
         assert!(!table.is_huge());
@@ -543,14 +862,46 @@ mod tests {
     }
 
     #[test]
-    fn a_huge_entry_refuses_a_merely_page_aligned_address() {
-        // Bit 12 of a huge entry selects the PAT, so 4 KiB alignment would
-        // encode a different frame and a different memory type.
+    fn a_page_table_leaf_uses_four_kib_alignment_without_the_huge_bit() {
+        let leaf = Entry::page(Level::Pt, 0x1000, Flags::PRESENT).expect("4 KiB aligned");
+        assert!(!leaf.flags().contains(Flags::HUGE));
+    }
+
+    #[test]
+    fn a_page_directory_leaf_uses_two_mib_alignment_and_the_huge_bit() {
+        let leaf = Entry::page(Level::Pd, LARGE_PAGE_SIZE, Flags::PRESENT).expect("2 MiB aligned");
+        assert!(leaf.flags().contains(Flags::HUGE));
         assert_eq!(
-            Entry::page(0x1000, Flags::PRESENT | Flags::HUGE),
+            Entry::page(Level::Pd, 0x1000, Flags::PRESENT),
             Err(EntryError::Misaligned(0x1000))
         );
-        assert!(Entry::page(0x1000, Flags::PRESENT).is_ok());
+    }
+
+    #[test]
+    fn a_pdpt_leaf_uses_one_gib_alignment_and_the_huge_bit() {
+        assert_eq!(
+            Entry::page(Level::Pdpt, LARGE_PAGE_SIZE, Flags::PRESENT),
+            Err(EntryError::Misaligned(LARGE_PAGE_SIZE))
+        );
+
+        let one_gib = Entry::page(Level::Pdpt, 1 << 30, Flags::PRESENT).expect("1 GiB aligned");
+        assert!(one_gib.flags().contains(Flags::HUGE));
+    }
+
+    #[test]
+    fn a_caller_cannot_supply_the_level_derived_huge_flag() {
+        assert_eq!(
+            Entry::page(Level::Pt, 0x1000, Flags::PRESENT | Flags::HUGE),
+            Err(EntryError::HugeFlagIsDerived)
+        );
+    }
+
+    #[test]
+    fn a_top_level_entry_cannot_be_a_leaf() {
+        assert_eq!(
+            Entry::page(Level::Pml4, 0, Flags::PRESENT),
+            Err(EntryError::CannotMapPage(Level::Pml4))
+        );
     }
 
     #[test]
@@ -559,7 +910,8 @@ mod tests {
         use std::format;
 
         assert_eq!(format!("{:?}", Entry::EMPTY), "Entry(absent)");
-        let entry = Entry::page(0x1000, Flags::PRESENT | Flags::NO_EXECUTE).expect("aligned");
+        let entry =
+            Entry::page(Level::Pt, 0x1000, Flags::PRESENT | Flags::NO_EXECUTE).expect("aligned");
         assert_eq!(format!("{entry:?}"), "Entry(0x1000 present no-execute)");
         assert_eq!(format!("{:?}", Flags::NONE), "none");
     }

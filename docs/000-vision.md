@@ -34,7 +34,7 @@ A full OS with userspace that can, eventually:
 | Process model | `spawn()` only — no native `fork()` (compat-fork gated for the POSIX layer) |
 | Filesystem | VFS first, then a read-only third-party format; WizFS = **CoW B-tree, checksummed, snapshots** in a phase of its own, late (D-73) |
 | App formats | ELF64 native + **core Wasm/`wasip1`** first-class; the Component Model is a watch item (D-72) |
-| Security | W^X, NX, SMEP/SMAP/UMIP, guard pages as baseline, not retrofit; KASLR deferred to Phase 12 with its cost named (D-46) |
+| Security | W^X, NX, SMEP/SMAP/UMIP live; ordinary thread stacks guarded, boot + double-fault guards owed in Phase 5; KASLR deferred to Phase 12 with its cost named (D-46) |
 | Scheduler | EEVDF-inspired virtual deadlines, tickless |
 | Theme | Wizard/magic at product level (app names, shell personality); conventional naming in code |
 | Dev loop | QEMU (UEFI, serial stdio) minute-to-minute; VMware Workstation as milestone target |
@@ -57,14 +57,16 @@ reference — not followed linearly). Docs are numbered in creation order.
    IRQ-safe locking and interrupts on 2026-08-14; the calibrated 100 Hz tick,
    uptime, and the polled set 2 keyboard 2026-08-20; W^X follows the page
    tables into Phase 3 (D-32); slice table in `006-cpu-fundamentals.md`*
-3. **Memory** — physical frame allocator, paging, kernel heap, memory objects
-   ✅ (2026-08-22) — *the grown boot handoff and the frame allocator; the
+3. **Memory** — physical frame allocator, paging, kernel heap
+   ✅ implementation (2026-08-22; the dated Phase-3 VMware result was not
+   recorded) — *the grown boot handoff and the frame allocator; the
    kernel's own W^X-correct tables and a `CR3` switch that refuses to go
    blind; the heap, in the direct map so that mapping stays one-way; the
    console back buffer; the I/O APIC, which retires the polled keyboard
    (D-37) and takes down D-33's wall; write-combining. KASLR is deferred to
-   Phase 12 with its cost named (D-46) and is the last of D-12's baseline
-   still owed. Memory objects move to Phase 5 with D-44's untyped decision.
+   Phase 12 with its cost named (D-46). Guarding the boot and double-fault
+   stacks and moving to growable stacks remain Phase-5 work; memory objects
+   also move to Phase 5 with D-44's untyped decision.
    Slice table in `007-memory.md`*
 4. Multitasking — kernel threads, EEVDF-style scheduler, tickless idle
    ✅ (2026-08-23) — *threads and the naked switch, the EEVDF seam over

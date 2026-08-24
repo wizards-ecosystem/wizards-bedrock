@@ -138,69 +138,91 @@ pub fn managed_frames() -> usize {
     FRAMES.lock().managed_count()
 }
 
-/// Copy physical memory at `address` into `buffer`, for firmware tables.
+/// Read-only access to physical firmware tables.
 ///
-/// The range must be described by the memory map, not allocatable, and — once
-/// the kernel's own tables are in force — direct-mapped. A copy rather than a
-/// reference: some of those regions hold memory the kernel itself writes, and
-/// a reference over that would alias the writes; volatile reads do not.
-pub fn read_physical(address: Paddr, buffer: &mut [u8]) -> bool {
-    let len = buffer.len();
-    if len == 0 {
+/// This deliberately cannot read usable, bootloader, kernel, reserved, or
+/// device memory. That narrower authority prevents safe code from creating a
+/// raw direct-map alias of a live Rust allocation or an MMIO register bank.
+#[derive(Debug, Clone, Copy)]
+pub struct FirmwareMemory(());
+
+impl FirmwareMemory {
+    /// Whether every byte is described exclusively as ACPI table storage.
+    pub fn contains(&self, address: Paddr, len: usize) -> bool {
+        let Ok(len) = u64::try_from(len) else {
+            return false;
+        };
+        if len == 0 {
+            return false;
+        }
+        let Some(end) = address.checked_add(len) else {
+            return false;
+        };
+        let guard = MAP.lock();
+        let Some(map) = guard.as_ref() else {
+            return false;
+        };
+        let overlaps = |region: &MemoryRegion| {
+            address < region.base.saturating_add(region.len) && region.base < end
+        };
+        map.covers(address, end)
+            && map
+                .regions()
+                .filter(overlaps)
+                .all(|region| region.kind.is_firmware_table())
+    }
+
+    /// Copy table bytes at `address` into `buffer` with volatile reads.
+    pub fn read(&self, address: Paddr, buffer: &mut [u8]) -> bool {
+        if !self.contains(address, buffer.len()) {
+            return false;
+        }
+        let Some(base) = direct_pointer(address, buffer.len() as u64) else {
+            return false;
+        };
+        for (index, slot) in buffer.iter_mut().enumerate() {
+            // SAFETY: `contains` proved this byte is immutable ACPI storage,
+            // and `direct_pointer` proved its direct-map address does not
+            // overflow. No safe API forms a mutable reference to this range.
+            let byte = unsafe { base.add(index) };
+            // SAFETY: as above; `byte` is within the checked firmware range.
+            *slot = unsafe { byte.read_volatile() };
+        }
+        true
+    }
+}
+
+/// Acquire the narrow reader after the memory map and direct map exist.
+pub fn firmware_memory() -> Option<FirmwareMemory> {
+    (MAP.lock().is_some() && DIRECT_MAP_OFFSET.load(Ordering::Acquire) != 0)
+        .then_some(FirmwareMemory(()))
+}
+
+/// Whether `start..end` is disjoint from every RAM or firmware allocation.
+pub(crate) fn device_range_is_eligible(start: Paddr, end: Paddr) -> bool {
+    if start >= end {
         return false;
     }
-    let Some(end) = address.checked_add(len as u64) else {
-        return false;
-    };
-    let narrowed = NARROWED.is_claimed();
-
     let guard = MAP.lock();
     let Some(map) = guard.as_ref() else {
         return false;
     };
-    let overlaps = |region: &MemoryRegion| {
-        address < region.base.saturating_add(region.len) && region.base < end
-    };
-    let refused = map.regions().any(|region| {
-        overlaps(&region)
-            && (region.kind.is_allocatable() || (narrowed && !region.kind.is_direct_mapped()))
-    });
-    let described = map.covers(address, end);
-    drop(guard);
-
-    if refused || !described {
-        return false;
-    }
-
-    let Some(base) = direct_pointer(address, len as u64) else {
-        return false;
-    };
-    for (index, slot) in buffer.iter_mut().enumerate() {
-        // SAFETY: `index` is below `len`, which the checks above bounded.
-        let byte = unsafe { base.add(index) };
-        // SAFETY: the range is described by the map and the direct map in
-        // force reaches it; volatile, because the kernel may be writing it.
-        *slot = unsafe { byte.read_volatile() };
-    }
-    true
+    map.regions().all(|region| {
+        let overlaps = start < region.base.saturating_add(region.len) && region.base < end;
+        !overlaps
+            || matches!(
+                region.kind,
+                crate::boot::MemoryKind::Reserved | crate::boot::MemoryKind::Unknown(_)
+            )
+    })
 }
 
-/// Set once the kernel's own tables are the ones in force.
-static NARROWED: Once = Once::new();
-
-/// Record that the direct map is no longer the bootloader's, which covers
-/// strictly more. [`read_physical`] is the one caller that has to know.
-pub(crate) fn narrow_direct_map() {
-    NARROWED.claim();
-}
-
-/// The memory map [`init`] was given, for [`read_physical`]'s check.
+/// The memory map [`init`] was given, for ownership and firmware checks.
 static MAP: SpinLock<Option<MemoryMap>> = SpinLock::new(None);
 
 /// Run `f` against the memory map [`init`] recorded, if there is one.
 ///
-/// The lock is held for the call, so `f` must not take it — [`read_physical`]
-/// does.
+/// The lock is held for the call, so `f` must not try to acquire it again.
 pub fn with_memory_map<T>(f: impl FnOnce(&MemoryMap) -> T) -> Option<T> {
     MAP.lock().as_ref().map(f)
 }
@@ -219,7 +241,7 @@ pub fn direct_map() -> Option<DirectMap> {
 
 /// Reclaim the frame allocator's lock on the terminal panic path.
 ///
-/// Called by [`panic::reclaim`](crate::panic::reclaim) rather than directly, on
+/// Called by the terminal panic boundary rather than directly, on
 /// the standing obligation `005-code-conventions.md` places on every `static`
 /// lock: a panic can interrupt code holding this one, and a handler that
 /// reports free memory would otherwise spin forever.
@@ -424,7 +446,7 @@ fn direct_map_pointer(physical: Paddr) -> Option<*mut u8> {
 /// Where the direct map makes `len` bytes at `physical` accessible.
 ///
 /// Arithmetic only. Whether the map actually *reaches* those bytes is the
-/// caller's to establish: [`read_physical`] checks the memory map, and a
+/// caller's to establish: [`FirmwareMemory`] checks the memory map, and a
 /// [`Frame`] carries it by construction.
 pub(crate) fn direct_pointer(physical: Paddr, len: u64) -> Option<*mut u8> {
     let offset = DIRECT_MAP_OFFSET.load(Ordering::Acquire);

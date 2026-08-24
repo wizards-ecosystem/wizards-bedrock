@@ -18,7 +18,7 @@ rest is written down here.** Where a convention could be a lint, it is one.
 | Crate | May write `unsafe`? | Purpose |
 |---|---|---|
 | `wost/` | **yes — and nowhere else does** | Privileged framework: boot handoff, port I/O, MMIO, CPU control, locking. The kernel's memory-safety TCB. |
-| `kernel/` | no (`#![deny(unsafe_code)]`) | The kernel binary: drivers, console, logging, panic reporting, eventually scheduler and VFS. |
+| `kernel/` | no (`#![deny(unsafe_code)]`) | The kernel binary: drivers, console, logging, panic reporting, scheduler, and eventually VFS. |
 | `libs/` | no (`#![forbid(unsafe_code)]`) | Pure, hardware-free logic, host-testable. |
 | `xtask/` | no | Host build tooling. Not part of the kernel. |
 
@@ -65,9 +65,10 @@ unsafe operation underneath it *checkable*, not merely *wrapped*.
 `MmioRegion` bounds- and alignment-checks. `port::claim` records ownership in a
 registry so exclusivity is verified rather than promised — over the span an
 access *reaches*, not the port it names, which is the distinction Phase 2 got
-wrong and D-39 fixed. `SpinLock::force_unlock` takes a `PanicToken` — a value
-only the terminal panic path can obtain — so the obligation is discharged by
-the type system instead of by a comment. Following Asterinas
+wrong and D-39 fixed. A spin lock's recovery operation and its proof value are
+crate-private, and only the non-returning panic boundary can reach them. A
+safe caller cannot manufacture recovery authority or resume after violating a
+live guard. Following Asterinas
 (`002-architecture.md` pillar 5): these abstractions are designed in from day
 one, never retrofitted.
 
@@ -76,13 +77,12 @@ arithmetic, the arithmetic goes to a `libs/` crate and `wost` keeps only the
 lock and the instruction — `port_space::PortSpace` under
 `arch::x86_64::port` is the pattern to copy.
 
-**Every lock in a `static` is on the panic path's list.** A fault is not masked
-by the interrupt flag, so any lock can be held by the code a panic interrupted,
-and a handler that blocks on one reports nothing. `wost::panic::reclaim` takes
-back everything `wost` owns; `dev::force_unlock`, `input::force_unlock`,
-`input::force_unlock_watch` and `thread::force_unlock` do the same for the
-kernel's. A new `static` lock that is not added to that list is a deadlock
-waiting for its first panic.
+**The panic path never blocks on a kernel lock.** A fault is not masked by the
+interrupt flag, so any lock can be held by the code a panic interrupted.
+`wost` reclaims only its own internal locks, inside a terminal function-pointer
+boundary that cannot capture a live guard. Kernel reporting uses `try_lock` and
+may omit a channel whose lock is busy. A new panic reporter that waits for a
+kernel lock is a deadlock waiting for its first panic.
 
 `kernel/` uses `deny`, not `forbid`, for exactly one reason: `wost::entry!`
 expands `#[allow(unsafe_code)]` boot glue into the binary crate, and `forbid`
@@ -157,7 +157,7 @@ it manufactures noise on every helper.
 C-EXAMPLE is adopted **only in `libs/`**, and the split is a fact about where
 doctests can run rather than a preference (D-41). The floor is one runnable
 example per `libs/` crate — on the module doc or its central item — and all
-thirteen carry one; more go on any item whose encoding an example states
+current crates carry one; more go on any item whose encoding an example states
 better than prose. Not "an
 example on every item", which the rule used to say and no crate has ever
 done. `wost` and `kernel` are `no_std` and cross-compiled, so their doctests
@@ -240,11 +240,12 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   encoding, where the host test is the only thing that can check a bit position
   against the manual. `libs/x86-apic` and `libs/x86-pit` follow on the same
   grounds, and `libs/ps2-keys` for the scancode state machine.
-  `libs/port-space` is the newest and the clearest case of *why*: the I/O port
+  `libs/port-space` is a particularly clear case of *why*: the I/O port
   reservation bitmap sat inside `wost`, where nothing could test it, and it
   spent Phase 2 recording one port per claim however wide the access it
-  authorised (D-39). Add crates here for page-table bit packing, ELF parsing,
-  ring index arithmetic, and the WizFS on-disk format as those arrive.
+  authorised (D-39). Page-table bit packing has since become
+  `libs/x86-paging`; add crates on the same pattern for ELF parsing, ring index
+  arithmetic, and the WizFS on-disk format as those arrive.
 - **The gate runs over a configuration matrix, not a codebase.** A cargo
   feature is a different crate graph, and a lint that fires in one need not
   fire in the other: `cargo xtask ci` covers the host packages, the kernel
