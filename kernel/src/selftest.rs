@@ -1054,6 +1054,55 @@ fn the_double_fault_stack_is_guarded() -> bool {
     true
 }
 
+/// A second address space has the kernel and nothing of anyone else.
+///
+/// The shape a process needs (D-104): the higher half shared so a trap from
+/// ring 3 has somewhere to land, and the lower half empty, which is the
+/// isolation. Two programs' spaces will share the kernel and nothing else.
+///
+/// The sharing is checked by *physical identity*, not by both walks
+/// succeeding: two spaces that each mapped the kernel separately would both
+/// resolve and would not be sharing. The same physical frame at the same
+/// virtual address is what sharing means.
+///
+/// And the emptiness is checked at an address the live space *does* have a
+/// mapping for — the running program's code page. A fresh space that lacked it
+/// would be indistinguishable from one that lacked everything, and this way
+/// the difference between the halves is what the check sees.
+fn a_second_space_holds_the_kernel_and_nothing_else() -> bool {
+    let Ok(space) = AddressSpace::for_user() else {
+        return false;
+    };
+
+    // Everything the kernel needs on the way in, at the same frames.
+    let text = boot::sections().text.start;
+    let Some(stack_layout) = thread::layout() else {
+        return false;
+    };
+    let Some(slot) = stack_layout.slot(0) else {
+        return false;
+    };
+    let shared = [text, slot.stack_base(), mem::direct_map_base()]
+        .into_iter()
+        .all(|at| match (paging::translate(at), space.lookup(at)) {
+            (Some(here), Some(there)) => here == there,
+            _ => false,
+        });
+
+    // And nothing of the program's, though the live space has it.
+    let user_is_absent =
+        paging::translate(user::CODE).is_some() && space.lookup(user::CODE).is_none();
+
+    // The half it shares is not reachable from ring 3, whatever the leaves
+    // say: a shared top-level entry that carried `USER` would hand every
+    // program the kernel.
+    let kernel_is_not_user = space
+        .lookup(text)
+        .is_some_and(|(_, flags)| !flags.contains(Flags::USER));
+
+    shared && user_is_absent && kernel_is_not_user
+}
+
 /// A walk reports the permission the CPU will grant, not the leaf's opinion.
 ///
 /// The architecture takes `USER` and `WRITABLE` as the conjunction down the
@@ -2130,7 +2179,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 104;
+const EXPECTED_CHECKS: usize = 105;
 
 impl Report {
     const fn new() -> Self {
@@ -2289,6 +2338,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the double-fault stack is guarded",
         the_double_fault_stack_is_guarded(),
+    );
+    report.check(
+        "a second space holds the kernel and nothing else",
+        a_second_space_holds_the_kernel_and_nothing_else(),
     );
     report.check(
         "a walk reports the permission the cpu grants",

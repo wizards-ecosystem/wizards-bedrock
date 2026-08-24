@@ -132,6 +132,12 @@ pub(crate) fn map_guarded_stack(
     }
 }
 
+/// Where the direct map starts, for the checks that ask what a space holds.
+#[cfg(feature = "selftest")]
+pub(crate) fn direct_map_base() -> u64 {
+    mm::direct_map().map_or(0, |map| map.virtual_address(0).unwrap_or(0))
+}
+
 /// Log every region the bootloader described.
 ///
 /// At debug level because it runs to a few dozen lines, and worth having at

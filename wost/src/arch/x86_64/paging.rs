@@ -440,7 +440,7 @@ impl AddressSpace {
 
         let mut guard = slot.guard_base();
         while guard < slot.stack_base() {
-            if self.translate_here(guard).is_some() {
+            if self.lookup(guard).is_some() {
                 return Err(MapError::Conflict(guard));
             }
             guard = guard
@@ -455,8 +455,57 @@ impl AddressSpace {
     }
 
     /// Translate through this space's tables, active or not.
-    fn translate_here(&self, virtual_address: u64) -> Option<(Paddr, Flags)> {
+    ///
+    /// The same walk [`translate`] makes, aimed at a space that may not be the
+    /// one the CPU is using — which is the only way to ask anything about a
+    /// space before it is installed.
+    pub fn lookup(&self, virtual_address: u64) -> Option<(Paddr, Flags)> {
         translate_in(self.root, virtual_address)
+    }
+
+    /// A space for a program: empty below, and the kernel's above.
+    ///
+    /// The higher half is shared by *reference* — the top half of the kernel's
+    /// top-level table is copied entry for entry, so both spaces walk the same
+    /// tables beneath them. That is what makes a trap from ring 3 land
+    /// somewhere: the entry path, the stacks, the direct map and the heap are
+    /// all in the half every space shares, and none of them has to be mapped
+    /// again (D-104).
+    ///
+    /// Sharing entries rather than contents has one consequence worth knowing:
+    /// a later kernel mapping appears in every space *only if* it lands in a
+    /// top-level slot that already exists. A mapping that needed a new one —
+    /// a new five-hundred-and-twelve-gigabyte region — would be invisible to
+    /// spaces made before it. Nothing does that today; the windows this kernel
+    /// uses were all placed before the first space is made.
+    ///
+    /// The lower half is empty, which is the isolation: two programs' spaces
+    /// share the kernel and nothing else.
+    ///
+    /// # Errors
+    ///
+    /// [`MapError::OutOfMemory`] for the root, and [`MapError::Unreachable`]
+    /// if the direct map cannot reach a table. Also `OutOfMemory` before the
+    /// kernel's own tables are installed, because there is nothing to share.
+    pub fn for_user() -> Result<Self, MapError> {
+        if !is_active() {
+            return Err(MapError::OutOfMemory);
+        }
+        let kernel = active_root();
+        let space = Self::new()?;
+
+        for index in ENTRIES / 2..ENTRIES {
+            let from = entry_pointer(kernel, index)?;
+            let into = entry_pointer(space.root, index)?;
+            // SAFETY: `entry_pointer` confirmed the slot is inside the live
+            // kernel table and reachable through the direct map.
+            let entry = unsafe { from.read_volatile() };
+            // SAFETY: as above, for a table this space owns and which nothing
+            // else can reach — it has not been installed and `new` just made
+            // it.
+            unsafe { into.write_volatile(entry) };
+        }
+        Ok(space)
     }
 
     /// Take a mapping away, and hand back what it owned.
