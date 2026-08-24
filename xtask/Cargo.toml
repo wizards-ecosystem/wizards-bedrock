@@ -17,6 +17,7 @@ private_intra_doc_links = "deny"
 redundant_explicit_links = "deny"
 
 [dependencies]
+elf64 = { workspace = true }
 anyhow.workspace = true
 fatfs.workspace = true
 fscommon.workspace = true

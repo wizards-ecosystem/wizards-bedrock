@@ -86,7 +86,11 @@ fn kernel_main(boot: BootInfo) -> ! {
     // to guard it: that stack has nothing below it and lives inside the direct
     // map, which is two-megabyte on purpose (D-92). Everything after this point
     // runs in `boot_continue`, on a stack with an unmapped page beneath it.
-    *HANDOFF.lock_leaf() = Some(Handoff { serial, routing });
+    *HANDOFF.lock_leaf() = Some(Handoff {
+        serial,
+        routing,
+        module: boot.module,
+    });
     match mem::map_boot_stack() {
         Some(stack) => task::continue_on_stack(stack, boot_continue, 0),
         None => {
@@ -103,6 +107,9 @@ fn kernel_main(boot: BootInfo) -> ! {
 struct Handoff {
     serial: Result<(), UartError>,
     routing: Option<mem::Routing>,
+    /// The initrd, which the boot thread reads before it changes stacks and
+    /// the loader reads long after.
+    module: Result<&'static [u8], wost::boot::HandoffError>,
 }
 
 static HANDOFF: SpinLock<Option<Handoff>> = SpinLock::new(None);
@@ -113,7 +120,12 @@ static HANDOFF: SpinLock<Option<Handoff>> = SpinLock::new(None);
 ///
 /// If the handoff is missing, which would mean this ran twice.
 extern "C" fn boot_continue(_arg: usize) -> ! {
-    let Some(Handoff { serial, routing }) = HANDOFF.lock_leaf().take() else {
+    let Some(Handoff {
+        serial,
+        routing,
+        module,
+    }) = HANDOFF.lock_leaf().take()
+    else {
         panic!("the boot handoff is gone; boot_continue ran twice");
     };
 
@@ -137,6 +149,13 @@ extern "C" fn boot_continue(_arg: usize) -> ! {
             let _ = writeln!(console, "  no serial log: {reason}");
         }
     });
+
+    // The initrd is read by the loader, which ships only with the checks for
+    // now: there is a program in the image and nothing shipped that runs one.
+    #[cfg(feature = "selftest")]
+    user::keep(module);
+    #[cfg(not(feature = "selftest"))]
+    let _ = module;
 
     #[cfg(feature = "selftest")]
     selftest::run(serial);

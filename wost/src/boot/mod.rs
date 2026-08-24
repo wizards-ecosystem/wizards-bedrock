@@ -595,6 +595,9 @@ pub struct BootInfo {
     /// Virtual from base revision 4, which is one of the reasons D-42 asked
     /// for it: the table tree is readable before the kernel maps anything.
     pub rsdp: Result<u64, HandoffError>,
+    /// The first module the bootloader loaded — this kernel's initrd, which is
+    /// one program (D-100).
+    pub module: Result<&'static [u8], HandoffError>,
 }
 
 /// Why part of the boot handoff is missing.
@@ -626,11 +629,11 @@ impl core::error::Error for HandoffError {}
 pub mod __macro {
     pub use limine::BaseRevision;
     pub use limine::request::{
-        ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest,
+        ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest, ModuleRequest,
         RequestsEndMarker, RequestsStartMarker, RsdpRequest,
     };
 
-    pub use super::limine_glue::base_revision;
+    pub use super::limine_glue::{Requests, base_revision};
 }
 
 /// Define the kernel entry point.
@@ -695,6 +698,12 @@ macro_rules! entry {
 
         #[used]
         #[allow(unsafe_code)]
+        #[unsafe(link_section = ".requests")]
+        static __WOST_MODULES: $crate::boot::__macro::ModuleRequest =
+            $crate::boot::__macro::ModuleRequest::new();
+
+        #[used]
+        #[allow(unsafe_code)]
         #[unsafe(link_section = ".requests_end_marker")]
         static __WOST_REQUESTS_END: $crate::boot::__macro::RequestsEndMarker =
             $crate::boot::__macro::RequestsEndMarker::new();
@@ -703,12 +712,15 @@ macro_rules! entry {
         #[unsafe(no_mangle)]
         extern "C" fn kmain() -> ! {
             $crate::boot::enter(
-                &__WOST_BASE_REVISION,
-                &__WOST_FRAMEBUFFER,
-                &__WOST_MEMORY_MAP,
-                &__WOST_DIRECT_MAP,
-                &__WOST_IMAGE,
-                &__WOST_RSDP,
+                $crate::boot::__macro::Requests {
+                    base_revision: &__WOST_BASE_REVISION,
+                    framebuffer: &__WOST_FRAMEBUFFER,
+                    memory_map: &__WOST_MEMORY_MAP,
+                    hhdm: &__WOST_DIRECT_MAP,
+                    image: &__WOST_IMAGE,
+                    rsdp: &__WOST_RSDP,
+                    modules: &__WOST_MODULES,
+                },
                 __WOST_ENTRY_SIGNATURE,
             )
         }

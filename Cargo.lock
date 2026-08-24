@@ -132,6 +132,7 @@ version = "0.1.0"
 dependencies = [
  "acpi-tables",
  "eevdf",
+ "elf64",
  "handle-space",
  "noto-sans-mono-bitmap",
  "ps2-keys",
@@ -187,6 +188,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "elf64",
  "fatfs",
  "fscommon",
 ]

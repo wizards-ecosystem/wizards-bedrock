@@ -85,6 +85,9 @@ pub const SELFTEST_FEATURE_SPEC: &str = "wizard-kernel/selftest";
 /// line in `boot/limine.conf`.
 pub const KERNEL_ON_ESP: &str = "wizard-kernel.elf";
 
+/// The user program, alongside the kernel, handed over as a Limine module.
+pub const PROGRAM_ON_ESP: &str = "hello.elf";
+
 /// File name of the bootable disk image.
 pub const IMAGE_NAME: &str = "wizard-os.img";
 

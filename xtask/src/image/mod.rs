@@ -6,6 +6,7 @@
 
 pub mod esp;
 pub mod mbr;
+pub mod program;
 
 use std::fs::OpenOptions;
 use std::path::PathBuf;

@@ -4,7 +4,8 @@ use limine::BaseRevision;
 use limine::framebuffer::MemoryModel;
 use limine::memory_map::EntryType;
 use limine::request::{
-    ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest, RsdpRequest,
+    ExecutableAddressRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest, ModuleRequest,
+    RsdpRequest,
 };
 
 use pixel::{Channel, FramebufferLayout, PixelFormat};
@@ -35,15 +36,16 @@ const SUPPORTED_BPP: u16 = 32;
 /// Assemble [`BootInfo`] from the bootloader's answers and hand over control.
 ///
 /// Called only by [`entry!`](crate::entry).
-pub fn enter(
-    base_revision: &'static BaseRevision,
-    framebuffer: &'static FramebufferRequest,
-    memory_map: &'static MemoryMapRequest,
-    hhdm: &'static HhdmRequest,
-    image: &'static ExecutableAddressRequest,
-    rsdp: &'static RsdpRequest,
-    kernel_main: fn(BootInfo) -> !,
-) -> ! {
+pub fn enter(requests: Requests, kernel_main: fn(BootInfo) -> !) -> ! {
+    let Requests {
+        base_revision,
+        framebuffer,
+        memory_map,
+        hhdm,
+        image,
+        rsdp,
+        modules,
+    } = requests;
     // A second caller would mint a second framebuffer over live device memory.
     static ENTERED: crate::sync::Once = crate::sync::Once::new();
     assert!(ENTERED.claim(), "the kernel has already been entered");
@@ -55,6 +57,7 @@ pub fn enter(
         direct_map: take_direct_map(hhdm),
         image: take_image(image),
         rsdp: take_rsdp(rsdp),
+        module: take_module(modules),
     })
 }
 
@@ -67,6 +70,27 @@ fn take_image(request: &'static ExecutableAddressRequest) -> Result<ImageAddress
     ))
 }
 
+/// The first module the bootloader loaded, as bytes.
+///
+/// One, not all: the initrd is a single program (D-100), and an API that
+/// returned a list would be shaped for a filesystem this kernel does not have.
+/// The slice borrows memory the bootloader owns, which is why it is `'static`
+/// and why nothing may write it — it lives in a reclaimable region that stays
+/// mapped for the life of the boot.
+fn take_module(request: &'static ModuleRequest) -> Result<&'static [u8], HandoffError> {
+    let response = request.get_response().ok_or(HandoffError::NoResponse)?;
+    let module = response.modules().first().ok_or(HandoffError::Empty)?;
+    let address = module.addr();
+    let len = module.size() as usize;
+    if address.is_null() || len == 0 {
+        return Err(HandoffError::Empty);
+    }
+    // SAFETY: the bootloader reports this range as a module it loaded and
+    // keeps mapped, and the protocol makes it ours to read for the life of the
+    // boot. Nothing else holds a reference to it, and it is never written.
+    Ok(unsafe { core::slice::from_raw_parts(address.cast_const(), len) })
+}
+
 /// The ACPI root pointer's address.
 fn take_rsdp(request: &'static RsdpRequest) -> Result<u64, HandoffError> {
     let response = request.get_response().ok_or(HandoffError::NoResponse)?;
@@ -74,6 +98,36 @@ fn take_rsdp(request: &'static RsdpRequest) -> Result<u64, HandoffError> {
         0 => Err(HandoffError::Empty),
         address => Ok(address),
     }
+}
+
+/// Every request the entry glue places, gathered so the handoff is one
+/// argument rather than a list that grows with each protocol feature.
+///
+/// The fields are the bootloader's types, which is why this lives here: it is
+/// the only file that names them (`005`, and swapping bootloaders touches one
+/// file).
+///
+/// No `Debug`, unusually for this codebase (`005`, C-DEBUG): the bootloader's
+/// request types do not implement it, and a hand-written impl here would print
+/// the addresses of static requests, which is not information anyone wants and
+/// is exactly what a KASLR ledger would rather not see in a log.
+#[allow(missing_debug_implementations)]
+#[derive(Clone, Copy)]
+pub struct Requests {
+    /// The protocol revision the kernel asked for.
+    pub base_revision: &'static BaseRevision,
+    /// The framebuffer, if the firmware gave one.
+    pub framebuffer: &'static FramebufferRequest,
+    /// The memory map.
+    pub memory_map: &'static MemoryMapRequest,
+    /// The direct map's offset.
+    pub hhdm: &'static HhdmRequest,
+    /// Where the kernel image was placed.
+    pub image: &'static ExecutableAddressRequest,
+    /// The ACPI root pointer.
+    pub rsdp: &'static RsdpRequest,
+    /// The modules, of which this kernel reads the first (D-100).
+    pub modules: &'static ModuleRequest,
 }
 
 /// The bootloader's memory map, translated into types that name no bootloader.

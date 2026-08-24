@@ -399,6 +399,79 @@ fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
     from_user && through_the_gate && only_gate && on_a_user_stack && retired
 }
 
+/// The loader refuses an image that asks for what it may not have.
+///
+/// The half of a loader that matters. An image is bytes a program supplied,
+/// and every one of these is a way of asking the kernel to map something it
+/// should not: a segment both writable and executable, one whose contents run
+/// past the file, one claiming more memory than the file holds, and one placed
+/// in the half of the address space the kernel lives in.
+///
+/// **W^X is not relaxed for an image that asks nicely** (D-100). A loader that
+/// dropped the write bit to make a program load would be loading something
+/// that faults later and blames the kernel.
+///
+/// Each is a copy of the real initrd with one field changed, so what is being
+/// refused differs from what loads by exactly the thing under test.
+fn the_loader_refuses_what_it_may_not_map() -> bool {
+    let Some(original) = user::image() else {
+        return false;
+    };
+    /// Offset of the first program header's flags, from the ELF64 layout.
+    const FLAGS: usize = elf64::HEADER_BYTES + 4;
+    /// Its `p_offset`, `p_filesz` and `p_vaddr`.
+    const OFFSET: usize = elf64::HEADER_BYTES + 8;
+    const VADDR: usize = elf64::HEADER_BYTES + 16;
+    const FILE_SIZE: usize = elf64::HEADER_BYTES + 32;
+    const MEMORY_SIZE: usize = elf64::HEADER_BYTES + 40;
+
+    let doctor = |at: usize, value: u64| -> Vec<u8> {
+        let mut copy = original.to_vec();
+        copy[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        copy
+    };
+
+    // Writable and executable at once.
+    let mut write_execute = original.to_vec();
+    write_execute[FLAGS..FLAGS + 4].copy_from_slice(&0b111u32.to_le_bytes());
+    let wx_refused = matches!(
+        user::load_image(&mut context(), &write_execute, 0),
+        Err(user::LoadError::WriteExecute(_))
+    );
+
+    // Contents past the end of the image.
+    let overrun = doctor(FILE_SIZE, 0x1000);
+    let overrun_refused = matches!(
+        user::load_image(&mut context(), &overrun, 0),
+        Err(user::LoadError::Malformed(_))
+    );
+
+    // More file than memory to put it in.
+    let mut oversized = doctor(FILE_SIZE, 8);
+    oversized[MEMORY_SIZE..MEMORY_SIZE + 8].copy_from_slice(&4u64.to_le_bytes());
+    let oversized_refused = matches!(
+        user::load_image(&mut context(), &oversized, 0),
+        Err(user::LoadError::Malformed(_))
+    );
+
+    // Placed in the kernel's half.
+    let intruding = doctor(VADDR, 0xffff_8000_0000_0000);
+    let intruding_refused = matches!(
+        user::load_image(&mut context(), &intruding, 0),
+        Err(user::LoadError::NotUserMemory(_))
+    );
+
+    // And something that is not an ELF at all.
+    let not_an_elf = [0u8; 64];
+    let refused_outright = matches!(
+        user::load_image(&mut context(), &not_an_elf, 0),
+        Err(user::LoadError::NotAnElf(_))
+    );
+
+    let _ = OFFSET;
+    wx_refused && overrun_refused && oversized_refused && intruding_refused && refused_outright
+}
+
 /// A second thread crosses too, and each trap lands on its own kernel stack.
 ///
 /// The limitation D-96 wrote down and D-99 lifted. `RSP0` used to be set once,
@@ -1940,7 +2013,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 100;
+const EXPECTED_CHECKS: usize = 101;
 
 impl Report {
     const fn new() -> Self {
@@ -2031,6 +2104,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a thread crosses into ring three and calls back",
         a_thread_crosses_into_ring_three_and_calls_back(),
+    );
+    report.check(
+        "the loader refuses what it may not map",
+        the_loader_refuses_what_it_may_not_map(),
     );
     report.check(
         "a second thread crosses onto its own stack",

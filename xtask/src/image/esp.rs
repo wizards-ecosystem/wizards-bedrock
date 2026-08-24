@@ -51,6 +51,12 @@ pub fn populate<D: ReadWriteSeek>(
     let boot = root.create_dir("boot").context("creating /boot")?;
     copy_into(&boot, paths::KERNEL_ON_ESP, kernel)?;
 
+    // The initrd, such as it is: one program, built rather than compiled
+    // (D-100). It goes beside the kernel because Limine's `module_path` is
+    // relative to the boot volume, not to the kernel.
+    let program = super::program::build();
+    write_file(&boot, paths::PROGRAM_ON_ESP, &program)?;
+
     let limine = boot.create_dir("limine").context("creating /boot/limine")?;
     copy_into(&limine, "limine.conf", &paths.limine_conf())
 }
