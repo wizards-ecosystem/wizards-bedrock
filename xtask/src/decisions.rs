@@ -18,7 +18,7 @@
 //! the next gap being introduced, which is the cheaper end to fix it from.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
@@ -60,6 +60,7 @@ fn number(rest: &str) -> Option<(u32, &str)> {
 }
 
 /// Every `D-NNN` cited in a file, with the line it is on.
+#[cfg(test)]
 fn cited(text: &str) -> Vec<(u32, usize)> {
     let mut found = Vec::new();
     for (index, line) in text.lines().enumerate() {
@@ -82,7 +83,8 @@ fn cited(text: &str) -> Vec<(u32, usize)> {
 }
 
 /// Every file worth searching for citations: sources, docs, and manifests.
-fn searchable(root: &Path) -> Result<Vec<PathBuf>> {
+#[cfg(test)]
+fn searchable(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     /// Directories whose contents are not ours to check.
     const SKIP: &[&str] = &["target", ".git", "vendor", "tools", "node_modules"];
 
@@ -117,7 +119,7 @@ mod tests {
     use super::*;
 
     /// The workspace root, from where this crate sits below it.
-    fn root() -> PathBuf {
+    fn root() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask sits below the workspace root")
