@@ -4096,6 +4096,30 @@ fn the_blocked_reader_woke_with_the_key() -> bool {
         && input::dropped_events() == 0
 }
 
+/// A wake from a handler arms the timer for what it woke.
+///
+/// `thread.rs` states the rule without qualification — every path that changes
+/// who is runnable ends by arming the timer — and `unblock` exempted trap
+/// context, because the trap exit reschedules (D-54). That holds for the timer
+/// and keyboard arms, which both end in `thread::reschedule`. It does not hold
+/// for the syscall arm, which serves the ring and returns to ring 3: a
+/// `ring_enter` that wakes a waiter left it runnable with nothing armed for it.
+/// The premise was in `thread.rs` and the arms are in `trap.rs`, and nothing
+/// compared them (D-133).
+///
+/// **The assertion is about the arming, not the running.** A woken thread runs
+/// eventually whatever happens here — this checking thread's own yields and
+/// sleeps arm timers, and any of them will pick it up — so a check that waited
+/// for it to run would pass with the exemption in place. That is the shape
+/// D-124 kept finding, and it is why this reads a counter.
+///
+/// The blocked reader is the machine's only wake from a handler, so the check
+/// above establishing that it happened is what makes a zero here mean "one did
+/// and armed nothing" rather than "none ever happened".
+fn a_wake_from_a_handler_armed_the_timer() -> bool {
+    READER_SAW.load(Ordering::Acquire) != 0 && thread::handler_arms() > 0
+}
+
 /// The polled keyboard fallback drains, sleeps and stops.
 ///
 /// D-37's path had never run: both test machines have an I/O APIC. Started
@@ -4233,7 +4257,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 136;
+const EXPECTED_CHECKS: usize = 137;
 
 impl Report {
     const fn new() -> Self {
@@ -4787,6 +4811,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the blocked reader woke with the injected key, without polling",
         the_blocked_reader_woke_with_the_key(),
+    );
+    report.check(
+        "a wake from a handler arms the timer for what it woke",
+        a_wake_from_a_handler_armed_the_timer(),
     );
 
     // Before the editing check and not merely beside it: this is what makes

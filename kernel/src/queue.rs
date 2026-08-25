@@ -312,12 +312,30 @@ impl Queue {
             }
             // The reservation, taken before the operation is accepted.
             state.submit()?;
-            state.take()?
+            // Unreachable: `submit` has just produced into this ring, so there
+            // is something to consume. Loud in a debug build for the reason
+            // D-115 gave `serve`'s twin two functions down — every path past
+            // this point spends the reservation, and a `None` here holds it
+            // for ever. The ring then admits nothing more and the program waits
+            // on a completion that will not come: a permanent wedge, which is
+            // worse than a panic because nothing can diagnose it (D-133).
+            match state.take() {
+                Some(slot) => slot,
+                None => {
+                    debug_assert!(false, "a submission was reserved and then was not there");
+                    return None;
+                }
+            }
         };
 
         let mut bytes = [0u8; ENTRY_BYTES];
         let at = ENTRIES_AT + slot * ENTRY_BYTES;
+        // Unreachable for the same reason and with the same cost: `slot` is
+        // below `SUBMISSIONS` and the entries are a page in, so the range is
+        // inside the shared run by construction. This one has *consumed* the
+        // submission as well as reserved, so it loses the operation too.
         if !self.shared.lock_leaf().read_at(at, &mut bytes) {
+            debug_assert!(false, "a submission slot was outside the shared pages");
             return None;
         }
 

@@ -901,17 +901,39 @@ pub(crate) fn unblock(slots: u32) -> usize {
         woken
     };
 
-    // A woken thread is runnable and nothing has been asked to run it. From a
-    // handler that is fine — the trap exit reschedules (D-54). From thread
-    // context nothing does, and on a tickless kernel there may be no timer
-    // armed at all (D-57), so the thread this call just made ready could wait
-    // for an unrelated interrupt that never comes. This module's own rule is
-    // that every path changing who is runnable ends by arming the timer; this
-    // one was not obeying it (D-93).
-    if woken > 0 && !interrupt::in_trap() {
+    // A woken thread is runnable and nothing has been asked to run it, so this
+    // is where the timer is armed for it — **unconditionally**. It used to skip
+    // trap context, because the trap exit reschedules (D-54): true of the timer
+    // and keyboard arms, which both end in `reschedule`, and false of the
+    // syscall arm, which serves the ring and returns straight to ring 3. That
+    // premise lived here and the arms it was about live in `trap.rs`, so
+    // nothing compared them and they stopped agreeing (D-133).
+    //
+    // Arming twice costs one APIC write on a path that has just taken an
+    // interrupt. Not arming at all costs a runnable thread nothing will run,
+    // on a tickless kernel where there may be no other timer to save it
+    // (D-57, D-93).
+    if woken > 0 {
+        if interrupt::in_trap() {
+            HANDLER_ARMS.fetch_add(1, Ordering::Relaxed);
+        }
         reschedule_timer(Some(time::now_ns()));
     }
     woken
+}
+
+/// Wakes delivered from a trap handler for which this armed the timer.
+///
+/// Zero for the whole of the kernel's life until D-133, because the arming
+/// above excluded exactly this case. The keyboard is the only handler that
+/// wakes anything today, which is what makes a zero here a falsifiable claim
+/// rather than an absence of evidence.
+static HANDLER_ARMS: AtomicUsize = AtomicUsize::new(0);
+
+/// Wakes from a handler that armed the timer. See [`HANDLER_ARMS`].
+#[cfg(feature = "selftest")]
+pub(crate) fn handler_arms() -> usize {
+    HANDLER_ARMS.load(Ordering::Relaxed)
 }
 
 /// The slot this CPU is running on.
