@@ -237,6 +237,103 @@ pub const MUTATIONS: &[Mutation] = &[
     // says nothing, which is the state the kernel was in before it existed. A
     // receiver already blocked then sleeps for the rest of the boot, so the
     // check that drops the far end under one is what has to notice.
+    // The nine checks the Phase 0-5 audit's fixes landed with (D-135 to D-145).
+    // Each is the exact mutation its break-test used.
+    Mutation {
+        file: "kernel/src/console.rs",
+        find: "        self.set_cursor(false);
+        self.put(text);
+        self.newline();
+        self.set_cursor(true);",
+        replace: "        self.write_text(text);
+        self.newline();",
+        breaks: "a line break happens with the cursor down",
+        reddens: Caught::Check("a scroll leaves no cursor behind"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/port.rs",
+        find: "    if !CLAIMED.lock_leaf().reserve_all(&spans) {
+        return None;
+    }
+    // SAFETY: the registry has just recorded every port both accesses drive,",
+        replace: "    if !reserve(first, size_of::<T>()) {
+        return None;
+    }
+    if !reserve(second, size_of::<U>()) {
+        return None;
+    }
+    // SAFETY: the registry has just recorded every port both accesses drive,",
+        breaks: "two claims are taken all at once or not at all",
+        reddens: Caught::Check("a refused pair of claims strands neither"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/cpu.rs",
+        find: "    unsafe { msr::write(EFER, msr::read(EFER) & !EFER_SYSCALL) };",
+        replace: "",
+        breaks: "the syscall door is shut before ring 3 runs",
+        reddens: Caught::Check("ring three has no fast-syscall door"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        if self.is_reclaimed() {
+            RECLAIMED_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
+        translate_in(self.root, virtual_address)",
+        replace: "        translate_in(self.root, virtual_address)",
+        breaks: "a reclaimed space is not walked as physical frame zero",
+        reddens: Caught::Check("a reclaimed space answers nothing"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "    if !root.is_live() {
+        STALE_ROOT_REFUSALS.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }",
+        replace: "",
+        breaks: "a root outliving its thread authorises nothing",
+        reddens: Caught::Check("a stale root authorises no walk"),
+    },
+    Mutation {
+        file: "kernel/src/handle.rs",
+        find: "        let slot = &mut self.slots[index];
+        let generation = slot.generation;
+        slot.entry = Some(entry);",
+        replace: "        let generation = self.slots[index].generation;
+        let _ = entry;",
+        breaks: "a claimed slot is filled by the call that claimed it",
+        reddens: Caught::Check("filling the arena never repeats a slot"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/xstate.rs",
+        find: "    BYTES.store(bytes, Ordering::Release);",
+        replace: "    BYTES.store(bytes / 2, Ordering::Release);",
+        breaks: "a save area is sized for the form that writes it",
+        reddens: Caught::Check("a save stays inside its area"),
+    },
+    Mutation {
+        file: "kernel/src/object.rs",
+        find: "            if let Some(message) = self.receive() {
+                return Some(message);
+            }
+            if self.is_orphaned() {",
+        replace: "            if self.is_orphaned() {
+                return None;
+            }
+            if let Some(message) = self.receive() {
+                return Some(message);
+            }
+            if false {",
+        breaks: "a closing channel is drained before it is refused",
+        reddens: Caught::Check("a closed channel still yields what it was sent"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/interrupt.rs",
+        find: "    \"verw word ptr [rsp]\",",
+        replace: "",
+        breaks: "the buffer flush is the instruction, not its neighbour",
+        reddens: Caught::Check("the return to ring three clears buffers"),
+    },
     Mutation {
         file: "kernel/src/object.rs",
         find: "            far.waiters.wake_all();",
