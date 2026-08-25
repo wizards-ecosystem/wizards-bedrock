@@ -137,12 +137,32 @@ enum Class {
     Idle,
 }
 
+/// Who a thread is.
+///
+/// Changed by `spawn` and by `exit`, and read by nothing that schedules: the
+/// half of a thread the policy has no business seeing (D-109).
 #[derive(Debug, Clone, Copy)]
-struct Thread {
-    state: State,
-    class: Class,
+struct Identity {
     name: &'static str,
     entry: Option<fn()>,
+}
+
+impl Identity {
+    const FREE: Self = Self {
+        name: "",
+        entry: None,
+    };
+}
+
+/// Everything the policy needs about one slot, and nothing else.
+///
+/// Deliberately without a name or an entry point. Swapping `libs/eevdf` for
+/// another policy is a change to [`RunQueue`] and to this, and to nothing that
+/// knows what a thread *is* (D-109).
+#[derive(Debug, Clone, Copy)]
+struct Scheduled {
+    state: State,
+    class: Class,
     entity: Entity,
     /// Uptime, in nanoseconds, when it last went on the CPU.
     started: u64,
@@ -155,12 +175,10 @@ struct Thread {
     parked_with_lag: i64,
 }
 
-impl Thread {
+impl Scheduled {
     const FREE: Self = Self {
         state: State::Free,
         class: Class::Normal,
-        name: "",
-        entry: None,
         entity: Entity::new(BASE_WEIGHT),
         started: 0,
         wake_at: 0,
@@ -177,18 +195,45 @@ impl Thread {
     }
 }
 
+/// Who runs next.
+///
+/// The scheduler's whole world: one [`Scheduled`] per slot and the policy over
+/// them. It cannot name a thread, which is the point of the boundary.
+#[derive(Debug)]
+struct RunQueue {
+    slots: [Scheduled; CAPACITY],
+}
+
+/// Who exists, and who runs next.
+///
+/// One lock over both halves, because every decision that changes runnability
+/// happens with the other half settled. The split is a *structural* boundary
+/// and not a locking one: the queue's methods take `&RunQueue`, so a change to
+/// the policy cannot reach a name (D-109).
 #[derive(Debug)]
 struct Threads {
-    threads: [Thread; CAPACITY],
+    identities: [Identity; CAPACITY],
+    queue: RunQueue,
     /// Slots the arena backs, or zero when threads are unavailable.
     spawnable: usize,
 }
 
 impl Threads {
+    /// Give a slot back: nobody is there, and nothing schedules it.
+    ///
+    /// Both halves, in one call, because a slot free in one and not the other
+    /// is a thread with no name or a name with no thread (D-109).
+    fn release(&mut self, slot: usize) {
+        self.identities[slot] = Identity::FREE;
+        self.queue.slots[slot] = Scheduled::FREE;
+    }
+}
+
+impl RunQueue {
     /// The fair-share point of everything the policy schedules.
     fn average(&self) -> Option<u64> {
         eevdf::average_vruntime(
-            self.threads
+            self.slots
                 .iter()
                 .filter(|thread| thread.is_scheduled())
                 .map(|thread| &thread.entity),
@@ -199,7 +244,7 @@ impl Threads {
     /// not one of them, which is what makes an otherwise-empty machine
     /// tickless rather than merely quiet.
     fn runnable(&self) -> usize {
-        self.threads
+        self.slots
             .iter()
             .filter(|thread| thread.is_scheduled())
             .count()
@@ -207,14 +252,14 @@ impl Threads {
 
     /// The slot holding the idle thread, if it has been started.
     fn idle(&self) -> Option<usize> {
-        self.threads
+        self.slots
             .iter()
             .position(|thread| thread.class == Class::Idle && thread.is_runnable())
     }
 
     /// Charge the running thread for the time since it went on.
     fn charge(&mut self, slot: usize, now: u64) {
-        let thread = &mut self.threads[slot];
+        let thread = &mut self.slots[slot];
         thread.entity.charge(now.saturating_sub(thread.started));
         thread.started = now;
         if thread.entity.slice_is_spent() {
@@ -228,7 +273,7 @@ impl Threads {
     /// with, which is where D-53's clamp acts.
     fn wake_due(&mut self, now: u64) {
         for slot in 0..CAPACITY {
-            let thread = &self.threads[slot];
+            let thread = &self.slots[slot];
             if thread.state != State::Sleeping || thread.wake_at > now {
                 continue;
             }
@@ -239,11 +284,9 @@ impl Threads {
     /// Put a parked thread back on the queue, at the fair-share point offset
     /// by the lag it left with.
     fn make_ready(&mut self, slot: usize) {
-        let average = self
-            .average()
-            .unwrap_or(self.threads[slot].entity.vruntime());
-        let lag = self.threads[slot].parked_with_lag;
-        let thread = &mut self.threads[slot];
+        let average = self.average().unwrap_or(self.slots[slot].entity.vruntime());
+        let lag = self.slots[slot].parked_with_lag;
+        let thread = &mut self.slots[slot];
         thread.entity.place(average, lag, SLICE_NS);
         thread.state = State::Ready;
         WAKES.fetch_add(1, Ordering::Relaxed);
@@ -253,7 +296,7 @@ impl Threads {
     /// [`make_ready`](Self::make_ready) can give it back.
     fn park(&mut self, slot: usize) {
         let average = self.average().unwrap_or(0);
-        let thread = &mut self.threads[slot];
+        let thread = &mut self.slots[slot];
         thread.parked_with_lag = thread.entity.lag(average);
     }
 
@@ -270,7 +313,7 @@ impl Threads {
             (1..=CAPACITY)
                 .map(|offset| (current + offset) % CAPACITY)
                 .filter(|slot| *slot != current || include_current)
-                .filter(|slot| self.threads[*slot].is_scheduled())
+                .filter(|slot| self.slots[*slot].is_scheduled())
         };
         // The idle thread is the answer only when there is no other, and it
         // is never the answer to "should the running thread be replaced" —
@@ -279,7 +322,7 @@ impl Threads {
             return self.idle().filter(|slot| *slot != current);
         };
         let picked = eevdf::pick(
-            candidates().map(|slot| (slot, &self.threads[slot].entity)),
+            candidates().map(|slot| (slot, &self.slots[slot].entity)),
             average,
         );
         match picked {
@@ -310,9 +353,9 @@ impl Threads {
     /// will notice it.
     fn next_event(&self, running: usize, now: u64) -> Option<u64> {
         let slice_end = (self.runnable() > 1)
-            .then(|| now.saturating_add(self.threads[running].entity.remaining_slice()));
+            .then(|| now.saturating_add(self.slots[running].entity.remaining_slice()));
         let earliest_sleeper = self
-            .threads
+            .slots
             .iter()
             .filter(|thread| thread.state == State::Sleeping)
             .map(|thread| thread.wake_at)
@@ -326,14 +369,17 @@ impl Threads {
 
     /// Move the CPU's bookkeeping from `current` to `next`.
     fn hand_over(&mut self, current: usize, next: usize, leaving: State, now: u64) {
-        self.threads[current].state = leaving;
-        self.threads[next].state = State::Running;
-        self.threads[next].started = now;
+        self.slots[current].state = leaving;
+        self.slots[next].state = State::Running;
+        self.slots[next].started = now;
     }
 }
 
 static THREADS: SpinLock<Threads> = SpinLock::new(Threads {
-    threads: [Thread::FREE; CAPACITY],
+    identities: [Identity::FREE; CAPACITY],
+    queue: RunQueue {
+        slots: [Scheduled::FREE; CAPACITY],
+    },
     spawnable: 0,
 });
 
@@ -367,12 +413,15 @@ pub(crate) fn init(arena: StackArena) -> Result<usize, TaskError> {
     threads.spawnable = spawnable.min(STACK_SLOTS);
     let mut entity = Entity::new(BASE_WEIGHT);
     entity.place(0, 0, SLICE_NS);
-    threads.threads[BOOT] = Thread {
-        state: State::Running,
+    threads.identities[BOOT] = Identity {
         name: "boot",
+        entry: None,
+    };
+    threads.queue.slots[BOOT] = Scheduled {
+        state: State::Running,
         entity,
         started: time::now_ns(),
-        ..Thread::FREE
+        ..Scheduled::FREE
     };
     Ok(threads.spawnable)
 }
@@ -386,9 +435,9 @@ pub(crate) fn is_available() -> bool {
 #[cfg(feature = "selftest")]
 pub(crate) fn free_slots() -> usize {
     let threads = THREADS.lock_leaf();
-    threads.threads[1..=threads.spawnable]
+    threads.queue.slots[1..=threads.spawnable]
         .iter()
-        .filter(|thread| thread.state == State::Free)
+        .filter(|slot| slot.state == State::Free)
         .count()
 }
 
@@ -419,7 +468,7 @@ pub(crate) fn idle_halts() -> usize {
 /// Whether the idle thread is running.
 #[cfg(feature = "selftest")]
 pub(crate) fn idle_is_started() -> bool {
-    IDLE_STARTED.is_claimed() && THREADS.lock_leaf().idle().is_some()
+    IDLE_STARTED.is_claimed() && THREADS.lock_leaf().queue.idle().is_some()
 }
 
 /// Start the thread that runs when nothing else can.
@@ -435,7 +484,7 @@ pub(crate) fn start_idle() {
     let Ok(slot) = spawn("idle", idle_loop) else {
         return;
     };
-    THREADS.lock_leaf().threads[slot].class = Class::Idle;
+    THREADS.lock_leaf().queue.slots[slot].class = Class::Idle;
 }
 
 /// What the idle thread does: nothing, as cheaply as the hardware allows.
@@ -520,14 +569,16 @@ fn spawn_prepared(
             return Err(SpawnError::Unavailable);
         }
         let slot = (1..=threads.spawnable)
-            .find(|slot| threads.threads[*slot].state == State::Free)
+            .find(|slot| threads.queue.slots[*slot].state == State::Free)
             .ok_or(SpawnError::Full)?;
-        threads.threads[slot] = Thread {
-            state: State::Reserved,
+        threads.identities[slot] = Identity {
             name,
             entry: Some(entry),
+        };
+        threads.queue.slots[slot] = Scheduled {
+            state: State::Reserved,
             entity: Entity::new(weight),
-            ..Thread::FREE
+            ..Scheduled::FREE
         };
         slot
     };
@@ -536,7 +587,7 @@ fn spawn_prepared(
     // leaf. The slot is reserved, so no other spawn can choose it and no
     // expiry can pick it.
     if let Err(error) = task::fabricate(slot, start, slot) {
-        THREADS.lock_leaf().threads[slot] = Thread::FREE;
+        THREADS.lock_leaf().release(slot);
         return Err(SpawnError::Task(error));
     }
 
@@ -546,7 +597,7 @@ fn spawn_prepared(
     if let Some(binding) = binding
         && let Err(error) = task::bind_address_space(slot, binding)
     {
-        THREADS.lock_leaf().threads[slot] = Thread::FREE;
+        THREADS.lock_leaf().release(slot);
         return Err(SpawnError::Task(error));
     }
     arrange(slot);
@@ -558,10 +609,10 @@ fn spawn_prepared(
     let now = time::now_ns();
     let event = {
         let mut threads = THREADS.lock_leaf();
-        let average = threads.average().unwrap_or(0);
-        threads.threads[slot].entity.place(average, 0, SLICE_NS);
-        threads.threads[slot].state = State::Ready;
-        threads.next_event(task::current(), now)
+        let average = threads.queue.average().unwrap_or(0);
+        threads.queue.slots[slot].entity.place(average, 0, SLICE_NS);
+        threads.queue.slots[slot].state = State::Ready;
+        threads.queue.next_event(task::current(), now)
     };
     reschedule_timer(event);
     saved.restore();
@@ -590,13 +641,13 @@ pub(crate) fn yield_now(context: &mut ThreadContext) {
     let (next, event) = {
         let mut threads = THREADS.lock(context);
         let current = task::current();
-        threads.charge(current, now);
-        threads.wake_due(now);
-        let next = threads.choose(current, false);
+        threads.queue.charge(current, now);
+        threads.queue.wake_due(now);
+        let next = threads.queue.choose(current, false);
         if let Some(next) = next {
-            threads.hand_over(current, next, State::Ready, now);
+            threads.queue.hand_over(current, next, State::Ready, now);
         }
-        (next, threads.next_event(next.unwrap_or(current), now))
+        (next, threads.queue.next_event(next.unwrap_or(current), now))
     };
 
     reschedule_timer(event);
@@ -642,7 +693,7 @@ pub(crate) fn sleep_ns(context: &mut ThreadContext, nanoseconds: u64) {
     // than its own deadline — the halt below returns on any interrupt — and
     // the deadline, not the wakeup, is what this promised.
     while time::now_ns() < wake_at {
-        THREADS.lock(context).threads[task::current()].wake_at = wake_at;
+        THREADS.lock(context).queue.slots[task::current()].wake_at = wake_at;
         park(context, State::Sleeping, Some(wake_at));
     }
     saved.restore();
@@ -662,21 +713,21 @@ fn park(context: &mut ThreadContext, leaving: State, until: Option<u64>) {
     let (next, event) = {
         let mut threads = THREADS.lock(context);
         let current = task::current();
-        threads.charge(current, now);
-        threads.wake_due(now);
-        threads.park(current);
-        threads.threads[current].state = leaving;
+        threads.queue.charge(current, now);
+        threads.queue.wake_due(now);
+        threads.queue.park(current);
+        threads.queue.slots[current].state = leaving;
 
-        match threads.choose(current, false) {
+        match threads.queue.choose(current, false) {
             Some(next) => {
                 // Counted here, not at the call: a thread with nobody to hand
                 // the CPU to never leaves the run queue.
                 if leaving == State::Blocked {
                     BLOCKS.fetch_add(1, Ordering::Relaxed);
                 }
-                threads.threads[next].state = State::Running;
-                threads.threads[next].started = now;
-                (Some(next), threads.next_event(next, now))
+                threads.queue.slots[next].state = State::Running;
+                threads.queue.slots[next].started = now;
+                (Some(next), threads.queue.next_event(next, now))
             }
             // Nobody to hand the CPU to, so this thread keeps it and waits on
             // it — still running, and still the one the table charges, for
@@ -684,8 +735,8 @@ fn park(context: &mut ThreadContext, leaving: State, until: Option<u64>) {
             // CPU. The idle thread of `start_idle` is what removes this case
             // once it exists.
             None => {
-                threads.threads[current].state = State::Running;
-                let event = threads.next_event(current, now);
+                threads.queue.slots[current].state = State::Running;
+                let event = threads.queue.next_event(current, now);
                 (None, earliest(event, until))
             }
         }
@@ -723,15 +774,15 @@ pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
     let (next, event) = {
         let mut threads = THREADS.lock_leaf();
         let current = task::current();
-        threads.charge(current, now);
-        threads.wake_due(now);
-        threads.park(current);
-        threads.threads[current].state = State::Blocked;
-        match threads.choose(current, false) {
+        threads.queue.charge(current, now);
+        threads.queue.wake_due(now);
+        threads.queue.park(current);
+        threads.queue.slots[current].state = State::Blocked;
+        match threads.queue.choose(current, false) {
             Some(next) => {
-                threads.threads[next].state = State::Running;
-                threads.threads[next].started = now;
-                (Some(next), threads.next_event(next, now))
+                threads.queue.slots[next].state = State::Running;
+                threads.queue.slots[next].started = now;
+                (Some(next), threads.queue.next_event(next, now))
             }
             None => (None, None),
         }
@@ -787,10 +838,10 @@ pub(crate) fn unblock(slots: u32) -> usize {
         let mut threads = THREADS.lock_leaf();
         let mut woken = 0;
         for slot in 0..CAPACITY {
-            if slots & (1 << slot) == 0 || threads.threads[slot].state != State::Blocked {
+            if slots & (1 << slot) == 0 || threads.queue.slots[slot].state != State::Blocked {
                 continue;
             }
-            threads.make_ready(slot);
+            threads.queue.make_ready(slot);
             woken += 1;
         }
         woken
@@ -821,7 +872,7 @@ pub(crate) fn current_slot() -> usize {
 pub(crate) fn current_name() -> &'static str {
     let slot = task::current();
     match THREADS.try_lock_leaf() {
-        Some(threads) if !threads.threads[slot].name.is_empty() => threads.threads[slot].name,
+        Some(threads) if !threads.identities[slot].name.is_empty() => threads.identities[slot].name,
         Some(_) => "unnamed",
         None => "unknown",
     }
@@ -846,16 +897,19 @@ pub(crate) fn reschedule(frame: &TrapFrame) {
             return;
         }
         let current = task::current();
-        threads.charge(current, now);
-        threads.wake_due(now);
-        let next = match switchable.then(|| threads.choose(current, true)).flatten() {
+        threads.queue.charge(current, now);
+        threads.queue.wake_due(now);
+        let next = match switchable
+            .then(|| threads.queue.choose(current, true))
+            .flatten()
+        {
             Some(next) if next != current => {
-                threads.hand_over(current, next, State::Ready, now);
+                threads.queue.hand_over(current, next, State::Ready, now);
                 Some(next)
             }
             _ => None,
         };
-        (next, threads.next_event(next.unwrap_or(current), now))
+        (next, threads.queue.next_event(next.unwrap_or(current), now))
     };
 
     reschedule_timer(event);
@@ -903,14 +957,14 @@ pub(crate) fn exit() -> ! {
         // accounted like every other. It changes nothing while the slot is
         // freed immediately, and it is wrong the day exit accounting matters
         // (D-105).
-        threads.charge(current, now);
-        threads.threads[current] = Thread::FREE;
-        threads.wake_due(now);
-        let Some(next) = threads.choose(current, false) else {
+        threads.queue.charge(current, now);
+        threads.release(current);
+        threads.queue.wake_due(now);
+        let Some(next) = threads.queue.choose(current, false) else {
             panic!("nothing is runnable after slot {current} exited");
         };
-        threads.hand_over(current, next, State::Free, now);
-        (next, threads.next_event(next, now))
+        threads.queue.hand_over(current, next, State::Free, now);
+        (next, threads.queue.next_event(next, now))
     };
 
     reschedule_timer(event);
@@ -920,7 +974,7 @@ pub(crate) fn exit() -> ! {
 
 /// Where every spawned thread begins: run its entry, then leave.
 extern "C" fn start(slot: usize) -> ! {
-    let entry = THREADS.lock_leaf().threads[slot].entry;
+    let entry = THREADS.lock_leaf().identities[slot].entry;
     match entry {
         Some(entry) => entry(),
         None => panic!("slot {slot} started with no entry"),
