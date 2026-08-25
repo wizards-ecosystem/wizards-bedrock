@@ -919,6 +919,56 @@ fn the_return_to_ring_three_clears_buffers() -> bool {
     executed >= trap::last_syscall().count as u64
 }
 
+/// A user copy that faults resumes and reports, instead of stopping the
+/// machine.
+///
+/// D-97 reasons from the right premise — *the program is the untrusted party*
+/// — and until D-120 the copy path did not act on it. A fault inside the
+/// window was terminal, so a program that arranged one stopped the machine.
+///
+/// **Driven through the unwalked copy, because the walked one cannot reach
+/// it.** `admits` refuses an unmapped address before a byte moves, so a check
+/// built on the walked form tests the refusal it already has and the recovery
+/// not at all — it would pass with the fixup deleted, which is the shape this
+/// project keeps finding in its own checks (D-105 rule 2). The unwalked form
+/// is safe *because* of the fixup, so pointing it at nothing is exactly the
+/// mechanism under test.
+fn a_faulting_user_copy_resumes_and_reports() -> bool {
+    /// User memory the running space certainly does not map.
+    const NOWHERE: u64 = 0x0000_6000_0000_0000;
+
+    let recoveries_before = trap::user_copy_recoveries();
+    let mut read = [0xA5u8; 8];
+
+    // Nothing is there. The copy faults on its first byte, resumes at the
+    // fixup, and says how much it did not move.
+    let vanished = usercopy::copy_from_user_unwalked(NOWHERE, &mut read);
+    let reported = vanished == Err(UserCopyError::Vanished(read.len()));
+
+    // The machine is still here, and the fault was counted rather than
+    // inferred: this line running at all is the weaker half, and the count is
+    // the half that could not be true by accident.
+    let recovered = trap::user_copy_recoveries() == recoveries_before + 1;
+
+    // Ring 3's half only: the kernel's is refused before the window opens, so
+    // the unwalked form cannot be turned into an arbitrary kernel read.
+    let kernel_refused = matches!(
+        usercopy::copy_from_user_unwalked(boot::sections().text.start, &mut read),
+        Err(UserCopyError::NotUserMemory(_))
+    );
+
+    // And a page that *is* there copies, so the fixup has not simply broken
+    // the copy for everything.
+    let Some((code, _)) = boundary_probe() else {
+        return false;
+    };
+    let mut program = [0u8; user::PROGRAM.len()];
+    let works =
+        usercopy::copy_from_user_unwalked(code, &mut program).is_ok() && program == user::PROGRAM;
+
+    reported && recovered && kernel_refused && works
+}
+
 /// Bytes cross the boundary in both directions, and every way they must not
 /// is refused.
 ///
@@ -3697,7 +3747,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 127;
+const EXPECTED_CHECKS: usize = 128;
 
 impl Report {
     const fn new() -> Self {
@@ -3884,6 +3934,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the return to ring three clears buffers",
         the_return_to_ring_three_clears_buffers(),
+    );
+    report.check(
+        "a faulting user copy resumes and reports",
+        a_faulting_user_copy_resumes_and_reports(),
     );
     report.check(
         "bytes cross the boundary only where they may",

@@ -942,10 +942,13 @@ Nothing here is a surprise; each is named in the ADR that created it.
   with the frame count steady. The program's *stack* is still the boot-time
   arena, so sixteen remains a cap on concurrency — no longer on programs ever
   run.
-- **A fault during a user copy is still terminal**, where a real kernel would
-  recover and return an error. That needs a fixup table keyed on the faulting
-  instruction pointer, and the trap dispatch D-81 built is what would consult
-  one.
+- ~~A fault during a user copy is still terminal.~~ **Closed by D-120.** The
+  copy is assembly with its faulting instructions between named labels, a page
+  fault in that range resumes at a fixup, and the caller gets a count of what
+  did not move. The trap dispatch D-81 built is what consults it. What it buys
+  beyond the hole: dereferencing an arbitrary *user* address is now memory-safe,
+  so `copy_from_user_unwalked` exists and is what Linux's `copy_from_user`
+  has always been.
 - **`xtask/src/elf.rs` still carries its own transcription** of the ELF header
   offsets rather than using `libs/elf64` — the duplication that crate exists to
   prevent. D-105 recorded it; it is still true.

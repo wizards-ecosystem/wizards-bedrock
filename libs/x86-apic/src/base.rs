@@ -8,7 +8,7 @@
 pub const MSR: u32 = 0x1B;
 
 /// Bit 8: this is the processor the firmware started from reset.
-const BOOTSTRAP: u64 = 1 << 8;
+const BOOTSTRAP: u64 = 1 << 9;
 
 /// Bit 10: the APIC is reached through model-specific registers rather than
 /// memory, and every offset in [`crate::register`] is meaningless.

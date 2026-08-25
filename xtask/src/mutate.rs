@@ -119,6 +119,16 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "    if false && wanted != cpu::page_table_base() {",
         breaks: "a thread's address space is installed by the switch",
     },
+    // Its failure mode is a *panic* rather than a red check, because without
+    // the fixup the fault is terminal and the self-test never reaches its
+    // verdict. The harness treats both as a failure, which is right: a kernel
+    // that died is a kernel that noticed (D-120).
+    Mutation {
+        file: "kernel/src/arch/x86_64/trap.rs",
+        find: "if usercopy::recover(frame) =>",
+        replace: "if false && usercopy::recover(frame) =>",
+        breaks: "a faulting user copy resumes instead of stopping the machine",
+    },
 ];
 
 /// Apply each mutation, boot, and require something to go red.

@@ -286,6 +286,33 @@ pub(crate) fn is_live_frame(frame: &TrapFrame) -> bool {
     LIVE_FRAME.load(Ordering::Relaxed) == frame.origin
 }
 
+/// Resume the interrupted context at `address` instead of where it faulted.
+///
+/// `pub(super)`, and there is exactly one caller: `usercopy::recover`, which
+/// has already established that the fault was inside its own two-instruction
+/// copy and that `address` is its own fixup label. A general "set the
+/// instruction pointer" is not something this kernel should have — it is the
+/// primitive every exploit wants — and the narrowness is the whole safety
+/// argument (D-120).
+///
+/// Refused unless `frame` is the innermost live one, as [`answer`] is: a stale
+/// snapshot's `origin` names a stack another thread is now standing on.
+///
+/// `false` if the frame is not live, having written nothing.
+pub(super) fn resume_at(frame: &TrapFrame, address: u64) -> bool {
+    if !is_live_frame(frame) {
+        return false;
+    }
+    // SAFETY: `origin` is the assembly frame the entry path pushed and the
+    // check above says it is still the innermost one, so it is on this
+    // thread's kernel stack and the stub has not yet popped it.
+    let slot = unsafe { core::ptr::addr_of_mut!((*frame.origin).instruction_pointer) };
+    // SAFETY: as above. The value is a label inside this crate's own text, so
+    // `iretq` returns to an instruction rather than to whatever a caller chose.
+    unsafe { slot.write(address) };
+    true
+}
+
 /// Set the `rax` the interrupted context will resume with.
 ///
 /// The one way anything writes a trap frame, and the whole of the return-value

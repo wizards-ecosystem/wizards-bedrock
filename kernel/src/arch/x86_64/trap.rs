@@ -13,6 +13,7 @@ use trap_cause::TrapCause;
 use wost::arch::current::apic;
 use wost::arch::current::cpu;
 use wost::arch::current::interrupt::{self, TrapFrame};
+use wost::arch::current::usercopy;
 
 use super::vector;
 
@@ -99,6 +100,19 @@ fn on_trap(frame: &TrapFrame) {
         // The privilege in the saved `CS` is the CPU's own account of where
         // the fault happened, so it cannot be forged by kernel code that
         // merely looks like a program.
+        // A fault inside the user-copy window is neither the kernel's bug nor
+        // the program's death: it is the page having gone away between the
+        // walk and the copy, which interrupts being on between them makes
+        // possible. The copy resumes at its fixup and reports how much it did
+        // not move (D-120).
+        //
+        // **Before** the ring-3 test, because this fault is taken in ring 0 —
+        // the kernel is the one dereferencing — so `is_the_programs` would say
+        // no and the machine would stop.
+        TrapCause::Fault(trap_cause::Fault::PageFault(_)) if usercopy::recover(frame) => {
+            USER_COPY_RECOVERIES.fetch_add(1, Ordering::Relaxed);
+        }
+
         TrapCause::Fault(fault) if is_the_programs(frame, fault) => {
             LAST_USER_FAULT.record(frame);
             if !crate::thread::retire_from_trap(frame) {
@@ -108,6 +122,19 @@ fn on_trap(frame: &TrapFrame) {
 
         _ => panic!("{}", Report { frame, cause }),
     }
+}
+
+/// Faults recovered inside the user-copy window.
+///
+/// Should stay at zero on a machine where nothing unmaps another thread's
+/// memory; a count that climbs is the window being reached, which is worth
+/// knowing rather than inferring.
+static USER_COPY_RECOVERIES: AtomicUsize = AtomicUsize::new(0);
+
+/// How many user copies have been resumed at their fixup.
+#[cfg(feature = "selftest")]
+pub(crate) fn user_copy_recoveries() -> usize {
+    USER_COPY_RECOVERIES.load(Ordering::Acquire)
 }
 
 /// Whether this fault is a program's to die of rather than the machine's.
