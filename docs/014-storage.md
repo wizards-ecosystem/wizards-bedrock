@@ -67,7 +67,7 @@ before its abstraction is anything but a guess.
 |---|---|---|
 | 1 | **A completion carries a handle.** Reservation extended to handle-table slots, attenuation on arrival, and the first operation that genuinely waits | Done |
 | 2 | **The time page.** Two regions — immutable constants, and a versioned clock with a revocation gate and a syscall fallback | Done |
-| 3 | **Death mid-operation.** In-flight operations collected with the zombie; exit is a *wait*, not a signal | |
+| 3 | **Death mid-operation.** In-flight operations collected with the zombie; exit is a *wait*, not a signal | Done |
 | 4 | **PCI, and a device that is claimed.** CF8/CFC enumeration recursing through bridges, a `Device` capability that supersedes bare port claims, BAR mapping uncacheable | |
 | 5 | **NVMe, polled.** Twelve-step init, one I/O queue pair, `IEN=0`, PRP construction in `libs/`, and the `size − 1` capacity rule proved | |
 | 6 | **FAT32, read-only, short names.** `libs/fat32` over a block trait, checked against the ESP `xtask` already builds | |
@@ -541,3 +541,49 @@ while none is implemented and would cost an ABI break later. The C header gains
 the page's address, version, modes and every field offset, and the cross-check
 compares all of them against `timepage.rs` — a `mode` read from the wrong place
 is a clock that reads as usable when it is not.
+
+---
+
+## Slice 3 — Death mid-operation
+
+**Landed 2026-08-25.** D-167. 158 machine checks, 619 host tests, 39 mutations.
+
+Until slice 1 there was nothing to say here: every operation completed inside
+the call that submitted it, so a retiring program had no work in flight by
+construction. `Opcode::Timer` made D-153's debt reachable in the same commit
+that created it.
+
+**The hazard is specific.** A retired program's ring pages go back to the
+allocator in `reclaim`. An operation in flight is one that will later write a
+completion, and the page it would write into is about to be somebody else's.
+Not a leak — a write to freed memory, arriving whenever the operation finishes.
+
+**So the ring is quietened first.** `abandon` ends every operation and posts the
+completion it was owed, into pages the zombie still holds. The completions go
+into a ring nobody will read, and that is not waste: posting them is what
+spends the reservations, and a reservation never spent is a ring whose
+accounting says work is outstanding for ever.
+
+**No grace period, no refcount** — `012` §10's third consequence, and the
+easiest to violate by accident. A teardown that waits for a count to reach zero
+*eventually* is precisely the out-of-line cancellation that took io_uring six
+years to undo.
+
+### The part that needed no code
+
+D-151's third terminal path is "a retired program's", and D-163 had already
+made the reservation a value holding an `Arc` to its table. A program that dies
+holding a promise leaves the table alive exactly as long as the promise, and
+the destructor gives the slot back and lets the table go. The teardown drops
+its reference and the table simply does not leave.
+
+That is *checked* rather than asserted: the check watches the table through a
+`Weak`, spends the promise against it after its owner is gone — surviving and
+working being different claims — and then requires the `Weak` to stop
+upgrading, because a table nothing will ever free is the other failure.
+
+### What slice 5 inherits
+
+The shape, not the code. A polled NVMe read cannot be ended by writing a
+completion: the device has the command. `abandon` will have to wait for the
+controller there. What it must not do is return before `is_quiet`.

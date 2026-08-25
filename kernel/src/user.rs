@@ -680,9 +680,31 @@ fn reclaim(bootstrap: Bootstrap) -> Reclaimed {
         }
     }
 
+    // **Before the ring's pages go anywhere.** An operation still in flight is
+    // an operation that could still write a completion, and the page it would
+    // write into is about to become the allocator's. So the ring is quietened
+    // first: every outstanding operation is ended and given the completion it
+    // was owed, into memory that still exists (D-167).
+    //
+    // A wait, not a signal — `012` §10, and io_uring's six years of cancelling
+    // out of line with mount points staying busy afterwards. When `abandon`
+    // returns there is nothing left that could touch these pages, which is why
+    // the drop below is safe rather than merely usual.
+    let abandoned = ring.abandon();
+    debug_assert!(
+        ring.is_quiet(),
+        "a zombie's ring still has work in flight after being abandoned"
+    );
+
     // Before the tables: dropping an object can reach the frame allocator, and
     // doing that after the space is gone would be fine — doing it *first* is
     // simply the order that has nothing subtle in it.
+    //
+    // The table may **outlive this drop**, and that is the design rather than a
+    // leak. A promise made to an operation holds an `Arc` to the table it is
+    // against, so a program that dies with one outstanding leaves the table
+    // alive exactly as long as the promise — and the promise's destructor
+    // gives the slot back and lets the table go (D-163).
     drop(table);
     drop(ring);
 
@@ -700,6 +722,7 @@ fn reclaim(bootstrap: Bootstrap) -> Reclaimed {
         pages: unmapped,
         tables,
         lost,
+        abandoned,
     }
 }
 
@@ -712,6 +735,8 @@ pub(crate) struct Reclaimed {
     pub(crate) tables: usize,
     /// Table frames it had too many of to remember, and did not get back.
     pub(crate) lost: usize,
+    /// Operations that were still in flight and were ended.
+    pub(crate) abandoned: usize,
 }
 
 /// Programs whose threads are gone and whose resources are not.

@@ -1310,6 +1310,131 @@ fn a_table() -> alloc::sync::Arc<crate::handle::HandleTable> {
     alloc::sync::Arc::new(crate::handle::HandleTable::new(8))
 }
 
+/// A program that dies with work in flight has it ended before its ring goes.
+///
+/// D-153 as `012` §10 amends it: **exit is a wait, not a signal.** io_uring
+/// cancelled out of line for six years and the symptom was mount points
+/// staying busy after the process had exited. An operation still in flight is
+/// one that could still write a completion, and the page it would write into
+/// is about to become the allocator's.
+///
+/// So the claim is not "the operation is forgotten" but "the operation is
+/// *finished*": it gets the one terminal completion D-79 promises it, into
+/// memory that still exists, and the reservation it was holding is spent. A
+/// reservation never spent is a ring whose accounting says work is outstanding
+/// for ever, which is invisible until something asks — and slice 5's device
+/// will ask (D-167).
+fn work_in_flight_is_ended_before_the_ring_is_released() -> bool {
+    if !crate::time::is_calibrated() {
+        return false;
+    }
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let table = a_table();
+
+    // Two operations, an hour out, so nothing but the teardown can end them.
+    for (slot, token) in [(0usize, 0xA1u32), (1, 0xA2)] {
+        queue.post_submission_for_test(
+            slot,
+            queue::Submission {
+                opcode: queue::Opcode::Timer,
+                token,
+                argument: 3_600_000_000_000,
+            },
+        );
+    }
+    queue.publish_tail_for_test(2);
+
+    // Admitted and deferred: no completions, and the ring's own accounting
+    // says two operations are outstanding.
+    let in_flight = queue.serve(&table) == 0 && queue.in_flight() == 2 && queue.outstanding() == 2;
+
+    let ended = queue.abandon();
+
+    // Each got the completion it was owed, and it says what happened rather
+    // than pretending to be a result.
+    let first = queue.read_completion(0);
+    let second = queue.read_completion(1);
+    let completed = first.token == 0xA1
+        && first.status == queue::STATUS_CANCELLED
+        && second.token == 0xA2
+        && second.status == queue::STATUS_CANCELLED;
+
+    in_flight
+        && ended == 2
+        && completed
+        // Nothing left that could touch the pages, and the reservations are
+        // spent rather than held: `outstanding` is the accounting that would
+        // otherwise say work is in flight for ever.
+        && queue.is_quiet()
+        && queue.in_flight() == 0
+        && queue.outstanding() == 0
+        && queue.is_consistent()
+        // And a second sweep finds nothing, so teardown is idempotent — which
+        // it must be, because `reclaim` is not the only path that could reach
+        // a zombie.
+        && queue.abandon() == 0
+}
+
+/// A promise outlives the program that made it, and gives its slot back.
+///
+/// The third of D-151's three terminal paths, and the one slice 1 could not
+/// reach: a program that dies holding a promise against its own handle table.
+///
+/// The reservation holds an `Arc` to the table, so the table stays alive
+/// exactly as long as the promise does — the teardown drops its reference and
+/// the table does not go anywhere. That is what makes "the zombie holds every
+/// resource any in-flight operation can still touch" true by construction
+/// rather than by remembering (D-163, D-167).
+///
+/// Observed through a `Weak`, which is the only way to ask "is it still there"
+/// without being the reason it is. Then the table is *used* after its owner is
+/// gone, because surviving and working are different claims.
+fn a_promise_outlives_the_program_that_made_it() -> bool {
+    let Some((held, _far)) = crate::object::channel() else {
+        return false;
+    };
+    let Some((second, _far_two)) = crate::object::channel() else {
+        return false;
+    };
+
+    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(4));
+    let watching = alloc::sync::Arc::downgrade(&table);
+
+    let full = Rights::UNIVERSAL.union(Rights::READ);
+    if table.insert(held, full).is_err() {
+        return false;
+    }
+    let Ok(reservation) = table.reserve_slot() else {
+        return false;
+    };
+    let promised = table.live() == 1 && table.promised() == 1;
+
+    // The program dies. Everything the kernel held of it is dropped, and the
+    // only reference left in the world is the one inside the promise.
+    drop(table);
+
+    let Some(orphan) = watching.upgrade() else {
+        // A table freed under an outstanding promise is a use-after-free
+        // waiting for the completion to arrive, not merely a failed check.
+        return false;
+    };
+
+    // Surviving is not the same as working: the promise is spent against the
+    // orphaned table, which is exactly what a completion arriving after the
+    // program's death would do.
+    let installed = orphan.install(reservation, second, full, full).is_ok();
+    let accounted = orphan.live() == 2 && orphan.promised() == 0;
+
+    // And with the promise gone, the table goes when the last reference does.
+    // A `Weak` that still upgrades here is a table nothing will ever free.
+    drop(orphan);
+    let released = watching.upgrade().is_none();
+
+    promised && installed && accounted && released
+}
+
 /// The constants region says what the kernel measured.
 ///
 /// No sequence counter guards this region and none is needed: it is written
@@ -4879,7 +5004,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 156;
+const EXPECTED_CHECKS: usize = 158;
 
 impl Report {
     const fn new() -> Self {
@@ -5022,6 +5147,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a ring announces its shape and keeps its pages",
         a_ring_announces_its_shape_and_keeps_its_pages(),
+    );
+    report.check(
+        "work in flight is ended before the ring is released",
+        work_in_flight_is_ended_before_the_ring_is_released(),
+    );
+    report.check(
+        "a promise outlives the program that made it",
+        a_promise_outlives_the_program_that_made_it(),
     );
     report.check(
         "the time page states the clock the kernel measured",

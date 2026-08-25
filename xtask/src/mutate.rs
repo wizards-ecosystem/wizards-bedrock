@@ -466,6 +466,41 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "the time page is read-only to ring 3",
         reddens: Caught::Check("a program sees the time page and cannot write it"),
     },
+    // Slice 3. Teardown that forgets an operation rather than finishing it:
+    // no completion, and the reservation held for ever. Not a crash — a ring
+    // whose accounting says work is outstanding after the program is gone,
+    // which is invisible until something asks (D-167).
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "            if !self.post(Completion {
+                token: entry.token,
+                status: STATUS_CANCELLED,
+                value: 0,
+            }) {
+                debug_assert!(false, \"an abandoned operation had no reserved slot\");
+                break;
+            }
+            ended += 1;",
+        replace: "            ended += 1;",
+        breaks: "a dead program's work is finished, not forgotten",
+        reddens: Caught::Check("work in flight is ended before the ring is released"),
+    },
+    // The promise given a table of its own, so the one it was made against
+    // dies under it. This is the use-after-free D-163's `Arc` exists to
+    // prevent, and it reddens four checks at once.
+    Mutation {
+        file: "kernel/src/handle.rs",
+        find: "        Ok(SlotReservation {
+            table: Arc::clone(self),
+            spent: false,
+        })",
+        replace: "        Ok(SlotReservation {
+            table: Arc::new(HandleTable::new(self.quota)),
+            spent: false,
+        })",
+        breaks: "a promise holds the table it is against",
+        reddens: Caught::Check("a promise outlives the program that made it"),
+    },
     // D-133's exemption, put back. The inner test is left in place so the
     // counter still cannot move, which is the point: the woken thread runs
     // either way, because the keyboard arm reschedules a moment later, so only

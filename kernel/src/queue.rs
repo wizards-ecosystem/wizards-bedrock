@@ -530,6 +530,69 @@ impl Queue {
         due
     }
 
+    /// End every operation still in flight, and report how many.
+    ///
+    /// **The teardown path**, and D-153 as `012` §10 amends it: *exit is a
+    /// wait, not a signal.* io_uring cancelled out of line for six years and
+    /// the symptom was mount points staying busy after the process had exited.
+    /// So this does not mark anything abandoned and leave: it ends each
+    /// operation and posts the completion it was owed, into pages the zombie
+    /// still holds, and when it returns there is nothing left that could
+    /// touch them.
+    ///
+    /// The completions go into a ring nobody will read, and that is not waste.
+    /// Posting them is what spends the reservations, and a reservation that is
+    /// never spent is a ring whose accounting says work is outstanding for
+    /// ever — which is invisible until something asks, and slice 5's device
+    /// will ask.
+    ///
+    /// **No grace period and no refcount.** Every operation this kernel has
+    /// today ends synchronously, so one sweep is the whole wait. An operation
+    /// that could not — a read the device has already been told to do — is
+    /// slice 5's problem, and the shape it must fit is this one: the sweep
+    /// ends when [`is_quiet`](Self::is_quiet) is true and not before.
+    pub(crate) fn abandon(&self) -> usize {
+        let mut ended = 0;
+        loop {
+            let taken = {
+                let mut pending = self.pending.lock_leaf();
+                let mut found = None;
+                for slot in pending.iter_mut() {
+                    if slot.is_some() {
+                        found = slot.take();
+                        break;
+                    }
+                }
+                found
+            };
+            let Some(entry) = taken else {
+                break;
+            };
+            if !self.post(Completion {
+                token: entry.token,
+                status: STATUS_CANCELLED,
+                value: 0,
+            }) {
+                debug_assert!(false, "an abandoned operation had no reserved slot");
+                break;
+            }
+            ended += 1;
+        }
+
+        if ended > 0 {
+            self.served.fetch_add(ended, Ordering::Release);
+        }
+        ended
+    }
+
+    /// Whether nothing is in flight.
+    ///
+    /// What [`abandon`](Self::abandon) leaves true, and what a teardown must
+    /// see before it releases anything an operation could still reach.
+    pub(crate) fn is_quiet(&self) -> bool {
+        self.pending.lock_leaf().iter().all(Option::is_none)
+    }
+
     /// When the soonest operation still in flight comes due.
     ///
     /// `None` when nothing is, which is what tells a waiter there is nothing
