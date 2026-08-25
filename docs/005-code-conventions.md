@@ -318,6 +318,14 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   nearest integer to the ratio" is testable against both neighbours without
   ever mentioning the `+ denominator / 2` that achieves it.
 
+- **A check that quantifies must read its domain.** If the name begins
+  "every", "all" or "no", the body enumerates the domain — it does not name
+  its members. A list restated beside its source is a second copy with a
+  test-shaped wrapper, and it passes on the day the two disagree, which is the
+  failure it was written to catch. `vendor.rs` is the shape: it walks the tree
+  for `CHECKSUMS` files, cross-checks both directions and asserts the counts
+  match. The two checks that were wrong were the two that had a list (D-157).
+
 - **Measure what a tool does; do not reason about it.** This is the one rule
   here that was learned twice in a day, in opposite directions, and it is
   narrower and more useful than "check your assumptions".

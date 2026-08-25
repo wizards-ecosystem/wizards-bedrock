@@ -115,8 +115,7 @@ mod tests {
         let spec = std::fs::read_to_string(root.join("models/Ring.tla")).expect("Ring.tla");
         let config = std::fs::read_to_string(root.join("models/Ring.cfg")).expect("Ring.cfg");
 
-        // A definition is `Name == ...` at the left margin. The invariants are
-        // the ones whose bodies are a comparison rather than an action.
+        // A definition is `Name == ...` at the left margin.
         let defined: Vec<&str> = spec
             .lines()
             .filter(|line| !line.starts_with("\\"))
@@ -124,35 +123,122 @@ mod tests {
             .filter(|name| !name.is_empty() && !name.contains(' '))
             .collect();
 
-        let listed = config
+        // The block runs to the first blank line; the comment and
+        // `CHECK_DEADLOCK` that follow it are not invariants. Collecting names
+        // rather than searching the raw tail is what lets the config be read
+        // in both directions.
+        let listed: Vec<&str> = config
             .split_once("INVARIANTS")
             .expect("the config names an INVARIANTS block")
-            .1;
+            .1
+            .lines()
+            .skip(1)
+            .map(str::trim)
+            .take_while(|line| !line.is_empty())
+            .collect();
 
-        // The five the config lists today, each of which must still be defined
-        // by the model and still named by the config.
-        for invariant in [
-            "NoDroppedCompletion",
-            "ReservationsAreOperations",
-            "OneCompletionPerOperation",
-            "NothingVanishes",
-            "TypeOK",
-        ] {
-            assert!(
-                defined.contains(&invariant),
-                "`{invariant}` is checked by the config and not defined by the model"
-            );
+        // The specification's own machinery: the three names TLA+ convention
+        // fixes, plus every action `Next` disjoins. Deriving the actions from
+        // `Next` rather than listing them is what turns the rest of this test
+        // into a rule — an operator added to the model and forgotten in the
+        // config has nowhere left to hide. That is what D-148 asked for, and
+        // what naming five invariants in an array only looked like.
+        let next = spec
+            .lines()
+            .find(|line| line.starts_with("Next =="))
+            .expect("the model defines Next");
+        let mut machinery = vec!["vars", "Init", "Next", "Spec"];
+        machinery.extend(
+            next.trim_start_matches("Next ==")
+                .split("\\/")
+                .map(str::trim)
+                .filter(|name| !name.is_empty()),
+        );
+
+        // Everything else the model defines is a property, and a property TLC
+        // is not told to check is a property nobody is checking.
+        let invariants: Vec<&str> = defined
+            .iter()
+            .copied()
+            .filter(|name| !machinery.contains(name))
+            .collect();
+
+        assert!(
+            !invariants.is_empty(),
+            "the model defines nothing but machinery, so there is nothing to check"
+        );
+
+        for invariant in &invariants {
             assert!(
                 listed.contains(invariant),
                 "`{invariant}` is defined by the model and not checked by the config"
             );
         }
 
-        // And the block is not empty, which is the failure that reads as a
-        // pass.
-        assert!(
-            listed.trim_start().starts_with("NoDropped"),
-            "the INVARIANTS block lists nothing; TLC would check nothing and report success"
-        );
+        for name in &listed {
+            assert!(
+                defined.contains(name),
+                "`{name}` is checked by the config and not defined by the model"
+            );
+        }
+    }
+
+    /// Nothing but the model lives in `models/`, unless it is ignored.
+    ///
+    /// TLC writes a states directory per run and a *pair* of files beside a
+    /// counterexample — `Ring_TTrace_<stamp>.tla` and a `.bin` companion. The
+    /// ignore rule covered the spec and not the binary, so five of them were
+    /// committed and nothing said so: the trace is TLC's scratch paper, and a
+    /// repository that keeps it is claiming it is part of the model.
+    ///
+    /// Filesystem-based rather than `git ls-files`, because the gate does not
+    /// shell out to git anywhere and should not start here.
+    #[test]
+    fn models_holds_the_model_and_nothing_else_unignored() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let ignore = std::fs::read_to_string(root.join(".gitignore")).expect(".gitignore");
+
+        let rules: Vec<&str> = ignore
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| line.strip_prefix("/models/"))
+            .map(|rule| rule.trim_end_matches('/'))
+            .collect();
+        assert!(!rules.is_empty(), "no rule covers models/ at all");
+
+        for entry in std::fs::read_dir(root.join("models")).expect("models/") {
+            let name = entry.expect("a directory entry").file_name();
+            let name = name.to_str().expect("a name that is text");
+            if name == "Ring.tla" || name == "Ring.cfg" {
+                continue;
+            }
+            assert!(
+                rules.iter().any(|rule| glob_lite(rule, name)),
+                "`models/{name}` is neither the model nor ignored"
+            );
+        }
+    }
+
+    /// `*` against a file name, which is all the rules here need.
+    fn glob_lite(rule: &str, name: &str) -> bool {
+        let mut rest = name;
+        let mut parts = rule.split('*').peekable();
+        let first = parts.next().unwrap_or_default();
+        let Some(stripped) = rest.strip_prefix(first) else {
+            return false;
+        };
+        rest = stripped;
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                return rest.ends_with(part);
+            }
+            let Some(at) = rest.find(part) else {
+                return false;
+            };
+            rest = &rest[at + part.len()..];
+        }
+        true
     }
 }

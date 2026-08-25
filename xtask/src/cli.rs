@@ -296,25 +296,21 @@ mod tests {
     /// nobody will run; one the help offers but the parser rejects is worse.
     #[test]
     fn every_task_the_parser_accepts_is_named_in_the_help() {
-        let names = [
-            "build",
-            "image",
-            "run",
-            "vmware",
-            "check",
-            "clippy",
-            "doc",
-            "fmt",
-            "test",
-            "test-boot",
-            "boot-check",
-            "degraded-check",
-            "verify-vendor",
-            "model-check",
-            "mutate",
-            "ci",
-            "clean",
-        ];
+        // Read out of the parser rather than restated beside it. A list here
+        // would only be a second copy of the match below, and a second copy is
+        // green on the day the two disagree — which is the whole failure this
+        // test exists to prevent.
+        let names: Vec<&str> = include_str!("cli.rs")
+            .lines()
+            .filter(|line| line.contains("=> Ok(Task::"))
+            .filter_map(|line| line.trim().strip_prefix('"'))
+            .filter_map(|rest| rest.split_once('"').map(|(name, _)| name))
+            .collect();
+        assert!(
+            names.len() > 10,
+            "the parser was read as {} tasks, so the reading is wrong",
+            names.len()
+        );
 
         for name in names {
             assert!(parse_args(&[name]).is_ok(), "{name} does not parse");
