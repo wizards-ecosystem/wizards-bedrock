@@ -891,6 +891,35 @@ design; and a processor that reports `MD_CLEAR`, so the `VERW` on the way out
 of ring 3 is doing something rather than merely executing. D-91 recorded that
 QEMU reports no capability word; this is the machine that does.
 
+### What the closing audit found
+
+D-115, in D-77's pattern, held to D-105's two rules. Five reachable defects:
+a boot check reading numbers ring 3 owns (one store panicked the debug
+kernel); `xstate::init` enabling SSE before three paths that refuse, leaving
+two processes sharing the register file with nothing saving it; a safe public
+walk taking a bare physical address; `map_shared` and `map_user` able to alias
+one run; and three `lock_leaf` obligations breached by this phase's own code.
+
+Nine checks could not fail and three failed for the wrong reason. Two are worth
+carrying forward as patterns rather than as incidents:
+
+- **A check compared two places the thing under test never touched.**
+  `a_rewritten_submission_cannot_change_what_was_served` read a completion slot
+  128 bytes from the submission it rewrote, so it reduced to `posted == posted`
+  — *no line in `queue.rs` could falsify it*. The question that finds this is
+  "which deletion turns this red", asked before the check is trusted.
+- **A check read a Rust early return where it meant to read a register.**
+  `extended_control()` began `if !is_enabled() { return 0 }`. This is D-105's
+  own `VERW`-arming finding, three decisions later, in a fresh costume. The
+  guard must be the hardware, not a flag remembering the hardware.
+
+And one finding did not reproduce as described. The audit rated `reap_up_to`'s
+unvalidated head as defeating the no-dropped-completion claim; `Ring::reap`
+already refuses on an empty queue, so a lying head gains nothing. The bound was
+added anyway, and then *neither* bound could be shown load-bearing because each
+covers every input the other does. D-115 says so rather than shipping a
+confident comment on a redundant guard.
+
 ### Still owed, and where it went
 
 Nothing here is a surprise; each is named in the ADR that created it.
