@@ -9739,3 +9739,106 @@ copy of its subject.
 - A sweep of the other fifty-odd universally-named checks found no third
   instance. `tasks.rs`, `qemu.rs`, `vendor.rs` and `paths.rs` all enumerate.
 - `005`'s testing section carries the rule.
+
+## D-158 One ELF reader, and the verifier uses the loader's — Status: Accepted (2026-08-25)
+
+**Context.** D-105 named it and left it: `xtask/src/elf.rs` carried its own
+transcription of the ELF magic, the class byte, the endianness byte, `PT_LOAD`,
+`PF_W`, `PF_X` and every file- and program-header offset, while `libs/elf64` —
+the crate the kernel actually loads programs with — carried the same table
+again. Two readers of one format in one repository, with nothing comparing
+them.
+
+The cost was not hypothetical and had already been paid twice. D-124 added
+`e_machine` and the program-header stride checks to `elf64` and found `xtask`'s
+copy *two validations short*, so the build verifier would have shipped an
+aarch64 kernel image. A test named
+`the_two_refusals_libs_elf64_has_are_here_too` existed for no reason except to
+hand-maintain the sync — a test whose name concedes the defect.
+
+**Options.** Leave it and keep the sync test. Move the section reader into
+`elf64` so one crate reads everything. Or have `xtask` read the header and the
+program headers through `elf64` and keep only the section table.
+
+**Decision.** The third. `xtask::elf::parse` is now
+`elf64::Elf::parse(bytes)` plus a section walk; `parse_segments` and every
+transcribed constant are deleted. The section table stays in `xtask` because a
+*loader* never reads one and nothing else in the tree wants it — moving it into
+`elf64` would grow the crate the kernel links for the benefit of one host
+caller.
+
+Two accessors were added to `elf64` to make it a complete substitute:
+`SegmentKind::bits`, the inverse of `from_bits`, and `Segment::flags`, the raw
+field a verifier needs in order to report what it objected to. Neither is
+speculative — both have their caller in the same commit (D-41).
+
+**Rationale.** The rule this settles is the same one D-157 stated a level up.
+There, a check restated the data it was checking; here, a reader restated the
+format another reader already knew. Both pass on the day the two copies
+disagree, because the copy being read is the copy the author was looking at.
+`x86-tables` and `trap-cause` disagreeing about vector 28 is the same story
+with a third table.
+
+The merge also makes `xtask` *stricter* for free, which is the tell that it was
+behind: `elf64` takes the whole 64-byte file header before it looks at the
+class byte, checks that the program-header table lies inside the image without
+overflowing, and refuses `p_phoff` near `u64::MAX` — none of which the
+verifier's own parser did.
+
+**Consequences.**
+
+- `xtask/src/elf.rs` loses seven constants, `parse_segments`, and every header
+  offset except the section table's. `libs/elf64` gains two accessors and a
+  round-trip test over the `p_type` table, exhaustive across the named range
+  and its edges, which also proves no two named kinds encode alike.
+- Every existing ELF test passes unchanged, which is the evidence the two
+  readers did agree — and `elf64`'s error messages already contained the
+  strings the verifier's tests assert on.
+- Two tests were reframed rather than deleted. The sync test is renamed for
+  what it now proves — an image for another machine or of another shape is
+  refused — and still asserts the two constants, because a typo in `elf64`
+  would move both readers together and neither would notice.
+- `libs/elf64`'s module doc said the merge had not happened. It now says it
+  has, and says what deliberately stayed behind.
+
+## D-159 The lints that were measured and not adopted — Status: Accepted (2026-08-25)
+
+**Context.** `005` says **measure what a tool does; do not reason about it**.
+The workspace denies three clippy lints beyond the default set —
+`undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`,
+`missing_safety_doc` — and nothing recorded why the rest were not on. "It would
+be noisy" is a guess, and the rule says to go and look.
+
+**Decision.** Measured across the whole tree, host and kernel targets. None is
+adopted, and this entry exists so the measurement is not repeated.
+
+| Lint group | Hits | What they were |
+|---|---|---|
+| `clippy::pedantic` | 59 in six `libs/` crates | 17 cast, 7 `must_use_candidate`, 4 `doc_markdown`, the rest style |
+| `clippy::nursery` | 4 | one real `redundant_clone`, in a test |
+| `clippy::indexing_slicing` | 118 in `kernel` + `wost` + `libs` | every one behind a `get`/`take` that had already proved the length |
+| the cast family | 66 in `kernel` + `wost` | sign-extension in `x86-paging` is the canonical-address arithmetic itself |
+
+**Rationale.** Not one of them is a defect. The indexing count is the
+interesting one: 118 sites, and every one sampled indexes a slice the function
+has just bounds-checked — `elf64` reads `field[0]` only after `take(bytes, at,
+2)?`, `acpi-tables` reads `head[15]` only after `bytes.get(..V1_LEN)`. The lint
+cannot see the proof, so adopting it would mean 118 suppressions asserting that
+a proof exists somewhere above. That is worse than nothing: `005` already
+records that a suppression which reads as checked and is not falsifiable is
+worse than the `allow` it replaced.
+
+The cast lints are the same shape. `((address as i64) << 16 >> 16) as u64` *is*
+`is_canonical`; the sign loss the lint reports is the mechanism.
+
+**Consequences.**
+
+- No lint added, no suppression added, no code changed by this entry.
+- The one genuine finding — a `redundant_clone` in an `acpi-tables` test — is
+  not worth a lint that costs 118 suppressions, and is left.
+- If a future phase parses a new hostile format, the measurement is cheap to
+  redo and this table says what the baseline was.
+- What *is* worth keeping is the shape the measurement confirmed: the tree has
+  no `.unwrap()` in `kernel` or `wost` outside the self-test, and its sixteen
+  panicking calls are all deliberate halts on a broken kernel invariant — a
+  refused yield, a resumed dead thread, a second boot handoff.

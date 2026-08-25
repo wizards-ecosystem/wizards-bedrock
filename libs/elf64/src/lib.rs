@@ -5,14 +5,14 @@
 //! hostile input. `xtask`'s image builder round-trips what it writes through
 //! this crate, which is the other caller.
 //!
-//! **`xtask/src/elf.rs` does not use this crate**, and it was described here
-//! as though it did. It verifies the linked kernel after every build (D-40),
-//! wants sections and a string table this crate does not read, and carries its
-//! own transcription of the magic, the class byte and every header offset.
-//! They agree today, and nothing checks that they do — which is exactly the
-//! failure this crate's existence is supposed to prevent, since two
-//! transcriptions of the same table is how `x86-tables` and `trap-cause` came
-//! to disagree about vector 28. Merging them is owed (D-105).
+//! `xtask/src/elf.rs` verifies the linked kernel after every build (D-40) and
+//! now reads the file header and the program headers through this crate
+//! (D-158). It carried its own transcription of the magic, the class byte and
+//! every header offset for two phases; they agreed, nothing checked that they
+//! did, and a repair to one copy left the other two validations short — which
+//! is how `x86-tables` and `trap-cause` came to disagree about vector 28.
+//! What stays there is the **section** table and its string table: a loader
+//! never reads one, so this crate does not either.
 //!
 //! **Nothing here allocates, indexes unchecked, or panics.** The bytes may
 //! come from an initrd a program supplied, so every read is bounds-checked
@@ -179,6 +179,24 @@ impl SegmentKind {
             other => Self::Other(other),
         }
     }
+
+    /// The `p_type` field this decodes from.
+    ///
+    /// The inverse of [`from_bits`](Self::from_bits), which makes the pair
+    /// round-trippable and so testable: a decode table with no encode side is
+    /// a table nothing can check against itself.
+    pub const fn bits(self) -> u32 {
+        match self {
+            Self::Null => 0,
+            Self::Load => 1,
+            Self::Dynamic => 2,
+            Self::Interpreter => 3,
+            Self::Note => 4,
+            Self::ProgramHeaders => 6,
+            Self::ThreadLocal => 7,
+            Self::Other(other) => other,
+        }
+    }
 }
 
 /// One program header.
@@ -204,6 +222,14 @@ impl Segment {
     /// What it describes.
     pub const fn kind(self) -> SegmentKind {
         self.kind
+    }
+
+    /// The raw `p_flags` field.
+    ///
+    /// The three predicates below are what a loader wants. This is for a
+    /// *verifier*, which has to report the value it objected to.
+    pub const fn flags(self) -> u32 {
+        self.flags
     }
 
     /// Where in the file its contents start.
@@ -424,6 +450,44 @@ fn read_u64(bytes: &[u8], at: usize) -> Result<u64, ElfError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `p_type` survives a decode and an encode unchanged.
+    ///
+    /// Exhaustive over the named range and its edges rather than a sample:
+    /// the whole risk in a decode table is one arm returning a neighbour's
+    /// value, and a sample that skips the neighbour cannot see it.
+    #[test]
+    fn every_segment_type_round_trips_through_the_decode_table() {
+        for bits in (0..24).chain([u32::MAX, u32::MAX - 1, 0x6474_E551, 0x7000_0000]) {
+            assert_eq!(
+                SegmentKind::from_bits(bits).bits(),
+                bits,
+                "p_type {bits:#x} did not survive the table"
+            );
+        }
+
+        // And the named kinds are distinct, so no two arms encode alike — the
+        // failure the loop above cannot see, because it never holds two
+        // answers at once.
+        let named = [
+            SegmentKind::Null,
+            SegmentKind::Load,
+            SegmentKind::Dynamic,
+            SegmentKind::Interpreter,
+            SegmentKind::Note,
+            SegmentKind::ProgramHeaders,
+            SegmentKind::ThreadLocal,
+        ];
+        for (index, kind) in named.iter().enumerate() {
+            for earlier in &named[..index] {
+                assert_ne!(
+                    kind.bits(),
+                    earlier.bits(),
+                    "{kind:?} and {earlier:?} encode to the same p_type"
+                );
+            }
+        }
+    }
 
     /// A well-formed image with the given program headers.
     fn image(segments: &[(u32, u32, u64, u64, u64, u64)]) -> Vec<u8> {

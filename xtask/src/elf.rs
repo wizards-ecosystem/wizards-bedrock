@@ -15,32 +15,11 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-/// Bytes of `e_ident`, which every ELF file starts with.
-const IDENT_BYTES: usize = 16;
-
-/// `\x7FELF`.
-const MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
-
-/// `e_ident[EI_CLASS]` for a 64-bit file.
-const CLASS_64: u8 = 2;
-
-/// `e_ident[EI_DATA]` for a little-endian file.
-const DATA_LITTLE_ENDIAN: u8 = 1;
-
-/// Segment type: load this at `vaddr`.
-const PT_LOAD: u32 = 1;
-
 /// Section type: occupies address space but no file space.
 const SHT_NOBITS: u32 = 8;
 
 /// Section flag: this section is part of the loaded image.
 const SHF_ALLOC: u64 = 1 << 1;
-
-/// Segment flag: executable.
-const PF_X: u32 = 1;
-
-/// Segment flag: writable.
-const PF_W: u32 = 1 << 1;
 
 /// Where the higher half begins — the base `kernel/linker.ld` links at, and
 /// the range the kernel code model can address.
@@ -64,7 +43,7 @@ pub struct Segment {
 impl Segment {
     /// Whether this segment is loaded into memory at all.
     pub const fn is_loadable(self) -> bool {
-        self.kind == PT_LOAD
+        self.kind == elf64::SegmentKind::Load.bits()
     }
 
     /// Whether an address of `size` bytes at `vaddr` lies inside this segment.
@@ -80,7 +59,7 @@ impl Segment {
 
     /// Whether this segment is both writable and executable.
     pub const fn is_writable_and_executable(self) -> bool {
-        self.flags & PF_W != 0 && self.flags & PF_X != 0
+        self.flags & elf64::Segment::WRITE != 0 && self.flags & elf64::Segment::EXECUTE != 0
     }
 }
 
@@ -295,66 +274,33 @@ impl Image {
 }
 
 /// Parse the ELF64 headers of `bytes`.
+///
+/// The file header and the program headers come from `libs/elf64` — the crate
+/// the kernel loads programs with — so the verifier and the loader agree about
+/// the format by construction rather than by two transcriptions being kept in
+/// step. D-105 recorded that duplication as owed and D-124 found what it costs:
+/// a repair to one copy left the other two validations short (D-158).
+///
+/// The section table stays here. `elf64` is a loader's crate and a loader
+/// never reads one; nothing else in the tree wants it.
 pub fn parse(bytes: &[u8]) -> Result<Image> {
-    if bytes.len() < IDENT_BYTES || bytes[..MAGIC.len()] != MAGIC {
-        bail!("not an ELF file");
-    }
-    if bytes[4] != CLASS_64 {
-        bail!("not a 64-bit ELF file");
-    }
-    if bytes[5] != DATA_LITTLE_ENDIAN {
-        bail!("not a little-endian ELF file");
-    }
-
-    // The two refusals `libs/elf64` has and this had fallen behind on. The
-    // duplication is what D-105 recorded as owed; what it did not predict is
-    // that a repair to one copy would leave the other *two validations*
-    // short — which is the duplication being a defect rather than a cost
-    // (D-124).
-    //
-    // `e_machine`, at offset 18. An aarch64 kernel ELF parses cleanly by every
-    // other rule here and would ship: `verify_file` runs after every kernel
-    // build.
-    let machine = read_u16(bytes, 0x12)?;
-    if machine != elf64::MACHINE_X86_64 {
-        bail!("not an x86-64 ELF file: machine {machine}");
-    }
-
-    let entry = read_u64(bytes, 0x18)?;
-    let segments = parse_segments(bytes)?;
+    let image = elf64::Elf::parse(bytes).map_err(|error| anyhow::anyhow!("{error}"))?;
+    let segments = image
+        .segments()
+        .map(|segment| Segment {
+            kind: segment.kind().bits(),
+            flags: segment.flags(),
+            vaddr: segment.address(),
+            file_size: segment.file_size(),
+            memory_size: segment.memory_size(),
+        })
+        .collect();
     let sections = parse_sections(bytes)?;
     Ok(Image {
-        entry,
+        entry: image.entry(),
         segments,
         sections,
     })
-}
-
-fn parse_segments(bytes: &[u8]) -> Result<Vec<Segment>> {
-    let table = read_u64(bytes, 0x20)? as usize;
-    let stride = read_u16(bytes, 0x36)? as usize;
-    let count = read_u16(bytes, 0x38)? as usize;
-
-    // Taken verbatim as the walk stride until D-124. `libs/elf64` refuses
-    // anything but 56 on the stated grounds that "a different size means a
-    // different format, and walking it with this one's field offsets would
-    // read whatever happened to be there" — which this was doing.
-    if count != 0 && stride != elf64::PROGRAM_HEADER_BYTES {
-        bail!("program headers of {stride} bytes are not this format's");
-    }
-
-    (0..count)
-        .map(|index| {
-            let at = entry_at(table, index, stride)?;
-            Ok(Segment {
-                kind: read_u32(bytes, at)?,
-                flags: read_u32(bytes, field(at, 0x04)?)?,
-                vaddr: read_u64(bytes, field(at, 0x10)?)?,
-                file_size: read_u64(bytes, field(at, 0x20)?)?,
-                memory_size: read_u64(bytes, field(at, 0x28)?)?,
-            })
-        })
-        .collect()
 }
 
 /// Where entry `index` of a header table starts, refusing rather than wrapping.
@@ -471,7 +417,7 @@ mod tests {
 
     fn segment(vaddr: u64, size: u64, flags: u32) -> Segment {
         Segment {
-            kind: PT_LOAD,
+            kind: elf64::SegmentKind::Load.bits(),
             flags,
             vaddr,
             file_size: size,
@@ -494,8 +440,8 @@ mod tests {
     /// costing no file space.
     fn good_image() -> Image {
         let data = Segment {
-            kind: PT_LOAD,
-            flags: PF_W | (1 << 2),
+            kind: elf64::SegmentKind::Load.bits(),
+            flags: elf64::Segment::WRITE | (1 << 2),
             vaddr: HIGHER_HALF + 0x12000,
             file_size: 0x100,
             memory_size: 0x8000,
@@ -503,7 +449,7 @@ mod tests {
         Image {
             entry: HIGHER_HALF + 0x5bb0,
             segments: vec![
-                segment(HIGHER_HALF, 0x8000, PF_X | (1 << 2)),
+                segment(HIGHER_HALF, 0x8000, elf64::Segment::EXECUTE | (1 << 2)),
                 segment(HIGHER_HALF + 0x8000, 0xa000, 1 << 2),
                 data,
             ],
@@ -624,7 +570,7 @@ mod tests {
     #[test]
     fn a_writable_executable_segment_is_caught() {
         let mut image = good_image();
-        image.segments[0].flags |= PF_W;
+        image.segments[0].flags |= elf64::Segment::WRITE;
 
         assert_eq!(
             image.verify(),
@@ -689,7 +635,7 @@ mod tests {
     fn every_fault_says_something_specific() {
         let mut image = good_image();
         image.entry = 0;
-        image.segments[0].flags |= PF_W;
+        image.segments[0].flags |= elf64::Segment::WRITE;
         image.sections.retain(|section| section.name != ".requests");
 
         let messages: Vec<String> = image.verify().iter().map(ToString::to_string).collect();
@@ -730,9 +676,9 @@ mod tests {
         let names_at = sh_table + (image.sections.len() + 1) * SH_STRIDE;
 
         let mut out = vec![0u8; names_at + names.len()];
-        out[..4].copy_from_slice(&MAGIC);
-        out[4] = CLASS_64;
-        out[5] = DATA_LITTLE_ENDIAN;
+        out[..4].copy_from_slice(&elf64::MAGIC);
+        out[4] = elf64::CLASS_64;
+        out[5] = elf64::LITTLE_ENDIAN;
         out[0x12..0x14].copy_from_slice(&elf64::MACHINE_X86_64.to_le_bytes());
         out[0x18..0x20].copy_from_slice(&image.entry.to_le_bytes());
         out[0x20..0x28].copy_from_slice(&(ph_table as u64).to_le_bytes());
@@ -806,11 +752,12 @@ mod tests {
     fn a_file_that_is_not_an_elf_is_refused() {
         assert!(parse(b"").is_err());
         assert!(parse(b"MZ\x90\x00 a PE executable").is_err());
-        // Full-length identifiers, because the class and endianness checks sit
-        // behind `bytes.len() < IDENT_BYTES` and a short slice bails there
-        // instead. The six- and eight-byte versions of these two lines said
-        // "32-bit" and "big-endian" while testing neither, and deleting both
-        // checks left them green (D-105).
+        // Full-length identifiers, because `elf64` takes the whole 64-byte
+        // file header before it looks at the class or the endianness, and a
+        // short slice is refused for being short instead. The six- and
+        // eight-byte versions of these two lines said "32-bit" and
+        // "big-endian" while testing neither, and deleting both checks left
+        // them green (D-105).
         let mut thirty_two = encode(&good_image());
         thirty_two[4] = 1;
         let message = parse(&thirty_two).expect_err("32-bit").to_string();
@@ -866,7 +813,7 @@ mod tests {
     /// every kernel build, so an aarch64 ELF passing it would have shipped
     /// (D-124).
     #[test]
-    fn the_two_refusals_libs_elf64_has_are_here_too() {
+    fn an_image_for_another_machine_or_of_another_shape_is_refused() {
         let mut aarch64 = encode(&good_image());
         // `e_machine`, at offset 18.
         aarch64[0x12..0x14].copy_from_slice(&183u16.to_le_bytes());
@@ -879,7 +826,10 @@ mod tests {
         let message = parse(&wrong_stride).expect_err("stride").to_string();
         assert!(message.contains("program headers"), "said {message:?}");
 
-        // And the numbers both readers use are the same numbers.
+        // Both refusals are `elf64`'s now rather than transcriptions of it,
+        // which is what makes them impossible to fall behind on (D-158). The
+        // numbers are still asserted, because a crate-wide typo would move
+        // both readers together and neither would notice.
         assert_eq!(elf64::PROGRAM_HEADER_BYTES, 56);
         assert_eq!(elf64::MACHINE_X86_64, 62);
     }
