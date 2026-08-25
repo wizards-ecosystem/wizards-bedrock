@@ -1363,7 +1363,9 @@ fn a_spawned_program_holds_exactly_one_handle() -> bool {
 /// the *peer's* inbox and a receive takes from its own — which is what makes
 /// the pipe bidirectional without either end reading its own writes (D-110).
 fn a_message_crosses_a_channel_and_is_gone() -> bool {
-    let (near, far) = object::channel();
+    let Some((near, far)) = object::channel() else {
+        return false;
+    };
     let (Some(here), Some(there)) = (near.as_channel(), far.as_channel()) else {
         return false;
     };
@@ -1421,7 +1423,9 @@ fn a_message_crosses_a_channel_and_is_gone() -> bool {
 /// say so. A send into nothing that reported success would be a message a
 /// caller believes was delivered (D-110).
 fn an_orphaned_channel_end_refuses() -> bool {
-    let (near, far) = object::channel();
+    let Some((near, far)) = object::channel() else {
+        return false;
+    };
     let Some(here) = near.as_channel() else {
         return false;
     };
@@ -1565,7 +1569,9 @@ fn a_handle_without_transfer_is_refused_at_the_sender() -> bool {
 /// pipe: what arrives names the thing the sender named, and the rights that
 /// came with it are the rights it works under.
 fn a_handle_sent_in_a_message_names_the_same_object() -> bool {
-    let (near, far) = object::channel();
+    let Some((near, far)) = object::channel() else {
+        return false;
+    };
     let (Some(here), Some(there)) = (near.as_channel(), far.as_channel()) else {
         return false;
     };
@@ -1629,7 +1635,9 @@ fn a_handle_sent_in_a_message_names_the_same_object() -> bool {
 /// a predicate that sends while holding the queue's own lock is how the first
 /// version of the event check hung the machine.
 fn a_blocked_receiver_wakes_with_its_message() -> bool {
-    let (near, far) = object::channel();
+    let Some((near, far)) = object::channel() else {
+        return false;
+    };
     let Some(here) = near.as_channel() else {
         return false;
     };
@@ -1662,7 +1670,9 @@ fn a_blocked_receiver_wakes_with_its_message() -> bool {
     // `receive_blocking` cannot reach that state — it takes the message first
     // — so the wait is driven directly, which is what makes a plain `wait`
     // here a thread that never returns rather than a check that passes.
-    let (window_near, window_far) = object::channel();
+    let Some((window_near, window_far)) = object::channel() else {
+        return false;
+    };
     let Ok(already) = object::Message::new(b"already here") else {
         return false;
     };

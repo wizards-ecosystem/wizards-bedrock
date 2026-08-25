@@ -421,6 +421,8 @@ pub(crate) enum SpawnError {
     NoBootstrap(HandleError),
     /// No memory for its ring.
     NoRing,
+    /// No memory for its bootstrap channel.
+    NoChannel,
 }
 
 impl fmt::Display for SpawnError {
@@ -433,6 +435,7 @@ impl fmt::Display for SpawnError {
             Self::NoThread(error) => write!(f, "no thread: {error}"),
             Self::NoBootstrap(error) => write!(f, "no bootstrap channel: {error}"),
             Self::NoRing => f.write_str("no memory for a ring"),
+            Self::NoChannel => f.write_str("no memory for a bootstrap channel"),
         }
     }
 }
@@ -474,7 +477,7 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     // Its whole power, made before the thread exists so the table is never
     // observable holding anything else. The child's end can be used and sent
     // on; the parent keeps the other (D-111).
-    let (theirs, ours) = object::channel();
+    let (theirs, ours) = object::channel().ok_or(SpawnError::NoChannel)?;
     let mut table = HandleTable::new(HANDLE_QUOTA);
     let handle = table
         .insert(

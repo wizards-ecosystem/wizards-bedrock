@@ -295,14 +295,22 @@ impl Channel {
     /// exists to avoid, and the answer is the same here (D-79).
     pub(crate) const DEPTH: usize = 16;
 
-    fn new() -> Self {
-        Self {
-            inbox: SpinLock::new(Inbox {
-                messages: VecDeque::new(),
-            }),
+    /// `None` if the inbox's room cannot be taken.
+    ///
+    /// The room is taken **here**, once, and never again: `DEPTH` is the most
+    /// the queue will hold, so a `push_back` below `DEPTH` can never grow the
+    /// deque and therefore never reaches the allocator. That is what lets the
+    /// send path hold a leaf guard at all — `try_reserve` under one was a
+    /// `lock_leaf` violation, and the fix is not to do it rather than to
+    /// document it (D-85, D-110).
+    fn new() -> Option<Self> {
+        let mut messages = VecDeque::new();
+        messages.try_reserve_exact(Self::DEPTH).ok()?;
+        Some(Self {
+            inbox: SpinLock::new(Inbox { messages }),
             waiters: WaitQueue::new(),
             peer: SpinLock::new(Weak::new()),
-        }
+        })
     }
 
     /// Put `message` in the far end's inbox, and wake anything waiting there.
@@ -325,14 +333,10 @@ impl Channel {
             if inbox.messages.len() >= Self::DEPTH {
                 return Err(ChannelError::Full);
             }
-            // Reserving under a leaf guard is what `lock_leaf` forbids, so the
-            // room is taken while the queue is empty of obligations: `DEPTH` is
-            // small and the reserve is amortised, so this grows at most a few
-            // times per end (D-85, D-110).
-            inbox
-                .messages
-                .try_reserve(1)
-                .map_err(|_| ChannelError::OutOfMemory)?;
+            // Cannot allocate: `new` reserved `DEPTH` and the refusal above
+            // keeps the length below it, so nothing here reaches the heap
+            // while a leaf guard is held.
+            debug_assert!(inbox.messages.capacity() >= Self::DEPTH);
             inbox.messages.push_back(message);
         }
         far.waiters.wake_all();
@@ -397,12 +401,12 @@ impl Channel {
 ///
 /// The only way to make a `Channel`: an end with no peer would be a pipe with
 /// one side, and there is no operation that could give it one later.
-pub(crate) fn channel() -> (ObjectRef, ObjectRef) {
-    let first: ObjectRef = Arc::new(Object::Channel(Channel::new()));
-    let second: ObjectRef = Arc::new(Object::Channel(Channel::new()));
+pub(crate) fn channel() -> Option<(ObjectRef, ObjectRef)> {
+    let first: ObjectRef = Arc::new(Object::Channel(Channel::new()?));
+    let second: ObjectRef = Arc::new(Object::Channel(Channel::new()?));
     if let (Some(one), Some(two)) = (first.as_channel(), second.as_channel()) {
         *one.peer.lock_leaf() = Arc::downgrade(&second);
         *two.peer.lock_leaf() = Arc::downgrade(&first);
     }
-    (first, second)
+    Some((first, second))
 }
