@@ -673,8 +673,9 @@ an API that later slices are built on:
    hand-rolled-vs-crate into a revisable choice rather than an architectural
    one, and leaves the door open for `Allocator` when it stabilises.
 
-**Then build `libs/x86-page-tables` first**, with a host test for every
-bitfield, before `wost` is allowed to switch CR3 ⊕. That is the cleanest
+**Then build `libs/x86-page-tables` first** — it was built, under the name
+`libs/x86-paging` — with a host test for every bitfield, before `wost` is
+allowed to switch CR3 ⊕. That is the cleanest
 research-into-code bridge available, it is what D-30 already prescribes, and
 §5's verification options attach to it directly.
 

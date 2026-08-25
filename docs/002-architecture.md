@@ -118,8 +118,14 @@ Deferred, each with its cost named where it was deferred:
   the only D-12 item deferred as far as Phase 12, and it is *not* "on from the
   start". The stack exceptions this list used to carry are closed (D-89, D-92).
 - Intel CET shadow stacks, signed boot chain, measured boot. CET is the one
-  that constrains earlier work: a shadow stack is a second region per thread,
-  so the Phase 5 stack allocator should not foreclose it (`010` §10).
+  that constrained earlier work: a shadow stack is a second region per thread,
+  and the Phase 5 stack allocator must not foreclose it (`010` §10).
+  **Answered in `011` slice 3, and answered by *not* building it:**
+  `libs/stack-layout` computes every address from `(base, stack_len,
+  guard_len, slots)`, so a second region is a field on `Slot` and a term in the
+  stride, in a host-tested crate with no hardware in it. An unused slot built
+  today would be the speculative API `005` forbids; the arithmetic being
+  parameterised is the whole of what was owed.
 
 ## Filesystem: WizFS is CoW
 
@@ -178,7 +184,9 @@ native software never touches it.
 **It arrives with the ABI, not after the userland** (D-74). A stub-heavy
 sysdep is written as soon as Phase 5 can run two processes — not to run real
 software, but to find out whether a POSIX libc can sit on this ABI while the
-ABI is still cheap to change.
+ABI is still cheap to change. **Written in Phase 5 slice 10** (D-114), against
+a toolchain wall recorded rather than worked around: the sysdeps are analysed,
+not compiled, and `userland/README.md` states what that cost.
 
 **The surface, measured, so it is not costed at zero.** mlibc defines 296
 sysdep tags. Sixteen are mandatory, and its own porting book says those are
@@ -189,10 +197,11 @@ implement 147 to 202. Every shipping port implements `Fork`, `Sigaction`,
 release tag, never `master`.
 
 Two things this layer must answer that the native ABI would otherwise never
-raise, and both are cheaper to answer before Phase 5 freezes the queue:
-**how a signal interrupts a blocking queue wait**, and whether userland is
-static-only or gets a dynamic linker (CPython needs `dlopen` and
-`-export-dynamic`). The cluster POSIX assumes and a capability system does not
+raise, and both were cheaper to answer before Phase 5 froze the queue:
+**how a signal interrupts a blocking queue wait** — answered by D-80, a signal
+is a completion entry — and whether userland is static-only or gets a dynamic
+linker (CPython needs `dlopen` and `-export-dynamic`), which is still open and
+belongs to Phase 9. The cluster POSIX assumes and a capability system does not
 — uid/gid, umask, controlling tty, hard links, signal masks — is the same
 cluster Plan 9's APE could not implement and Fuchsia excluded from POSIX Lite.
 `010` §5 has the evidence and the numbers.
@@ -213,10 +222,19 @@ Still open:
 Closed since this list was written:
 
 - *Whether a POSIX libc can sit on this ABI* — asked and answered by D-114
-  rather than deferred: three of mlibc's sixteen mandatory tags map, twelve
-  need a ring-3 door to a mechanism the kernel already has, and one needs a
-  namespace this design does not have. `userland/README.md` has the four
-  things writing them surfaced that the native ABI would never have raised.
+  rather than deferred. Some of mlibc's sixteen mandatory tags map onto the
+  native ABI as it stands, most need a ring-3 door to a mechanism the kernel
+  already has, and one needs a namespace this design does not have.
+
+  **The counts are in `userland/README.md` and deliberately not repeated
+  here.** They were, and they went stale the moment D-118 paid `sys_tcb_set`:
+  this paragraph said "three map, twelve need a door" for a day after it was
+  four and eleven. A number restated in a second place is a number that can
+  disagree with itself, and the README's is checked against the sysdeps' own
+  tags at every commit while a sentence here could not be (D-94, D-124).
+
+  `userland/README.md` also has the four things writing the sysdeps surfaced
+  that the native ABI would never have raised.
 
 - *Handle table representation & rights taxonomy* — the taxonomy half by
   `010` §3, the layout and lifetime rules by **D-78** and

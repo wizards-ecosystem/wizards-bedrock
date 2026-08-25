@@ -18,6 +18,7 @@ pub mod image;
 pub mod model;
 pub mod mutate;
 pub mod paths;
+pub mod prose;
 pub mod qemu;
 pub mod qmp;
 pub mod sha256;
