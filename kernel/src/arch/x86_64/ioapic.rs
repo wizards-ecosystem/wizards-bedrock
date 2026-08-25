@@ -89,8 +89,10 @@ impl Wiring {
 pub(crate) enum RoutingError {
     /// The interrupt is not one this controller routes.
     ///
-    /// Separate from an access failure: the arithmetic that finds a line
-    /// subtracts the base, and below it that wraps.
+    /// Separate from an access failure, and checked before the subtraction
+    /// rather than after: the arithmetic that finds a line subtracts the base,
+    /// which below the base would wrap in release and panic in debug. The
+    /// `handles` guard is what stops it reaching either.
     NotOurs(u32),
     /// The registers refused the access.
     Registers(MmioError),

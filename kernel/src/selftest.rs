@@ -20,6 +20,7 @@ use core::hint::spin_loop;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use handle_space::Rights;
+use stack_layout::StackLayout;
 use wost::arch::current::cpu::{self, Protections};
 use wost::arch::current::paging::{self, ActivateError, AddressSpace, BootRegion, MapError};
 use wost::arch::current::usercopy::{self, UserCopyError};
@@ -3555,6 +3556,47 @@ fn registers_survive_a_switch() -> bool {
     boot_survived && exited && CHURN_VERDICT.load(Ordering::Acquire) == 1
 }
 
+/// A stack whose mapping is taken away stops being one the CPU can stand on.
+///
+/// `MappedStack` is evidence dated at construction, and until D-125 that was
+/// all `is_installed` looked at: the root still matched after an unmap, so the
+/// value happily outlived the mapping it stood for — and `set_double_fault_
+/// stack` takes it as proof enough to point the CPU's most privileged handler
+/// somewhere. This is the state that could not be reached before, made
+/// reachable on purpose (D-94's open item).
+fn a_stack_stops_being_installed_when_it_is_unmapped() -> bool {
+    let mut context = context();
+
+    // Above every stack the kernel maps, so nothing else is in this window.
+    let Some(above) = thread::boot_stack_layout()
+        .and_then(|boot| StackLayout::new(boot.end(), PAGE_SIZE, PAGE_SIZE, 1))
+    else {
+        return false;
+    };
+    let Some(slot) = above.slot(0) else {
+        return false;
+    };
+    let Some(Ok(stack)) = mem::with_active_space(&mut context, |space| space.map_stack(&slot))
+    else {
+        return false;
+    };
+
+    let installed = stack.is_installed();
+
+    // Taken away underneath it. The value is untouched and still names the
+    // running root, which is exactly what made the old answer wrong.
+    let unmapped = mem::with_active_space(&mut context, |space| {
+        space.unmap(slot.stack_base(), slot.stack_len())
+    });
+    let Some(Ok(taken)) = unmapped else {
+        return false;
+    };
+    let gone = !stack.is_installed();
+    drop(taken.flush());
+
+    installed && gone
+}
+
 /// Every thread stack is guarded below, read back from the live tables.
 ///
 /// Structural, because the fault itself is terminal: the guard must be absent
@@ -3990,7 +4032,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 131;
+const EXPECTED_CHECKS: usize = 132;
 
 impl Report {
     const fn new() -> Self {
@@ -4325,6 +4367,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     );
 
     report.check("threads are available", thread::is_available());
+    report.check(
+        "an unmapped stack is no longer installed",
+        a_stack_stops_being_installed_when_it_is_unmapped(),
+    );
     report.check(
         "thread stacks are guarded below",
         thread_stacks_are_guarded(),

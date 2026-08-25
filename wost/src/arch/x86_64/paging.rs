@@ -1552,13 +1552,36 @@ impl MappedStack {
         self.top
     }
 
-    /// Whether this stack belongs to the space the CPU is walking now.
+    /// Whether this stack belongs to the space the CPU is walking now, **and
+    /// is still mapped in it**.
     ///
-    /// A stack mapped into a space that was never installed is not a stack
-    /// this CPU can stand on, and the addresses collide across spaces, so the
-    /// root is the only thing that can tell them apart.
+    /// A stack mapped into a space that was never installed is not a stack this
+    /// CPU can stand on, and the addresses collide across spaces, so the root
+    /// is the only thing that can tell them apart.
+    ///
+    /// The second half is D-94's open item and D-125's answer. This value is
+    /// evidence that a region *was* mapped writable with its guard verified
+    /// absent — evidence dated at construction. Nothing stops the region being
+    /// unmapped afterwards, and the value outlives the mapping happily: the
+    /// root still matches, and a caller pointing the CPU's double-fault handler
+    /// at it would be pointing it at nothing. So the top page is re-walked
+    /// here, for the flags `map_stack` established.
     pub fn is_installed(&self) -> bool {
-        is_active() && active_root() == self.root
+        if !is_active() || active_root() != self.root {
+            return false;
+        }
+        // The last byte the stack can hold, not `top` itself: `top` is one past
+        // the region and belongs to whatever is above it, or to nothing.
+        let Some(last) = self.top.checked_sub(1) else {
+            return false;
+        };
+        matches!(
+            translate(last),
+            Some((_, flags))
+                if flags.contains(Flags::PRESENT)
+                    && flags.contains(Flags::WRITABLE)
+                    && flags.contains(Flags::NO_EXECUTE)
+        )
     }
 }
 

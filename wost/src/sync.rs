@@ -33,9 +33,17 @@ pub fn spinlocks_held() -> usize {
 ///
 /// D-62 introduced it as the token every call that can block takes. D-69 gave
 /// it a second job: [`SpinLock::lock`] borrows one for the guard's life, so
-/// taking a second lock, or blocking with one held, is a borrow error rather
-/// than a rule. Neither `Send` nor `Sync`, so it cannot be stashed in a
+/// blocking with a guard held, or taking a second lock **through `lock`**, is a
+/// borrow error. Neither `Send` nor `Sync`, so it cannot be stashed in a
 /// `static` and produced later.
+///
+/// **It is a strong default, not a proof, and the difference is D-94's.** The
+/// prose used to say a second lock is `E0499` full stop. It is not:
+/// [`ThreadContext::claim`] mints a token wherever the interrupt flag says
+/// thread context, so a second one can be minted inside a live guard — and
+/// [`SpinLock::lock_leaf`] needs no token at all. What the borrow buys is that
+/// defeating it takes one visible, greppable line, audited the way an `unsafe`
+/// block is.
 #[derive(Debug)]
 pub struct ThreadContext(PhantomData<*const ()>);
 
@@ -156,10 +164,13 @@ impl<T> SpinLock<T> {
     /// scheduled and cannot be interrupted, which on one CPU is a hang and on
     /// several is merely slow.
     ///
-    /// The guard borrows `context` for its life, which is what makes taking a
-    /// second lock, or calling anything that can block, a borrow error while
-    /// this one is held (D-69). Where a nesting is genuinely wanted, the
-    /// caller drops this guard, acquires what it needs, and re-checks.
+    /// The guard borrows `context` for its life, which is what makes calling
+    /// anything that can block — or taking a second lock *through this same
+    /// method* — a borrow error while this one is held (D-69). It does not make
+    /// a second lock impossible: `claim` and [`Self::lock_leaf`] both reach one
+    /// without the token, which D-94 corrected the prose about. Where a nesting
+    /// is genuinely wanted, the caller drops this guard, acquires what it
+    /// needs, and re-checks.
     pub fn lock<'a>(&'a self, context: &'a mut ThreadContext) -> SpinLockGuard<'a, T> {
         // The discipline is the signature: `'a` ties this borrow to the
         // guard's life, so the token is unavailable until the guard drops.

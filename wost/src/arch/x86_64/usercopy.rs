@@ -235,7 +235,13 @@ fn admits(address: u64, len: usize, direction: Direction) -> Result<(), UserCopy
 ///
 /// # Errors
 ///
-/// See [`UserCopyError`]. Nothing is copied unless the whole range checks out.
+/// See [`UserCopyError`]. Every page is walked before a byte moves, so a range
+/// that does not check out is refused with nothing copied.
+///
+/// [`UserCopyError::Vanished`] is the exception and the reason this is not
+/// stated as all-or-nothing: the walk and the copy are two moments, so a page
+/// can stop being mapped in the gap. `into` then holds however much was moved
+/// before the fault, and the error names how many bytes were left (D-120).
 pub fn copy_from_user(from: u64, into: &mut [u8]) -> Result<(), UserCopyError> {
     admits(from, into.len(), Direction::FromUser)?;
     if into.is_empty() {
@@ -307,8 +313,13 @@ pub fn copy_from_user_unwalked(from: u64, into: &mut [u8]) -> Result<(), UserCop
 ///
 /// # Errors
 ///
-/// See [`UserCopyError`]. Nothing is copied unless the whole range checks out,
-/// including that every page of it is writable from ring 3.
+/// See [`UserCopyError`]. Every page is walked before a byte moves — including
+/// that each is writable from ring 3 — so a range that does not check out is
+/// refused with nothing copied.
+///
+/// [`UserCopyError::Vanished`] is the exception, as for [`copy_from_user`]:
+/// the page can go away between the walk and the copy, leaving user memory
+/// partly written and naming how many bytes were left (D-120).
 pub fn copy_to_user(onto: u64, from: &[u8]) -> Result<(), UserCopyError> {
     admits(onto, from.len(), Direction::ToUser)?;
     if from.is_empty() {

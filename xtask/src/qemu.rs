@@ -143,7 +143,7 @@ const SELFTEST_FAILED: i32 = 35;
 /// The serial verdict contract shared with `kernel/src/selftest.rs`.
 const SELFTEST_VERDICT_PREFIX: &str = "selftest: verdict ";
 const SELFTEST_VERDICT_VERSION: &str = "v1";
-const EXPECTED_SELFTEST_CHECKS: usize = 131;
+const EXPECTED_SELFTEST_CHECKS: usize = 132;
 
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.

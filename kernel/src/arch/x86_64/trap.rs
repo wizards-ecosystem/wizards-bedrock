@@ -1,10 +1,20 @@
 //! What the kernel does when the CPU raises a vector.
 //!
 //! Every vector arrives here — exceptions the CPU raised against itself, and
-//! interrupts the local APIC delivered. An exception is a kernel bug and ends
-//! the machine with a report, bar the breakpoint, which resumes. An interrupt
-//! is dismissed and returned from. Nothing is recovered and nothing is retried
-//! — containment is supervised restart (D-14), and there is no supervisor yet.
+//! interrupts the local APIC delivered. An interrupt is dismissed and returned
+//! from; an unexpected one still ends the machine, which is what keeps a leaked
+//! legacy line from arriving as something else.
+//!
+//! **A fault has three answers now, and which one it gets is about *who
+//! faulted*.** D-31 made every fault terminal, when a fault was necessarily a
+//! kernel bug. Ring 3 changed that twice. A fault inside the user-copy window
+//! resumes at its fixup, because the page went away between the walk and the
+//! copy and the kernel is the one dereferencing (D-120). A fault whose saved
+//! `CS` says ring 3 retires the *program* and leaves the machine up (D-102).
+//! Everything else — a fault the kernel took outside that window, an
+//! unexpected vector — is still a report and a halt, and the breakpoint still
+//! resumes. Containment above that is supervised restart (D-14), and there is
+//! no supervisor yet.
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
