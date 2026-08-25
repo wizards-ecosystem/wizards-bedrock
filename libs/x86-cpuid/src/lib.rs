@@ -278,4 +278,29 @@ mod tests {
             "capabilities 0x23 rdcl_no ibrs_all mds_no"
         );
     }
+
+    /// The four numbers the SDM fixes, transcribed.
+    ///
+    /// Every test above spells them by name on both sides of its comparison,
+    /// so each reduces to an identity: `msr == ARCH_CAPABILITIES_MSR` where
+    /// the value *is* that constant; `bit & bit != 0`, true of every single
+    /// bit; `x | IBRS == x | IBRS`. All four survived being changed, and
+    /// `SPEC_CTRL_MSR` was referenced by no test at all (D-124).
+    #[test]
+    fn the_speculation_constants_are_the_manual_s() {
+        // SDM Vol. 4 table 2-2: IA32_SPEC_CTRL is MSR 0x48, and
+        // IA32_ARCH_CAPABILITIES is 0x10A.
+        assert_eq!(SPEC_CTRL_MSR, 0x48);
+        assert_eq!(ARCH_CAPABILITIES_MSR, 0x10A);
+        // Vol. 2A, CPUID leaf 7 sub-leaf 0: EDX bit 29 says the capability
+        // MSR exists.
+        assert_eq!(ARCH_CAPABILITIES_BIT, 0x2000_0000);
+        // IA32_SPEC_CTRL bit 0 is IBRS.
+        assert_eq!(SPEC_CTRL_IBRS, 1);
+
+        // And the bit is read from the position it names: a word with only
+        // bit 29 set describes the capability, and one with bit 28 does not.
+        assert!(Speculation::read(0x2000_0000, |_| 0).is_described());
+        assert!(!Speculation::read(0x1000_0000, |_| 0).is_described());
+    }
 }

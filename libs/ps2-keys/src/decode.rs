@@ -52,6 +52,12 @@ mod protocol {
 /// state; this decoder discards them.
 const FAKE_SHIFTS: [u8; 2] = [0x12, 0x59];
 
+// Both bytes are also absent from `table::extended_key_for`, so today the
+// guard and the table agree and no test can tell which suppressed a fake
+// shift. The guard is what keeps the behaviour if either byte is ever added
+// there — they are real keys in the *base* table, which is exactly why a
+// future edit might (D-124).
+
 /// Pause sends this whole sequence on press and nothing on release — the
 /// one key with no break code.
 const PAUSE_SEQUENCE: [u8; 8] = [0xE1, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77];
@@ -407,6 +413,36 @@ mod tests {
                 });
                 assert!(recovered, "wedged by {byte:#04x} after {prefix:02x?}");
             }
+        }
+    }
+
+    /// **Both** fake shifts are swallowed, in both directions.
+    ///
+    /// The tests reached `FAKE_SHIFTS` only with `0x12`, so its second element
+    /// was never exercised. Widening this to both did **not** make the
+    /// constant load-bearing, and saying so is the point: `extended_key_for`
+    /// has no arm for either byte, so the guard and the table give the same
+    /// answer and neither can be shown to be the one giving it (D-124).
+    ///
+    /// The test is kept because it pins the *behaviour* — `E0 12` and `E0 59`
+    /// produce nothing, whichever layer decides — and because the guard is
+    /// what survives someone adding those bytes to the extended table, which
+    /// is a plausible edit: they are real keys in the base one.
+    #[test]
+    fn both_fake_shifts_are_swallowed() {
+        for fake in [0x12u8, 0x59] {
+            let mut decoder = Decoder::new();
+            // The make: `E0 <fake>` yields nothing at all.
+            assert_eq!(decoder.feed(0xE0), None, "{fake:#04x} make prefix");
+            assert_eq!(decoder.feed(fake), None, "{fake:#04x} make");
+
+            // The break: `E0 F0 <fake>` likewise.
+            assert_eq!(decoder.feed(0xE0), None, "{fake:#04x} break prefix");
+            assert_eq!(decoder.feed(0xF0), None, "{fake:#04x} break marker");
+            assert_eq!(decoder.feed(fake), None, "{fake:#04x} break");
+
+            // And the decoder is back at rest, not stuck in a state.
+            assert_eq!(decoder.feed(0x1C), event(Key::A, KeyState::Pressed));
         }
     }
 }

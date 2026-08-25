@@ -217,4 +217,50 @@ mod tests {
             ["alpha.efi", "zebra.efi"]
         );
     }
+
+    /// Every vendored directory is one `verify` checks.
+    ///
+    /// `verify` walks a hand-written array, and its own doc says why that is
+    /// the wrong shape: *"a directory added and not added here is a directory
+    /// nothing checks."* The `unaccounted` machinery closes "a file was added"
+    /// *within* a listed directory and leaves the outer case open (D-124).
+    ///
+    /// A vendored directory is one holding a `CHECKSUMS`, which is the same
+    /// definition `verify` uses — so this finds what it should have listed.
+    #[test]
+    fn every_vendored_directory_is_verified() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+
+        let listed = [
+            root.join("boot").join("limine").join("CHECKSUMS"),
+            root.join("tools").join("tla").join("CHECKSUMS"),
+        ];
+
+        let mut found = Vec::new();
+        let mut pending = vec![root.join("boot"), root.join("tools")];
+        while let Some(next) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&next) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.file_name().is_some_and(|name| name == "CHECKSUMS") {
+                    found.push(path);
+                }
+            }
+        }
+
+        for checksums in &found {
+            assert!(
+                listed.iter().any(|known| known == checksums),
+                "{} is not one `verify` checks",
+                checksums.display()
+            );
+        }
+        assert_eq!(found.len(), listed.len(), "a listing has no directory");
+    }
 }

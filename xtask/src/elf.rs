@@ -306,6 +306,20 @@ pub fn parse(bytes: &[u8]) -> Result<Image> {
         bail!("not a little-endian ELF file");
     }
 
+    // The two refusals `libs/elf64` has and this had fallen behind on. The
+    // duplication is what D-105 recorded as owed; what it did not predict is
+    // that a repair to one copy would leave the other *two validations*
+    // short — which is the duplication being a defect rather than a cost
+    // (D-124).
+    //
+    // `e_machine`, at offset 18. An aarch64 kernel ELF parses cleanly by every
+    // other rule here and would ship: `verify_file` runs after every kernel
+    // build.
+    let machine = read_u16(bytes, 0x12)?;
+    if machine != elf64::MACHINE_X86_64 {
+        bail!("not an x86-64 ELF file: machine {machine}");
+    }
+
     let entry = read_u64(bytes, 0x18)?;
     let segments = parse_segments(bytes)?;
     let sections = parse_sections(bytes)?;
@@ -320,6 +334,14 @@ fn parse_segments(bytes: &[u8]) -> Result<Vec<Segment>> {
     let table = read_u64(bytes, 0x20)? as usize;
     let stride = read_u16(bytes, 0x36)? as usize;
     let count = read_u16(bytes, 0x38)? as usize;
+
+    // Taken verbatim as the walk stride until D-124. `libs/elf64` refuses
+    // anything but 56 on the stated grounds that "a different size means a
+    // different format, and walking it with this one's field offsets would
+    // read whatever happened to be there" — which this was doing.
+    if count != 0 && stride != elf64::PROGRAM_HEADER_BYTES {
+        bail!("program headers of {stride} bytes are not this format's");
+    }
 
     (0..count)
         .map(|index| {
@@ -372,10 +394,15 @@ fn parse_sections(bytes: &[u8]) -> Result<Vec<Section>> {
             let at = entry_at(table, index, stride)?;
             Ok(Section {
                 name: read_name(bytes, field(names, read_u32(bytes, at)? as usize)?)?,
-                kind: read_u32(bytes, at + 0x04)?,
-                flags: read_u64(bytes, at + 0x08)?,
-                addr: read_u64(bytes, at + 0x10)?,
-                size: read_u64(bytes, at + 0x20)?,
+                // Through `field` like the segment walk, rather than raw
+                // addition. It was unreachable — the `name` field initialises
+                // first and bails on a large `at` — but that made the safety
+                // argument rest on Rust's struct-field initialisation order,
+                // which is not what D-105's fix was resting on (D-124).
+                kind: read_u32(bytes, field(at, 0x04)?)?,
+                flags: read_u64(bytes, field(at, 0x08)?)?,
+                addr: read_u64(bytes, field(at, 0x10)?)?,
+                size: read_u64(bytes, field(at, 0x20)?)?,
             })
         })
         .collect()
@@ -706,6 +733,7 @@ mod tests {
         out[..4].copy_from_slice(&MAGIC);
         out[4] = CLASS_64;
         out[5] = DATA_LITTLE_ENDIAN;
+        out[0x12..0x14].copy_from_slice(&elf64::MACHINE_X86_64.to_le_bytes());
         out[0x18..0x20].copy_from_slice(&image.entry.to_le_bytes());
         out[0x20..0x28].copy_from_slice(&(ph_table as u64).to_le_bytes());
         out[0x28..0x30].copy_from_slice(&(sh_table as u64).to_le_bytes());
@@ -827,6 +855,33 @@ mod tests {
         // `e_shstrndx`, chosen so the name table's own entry is far out.
         names[0x3E..0x40].copy_from_slice(&u16::MAX.to_le_bytes());
         assert!(parse(&names).is_err(), "e_shstrndx = u16::MAX");
+    }
+
+    /// The two refusals `libs/elf64` has, which this reader had fallen behind
+    /// on.
+    ///
+    /// The duplication D-105 recorded as owed is not merely still owed: a
+    /// repair to one copy left the other two validations short, which is the
+    /// duplication being a defect rather than a cost. `verify_file` runs after
+    /// every kernel build, so an aarch64 ELF passing it would have shipped
+    /// (D-124).
+    #[test]
+    fn the_two_refusals_libs_elf64_has_are_here_too() {
+        let mut aarch64 = encode(&good_image());
+        // `e_machine`, at offset 18.
+        aarch64[0x12..0x14].copy_from_slice(&183u16.to_le_bytes());
+        let message = parse(&aarch64).expect_err("aarch64").to_string();
+        assert!(message.contains("x86-64"), "said {message:?}");
+
+        let mut wrong_stride = encode(&good_image());
+        // `e_phentsize`, at offset 54.
+        wrong_stride[0x36..0x38].copy_from_slice(&64u16.to_le_bytes());
+        let message = parse(&wrong_stride).expect_err("stride").to_string();
+        assert!(message.contains("program headers"), "said {message:?}");
+
+        // And the numbers both readers use are the same numbers.
+        assert_eq!(elf64::PROGRAM_HEADER_BYTES, 56);
+        assert_eq!(elf64::MACHINE_X86_64, 62);
     }
 
     /// A segment whose file size runs off the end does not overflow the

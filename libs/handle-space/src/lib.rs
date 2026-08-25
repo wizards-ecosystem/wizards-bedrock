@@ -351,6 +351,17 @@ mod tests {
     /// different slots encode to one handle.
     #[test]
     fn the_widths_tile_the_word() {
+        // Transcribed, because the three assertions below are definitions:
+        // `GENERATION_BITS` *is* `32 - INDEX_BITS - RESERVED_BITS`, `SLOTS`
+        // *is* `1 << INDEX_BITS`, and `GENERATIONS` *is* `1 << GENERATION_BITS`
+        // — so the sum is `32 == 32` and the other two are `X == X` for every
+        // width. Narrowing `INDEX_BITS` to 17 survived them all (D-124).
+        assert_eq!(RESERVED_BITS, 2, "the low two bits are reserved (D-78)");
+        assert_eq!(INDEX_BITS, 18, "eighteen bits of arena index");
+        assert_eq!(GENERATION_BITS, 12, "and twelve of generation");
+        assert_eq!(SLOTS, 262_144);
+        assert_eq!(GENERATIONS, 4096);
+
         assert_eq!(RESERVED_BITS + INDEX_BITS + GENERATION_BITS, 32);
         assert_eq!(RESERVED, (1 << RESERVED_BITS) - 1);
         assert_eq!(SLOTS, 1 << INDEX_BITS);

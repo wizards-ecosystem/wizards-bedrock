@@ -103,4 +103,22 @@ mod tests {
     fn a_spurious_vector_below_the_architectural_range_is_refused() {
         let _ = Spurious::enabled(0x0F);
     }
+
+    /// The hardwired nibble is four bits, not three.
+    ///
+    /// Every vector the tests offered had a low nibble of 0xF or 0x0, which
+    /// cannot tell 0x0F from 0x07 — and at 0x07 a vector like 0x27 is accepted
+    /// while a P6-era APIC delivers it as 0x2F, which is the spurious
+    /// interrupt on an unexpected vector the assert exists to prevent (D-124).
+    #[test]
+    fn the_hardwired_low_bits_are_the_whole_nibble() {
+        assert_eq!(HARDWIRED_LOW_BITS, 0b1111);
+    }
+
+    #[test]
+    #[should_panic(expected = "spurious")]
+    fn a_vector_whose_low_nibble_is_seven_is_refused() {
+        // 0b0111 passes a three-bit mask and fails a four-bit one.
+        let _ = Spurious::enabled(0x27);
+    }
 }

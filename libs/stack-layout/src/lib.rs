@@ -264,4 +264,24 @@ mod tests {
         assert_eq!(StackLayout::new(top, 0x4000, 0x1000, 1), None);
         assert_eq!(StackLayout::new(0, !(PAGE_SIZE - 1), 0x1000, 2), None);
     }
+
+    /// A page is four kilobytes, and a guard smaller than one is refused.
+    ///
+    /// `PAGE_SIZE` is used only as an alignment modulus, and every test value
+    /// is a multiple of 4096 — which is also a multiple of 2048, so halving
+    /// the constant accepted everything offered and nothing was offered that
+    /// had to be *rejected*. `wost` maps in 4096 units, so a 2048-byte guard
+    /// is not a guard (D-124).
+    #[test]
+    fn a_guard_smaller_than_a_page_is_refused() {
+        assert_eq!(PAGE_SIZE, 4096);
+        assert!(
+            StackLayout::new(0xffff_fe00_0000_0000, 4096, 2048, 2).is_none(),
+            "a half-page guard was accepted"
+        );
+        assert!(
+            StackLayout::new(0xffff_fe00_0000_0000, 2048, 4096, 2).is_none(),
+            "a half-page stack was accepted"
+        );
+    }
 }

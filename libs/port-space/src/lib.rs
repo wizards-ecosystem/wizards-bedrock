@@ -298,4 +298,20 @@ mod tests {
             assert!(!space.reserve(port, 1), "port {port:#x} reserved twice");
         }
     }
+
+    /// The I/O space is sixteen bits, from the architecture rather than from
+    /// itself.
+    ///
+    /// Every ceiling is spelled `PORT_COUNT` and every test port is a literal
+    /// below it, so halving the constant survived the suite — x86's I/O space
+    /// being 65,536 ports appeared nowhere (D-124).
+    #[test]
+    fn the_io_space_is_sixteen_bits() {
+        assert_eq!(PORT_COUNT, 65_536);
+
+        // The highest port a one-byte access can reach, and the one past it.
+        let mut space = PortSpace::new();
+        assert!(space.reserve(0xFFFF, 1), "the last port is reservable");
+        assert!(!space.is_available(0xFFFF, 2), "and nothing runs past it");
+    }
 }

@@ -461,7 +461,10 @@ mod tests {
     fn a_slice_of_nanoseconds_survives_the_round_trip() {
         const NANOSECONDS: u64 = 3_000_000;
 
-        for weight in [1, BASE_WEIGHT, 64 * BASE_WEIGHT] {
+        // Up to `MAX_WEIGHT`, which is where the doc's one-unit claim is
+        // made — the sweep used to stop at 64 times the base, a factor of
+        // sixteen short of the bound it was testing (D-124).
+        for weight in [1, BASE_WEIGHT, 64 * BASE_WEIGHT, MAX_WEIGHT] {
             let mut entity = Entity::new(weight);
             entity.place(0, 0, NANOSECONDS);
             assert_eq!(entity.remaining_slice(), NANOSECONDS, "weight {weight}");
@@ -582,6 +585,35 @@ mod tests {
                 entity.vruntime()
             );
             previous = entity.vruntime();
+        }
+    }
+
+    /// The two scale constants, transcribed, and the round trip exercised at
+    /// the weight the doc bounds it at.
+    ///
+    /// Every other test spells its weights as multiples of `BASE_WEIGHT` and
+    /// its expectations in terms of `RESOLUTION`, so both cancel identically
+    /// — halving either survived the suite. And the round-trip sweep stopped
+    /// at 64 times the base, a factor of sixteen short of `MAX_WEIGHT`, which
+    /// is where the doc says the one-unit bound holds (D-124).
+    #[test]
+    fn the_scale_constants_are_what_the_doc_says() {
+        assert_eq!(BASE_WEIGHT, 1024);
+        assert_eq!(RESOLUTION, 1024);
+        assert_eq!(MAX_WEIGHT, 1_048_576);
+
+        // A charge at the base weight is real time times the resolution, with
+        // the literal on the right rather than the constant.
+        let mut at_base = Entity::new(1024);
+        at_base.charge(100);
+        assert_eq!(at_base.vruntime(), 102_400);
+
+        // And the round trip holds at the heaviest weight the doc bounds it
+        // at, which the sweep beside it stops a factor of sixteen short of.
+        for slice in [1u64, 3, 3_000_000] {
+            let mut entity = Entity::new(MAX_WEIGHT);
+            entity.place(0, 0, slice);
+            assert_eq!(entity.remaining_slice(), slice, "at the heaviest weight");
         }
     }
 }

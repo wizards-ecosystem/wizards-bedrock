@@ -1228,8 +1228,140 @@ mod tests {
             rust(&queue, "STATUS_UNKNOWN_OPCODE")
         );
 
-        // And the gate the calls go through.
-        assert_eq!(defined("WIZ_SYSCALL_VECTOR"), "0x80");
+        // And the gate the calls go through — read from `vector.rs`, not from
+        // a literal. Comparing the header to `"0x80"` never opened the kernel
+        // at all, so `vector::SYSCALL` could move to `0x81` with every syscall
+        // in the header wrong and the check green (D-124).
+        let vectors = std::fs::read_to_string(root.join("kernel/src/arch/x86_64/vector.rs"))
+            .expect("vector.rs");
+        let syscall = vectors
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("pub(crate) const SYSCALL: u8 = "))
+            .map(|value| value.trim_end_matches(';').to_string())
+            .expect("no SYSCALL in vector.rs");
+        assert_eq!(defined("WIZ_SYSCALL_VECTOR"), syscall);
+        // The program's own `int 0x80` is a fourth transcription of it.
+        let program =
+            std::fs::read_to_string(root.join("xtask/src/image/program.rs")).expect("program.rs");
+        assert!(
+            program.contains("0xCD, 0x80"),
+            "the emitted program does not call {syscall}"
+        );
+
+        // The ring's address is compared for equality, not containment: a
+        // header saying `0x10000200000000000ull` used to pass (D-124).
+        assert_eq!(
+            defined("WIZ_RING_ADDRESS")
+                .replace("uintptr_t)", "")
+                .replace("ull", ""),
+            rust(&user, "RING"),
+            "the ring address is not the kernel's"
+        );
+
+        // Every call number, against the kernel's own decoder — the whole
+        // enum was invisible to `defined`, which parses only `#define`, and
+        // D-118 renumbered it.
+        for (name, number) in [
+            ("WIZ_CALL_EXIT", "0"),
+            ("WIZ_CALL_RING_ENTER", "1"),
+            ("WIZ_CALL_TCB_SET", "2"),
+        ] {
+            let declared = header
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(&format!("{name} = ")))
+                .map(|value| value.split(',').next().unwrap_or(value).trim().to_string())
+                .unwrap_or_else(|| panic!("no `{name}` in wizard_abi.h"));
+            assert_eq!(declared, number, "{name} drifted from the header");
+        }
+        let calls = std::fs::read_to_string(root.join("kernel/src/user.rs")).expect("user.rs");
+        for arm in [
+            "0 => Self::Exit",
+            "1 => Self::RingEnter",
+            "2 => Self::ThreadBase",
+        ] {
+            assert!(calls.contains(arm), "the kernel does not decode `{arm}`");
+        }
+
+        // And nothing new slipped in unaccounted for: every `WIZ_*` name the
+        // header defines is one this test knows about. Without it the header
+        // grows constants nobody compares, which is how nineteen of
+        // twenty-six came to be unchecked (D-124).
+        let known = [
+            "WIZ_HANDLE_INVALID",
+            "WIZ_RIGHT_DUPLICATE",
+            "WIZ_RIGHT_TRANSFER",
+            "WIZ_RIGHT_WAIT",
+            "WIZ_RIGHT_INSPECT",
+            "WIZ_RIGHT_READ",
+            "WIZ_RIGHT_WRITE",
+            "WIZ_RIGHT_EXECUTE",
+            "WIZ_RIGHT_MAP",
+            "WIZ_RING_ADDRESS",
+            "WIZ_RING_VERSION",
+            "WIZ_RING_ENTRIES_AT",
+            "WIZ_OP_ECHO",
+            "WIZ_OP_UPTIME",
+            "WIZ_OP_SIGNAL",
+            "WIZ_STATUS_OK",
+            "WIZ_STATUS_UNKNOWN_OPCODE",
+            "WIZ_SYSCALL_VECTOR",
+            "WIZ_USER_END",
+            "WIZ_ENOSYS",
+            "WIZ_EINVAL",
+            "WIZ_EBADF",
+            "WIZ_EPERM",
+            "WIZ_EAGAIN",
+            "WIZ_ENOMEM",
+        ];
+        for line in header.lines() {
+            if let Some(rest) = line.trim().strip_prefix("#define WIZ_") {
+                let name = format!("WIZ_{}", rest.split_whitespace().next().unwrap_or(""));
+                assert!(
+                    known.contains(&name.as_str()),
+                    "{name} is defined and nothing accounts for it"
+                );
+            }
+        }
+
+        // The rights, against `libs/handle-space`.
+        let rights = std::fs::read_to_string(root.join("libs/handle-space/src/lib.rs"))
+            .expect("handle-space");
+        for (name, shift) in [
+            ("WIZ_RIGHT_DUPLICATE", "DUPLICATE"),
+            ("WIZ_RIGHT_TRANSFER", "TRANSFER"),
+            ("WIZ_RIGHT_WAIT", "WAIT"),
+            ("WIZ_RIGHT_INSPECT", "INSPECT"),
+            ("WIZ_RIGHT_READ", "READ"),
+            ("WIZ_RIGHT_WRITE", "WRITE"),
+            ("WIZ_RIGHT_EXECUTE", "EXECUTE"),
+            ("WIZ_RIGHT_MAP", "MAP"),
+        ] {
+            let bit = rights
+                .lines()
+                .find_map(|line| {
+                    line.trim()
+                        .strip_prefix(&format!("pub const {shift}: Self = Self(1 << "))
+                })
+                .map(|value| value.trim_end_matches(");").to_string())
+                .unwrap_or_else(|| panic!("no `{shift}` in handle-space"));
+            let declared = defined(name);
+            assert!(
+                declared.contains(&format!("1u << {bit}")),
+                "{name} is {declared:?}, not bit {bit}"
+            );
+        }
+
+        // And the user boundary, which `usercopy` and the header both state.
+        let usercopy = std::fs::read_to_string(root.join("wost/src/arch/x86_64/usercopy.rs"))
+            .expect("usercopy.rs");
+        assert!(
+            usercopy.contains("USER_END: u64 = 0x0000_8000_0000_0000"),
+            "the kernel's user boundary moved"
+        );
+        assert!(
+            defined("WIZ_USER_END").contains("0x0000800000000000"),
+            "the header's user boundary is not the kernel's"
+        );
     }
 
     /// And the count the kernel declares is the number of checks it runs.

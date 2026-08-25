@@ -61,4 +61,24 @@ mod tests {
     fn the_version_ignores_everything_above_its_byte() {
         assert_eq!(Version::from_bits(0xFFFF_FF14).number(), 0x14);
     }
+
+    /// The boundary, both sides.
+    ///
+    /// The three values in use — 0x14, 0x0F and 0 — are satisfied by any
+    /// threshold in 0x10..=0x14, so the constant was pinned to an interval
+    /// rather than to a number. A real integrated APIC reporting 0x11 would
+    /// have been rejected as the 486-era 82489DX (D-124).
+    #[test]
+    fn the_integrated_threshold_is_sixteen() {
+        assert_eq!(FIRST_INTEGRATED, 0x10);
+        assert!(
+            Version::from_bits(0x10).is_integrated(),
+            "0x10 is integrated"
+        );
+        assert!(!Version::from_bits(0x0F).is_integrated(), "0x0F is not");
+        // The versions real parts report.
+        for version in [0x11, 0x14, 0x15] {
+            assert!(Version::from_bits(version).is_integrated(), "{version:#x}");
+        }
+    }
 }

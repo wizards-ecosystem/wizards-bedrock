@@ -325,4 +325,52 @@ default-members = [
         assert_eq!(named("path:"), KERNEL_ON_ESP);
         assert_eq!(named("module_path:"), PROGRAM_ON_ESP);
     }
+
+    /// Every crate under `libs/` is in both lists.
+    ///
+    /// The test above compares the two lists **to each other**, so a crate in
+    /// *neither* is symmetric and passes — and it needs no manifest edit to
+    /// exist, because Cargo promotes a path dependency inside the workspace
+    /// directory to a member on its own. So `libs/foo` depended on by
+    /// `kernel/` builds fine while `cargo xtask test`, clippy's host pass and
+    /// `doc` never see it. That is the `port-space` drift the sibling test
+    /// exists to prevent, entered by the other door (D-124).
+    #[test]
+    fn every_libs_crate_is_in_both_lists() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("root manifest");
+        let members = default_members(&manifest);
+
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(root.join("libs"))
+            .expect("libs/")
+            .flatten()
+        {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            // A directory is a crate when it has a manifest; anything else is
+            // not this test's business.
+            if !entry.path().join("Cargo.toml").exists() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            assert!(
+                members.contains(&name),
+                "libs/{name} is not in the workspace default-members"
+            );
+            assert!(
+                HOST_PACKAGES.contains(&name.as_str()),
+                "libs/{name} is not in HOST_PACKAGES"
+            );
+            found.push(name);
+        }
+        assert!(
+            found.len() > 15,
+            "only {} crates found in libs/",
+            found.len()
+        );
+    }
 }

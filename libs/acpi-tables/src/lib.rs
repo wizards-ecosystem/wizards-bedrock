@@ -1006,4 +1006,22 @@ mod tests {
             Err(AcpiError::MalformedEntry { length: 10, .. })
         ));
     }
+
+    /// The ACPI header is thirty-six bytes, from the spec rather than from
+    /// itself.
+    ///
+    /// Every fixture is built as `vec![0u8; Sdt::LEN]` and every expectation
+    /// written `Sdt::LEN + n`, so the comparisons are `X == X` and shrinking
+    /// the constant survived them. It is load-bearing twice: the MADT's local
+    /// APIC address is read at a fixed offset from it, and the XSDT's entry
+    /// count is `(length - LEN) / width`. `Rsdp`'s equivalents were caught,
+    /// because that path transcribes its offsets (D-124).
+    #[test]
+    fn the_system_description_header_is_thirty_six_bytes() {
+        // ACPI 6.5 §5.2.6, table 5.4: signature 4, length 4, revision 1,
+        // checksum 1, OEM ID 6, OEM table ID 8, OEM revision 4, creator ID 4,
+        // creator revision 4.
+        assert_eq!(Sdt::LEN, 36);
+        assert_eq!(4 + 4 + 1 + 1 + 6 + 8 + 4 + 4 + 4, Sdt::LEN);
+    }
 }
