@@ -232,6 +232,127 @@ pub const fn next_generation(generation: u32) -> u32 {
     generation.wrapping_add(1) % GENERATIONS
 }
 
+/// A table's occupancy: handles it holds, and slots promised to operations
+/// that have not finished.
+///
+/// D-78 made the quota the answer to kernel-memory exhaustion at the handle
+/// layer. Phase 6 makes an operation able to *produce* a handle, and that
+/// splits the count in two: a submission admitted now will need a slot later,
+/// and the only moment a program can be told "no room" and do something about
+/// it is at submission. So a slot is **reserved** when the operation is
+/// admitted and **committed** when the handle arrives, and the sum of the two
+/// is what the limit bounds.
+///
+/// Both counts live in one word so the transition between them is a single
+/// compare-and-exchange, which is what lets the kernel hold this in an atomic
+/// rather than behind a lock. The arithmetic is here because it is arithmetic,
+/// and because `reserve`-then-never-`release` is a leak that a host test can
+/// find and a machine cannot.
+///
+/// # Examples
+///
+/// ```
+/// use handle_space::Quota;
+///
+/// let limit = 2;
+/// let empty = Quota::EMPTY;
+/// assert_eq!(Quota::live(empty), 0);
+///
+/// // Admit an operation that may produce a handle.
+/// let promised = Quota::reserve(empty, limit).expect("room for one");
+/// assert_eq!(Quota::reserved(promised), 1);
+///
+/// // The handle arrives: the promise becomes an occupant.
+/// let held = Quota::commit(promised).expect("a promise to keep");
+/// assert_eq!((Quota::live(held), Quota::reserved(held)), (1, 0));
+/// ```
+#[derive(Debug)]
+pub struct Quota;
+
+impl Quota {
+    /// A table holding nothing and promising nothing.
+    pub const EMPTY: u64 = 0;
+
+    /// Handles the table holds.
+    pub const fn live(bits: u64) -> u32 {
+        bits as u32
+    }
+
+    /// Slots promised to operations still in flight.
+    pub const fn reserved(bits: u64) -> u32 {
+        (bits >> 32) as u32
+    }
+
+    /// What the limit bounds: held plus promised.
+    ///
+    /// `u64` because two `u32`s can sum past one, and a limit check that
+    /// wrapped would admit exactly the operation it exists to refuse.
+    pub const fn charged(bits: u64) -> u64 {
+        Self::live(bits) as u64 + Self::reserved(bits) as u64
+    }
+
+    /// Promise a slot to an operation being admitted.
+    ///
+    /// `None` when the table is full — which is the answer the program gets at
+    /// *submission*, the one moment it can choose a different operation.
+    /// `IORING_FILE_INDEX_ALLOC` reporting `-ENFILE` at completion instead is
+    /// the failure this shape exists to avoid (D-151).
+    /// The half being incremented is checked as well as the limit. A limit
+    /// larger than a `u32` cannot bound either count on its own, and the
+    /// addition below would carry a full promise half into the held half —
+    /// turning a full table into an empty one with a billion handles. Not a
+    /// state this kernel's limit of 64 can reach, which is why the arithmetic
+    /// has to be right on values it will not produce.
+    pub const fn reserve(bits: u64, limit: usize) -> Option<u64> {
+        if Self::reserved(bits) == u32::MAX || Self::charged(bits) >= limit as u64 {
+            return None;
+        }
+        Some(bits + (1 << 32))
+    }
+
+    /// Turn a promise into a held handle.
+    ///
+    /// `None` if nothing was promised, which is a caller committing twice.
+    pub const fn commit(bits: u64) -> Option<u64> {
+        if Self::reserved(bits) == 0 || Self::live(bits) == u32::MAX {
+            return None;
+        }
+        Some(bits - (1 << 32) + 1)
+    }
+
+    /// Give a promise back unspent.
+    ///
+    /// The refused path, the cancelled path and the dead-program path all end
+    /// here, and there is no fourth.
+    pub const fn release(bits: u64) -> Option<u64> {
+        if Self::reserved(bits) == 0 {
+            return None;
+        }
+        Some(bits - (1 << 32))
+    }
+
+    /// Take a slot outright, with no promise before it.
+    ///
+    /// What an ordinary insert does: the caller is holding the answer already,
+    /// so there is nothing to admit and nothing to refuse later.
+    pub const fn take(bits: u64, limit: usize) -> Option<u64> {
+        if Self::live(bits) == u32::MAX || Self::charged(bits) >= limit as u64 {
+            return None;
+        }
+        Some(bits + 1)
+    }
+
+    /// Give a held handle back.
+    ///
+    /// `None` if the table held none, which is a double close.
+    pub const fn close(bits: u64) -> Option<u64> {
+        if Self::live(bits) == 0 {
+            return None;
+        }
+        Some(bits - 1)
+    }
+}
+
 /// What a handle permits.
 ///
 /// D-78: sixteen to twenty-four rights in a single `u32`, universal split from
@@ -783,5 +904,130 @@ mod rights_tests {
         assert_eq!(next_generation(u32::MAX), 0);
         assert_eq!(next_generation(GENERATIONS - 1), 0);
         assert_eq!(next_generation(GENERATIONS), 1);
+    }
+}
+
+#[cfg(test)]
+mod quota_tests {
+    use super::Quota;
+
+    /// Reserving and committing costs the same one slot as taking outright.
+    ///
+    /// The two paths into a table must agree about what a handle costs, or the
+    /// limit means one thing for a handle that arrived by completion and
+    /// another for a handle that was inserted.
+    #[test]
+    fn a_reserved_slot_and_a_taken_slot_cost_the_same() {
+        let limit = 4;
+
+        let reserved = Quota::reserve(Quota::EMPTY, limit).expect("room");
+        let committed = Quota::commit(reserved).expect("a promise to keep");
+
+        let taken = Quota::take(Quota::EMPTY, limit).expect("room");
+
+        assert_eq!(committed, taken);
+        assert_eq!(Quota::live(committed), 1);
+        assert_eq!(Quota::reserved(committed), 0);
+    }
+
+    /// A promise occupies the table before the handle exists.
+    ///
+    /// The property the whole type is for: an operation admitted against the
+    /// last slot must make an ordinary insert fail *now*, not make the
+    /// completion fail later. Deleting `reserved` from `charged` leaves every
+    /// other test here green.
+    #[test]
+    fn a_promise_holds_the_last_slot_against_an_insert() {
+        let limit = 1;
+
+        let promised = Quota::reserve(Quota::EMPTY, limit).expect("the one slot");
+        assert_eq!(Quota::live(promised), 0, "no handle exists yet");
+
+        assert!(
+            Quota::take(promised, limit).is_none(),
+            "an insert took the slot an admitted operation was promised"
+        );
+        assert!(
+            Quota::reserve(promised, limit).is_none(),
+            "a second operation was promised the same slot"
+        );
+
+        // And giving the promise back frees it again, which is the other half:
+        // a reservation that could not be released would be a slow leak.
+        let released = Quota::release(promised).expect("a promise to give back");
+        assert_eq!(released, Quota::EMPTY);
+        assert!(Quota::take(released, limit).is_some());
+    }
+
+    /// Releasing a promise does not disturb the handles already held.
+    #[test]
+    fn releasing_a_promise_leaves_the_held_handles_alone() {
+        let limit = 8;
+        let held = Quota::take(Quota::take(Quota::EMPTY, limit).unwrap(), limit).unwrap();
+        let promised = Quota::reserve(held, limit).expect("room");
+
+        let released = Quota::release(promised).expect("a promise to give back");
+        assert_eq!(Quota::live(released), 2);
+        assert_eq!(Quota::reserved(released), 0);
+
+        let committed = Quota::commit(promised).expect("a promise to keep");
+        assert_eq!(Quota::live(committed), 3);
+        assert_eq!(Quota::reserved(committed), 0);
+    }
+
+    /// Spending what was never promised is refused rather than wrapped.
+    ///
+    /// Each of these would otherwise borrow from the other count: a `commit`
+    /// with nothing reserved subtracts one from the high half and lands a
+    /// billion promises in the low half's carry.
+    #[test]
+    fn spending_a_promise_that_was_not_made_is_refused() {
+        assert!(Quota::commit(Quota::EMPTY).is_none());
+        assert!(Quota::release(Quota::EMPTY).is_none());
+        assert!(Quota::close(Quota::EMPTY).is_none());
+
+        let held = Quota::take(Quota::EMPTY, 4).expect("room");
+        assert!(Quota::commit(held).is_none(), "nothing was promised");
+        assert!(Quota::release(held).is_none(), "nothing was promised");
+        assert_eq!(Quota::close(held), Some(Quota::EMPTY));
+    }
+
+    /// The limit check cannot be defeated by two counts that sum past a word.
+    ///
+    /// `charged` is `u64` for this: `live` and `reserved` are each a `u32`,
+    /// and adding them in `u32` wraps to a small number, which passes a limit
+    /// check that should have refused. Not a reachable state through this
+    /// API — the limit stops it long before — which is exactly why the
+    /// arithmetic has to be right on values the API will not produce.
+    #[test]
+    fn two_counts_that_sum_past_a_word_do_not_wrap_the_limit_check() {
+        let brimming = u64::from(u32::MAX) | (u64::from(u32::MAX) << 32);
+
+        assert_eq!(Quota::charged(brimming), u64::from(u32::MAX) * 2);
+        assert!(
+            Quota::reserve(brimming, usize::MAX).is_none(),
+            "a full table admitted an operation"
+        );
+        assert!(Quota::take(brimming, usize::MAX).is_none());
+    }
+
+    /// The two counts do not read each other's half of the word.
+    ///
+    /// Pairwise distinct on purpose (D-136): equal counts would let `live` and
+    /// `reserved` be swapped with every assertion above still passing.
+    #[test]
+    fn the_two_counts_do_not_read_each_others_bits() {
+        let limit = 16;
+        let mut bits = Quota::EMPTY;
+        for _ in 0..5 {
+            bits = Quota::take(bits, limit).expect("room");
+        }
+        for _ in 0..3 {
+            bits = Quota::reserve(bits, limit).expect("room");
+        }
+
+        assert_eq!(Quota::live(bits), 5);
+        assert_eq!(Quota::reserved(bits), 3);
+        assert_eq!(Quota::charged(bits), 8);
     }
 }

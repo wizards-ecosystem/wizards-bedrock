@@ -115,8 +115,14 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "kernel/src/handle.rs",
-        find: "        let granted = offered.attenuate(declared).ok_or(HandleError::Denied)?;",
-        replace: "        let granted = offered.attenuate(declared).unwrap_or(offered);",
+        // The next line is part of the pattern, and has to be: `install`
+        // opened a second attenuation with the identical first line, so the
+        // one-site rule started failing here rather than silently mutating
+        // whichever came first (D-163).
+        find: "        let granted = offered.attenuate(declared).ok_or(HandleError::Denied)?;
+        self.insert(object, granted)",
+        replace: "        let granted = offered.attenuate(declared).unwrap_or(offered);
+        self.insert(object, granted)",
         breaks: "a receiver cannot widen what it was offered",
         reddens: Caught::Check("a handle crosses with the rights both ends declared"),
     },
@@ -355,6 +361,69 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "            grown.clear();",
         breaks: "the handle arena grows more than once",
         reddens: Caught::Check("the handle arena grows more than once"),
+    },
+    // Slice 1's four properties, one defect each (D-119).
+    //
+    // The ring became a delegation path in Phase 6, and a delegation path that
+    // does not narrow is a widening path. This is the whole of it: `install`
+    // hands out what was offered instead of the narrower of offered and
+    // declared.
+    Mutation {
+        file: "kernel/src/handle.rs",
+        find: "        let granted = offered.attenuate(declared).ok_or(HandleError::Denied)?;
+        if !granted.are_meaningful_for(object.kind().per_type_rights()) {
+            return Err(HandleError::Meaningless);
+        }
+        let handle = self.fill(object, granted)?;",
+        replace: "        let granted = offered;
+        let _ = declared;
+        if !granted.are_meaningful_for(object.kind().per_type_rights()) {
+            return Err(HandleError::Meaningless);
+        }
+        let handle = self.fill(object, granted)?;",
+        breaks: "rights attenuate on arrival",
+        reddens: Caught::Check("a completion carries a handle with narrowed rights"),
+    },
+    // The destructor that returns an unspent promise, removed. Not a crash:
+    // a table that quietly shrinks by one every time a program asks for
+    // something it cannot have — `012` §10's `-ENFILE`-at-completion, arrived
+    // at from the other direction.
+    Mutation {
+        file: "kernel/src/handle.rs",
+        find: "        if !self.spent {
+            self.table.step(Quota::release);
+        }",
+        replace: "        if false {
+            self.table.step(Quota::release);
+        }",
+        breaks: "a refused operation gives its promised slot back",
+        reddens: Caught::Check("a refused handle operation returns its promise"),
+    },
+    // A deferred operation made due the moment it is admitted, which is what
+    // "asynchronous" degrades into if nothing checks the deadline. The
+    // completion still arrives exactly once, so only a check that looks
+    // *before* the deadline can tell the two kernels apart.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "                    if slot.is_some_and(|entry| entry.deadline_ns <= now_ns) {",
+        replace: "                    if slot.is_some() {",
+        breaks: "an operation is not due before its deadline",
+        reddens: Caught::Check("an operation completes after its deadline and only once"),
+    },
+    // The cancellation stops posting the target's completion and reports only
+    // its own — the double-completion class from `012` §8 with the sign
+    // flipped, and the reason cancellation is an operation rather than a
+    // substitute.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "        if !self.post(Completion {
+            token: entry.token,
+            status: STATUS_CANCELLED,
+            value: 0,
+        }) {",
+        replace: "        if false {",
+        breaks: "a cancelled operation still gets its own completion",
+        reddens: Caught::Check("a cancelled operation and its cancellation complete separately"),
     },
     // D-133's exemption, put back. The inner test is left in place so the
     // counter still cannot move, which is the point: the woken thread runs

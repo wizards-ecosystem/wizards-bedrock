@@ -19,14 +19,17 @@
 //! single-owner rings — and it is why a program cannot free the memory the
 //! kernel is about to write a completion into.
 
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use handle_space::Rights;
 use ring_proto::{Capacity, Queues};
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::mm::{self, Shared, USegment};
 use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
+use crate::handle::HandleTable;
 use crate::wait::WaitQueue;
 
 /// Bytes of shared page: one for the header and the indices, one for the
@@ -80,6 +83,28 @@ pub(crate) enum Opcode {
     Echo,
     /// Return the kernel's uptime in nanoseconds.
     Uptime,
+    /// Duplicate a handle this program holds, narrowing its rights.
+    ///
+    /// The first operation whose completion carries **authority** rather than
+    /// bytes, which is what D-151 said the ring was missing and what makes it
+    /// a peer of the channel path rather than a side door around it. The
+    /// argument packs the handle in its low half and the rights the program is
+    /// willing to hold in its high half.
+    Duplicate,
+    /// Complete once `argument` nanoseconds have passed.
+    ///
+    /// The first operation whose honest answer is *not yet*. Admitted now,
+    /// completed later, and the reservation it took at admission is what
+    /// guarantees the later completion has somewhere to go.
+    Timer,
+    /// End an operation still in flight, naming it by its token.
+    ///
+    /// **Its own operation**, with its own reservation and its own completion.
+    /// It never substitutes for the target's, which still gets exactly one —
+    /// carrying [`STATUS_CANCELLED`] instead of a result. That separation is
+    /// the antidote to the double-completion class that produced two io_uring
+    /// CVEs (`012` §8).
+    Cancel,
     /// Anything else.
     Unknown(u32),
 }
@@ -89,6 +114,9 @@ impl Opcode {
         match value {
             1 => Self::Echo,
             2 => Self::Uptime,
+            3 => Self::Duplicate,
+            4 => Self::Timer,
+            5 => Self::Cancel,
             other => Self::Unknown(other),
         }
     }
@@ -124,6 +152,26 @@ pub(crate) struct Completion {
 pub(crate) const STATUS_OK: u32 = 0;
 /// The opcode is not one this kernel serves.
 pub(crate) const STATUS_UNKNOWN_OPCODE: u32 = 1;
+/// The table has no room for the handle this operation would produce.
+///
+/// Reported at **submission**, which is the point: a program told now can
+/// close something and ask again, where a program told at completion has
+/// already been charged for work it cannot receive (D-151).
+pub(crate) const STATUS_NO_HANDLE_SLOT: u32 = 2;
+/// The handle named is not one this program holds.
+pub(crate) const STATUS_BAD_HANDLE: u32 = 3;
+/// The rights asked for are not ones the program could pass on.
+pub(crate) const STATUS_DENIED: u32 = 4;
+/// The operation was ended early by a [`Opcode::Cancel`].
+pub(crate) const STATUS_CANCELLED: u32 = 5;
+/// A cancellation named no operation in flight.
+///
+/// Advisory, as io_uring's `-EALREADY` is: an operation that completed between
+/// the submission of the cancel and its service is not an error, and reporting
+/// it as one would make a race into a failure.
+pub(crate) const STATUS_NOT_FOUND: u32 = 6;
+/// Nothing left to track an in-flight operation with.
+pub(crate) const STATUS_NO_ROOM: u32 = 7;
 
 /// The indices, copied out of the shared page in one read.
 ///
@@ -136,6 +184,23 @@ struct Snapshot {
     completion_head: u32,
 }
 
+/// An operation admitted and not yet completed.
+///
+/// Concrete rather than general: a timer is the only kind there is, and a
+/// second kind arrives with the block device in slice 5. D-41 forbids the
+/// abstraction that has one implementation.
+///
+/// Its completion slot is **already reserved** — taken when the operation was
+/// admitted — so the completion below can never fail to find room. That is
+/// what makes deferring safe rather than merely convenient.
+#[derive(Debug, Clone, Copy)]
+struct Pending {
+    /// The submission's tag, which is also how a cancellation names it.
+    token: u32,
+    /// When it becomes due, in the clock's nanoseconds.
+    deadline_ns: u64,
+}
+
 /// A submission/completion ring bound to one process.
 #[derive(Debug)]
 pub(crate) struct Queue {
@@ -145,6 +210,12 @@ pub(crate) struct Queue {
     state: SpinLock<Queues>,
     /// Woken when a completion is posted.
     waiters: WaitQueue,
+    /// Operations admitted and not yet completed.
+    ///
+    /// At most one per submission slot, which is not a coincidence: an
+    /// operation occupies a submission's worth of the ring's admission until
+    /// it completes, so a table any larger could never be filled.
+    pending: SpinLock<[Option<Pending>; SUBMISSIONS as usize]>,
     /// Completions posted since the ring was made.
     ///
     /// Kernel-side and monotonic, so a check can ask whether work was actually
@@ -183,6 +254,7 @@ impl Queue {
             shared: SpinLock::new(shared),
             state: SpinLock::new(state),
             waiters: WaitQueue::new(),
+            pending: SpinLock::new([None; SUBMISSIONS as usize]),
             served: AtomicUsize::new(0),
         })
     }
@@ -228,12 +300,17 @@ impl Queue {
     /// One terminal completion per operation, always — including for an opcode
     /// this kernel does not serve, which is refused *with* a completion rather
     /// than ignored.
-    pub(crate) fn serve(&self) -> usize {
+    pub(crate) fn serve(&self, table: &Arc<HandleTable>) -> usize {
         let snapshot = self.snapshot();
         let mut served = 0;
 
         while let Some(submission) = self.take(&snapshot) {
-            let completion = perform(submission);
+            // `None` is an operation that has been admitted and will complete
+            // later. Its reservation stays held — that is the difference
+            // between deferring an operation and dropping one.
+            let Some(completion) = self.admit(submission, table) else {
+                continue;
+            };
             if !self.post(completion) {
                 // Unreachable: admission reserved this slot before the
                 // operation was accepted, which is the whole of D-79's design,
@@ -280,6 +357,196 @@ impl Queue {
     pub(crate) fn reserve_for_test(&self, count: usize) -> usize {
         let mut state = self.state.lock_leaf();
         (0..count).take_while(|_| state.submit().is_some()).count()
+    }
+
+    /// Carry out one submission, or admit it as still in flight.
+    ///
+    /// `None` means the operation was accepted and its completion will be
+    /// posted by [`expire`](Self::expire) or by a cancellation. Everything
+    /// else — including every refusal — returns the one terminal completion
+    /// D-79 requires.
+    fn admit(&self, submission: Submission, table: &Arc<HandleTable>) -> Option<Completion> {
+        let token = submission.token;
+        Some(match submission.opcode {
+            Opcode::Echo => Completion {
+                token,
+                status: STATUS_OK,
+                value: submission.argument,
+            },
+            Opcode::Uptime => Completion {
+                token,
+                status: STATUS_OK,
+                value: crate::time::now_ns(),
+            },
+            Opcode::Duplicate => self.duplicate(submission, table),
+            Opcode::Timer => {
+                if self.defer(submission).is_some() {
+                    return None;
+                }
+                refuse(token, STATUS_NO_ROOM)
+            }
+            Opcode::Cancel => self.cancel(submission),
+            Opcode::Unknown(_) => refuse(token, STATUS_UNKNOWN_OPCODE),
+        })
+    }
+
+    /// Produce a handle into the caller's own table.
+    ///
+    /// Three things happen in an order that is the whole point. The **slot is
+    /// promised first**, so a full table is reported at submission rather than
+    /// discovered at completion. The rights are then **attenuated on arrival**
+    /// by `install`, so the ring narrows exactly as a channel does and cannot
+    /// be the widening path around D-110. And every refusal below drops the
+    /// reservation, which gives the promise back — not because each path
+    /// remembers to, but because the type's destructor does (D-163).
+    fn duplicate(&self, submission: Submission, table: &Arc<HandleTable>) -> Completion {
+        let token = submission.token;
+        let named = submission.argument as u32;
+        let Some(declared) = Rights::from_bits((submission.argument >> 32) as u32) else {
+            return refuse(token, STATUS_DENIED);
+        };
+
+        let Ok(reservation) = table.reserve_slot() else {
+            return refuse(token, STATUS_NO_HANDLE_SLOT);
+        };
+        let Ok((object, held)) = table.resolve(named) else {
+            return refuse(token, STATUS_BAD_HANDLE);
+        };
+        // The same gate `HandleTable::duplicate` applies, restated here rather
+        // than reached through it: that path inserts as well, and this one has
+        // a promise to spend instead.
+        if !held.contains(Rights::DUPLICATE) {
+            return refuse(token, STATUS_DENIED);
+        }
+
+        match table.install(reservation, object, held, declared) {
+            Ok(handle) => Completion {
+                token,
+                status: STATUS_OK,
+                value: u64::from(handle),
+            },
+            Err(_) => refuse(token, STATUS_DENIED),
+        }
+    }
+
+    /// Record an operation as in flight, and say when it comes due.
+    ///
+    /// The deadline is computed **before** the guard is taken: reading the
+    /// clock is a call, and this lock is a leaf (D-85).
+    fn defer(&self, submission: Submission) -> Option<u64> {
+        let deadline_ns = crate::time::now_ns().saturating_add(submission.argument);
+        let mut pending = self.pending.lock_leaf();
+        for slot in pending.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(Pending {
+                    token: submission.token,
+                    deadline_ns,
+                });
+                return Some(deadline_ns);
+            }
+        }
+        None
+    }
+
+    /// End an operation early, giving it the completion it was owed.
+    ///
+    /// The target still gets **exactly one** terminal completion, carrying
+    /// [`STATUS_CANCELLED`]. This function's own completion is separate and is
+    /// posted by [`serve`](Self::serve), against its own reservation.
+    fn cancel(&self, submission: Submission) -> Completion {
+        let target = submission.argument as u32;
+        // Taken and dropped before `post`, which takes two more leaves. A
+        // guard held across it is the one thing `lock_leaf` forbids (D-121).
+        let found = {
+            let mut pending = self.pending.lock_leaf();
+            let mut taken = None;
+            for slot in pending.iter_mut() {
+                if slot.is_some_and(|entry| entry.token == target) {
+                    taken = slot.take();
+                    break;
+                }
+            }
+            taken
+        };
+
+        let Some(entry) = found else {
+            return refuse(submission.token, STATUS_NOT_FOUND);
+        };
+        if !self.post(Completion {
+            token: entry.token,
+            status: STATUS_CANCELLED,
+            value: 0,
+        }) {
+            // Unreachable for the reason `serve`'s twin is: the reservation
+            // was taken when the operation was admitted and nothing has spent
+            // it. Reaching it has consumed the operation with no completion.
+            debug_assert!(false, "a cancelled operation had no reserved slot");
+        }
+        self.served.fetch_add(1, Ordering::Release);
+        Completion {
+            token: submission.token,
+            status: STATUS_OK,
+            value: u64::from(entry.token),
+        }
+    }
+
+    /// Complete every operation whose deadline has passed, and report how many.
+    ///
+    /// The completion is posted **after** the deadline and by the kernel, not
+    /// by the program asking again: a program that submits a timer, waits, and
+    /// is woken finds the entry already in its queue.
+    pub(crate) fn expire(&self, now_ns: u64) -> usize {
+        let mut due = 0;
+        loop {
+            let ready = {
+                let mut pending = self.pending.lock_leaf();
+                let mut taken = None;
+                for slot in pending.iter_mut() {
+                    if slot.is_some_and(|entry| entry.deadline_ns <= now_ns) {
+                        taken = slot.take();
+                        break;
+                    }
+                }
+                taken
+            };
+            let Some(entry) = ready else {
+                break;
+            };
+            if !self.post(Completion {
+                token: entry.token,
+                status: STATUS_OK,
+                value: entry.deadline_ns,
+            }) {
+                debug_assert!(false, "an expired operation had no reserved slot");
+                break;
+            }
+            due += 1;
+        }
+
+        if due > 0 {
+            self.served.fetch_add(due, Ordering::Release);
+            self.waiters.wake_all();
+        }
+        due
+    }
+
+    /// When the soonest operation still in flight comes due.
+    ///
+    /// `None` when nothing is, which is what tells a waiter there is nothing
+    /// to wait for.
+    pub(crate) fn earliest_deadline(&self) -> Option<u64> {
+        self.pending
+            .lock_leaf()
+            .iter()
+            .flatten()
+            .map(|entry| entry.deadline_ns)
+            .min()
+    }
+
+    /// How many operations are in flight.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn in_flight(&self) -> usize {
+        self.pending.lock_leaf().iter().flatten().count()
     }
 
     /// Copy the indices out of the shared page, once.
@@ -440,9 +707,15 @@ impl Queue {
     /// the page is the boundary and the function call is not.
     #[cfg(feature = "selftest")]
     pub(crate) fn post_submission_for_test(&self, slot: usize, submission: Submission) {
+        // Exhaustive on purpose, and the compiler is what keeps it so: an
+        // opcode added to `decode` and forgotten here is a build failure
+        // rather than a check that silently exercises `Unknown` (D-161).
         let opcode = match submission.opcode {
             Opcode::Echo => 1,
             Opcode::Uptime => 2,
+            Opcode::Duplicate => 3,
+            Opcode::Timer => 4,
+            Opcode::Cancel => 5,
             Opcode::Unknown(other) => other,
         };
         let mut bytes = [0u8; ENTRY_BYTES];
@@ -535,28 +808,18 @@ impl Queue {
     }
 }
 
-/// Do what one submission asked, and say what happened.
+/// A completion that carries a refusal and no result.
 ///
-/// Every path returns a completion. There is no way to reach the end of this
-/// function without one, which is D-79's rule expressed as control flow rather
-/// than as a comment.
-fn perform(submission: Submission) -> Completion {
-    match submission.opcode {
-        Opcode::Echo => Completion {
-            token: submission.token,
-            status: STATUS_OK,
-            value: submission.argument,
-        },
-        Opcode::Uptime => Completion {
-            token: submission.token,
-            status: STATUS_OK,
-            value: crate::time::now_ns(),
-        },
-        Opcode::Unknown(_) => Completion {
-            token: submission.token,
-            status: STATUS_UNKNOWN_OPCODE,
-            value: 0,
-        },
+/// Every refusal in this file goes through it, so a refusal that forgot to
+/// zero its value could not be written. D-79's rule — one terminal completion,
+/// always — is expressed by `admit` returning one on every path that is not a
+/// deferral, and by a deferral holding the reservation that guarantees a later
+/// one.
+fn refuse(token: u32, status: u32) -> Completion {
+    Completion {
+        token,
+        status,
+        value: 0,
     }
 }
 

@@ -10019,3 +10019,211 @@ D-156 existed to remove.
   and the set the value belongs to is named — which is the detail whose absence
   caused this.
 - D-156's "left owed" item is closed.
+
+## D-163 The handle table works through a shared reference, and a promise is a value — Status: Accepted (2026-08-25)
+
+**Context.** Phase 6 slice 1 owes D-151: a completion must be able to carry a
+handle. Two things stood in the way, and the second was not obvious until the
+first was fixed.
+
+**A program's table could not be written to after it was spawned.** `spawn`
+built a `HandleTable`, inserted the bootstrap channel and wrapped it in an
+`Arc`, and every mutating method took `&mut self` — so from that moment the
+table was frozen. The ring is served from the syscall handler, where no
+`&mut` to it exists and none can, because the table is reached through a
+`BOOTSTRAPS` guard that must be dropped before anything else is taken (D-121).
+
+**Wrapping it in a lock is the obvious answer and the wrong one.** `insert`
+takes the handle arena's leaf guard. A table lock taken as a leaf and held
+across that is leaf-under-leaf, which is what `lock_leaf` forbids and what the
+machine check watches for; a token-bearing lock cannot be taken in trap context
+at all, because `ThreadContext::claim` returns `None` inside a handler (D-55).
+There is no lock that fits.
+
+**Decision.** The count becomes an atomic and every method takes `&self`.
+
+`id`, `mixer` and `quota` were already immutable after construction. The only
+mutable state was `live: usize`, and it becomes one `AtomicU64` holding the two
+counts `libs/handle-space`'s `Quota` packs — handles held, and slots promised.
+No lock is added, no lock order changes, and `Arc<HandleTable>` becomes usable
+exactly where it already was.
+
+**A reservation is a value with a destructor, not a rule.** `reserve_slot`
+returns a `SlotReservation` holding an `Arc` to the table. `install` consumes
+it and keeps it; every other end — a refusal, a cancellation, a `?` on the way
+through, the death of the program holding it — runs `Drop`, which gives the
+promise back.
+
+**Rationale.** D-151 asks that "the reservation is returned on every terminal
+path", and names three paths. The trouble with a property stated as a list of
+paths is that the list is a copy of the control flow, and it stops being a copy
+the moment a path is added — which is D-157's rule one level down. Making it a
+destructor obligation means the paths do not have to be enumerated in order to
+be covered: there is no way to lose one, including down a path nobody has
+written yet. Slice 3's dead-program path is the third in D-151's list and needs
+no new code here to be correct.
+
+The atomic is also what makes the two counts one word. Moving a promise to a
+handle is a single compare-and-exchange, so no reader ever sees a table that
+holds neither — which is what a quota check would otherwise be racing.
+
+**Consequences.**
+
+- `libs/handle-space` gains `Quota`: `reserve`, `commit`, `release`, `take`,
+  `close`, all total, all host-tested, five deliberate breaks. The overflow
+  test found a real edge on the first run — `reserve` could carry a full
+  promise half into the held half — and the transitions are now guarded on the
+  half being incremented as well as on the limit.
+- `insert` splits: `fill` does the arena work and touches no count, so the two
+  callers that charge differently share the part that does not.
+- **One existing mutation had to be disambiguated.** `install`'s attenuation is
+  the same line as `accept`'s, so `xtask/src/mutate.rs`'s one-site rule started
+  failing — correctly, and immediately. The pattern now carries its next line.
+- `live()` counts held handles and not promises. A check asking what a program
+  can *reach* must not count what it has been promised, and the two are
+  separately readable for exactly that reason.
+
+## D-164 A wait that is a wait — Status: Accepted (2026-08-25)
+
+**Context.** `014` opens by saying this is "the phase that gives the kernel
+something to wait for", and D-149 puts the ABI first precisely so the waiting
+shape is fixed before a filesystem depends on it. Slice 1 owes the first
+operation whose honest answer is *not yet*.
+
+Everything this kernel served through the ring until now answered immediately.
+`perform` was a pure function of the submission: echo returns its argument,
+uptime reads the clock. There was no in-flight state, and `Queue`'s wait queue
+had been built in Phase 5 and never used.
+
+**The obstacle is that a ring-3 thread had no way to stop running.** The
+syscall arrives through an interrupt gate (D-96) and is served in trap context,
+where `sleep_ns` cannot be used: it takes a `ThreadContext`, and there is none
+inside a handler (D-55). A "wait" that could not block would be a spin, and a
+program spinning is a program holding a CPU it is not using.
+
+**Options.** Return "nothing yet" and let the program spin; run the ring from a
+kernel worker thread that can block; or give the trap path its own way to yield.
+
+**Decision.** All three of the pieces, each in its own place.
+
+**An operation can be deferred.** `Opcode::Timer` is admitted, recorded in a
+small pending table, and *not* completed. Its completion slot was reserved at
+admission and stays reserved, which is what makes the later completion certain
+rather than hopeful — the reservation is the difference between deferring an
+operation and dropping one.
+
+**A thread can sleep from a trap.** `thread::sleep_from_trap` is
+`retire_from_trap`'s shape without the retirement: mark the caller `Sleeping`
+with its deadline, hand the CPU on, and switch **through the frame**, which is
+the mechanism preemption already uses and the only place a switch is legal
+(D-54). The thread resumes inside its own handler and returns to ring 3 from
+there.
+
+**`RingWait` is the call that uses both.** Nothing in flight returns zero at
+once — blocking on nothing is a hang. Something already due completes without
+sleeping. Otherwise the thread sleeps to the soonest deadline and completes
+what it finds on waking.
+
+Not the worker thread. `012` §8 is emphatic that io_uring's history is a march
+*away* from its pool, that its bounded pool alone would be `4 × nr_cpus`, and
+that this kernel has sixteen thread slots in total. A state machine driven from
+the waiting thread needs zero — the direction Linux was travelling and could
+not finish because it had to keep every existing filesystem working. This
+kernel has none yet, which is the one moment the cheap answer is also the right
+one.
+
+**Rationale.** The completion is posted by the kernel *after* the deadline, on
+the waiting thread's behalf, so a woken program finds the entry already in its
+queue. That is what makes it a wait rather than a poll dressed up, and it is
+the shape slice 5's polled NVMe read reuses without changing the ABI.
+
+`Queue`'s `WaitQueue` is still not what a ring-3 waiter uses, and this entry
+says so rather than leaving it looking like an oversight: `WaitQueue::wait`
+takes a `ThreadContext`, so it is the mechanism for a *kernel* thread waiting
+on a ring. A ring-3 thread waits through the scheduler, because that is where a
+trap-context switch is legal.
+
+**Cancellation is an operation, not a substitute.** `Opcode::Cancel` has its
+own reservation and its own completion. The operation it ends still gets
+exactly one terminal completion, carrying `STATUS_CANCELLED` rather than a
+result. `012` §8 names the double-completion class behind two io_uring CVEs,
+and this is the shape that has no room for it. A cancellation naming nothing is
+`STATUS_NOT_FOUND` and **not an error** — io_uring's `-EALREADY` — because an
+operation that completed between the submission of the cancel and its service
+is a race the program cannot avoid.
+
+**Consequences.**
+
+- Three opcodes: `Duplicate`, `Timer`, `Cancel`. Seven statuses where there
+  were two.
+- Six machine checks, seven deliberate breaks, four mutations.
+- `sleep_from_trap` returns whether it actually yielded. A machine with no
+  other thread to run, or a clock that never started, gets an honest zero
+  rather than a hang — a wait nobody can end is worse than no wait.
+- The pending table holds one entry per submission slot, which is not
+  arbitrary: an in-flight operation occupies a submission's worth of admission
+  until it completes, so a larger table could never be filled.
+- `Pending` is a timer and nothing more. D-41 forbids the abstraction with one
+  implementation; the second kind arrives with the block device in slice 5, and
+  that is when it becomes worth generalising.
+
+## D-165 A check that could not fail, found by breaking it — Status: Accepted (2026-08-25)
+
+**Context.** Slice 1's most important property is D-151's: **a promised handle
+slot is given back on every terminal path.** A leak there is not a crash. It is
+a table that shrinks by one every time a program asks for something it cannot
+have, and it surfaces hours later as a process that cannot open anything.
+
+The check written for it set up a table with room for exactly one handle, put
+the source handle in it, and submitted three operations that were refused. It
+asserted afterwards that nothing was still promised, and it passed.
+
+**It could not have failed.** With the table already full, all three refusals
+happened *at the reservation* — `reserve_slot` returned `QuotaExhausted` and no
+promise was ever made. `promised() == 0` was true because nothing had been
+promised. Deleting the destructor whose entire job is returning promises left
+the check green.
+
+**How it was found.** By D-28, and only by D-28. The break was applied, the
+boot went red — and it went red on a *different* check, which is what gave it
+away. `a completion cannot widen what was offered` also asserts `promised() ==
+0`, and its table has room, so its refusal happens after a promise is taken.
+The check that was *about* the property could not see it; a check that
+mentioned it in passing could.
+
+**Decision.** The check is rebuilt so that every submission reserves and then
+fails, at a different point each time: at the lookup (a value naming nothing of
+this table's), at the right (a handle held without `DUPLICATE`), and at the
+attenuation (asking for more than is held). The table is deliberately roomy,
+which is the opposite of the instinct that produced the first version.
+
+The full-table case is not deleted — it is a different claim and gets its own
+check. *A full table refuses at submission* is about the moment the program is
+told, which D-151 argues is the whole point of reserving at all. Merging the
+two is how the first one came to be unfailable: it was trying to be about both.
+
+**Rationale.** This is D-155's rule — choose inputs where the answers differ —
+arriving from a direction that rule did not cover. There the inputs made two
+*answers* indistinguishable. Here the input made the code path under test
+**unreachable**: the check never ran the lines it was written about. That is
+worse, because no amount of staring at the assertion reveals it. The assertion
+is correct.
+
+The general form, and it is the third thing this rule has cost:
+
+> **A check must reach the code it is about.** Set-up chosen to make the failure
+> easy to trigger can make it impossible to reach — a full table refuses early,
+> a closed channel refuses early, an unmapped page faults early. If the refusal
+> under test is the *second* thing that could go wrong, the input has to get
+> past the first.
+
+`005`'s testing section carries it.
+
+**Consequences.**
+
+- One check rebuilt, one check added, and the break that found it is now a
+  mutation, so it cannot rot back.
+- Two checks now assert `promised() == 0` from different set-ups, which is the
+  redundancy that caught this and is worth keeping.
+- Nothing in the kernel changed. The destructor was correct; the check could
+  not show it.

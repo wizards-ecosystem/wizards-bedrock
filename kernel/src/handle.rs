@@ -23,9 +23,9 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use handle_space::{Mixer, Rights, SLOTS, Slot};
+use handle_space::{Mixer, Quota, Rights, SLOTS, Slot};
 use wost::sync::SpinLock;
 
 use crate::object::{ObjectRef, ObjectType};
@@ -228,7 +228,14 @@ pub(crate) struct HandleTable {
     id: TableId,
     mixer: Mixer,
     quota: usize,
-    live: usize,
+    /// Handles held and slots promised, packed by [`Quota`].
+    ///
+    /// An atomic rather than a plain field, and that is what makes the table
+    /// usable through an `Arc` after the program is running. Every method
+    /// below takes `&self`, so a completion can install a handle into a table
+    /// the spawner long since gave away — which is the whole of D-151 and was
+    /// impossible while the count needed `&mut` (D-163).
+    counts: AtomicU64,
 }
 
 /// The half every spawned program uses: `user::spawn` builds a table and puts
@@ -256,13 +263,66 @@ impl HandleTable {
             id,
             mixer: Mixer::for_table(id.0),
             quota,
-            live: 0,
+            counts: AtomicU64::new(Quota::EMPTY),
         }
     }
 
     /// How many handles this table holds.
-    pub(crate) const fn live(&self) -> usize {
-        self.live
+    ///
+    /// Held, not charged: a promise is not yet a handle, and a check counting
+    /// what a program can *reach* must not count what it has been promised.
+    pub(crate) fn live(&self) -> usize {
+        Quota::live(self.counts.load(Ordering::Acquire)) as usize
+    }
+
+    /// Slots promised to operations that have not finished.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn promised(&self) -> usize {
+        Quota::reserved(self.counts.load(Ordering::Acquire)) as usize
+    }
+
+    /// Apply one [`Quota`] transition, or report that it was refused.
+    ///
+    /// A compare-and-exchange loop because the two counts share a word: moving
+    /// a promise to a handle is one write, so no reader ever sees a table that
+    /// holds neither.
+    fn step(&self, transition: impl Fn(u64) -> Option<u64>) -> bool {
+        let mut seen = self.counts.load(Ordering::Acquire);
+        loop {
+            let Some(next) = transition(seen) else {
+                return false;
+            };
+            match self
+                .counts
+                .compare_exchange_weak(seen, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(current) => seen = current,
+            }
+        }
+    }
+
+    /// Promise a slot to an operation being admitted.
+    ///
+    /// The reservation is a value with a destructor, so the promise is given
+    /// back on **every** path out — refused, cancelled, or dropped on the way
+    /// through a `?`. D-151 asks for exactly that and names io_uring's
+    /// `-ENFILE`-at-completion as the shape of getting it wrong; making it a
+    /// `Drop` obligation rather than a rule means the paths do not have to be
+    /// enumerated in order to be covered (D-163).
+    ///
+    /// # Errors
+    ///
+    /// [`HandleError::QuotaExhausted`] when the table is full, which is the
+    /// answer at *submission* — the one moment the program can act on it.
+    pub(crate) fn reserve_slot(self: &Arc<Self>) -> Result<SlotReservation, HandleError> {
+        if !self.step(|bits| Quota::reserve(bits, self.quota)) {
+            return Err(HandleError::QuotaExhausted);
+        }
+        Ok(SlotReservation {
+            table: Arc::clone(self),
+            spent: false,
+        })
     }
 
     /// Put `object` in this table with `rights`, and return its handle.
@@ -277,13 +337,32 @@ impl HandleTable {
     /// [`HandleError::Meaningless`] for a right this object type makes no
     /// distinction about, [`HandleError::QuotaExhausted`] if the table is
     /// full, and [`HandleError::ArenaFull`] if the machine is.
-    pub(crate) fn insert(&mut self, object: ObjectRef, rights: Rights) -> Result<u32, HandleError> {
+    pub(crate) fn insert(&self, object: ObjectRef, rights: Rights) -> Result<u32, HandleError> {
         if !rights.are_meaningful_for(object.kind().per_type_rights()) {
             return Err(HandleError::Meaningless);
         }
-        if self.live >= self.quota {
+        // The room is taken before the arena work rather than after it: a
+        // table that claimed an arena slot and only then found itself full
+        // would have to put it back, and the path that puts it back is the one
+        // nothing exercises.
+        if !self.step(|bits| Quota::take(bits, self.quota)) {
             return Err(HandleError::QuotaExhausted);
         }
+        match self.fill(object, rights) {
+            Ok(handle) => Ok(handle),
+            Err(error) => {
+                self.step(Quota::close);
+                Err(error)
+            }
+        }
+    }
+
+    /// Put `object` in a slot this table has already been charged for.
+    ///
+    /// Touches no count. Its two callers each own the accounting:
+    /// [`insert`](Self::insert) has taken the room outright, and
+    /// [`install`](Self::install) holds a promise.
+    fn fill(&self, object: ObjectRef, rights: Rights) -> Result<u32, HandleError> {
         // Reserved before the guard, never under it: `Vec` growth calls the
         // allocator, and this lock is a leaf (D-85, D-95). The reservation is
         // not a hold, so another table can consume the room in the window
@@ -314,8 +393,39 @@ impl HandleTable {
             }
             return Err(HandleError::ArenaFull);
         };
-        self.live += 1;
         Ok(named.encode(self.mixer))
+    }
+
+    /// Install a handle into a slot promised earlier, attenuating on arrival.
+    ///
+    /// The receiving half of D-110's rule, applied to the ring: `offered` is
+    /// what the operation produced, `declared` is what the program said it was
+    /// willing to hold, and what lands is the **narrower of the two**. Without
+    /// it the ring would be the widening path around the discipline the
+    /// channels keep, which is the one thing that would make it worse than
+    /// them (D-151).
+    ///
+    /// # Errors
+    ///
+    /// [`HandleError::Denied`] if `declared` asks for more than was offered,
+    /// [`HandleError::Meaningless`] for a right the object makes no
+    /// distinction about, and [`HandleError::ArenaFull`] if the machine is. On
+    /// every one of them the promise goes back, because the reservation is
+    /// taken by value and its destructor runs.
+    pub(crate) fn install(
+        &self,
+        reservation: SlotReservation,
+        object: ObjectRef,
+        offered: Rights,
+        declared: Rights,
+    ) -> Result<u32, HandleError> {
+        let granted = offered.attenuate(declared).ok_or(HandleError::Denied)?;
+        if !granted.are_meaningful_for(object.kind().per_type_rights()) {
+            return Err(HandleError::Meaningless);
+        }
+        let handle = self.fill(object, granted)?;
+        reservation.keep();
+        Ok(handle)
     }
 
     /// What `handle` names here, if it names anything of this table's.
@@ -395,7 +505,7 @@ impl HandleTable {
     /// As [`resolve`](Self::resolve), plus [`HandleError::Denied`] if
     /// `DUPLICATE` is absent or `wanted` exceeds what is held, and
     /// [`HandleError::QuotaExhausted`].
-    pub(crate) fn duplicate(&mut self, handle: u32, wanted: Rights) -> Result<u32, HandleError> {
+    pub(crate) fn duplicate(&self, handle: u32, wanted: Rights) -> Result<u32, HandleError> {
         let (object, rights) = self.resolve(handle)?;
         if !rights.contains(Rights::DUPLICATE) {
             return Err(HandleError::Denied);
@@ -430,7 +540,7 @@ impl HandleTable {
     /// [`HandleError::Denied`] for any of the first two, and
     /// [`HandleError::Meaningless`] for the third.
     pub(crate) fn send(
-        &mut self,
+        &self,
         handle: u32,
         declared: Rights,
     ) -> Result<(ObjectRef, Rights), HandleError> {
@@ -458,7 +568,7 @@ impl HandleTable {
     /// [`HandleError::Denied`] if `declared` asks for more than was offered,
     /// plus whatever [`insert`](Self::insert) refuses.
     pub(crate) fn accept(
-        &mut self,
+        &self,
         object: ObjectRef,
         offered: Rights,
         declared: Rights,
@@ -480,7 +590,7 @@ impl HandleTable {
     /// # Errors
     ///
     /// As [`resolve`](Self::resolve).
-    pub(crate) fn close(&mut self, handle: u32) -> Result<(), HandleError> {
+    pub(crate) fn close(&self, handle: u32) -> Result<(), HandleError> {
         let named = Slot::decode(handle, self.mixer).ok_or(HandleError::Malformed)?;
         let released = {
             let mut arena = ARENA.lock_leaf();
@@ -499,9 +609,44 @@ impl HandleTable {
             slot.generation = named.reused().generation();
             slot.entry.take()
         };
-        self.live -= 1;
+        self.step(Quota::close);
         drop(released);
         Ok(())
+    }
+}
+
+/// A slot promised to an operation that has been admitted and has not finished.
+///
+/// Exists so that "the reservation is returned on every terminal path" is a
+/// property of the type rather than a rule the paths have to remember. There
+/// is no way to lose one silently: [`keep`](Self::keep) spends it, and every
+/// other end — a refusal, a cancellation, a `?` on the way through, the death
+/// of the program holding it — runs the destructor, which gives it back.
+///
+/// It holds an `Arc` to the table rather than a borrow, because the operation
+/// outlives the call that admitted it and may outlive the thread that made it
+/// (D-153 is slice 3, and this is the shape that makes it possible).
+#[derive(Debug)]
+pub(crate) struct SlotReservation {
+    table: Arc<HandleTable>,
+    spent: bool,
+}
+
+impl SlotReservation {
+    /// Turn the promise into a held handle.
+    ///
+    /// By value, so a reservation cannot be kept twice.
+    fn keep(mut self) {
+        self.table.step(Quota::commit);
+        self.spent = true;
+    }
+}
+
+impl Drop for SlotReservation {
+    fn drop(&mut self) {
+        if !self.spent {
+            self.table.step(Quota::release);
+        }
     }
 }
 
@@ -533,7 +678,7 @@ impl Drop for HandleTable {
         // Sized before the guard is taken, because `Vec` growth calls the
         // allocator and this lock is a leaf (D-95). `live` is exactly how many
         // entries will come out, so nothing grows under the lock.
-        let mut released: Vec<ObjectRef> = Vec::with_capacity(self.live);
+        let mut released: Vec<ObjectRef> = Vec::with_capacity(self.live());
         {
             let mut arena = ARENA.lock_leaf();
             for slot in &mut arena.slots {
@@ -552,7 +697,7 @@ impl Drop for HandleTable {
                 }
             }
         }
-        self.live = 0;
+        self.counts.store(Quota::EMPTY, Ordering::Release);
         // Released with the guard gone: dropping the last reference to an
         // object can reach the frame allocator.
         drop(released);

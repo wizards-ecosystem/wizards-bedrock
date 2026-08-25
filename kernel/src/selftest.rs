@@ -1195,7 +1195,7 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
             );
         }
         queue.publish_tail_for_test(posted + room as u32);
-        let served = queue.serve();
+        let served = queue.serve(&a_table());
         if served == 0 {
             break;
         }
@@ -1241,7 +1241,7 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
         );
     }
     liar.publish_tail_for_test(2);
-    if liar.serve() != 2 {
+    if liar.serve(&a_table()) != 2 {
         return false;
     }
     // Two posted; the program claims to have read four billion.
@@ -1298,6 +1298,392 @@ fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
     announced && reachable && unowned
 }
 
+/// A table with nothing in it, for the ring checks that produce no handles.
+///
+/// `serve` needs one because a submission can now install a handle. Every
+/// check that predates that produces none, so an empty table is exactly as
+/// much authority as those operations need — which is the point of passing it
+/// rather than reaching for the caller's.
+#[cfg(feature = "selftest")]
+fn a_table() -> alloc::sync::Arc<crate::handle::HandleTable> {
+    alloc::sync::Arc::new(crate::handle::HandleTable::new(8))
+}
+
+/// A completion carries a handle, and the rights narrow on the way in.
+///
+/// D-151's headline: the ring becomes a delegation path, which it was not.
+/// The program declares what it is willing to hold and gets **the narrower of
+/// that and what was there** — the same rule D-110 puts on a channel, so the
+/// ring cannot be the widening path around it.
+///
+/// Driven through the shared page, because the page is the boundary. The
+/// rights are checked by resolving the handle that arrived rather than by
+/// trusting the status: a completion saying `OK` about a handle nobody looked
+/// at is a claim, not a check.
+fn a_completion_carries_a_handle_with_narrowed_rights() -> bool {
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let Some((held, _far)) = crate::object::channel() else {
+        return false;
+    };
+    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+
+    let offered = Rights::UNIVERSAL.union(Rights::READ).union(Rights::WRITE);
+    let Ok(source) = table.insert(held, offered) else {
+        return false;
+    };
+
+    // Read only, out of a handle that also carries write.
+    let declared = Rights::UNIVERSAL.union(Rights::READ);
+    queue.post_submission_for_test(
+        0,
+        queue::Submission {
+            opcode: queue::Opcode::Duplicate,
+            token: 0x5150,
+            argument: u64::from(source) | (u64::from(declared.bits()) << 32),
+        },
+    );
+    queue.publish_tail_for_test(1);
+
+    if queue.serve(&table) != 1 {
+        return false;
+    }
+    let completion = queue.read_completion(0);
+    if completion.token != 0x5150 || completion.status != queue::STATUS_OK {
+        return false;
+    }
+
+    let arrived = completion.value as u32;
+    let Ok((_, granted)) = table.resolve(arrived) else {
+        return false;
+    };
+
+    granted == declared
+        && !granted.contains(Rights::WRITE)
+        && arrived != source
+        && table.live() == 2
+        // The promise became a handle rather than staying a promise, which is
+        // the accounting half: a table charged twice for one handle runs out
+        // at half its quota and nothing else would say so.
+        && table.promised() == 0
+}
+
+/// A completion cannot carry rights the program was never offered.
+///
+/// The refusal is at the *attenuation*, and it is a refusal rather than a
+/// silent narrowing: a program that asks for more than it holds has made a
+/// mistake, and quietly giving it less is how a caller comes to believe it has
+/// authority it does not.
+///
+/// The table is inspected afterwards as well as the status, because the
+/// failure that matters is not the refusal — it is a refusal that kept the
+/// slot it promised.
+fn a_completion_cannot_widen_what_was_offered() -> bool {
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let Some((held, _far)) = crate::object::channel() else {
+        return false;
+    };
+    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+
+    // Held without WRITE, so asking for it is asking to widen.
+    let offered = Rights::UNIVERSAL.union(Rights::READ);
+    let Ok(source) = table.insert(held, offered) else {
+        return false;
+    };
+
+    let asked = Rights::UNIVERSAL.union(Rights::READ).union(Rights::WRITE);
+    queue.post_submission_for_test(
+        0,
+        queue::Submission {
+            opcode: queue::Opcode::Duplicate,
+            token: 0x0BAD,
+            argument: u64::from(source) | (u64::from(asked.bits()) << 32),
+        },
+    );
+    queue.publish_tail_for_test(1);
+
+    if queue.serve(&table) != 1 {
+        return false;
+    }
+    let completion = queue.read_completion(0);
+
+    completion.token == 0x0BAD
+        && completion.status == queue::STATUS_DENIED
+        && completion.value == 0
+        && table.live() == 1
+        && table.promised() == 0
+}
+
+/// Every refused handle operation gives its promised slot back.
+///
+/// The property D-151 states and `012` §10 names the symptom of missing:
+/// io_uring's `IORING_FILE_INDEX_ALLOC` reporting `-ENFILE` at completion. A
+/// promise that is not returned is not a crash — it is a table that shrinks by
+/// one every time a program asks for something it cannot have.
+///
+/// **Every submission here reserves and then fails**, which is the whole
+/// difficulty of writing this check. The first version used a table that was
+/// already full, so all three refusals happened *at* the reservation and none
+/// of them ever held one — `promised() == 0` was true because nothing had been
+/// promised, and deleting the destructor that returns promises left it green
+/// (D-165). The table is deliberately roomy, and each refusal happens at a
+/// different point after the promise is taken: at the lookup, at the right, and
+/// at the attenuation.
+fn a_refused_handle_operation_returns_its_promise() -> bool {
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let Some((duplicable, _far_one)) = crate::object::channel() else {
+        return false;
+    };
+    let Some((sealed, _far_two)) = crate::object::channel() else {
+        return false;
+    };
+
+    // Room to spare: a refusal must be reached *after* a promise is taken, and
+    // a full table refuses before there is one.
+    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+    let full = Rights::UNIVERSAL.union(Rights::READ);
+    let Ok(source) = table.insert(duplicable, full) else {
+        return false;
+    };
+    // Held without DUPLICATE, which is what makes copying it a refusal rather
+    // than a mistake.
+    let Ok(undupable) = table.insert(sealed, Rights::READ) else {
+        return false;
+    };
+
+    let asked = [
+        // Refused at the lookup: a well-formed value naming nothing of ours.
+        (
+            0xF001u32,
+            u64::from(source ^ 0x40) | (u64::from(full.bits()) << 32),
+            queue::STATUS_BAD_HANDLE,
+        ),
+        // Refused at the right: held, but not passable.
+        (
+            0xF002,
+            u64::from(undupable) | (u64::from(Rights::READ.bits()) << 32),
+            queue::STATUS_DENIED,
+        ),
+        // Refused at the attenuation: asking for more than is held.
+        (
+            0xF003,
+            u64::from(undupable) | (u64::from(Rights::READ.union(Rights::WRITE).bits()) << 32),
+            queue::STATUS_DENIED,
+        ),
+    ];
+
+    for (slot, (token, argument, _)) in asked.iter().enumerate() {
+        queue.post_submission_for_test(
+            slot,
+            queue::Submission {
+                opcode: queue::Opcode::Duplicate,
+                token: *token,
+                argument: *argument,
+            },
+        );
+    }
+    queue.publish_tail_for_test(asked.len() as u32);
+
+    if queue.serve(&table) != asked.len() {
+        return false;
+    }
+
+    let mut refused = true;
+    for (slot, (token, _, status)) in asked.iter().enumerate() {
+        let completion = queue.read_completion(slot);
+        refused &= completion.token == *token && completion.status == *status;
+    }
+
+    // The whole point: three promises taken, three given back. A leak here is
+    // invisible in the completions and shows up later as a table that is full
+    // of nothing.
+    refused && table.live() == 2 && table.promised() == 0
+}
+
+/// A full table refuses at submission, before it promises anything.
+///
+/// The other half of D-151, and a different claim from the one above: there,
+/// three promises are taken and returned; here, none is taken at all, and the
+/// program is told *at submission* — the one moment it can close something and
+/// ask again.
+fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let Some((held, _far)) = crate::object::channel() else {
+        return false;
+    };
+
+    // Room for exactly one, which the source takes.
+    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(1));
+    let full = Rights::UNIVERSAL.union(Rights::READ);
+    let Ok(source) = table.insert(held, full) else {
+        return false;
+    };
+
+    queue.post_submission_for_test(
+        0,
+        queue::Submission {
+            opcode: queue::Opcode::Duplicate,
+            token: 0xFEED,
+            argument: u64::from(source) | (u64::from(full.bits()) << 32),
+        },
+    );
+    queue.publish_tail_for_test(1);
+
+    if queue.serve(&table) != 1 {
+        return false;
+    }
+    let completion = queue.read_completion(0);
+
+    completion.token == 0xFEED
+        && completion.status == queue::STATUS_NO_HANDLE_SLOT
+        && completion.value == 0
+        && table.live() == 1
+        && table.promised() == 0
+}
+
+/// An operation that is not ready yet completes later, and completes once.
+///
+/// The first operation in this kernel whose honest answer is *not yet* (D-164).
+/// Serving it produces **no** completion — which is not the same as producing
+/// none ever, and the difference is the reservation it is holding.
+///
+/// Three moments are checked and they are three different claims: nothing at
+/// admission, nothing before the deadline, and exactly one after it. The
+/// middle one is what fails if a deferral is really an immediate completion
+/// with a delay written in the value.
+fn an_operation_completes_after_its_deadline_and_only_once() -> bool {
+    if !crate::time::is_calibrated() {
+        return false;
+    }
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let table = a_table();
+
+    const DELAY_NS: u64 = 2_000_000;
+    let submitted_at = crate::time::now_ns();
+    queue.post_submission_for_test(
+        0,
+        queue::Submission {
+            opcode: queue::Opcode::Timer,
+            token: 0x7117,
+            argument: DELAY_NS,
+        },
+    );
+    queue.publish_tail_for_test(1);
+
+    // Admitted, and *not* completed.
+    let deferred = queue.serve(&table) == 0 && queue.in_flight() == 1;
+    let Some(deadline) = queue.earliest_deadline() else {
+        return false;
+    };
+    // Before the deadline nothing is due, however often it is asked.
+    let early = queue.expire(crate::time::now_ns()) == 0 && queue.in_flight() == 1;
+
+    // A million reads: the deadline is two milliseconds out and the clock is
+    // running, so a deadline this does not reach is not slow, it is wrong.
+    if !spins_until(1_000_000, || crate::time::now_ns() >= deadline) {
+        return false;
+    }
+
+    let due = queue.expire(crate::time::now_ns());
+    let completion = queue.read_completion(0);
+
+    deferred
+        && early
+        && due == 1
+        // And only once: the second sweep finds nothing, which is D-79's rule
+        // seen from the side a deferral could break it from.
+        && queue.expire(crate::time::now_ns()) == 0
+        && queue.in_flight() == 0
+        && completion.token == 0x7117
+        && completion.status == queue::STATUS_OK
+        // Completed *after* the deadline, not merely after the submission.
+        && completion.value >= submitted_at.saturating_add(DELAY_NS)
+}
+
+/// A cancellation is its own operation and does not stand in for the target's.
+///
+/// The antidote to the double-completion class behind two io_uring CVEs
+/// (`012` §8): the cancelled operation still gets **exactly one** terminal
+/// completion, carrying a cancellation rather than a result, and the
+/// cancellation gets its own against its own reservation.
+///
+/// So the count is two, not one and not three — and the target's is the one
+/// that says `CANCELLED`, which is what distinguishes this from a design where
+/// the canceller simply reports on the target's behalf.
+fn a_cancelled_operation_and_its_cancellation_complete_separately() -> bool {
+    if !crate::time::is_calibrated() {
+        return false;
+    }
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let table = a_table();
+
+    // An hour away, so nothing but the cancellation can end it.
+    queue.post_submission_for_test(
+        0,
+        queue::Submission {
+            opcode: queue::Opcode::Timer,
+            token: 0xDEAD,
+            argument: 3_600_000_000_000,
+        },
+    );
+    queue.publish_tail_for_test(1);
+    if queue.serve(&table) != 0 || queue.in_flight() != 1 {
+        return false;
+    }
+
+    queue.post_submission_for_test(
+        1,
+        queue::Submission {
+            opcode: queue::Opcode::Cancel,
+            token: 0xC0DE,
+            argument: 0xDEAD,
+        },
+    );
+    queue.publish_tail_for_test(2);
+    if queue.serve(&table) != 1 {
+        return false;
+    }
+
+    // The target's, posted from inside the cancellation, then the
+    // cancellation's own.
+    let target = queue.read_completion(0);
+    let canceller = queue.read_completion(1);
+
+    let separate = target.token == 0xDEAD
+        && target.status == queue::STATUS_CANCELLED
+        && canceller.token == 0xC0DE
+        && canceller.status == queue::STATUS_OK
+        && canceller.value == u64::from(0xDEADu32);
+
+    // Nothing is left to complete, and a second cancellation of the same token
+    // finds nothing — advisory rather than an error, which is io_uring's
+    // `-EALREADY` and the right answer for a race the program cannot avoid.
+    queue.post_submission_for_test(
+        2,
+        queue::Submission {
+            opcode: queue::Opcode::Cancel,
+            token: 0xC0DF,
+            argument: 0xDEAD,
+        },
+    );
+    queue.publish_tail_for_test(3);
+    let again =
+        queue.serve(&table) == 1 && queue.read_completion(2).status == queue::STATUS_NOT_FOUND;
+
+    separate && again && queue.in_flight() == 0 && queue.is_consistent()
+}
+
 /// Every submission gets exactly one completion, and it is the one it asked
 /// for.
 ///
@@ -1335,9 +1721,9 @@ fn every_submission_gets_exactly_one_completion() -> bool {
     }
     queue.publish_tail_for_test(asked.len() as u32);
 
-    let served = queue.serve();
+    let served = queue.serve(&a_table());
     // Exactly one each, and no more: a second call finds nothing left.
-    let once = served == asked.len() && queue.serve() == 0;
+    let once = served == asked.len() && queue.serve(&a_table()) == 0;
     let accounted = queue.outstanding() == 0 && queue.is_consistent();
 
     let echo = queue.read_completion(0);
@@ -1419,7 +1805,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         },
     );
     queue.publish_tail_for_test(1);
-    if queue.serve() != 1 {
+    if queue.serve(&a_table()) != 1 {
         return false;
     }
     let posted = queue.read_completion(0);
@@ -1449,7 +1835,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         && posted.value == 0x0F0F_0F0F
         // And serving again does not re-serve the rewritten entry: the slot
         // was consumed, and the new bytes are a submission nobody made.
-        && queue.serve() == 0;
+        && queue.serve(&a_table()) == 0;
 
     // A tail run away with the kernel's ring *empty* is refused — but so it
     // would be with no bound at all, because `take` finds nothing. The case
@@ -1473,12 +1859,12 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         );
     }
     runaway.publish_tail_for_test(u32::MAX);
-    let runaway_bounded = runaway.serve() == 0 && runaway.outstanding() == 0;
+    let runaway_bounded = runaway.serve(&a_table()) == 0 && runaway.outstanding() == 0;
 
     // And with the ring drained, which is the weaker case the earlier version
     // was testing without knowing it.
     queue.publish_tail_for_test(u32::MAX);
-    let drained_bounded = queue.serve() == 0;
+    let drained_bounded = queue.serve(&a_table()) == 0;
 
     // The case the runaway tail cannot show: **writing is not publishing.**
     // A program may write
@@ -1500,7 +1886,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         );
     }
     partial.publish_tail_for_test(1);
-    let only_published = partial.serve() == 1;
+    let only_published = partial.serve(&a_table()) == 1;
     let one_reported = partial.read_completion(0).token == 0x5150;
     // And nothing is held open: the one served reported, and the two unpublished
     // entries were never admitted, so no reservation outlives the round.
@@ -2094,8 +2480,8 @@ fn an_orphaned_channel_end_refuses() -> bool {
 /// The move is the other half. A handle that survived a send would make
 /// delegation into duplication, and `002`'s pillar 1 rests on it not.
 fn a_handle_crosses_with_the_rights_both_ends_declared() -> bool {
-    let mut sender = HandleTable::new(8);
-    let mut receiver = HandleTable::new(8);
+    let sender = HandleTable::new(8);
+    let receiver = HandleTable::new(8);
 
     let object = object::event();
     let Ok(handle) = sender.insert(object, Rights::UNIVERSAL) else {
@@ -2124,7 +2510,7 @@ fn a_handle_crosses_with_the_rights_both_ends_declared() -> bool {
     // Neither end can widen. The receiver asking for more than was offered is
     // refused rather than clamped, because a clamp is a default by another
     // name.
-    let mut widening = HandleTable::new(8);
+    let widening = HandleTable::new(8);
     let second = object::event();
     let Ok(full) = widening.insert(second, Rights::UNIVERSAL) else {
         return false;
@@ -2159,7 +2545,7 @@ fn a_handle_crosses_with_the_rights_both_ends_declared() -> bool {
 /// which it cannot — the message carries an object and a set of rights, not a
 /// history (D-110).
 fn a_handle_without_transfer_is_refused_at_the_sender() -> bool {
-    let mut sender = HandleTable::new(8);
+    let sender = HandleTable::new(8);
     let object = object::event();
 
     // Everything except the right to pass it on.
@@ -2174,7 +2560,7 @@ fn a_handle_without_transfer_is_refused_at_the_sender() -> bool {
 
     // Stripping `TRANSFER` on the way through is how a holder is given a
     // non-delegatable handle in the first place.
-    let mut receiver = HandleTable::new(8);
+    let receiver = HandleTable::new(8);
     let second = object::event();
     let Ok(sendable) = sender.insert(second, Rights::UNIVERSAL) else {
         return false;
@@ -2204,8 +2590,8 @@ fn a_handle_sent_in_a_message_names_the_same_object() -> bool {
         return false;
     };
 
-    let mut sender = HandleTable::new(8);
-    let mut receiver = HandleTable::new(8);
+    let sender = HandleTable::new(8);
+    let receiver = HandleTable::new(8);
 
     // An event the receiver will be told about by handle, and which this
     // thread keeps a reference to so it can signal it afterwards.
@@ -2460,7 +2846,7 @@ fn block_until_orphaned() {
 /// what turns that use-after-free into a decode failure rather than a silent
 /// reference to someone else's object.
 fn a_closed_handle_names_nothing() -> bool {
-    let mut table = HandleTable::new(8);
+    let table = HandleTable::new(8);
     let Ok(handle) = table.insert(object::event(), Rights::UNIVERSAL) else {
         return false;
     };
@@ -2498,7 +2884,7 @@ fn a_closed_handle_names_nothing() -> bool {
 /// permission, and granting it would make the rights word mean less every time
 /// an object type was added.
 fn a_meaningless_right_is_refused() -> bool {
-    let mut table = HandleTable::new(4);
+    let table = HandleTable::new(4);
 
     let refused = table.insert(object::event(), Rights::READ) == Err(HandleError::Meaningless);
     let also_refused = table.insert(object::event(), Rights::ALL) == Err(HandleError::Meaningless);
@@ -2518,7 +2904,7 @@ fn a_meaningless_right_is_refused() -> bool {
 /// refused as theirs, and a value from another table usually does not decode
 /// at all, because the mixers differ.
 fn a_handle_does_not_cross_tables() -> bool {
-    let mut mine = HandleTable::new(4);
+    let mine = HandleTable::new(4);
     let theirs = HandleTable::new(4);
     let Ok(handle) = mine.insert(object::event(), Rights::UNIVERSAL) else {
         return false;
@@ -2554,7 +2940,7 @@ fn a_handle_does_not_cross_tables() -> bool {
 
 /// Rights are checked, and duplication only ever narrows them.
 fn rights_are_checked_and_only_narrow() -> bool {
-    let mut table = HandleTable::new(8);
+    let table = HandleTable::new(8);
     // `WAIT` rather than `READ`: an event has no pages, so a memory right on
     // one is a category error rather than a narrower permission (D-95). This
     // fixture used to grant `READ` on an event and check it was honoured,
@@ -2590,7 +2976,7 @@ fn rights_are_checked_and_only_narrow() -> bool {
 /// permanent.
 fn a_table_cannot_exceed_its_quota() -> bool {
     const QUOTA: usize = 3;
-    let mut table = HandleTable::new(QUOTA);
+    let table = HandleTable::new(QUOTA);
     let mut held = Vec::new();
     for _ in 0..QUOTA {
         match table.insert(object::event(), Rights::UNIVERSAL) {
@@ -2632,7 +3018,7 @@ fn the_handle_arena_grows_more_than_once() -> bool {
     /// Two reallocations past an empty arena, whose capacity runs 16, 32, 64.
     const HELD: usize = 40;
 
-    let mut table = HandleTable::new(HELD);
+    let table = HandleTable::new(HELD);
     let mut handles = Vec::new();
     for _ in 0..HELD {
         match table.insert(object::event(), Rights::UNIVERSAL) {
@@ -2660,7 +3046,7 @@ fn the_handle_arena_grows_more_than_once() -> bool {
 /// really a check that the table holds a reference rather than a pointer: two
 /// handles keep one object alive, and it dies when the second goes.
 fn an_object_lives_exactly_as_long_as_its_handles() -> bool {
-    let mut table = HandleTable::new(8);
+    let table = HandleTable::new(8);
     let object = object::event();
     let watcher = Arc::downgrade(&object);
     let Ok(first) = table.insert(object, Rights::UNIVERSAL) else {
@@ -2692,7 +3078,7 @@ fn a_dead_table_releases_its_objects() -> bool {
     let object = object::event();
     let watcher = Arc::downgrade(&object);
     {
-        let mut table = HandleTable::new(4);
+        let table = HandleTable::new(4);
         if table.insert(object, Rights::UNIVERSAL).is_err() {
             return false;
         }
@@ -2734,7 +3120,7 @@ fn wait_on_the_event() {
 /// safe: a signal landing between the two sets a state the loop re-reads,
 /// rather than delivering a wakeup that can be missed.
 fn a_signal_wakes_a_thread_waiting_on_a_handle() -> bool {
-    let mut table = HandleTable::new(4);
+    let table = HandleTable::new(4);
     let Ok(handle) = table.insert(object::event(), Rights::WAIT.union(Rights::INSPECT)) else {
         return false;
     };
@@ -4314,7 +4700,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 145;
+const EXPECTED_CHECKS: usize = 151;
 
 impl Report {
     const fn new() -> Self {
@@ -4457,6 +4843,30 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a ring announces its shape and keeps its pages",
         a_ring_announces_its_shape_and_keeps_its_pages(),
+    );
+    report.check(
+        "a completion carries a handle with narrowed rights",
+        a_completion_carries_a_handle_with_narrowed_rights(),
+    );
+    report.check(
+        "a completion cannot widen what was offered",
+        a_completion_cannot_widen_what_was_offered(),
+    );
+    report.check(
+        "a refused handle operation returns its promise",
+        a_refused_handle_operation_returns_its_promise(),
+    );
+    report.check(
+        "a full table refuses a handle operation at submission",
+        a_full_table_refuses_a_handle_operation_at_submission(),
+    );
+    report.check(
+        "an operation completes after its deadline and only once",
+        an_operation_completes_after_its_deadline_and_only_once(),
+    );
+    report.check(
+        "a cancelled operation and its cancellation complete separately",
+        a_cancelled_operation_and_its_cancellation_complete_separately(),
     );
     report.check(
         "every submission gets exactly one completion",
@@ -5117,7 +5527,7 @@ fn filling_the_arena_never_repeats_a_slot() -> bool {
     /// Enough to wrap the hint past the end and force a grow or two.
     const HANDLES: usize = 24;
 
-    let mut table = HandleTable::new(HANDLES);
+    let table = HandleTable::new(HANDLES);
     let mut handles = [0u32; HANDLES];
 
     for slot in &mut handles {

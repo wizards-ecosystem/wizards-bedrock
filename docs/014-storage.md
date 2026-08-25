@@ -65,7 +65,7 @@ before its abstraction is anything but a guess.
 
 | Slice | Contents | Status |
 |---|---|---|
-| 1 | **A completion carries a handle.** Reservation extended to handle-table slots, attenuation on arrival, and the first operation that genuinely waits | |
+| 1 | **A completion carries a handle.** Reservation extended to handle-table slots, attenuation on arrival, and the first operation that genuinely waits | Done |
 | 2 | **The time page.** Two regions — immutable constants, and a versioned clock with a revocation gate and a syscall fallback | |
 | 3 | **Death mid-operation.** In-flight operations collected with the zombie; exit is a *wait*, not a signal | |
 | 4 | **PCI, and a device that is claimed.** CF8/CFC enumeration recursing through bridges, a `Device` capability that supersedes bare port claims, BAR mapping uncacheable | |
@@ -403,3 +403,80 @@ here, because a citation to an entry that does not exist is what
    applies: `-ENOBUFS` at completion is the same late-failure shape as the
    `-ENFILE` D-151 designed away. If lengths are always caller-supplied the
    question does not arise, and it should not arise unless something needs it.
+
+---
+
+## Slice 1 — A completion carries a handle
+
+**Landed 2026-08-25.** D-163, D-164, D-165. 151 machine checks, 606 host tests,
+33 mutations.
+
+Three opcodes, and each exists to pay one of the debts `011` closed with:
+
+| Opcode | What it proves |
+|---|---|
+| `Duplicate` | A completion carries **authority**, narrowed on arrival |
+| `Timer` | An operation whose honest answer is *not yet*, and the first blocking wait |
+| `Cancel` | An operation ends early **with its own completion**, never with the target's |
+
+### What had to move first
+
+Two things blocked the whole slice and neither was about the ring.
+
+**A program's handle table was frozen the moment it was spawned.** `spawn`
+built one, inserted the bootstrap channel, wrapped it in an `Arc` — and every
+mutating method took `&mut self`. Wrapping it in a lock does not work: `insert`
+takes the handle arena's leaf, so a table leaf held across it is the nesting
+`lock_leaf` forbids, and a token-bearing lock cannot be taken in a handler at
+all. The count became one `AtomicU64` instead and every method takes `&self`.
+No lock added, no lock order changed (D-163).
+
+**A ring-3 thread had no way to stop running.** `sleep_ns` needs a
+`ThreadContext` and there is none inside a trap. `thread::sleep_from_trap` is
+`retire_from_trap`'s shape without the retirement — mark the caller `Sleeping`,
+hand the CPU on, and switch through the frame, which is what preemption already
+does and the only place a switch is legal (D-164).
+
+### The promise is a value, not a rule
+
+D-151 asks that the reservation be returned on every terminal path and names
+three. A property stated as a list of paths is a copy of the control flow, and
+it stops being a copy the moment a path is added. So `reserve_slot` returns a
+`SlotReservation` with a destructor: `install` consumes it, and every other
+end — a refusal, a cancellation, a `?` on the way through, slice 3's dead
+program — gives it back without being told to.
+
+The arithmetic went to `libs/handle-space` as `Quota`, two counts in one word so
+the promise-to-handle transition is a single compare-and-exchange. Its overflow
+test found a real edge on the first run: `reserve` could carry a full promise
+half into the held half. Not reachable through a quota of 64, which is exactly
+why it had to be right.
+
+### What the checks are, and the one that could not fail
+
+Six checks, seven deliberate breaks, four mutations. The one worth recording is
+the one that was wrong.
+
+*A refused handle operation returns its promise* was written against a table
+with room for exactly one handle. Every refusal therefore happened **at** the
+reservation, no promise was ever made, and `promised() == 0` was true for the
+wrong reason. Deleting the destructor left it green. It was found by D-28 and
+only by D-28 — and the tell was that the break reddened a *different* check,
+one that asserts the same thing in passing from a table with room. The check
+about the property could not see it; the check that mentioned it could (D-165).
+
+The rebuilt version reserves and then fails three times, at a different point
+each: at the lookup, at the right, and at the attenuation. The full-table case
+is a separate check now, because it is a separate claim — it is about *when*
+the program is told, which is D-151's whole argument for reserving at all.
+
+### What this slice deliberately did not do
+
+- **`Pending` is a timer and nothing else.** D-41 forbids the abstraction with
+  one implementation; the second kind arrives with the block device in slice 5.
+- **No worker thread.** `012` §8 is emphatic, and a state machine driven from
+  the waiting thread needs none. Sixteen thread slots is the reason and the
+  measurement will be taken in slice 5.
+- **`Queue`'s `WaitQueue` is still unused by ring 3**, and that is not an
+  oversight: it takes a `ThreadContext`, so it is what a *kernel* thread waits
+  on. A ring-3 thread waits through the scheduler.

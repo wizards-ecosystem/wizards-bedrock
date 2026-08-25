@@ -996,6 +996,67 @@ pub(crate) fn reschedule(frame: &TrapFrame) {
     }
 }
 
+/// Give the CPU up until `wake_at`, from inside a trap handler.
+///
+/// The thread-context [`sleep_ns`] cannot be used from a syscall: it takes a
+/// `ThreadContext`, and there is none inside a handler (D-55). But a ring-3
+/// thread that has asked to wait has to stop running, or "wait" means "spin",
+/// and a program spinning is a program holding a CPU it is not using.
+///
+/// So this is [`retire_from_trap`]'s shape without the retirement: mark the
+/// caller `Sleeping` with its deadline, hand the CPU to whoever is next, and
+/// switch **through the frame**, which is the same mechanism preemption uses
+/// and the only place a switch is legal (D-54). The thread resumes inside its
+/// own handler when the scheduler picks it again, and returns to ring 3 from
+/// there.
+///
+/// Returns whether the caller actually gave up the CPU. `false` — no other
+/// thread to run, or a clock that never started — means the caller must answer
+/// its program now rather than pretend it waited, because a wait nobody can
+/// end is a hang.
+pub(crate) fn sleep_from_trap(frame: &TrapFrame, wake_at: u64) -> bool {
+    if !time::is_calibrated() {
+        return false;
+    }
+    let now = time::now_ns();
+    if now >= wake_at {
+        return false;
+    }
+
+    let current = task::current();
+    let (next, event) = {
+        let mut threads = THREADS.lock_leaf();
+        threads.queue.charge(current, now);
+        threads.queue.wake_due(now);
+        threads.queue.slots[current].wake_at = wake_at;
+        threads.queue.park(current);
+        threads.queue.slots[current].state = State::Sleeping;
+
+        match threads.queue.choose(current, false) {
+            Some(next) => {
+                threads.queue.slots[next].state = State::Running;
+                threads.queue.slots[next].started = now;
+                (Some(next), threads.queue.next_event(next, now))
+            }
+            // Nobody to hand the CPU to. A handler cannot halt — it is
+            // standing on the interrupted thread's stack with that thread's
+            // state in the frame — so the caller keeps the CPU and is told it
+            // did not sleep. `park`'s own idle branch does the same thing for
+            // the same reason.
+            None => {
+                threads.queue.slots[current].state = State::Running;
+                (None, threads.queue.next_event(current, now))
+            }
+        }
+    };
+
+    reschedule_timer(earliest(event, Some(wake_at)));
+    match next {
+        Some(next) => task::switch_from_trap(next, frame).is_ok(),
+        None => false,
+    }
+}
+
 /// Arm the timer for the next thing owed a decision, or stop it if nothing
 /// is.
 ///

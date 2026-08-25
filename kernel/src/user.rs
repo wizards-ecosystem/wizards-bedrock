@@ -591,7 +591,7 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     // observable holding anything else. The child's end can be used and sent
     // on; the parent keeps the other (D-111).
     let (theirs, ours) = object::channel().ok_or(SpawnError::NoChannel)?;
-    let mut table = HandleTable::new(HANDLE_QUOTA);
+    let table = HandleTable::new(HANDLE_QUOTA);
     let handle = table
         .insert(
             theirs,
@@ -832,6 +832,12 @@ enum Call {
     Exit,
     /// Serve what has been submitted, and report how many completed.
     RingEnter,
+    /// Wait until an operation in flight comes due, then serve it.
+    ///
+    /// The first call in this ABI whose honest answer is *not yet*. It gives
+    /// the CPU up rather than spinning, which is what makes a deferred
+    /// completion worth having (D-164).
+    RingWait,
     /// Point this thread's local storage at `rdi`.
     ///
     /// mlibc's `sys_tcb_set`, and the reason it is here rather than on the
@@ -849,6 +855,7 @@ impl Call {
             0 => Self::Exit,
             1 => Self::RingEnter,
             2 => Self::ThreadBase,
+            3 => Self::RingWait,
             other => Self::Unknown(other),
         }
     }
@@ -936,6 +943,12 @@ pub(crate) fn call(frame: &TrapFrame) {
                 UNANSWERED.fetch_add(1, Ordering::Relaxed);
             }
         }
+        Call::RingWait => {
+            let completed = wait_ring(slot, frame);
+            if !interrupt::answer(frame, completed) {
+                UNANSWERED.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         Call::ThreadBase => {
             // Refused rather than faulted for a base the program may not have:
             // `wrmsr` on a non-canonical value is a `#GP` in *kernel* context,
@@ -978,19 +991,71 @@ fn serve_ring(slot: usize) -> u64 {
     // `serve` reads the program's memory, performs each operation and wakes
     // whatever was waiting — four more locks — and doing that under this
     // table's leaf guard is what `lock_leaf` forbids (D-121, D-124).
-    let ring = {
-        let guard = BOOTSTRAPS.lock_leaf();
-        let Some(bootstrap) = guard.get(slot).and_then(Option::as_ref) else {
-            return ENOSYS;
-        };
-        alloc::sync::Arc::clone(&bootstrap.ring)
+    let Some((ring, table)) = authority_of(slot) else {
+        return ENOSYS;
     };
 
     // The program's own claim about what it has reaped, taken once and bounded
     // inside (D-113, D-115).
     let head = ring.completion_head();
     ring.reap_up_to(head);
-    ring.serve() as u64
+    // Operations that came due while the program was away are completed before
+    // new ones are admitted, so a ring that is full of finished work does not
+    // refuse the next submission for want of a slot the kernel already owes.
+    ring.expire(crate::time::now_ns());
+    ring.serve(&table) as u64
+}
+
+/// The ring and the handle table of the thread in `slot`.
+///
+/// Both are cloned out and the guard dropped before either is used. `serve`
+/// reads the program's memory, performs each operation and wakes whatever was
+/// waiting, and `install` takes the handle arena's leaf — doing any of that
+/// under this table's guard is what `lock_leaf` forbids (D-121, D-124).
+fn authority_of(
+    slot: usize,
+) -> Option<(
+    alloc::sync::Arc<queue::Queue>,
+    alloc::sync::Arc<HandleTable>,
+)> {
+    let guard = BOOTSTRAPS.lock_leaf();
+    let bootstrap = guard.get(slot).and_then(Option::as_ref)?;
+    Some((
+        alloc::sync::Arc::clone(&bootstrap.ring),
+        alloc::sync::Arc::clone(&bootstrap.table),
+    ))
+}
+
+/// Wait for an operation in flight, then serve what came due.
+///
+/// Three answers, and they are different things. **Nothing in flight** returns
+/// zero at once — there is nothing to wait for, and blocking would be a hang.
+/// **Something already due** is completed without sleeping. Otherwise the
+/// thread sleeps until the soonest deadline and completes what it finds when
+/// it wakes, which may be later than the deadline and never earlier.
+///
+/// The completion is posted by the kernel after the deadline, not by the
+/// program asking again: a woken program finds the entry already in its queue.
+/// That is what makes this a wait rather than a poll, and it is the shape the
+/// block device will reuse in slice 5 (D-164).
+fn wait_ring(slot: usize, frame: &TrapFrame) -> u64 {
+    let Some((ring, _)) = authority_of(slot) else {
+        return ENOSYS;
+    };
+
+    let due = ring.expire(crate::time::now_ns());
+    if due > 0 {
+        return due as u64;
+    }
+    let Some(deadline) = ring.earliest_deadline() else {
+        return 0;
+    };
+
+    // May return having done nothing — a machine with no other thread to run,
+    // or a clock that never started. Either way the answer below is the truth
+    // about what is due *now*, which is what the program is owed.
+    thread::sleep_from_trap(frame, deadline);
+    ring.expire(crate::time::now_ns()) as u64
 }
 
 /// Cross into ring 3, and never come back on this thread.

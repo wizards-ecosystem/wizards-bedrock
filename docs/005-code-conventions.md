@@ -318,6 +318,16 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   nearest integer to the ratio" is testable against both neighbours without
   ever mentioning the `+ denominator / 2` that achieves it.
 
+- **A check must reach the code it is about.** Set-up chosen to make a failure
+  easy to trigger can make it impossible to *reach*: a full table refuses
+  early, a closed channel refuses early, an unmapped page faults early. If the
+  refusal under test is the second thing that could go wrong, the input has to
+  get past the first. A check for "a promised handle slot is given back on
+  every refusal" used a table with no room, so every refusal happened at the
+  reservation and no promise was ever made — it passed with the destructor that
+  returns promises deleted, and nothing about the assertion looked wrong,
+  because the assertion was not wrong (D-165).
+
 - **A check that quantifies must read its domain.** If the name begins
   "every", "all" or "no", the body enumerates the domain — it does not name
   its members. A list restated beside its source is a second copy with a
