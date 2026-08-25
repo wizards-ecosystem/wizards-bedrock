@@ -165,6 +165,51 @@ mod tests {
         50_000_000_000,
     ];
 
+    /// The multiplier is the **nearest** integer to the exact ratio.
+    ///
+    /// The implementation gets that with `+ denominator / 2`, and every test
+    /// here passed with it changed to `+ denominator - 1` — round *up* — which
+    /// doubles the worst-case error of every conversion and biases it in one
+    /// direction. A clock whose error is one-sided drifts; one whose error is
+    /// symmetric does not (D-155).
+    ///
+    /// Checked against the two candidates rather than against the trick: the
+    /// claim is "nearest", so the test computes both neighbours and their
+    /// distances and requires the closer one.
+    #[test]
+    fn the_multiplier_is_the_nearest_integer_not_the_ceiling() {
+        // Real frequencies, including ones whose ratios are awkward: a 100 MHz
+        // APIC, an odd TSC, and one deliberately chosen so the exact ratio
+        // falls below the halfway point and nearest differs from ceiling.
+        for hz in [
+            100_000_000u64,
+            1_000_000_000,
+            2_500_000_000,
+            3_300_000_000,
+            1_193_182,
+            999_999_937,
+        ] {
+            let conversion = Timebase::nanoseconds(hz).expect("a usable conversion");
+            let bits = conversion.to_bits();
+            let multiplier = u128::from(bits & u64::from(u32::MAX));
+            let shift = (bits >> SHIFT_BITS) as u32;
+
+            let exact = u128::from(NANOSECONDS_PER_SECOND) << shift;
+            let denominator = u128::from(hz);
+            let floor = exact / denominator;
+            let ceiling = floor + 1;
+
+            let below = exact - floor * denominator;
+            let above = ceiling * denominator - exact;
+            let nearest = if above < below { ceiling } else { floor };
+
+            assert_eq!(
+                multiplier, nearest,
+                "at {hz} Hz the multiplier is not the nearest integer to the ratio"
+            );
+        }
+    }
+
     #[test]
     fn a_gigahertz_counter_counts_nanoseconds_exactly() {
         let elapsed = Timebase::nanoseconds(1_000_000_000).unwrap();

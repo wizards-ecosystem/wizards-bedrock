@@ -467,6 +467,40 @@ mod tests {
         FramebufferLayout::new(0x1000, 1280, 720, 5120, 4).expect("valid layout")
     }
 
+    /// A padded framebuffer spans its **pitch**, not its visible width.
+    ///
+    /// Every other test here uses geometry where `pitch == width *
+    /// bytes_per_pixel`, so the two are interchangeable and
+    /// `row_bytes.checked_mul(height)` survives. On any framebuffer whose
+    /// rows are padded — which is most real hardware, and what `pitch` exists
+    /// to express — that maps short by `(pitch - row_bytes) * height` bytes,
+    /// and the bottom of the screen is off the end of the mapping (D-155).
+    #[test]
+    fn a_padded_framebuffer_spans_its_pitch() {
+        const WIDTH: usize = 1024;
+        const HEIGHT: usize = 768;
+        const BYTES_PER_PIXEL: usize = 4;
+        /// Deliberately more than `WIDTH * BYTES_PER_PIXEL`, which is 4096.
+        const PITCH: usize = 4352;
+
+        let layout = FramebufferLayout::new(0x1000, WIDTH, HEIGHT, PITCH, BYTES_PER_PIXEL)
+            .expect("padded geometry is valid");
+
+        assert_eq!(layout.span(), PITCH * HEIGHT, "the span is the pitch's");
+        assert_ne!(
+            layout.span(),
+            WIDTH * BYTES_PER_PIXEL * HEIGHT,
+            "the two are distinguishable here, which is the point"
+        );
+
+        // And the last visible pixel is inside that span — the property the
+        // span exists to guarantee.
+        let last = layout
+            .offset(WIDTH - 1, HEIGHT - 1)
+            .expect("the bottom-right pixel is visible");
+        assert!(last + BYTES_PER_PIXEL <= layout.span());
+    }
+
     #[test]
     fn from_hex_splits_the_channels() {
         assert_eq!(
