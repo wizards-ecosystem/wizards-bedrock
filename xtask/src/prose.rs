@@ -51,6 +51,10 @@ pub const ABSENT: &[Absent] = &[
                   records what was proposed, so the name stays with a pointer beside it.",
     },
     Absent {
+        crate_name: "fat32",
+        because: "`014` names it as Phase 6 slice 6's FAT32 reader — the charter precedes the                   code (D-19), so the crate is named before it is written.",
+    },
+    Absent {
         crate_name: "wizfs-format",
         because: "`002` and `010`: the on-disk format crate, owed before WizFS's own phase \
                   (D-73). Not yet written and not yet due.",
