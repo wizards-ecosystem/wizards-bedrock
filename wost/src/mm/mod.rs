@@ -725,7 +725,7 @@ pub const MAX_EXTENTS: usize = 64;
 /// that *while holding* the map's leaf guard, whose whole obligation is that
 /// nothing is called while it is live (D-105, D-121).
 ///
-/// Sixty-four extents of twenty-four bytes is a page and a half of stack,
+/// Sixty-four extents of thirty-two bytes is half a page of stack,
 /// which the one caller — a boot-time walk on a thirty-two kilobyte stack —
 /// has room for. Past the ceiling the count reports more than were returned,
 /// so a caller can refuse rather than silently walk part of memory.

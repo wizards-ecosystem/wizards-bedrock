@@ -1,6 +1,6 @@
 //! The user program that ships in the image.
 //!
-//! Twenty-two bytes of machine code inside a minimal ELF64, assembled here
+//! About a hundred bytes of machine code inside a minimal ELF64, assembled here
 //! rather
 //! than compiled. That is a deliberate stopping point: a real userland needs a
 //! second crate, a second link address and a fourth pass in the gate's

@@ -552,7 +552,7 @@ impl fmt::Display for SpawnError {
 /// A failure partway leaves no thread naming anything, but it does leak: an
 /// `AddressSpace` has no `Drop`, because its table frames are leaked on
 /// purpose, and the frames a half-load mapped go with them. Bounded — this is
-/// called three times a boot — and it is the same debt `undo` pays down inside
+/// called six times a boot — and it is the same debt `undo` pays down inside
 /// one load. D-44's accounting is where it is settled.
 ///
 /// # Errors

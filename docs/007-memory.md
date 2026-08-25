@@ -204,7 +204,7 @@ carries the entry bits, the index each level takes from a virtual address, and
 the canonical-form test, transcribed from SDM 3A §4.5. Its tests restate every
 bit position *from the manual* rather than from the constants above them,
 which is the only arrangement in which a transcription error fails instead of
-agreeing with itself. Nineteen host tests and a doctest before any hardware saw
+agreeing with itself. Forty-odd host tests and a doctest before any hardware saw
 a table (D-30).
 
 **The switch is a safe function**, and that is D-45's substance rather than its
@@ -268,7 +268,7 @@ what a slab refill wants, so the constraint left and the choice stayed. What
 did change is that `HEAP` no longer takes `FRAMES` — D-85 moved the refill out
 from under the guard, retiring the one lock order this kernel had.
 
-`libs/slab-layout` carries the class arithmetic — eleven host tests, including
+`libs/slab-layout` carries the class arithmetic — fourteen host tests, including
 one that asserts the invariant the whole design rests on, over every slot of
 every class: alignment is met by *choosing a class*, never by padding.
 
@@ -329,7 +329,7 @@ merely unmapped; it is unmappable, and `DeviceMapping` — neither `Copy` nor
 `Clone` — is what makes handing out an `MmioRegion` for one a safe function.
 
 **Firmware is the least trustworthy input the kernel has**, so `libs/acpi-tables`
-validates before it trusts and refuses rather than panics: seventeen host tests
+validates before it trusts and refuses rather than panics: thirty-odd host tests
 including a zero-length entry that would otherwise loop forever, an entry
 running past its table, and a truncated entry of a known kind. Interrupt source
 overrides are honoured — assuming `irq == gsi` is the classic way to program an

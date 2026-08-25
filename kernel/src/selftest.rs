@@ -787,7 +787,8 @@ fn kernel_memory_cannot_be_published_to_ring_three() -> bool {
 /// at the next instruction, so `bind` compares every top-level entry of the
 /// higher half rather than sampling addresses (D-106). The comparison itself
 /// cannot be made to fail through the public API, which is the point: the
-/// three doors into the higher half — `map_boot`, `unmap` and `map_device` —
+/// the doors into the higher half — `map_boot`, `map_owned`, `unmap` and
+/// `map_device` —
 /// all refuse a space that shares the kernel's. `map_device` was the one that
 /// did not, and it walked into the kernel's own device tables.
 fn only_a_space_that_matches_the_kernel_can_be_installed() -> bool {
@@ -1735,7 +1736,7 @@ fn a_bound_space_is_not_reclaimed() -> bool {
 ///
 /// Until D-117 nothing was reclaimed: a retired thread kept its slot, its
 /// stack, its address space, its handle table and its ring for the life of the
-/// boot. Three programs a boot made that bounded and uninteresting; it stops
+/// boot. A handful of programs a boot made that bounded and uninteresting; it stops
 /// being either the moment something spawns in a loop, which is what an OS
 /// does.
 ///
@@ -3088,8 +3089,8 @@ fn an_unmapped_range_returns_its_frames() -> bool {
 
 /// Unmapping refuses everything it cannot prove it owns.
 ///
-/// Four ways to ask for something that is not a run of owned four-kilobyte
-/// pages, and four refusals. The direct map is the interesting one: it is
+/// Six ways to ask for something that is not a run of owned four-kilobyte
+/// pages, and six refusals. The direct map is the interesting one: it is
 /// mapped in two-megabyte pages on purpose (D-45), splitting it is not offered,
 /// and the measurement in `010` §8 says keeping it that way is right.
 fn unmapping_refuses_what_it_does_not_own() -> bool {
@@ -4031,7 +4032,7 @@ fn the_clock_is_running() -> bool {
 /// timer switching them, and it has to happen in both directions for the
 /// boot thread to be here to notice.
 fn a_spinner_cannot_starve_another() -> bool {
-    /// Generous beside a 30 ms slice, stingy beside a hung harness.
+    /// Generous beside a 3 ms slice, stingy beside a hung harness.
     const PATIENCE_MS: u64 = 500;
 
     STOP_SPINNING.store(0, Ordering::Release);
@@ -5484,8 +5485,9 @@ fn sweep_clock() -> ClockSweep {
 /// is runnable but the boot thread and nothing sleeps, so there is nothing to
 /// be interrupted *for* — none, not merely fewer.
 fn an_idle_kernel_takes_no_timer_interrupts() -> bool {
-    /// Five times the old tick's period, so a tick that survived would show
-    /// up five times over.
+    /// Fifty times the old tick's period, so a tick that survived would show
+    /// up fifty times over. The comment said five; the tick was 100 Hz, and
+    /// the line four above already says "a number that would have been fifty".
     const QUIET_MS: u64 = 500;
 
     let before = time::expiries();
