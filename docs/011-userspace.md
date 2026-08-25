@@ -83,7 +83,7 @@ message shape. mlibc needs an ABI to sit on.
 | 2 | The lock discipline in the borrow checker (D-69): `SpinLock::lock` borrows the context, and the leaf acquisition a `Drop` can take | ✅ 2026-08-24 |
 | 3 | The address space that grows: two-way mapping, mappings that carry their evidence, unmap returning a flush token, the double-fault stack guarded | ✅ 2026-08-24 |
 | 4 | Trap entry, FRED-shaped: `libs/trap-cause` and table dispatch, the boot thread's own guarded stack, eIBRS and the speculation report, x2APIC as a checked precondition | ✅ 2026-08-24 |
-| 5 | Ring 3: user descriptors, a trap gate, the SMAP copy guard, `VERW` on the way out, the XSAVE layout in `libs/x86-cpuid` | ✅ 2026-08-24 |
+| 5 | Ring 3: user descriptors, one gate at DPL 3, the SMAP copy guard, `VERW` on the way out, the XSAVE layout in `libs/x86-cpuid` | ✅ 2026-08-24 |
 | 6 | The handle table: `libs/handle-space`, rights in one `u32`, a refcounted table, the object header, per-process quota | ✅ 2026-08-24 |
 | 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, `UFrame`, per-thread `RSP0` and eager XSAVE, stacks that arrive with their thread, two processes, exactly one handle each at spawn, and `THREADS` split into a thread table and a run queue | |
 | 8 | Channels: bytes and handles, attenuate-on-send, rights declared per field with no defaults | |
@@ -754,8 +754,10 @@ Recorded as built, per the charter above.
 `syscall`-versus-trap-gate question open and said the measurement that would
 settle it is meaningless under TCG. It is settled on something else: `syscall`
 needs `swapgs`, `swapgs` needs a per-CPU block, and that is two unproven
-mechanisms in the commit that establishes a privilege boundary. A trap gate
-needs neither — the CPU loads `RSP0` from the task-state segment itself. So the
+mechanisms in the commit that establishes a privilege boundary. A gate the
+CPU reaches through the interrupt table needs neither — it loads `RSP0` from
+the task-state segment itself. (An *interrupt* gate at DPL 3, not a trap gate:
+the flag is clear on entry, and `libs/x86-tables` offers no trap gate at all.) So the
 boundary goes up on the simplest thing that can hold it, and `syscall` becomes
 an optimisation with something working to compare against, on hardware, where
 the comparison means something.

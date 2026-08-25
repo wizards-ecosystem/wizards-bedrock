@@ -4735,8 +4735,8 @@ cleared on entry — and `libs/x86-tables` says a trap gate "is deliberately
 unavailable". Corrected by D-101.) `syscall` needs
 `swapgs`, `swapgs` needs a per-CPU block, and a per-CPU block reached through
 `gs:` is a second unproven mechanism in the same commit as the privilege
-boundary. A trap gate needs none of it: the CPU loads `RSP0` from the
-task-state segment itself. So the boundary is established first, on the
+boundary. A gate reached through the interrupt table needs none of it: the CPU
+loads `RSP0` from the task-state segment itself. So the boundary is established first, on the
 simplest mechanism that can hold it, and `syscall` becomes an optimisation with
 something working to compare against — on hardware, where the comparison means
 something.
