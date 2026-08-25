@@ -46,8 +46,14 @@ extern "C" {
  * handles, so nothing may depend on which one is smaller. */
 typedef uint32_t wiz_handle_t;
 
-/* The value no handle ever has. Not zero: zero is a plausible mistake and this
- * is not, so a forgotten initialisation fails rather than naming slot zero. */
+/* The value no handle ever has, and it is zero on purpose — the comment here
+ * used to say "not zero" directly above a zero.
+ *
+ * Zero is safe to use precisely because of the two reserved low bits above:
+ * every real handle carries 0b11 there, the mixer cannot clear them, and
+ * `decode` refuses anything that does not. So zero is unreachable by
+ * construction, and a forgotten initialisation names nothing rather than
+ * naming slot zero. */
 #define WIZ_HANDLE_INVALID ((wiz_handle_t)0)
 
 /* Rights, in one word (D-78). The universal four mean the same for every kind

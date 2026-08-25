@@ -62,15 +62,21 @@ inline volatile wiz_ring_header *ring() {
 
 } // namespace
 
-// --- MAPS: the four that need nothing but the gate ---------------------
+// --- The three that need nothing but the gate, and one that has no door ---
 
-// sys_libc_log. MAPS. The kernel's console is not a file and a libc does not
-// need it to be: this is diagnostics, and the ring's echo opcode is enough to
-// prove the path. Owed a real opcode that takes a pointer and a length.
+// sys_libc_log. MAPS **in shape only**, which is how the README counts it and
+// how this comment did not. The kernel's console is not a file and a libc does
+// not need it to be: this is diagnostics, and a ring opcode taking a pointer
+// and a length is the whole of what it wants.
 void sys_libc_log(const char *message) {
-	// OWED: WIZ_OP_LOG. Until it exists this is a submission the kernel
-	// refuses with STATUS_UNKNOWN_OPCODE, which is *reported* rather than
-	// ignored (D-79) — so a libc built today gets a failure it can see.
+	// The body is a no-op and says so. It used to claim it submitted
+	// something the kernel refused with STATUS_UNKNOWN_OPCODE — it does not
+	// submit anything, so a libc built today gets silence rather than the
+	// visible failure that comment promised (D-124).
+	//
+	// OWED: WIZ_OP_LOG. Deliberately not faked with a refused submission:
+	// an opcode number invented here would be one the kernel has never
+	// heard of, and the first real one would have to avoid it.
 	(void)message;
 }
 
@@ -93,7 +99,9 @@ void sys_libc_log(const char *message) {
 	__builtin_unreachable();
 }
 
-// sys_clock_get. OWED. `libs/timebase` already converts the TSC to nanoseconds
+// sys_clock_get. OWED, and under the heading above rather than beside the
+// other OWED entries because it is the last of the four a libc reaches
+// through the bare gate. `libs/timebase` already converts the TSC to nanoseconds
 // and the ring has an uptime opcode, so the mechanism is complete and the door
 // is missing. Note what POSIX wants that the kernel does not have: a *wall
 // clock*. Uptime is monotonic; `CLOCK_REALTIME` needs an epoch, and this
@@ -109,14 +117,17 @@ int sys_clock_get(int clock, time_t *secs, long *nanos) {
 	return 0;
 }
 
-// --- OWED: the file-descriptor four ------------------------------------
+// --- The file-descriptor five: four OWED, and `open` ---------------------
 
 // A POSIX fd is a handle (pillar 1), and the translation is exact for the
 // operations below: a descriptor number *is* a handle value, and the rights
 // on it are what `open` asked for. What POSIX adds that handles do not have is
 // the *table's* semantics — dup2 to a chosen number, and inheritance across
-// exec — and both are recorded as ABSENT further down.
+// exec. Neither is among the sixteen mandatory tags; both are in the README's
+// "cluster that stays unimplementable", which is where this comment used to
+// say "further down" and point at nothing.
 
+// sys_read. OWED, over the ring rather than as a synchronous call.
 int sys_read(int fd, void *buffer, size_t size, ssize_t *bytes_read) {
 	// OWED: WIZ_CALL_RING_ENTER with a read opcode. Written as a ring
 	// submission and not as a synchronous call on purpose: `002` pillar 2
@@ -130,6 +141,7 @@ int sys_read(int fd, void *buffer, size_t size, ssize_t *bytes_read) {
 	return WIZ_ENOSYS;
 }
 
+// sys_write. OWED, as sys_read.
 int sys_write(int fd, const void *buffer, size_t size, ssize_t *bytes_written) {
 	// OWED, as sys_read.
 	(void)fd;
@@ -139,6 +151,7 @@ int sys_write(int fd, const void *buffer, size_t size, ssize_t *bytes_written) {
 	return WIZ_ENOSYS;
 }
 
+// sys_seek. OWED, and the state it moves belongs to the object.
 int sys_seek(int fd, off_t offset, int whence, off_t *new_offset) {
 	// OWED. A seek is state the *file object* holds, not the handle: two
 	// handles to one file share a position in POSIX, which is a distinction
@@ -151,6 +164,7 @@ int sys_seek(int fd, off_t offset, int whence, off_t *new_offset) {
 	return WIZ_ENOSYS;
 }
 
+// sys_close. OWED: the kernel side exists and has no ring-3 door.
 int sys_close(int fd) {
 	// OWED: WIZ_CALL_HANDLE_CLOSE. The kernel side exists — closing advances
 	// the slot's generation so the value is dead the instant it is closed
@@ -158,9 +172,13 @@ int sys_close(int fd) {
 	return as_errno(call1(WIZ_CALL_HANDLE_CLOSE, fd));
 }
 
+// sys_open. ABSENT: it needs a namespace this OS deliberately has not got.
 int sys_open(const char *path, int flags, mode_t mode, int *fd) {
-	// OWED, and the one that needs the most that does not exist: a
-	// *namespace*. There is no global filesystem to name a path in, by
+	// ABSENT — the only one of the sixteen, and the README has always said
+	// so while this line said OWED. The distinction is the whole point of
+	// the taxonomy: OWED means the kernel has the mechanism and no door,
+	// and there is no mechanism here to have a door onto. What it needs is
+	// a *namespace*. There is no global filesystem to name a path in, by
 	// design (pillar 1), so `open` must resolve through a directory handle
 	// the process was given — which is `openat` with no `AT_FDCWD`, and is
 	// what WASI's `path_open` settled on for the same reason.
@@ -176,6 +194,7 @@ int sys_open(const char *path, int flags, mode_t mode, int *fd) {
 
 // --- OWED: memory ------------------------------------------------------
 
+// sys_vm_map. OWED, over D-107's map_user, with W^X non-negotiable.
 int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd,
                off_t offset, void **window) {
 	// OWED: WIZ_CALL_VM_MAP. The kernel side is D-107's `map_user`, and the
@@ -196,6 +215,7 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd,
 	return WIZ_ENOSYS;
 }
 
+// sys_vm_unmap. OWED, over unmap and its flush token (D-88).
 int sys_vm_unmap(void *window, size_t size) {
 	// OWED: WIZ_CALL_VM_UNMAP. `AddressSpace::unmap` exists and returns a
 	// flush token (D-88), which is the shape a shootdown will need.
@@ -204,17 +224,20 @@ int sys_vm_unmap(void *window, size_t size) {
 	return WIZ_ENOSYS;
 }
 
+// sys_anon_allocate. OWED, and is sys_vm_map with the anonymous flag.
 int sys_anon_allocate(size_t size, void **window) {
 	return sys_vm_map(nullptr, size, 3 /* read|write */, 0x20 /* anonymous */,
 	                  -1, 0, window);
 }
 
+// sys_anon_free. OWED, and is sys_vm_unmap.
 int sys_anon_free(void *window, size_t size) {
 	return sys_vm_unmap(window, size);
 }
 
 // --- OWED: threads and futexes -----------------------------------------
 
+// sys_futex_wait. OWED, over the wait queue that already closes the window.
 int sys_futex_wait(int *pointer, int expected, const struct timespec *time) {
 	// OWED: WIZ_CALL_FUTEX_WAIT. `kernel/src/wait.rs` already has the hard
 	// half — `wait_unless` registers before it re-reads, which is what makes
@@ -226,14 +249,16 @@ int sys_futex_wait(int *pointer, int expected, const struct timespec *time) {
 	return WIZ_ENOSYS;
 }
 
+// sys_futex_wake. OWED, over WaitQueue::wake_all.
 int sys_futex_wake(int *pointer) {
 	// OWED: WIZ_CALL_FUTEX_WAKE, over `WaitQueue::wake_all`.
 	(void)pointer;
 	return WIZ_ENOSYS;
 }
 
+// sys_tcb_set. MAPS, since D-118 — and this sysdep is why.
 int sys_tcb_set(void *pointer) {
-	// MAPS, since D-118 — and this sysdep is why. Writing it found that
+	// Writing it found that
 	// `FS_BASE` is a *fourth* thing that must follow a thread, after the
 	// privilege stack (D-99), the tables (D-106) and the extended state
 	// (D-108). Nothing native has thread-local storage, so nothing native

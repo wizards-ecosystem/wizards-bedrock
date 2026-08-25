@@ -1147,6 +1147,79 @@ mod tests {
     /// reads the ring at, a version it checks, the opcodes it submits and the
     /// statuses it decodes. A drift in any of those is a program that compiles,
     /// runs, and reads the wrong page.
+    /// Every sysdep's tag agrees with the README's tally.
+    ///
+    /// The three tags — MAPS, OWED, ABSENT — are the whole finding of D-74's
+    /// slice: which POSIX calls this ABI already has the shape for, which it
+    /// owes a door, and which it will never have. The counts live in the
+    /// README and the tags live in the sysdeps, and the two disagreed in two
+    /// places: `sys_libc_log` called itself MAPS where the README counts only
+    /// its *shape*, and `sys_open` called itself OWED where the README has
+    /// always said ABSENT — which is the distinction the taxonomy exists to
+    /// draw (D-124).
+    #[test]
+    fn every_sysdep_tag_agrees_with_the_readme() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let sysdeps = std::fs::read_to_string(root.join("userland/sysdeps/wizard/generic.cpp"))
+            .expect("generic.cpp");
+        let readme = std::fs::read_to_string(root.join("userland/README.md")).expect("README.md");
+
+        // One tag line per sysdep: `// sys_name. TAG`, which is the register
+        // the file is written in throughout.
+        let mut tags: Vec<(&str, &str)> = Vec::new();
+        for line in sysdeps.lines() {
+            let Some(rest) = line.trim().strip_prefix("// sys_") else {
+                continue;
+            };
+            let Some((name, after)) = rest.split_once(". ") else {
+                continue;
+            };
+            for tag in ["MAPS", "OWED", "ABSENT"] {
+                if after.starts_with(tag) {
+                    tags.push((name, tag));
+                    break;
+                }
+            }
+        }
+
+        // The four that reach the kernel through the bare gate, plus the
+        // file-descriptor five, plus memory, threads and futexes.
+        assert_eq!(
+            tags.len(),
+            16,
+            "mlibc's sixteen mandatory tags, one tag line each; found {tags:?}"
+        );
+
+        for (tag, expected) in [("MAPS", 4), ("OWED", 11), ("ABSENT", 1)] {
+            let counted = tags.iter().filter(|(_, found)| *found == tag).count();
+            // The README states it as a table row.
+            let declared = readme
+                .lines()
+                .find_map(|line| {
+                    let mut cells = line.split('|').map(str::trim);
+                    (cells.next()?.is_empty() && cells.next()? == format!("**{tag}**"))
+                        .then(|| cells.next()?.parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or_else(|| panic!("no {tag} row in the README's table"));
+
+            assert_eq!(counted, expected, "{tag}: the sysdeps tag {counted}");
+            assert_eq!(declared, expected, "{tag}: the README says {declared}");
+        }
+
+        // And `sys_open` is the ABSENT one, which is the disagreement that
+        // made this test worth writing.
+        assert_eq!(
+            tags.iter()
+                .find(|(_, tag)| *tag == "ABSENT")
+                .map(|(name, _)| *name),
+            Some("open"),
+            "`sys_open` is the one the native ABI has nothing of the kind for"
+        );
+    }
+
     #[test]
     fn the_c_header_and_the_kernel_agree_about_the_abi() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

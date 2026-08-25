@@ -114,6 +114,21 @@ authority, and a process's power is exactly its handle table. None of them is
 among the sixteen mandatory tags, which is itself informative — mlibc's own
 minimum does not require them.
 
+Two more belong here and were named in the sysdeps without being recorded
+anywhere, which is how a forward reference becomes a dead one:
+
+- **`dup2` to a chosen number.** Duplicating a handle is fine; choosing *which*
+  value the copy gets is not. D-70 rule 7 gives the table no lowest-free
+  promise precisely so that two allocations in either order produce the same
+  two handles, which is what makes allocation commutative and the table
+  scalable. A caller that may name the result has re-introduced the ordering
+  the rule deletes. `dup` maps; `dup2` does not.
+- **Inheritance across `exec`.** A spawned process receives exactly one handle
+  — its bootstrap channel — and everything else arrives through a channel
+  (D-111). Inheriting a table by default is the opposite rule, and it is the
+  one that makes POSIX's `CLOEXEC` necessary: a flag that exists to undo a
+  default nobody wanted. There is nothing to undo here.
+
 ## What is owed
 
 A compiled hello-world, which needs a self-contained C toolchain this platform
