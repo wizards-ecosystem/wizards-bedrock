@@ -116,13 +116,11 @@ pub fn silence() -> Result<(), PicError> {
     // arrives with the second CPU. It belongs with D-56's per-CPU work,
     // alongside `LEAVES_HELD` moving into `arch::percpu` (D-126, D-129).
     //
-    // **A failed claim is a permanent loss.** `PortBlock` has no `Drop` and
-    // the registry never releases, so if `SECONDARY` is unavailable the
-    // `PRIMARY` block below is claimed and stranded — and no later caller can
-    // ever silence the PIC. That is a standing property of the port registry
-    // rather than of this function; `?`-chaining the two claims had the same
-    // outcome and merely reached it less reliably (D-129).
-    let claims = port::claim_block(PRIMARY).zip(port::claim_block(SECONDARY));
+    // **Both or neither.** A claim is permanent, so taking `PRIMARY` and then
+    // failing on `SECONDARY` stranded the first and no later caller could ever
+    // silence the PIC. `?`-chaining had the same outcome and `.zip()` reached
+    // it more reliably; one all-or-none reservation is what removes it (D-138).
+    let claims = port::claim_block_pair::<2, 2>(PRIMARY, SECONDARY);
 
     let mut controllers = CONTROLLERS.lock_leaf();
     if controllers.is_some() {

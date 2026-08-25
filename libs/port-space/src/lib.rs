@@ -84,6 +84,57 @@ impl PortSpace {
         true
     }
 
+    /// Reserve several spans, all or none.
+    ///
+    /// A claim in this registry is **permanent** — nothing releases, because a
+    /// driver owns its registers for the life of the kernel. That makes a
+    /// caller wanting two spans a trap: take the first, fail on the second,
+    /// and the first is stranded where nothing can ever claim it again, so the
+    /// thing that needed both can never be built on this boot.
+    ///
+    /// Two callers had exactly that shape. `i8042::Controller::new` chains
+    /// `DATA` and `CONTROL`, so a refused `CONTROL` foreclosed the keyboard;
+    /// `pic::silence` chains its two blocks. Neither could guard against it
+    /// alone, because the check and the claim are two moments and the registry
+    /// has no undo. Doing it under one lock, against one bitmap, is the only
+    /// place the question can be answered (D-138).
+    ///
+    /// False, and nothing recorded, if *any* span is unavailable — checked
+    /// against the others in the same call, so two overlapping spans in one
+    /// request are refused rather than silently merged.
+    #[must_use = "ignoring a refused reservation means driving ports something else owns"]
+    pub fn reserve_all(&mut self, spans: &[(usize, usize)]) -> bool {
+        if spans.is_empty() {
+            return false;
+        }
+
+        // Every span resolved before any is written, and each checked against
+        // the ones before it — `span` only sees what is already *recorded*, so
+        // two requests for the same port in one call would both pass it.
+        let mut resolved = [const { None }; MAX_SPANS];
+        let Some(room) = resolved.get_mut(..spans.len()) else {
+            return false;
+        };
+        for (index, (port, len)) in spans.iter().enumerate() {
+            let Some(span) = self.span(*port, *len) else {
+                return false;
+            };
+            for earlier in room.iter().take(index).flatten() {
+                if overlaps(&span, earlier) {
+                    return false;
+                }
+            }
+            room[index] = Some(span);
+        }
+
+        for span in room.iter().flatten() {
+            for port in span.clone() {
+                self.reserved[port / PORTS_PER_WORD] |= bit(port);
+            }
+        }
+        true
+    }
+
     /// Whether the `len` ports starting at `port` could be reserved right now.
     ///
     /// The question [`reserve`](Self::reserve) answers as a side effect,
@@ -116,6 +167,18 @@ const fn bit(port: usize) -> u64 {
     1 << (port % PORTS_PER_WORD)
 }
 
+/// Spans one [`reserve_all`](PortSpace::reserve_all) may take at once.
+///
+/// Two is what the two callers need. The array is fixed because this crate is
+/// `no_std` with no allocator, and a ceiling that refuses is better than a
+/// silent truncation that reserves some of what was asked for.
+pub const MAX_SPANS: usize = 8;
+
+/// Whether two resolved spans share a port.
+fn overlaps(left: &Range<usize>, right: &Range<usize>) -> bool {
+    left.start < right.end && right.start < left.end
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +186,79 @@ mod tests {
     /// Widths an x86 port access can have, and therefore every span length a
     /// real kernel ever asks for.
     const WIDTHS: [usize; 3] = [1, 2, 4];
+
+    /// A refused multi-span reservation strands nothing.
+    ///
+    /// The whole point: a claim here is permanent, so a caller that takes the
+    /// first span and then fails has foreclosed it for the life of the boot.
+    /// Both real callers wanted two spans and neither could ask for them
+    /// together (D-138).
+    #[test]
+    fn a_refused_multi_span_reservation_takes_nothing() {
+        const FIRST: usize = 0x60;
+        const SECOND: usize = 0x64;
+
+        let mut space = PortSpace::new();
+        // Something else already owns the second span.
+        assert!(space.reserve(SECOND, 1));
+
+        assert!(
+            !space.reserve_all(&[(FIRST, 1), (SECOND, 1)]),
+            "the pair must be refused when either half is taken"
+        );
+        // And the first is still free, which is what chaining would have lost.
+        assert!(
+            space.is_available(FIRST, 1),
+            "a refused pair stranded its first span"
+        );
+        // So a later attempt can still get it once the obstacle is theirs.
+        assert!(space.reserve(FIRST, 1));
+    }
+
+    /// A granted multi-span reservation takes all of them.
+    #[test]
+    fn a_granted_multi_span_reservation_takes_every_span() {
+        let spans = [(0x60, 1), (0x64, 1), (0x3F8, 8)];
+
+        let mut space = PortSpace::new();
+        assert!(space.reserve_all(&spans));
+
+        for (port, len) in spans {
+            assert!(!space.is_available(port, len), "{port:#x} was not recorded");
+        }
+        // And nothing beyond them: the span at 0x70 is untouched.
+        assert!(space.is_available(0x70, 1));
+        // Asking again is refused, because the registry never releases.
+        assert!(!space.reserve_all(&spans));
+    }
+
+    /// Two spans in one request that overlap each other are refused.
+    ///
+    /// `span` only sees what is already *recorded*, so without the pairwise
+    /// check both halves of `[(0x60, 4), (0x62, 2)]` pass it and the caller is
+    /// told it owns one range twice.
+    #[test]
+    fn a_request_that_overlaps_itself_is_refused() {
+        let mut space = PortSpace::new();
+        assert!(!space.reserve_all(&[(0x60, 4), (0x62, 2)]));
+        assert!(space.is_available(0x60, 4), "nothing was recorded");
+
+        // Adjacent but disjoint is fine — the boundary is exclusive.
+        assert!(space.reserve_all(&[(0x60, 2), (0x62, 2)]));
+    }
+
+    /// An empty request and one past the ceiling are both refused.
+    #[test]
+    fn an_empty_or_oversized_multi_span_request_is_refused() {
+        let mut space = PortSpace::new();
+        // Empty would reserve nothing while reporting success.
+        assert!(!space.reserve_all(&[]));
+
+        let too_many: [(usize, usize); MAX_SPANS + 1] =
+            core::array::from_fn(|index| (index * 2, 1));
+        assert!(!space.reserve_all(&too_many), "past the ceiling is refused");
+        assert!(space.is_available(0, 1), "and nothing was recorded");
+    }
 
     #[test]
     fn a_fresh_space_reserves_nothing() {

@@ -4313,7 +4313,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 138;
+const EXPECTED_CHECKS: usize = 139;
 
 impl Report {
     const fn new() -> Self {
@@ -4354,6 +4354,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a claimed port cannot be claimed twice",
         ports_are_exclusive(),
+    );
+    report.check(
+        "a refused pair of claims strands neither",
+        a_refused_pair_of_claims_strands_neither(),
     );
     report.check(
         "a claim covers the width it drives",
@@ -4986,6 +4990,35 @@ fn channels_are_disjoint(geometry: FramebufferInfo) -> bool {
 /// refused — the whole block, and any single port inside it.
 fn ports_are_exclusive() -> bool {
     port::claim_block::<8>(uart::COM1).is_none() && port::claim::<u8>(uart::COM1).is_none()
+}
+
+/// A refused pair of claims strands neither.
+///
+/// A claim in this registry is permanent — nothing releases, because a driver
+/// owns its registers for the life of the kernel. So a caller that takes one
+/// port and then fails on the second has foreclosed the first for the boot,
+/// and whatever needed both can never be built. `i8042::Controller::new`
+/// chained `DATA` and `CONTROL` exactly that way, so a refused `CONTROL` would
+/// have retired the keyboard (D-138).
+///
+/// Driven against a port the serial driver already owns, so the refusal is
+/// real rather than arranged.
+fn a_refused_pair_of_claims_strands_neither() -> bool {
+    /// Free, and two below COM1 so it cannot collide with the serial block.
+    const FREE: u16 = uart::COM1 - 4;
+
+    // COM1 is the serial driver's, so any pair naming it must be refused.
+    let refused = port::claim_pair::<u8, u8>(FREE, uart::COM1).is_none();
+
+    // And the free half is still free: chaining would have taken it on the
+    // way to failing.
+    let untouched = port::claim::<u8>(FREE).is_some();
+
+    // Which also proves the first line was a real refusal and not a refusal
+    // of `FREE` itself — it was claimable a moment later.
+    let taken_now = port::claim::<u8>(FREE).is_none();
+
+    refused && untouched && taken_now
 }
 
 /// A claim covers the ports its access *reaches*, not just the one it names.

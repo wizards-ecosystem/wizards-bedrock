@@ -23,10 +23,13 @@ use anyhow::{Context, Result};
 
 /// Lines of `unsafe` `wost` may hold.
 ///
-/// 356 lines in 156 blocks, measured 2026-08-24 during the Phase 0–6 sweep.
-/// It was 343 at the Phase 5 close; the thirteen added are D-120's fixup
-/// recovery, D-123's four soundness fixes, and the two pointer reads behind
-/// the leaf-nesting check's reporting (D-126).
+/// 360 lines, measured 2026-08-25 during the Phase 0–5 audit. It was 343 at
+/// the Phase 5 close; the seventeen added are D-120's fixup recovery, D-123's
+/// four soundness fixes, the two pointer reads behind the leaf-nesting check's
+/// reporting (D-126), and the four constructions behind `claim_pair` and
+/// `claim_block_pair` — two `Port::new` and two `PortBlock::new`, each sound
+/// for the reason the single-port doors are, over one all-or-none reservation
+/// instead of two (D-138).
 ///
 /// Phase 5 added the most unsafe of any phase so far — ring 3, the extended
 /// state, the address space that grows — which is why this is where the number
@@ -44,7 +47,7 @@ pub const BUDGET: usize = 380;
 /// is the truth — so the measurement is recorded beside it and checked, which
 /// makes drift toward the ceiling visible rather than something a reader
 /// infers from a comment that may be a phase out of date.
-pub const MEASURED: usize = 356;
+pub const MEASURED: usize = 360;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///

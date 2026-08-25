@@ -57,6 +57,38 @@ pub fn claim<T: PortValue>(number: u16) -> Option<Port<T>> {
     })
 }
 
+/// Claim two ports at once, or neither.
+///
+/// The answer to the trap named above: a claim is permanent, so a caller that
+/// takes one port and then fails to take the second has foreclosed the first
+/// for the life of the boot, and the thing that needed both can never be
+/// built. Chaining two [`claim`]s cannot avoid it — the check and the record
+/// are two moments and there is no undo — so the question is asked once,
+/// against one bitmap, under one lock (D-138).
+///
+/// `None` if either port is already claimed, if the two overlap, or if either
+/// runs past the end of I/O space.
+pub fn claim_pair<T: PortValue, U: PortValue>(
+    first: u16,
+    second: u16,
+) -> Option<(Port<T>, Port<U>)> {
+    let spans = [
+        (first as usize, size_of::<T>()),
+        (second as usize, size_of::<U>()),
+    ];
+    if !CLAIMED.lock_leaf().reserve_all(&spans) {
+        return None;
+    }
+    // SAFETY: the registry has just recorded every port both accesses drive,
+    // as one all-or-none transaction, and no claim is ever released — so no
+    // other `Port` or `PortBlock` can cover any of them.
+    let first = unsafe { Port::new(first) };
+    // SAFETY: as above; the same reservation covered this port, and
+    // `reserve_all` refused the pair had the two overlapped.
+    let second = unsafe { Port::new(second) };
+    Some((first, second))
+}
+
 /// Claim exclusive access to the `N` consecutive ports starting at `base`.
 ///
 /// Returns `None` if any of them is already claimed, or if the block would run
@@ -67,6 +99,30 @@ pub fn claim_block<const N: usize>(base: u16) -> Option<PortBlock<N>> {
         // no claim is ever released, so nothing else can cover them.
         unsafe { PortBlock::new(base) }
     })
+}
+
+/// Claim two blocks at once, or neither.
+///
+/// [`claim_pair`]'s reasoning, for the callers that drive register windows
+/// rather than single ports (D-138).
+///
+/// `None` if either block is already claimed, if the two overlap, or if either
+/// runs past the end of I/O space.
+pub fn claim_block_pair<const N: usize, const M: usize>(
+    first: u16,
+    second: u16,
+) -> Option<(PortBlock<N>, PortBlock<M>)> {
+    let spans = [(first as usize, N), (second as usize, M)];
+    if !CLAIMED.lock_leaf().reserve_all(&spans) {
+        return None;
+    }
+    // SAFETY: the registry has just recorded every port in both blocks, as one
+    // all-or-none transaction, and no claim is ever released — so nothing else
+    // can cover any of them.
+    let first = unsafe { PortBlock::new(first) };
+    // SAFETY: as above; `reserve_all` refused the pair had the two overlapped.
+    let second = unsafe { PortBlock::new(second) };
+    Some((first, second))
 }
 
 /// Reclaim the registry's lock on the terminal panic path.

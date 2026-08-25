@@ -142,8 +142,11 @@ impl Controller {
     /// scanning enable is not, because a keyboard that will not scan is not
     /// an input device.
     pub(crate) fn new() -> Result<Self, I8042Error> {
-        let data = port::claim(DATA).ok_or(I8042Error::PortsUnavailable)?;
-        let control = port::claim(CONTROL).ok_or(I8042Error::PortsUnavailable)?;
+        // Both or neither. Chaining two claims strands `DATA` when `CONTROL`
+        // is refused, and a claim is permanent — so the keyboard controller
+        // could never be built again on that boot (D-138).
+        let (data, control) =
+            port::claim_pair(DATA, CONTROL).ok_or(I8042Error::PortsUnavailable)?;
         let mut controller = Self { data, control };
 
         if controller.control.read() == ABSENT_STATUS {
