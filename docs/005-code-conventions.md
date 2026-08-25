@@ -302,6 +302,30 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   INDEX_BITS - RESERVED_BITS)` is a definition, and a frame-allocator check
   that asserts the address, the count and the tally has checked the
   allocator's *description* rather than its frames (D-124).
+- **Measure what a tool does; do not reason about it.** This is the one rule
+  here that was learned twice in a day, in opposite directions, and it is
+  narrower and more useful than "check your assumptions".
+
+  `#[expect(lint)]` fails the build when the suppression stops being needed —
+  except inside a macro expansion, where `unfulfilled_lint_expectations` never
+  fires. Converting a macro's attributes therefore produces something that
+  *reads as checked* and is exactly as unfalsifiable as the `allow` it
+  replaced, which is worse than leaving it. Found by adding an
+  `#[expect(non_snake_case)]` to a `SCREAMING_CASE` static and watching nothing
+  happen (D-131).
+
+  The mutation sweep's `strip_suffix(" FAILED")` looked stricter than the
+  verdict check it replaced. Serial lines carry a trailing ``, so it matched
+  nothing, and the first strict run reported **eighteen survivors on boots that
+  had each reddened exactly the right check** — a stricter-looking tool that
+  was strictly worse, reporting failure for defects that were caught (D-134).
+
+  Both were ten minutes to measure and would have been a phase to find. The
+  pattern is not that premises need checking in general: it is that **a tool is
+  a thing we describe to ourselves in prose and then trust the prose**, so the
+  gap between what it does and what we say it does closes only when something
+  runs.
+
 - Hardware behaviour is *also* verified by eye: `cargo xtask run` for the loop,
   a VMware boot as every phase's definition of done (D-18). The self-test
   catches regressions; the eye catches things nobody thought to assert.
