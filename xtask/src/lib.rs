@@ -15,6 +15,7 @@ pub mod cli;
 pub mod decisions;
 pub mod elf;
 pub mod image;
+pub mod machine;
 pub mod model;
 pub mod mutate;
 pub mod paths;

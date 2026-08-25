@@ -215,13 +215,17 @@ impl fmt::Display for Protections {
 /// Whether `CR4.OSXSAVE` is set, which is what makes `XGETBV`, `XSETBV` and
 /// the save instructions legal.
 ///
+/// `CR4.OSXSAVE`: the bit that makes `XSAVE` and `XGETBV` legal at all.
+///
+/// One definition for the two functions that name it — the one that sets it
+/// and the one that reads it back to say whether the write took. They were a
+/// local each, with the same value and the same doc line (D-160).
+const CR4_OSXSAVE: u64 = 1 << 18;
+
 /// Read from the register rather than from a remembered flag: the one caller
 /// is a check asking whether the write took, and a remembered flag would
 /// answer with the memory of the write (D-115).
 pub fn extended_state_is_enabled() -> bool {
-    /// `CR4.OSXSAVE`.
-    const CR4_OSXSAVE: u64 = 1 << 18;
-
     read_cr4() & CR4_OSXSAVE != 0
 }
 
@@ -248,8 +252,6 @@ pub(super) fn enable_extended_state() {
     /// `#UD` a processor raises when the kernel has not said it can handle
     /// them.
     const CR4_OSXMMEXCPT: u64 = 1 << 10;
-    /// `CR4.OSXSAVE`.
-    const CR4_OSXSAVE: u64 = 1 << 18;
     /// `CR0.MP`: monitor coprocessor, which the manual pairs with `EM` clear.
     const CR0_MONITOR: u64 = 1 << 1;
     /// `CR0.EM`: emulation. Set, every SSE instruction faults.
