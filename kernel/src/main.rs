@@ -19,25 +19,22 @@ mod arch;
 mod banner;
 mod console;
 mod dev;
-// Built and proven before anything ships it, which is the order the charter
-// forced: handles need objects and objects need a process to belong to, so the
-// first shipped caller is `spawn` in slice 7 and the gate comes off with it.
-#[cfg(feature = "selftest")]
+// Ungated at the Phase 5 close. The order the charter forced was handles
+// before objects before a process to belong to, so these were built and proven
+// behind the selftest feature first — and the gate comes off with `spawn`,
+// which the syscall path now reaches unconditionally (D-116).
 mod handle;
 mod input;
 mod log;
 mod mem;
-#[cfg(feature = "selftest")]
 mod object;
 mod panic;
-#[cfg(feature = "selftest")]
 mod queue;
 #[cfg(feature = "selftest")]
 mod selftest;
 mod theme;
 mod thread;
 mod time;
-#[cfg(feature = "selftest")]
 mod user;
 mod wait;
 
@@ -177,12 +174,7 @@ extern "C" fn boot_continue(_arg: usize) -> ! {
         }
     });
 
-    // The initrd is read by the loader, which ships only with the checks for
-    // now: there is a program in the image and nothing shipped that runs one.
-    #[cfg(feature = "selftest")]
     user::keep(module);
-    #[cfg(not(feature = "selftest"))]
-    let _ = module;
 
     #[cfg(feature = "selftest")]
     selftest::run(serial);
@@ -191,6 +183,20 @@ extern "C" fn boot_continue(_arg: usize) -> ! {
     // woken. Idempotent: the self-checks start it earlier, to watch the
     // machine on both sides of it.
     thread::start_idle();
+
+    // And the shipped kernel runs the program, which until D-116 only the
+    // checks did. A kernel that has userspace and never enters it has not
+    // shipped userspace: the loader, the address space, the handle table, the
+    // ring and the gate were all dead code in the image people actually boot.
+    //
+    // Reported rather than returned: there is exactly one caller and nothing
+    // it could do differently. A refusal is a line in the log and a kernel
+    // that goes on reading the keyboard, which is the behaviour a program
+    // failing to start should have.
+    match user::run() {
+        Ok(program) => info!("user: program running in slot {}", program.slot),
+        Err(reason) => warn!("user: no program: {reason}"),
+    }
     info!(
         "kernel: reading the keyboard, uptime {} ms",
         time::uptime_ms()

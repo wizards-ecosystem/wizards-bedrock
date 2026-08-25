@@ -71,9 +71,7 @@ fn on_trap(frame: &TrapFrame) {
             // D-101 is about: the caller's flags are in the frame, and this is
             // the CPU's own state now that the entry path has run.
             SMAP_ON_ENTRY.store(u64::from(!cpu::access_check_is_off()), Ordering::Release);
-            if !crate::thread::retire_from_trap(frame) {
-                panic!("a ring 3 thread called in and could not be retired");
-            }
+            crate::user::call(frame);
         }
 
         // Deliberately not dismissed: a spurious interrupt is the APIC saying

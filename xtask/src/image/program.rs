@@ -18,18 +18,38 @@ use elf64::{HEADER_BYTES, PROGRAM_HEADER_BYTES};
 /// Where the program is linked, and where the kernel maps it.
 pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 
-/// The program: read one word of argument, then either call the kernel or
-/// fault deliberately.
+/// The program: read one word of argument, then either fault deliberately or
+/// drive its own ring and exit.
 ///
 /// ```text
 ///   58                       pop rax                     ; the kernel's word
 ///   48 85 c0                 test rax, rax
-///   74 02                    jz  +2                      ; zero: behave
+///   74 02                    jz  behave                  ; zero: behave
 ///   0f 0b                    ud2                         ; anything else: die
+/// behave:
 ///   9c                       pushfq
 ///   48 81 0c 24 00 00 04 00  or qword ptr [rsp], 0x40000 ; set AC, bit 18
 ///   9d                       popfq
+///   48 bb ..                 mov rbx, RING               ; its own ring
+///   c7 83 00 10 00 00 ..     mov dword [rbx+0x1000], 1   ; opcode: echo
+///   c7 83 04 10 00 00 ..     mov dword [rbx+0x1004], tag
+///   48 c7 83 08 10 00 00 ..  mov qword [rbx+0x1008], arg
+///   c7 43 14 01 00 00 00     mov dword [rbx+20], 1       ; submission tail
+///   b8 01 00 00 00           mov eax, 1                  ; ring enter
 ///   cd 80                    int 0x80
+///   48 83 f8 01              cmp rax, 1                  ; exactly one served
+///   75 ..                    jne die
+///   48 8b 8b 88 10 00 00     mov rcx, [rbx+0x1088]       ; completion value
+///   48 c7 c2 ..              mov rdx, arg
+///   48 39 d1                 cmp rcx, rdx                ; it echoed back
+///   75 ..                    jne die
+///   8b 8b 84 10 00 00        mov ecx, [rbx+0x1084]       ; completion status
+///   85 c9                    test ecx, ecx
+///   75 ..                    jnz die
+///   31 c0                    xor eax, eax                ; exit
+///   cd 80                    int 0x80
+/// die:
+///   0f 0b                    ud2
 ///   eb fe                    jmp .
 /// ```
 ///
@@ -44,20 +64,130 @@ pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 /// kernel a trap with SMAP already off unless the entry path clears it
 /// (D-101).
 ///
-/// The trailing jump is unreachable while the kernel retires its callers, and
-/// it is there because a program whose last instruction falls forwards
-/// executes whatever the page holds.
-const CODE: [u8; 22] = [
-    0x58, // pop rax
-    0x48, 0x85, 0xC0, // test rax, rax
-    0x74, 0x02, // jz +2
-    0x0F, 0x0B, // ud2
-    0x9C, // pushfq
-    0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00, // or qword [rsp], 1 << 18
-    0x9D, // popfq
-    0xCD, 0x80, // int 0x80
-    0xEB, 0xFE, // jmp .
-];
+/// **The ring work is the point of everything after that** (D-116). Until it
+/// existed the program crossed once and was retired, so the whole async ABI —
+/// the shared pages, the admission, the terminal completion — was reachable
+/// only from kernel checks. Here a *program* posts an operation, rings the
+/// doorbell, and reads its own answer back out of a page it shares with the
+/// kernel. Every refusal on the way is a `ud2`, so a wrong answer kills the
+/// program and the boot check sees a fault instead of an exit.
+///
+/// Emitted rather than transcribed: the jump displacements are patched from
+/// the labels, so adding an instruction cannot silently retarget a branch —
+/// which is the failure mode a hand-assembled listing has and does not
+/// announce.
+fn code() -> Vec<u8> {
+    /// Where the kernel maps a program's ring. Must match `user::RING`.
+    const RING: u64 = 0x0000_2000_0000_0000;
+    /// First submission entry, from the ABI's `WIZ_RING_ENTRIES_AT`.
+    const SUBMISSIONS_AT: u32 = 4096;
+    /// First completion entry: eight submissions of sixteen bytes after them.
+    const COMPLETIONS_AT: u32 = SUBMISSIONS_AT + 8 * 16;
+    /// `header::SUBMISSION_TAIL`.
+    const TAIL_AT: u8 = 20;
+    /// `WIZ_OP_ECHO`.
+    const ECHO: u32 = 1;
+    /// The call numbers, from `enum wiz_call`.
+    const RING_ENTER: u32 = 1;
+
+    let mut code = Vec::new();
+
+    // The argument word, and the two behaviours it chooses.
+    code.extend_from_slice(&[0x58]); // pop rax
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    code.extend_from_slice(&[0x74, 0x02]); // jz behave
+    code.extend_from_slice(&[0x0F, 0x0B]); // ud2
+
+    // Set `AC`, which the entry path must clear.
+    code.extend_from_slice(&[0x9C]); // pushfq
+    code.extend_from_slice(&[0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00]);
+    code.extend_from_slice(&[0x9D]); // popfq
+
+    // rbx = the ring.
+    code.extend_from_slice(&[0x48, 0xBB]);
+    code.extend_from_slice(&RING.to_le_bytes());
+
+    // One submission: echo, tagged, with an argument to get back.
+    code.extend_from_slice(&[0xC7, 0x83]); // mov dword [rbx+disp32], imm32
+    code.extend_from_slice(&SUBMISSIONS_AT.to_le_bytes());
+    code.extend_from_slice(&ECHO.to_le_bytes());
+
+    code.extend_from_slice(&[0xC7, 0x83]);
+    code.extend_from_slice(&(SUBMISSIONS_AT + 4).to_le_bytes());
+    code.extend_from_slice(&PROGRAM_TAG.to_le_bytes());
+
+    code.extend_from_slice(&[0x48, 0xC7, 0x83]); // mov qword [rbx+disp32], imm32
+    code.extend_from_slice(&(SUBMISSIONS_AT + 8).to_le_bytes());
+    code.extend_from_slice(&PROGRAM_ARGUMENT.to_le_bytes());
+
+    // Publish it.
+    code.extend_from_slice(&[0xC7, 0x43, TAIL_AT]); // mov dword [rbx+20], imm32
+    code.extend_from_slice(&1u32.to_le_bytes());
+
+    // Ring the doorbell.
+    code.extend_from_slice(&[0xB8]); // mov eax, imm32
+    code.extend_from_slice(&RING_ENTER.to_le_bytes());
+    code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
+
+    // Exactly one served, or die.
+    code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x01]); // cmp rax, 1
+    let served = branch(&mut code, 0x75); // jne die
+
+    // The value came back, or die.
+    code.extend_from_slice(&[0x48, 0x8B, 0x8B]); // mov rcx, [rbx+disp32]
+    code.extend_from_slice(&(COMPLETIONS_AT + 8).to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xC7, 0xC2]); // mov rdx, imm32
+    code.extend_from_slice(&PROGRAM_ARGUMENT.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x39, 0xD1]); // cmp rcx, rdx
+    let echoed = branch(&mut code, 0x75); // jne die
+
+    // With a clean status, or die.
+    code.extend_from_slice(&[0x8B, 0x8B]); // mov ecx, [rbx+disp32]
+    code.extend_from_slice(&(COMPLETIONS_AT + 4).to_le_bytes());
+    code.extend_from_slice(&[0x85, 0xC9]); // test ecx, ecx
+    let clean = branch(&mut code, 0x75); // jnz die
+
+    // Exit.
+    code.extend_from_slice(&[0x31, 0xC0]); // xor eax, eax
+    code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
+
+    // Everything that went wrong lands here.
+    let die = code.len();
+    code.extend_from_slice(&[0x0F, 0x0B]); // ud2
+    code.extend_from_slice(&[0xEB, 0xFE]); // jmp .
+
+    for site in [served, echoed, clean] {
+        patch(&mut code, site, die);
+    }
+    code
+}
+
+/// The tag the program puts on its submission, and gets back.
+const PROGRAM_TAG: u32 = 0x0000_1234;
+
+/// The word it asks the kernel to echo.
+const PROGRAM_ARGUMENT: u32 = 0x00C0_FFEE;
+
+/// Emit a two-byte conditional jump with a placeholder, and report where its
+/// displacement byte is.
+fn branch(code: &mut Vec<u8>, opcode: u8) -> usize {
+    code.push(opcode);
+    code.push(0);
+    code.len() - 1
+}
+
+/// Fill in a displacement, now that the target is known.
+///
+/// Panics on a jump too far to encode, which is a build-time failure and the
+/// right one: a truncated displacement is a branch into the middle of an
+/// instruction, and the program would run and do something else.
+fn patch(code: &mut [u8], site: usize, target: usize) {
+    let from = site + 1;
+    let distance = i64::try_from(target).expect("a small program")
+        - i64::try_from(from).expect("a small program");
+    let displacement = i8::try_from(distance).expect("a jump inside one byte");
+    code[site] = displacement as u8;
+}
 
 /// `PT_LOAD`.
 const PT_LOAD: u32 = 1;
@@ -78,7 +208,8 @@ const PF_READ_EXECUTE: u32 = 0b101;
 /// mapped the image directly would need both the congruence and an alignment
 /// that says so.
 pub fn build() -> Vec<u8> {
-    let mut image = vec![0u8; HEADER_BYTES + PROGRAM_HEADER_BYTES + CODE.len()];
+    let code = code();
+    let mut image = vec![0u8; HEADER_BYTES + PROGRAM_HEADER_BYTES + code.len()];
 
     image[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
     image[4] = 2; // ELFCLASS64
@@ -100,11 +231,11 @@ pub fn build() -> Vec<u8> {
     image[at + 8..at + 16].copy_from_slice(&(code_at as u64).to_le_bytes()); // p_offset
     image[at + 16..at + 24].copy_from_slice(&LOAD_ADDRESS.to_le_bytes()); // p_vaddr
     image[at + 24..at + 32].copy_from_slice(&LOAD_ADDRESS.to_le_bytes()); // p_paddr
-    image[at + 32..at + 40].copy_from_slice(&(CODE.len() as u64).to_le_bytes()); // p_filesz
-    image[at + 40..at + 48].copy_from_slice(&(CODE.len() as u64).to_le_bytes()); // p_memsz
+    image[at + 32..at + 40].copy_from_slice(&(code.len() as u64).to_le_bytes()); // p_filesz
+    image[at + 40..at + 48].copy_from_slice(&(code.len() as u64).to_le_bytes()); // p_memsz
     image[at + 48..at + 56].copy_from_slice(&1u64.to_le_bytes()); // p_align
 
-    image[code_at..code_at + CODE.len()].copy_from_slice(&CODE);
+    image[code_at..code_at + code.len()].copy_from_slice(&code);
     image
 }
 
@@ -130,8 +261,8 @@ mod tests {
         let segment = elf.segments().next().expect("one segment");
         assert_eq!(segment.kind(), SegmentKind::Load);
         assert_eq!(segment.address(), LOAD_ADDRESS);
-        assert_eq!(segment.file_size(), CODE.len() as u64);
-        assert_eq!(segment.memory_size(), CODE.len() as u64);
+        assert_eq!(segment.file_size(), code().len() as u64);
+        assert_eq!(segment.memory_size(), code().len() as u64);
         assert!(segment.contents_fit(image.len()));
         assert!(!segment.is_oversized());
     }
@@ -188,6 +319,75 @@ mod tests {
 
         let at = segment.offset() as usize;
         let len = segment.file_size() as usize;
-        assert_eq!(&image[at..at + len], &CODE);
+        assert_eq!(&image[at..at + len], code().as_slice());
+    }
+
+    /// The emitted instructions are the ones the listing says.
+    ///
+    /// A generated program can be wrong in a way a transcribed one cannot: an
+    /// instruction added in the middle shifts every later one, and a
+    /// displacement computed from the wrong label is a jump into the middle of
+    /// an instruction that still *runs*. So the bytes are pinned here against
+    /// the doc comment above (D-116).
+    #[test]
+    fn the_emitted_program_is_the_listing() {
+        let code = code();
+
+        // The first four are what the kernel reads back across the boundary,
+        // and `user::PROGRAM` transcribes them independently.
+        assert_eq!(
+            &code[..4],
+            &[0x58, 0x48, 0x85, 0xC0],
+            "pop rax; test rax, rax"
+        );
+        // The fault behaviour, at the offset the `jz` skips to.
+        assert_eq!(&code[4..8], &[0x74, 0x02, 0x0F, 0x0B], "jz +2; ud2");
+        // Setting `AC`, which the entry path must clear.
+        assert_eq!(
+            &code[8..18],
+            &[0x9C, 0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00, 0x9D],
+            "pushfq; or qword [rsp], 0x40000; popfq"
+        );
+        // The ring's address, which must be `user::RING`.
+        assert_eq!(&code[18..20], &[0x48, 0xBB], "mov rbx, imm64");
+        assert_eq!(
+            u64::from_le_bytes(code[20..28].try_into().expect("eight bytes")),
+            0x0000_2000_0000_0000,
+            "the program looks for its ring where the kernel maps it"
+        );
+
+        // Two `int 0x80`s: the doorbell and the exit, in that order.
+        let calls: Vec<usize> = code
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| *pair == [0xCD, 0x80])
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(calls.len(), 2, "one doorbell and one exit");
+        assert_eq!(
+            &code[calls[0] - 5..calls[0]],
+            &[0xB8, 1, 0, 0, 0],
+            "mov eax, 1"
+        );
+        assert_eq!(&code[calls[1] - 2..calls[1]], &[0x31, 0xC0], "xor eax, eax");
+
+        // Every branch lands on the `ud2`, and none in the middle of an
+        // instruction: the displacements are patched from one label, so if any
+        // is wrong they all point somewhere that is not it.
+        let die = code.len() - 4;
+        assert_eq!(&code[die..], &[0x0F, 0x0B, 0xEB, 0xFE], "ud2; jmp .");
+        let branches: Vec<usize> = code
+            .iter()
+            .enumerate()
+            .skip(28)
+            .filter(|(at, byte)| **byte == 0x75 && *at + 1 < code.len())
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(branches.len(), 3, "three ways to fail");
+        for site in branches {
+            let displacement = i64::from(code[site + 1] as i8);
+            let target = site as i64 + 2 + displacement;
+            assert_eq!(target, die as i64, "a branch at {site} misses the ud2");
+        }
     }
 }

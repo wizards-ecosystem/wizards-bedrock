@@ -924,11 +924,12 @@ confident comment on a redundant guard.
 
 Nothing here is a surprise; each is named in the ADR that created it.
 
-- **A program cannot drive its own ring.** The kernel side is complete and
-  checked through the shared page, which is the boundary that matters. What is
-  missing is a program big enough to write an entry and bump a tail — the
-  initrd is twenty-two bytes of hand-written assembly, and the thing that makes
-  a bigger one ordinary is the libc D-114 could not compile.
+- ~~A program cannot drive its own ring.~~ **Closed by D-116**, after the
+  phase's other work was done: the gate dispatches on `rax` and only `exit`
+  retires, `serve` reserves at the doorbell rather than in an earlier call, and
+  the initrd's program posts an operation, rings the doorbell and reads its own
+  answer. The shipped kernel runs it — a kernel that has userspace and never
+  enters it has not shipped userspace. 125 checks.
 - **`FS_BASE` is a fourth thing that must follow a thread**, found by writing
   the sysdeps (D-114). `RSP0`, `CR3` and the extended state all live in
   `task::prepare`; this belongs there with them.

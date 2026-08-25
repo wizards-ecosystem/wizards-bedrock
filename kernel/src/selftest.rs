@@ -1046,11 +1046,8 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
     // Fill the completion queue by serving as many rounds as it holds.
     let mut posted = 0u32;
     while posted < completions {
-        let admitted = queue.admit(submissions as usize);
-        if admitted == 0 {
-            break;
-        }
-        for slot in 0..admitted {
+        let room = submissions as usize;
+        for slot in 0..room {
             queue.post_submission_for_test(
                 slot,
                 queue::Submission {
@@ -1060,17 +1057,17 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
                 },
             );
         }
-        queue.publish_tail_for_test(posted + admitted as u32);
+        queue.publish_tail_for_test(posted + room as u32);
         let served = queue.serve();
-        if served != admitted {
-            return false;
+        if served == 0 {
+            break;
         }
         posted += served as u32;
     }
 
     // Nothing has been reaped, so nothing more can be admitted: every slot is
     // either spoken for or already holds a completion.
-    let refuses = queue.admit(1) == 0 && queue.is_consistent();
+    let refuses = queue.reserve_for_test(1) == 0 && queue.is_consistent();
 
     // Userspace reaps *some* of them, and the kernel gives back exactly that
     // much. Reaping everything would be the kernel deciding a program had read
@@ -1083,8 +1080,8 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
     let followed = head_before == 0 && reaped == partial as usize;
 
     // Room for exactly what was reaped, and no more.
-    let resumes = queue.admit(partial as usize) == partial as usize
-        && queue.admit(1) == 0
+    let resumes = queue.reserve_for_test(partial as usize) == partial as usize
+        && queue.reserve_for_test(1) == 0
         && queue.is_consistent();
 
     // And a program that **lies** about how far it has read gets nothing for
@@ -1096,9 +1093,6 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
     let Some(liar) = queue::Queue::new() else {
         return false;
     };
-    if liar.admit(2) != 2 {
-        return false;
-    }
     for slot in 0..2 {
         liar.post_submission_for_test(
             slot,
@@ -1199,9 +1193,6 @@ fn every_submission_gets_exactly_one_completion() -> bool {
         },
     ];
 
-    if queue.admit(asked.len()) != asked.len() {
-        return false;
-    }
     for (slot, submission) in asked.iter().enumerate() {
         queue.post_submission_for_test(slot, *submission);
     }
@@ -1249,7 +1240,7 @@ fn admission_refuses_before_the_completion_queue_can_overflow() -> bool {
 
     // Ask for far more than either queue holds.
     let wanted = (completions as usize) * 4;
-    let admitted = queue.admit(wanted);
+    let admitted = queue.reserve_for_test(wanted);
 
     // Bounded by the submission queue, which is the tighter of the two here,
     // and never by nothing.
@@ -1258,7 +1249,7 @@ fn admission_refuses_before_the_completion_queue_can_overflow() -> bool {
     let consistent = queue.is_consistent();
 
     // And a full ring admits nothing more until something reports.
-    let full_refuses = queue.admit(1) == 0;
+    let full_refuses = queue.reserve_for_test(1) == 0;
 
     bounded && refused && consistent && full_refuses
 }
@@ -1282,9 +1273,6 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         return false;
     };
 
-    if queue.admit(1) != 1 {
-        return false;
-    }
     queue.post_submission_for_test(
         0,
         queue::Submission {
@@ -1335,43 +1323,51 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     let Some(runaway) = queue::Queue::new() else {
         return false;
     };
-    if runaway.admit(3) != 3 {
-        return false;
+    // Three written, and a tail claiming four billion. Without the bound the
+    // kernel admits and serves all three from slots it was never told about.
+    for slot in 0..3 {
+        runaway.post_submission_for_test(
+            slot,
+            queue::Submission {
+                opcode: queue::Opcode::Echo,
+                token: 0x9999,
+                argument: 0,
+            },
+        );
     }
     runaway.publish_tail_for_test(u32::MAX);
-    let runaway_bounded = runaway.serve() == 0 && runaway.outstanding() == 3;
+    let runaway_bounded = runaway.serve() == 0 && runaway.outstanding() == 0;
 
     // And with the ring drained, which is the weaker case the earlier version
     // was testing without knowing it.
     queue.publish_tail_for_test(u32::MAX);
     let drained_bounded = queue.serve() == 0;
 
-    // The case the runaway tail cannot show, because the kernel's own ring is
-    // empty by then: **admitting is not publishing.** A program may ask for
-    // room for three and write only one, and the kernel must serve one — the
-    // reservation says where a completion *can* go, and the tail says what is
-    // actually there. Serving the difference would report completions for
-    // entries that are still whatever the page held.
+    // The case the runaway tail cannot show: **writing is not publishing.**
+    // A program may write
+    // three entries and publish a tail of one, and the kernel must serve one.
+    // The tail is what says an entry is *there*; the other two slots hold
+    // bytes the program wrote and has not offered, and serving them would
+    // report completions for operations nobody made.
     let Some(partial) = queue::Queue::new() else {
         return false;
     };
-    if partial.admit(3) != 3 {
-        return false;
+    for slot in 0..3 {
+        partial.post_submission_for_test(
+            slot,
+            queue::Submission {
+                opcode: queue::Opcode::Echo,
+                token: 0x5150 + slot as u32,
+                argument: 7,
+            },
+        );
     }
-    partial.post_submission_for_test(
-        0,
-        queue::Submission {
-            opcode: queue::Opcode::Echo,
-            token: 0x5150,
-            argument: 7,
-        },
-    );
     partial.publish_tail_for_test(1);
     let only_published = partial.serve() == 1;
     let one_reported = partial.read_completion_for_test(0).token == 0x5150;
-    // The other two reservations are still held, because their operations
-    // were never posted.
-    let still_reserved = partial.outstanding() == 2 && partial.is_consistent();
+    // And nothing is held open: the one served reported, and the two unpublished
+    // entries were never admitted, so no reservation outlives the round.
+    let still_reserved = partial.outstanding() == 0 && partial.is_consistent();
 
     unchanged
         && runaway_bounded
@@ -1379,6 +1375,60 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         && only_published
         && one_reported
         && still_reserved
+}
+
+/// A program posts an operation, rings the doorbell, and reads its own answer.
+///
+/// The whole async ABI, driven from ring 3 rather than from the kernel — which
+/// is what `002` pillar 2 is about and what nothing could do until D-116. The
+/// earlier checks exercise the kernel's side through the shared page, which is
+/// the right boundary to test the *kernel* at; this is the other half, and it
+/// is the one that says the ABI is usable.
+///
+/// **Nothing here is transcribed.** The submission read back is the one the
+/// program wrote, and the completion is compared against *it* — so a check
+/// that agreed with a constant it also chose is not possible. The kernel never
+/// posts to a program's ring, so a matching pair can only have come from a
+/// program that ran.
+///
+/// The program dies on any mismatch: it compares the echoed value and the
+/// status itself, and every failure path is a `ud2`. So a wrong answer shows
+/// up here as a fault rather than as a quiet pass — the check and the program
+/// disagree in the same direction.
+fn a_program_drives_its_own_ring() -> bool {
+    let faults_before = trap::last_user_fault().count;
+    let retirements_before = thread::retirements();
+
+    let Ok(spawned) = user::run_for_bootstrap() else {
+        return false;
+    };
+
+    // It has to load, cross, submit, be served, check the answer, and exit.
+    if !runs_until(2000, || thread::retirements() > retirements_before) {
+        return false;
+    }
+
+    let Some((served, submitted, completed)) = user::ring_round_trip_of(spawned.slot) else {
+        return false;
+    };
+
+    // The kernel's own tally, which ring 3 cannot write.
+    let one_served = served == 1;
+
+    // The program wrote a submission, and it is the one the ABI describes.
+    let asked = submitted.opcode == queue::Opcode::Echo && submitted.token != 0;
+
+    // And the completion answers *that* submission.
+    let answered = completed.token == submitted.token
+        && completed.status == queue::STATUS_OK
+        && completed.value == submitted.argument;
+
+    // It left by calling exit, not by faulting: a program that disagreed with
+    // its own answer executes `ud2`, and that would be a fault this boot did
+    // not have before.
+    let exited = trap::last_user_fault().count == faults_before;
+
+    one_served && asked && answered && exited
 }
 
 /// A freshly spawned program holds exactly one handle, and it is a channel.
@@ -3464,7 +3514,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 124;
+const EXPECTED_CHECKS: usize = 125;
 
 impl Report {
     const fn new() -> Self {
@@ -3631,6 +3681,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a second thread crosses onto its own stack",
         a_second_thread_crosses_onto_its_own_stack(),
+    );
+    report.check(
+        "a program drives its own ring",
+        a_program_drives_its_own_ring(),
     );
     report.check(
         "a spawned program holds exactly one handle",

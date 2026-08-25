@@ -286,6 +286,34 @@ pub(crate) fn is_live_frame(frame: &TrapFrame) -> bool {
     LIVE_FRAME.load(Ordering::Relaxed) == frame.origin
 }
 
+/// Set the `rax` the interrupted context will resume with.
+///
+/// The one way anything writes a trap frame, and the whole of the return-value
+/// convention: a call's result goes back in `rax`, which the entry stub pops
+/// on its way to `iretq`. Everything else in the frame stays read-only —
+/// `TrapFrame` is a snapshot on purpose, and a handler that could edit the
+/// interrupted state at will is a handler that can resume a thread somewhere
+/// it never was (D-116).
+///
+/// Refused unless `frame` is the innermost live one, for the same reason
+/// `switch_from_trap` refuses a foreign frame: a stale snapshot's `origin`
+/// names a stack another thread is now standing on.
+///
+/// `false` if the frame is not live, having written nothing.
+pub fn answer(frame: &TrapFrame, value: u64) -> bool {
+    if !is_live_frame(frame) {
+        return false;
+    }
+    // SAFETY: `origin` is the assembly frame the entry path pushed and the
+    // check above says it is still the innermost one, so it is on this
+    // thread's kernel stack and the stub has not yet popped it.
+    let slot = unsafe { core::ptr::addr_of_mut!((*frame.origin).rax) };
+    // SAFETY: as above, and `rax` is caller-saved — no compiled code is
+    // holding the value being replaced.
+    unsafe { slot.write(value) };
+    true
+}
+
 /// Take this context's trap state off the CPU, for a switch to another.
 ///
 /// Paired with [`resume_trap`] on the way back; between them the CPU runs a

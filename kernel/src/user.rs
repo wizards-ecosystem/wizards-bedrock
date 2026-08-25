@@ -18,6 +18,7 @@ use core::fmt;
 use elf64::{Elf, ElfError, SegmentKind};
 use handle_space::Rights;
 use wost::arch::current::cpu;
+use wost::arch::current::interrupt::{self, TrapFrame};
 use wost::arch::current::paging::{ActivateError, AddressSpace, MapError};
 use wost::arch::current::task;
 use wost::arch::current::usercopy;
@@ -28,7 +29,7 @@ use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
 use crate::handle::{HandleError, HandleTable};
-use crate::object::{self, ObjectRef, ObjectType};
+use crate::object::{self, ObjectRef};
 use crate::{info, queue, thread, warn};
 
 /// Where the first user program's page of code goes.
@@ -36,6 +37,7 @@ use crate::{info, queue, thread, warn};
 /// Low half, far from anything the kernel maps: an address a user mapping can
 /// occupy is by definition one the kernel does not, and the split is bit 63
 /// (`010` §10's LASS note).
+#[allow(dead_code)]
 pub(crate) const CODE: u64 = 0x0000_4000_0000_0000;
 
 /// Where its stack goes, well away from the code so a run-off hits nothing.
@@ -66,6 +68,7 @@ const STACK_BYTES: u64 = PAGE_SIZE;
 /// the kernel left on its stack (D-102). Written by `xtask` into the image
 /// (D-100) rather than by the kernel, so this is a statement about the initrd
 /// and not a copy of something the kernel placed.
+#[allow(dead_code)]
 pub(crate) const PROGRAM: [u8; 4] = [0x58, 0x48, 0x85, 0xC0];
 
 /// Map the program and its stack, and report where to enter.
@@ -357,6 +360,7 @@ static LAUNCHES: SpinLock<[Option<Launch>; thread::CAPACITY]> =
 /// process receives exactly one handle at spawn — its bootstrap channel — and
 /// every later handle arrived through a channel.** The table is the process's
 /// whole power, so "one entry" is the strongest form the claim has (D-111).
+#[allow(dead_code)]
 struct Bootstrap {
     table: HandleTable,
     /// Its ring. Held here because the shared pages are the kernel's and must
@@ -381,6 +385,7 @@ const HANDLE_QUOTA: usize = 64;
 ///
 /// The far end of its bootstrap channel: the only way to reach it, which is
 /// what "no ambient authority" means from the other side.
+#[allow(dead_code)]
 pub(crate) struct Spawned {
     /// The thread slot it runs in.
     pub(crate) slot: usize,
@@ -390,11 +395,29 @@ pub(crate) struct Spawned {
 
 /// What a spawned program's table holds, for the check that counts it.
 #[cfg(feature = "selftest")]
-pub(crate) fn bootstrap_of(slot: usize) -> Option<(usize, ObjectType)> {
+pub(crate) fn bootstrap_of(slot: usize) -> Option<(usize, crate::object::ObjectType)> {
     let guard = BOOTSTRAPS.lock_leaf();
     let bootstrap = guard.get(slot)?.as_ref()?;
     let kind = bootstrap.table.kind_of(bootstrap.handle).ok()?;
     Some((bootstrap.table.live(), kind))
+}
+
+/// What a spawned program's ring served, and the round trip it made.
+///
+/// The submission is one the *program* wrote — the kernel never posts to its
+/// own ring — so a completion matching it is the whole async ABI having worked
+/// from ring 3 (D-116).
+#[cfg(feature = "selftest")]
+pub(crate) fn ring_round_trip_of(
+    slot: usize,
+) -> Option<(usize, queue::Submission, queue::Completion)> {
+    let guard = BOOTSTRAPS.lock_leaf();
+    let ring = &guard.get(slot)?.as_ref()?.ring;
+    Some((
+        ring.served(),
+        ring.read_submission_for_test(0),
+        ring.read_completion_for_test(0),
+    ))
 }
 
 /// What the **kernel** believes a spawned program's ring is.
@@ -520,6 +543,93 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     })
 }
 
+/// What a program asked for, in `rax`.
+///
+/// The synchronous plane (`002` pillar 2): setup, handle operations, memory
+/// and blocking waits. The *data* path is the ring, and the one call here that
+/// touches it does so by asking the kernel to serve what the program has
+/// already posted — the trap is a doorbell, not a transfer (D-116).
+///
+/// Two, and the surface stays small on purpose. io_uring's exploit record is
+/// a warning about surface growth, and every call added here is one a hostile
+/// program can reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Call {
+    /// End this thread. The only one that does not return.
+    Exit,
+    /// Serve what has been submitted, and report how many completed.
+    RingEnter,
+    /// Anything else.
+    Unknown(u64),
+}
+
+impl Call {
+    const fn decode(value: u64) -> Self {
+        match value {
+            0 => Self::Exit,
+            1 => Self::RingEnter,
+            other => Self::Unknown(other),
+        }
+    }
+}
+
+/// `-ENOSYS`, as `abis/linux` numbers it and as the ABI header states.
+const ENOSYS: u64 = (-38i64) as u64;
+
+/// Serve one call from ring 3.
+///
+/// Runs in trap context, so nothing here may allocate, block, or take a lock a
+/// handler cannot (D-55, D-63). `Queue::serve` is written to that rule: it
+/// takes two leaf locks in a fixed order and calls nothing while either is
+/// held.
+///
+/// **Only `Exit` does not return.** Until D-116 the gate retired its caller
+/// unconditionally, which made the boundary provable and the ABI unusable —
+/// a program could cross once and never act on what it learned.
+pub(crate) fn call(frame: &TrapFrame) {
+    let slot = task::current();
+    match Call::decode(frame.rax()) {
+        Call::Exit => {
+            if !thread::retire_from_trap(frame) {
+                panic!("a ring 3 thread called in and could not be retired");
+            }
+        }
+        Call::RingEnter => {
+            let served = serve_ring(slot);
+            // The frame is the innermost live one — this is a handler running
+            // on it — so the write cannot be refused for any reason a caller
+            // could cause.
+            if !interrupt::answer(frame, served) {
+                warn!("user: could not answer a ring enter on slot {slot}");
+            }
+        }
+        Call::Unknown(number) => {
+            // Refused *with an answer*, never ignored: a program that gets
+            // nothing back cannot tell a call it made wrong from one the
+            // kernel dropped, and would wait for ever on the difference.
+            let _ = interrupt::answer(frame, ENOSYS);
+            warn!("user {slot}: refused call {number}");
+        }
+    }
+}
+
+/// Serve the calling thread's own ring, and count the completions.
+///
+/// The ring is reached through the thread's `Bootstrap`, which is where its
+/// authority lives — a program cannot name another's, because there is no
+/// argument here that could say which.
+fn serve_ring(slot: usize) -> u64 {
+    let guard = BOOTSTRAPS.lock_leaf();
+    let Some(bootstrap) = guard.get(slot).and_then(Option::as_ref) else {
+        return ENOSYS;
+    };
+    // The program's own claim about what it has reaped, taken once and bounded
+    // inside (D-113, D-115).
+    let head = bootstrap.ring.completion_head();
+    bootstrap.ring.reap_up_to(head);
+    bootstrap.ring.serve() as u64
+}
+
 /// Cross into ring 3, and never come back on this thread.
 ///
 /// Runs as an ordinary kernel thread until its last instruction, and is retired
@@ -572,6 +682,7 @@ pub(crate) fn run() -> Result<Spawned, SpawnError> {
 }
 
 /// A second one, in a space of its own, at its own addresses.
+#[allow(dead_code)]
 pub(crate) fn run_second() -> Result<Spawned, SpawnError> {
     spawn("user-two", 1, BEHAVE)
 }
@@ -583,6 +694,7 @@ pub(crate) fn run_for_bootstrap() -> Result<Spawned, SpawnError> {
 }
 
 /// A third that faults on purpose, to show the machine survives it.
+#[allow(dead_code)]
 pub(crate) fn run_faulting() -> Result<Spawned, SpawnError> {
     spawn("user-fault", 2, FAULT)
 }

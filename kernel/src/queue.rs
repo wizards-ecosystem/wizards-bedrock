@@ -19,6 +19,8 @@
 //! single-owner rings — and it is why a program cannot free the memory the
 //! kernel is about to write a completion into.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use ring_proto::{Capacity, Queues};
 use wost::arch::current::paging::{AddressSpace, MapError};
 use wost::mm::{self, Shared, USegment};
@@ -143,6 +145,12 @@ pub(crate) struct Queue {
     state: SpinLock<Queues>,
     /// Woken when a completion is posted.
     waiters: WaitQueue,
+    /// Completions posted since the ring was made.
+    ///
+    /// Kernel-side and monotonic, so a check can ask whether work was actually
+    /// done without reading a number ring 3 can write (D-115's lesson applied
+    /// where the answer matters most: the program's own tally is in the page).
+    served: AtomicUsize,
 }
 
 impl Queue {
@@ -175,6 +183,7 @@ impl Queue {
             shared: SpinLock::new(shared),
             state: SpinLock::new(state),
             waiters: WaitQueue::new(),
+            served: AtomicUsize::new(0),
         })
     }
 
@@ -202,11 +211,23 @@ impl Queue {
 
     /// Serve every submission userspace has posted, and report how many.
     ///
+    /// **Admission happens here**, when the doorbell rings — not before. A
+    /// program writes an entry and moves its tail; nothing tells the kernel
+    /// until it is asked, and it is the asking that reserves. Reserving in a
+    /// separate earlier call was the first design and it could not work: the
+    /// kernel's own ring never learned about entries the program had written,
+    /// so a program that did exactly what the ABI describes was served
+    /// nothing (D-116).
+    ///
+    /// The reservation is still taken **before** the operation is accepted,
+    /// which is the whole of D-79 and what the model checks (D-112): a
+    /// submission with nowhere to report is left unserved rather than served
+    /// and dropped. That is the backpressure, and it is why this can stop
+    /// early with entries still published.
+    ///
     /// One terminal completion per operation, always — including for an opcode
     /// this kernel does not serve, which is refused *with* a completion rather
-    /// than ignored. Admission already reserved the room, so none of these can
-    /// fail to find a slot; if one did, `submit` admitted work it had nowhere
-    /// to report and the model that says it cannot is wrong.
+    /// than ignored.
     pub(crate) fn serve(&self) -> usize {
         let snapshot = self.snapshot();
         let mut served = 0;
@@ -229,17 +250,35 @@ impl Queue {
         }
 
         if served > 0 {
+            self.served.fetch_add(served, Ordering::Release);
             self.waiters.wake_all();
         }
         served
     }
 
-    /// Admit `count` operations, or as many as there is room to report.
+    /// Completions posted since this ring was made.
     ///
-    /// The kernel's side of admission, used by the checks: reserving here is
-    /// what makes a completion impossible to drop, and it is the one place
-    /// backpressure is expressed.
-    pub(crate) fn admit(&self, count: usize) -> usize {
+    /// The observation point for the check that a *program* drove this ring:
+    /// the tally is kernel-side, so unlike the header page's numbers it is not
+    /// something ring 3 can write to make the answer it wants (D-115, D-116).
+    ///
+    /// The `fetch_add` that feeds it is unconditional, so the shipped kernel
+    /// and the checked one run the same code; only the reading is gated.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn served(&self) -> usize {
+        self.served.load(Ordering::Acquire)
+    }
+
+    /// Reserve `count` completion slots without serving anything.
+    ///
+    /// **Not part of the ABI.** `serve` reserves as it goes, which is what the
+    /// design requires; this exists so a check can exercise admission on its
+    /// own — filling a completion queue and asking whether the next
+    /// reservation is refused, without a program in the way. Using it and then
+    /// publishing a tail would double-count, and the checks do one or the
+    /// other.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn reserve_for_test(&self, count: usize) -> usize {
         let mut state = self.state.lock_leaf();
         (0..count).take_while(|_| state.submit().is_some()).count()
     }
@@ -253,21 +292,27 @@ impl Queue {
         }
     }
 
-    /// Take one submission, if the snapshot says there is one to take.
+    /// Admit and take one submission, if the snapshot says there is one.
+    ///
+    /// Two refusals, and they are different things. **Nothing published** ends
+    /// the round normally. **No completion slot** is backpressure: the entry
+    /// stays where it is and is served on a later call, which is what makes an
+    /// unreportable operation impossible rather than merely unlikely.
     fn take(&self, snapshot: &Snapshot) -> Option<Submission> {
         let slot = {
             let mut state = self.state.lock_leaf();
             // The tail is userspace's number, so it bounds nothing on its own:
             // what it says is how many operations userspace *claims* to have
-            // posted, and the kernel serves the smaller of that and what it
-            // admitted. A tail that ran away would otherwise walk the kernel
+            // written, and a tail that ran away would otherwise walk the kernel
             // through slots nothing was written into.
-            let posted = snapshot
+            let published = snapshot
                 .submission_tail
                 .wrapping_sub(state.submissions().head());
-            if posted == 0 || posted > SUBMISSIONS {
+            if published == 0 || published > SUBMISSIONS {
                 return None;
             }
+            // The reservation, taken before the operation is accepted.
+            state.submit()?;
             state.take()?
         };
 
@@ -360,11 +405,13 @@ impl Queue {
     }
 
     /// Operations admitted and not yet reported.
+    #[allow(dead_code)]
     pub(crate) fn outstanding(&self) -> u32 {
         self.state.lock_leaf().outstanding()
     }
 
     /// Whether the accounting still says a completion cannot be dropped.
+    #[allow(dead_code)]
     pub(crate) fn is_consistent(&self) -> bool {
         self.state.lock_leaf().is_consistent()
     }
