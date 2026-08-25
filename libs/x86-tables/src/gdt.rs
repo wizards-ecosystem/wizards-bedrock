@@ -138,6 +138,53 @@ mod tests {
 
     /// The two values every x86_64 kernel arrives at, which is the point of
     /// asserting them: if a bit moves, this is where it shows.
+    /// A task-state descriptor sets the type and present bits and **nothing
+    /// else** in the flag byte.
+    ///
+    /// Bits 52–55 were asserted by nothing. `TASK_STATE_TYPE | 1 << 55` — the
+    /// granularity bit — survived the suite, and granularity scales the limit
+    /// by 4 KiB: a 104-byte segment becomes `0x67FFF`, so the TSS's
+    /// `iomap_base` of 104 lands **inside** the segment and the CPU fetches an
+    /// I/O permission bitmap from whatever follows the TSS in memory. Ring 3
+    /// would be granted port access by whatever bytes happened to be there
+    /// (D-142).
+    ///
+    /// SDM Vol. 3A figure 8-4: for a 64-bit TSS descriptor, bit 52 is
+    /// available-for-software, 53 is reserved-zero, 54 is the default/big bit
+    /// which must be clear, and 55 is granularity, which must be clear so the
+    /// limit is counted in bytes.
+    #[test]
+    fn a_task_state_descriptor_sets_no_size_or_granularity_bits() {
+        const SIZE: u16 = 104;
+
+        let descriptor = SystemDescriptor::task_state(0x1234_5678_9ABC_DEF0, SIZE);
+
+        // The limit is in bytes, so it reads back exactly.
+        assert_eq!(descriptor.low & 0xFFFF, u64::from(SIZE - 1));
+
+        for (bit, what) in [
+            (52, "available-for-software"),
+            (53, "reserved"),
+            (54, "default/big"),
+            (55, "granularity"),
+        ] {
+            assert_eq!(
+                descriptor.low & (1 << bit),
+                0,
+                "bit {bit} ({what}) is set; a scaled limit puts iomap_base inside the segment"
+            );
+        }
+
+        // And the two that must be set, so this is not satisfied by an empty
+        // descriptor.
+        assert_ne!(descriptor.low & bit::PRESENT, 0, "present must be set");
+        assert_eq!(
+            descriptor.low & (0xF << 40),
+            TASK_STATE_TYPE,
+            "the type nibble is an available 64-bit TSS"
+        );
+    }
+
     #[test]
     fn ring_zero_descriptors_match_the_known_encoding() {
         assert_eq!(Descriptor::KERNEL_CODE.bits(), 0x0020_9A00_0000_0000);

@@ -685,6 +685,58 @@ mod tests {
     /// 131,072 pointers, and the kernel does two byte-at-a-time firmware
     /// reads, a heap allocation and a checksum per entry — so "finite" was
     /// not the same as "affordable", and the doc claimed only the first.
+    /// Every MADT entry kind is refused below the length its fields need.
+    ///
+    /// Only kind 1's minimum was pinned. Lower kind 2's from 10 to 8 and the
+    /// suite stays green — and `next` then reads `entry[9]` for an eight-byte
+    /// entry, which is an **index-out-of-bounds panic on firmware input**, the
+    /// one thing this module's doc says it will not do (D-142).
+    ///
+    /// The numbers are ACPI 6.5 table 5-22's structure lengths, transcribed:
+    /// a processor local APIC is 8, an I/O APIC 12, an interrupt source
+    /// override 10, and any structure at all carries its type and length.
+    #[test]
+    fn a_madt_entry_shorter_than_its_fields_is_refused_not_read() {
+        for (kind, minimum) in [(0u8, 8usize), (1, 12), (2, 10), (0x80, 2)] {
+            // One byte short of what the fields need.
+            let short = minimum - 1;
+            let mut madt = madt_with_entry(kind, short);
+            assert!(
+                MadtEntries::new(&madt).is_err(),
+                "kind {kind} accepted {short} bytes, one short of {minimum}"
+            );
+
+            // And exactly enough is accepted, so the bound is the length and
+            // not a blanket refusal.
+            madt = madt_with_entry(kind, minimum);
+            let entries = MadtEntries::new(&madt).expect("a long-enough entry");
+            // Walking it must not panic — which is the whole point.
+            assert_eq!(entries.count(), 1);
+        }
+    }
+
+    /// A MADT holding one entry of `kind` and `len` bytes, checksum correct.
+    fn madt_with_entry(kind: u8, len: usize) -> Vec<u8> {
+        const MADT_HEADER: usize = Sdt::LEN + 8;
+
+        let mut table = vec![0u8; MADT_HEADER + len];
+        table[..4].copy_from_slice(&Sdt::MADT);
+        let length = u32::try_from(table.len()).expect("fits");
+        table[4..8].copy_from_slice(&length.to_le_bytes());
+        table[8] = 1;
+        // Only what fits: an entry shorter than two bytes cannot carry its own
+        // length, which is itself a shape the walk must refuse.
+        if let Some(slot) = table.get_mut(MADT_HEADER) {
+            *slot = kind;
+        }
+        if let Some(slot) = table.get_mut(MADT_HEADER + 1) {
+            *slot = u8::try_from(len).expect("a byte");
+        }
+        let checksum = table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+        table[9] = table[9].wrapping_sub(checksum);
+        table
+    }
+
     #[test]
     fn a_root_table_longer_than_the_cap_is_walked_only_to_it() {
         // Twice the cap, so the truncation is unambiguous.

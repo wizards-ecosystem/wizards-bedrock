@@ -90,6 +90,31 @@ mod tests {
     /// default address reports.
     const TYPICAL: u64 = 0xFEE0_0900;
 
+    /// The three flag bits sit where the manual puts them.
+    ///
+    /// `TYPICAL = 0xFEE0_0900` sets both `BOOTSTRAP` and `ENABLE`, so swapping
+    /// the two constants left all fifty-seven tests green — and
+    /// `Base::enabled()` would then set the **read-only** bootstrap bit and
+    /// never enable the APIC (D-142).
+    ///
+    /// SDM Vol. 3A §11.4.4, `IA32_APIC_BASE`: bit 8 BSP, bit 10 x2APIC enable,
+    /// bit 11 APIC global enable. Written as literals, against which the
+    /// constants are checked one at a time.
+    #[test]
+    fn the_base_flags_sit_where_the_manual_puts_them() {
+        assert_eq!(BOOTSTRAP, 1 << 8, "BSP is bit 8");
+        assert_eq!(X2APIC, 1 << 10, "x2APIC enable is bit 10");
+        assert_eq!(ENABLE, 1 << 11, "APIC global enable is bit 11");
+        assert_eq!(ADDRESS, 0x000F_FFFF_FFFF_F000, "the page frame is 12..52");
+
+        // Pairwise distinct, so no constant can stand in for another.
+        assert_ne!(BOOTSTRAP, X2APIC);
+        assert_ne!(X2APIC, ENABLE);
+        assert_ne!(BOOTSTRAP, ENABLE);
+        // And none of them overlaps the address field.
+        assert_eq!((BOOTSTRAP | X2APIC | ENABLE) & ADDRESS, 0);
+    }
+
     #[test]
     fn the_default_base_decodes_as_an_enabled_bootstrap_xapic() {
         let base = Base::from_bits(TYPICAL);
