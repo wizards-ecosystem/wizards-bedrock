@@ -233,13 +233,16 @@ int sys_futex_wake(int *pointer) {
 }
 
 int sys_tcb_set(void *pointer) {
-	// OWED: WIZ_CALL_TCB_SET, which writes `FS_BASE`. The kernel has the MSR
-	// wrapper already; what it does not have is saving `FS_BASE` across a
-	// context switch, which is a third thing that must follow a thread
-	// (D-99, D-106, D-108 are the other three) and belongs in `prepare` with
-	// them.
-	(void)pointer;
-	return WIZ_ENOSYS;
+	// MAPS, since D-118 — and this sysdep is why. Writing it found that
+	// `FS_BASE` is a *fourth* thing that must follow a thread, after the
+	// privilege stack (D-99), the tables (D-106) and the extended state
+	// (D-108). Nothing native has thread-local storage, so nothing native
+	// would have asked.
+	//
+	// The kernel range-checks the base against WIZ_USER_END rather than
+	// against canonicality alone: a program asking to point `fs:` at kernel
+	// memory has no reason it could be given.
+	return as_errno(call1(WIZ_CALL_TCB_SET, reinterpret_cast<long>(pointer)));
 }
 
 } // namespace mlibc

@@ -36,15 +36,16 @@ The tags divide three ways. The counts are the finding.
 
 | | Count | |
 |---|---|---|
-| **MAPS** | 3 | the native ABI already has the shape POSIX wants |
-| **OWED** | 12 | the kernel has the mechanism and no ring-3 door |
+| **MAPS** | 4 | the native ABI already has the shape POSIX wants |
+| **OWED** | 11 | the kernel has the mechanism and no ring-3 door |
 | **ABSENT** | 1 | the native ABI has nothing of the kind, deliberately |
 
-**MAPS (3):** `sys_libc_panic`, `sys_exit`, and the *shape* of `sys_libc_log`.
-`sys_exit` is the only one working end to end today — a ring-3 thread that
-calls in is retired from the far side (D-96).
+**MAPS (4):** `sys_libc_panic`, `sys_exit`, `sys_tcb_set`, and the *shape* of
+`sys_libc_log`. Two work end to end today: `sys_exit` retires a ring-3 thread
+from the far side of the boundary (D-96), and `sys_tcb_set` points `fs:` at
+thread-local storage that then follows the thread across a switch (D-118).
 
-**OWED (12):** every one has a kernel-side mechanism and no door. `sys_close`
+**OWED (11):** every one has a kernel-side mechanism and no door. `sys_close`
 over the handle table's close (D-78). `sys_read`/`sys_write` over the ring
 (D-113). `sys_vm_map`/`sys_vm_unmap` over `map_user` and `unmap` (D-107,
 D-88). `sys_futex_wait`/`sys_futex_wake` over `WaitQueue::wait_unless`, which
@@ -60,11 +61,17 @@ nobody gave a root directory to, and that is the point rather than a defect.
 
 ### Four things the sysdeps surfaced that the native ABI would never have raised
 
-1. **`FS_BASE` is a fourth thing that must follow a thread.** `sys_tcb_set`
-   writes it, and the kernel does not save it across a context switch. `RSP0`
-   (D-99), `CR3` (D-106) and the extended state (D-108) all live in
-   `task::prepare`; this belongs there with them, and nothing in the native ABI
-   would have asked for it because nothing native has thread-local storage.
+The first is fixed, and it is the clearest return the exercise paid: it was a
+real hole, in a place three neighbouring decisions had already visited, and
+only a POSIX consumer would have looked there.
+
+1. ~~**`FS_BASE` is a fourth thing that must follow a thread.**~~ **Fixed by
+   D-118**, and it is the clearest return this exercise paid: `RSP0` (D-99),
+   `CR3` (D-106) and the extended state (D-108) all lived in `task::prepare`
+   and this did not, because nothing native has thread-local storage and so
+   nothing native had asked. `sys_tcb_set` maps now, and the kernel range-checks
+   the base — a `wrmsr` of a non-canonical value is a fault in kernel context,
+   which would be a program crashing the handler rather than itself.
 
 2. **There is no wall clock.** `sys_clock_get` wants `CLOCK_REALTIME` and this
    kernel has never been told what time it is. Uptime is monotonic and is all

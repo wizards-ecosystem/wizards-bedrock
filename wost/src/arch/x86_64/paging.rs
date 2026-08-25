@@ -269,6 +269,19 @@ enum Reach {
 /// The canonical hole begins here; everything above it is the kernel's.
 const USER_END: u64 = 0x0000_8000_0000_0000;
 
+/// Whether `address` is one ring 3 could name.
+///
+/// Below the boundary, which on this architecture is also where the canonical
+/// hole begins — so this is a canonicality check as well as a privilege one,
+/// and callers that need only the first get the second for free (D-118).
+///
+/// **A range check, never `>> 47 == 0`** (D-84): the shift form encodes an
+/// assumption about how many bits the machine walks, which five-level paging
+/// changes.
+pub const fn is_user_address(address: u64) -> bool {
+    address < USER_END
+}
+
 /// Flags a caller may not choose, whatever it asks for.
 ///
 /// `OWNED` is provenance, and the only thing `unmap` consults before handing

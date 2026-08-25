@@ -132,25 +132,30 @@ struct wiz_completion {
 enum wiz_call {
 	/* Implemented. */
 	WIZ_CALL_EXIT = 0,
+	WIZ_CALL_RING_ENTER = 1,    /* Serve what has been submitted. */
+	WIZ_CALL_TCB_SET = 2,       /* Point `fs:` at thread-local storage. */
 
 	/* Owed. Every one of these has a kernel-side mechanism already and no
-	 * ring-3 entry point; the sysdeps below name them so that what is
-	 * missing is a link error and not a silent wrong answer (D-114). */
-	WIZ_CALL_RING_ENTER = 1,    /* Submit, and optionally block. */
-	WIZ_CALL_HANDLE_CLOSE = 2,
-	WIZ_CALL_HANDLE_DUPLICATE = 3,
-	WIZ_CALL_CHANNEL_SEND = 4,
-	WIZ_CALL_CHANNEL_RECEIVE = 5,
-	WIZ_CALL_VM_MAP = 6,
-	WIZ_CALL_VM_UNMAP = 7,
-	WIZ_CALL_CLOCK_GET = 8,
-	WIZ_CALL_FUTEX_WAIT = 9,
-	WIZ_CALL_FUTEX_WAKE = 10,
-	WIZ_CALL_TCB_SET = 11,
+	 * ring-3 entry point; the sysdeps name them so that what is missing is
+	 * a refusal the caller can see and not a silent wrong answer (D-114). */
+	WIZ_CALL_HANDLE_CLOSE = 3,
+	WIZ_CALL_HANDLE_DUPLICATE = 4,
+	WIZ_CALL_CHANNEL_SEND = 5,
+	WIZ_CALL_CHANNEL_RECEIVE = 6,
+	WIZ_CALL_VM_MAP = 7,
+	WIZ_CALL_VM_UNMAP = 8,
+	WIZ_CALL_CLOCK_GET = 9,
+	WIZ_CALL_FUTEX_WAIT = 10,
+	WIZ_CALL_FUTEX_WAKE = 11,
 };
 
 /* Errors, as Linux numbers them, because that is what `abis/linux` brings. */
 typedef int wiz_errno_t;
+
+/* `sys_tcb_set` takes a base below WIZ_USER_END and refuses anything else:
+ * writing a non-canonical value to FS_BASE is a fault in *kernel* context,
+ * which would be a program crashing the handler rather than itself (D-118). */
+#define WIZ_USER_END ((uint64_t)0x0000800000000000ull)
 
 #define WIZ_ENOSYS 38
 #define WIZ_EINVAL 22

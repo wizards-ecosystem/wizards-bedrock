@@ -798,6 +798,13 @@ enum Call {
     Exit,
     /// Serve what has been submitted, and report how many completed.
     RingEnter,
+    /// Point this thread's local storage at `rdi`.
+    ///
+    /// mlibc's `sys_tcb_set`, and the reason it is here rather than on the
+    /// owed list: writing the sysdeps found that `FS_BASE` is a fourth thing
+    /// that must follow a thread, and a call that sets it is worth nothing
+    /// until it does (D-114, D-118).
+    ThreadBase,
     /// Anything else.
     Unknown(u64),
 }
@@ -807,6 +814,7 @@ impl Call {
         match value {
             0 => Self::Exit,
             1 => Self::RingEnter,
+            2 => Self::ThreadBase,
             other => Self::Unknown(other),
         }
     }
@@ -814,6 +822,9 @@ impl Call {
 
 /// `-ENOSYS`, as `abis/linux` numbers it and as the ABI header states.
 const ENOSYS: u64 = (-38i64) as u64;
+
+/// `-EINVAL`, likewise.
+const EINVAL: u64 = (-22i64) as u64;
 
 /// Serve one call from ring 3.
 ///
@@ -841,6 +852,18 @@ pub(crate) fn call(frame: &TrapFrame) {
             if !interrupt::answer(frame, served) {
                 warn!("user: could not answer a ring enter on slot {slot}");
             }
+        }
+        Call::ThreadBase => {
+            // Refused rather than faulted for a base the program may not have:
+            // `wrmsr` on a non-canonical value is a `#GP` in *kernel* context,
+            // which would be a program crashing the handler rather than
+            // itself.
+            let answer = if task::set_thread_base(frame.rdi()) {
+                0
+            } else {
+                EINVAL
+            };
+            let _ = interrupt::answer(frame, answer);
         }
         Call::Unknown(number) => {
             // Refused *with an answer*, never ignored: a program that gets

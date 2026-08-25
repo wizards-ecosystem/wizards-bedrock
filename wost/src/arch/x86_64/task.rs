@@ -24,6 +24,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::cpu;
 use super::interrupt::{self, TrapFrame};
+use super::msr;
 use super::paging::{self, Binding, MappedStack, StackArena};
 use super::xstate;
 use crate::cell::HardwareCell;
@@ -123,6 +124,13 @@ struct Slot {
     /// kernel's. Written only through [`bind_address_space`], which takes the
     /// evidence that the space agrees with the kernel about the higher half.
     page_table: u64,
+    /// Where this thread's thread-local storage begins.
+    ///
+    /// The fourth thing that follows a thread, after the privilege stack
+    /// (D-99), the tables (D-106) and the extended state (D-108). Nothing
+    /// native needed it — it was writing an mlibc sysdep that asked, because
+    /// nothing native has thread-local storage (D-114, D-118).
+    thread_base: u64,
 }
 
 impl Slot {
@@ -132,6 +140,7 @@ impl Slot {
         entry: None,
         starts_interruptible: false,
         page_table: 0,
+        thread_base: 0,
     };
 }
 
@@ -285,6 +294,8 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
         // Kernel tables until something binds a space to it. A thread that
         // never enters ring 3 never needs its own.
         page_table: 0,
+        // And no thread-local storage until it asks for some.
+        thread_base: 0,
     };
     Ok(())
 }
@@ -516,6 +527,22 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
         unsafe { xstate::restore(arriving) };
     }
 
+    // The fourth thing that moves with a thread, and the cheapest: two MSR
+    // accesses, on the path that already writes `RSP0` and `CR3`. Saved from
+    // the register rather than from a remembered value, because ring 3 can
+    // change it — a program that set its own would otherwise have the kernel
+    // restore the one it was given (D-118).
+    table.slots[current].thread_base = read_thread_base();
+    let arriving = table.slots[slot].thread_base;
+    if arriving != read_thread_base() {
+        // SAFETY: `FS_BASE` names no memory the kernel dereferences — `fs:` is
+        // never used by compiled code here — so any value is a value ring 3
+        // could have set itself, and a non-canonical one faults on the write
+        // rather than corrupting anything. The lock is held and the flag is
+        // clear, so nothing runs between this and the switch.
+        unsafe { write_thread_base(arriving) };
+    }
+
     let contexts = CONTEXTS.as_mut_ptr().cast::<u64>();
     // SAFETY: both indices are below `MAX_TASKS`; the lock is held and the
     // flag is clear, so the assembly that also touches these words is not
@@ -621,6 +648,46 @@ impl Root {
     pub const fn address(self) -> u64 {
         self.0
     }
+}
+
+/// `IA32_FS_BASE`, where a thread's local storage begins.
+const FS_BASE: u32 = 0xC000_0100;
+
+/// Where the running thread's local storage begins.
+pub fn read_thread_base() -> u64 {
+    msr::read(FS_BASE)
+}
+
+/// Point the running thread's local storage at `base`.
+///
+/// # Safety
+///
+/// `base` must be canonical: `wrmsr` to `FS_BASE` with a non-canonical value
+/// raises a general protection fault. Nothing else is required — this kernel's
+/// compiled code never uses `fs:`, so the register names no memory anything
+/// here dereferences, and a program that sets its own is only ever pointing at
+/// its own memory.
+pub unsafe fn write_thread_base(base: u64) {
+    // SAFETY: the caller's.
+    unsafe { msr::write(FS_BASE, base) };
+}
+
+/// Point the running thread's local storage at `base`, if it may.
+///
+/// The safe door, and the one a syscall reaches: a non-canonical base is
+/// refused rather than faulting, and a base in the higher half is refused
+/// because a program asking the kernel to point `fs:` at kernel memory is a
+/// program asking for something it cannot be given a reason for (D-118).
+///
+/// `false` if the base was refused, having written nothing.
+pub fn set_thread_base(base: u64) -> bool {
+    if !crate::arch::current::paging::is_user_address(base) {
+        return false;
+    }
+    // SAFETY: the check above establishes canonicality, which is `wrmsr`'s
+    // only precondition here.
+    unsafe { write_thread_base(base) };
+    true
 }
 
 /// Bytes the fabricated frame occupies below the stack top.

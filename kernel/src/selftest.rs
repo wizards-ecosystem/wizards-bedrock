@@ -1389,6 +1389,73 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         && still_reserved
 }
 
+/// Thread-local storage follows the thread, and ring 3 cannot point it at the
+/// kernel.
+///
+/// The fourth thing that moves across a switch, after the privilege stack
+/// (D-99), the tables (D-106) and the extended state (D-108). Nothing native
+/// asked for it: writing an mlibc sysdep did, because nothing native has
+/// thread-local storage and every POSIX thread does (D-114, D-118).
+///
+/// The refusal is the other half. `wrmsr` to `FS_BASE` with a non-canonical
+/// value is a general protection fault in *kernel* context — a program
+/// crashing the handler rather than itself — so the safe door range-checks
+/// first, and it checks against the user boundary rather than canonicality
+/// alone because a program asking to point `fs:` at kernel memory has no
+/// reason it could be given.
+fn thread_local_storage_follows_the_thread() -> bool {
+    /// Somewhere in the low half, aligned, and not zero.
+    const MINE: u64 = 0x0000_1234_5678_0000;
+    /// What the other thread sets.
+    const THEIRS: u64 = 0x0000_7654_3210_0000;
+
+    let restore = task::read_thread_base();
+
+    if !task::set_thread_base(MINE) || task::read_thread_base() != MINE {
+        return false;
+    }
+
+    // A base in the kernel's half is refused, and the register is untouched.
+    let kernel_refused =
+        !task::set_thread_base(0xffff_8000_0000_0000) && task::read_thread_base() == MINE;
+    // So is one in the canonical hole, which the same range check catches.
+    let hole_refused =
+        !task::set_thread_base(0x0000_8000_0000_0000) && task::read_thread_base() == MINE;
+
+    BASE_INTRUDER_RAN.store(0, Ordering::Release);
+    if thread::spawn("base-intruder", set_another_thread_base).is_err() {
+        return false;
+    }
+    if !runs_until(500, || BASE_INTRUDER_RAN.load(Ordering::Acquire) == 1) {
+        return false;
+    }
+
+    // The other thread set its own and read its own back; this one still has
+    // what it set, which is only true if the switch saved and restored.
+    let kept = task::read_thread_base() == MINE;
+    let intruded = BASE_INTRUDER_SAW.load(Ordering::Acquire) == THEIRS as usize;
+
+    let _ = task::set_thread_base(restore);
+    kernel_refused && hole_refused && kept && intruded
+}
+
+/// Set by the intruding thread once it has run.
+static BASE_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
+
+/// What the intruding thread read back from its own base.
+static BASE_INTRUDER_SAW: AtomicUsize = AtomicUsize::new(0);
+
+/// Point a second thread's local storage somewhere else, and read it back.
+fn set_another_thread_base() {
+    const THEIRS: u64 = 0x0000_7654_3210_0000;
+    if task::set_thread_base(THEIRS) {
+        let mut context = context();
+        thread::yield_now(&mut context);
+        BASE_INTRUDER_SAW.store(task::read_thread_base() as usize, Ordering::Release);
+    }
+    BASE_INTRUDER_RAN.store(1, Ordering::Release);
+}
+
 /// A program that has ended gives its memory back — its pages, its tables,
 /// and its slot.
 ///
@@ -3630,7 +3697,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 126;
+const EXPECTED_CHECKS: usize = 127;
 
 impl Report {
     const fn new() -> Self {
@@ -3797,6 +3864,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a second thread crosses onto its own stack",
         a_second_thread_crosses_onto_its_own_stack(),
+    );
+    report.check(
+        "thread local storage follows the thread",
+        thread_local_storage_follows_the_thread(),
     );
     report.check(
         "a dead program gives its memory back",
