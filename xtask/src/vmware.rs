@@ -122,6 +122,13 @@ pub fn generate(paths: &Paths, image: &Path) -> Result<()> {
         "[xtask] serial output will appear in {}",
         vm_dir.join(SERIAL_LOG).display()
     );
+    // The image carries the self-test feature (D-135), so this boot reports a
+    // verdict like the gate's does. Two things a human has to do that QEMU's
+    // harness does for itself: press the key, and read the result.
+    println!("[xtask] this is the self-test kernel — two things to do:");
+    println!("        1. press `a` when you see `selftest: awaiting injected keystroke`");
+    println!("           (ten seconds, then that one check goes red)");
+    println!("        2. look for `selftest: verdict` in the serial log");
     Ok(())
 }
 
@@ -134,6 +141,42 @@ mod tests {
     use super::*;
 
     const IMAGE_SECTORS: u64 = 64 * 1024 * 1024 / 512;
+
+    /// The VMware image carries the self-test feature.
+    ///
+    /// It did not, and nothing said so. D-18 makes a VMware boot every phase's
+    /// definition of done, and `AGENTS.md` calls it "not decoration — it
+    /// reaches SMEP/SMAP/UMIP, the compacted `XSAVEC` path, a real x2APIC and
+    /// a processor that reports `MD_CLEAR`, none of which the gate's QEMU
+    /// does". All true of the *machine*; none of it was checked *there*,
+    /// because the image was built with an empty feature list and carried none
+    /// of the 137 checks. Five phase closes cited that boot as evidence.
+    ///
+    /// Read out of the dispatch's source, which is where the choice is made —
+    /// the same way `qemu.rs` checks the C header against the kernel's own
+    /// constants. A typed `Kernel::{Shipped, SelfTest}` would make this
+    /// unnecessary and is the better fix; this is the one that fits in the
+    /// commit that found it (D-135).
+    #[test]
+    fn the_vmware_image_is_built_with_the_checks_in_it() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let lib = std::fs::read_to_string(root.join("xtask/src/lib.rs")).expect("lib.rs");
+
+        let arm = lib
+            .split_once("Task::Vmware(profile) => {")
+            .expect("the vmware dispatch arm")
+            .1
+            .split_once("vmware::generate")
+            .expect("the arm's end")
+            .0;
+
+        assert!(
+            arm.contains("SELFTEST_FEATURE"),
+            "`cargo xtask vmware` builds an image without the self-test feature, so the boot              D-18 makes every phase's definition of done would check nothing"
+        );
+    }
 
     #[test]
     fn geometry_rounds_cylinders_up() {

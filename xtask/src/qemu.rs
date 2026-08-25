@@ -1160,6 +1160,65 @@ mod tests {
     /// harness wait for a line that will never come. This is the shape
     /// `paths.rs`'s `default-members` test exists for, applied to the other
     /// four lists (D-105).
+    /// The exit codes the harness waits for are the kernel's, doubled.
+    ///
+    /// `SELFTEST_PASSED`/`SELFTEST_FAILED` are a twin of `debug_exit.rs`'s
+    /// `PASSED`/`FAILED`, and were "kept in step" by a comment saying so.
+    /// Nothing compared them, and the serial-contract test beside this one
+    /// reads `selftest.rs`, `main.rs` and `panic.rs` — not the file that
+    /// writes the port.
+    ///
+    /// What that bought: change `FAILED` to `0x12` and `cargo xtask ci` stays
+    /// green, because every boot in the gate is a *passing* one. But every
+    /// mutation reports "inconclusive", because `mutate` can no longer tell a
+    /// red verdict from a broken build — one character disables the tool that
+    /// keeps D-28 true, and the gate says nothing (D-135).
+    ///
+    /// Derived, not restated: the harness value is computed from the kernel's
+    /// by QEMU's own `(value << 1) | 1`, so this cannot drift by agreeing with
+    /// itself.
+    #[test]
+    fn the_exit_codes_are_the_kernels_doubled() {
+        /// What QEMU's `isa-debug-exit` does to the value written.
+        fn qemu_exit_code(written: i32) -> i32 {
+            (written << 1) | 1
+        }
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let debug_exit = std::fs::read_to_string(root.join("kernel/src/arch/x86_64/debug_exit.rs"))
+            .expect("debug_exit.rs");
+
+        let value = |name: &str| -> i32 {
+            let marked = format!("const {name}: u32 = ");
+            let rest = debug_exit
+                .split_once(&marked)
+                .unwrap_or_else(|| panic!("no `{name}` in debug_exit.rs"))
+                .1;
+            let literal = rest
+                .split_once(';')
+                .expect("a terminated constant")
+                .0
+                .trim()
+                .trim_start_matches("0x");
+            i32::from_str_radix(literal, 16).expect("a hex literal")
+        };
+
+        assert_eq!(
+            qemu_exit_code(value("PASSED")),
+            SELFTEST_PASSED,
+            "the kernel's PASSED does not arrive as the code the harness waits for"
+        );
+        assert_eq!(
+            qemu_exit_code(value("FAILED")),
+            SELFTEST_FAILED,
+            "the kernel's FAILED does not arrive as the code the harness waits for"
+        );
+        // And they are distinguishable, which is the whole point of two.
+        assert_ne!(SELFTEST_PASSED, SELFTEST_FAILED);
+    }
+
     #[test]
     fn the_serial_contract_matches_the_kernel_source() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

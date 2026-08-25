@@ -47,7 +47,12 @@ pub fn run(task: Task) -> Result<()> {
             qemu::run(&paths, &image, &qemu_args)
         }
         Task::Vmware(profile) => {
-            let image = image::build(&paths, profile, &[])?;
+            // **With the self-test feature.** This built the shipped kernel
+            // until D-135, so the boot D-18 makes every phase's definition of
+            // done ran none of the 137 checks — it showed that the kernel came
+            // up, on a machine chosen because it reaches what QEMU cannot, and
+            // then checked nothing there.
+            let image = image::build(&paths, profile, &[paths::SELFTEST_FEATURE])?;
             vmware::generate(&paths, &image)
         }
         Task::Check { message_format } => tasks::check(&paths, message_format.as_deref()),

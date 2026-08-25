@@ -396,16 +396,36 @@ impl Sdt {
     }
 }
 
+/// The most table pointers a root table may list before the rest are ignored.
+///
+/// The header's own length already makes the sequence finite — but finite at
+/// the firmware's discretion. A root table filled to a one-megabyte ceiling
+/// lists 131,072 eight-byte pointers, and the kernel does real work per entry:
+/// two firmware reads that copy a byte at a time, a heap allocation, a zeroing
+/// and a checksum. That is tens of gigabytes of single-byte volatile reads
+/// before interrupts are on, chosen by the firmware rather than by this
+/// kernel.
+///
+/// Every other wait in this kernel carries an explicit cap — the 8042's
+/// response attempts, the UART's, the timer's polls, the input batches. This
+/// walk carried none. Real machines list a few dozen tables; 256 is generous
+/// by an order of magnitude and bounds the work at something a boot can spend.
+pub const MAX_TABLES: usize = 256;
+
 /// The table addresses an XSDT or RSDT lists.
 ///
-/// Yielded rather than collected so no allocation is needed, and bounded by
-/// the header's own length so a corrupt table cannot produce an endless
-/// sequence.
+/// Yielded rather than collected so no allocation is needed. Bounded twice:
+/// by the header's own length, so a corrupt table cannot produce an endless
+/// sequence, and by [`MAX_TABLES`], so a *valid* table cannot produce an
+/// unaffordable one. [`listed`](Self::listed) reports how many were really
+/// there, so a caller past the cap can say so rather than silently walking
+/// part of the firmware's list.
 #[derive(Debug)]
 pub struct SdtPointers<'a> {
     body: &'a [u8],
     width: usize,
     offset: usize,
+    yielded: usize,
 }
 
 impl<'a> SdtPointers<'a> {
@@ -427,7 +447,16 @@ impl<'a> SdtPointers<'a> {
             body: &table[..length],
             width,
             offset: Sdt::LEN,
+            yielded: 0,
         })
+    }
+
+    /// How many pointers the table lists, cap or no cap.
+    ///
+    /// Compare against [`MAX_TABLES`]: more means this iterator will stop
+    /// short, and a caller that cares should report it.
+    pub const fn listed(&self) -> usize {
+        (self.body.len() - Sdt::LEN) / self.width
     }
 
     /// The entries of a validated XSDT.
@@ -455,11 +484,15 @@ impl Iterator for SdtPointers<'_> {
     type Item = u64;
 
     fn next(&mut self) -> Option<u64> {
+        if self.yielded >= MAX_TABLES {
+            return None;
+        }
         let address = match self.width {
             8 => u64_at(self.body, self.offset)?,
             _ => u32_at(self.body, self.offset)? as u64,
         };
         self.offset += self.width;
+        self.yielded += 1;
         Some(address)
     }
 }
@@ -643,6 +676,66 @@ mod tests {
         bytes[4..8].copy_from_slice(&length.to_le_bytes());
         fix_checksum(&mut bytes, 9);
         bytes
+    }
+
+    /// A root table listing more pointers than anyone can afford yields the
+    /// cap and says how many there really were.
+    ///
+    /// The firmware chooses this number. A one-megabyte root table lists
+    /// 131,072 pointers, and the kernel does two byte-at-a-time firmware
+    /// reads, a heap allocation and a checksum per entry — so "finite" was
+    /// not the same as "affordable", and the doc claimed only the first.
+    #[test]
+    fn a_root_table_longer_than_the_cap_is_walked_only_to_it() {
+        // Twice the cap, so the truncation is unambiguous.
+        const LISTED: usize = MAX_TABLES * 2;
+
+        let mut table = vec![0u8; Sdt::LEN + LISTED * 8];
+        table[..4].copy_from_slice(&Sdt::XSDT);
+        let length = u32::try_from(table.len()).expect("fits");
+        table[4..8].copy_from_slice(&length.to_le_bytes());
+        table[8] = 1;
+        for index in 0..LISTED {
+            let at = Sdt::LEN + index * 8;
+            table[at..at + 8].copy_from_slice(&(0x1000u64 + index as u64).to_le_bytes());
+        }
+        let checksum = table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+        table[9] = table[9].wrapping_sub(checksum);
+
+        let pointers = SdtPointers::xsdt(&table).expect("a valid xsdt");
+        assert_eq!(pointers.listed(), LISTED, "the table lists what it lists");
+        assert!(
+            pointers.listed() > MAX_TABLES,
+            "the caller can see it will be truncated"
+        );
+        let walked: Vec<u64> = pointers.collect();
+        assert_eq!(walked.len(), MAX_TABLES, "and the walk stops at the cap");
+        // The ones it did walk are the first ones, not an arbitrary window.
+        assert_eq!(walked[0], 0x1000);
+        assert_eq!(walked[MAX_TABLES - 1], 0x1000 + MAX_TABLES as u64 - 1);
+    }
+
+    /// A table inside the cap is walked whole and reports no truncation.
+    #[test]
+    fn a_root_table_inside_the_cap_is_walked_whole() {
+        const LISTED: usize = 3;
+
+        let mut table = vec![0u8; Sdt::LEN + LISTED * 8];
+        table[..4].copy_from_slice(&Sdt::XSDT);
+        let length = u32::try_from(table.len()).expect("fits");
+        table[4..8].copy_from_slice(&length.to_le_bytes());
+        table[8] = 1;
+        for index in 0..LISTED {
+            let at = Sdt::LEN + index * 8;
+            table[at..at + 8].copy_from_slice(&(0x2000u64 + index as u64).to_le_bytes());
+        }
+        let checksum = table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+        table[9] = table[9].wrapping_sub(checksum);
+
+        let pointers = SdtPointers::xsdt(&table).expect("a valid xsdt");
+        assert_eq!(pointers.listed(), LISTED);
+        assert!(pointers.listed() <= MAX_TABLES, "nothing to truncate");
+        assert_eq!(pointers.count(), LISTED);
     }
 
     #[test]
