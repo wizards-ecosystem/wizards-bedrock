@@ -9447,9 +9447,29 @@ asynchronous.
   program retires *with an operation outstanding* — which is a state the
   existing reclamation checks do not reach.
 
+**Amended by `012` §10: exit must be a wait, not a signal.** Closing an
+io_uring instance cancels pending requests automatically — and until March 2025
+those cancellations happened *out of line*, so applications could not rely on
+ring exit meaning the I/O had finished. The symptom in Axboe's cover letter was
+**mount points staying busy after the test process had exited**. Six years of
+io_uring did it the other way and it was a bug.
+
+Three consequences for this entry, none of which it originally said:
+
+- **Collection must wait for the operation, not merely mark it abandoned.**
+- **The zombie must hold every resource any in-flight operation can still
+  touch.** The busy-mount symptom is what happens when it does not, and it is
+  the same failure as a completion posted into a re-used slot.
+- **Do not put a grace-period-based refcount on the teardown path.** The same
+  fix replaced a `percpu_ref` with a plain atomic because the RCU grace period
+  was too slow there, and this kernel's reclamation is already deferred to
+  whoever has nothing better to do (D-117).
+
 **Left owed.** Cancellation is not this. An operation whose program retires is
 abandoned; an operation a *living* program wants to stop needs the advisory
-cancel D-79 describes, and nothing here builds it.
+cancel D-79 describes, and nothing here builds it. `012` §8 adds what that will
+need: two completions, order unspecified, and `-EALREADY` meaning "your
+completion is coming, just not because of you".
 
 ## D-154 SMP stays at Phase 12; its seam is paid now — Status: Accepted (2026-08-25)
 
