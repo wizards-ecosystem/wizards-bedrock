@@ -754,7 +754,14 @@ pub fn direct_mapped_extents() -> ([Extent; MAX_EXTENTS], usize) {
                 end: region
                     .base
                     .saturating_add(region.len)
-                    .next_multiple_of(FRAME_SIZE),
+                    // Checked, not `next_multiple_of`: the input is a
+                    // `saturating_add` of the bootloader's own numbers, and
+                    // rounding a value near `u64::MAX` up panics with overflow
+                    // checks on — which the debug boot has. In release it
+                    // wraps to zero and the region is silently left out, so
+                    // the two builds disagree about what is mapped (D-124).
+                    .checked_next_multiple_of(FRAME_SIZE)
+                    .unwrap_or(u64::MAX),
                 kind: region.kind,
             };
         }

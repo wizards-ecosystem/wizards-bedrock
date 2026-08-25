@@ -364,10 +364,17 @@ fn build(
         // that page reachable, and the direct map is a map of memory, not of
         // the bootloader's bookkeeping.
         let base = region.base & !(FRAME_SIZE - 1);
+        // Checked, not `next_multiple_of`: the input is a `saturating_add` of
+        // the bootloader's own numbers, and rounding a value near `u64::MAX`
+        // up panics with overflow checks on — which the debug boot has. In
+        // release it wraps to zero and `while cursor < end` skips the region
+        // entirely, so the two builds disagree about what the direct map
+        // covers (D-124).
         let end = region
             .base
             .saturating_add(region.len)
-            .next_multiple_of(FRAME_SIZE);
+            .checked_next_multiple_of(FRAME_SIZE)
+            .unwrap_or(u64::MAX);
         let default_flags = Flags::WRITABLE.union(Flags::NO_EXECUTE).union(
             if region.kind == MemoryKind::Framebuffer {
                 Flags::WRITE_THROUGH

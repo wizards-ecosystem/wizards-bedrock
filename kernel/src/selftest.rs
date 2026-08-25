@@ -84,18 +84,52 @@ fn allocation_is_zeroed() -> bool {
 }
 
 /// A run of frames is consecutive, aligned, and released whole.
+///
+/// **Contiguity is half the name and was the half nothing checked.** The three
+/// conjuncts below are all about the run's *description* — its address, its
+/// count, the allocator's tally — and every one of them holds for an allocator
+/// that hands back eight scattered frames and reports the first. The span
+/// itself has to be written and read, and a frame taken from underneath it has
+/// to land outside (D-124).
 fn a_run_is_contiguous_and_aligned() -> bool {
     const FRAMES: usize = 8;
+    /// Distinct per frame, so a page from somewhere else reads as the wrong one.
+    const MARK: u8 = 0xC7;
 
     let before = mm::free_frames();
-    let Some(run) = mm::allocate_contiguous(FRAMES, FRAMES) else {
+    let Some(mut run) = mm::allocate_contiguous(FRAMES, FRAMES) else {
         return false;
     };
     let aligned = run.address().is_multiple_of(FRAMES as u64 * 4096);
     let sized = run.frames() == FRAMES && mm::free_frames() == before - FRAMES;
+
+    // A different byte in each frame, written through the run's own span.
+    let mut spans = true;
+    for frame in 0..FRAMES {
+        let at = frame * 4096;
+        spans &= run.write_at(at, &[MARK ^ frame as u8]);
+    }
+
+    // Anything else the allocator hands out now must be outside the span —
+    // otherwise the run is not the allocator's to have given whole.
+    let start = run.address();
+    let end = start + (FRAMES as u64 * 4096);
+    let elsewhere = mm::allocate_zeroed()
+        .map(|frame| {
+            let address = frame.address();
+            !(start..end).contains(&address)
+        })
+        .unwrap_or(false);
+
+    // And the marks are still there, each in its own frame.
+    let mut intact = true;
+    for frame in 0..FRAMES {
+        let mut byte = [0u8; 1];
+        intact &= run.read_at(frame * 4096, &mut byte) && byte[0] == MARK ^ frame as u8;
+    }
     drop(run);
 
-    aligned && sized && mm::free_frames() == before
+    aligned && sized && spans && elsewhere && intact && mm::free_frames() == before
 }
 
 /// The kernel is walking the tables it built, not the bootloader's.
@@ -3271,8 +3305,32 @@ fn the_heap_reuses_a_freed_slot() -> bool {
     let taken = mm::heap::stats().live == before.live + 1;
     drop(boxed);
     let after = mm::heap::stats();
+    let balanced = taken && after.live == before.live && after.slab_frames == before.slab_frames;
 
-    taken && after.live == before.live && after.slab_frames == before.slab_frames
+    // **And a slot is actually reused**, which nothing above shows: deleting
+    // the line that puts a freed slot back on the free list — so every free
+    // leaks — left all of this green. `live` is decremented either way, and
+    // `slab_frames` cannot move because the class was warmed.
+    //
+    // The first version of this counted frames, and could not fail either: a
+    // slab frame carves hundreds of slots, so leaking a few dozen never
+    // reaches a refill. The address is the direct signal — the free list is
+    // LIFO, so a freed slot is the *same* slot the next allocation of that
+    // class gets, and a leak makes it a different one (D-124).
+    //
+    // `black_box` on each is load-bearing and was found the hard way: without
+    // it LLVM elided the pair outright — the second address equalled the first
+    // because neither allocation happened — and the check went red with the
+    // heap correct. It escapes the pointer, so both calls must occur and in
+    // this order.
+    let first = core::hint::black_box(Box::new(0u32));
+    let address = core::hint::black_box(core::ptr::from_ref(&*first) as usize);
+    drop(first);
+    let second = core::hint::black_box(Box::new(0u32));
+    let reused = core::hint::black_box(core::ptr::from_ref(&*second) as usize) == address;
+    drop(second);
+
+    balanced && reused
 }
 
 /// A refill happens with the heap's own lock dropped, and the accounting
@@ -4262,7 +4320,7 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_large_allocation_takes_and_returns_frames(),
     );
     report.check(
-        "the console scrolls without reading the device",
+        "the console has a shadow to scroll from",
         dev::console_has_back_buffer(),
     );
 
@@ -4519,12 +4577,23 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     debug_exit::report(passed);
 }
 
-/// A row must be wide enough to hold the pixels the bootloader says are in it.
+/// A row must be wide enough to hold the pixels the bootloader says are in it,
+/// and the last of them must land inside the mapping the kernel made.
+///
+/// The four conjuncts about the handoff are a precondition and pass on every
+/// machine this has run on. The fifth is about *this kernel's* arithmetic: the
+/// byte offset of the bottom-right pixel, computed the way `write_pixel`
+/// computes it, against the size the framebuffer was mapped with. A pitch or a
+/// depth misread by the glue puts that offset outside the region, and nothing
+/// above would say so (D-124).
 fn geometry_is_sane(geometry: FramebufferInfo) -> bool {
-    geometry.width > 0
+    let described = geometry.width > 0
         && geometry.height > 0
         && geometry.bytes_per_pixel > 0
-        && geometry.pitch >= geometry.width * geometry.bytes_per_pixel
+        && geometry.pitch >= geometry.width * geometry.bytes_per_pixel;
+
+    let last = (geometry.height - 1) * geometry.pitch + geometry.width * geometry.bytes_per_pixel;
+    described && dev::framebuffer_bytes().is_some_and(|mapped| last <= mapped)
 }
 
 /// The bootloader's masks must place red, green and blue in disjoint bits.
@@ -4540,7 +4609,20 @@ fn channels_are_disjoint(geometry: FramebufferInfo) -> bool {
         pack(0, 0, u8::MAX),
     );
 
-    red != 0 && green != 0 && blue != 0 && red & green == 0 && green & blue == 0 && red & blue == 0
+    let disjoint = red != 0
+        && green != 0
+        && blue != 0
+        && red & green == 0
+        && green & blue == 0
+        && red & blue == 0;
+
+    // And the three compose the way the format says they do, which disjoint
+    // masks alone do not show: a `pack` that dropped a channel, or shifted one
+    // into the pad bits, satisfies every conjunct above (D-124).
+    let white = pack(u8::MAX, u8::MAX, u8::MAX) == red | green | blue;
+    let black = pack(0, 0, 0) == 0;
+
+    disjoint && white && black
 }
 
 /// COM1 is already owned by the serial driver, so a second claim must be
@@ -4638,9 +4720,16 @@ fn timer_entry_is_programmed() -> bool {
 /// Both measured rates, against bounds restated here rather than shared with
 /// the code under test. Calibration having declined reads as zero for either,
 /// which fails.
+///
+/// **These bounds catch a rate that is absent or absurd, not one that is
+/// merely wrong.** They were once wide enough that a counter rate off by a
+/// factor of ten sat inside them. Narrowed to what a machine this kernel will
+/// run on can actually report — but the check that catches a plausible wrong
+/// rate is `a_sleeper_wakes_on_time_and_quietly`, which arms on one clock and
+/// measures on the other, and this one does not pretend to (D-124).
 fn rates_are_believable() -> bool {
-    (1_000_000..=50_000_000_000).contains(&time::apic_hz())
-        && (100_000_000..=100_000_000_000).contains(&time::counter_hz())
+    (1_000_000..=10_000_000_000).contains(&time::apic_hz())
+        && (500_000_000..=10_000_000_000).contains(&time::counter_hz())
 }
 
 /// What a continuous read of the clock saw.
@@ -4664,7 +4753,11 @@ fn sweep_clock() -> ClockSweep {
     const SPAN_MS: u64 = 3;
 
     let deadline = time::uptime_ms() + SPAN_MS;
-    let mut previous = 0;
+    // Seeded with a real reading, not zero. With zero the first comparison is
+    // vacuous — no clock reads below it — so the sample taken under a lock,
+    // which is the one the retired clock could read backwards on and the whole
+    // reason attempt zero is special, was the one sample never checked (D-124).
+    let mut previous = time::now_ns();
     let mut sweep = ClockSweep {
         monotonic: true,
         finest_step: None,

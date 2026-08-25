@@ -66,7 +66,14 @@ fn on_trap(frame: &TrapFrame) {
         // The one entry ring 3 has. Nothing is served yet: what is proved is
         // that a thread can cross into user mode, come back through a gate
         // meant for it, and be retired from the far side (D-96).
-        TrapCause::Interrupt(vector::SYSCALL) => {
+        // From ring 3 only. `is_the_programs` checks the saved `CS` for faults
+        // on D-102's stated principle that the CPU's own account of the
+        // privilege "cannot be forged by kernel code that merely resembles a
+        // program" — and this arm had no such test, so a kernel-context
+        // `int 0x80` would retire a kernel thread or write `FS_BASE` from the
+        // kernel's own `rdi`. Nothing does it; the asymmetry was one line
+        // (D-124).
+        TrapCause::Interrupt(vector::SYSCALL) if frame.code_selector() & 0b11 == 3 => {
             LAST_SYSCALL.record(frame);
             // Whether SMAP is on *inside the handler*, which is the thing
             // D-101 is about: the caller's flags are in the frame, and this is

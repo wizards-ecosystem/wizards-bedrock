@@ -414,10 +414,16 @@ fn remember(regions: &mut [Option<(u64, u64)>; MAX_REGIONS], used: &mut usize, a
 
 /// The most user regions one program maps.
 ///
-/// Its segments, its stack and its ring. Bounded because reclaiming means
-/// unmapping exactly what was mapped, and a list that could grow is a list
-/// that needs the allocator on a path that must not fail (D-117).
-const MAX_REGIONS: usize = 8;
+/// Its segments **plus its stack**. Bounded because reclaiming means unmapping
+/// exactly what was mapped, and a list that could grow is a list that needs
+/// the allocator on a path that must not fail (D-117).
+///
+/// Written as `MAX_SEGMENTS + 1` rather than as its own number: it was eight
+/// while `MAX_SEGMENTS` was eight, so an image with eight segments — accepted,
+/// since the cap refuses at nine — silently discarded the note for its stack
+/// and leaked that frame per spawn. The doc said the margin the constants
+/// denied (D-124).
+const MAX_REGIONS: usize = MAX_SEGMENTS + 1;
 
 #[allow(dead_code)]
 struct Bootstrap {

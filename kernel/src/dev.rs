@@ -82,6 +82,12 @@ pub(crate) fn console_geometry() -> Option<wost::boot::FramebufferInfo> {
     guard.as_ref().map(Console::geometry)
 }
 
+/// Bytes the framebuffer mapping covers, if a console came up.
+#[cfg(feature = "selftest")]
+pub(crate) fn framebuffer_bytes() -> Option<usize> {
+    CONSOLE.lock().as_ref().map(Console::framebuffer_bytes)
+}
+
 /// Give the console's framebuffer a shadow in RAM.
 ///
 /// Separate from [`init_console`] because the console comes up during the boot

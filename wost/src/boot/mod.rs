@@ -113,6 +113,11 @@ impl Framebuffer {
         self.region.base_address() as u64
     }
 
+    /// Bytes the mapping covers, which every pixel offset must land inside.
+    pub fn mapped_bytes(&self) -> usize {
+        self.layout.span()
+    }
+
     /// Whether writes are being shadowed.
     pub fn has_back_buffer(&self) -> bool {
         !self.back.is_empty()

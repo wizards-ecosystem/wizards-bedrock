@@ -56,6 +56,12 @@ impl Console {
         console
     }
 
+    /// Bytes the framebuffer mapping covers.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn framebuffer_bytes(&self) -> usize {
+        self.framebuffer.mapped_bytes()
+    }
+
     /// Where the framebuffer is reachable now.
     #[cfg(feature = "selftest")]
     pub(crate) fn framebuffer_address(&self) -> u64 {

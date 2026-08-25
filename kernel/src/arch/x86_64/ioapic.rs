@@ -94,6 +94,13 @@ pub(crate) enum RoutingError {
     NotOurs(u32),
     /// The registers refused the access.
     Registers(MmioError),
+    /// This processor's APIC ID does not fit the redirection entry.
+    ///
+    /// The entry's destination field is eight bits. This kernel requires
+    /// x2APIC, so `apic::id()` is the full thirty-two-bit register rather than
+    /// the xAPIC 31:24 form — and shifting one of 256 or more left by
+    /// twenty-four silently routed the line to `id & 0xFF` (D-124).
+    UnroutableProcessor(u32),
 }
 
 impl fmt::Display for RoutingError {
@@ -101,6 +108,9 @@ impl fmt::Display for RoutingError {
         match self {
             Self::NotOurs(gsi) => write!(f, "gsi {gsi} is not this controller's"),
             Self::Registers(error) => write!(f, "{error}"),
+            Self::UnroutableProcessor(id) => {
+                write!(f, "apic id {id} does not fit a redirection entry")
+            }
         }
     }
 }
@@ -180,7 +190,10 @@ impl IoApic {
         wiring: Wiring,
     ) -> Result<(), RoutingError> {
         let line = self.line_for(gsi)?;
-        let destination = apic::id() << 24;
+        let id = apic::id();
+        let destination = u8::try_from(id)
+            .map(|id| u32::from(id) << 24)
+            .map_err(|_| RoutingError::UnroutableProcessor(id))?;
         write(&mut self.registers, redirection(line) + 1, destination)?;
         write(
             &mut self.registers,
