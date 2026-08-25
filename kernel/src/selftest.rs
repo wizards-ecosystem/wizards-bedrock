@@ -4313,7 +4313,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 142;
+const EXPECTED_CHECKS: usize = 143;
 
 impl Report {
     const fn new() -> Self {
@@ -4354,6 +4354,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a claimed port cannot be claimed twice",
         ports_are_exclusive(),
+    );
+    report.check(
+        "filling the arena never repeats a slot",
+        filling_the_arena_never_repeats_a_slot(),
     );
     report.check(
         "a stale root authorises no walk",
@@ -5002,6 +5006,56 @@ fn channels_are_disjoint(geometry: FramebufferInfo) -> bool {
 /// refused — the whole block, and any single port inside it.
 fn ports_are_exclusive() -> bool {
     port::claim_block::<8>(uart::COM1).is_none() && port::claim::<u8>(uart::COM1).is_none()
+}
+
+/// Filling the arena never hands the same slot out twice.
+///
+/// `Arena::take` used to find a free slot, advance the hint and return the
+/// index **without marking it**; `insert` then dropped the guard and
+/// re-acquired it to write the entry. Two callers interleaving in that window
+/// both got the same index, and the second write overwrote a live entry,
+/// dropping an `ObjectRef` under the leaf guard — which can reach
+/// `Channel::drop` and then `THREADS` (D-141).
+///
+/// **This check does not reproduce that interleaving**, and nothing here can:
+/// it needs two threads inside a window between two lock acquisitions, and a
+/// check that spawned racers would be flaky rather than a check. What it does
+/// pin is the deterministic half — every handle a table hands out names a
+/// distinct live slot, and one inserted earlier still resolves after later
+/// ones — which is the invariant an overwrite breaks when it does happen.
+fn filling_the_arena_never_repeats_a_slot() -> bool {
+    /// Enough to wrap the hint past the end and force a grow or two.
+    const HANDLES: usize = 24;
+
+    let mut table = HandleTable::new(HANDLES);
+    let mut handles = [0u32; HANDLES];
+
+    for slot in &mut handles {
+        let Ok(handle) = table.insert(object::event(), Rights::UNIVERSAL) else {
+            return false;
+        };
+        *slot = handle;
+    }
+
+    // Distinct values. Two claims of one slot would give the same index and
+    // the same generation, so the handles themselves would collide.
+    let mut distinct = true;
+    for (index, handle) in handles.iter().enumerate() {
+        for earlier in &handles[..index] {
+            distinct &= earlier != handle;
+        }
+    }
+
+    // And every one still resolves — an overwrite leaves the loser naming a
+    // slot whose entry belongs to someone else, which `resolve` reports as
+    // `NotYours` or `Stale` rather than as the object it was given.
+    let all_live = handles
+        .iter()
+        .all(|handle| table.kind_of(*handle) == Ok(ObjectType::Event));
+
+    let counted = table.live() == HANDLES;
+
+    distinct && all_live && counted
 }
 
 /// A root outlives its thread as a value and not as authority.

@@ -110,8 +110,31 @@ impl Arena {
         }
     }
 
-    /// Take a free slot, growing the arena if every existing one is busy.
-    fn take(&mut self) -> Option<usize> {
+    /// Take a free slot **and fill it**, growing the arena if every existing
+    /// one is busy.
+    ///
+    /// One call, under one guard, and that is the whole of the fix. `take`
+    /// used to find a slot and return its index without marking it, and
+    /// `insert` then dropped the guard and re-acquired it to write the entry.
+    /// Two callers interleaving in that window both received the same index —
+    /// `take` scans for `entry.is_none()`, which was still true — and the
+    /// second write **overwrote a live entry, dropping it in place under the
+    /// leaf guard**. An `ObjectRef` dropped there can reach `Channel::drop`
+    /// and then `THREADS`, which is the lock-under-a-leaf class D-121, D-126
+    /// and D-128 exist for (D-141).
+    ///
+    /// The room must already have been reserved: growing allocates, and
+    /// allocating under this guard is the `ARENA → HEAP` order D-128 removed.
+    fn claim(&mut self, entry: Entry) -> Option<(usize, u32)> {
+        let index = self.find_free()?;
+        let slot = &mut self.slots[index];
+        let generation = slot.generation;
+        slot.entry = Some(entry);
+        Some((index, generation))
+    }
+
+    /// A free slot's index, growing the arena if every existing one is busy.
+    fn find_free(&mut self) -> Option<usize> {
         let count = self.slots.len();
         for step in 0..count {
             let index = (self.hint + step) % count;
@@ -267,21 +290,17 @@ impl HandleTable {
         // between dropping that guard and taking this one — retried rather
         // than reported as a full machine, which is what it used to say
         // (D-105).
-        let index = loop {
+        let (index, generation) = loop {
             reserve_a_slot()?;
-            if let Some(index) = ARENA.lock_leaf().take() {
-                break index;
+            let entry = Entry {
+                owner: self.id,
+                object: ObjectRef::clone(&object),
+                rights,
+            };
+            if let Some(found) = ARENA.lock_leaf().claim(entry) {
+                break found;
             }
         };
-        let mut arena = ARENA.lock_leaf();
-        let slot = &mut arena.slots[index];
-        let generation = slot.generation;
-        slot.entry = Some(Entry {
-            owner: self.id,
-            object,
-            rights,
-        });
-        drop(arena);
 
         let Some(named) = Slot::new(index as u32, generation) else {
             // Unreachable: `take` bounds the index by `SLOTS` and the
