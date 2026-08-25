@@ -43,7 +43,7 @@ pub struct Mutation {
     pub replace: &'static str,
     /// The property this removes, in the register a check name is written in.
     ///
-    /// Human-facing, and deliberately *not* the check's name: only six of
+    /// Human-facing, and deliberately *not* the check's name: only four of
     /// these are, and the paraphrases read better in a progress line than the
     /// checks they stand for. [`Mutation::reddens`] carries the name.
     pub breaks: &'static str,

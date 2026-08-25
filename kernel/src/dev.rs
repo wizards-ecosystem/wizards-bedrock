@@ -88,6 +88,20 @@ pub(crate) fn framebuffer_bytes() -> Option<usize> {
     CONSOLE.lock().as_ref().map(Console::framebuffer_bytes)
 }
 
+/// What the console holds at (`x`, `y`), and the marks a check compares to.
+///
+/// Returns the pixel, the packed foreground, and the line height — read under
+/// one guard, because three separate calls would let a log line land between
+/// them and move what the first answered about.
+#[cfg(feature = "selftest")]
+pub(crate) fn console_probe(x: usize, y: usize) -> Option<(u32, u32, usize)> {
+    let guard = CONSOLE.lock();
+    let console = guard.as_ref()?;
+    let pixel = console.pixel_at(x, y)?;
+    let foreground = console.geometry().format.pack(console.foreground());
+    Some((pixel, foreground, console.line_height()))
+}
+
 /// Give the console's framebuffer a shadow in RAM.
 ///
 /// Separate from [`init_console`] because the console comes up during the boot

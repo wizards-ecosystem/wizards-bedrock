@@ -49,12 +49,14 @@ override that.
 cargo xtask ci       # the gate: fmt --check, clippy, doc, tests, vendor digests,
                      #   then four boots — test-boot (release), test-boot
                      #   (debug, overflow checks on), boot-check (D-65), and
-                     #   degraded-check (no x2apic, D-83)
+                     #   degraded-check (no x2apic, D-90)
 ```
 
 `ci` is the only gate — there is no hosted CI (D-26). `cargo xtask help` lists
-every task and is the authority; a check requires this paragraph to name the
-same set, because a task the README does not mention is a task nobody runs.
+every task and is the authority. A host test requires every task the parser
+accepts to appear in that help text — but **nothing checks this file against
+either**, and an earlier version of this paragraph claimed otherwise. `clean`
+and `verify-vendor` are named nowhere below.
 `boot-check` boots the shipped kernel and requires it to settle at its prompt;
 `degraded-check` boots it on a processor with no x2APIC and requires it to
 report that and settle rather than triple-fault.

@@ -144,6 +144,16 @@ impl Framebuffer {
         }
     }
 
+    /// The pixel at (`x`, `y`), or `None` outside the visible area.
+    ///
+    /// Read from the shadow where there is one, so this costs no uncached
+    /// device read — which is what makes it usable from a check at all. It
+    /// exists for one: the console's cursor is a mark on the framebuffer, and
+    /// until D-137 nothing could ask whether a stray one had been left behind.
+    pub fn pixel_at(&self, x: usize, y: usize) -> Option<u32> {
+        self.word_at(self.layout.offset(x, y)?)
+    }
+
     /// Set the pixel at (`x`, `y`), ignoring coordinates outside the visible
     /// area.
     ///

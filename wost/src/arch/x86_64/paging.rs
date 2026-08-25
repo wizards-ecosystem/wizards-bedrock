@@ -282,7 +282,7 @@ pub const USER_END: u64 = 0x0000_8000_0000_0000;
 /// hole begins — so this is a canonicality check as well as a privilege one,
 /// and callers that need only the first get the second for free (D-118).
 ///
-/// **A range check, never `>> 47 == 0`** (D-84): the shift form encodes an
+/// **A range check, never `>> 47 == 0`** (D-83): the shift form encodes an
 /// assumption about how many bits the machine walks, which five-level paging
 /// changes.
 pub const fn is_user_address(address: u64) -> bool {

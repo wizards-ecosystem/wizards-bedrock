@@ -3749,6 +3749,53 @@ fn a_leaf_guard_is_the_last_lock() -> bool {
     }
 }
 
+/// A scroll does not carry the cursor up the screen with it.
+///
+/// The cursor is an underline drawn on the framebuffer like any other mark,
+/// and `set_cursor`'s doc says every write takes it down first "which is what
+/// keeps it from being scrolled up the screen as a stray mark". `write_line`
+/// did not: it put the cursor back and *then* called `newline`, so the scroll
+/// that follows copied the underline up. Every log line goes through
+/// `write_line`, so it happened on every scroll (D-137).
+///
+/// Driven by writing real lines rather than by calling `newline` directly:
+/// the defect is in how the two are ordered, so a check that ordered them
+/// itself would be testing its own arrangement.
+fn a_scroll_leaves_no_cursor_behind() -> bool {
+    /// Where to look: the left margin, which is where a cursor sits after a
+    /// line break, on a row a scroll will have moved something into.
+    const AT_X: usize = crate::console::MARGIN;
+
+    let Some((_, _, line_height)) = dev::console_probe(AT_X, 0) else {
+        // No console came up; nothing to say about its scrolling.
+        return true;
+    };
+    let Some(geometry) = dev::console_geometry() else {
+        return true;
+    };
+
+    // The row a full screen of lines will have scrolled a cursor up into.
+    // Two cells above the bottom, so it is a row the scroll wrote and not the
+    // one the live cursor is on.
+    let rows = (geometry.height - crate::console::MARGIN) / line_height;
+    let probe_y = crate::console::MARGIN + (rows.saturating_sub(3)) * line_height + line_height - 1;
+
+    // A screenful and a half, so the row above has certainly been scrolled
+    // through. Blank text, so the only foreground pixel that could land on
+    // that row is a cursor: a glyph would put marks there legitimately.
+    for _ in 0..rows * 2 {
+        dev::with_console(|console| console.write_line(""));
+    }
+
+    let Some((pixel, foreground, _)) = dev::console_probe(AT_X, probe_y) else {
+        return false;
+    };
+
+    // The underline is drawn in the foreground colour. Anything else on a row
+    // of blank lines means a cursor rode the scroll up.
+    pixel != foreground
+}
+
 /// A stack whose mapping is taken away stops being one the CPU can stand on.
 ///
 /// `MappedStack` is evidence dated at construction, and until D-125 that was
@@ -4266,7 +4313,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 137;
+const EXPECTED_CHECKS: usize = 138;
 
 impl Report {
     const fn new() -> Self {
@@ -4859,6 +4906,16 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the local apic has recorded no error",
         apic::error_status() == 0,
+    );
+
+    // **Last, and deliberately.** This one writes a screenful of blank lines
+    // to make a region whose only possible foreground mark is a cursor — which
+    // scrolls the console and moves what every earlier console check is
+    // looking at. Placed here it disturbs nothing; placed where it was, it
+    // turned the editing check red (D-137).
+    report.check(
+        "a scroll leaves no cursor behind",
+        a_scroll_leaves_no_cursor_behind(),
     );
 
     let checked = report.passed + report.failed;

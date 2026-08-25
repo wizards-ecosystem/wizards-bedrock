@@ -16,9 +16,15 @@
 //! of the kernel, and is a trap for a caller claiming a set. Take two blocks
 //! and have the second refuse, and the first is claimed and stranded: nothing
 //! can ever claim it again, so whatever needed both can never be built, on
-//! this boot or any later attempt within it. `pic::silence` is the one caller
-//! that does this today, and it names the consequence rather than guarding
-//! against it, because on the one path it runs the ports are free (D-129).
+//! this boot or any later attempt within it.
+//!
+//! **Two callers do this**, and D-129 said one — `pic::silence`, which claims
+//! its two blocks and names the consequence. The other is
+//! `i8042::Controller::new`, which `?`-chains `DATA` and `CONTROL`: a refused
+//! `CONTROL` strands `DATA`, and the keyboard controller can never be built
+//! again on that boot. Neither is reachable today — on the one path each runs,
+//! the ports are free — and neither can guard against it while a claim is
+//! permanent (D-137).
 
 use core::arch::asm;
 use core::marker::PhantomData;

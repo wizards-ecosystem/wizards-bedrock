@@ -102,6 +102,25 @@ impl Console {
 
     /// Geometry of the framebuffer being drawn on.
     #[cfg(feature = "selftest")]
+    /// The colour at (`x`, `y`), for the check that hunts a stray cursor.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn pixel_at(&self, x: usize, y: usize) -> Option<u32> {
+        self.framebuffer.pixel_at(x, y)
+    }
+
+    /// The palette's foreground, so a check can recognise a mark.
+    #[cfg(feature = "selftest")]
+    pub(crate) const fn foreground(&self) -> wost::boot::Rgb {
+        self.palette.foreground
+    }
+
+    /// How tall a glyph cell is, which is the scroll's stride.
+    #[cfg(feature = "selftest")]
+    pub(crate) const fn line_height(&self) -> usize {
+        self.line_height
+    }
+
+    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
     pub(crate) const fn geometry(&self) -> FramebufferInfo {
         self.geometry
     }
@@ -115,9 +134,17 @@ impl Console {
     }
 
     /// Write `text` followed by a line break.
+    ///
+    /// The line break is **inside** the cursor bracket. It was outside:
+    /// `write_text` put the cursor back and `newline` then ran with it
+    /// visible, so the scroll it triggers copied the underline up the screen —
+    /// the exact mark `set_cursor`'s doc says this arrangement prevents. Every
+    /// log line goes through here, so it happened on every scroll (D-137).
     pub(crate) fn write_line(&mut self, text: &str) {
-        self.write_text(text);
+        self.set_cursor(false);
+        self.put(text);
         self.newline();
+        self.set_cursor(true);
     }
 
     fn write_text(&mut self, text: &str) {
@@ -125,10 +152,16 @@ impl Console {
         // taken down before the text moves and put back where the text left
         // off. Without this a scroll would carry a copy of it up the screen.
         self.set_cursor(false);
+        self.put(text);
+        self.set_cursor(true);
+    }
+
+    /// The characters, with no cursor handling — the shared half of the two
+    /// above, so neither can put the cursor back before the other is done.
+    fn put(&mut self, text: &str) {
         for character in text.chars() {
             self.write_char(character);
         }
-        self.set_cursor(true);
     }
 
     fn write_char(&mut self, character: char) {

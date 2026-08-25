@@ -158,7 +158,7 @@ const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// is a thing you do inside a fix and the table is a different file. This line
 /// and its twin in `kernel/src/selftest.rs` are the two you have to touch
 /// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 137;
+const EXPECTED_SELFTEST_CHECKS: usize = 138;
 
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
