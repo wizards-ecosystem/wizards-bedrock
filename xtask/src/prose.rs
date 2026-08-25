@@ -226,6 +226,57 @@ mod tests {
         );
     }
 
+    /// `ci` still runs every step it is supposed to.
+    ///
+    /// The boot count beside this is checked against the README, and nothing
+    /// checked the rest: delete `vendor::verify(paths)?` from `ci` and all
+    /// host tests stay green, because each step is also its own task and the
+    /// tests exercise the tasks. `ci` is the only gate this project has
+    /// (D-26), so a step silently leaving it is the gate quietly shrinking
+    /// (D-147).
+    ///
+    /// Read from `tasks.rs`'s text, as the boot count is: the question is what
+    /// `ci` is composed of, which is a property of the source.
+    #[test]
+    fn ci_runs_every_step_it_is_supposed_to() {
+        /// Every call `ci`'s body must contain, in no particular order.
+        const STEPS: [&str; 8] = [
+            "fmt(paths, FmtMode::Check)",
+            "clippy(paths)",
+            "doc(paths)",
+            "test(paths)",
+            "vendor::verify(paths)",
+            "test_boot(paths, Profile::Release)",
+            "test_boot(paths, Profile::Dev)",
+            "boot_check(paths, Profile::Release)",
+        ];
+
+        let root = root();
+        let tasks = std::fs::read_to_string(root.join("xtask/src/tasks.rs")).expect("tasks.rs");
+        let body = tasks
+            .split_once("pub fn ci(paths: &Paths) -> Result<()> {")
+            .expect("ci's definition")
+            .1
+            .split_once(
+                "
+}",
+            )
+            .expect("ci's end")
+            .0;
+
+        for step in STEPS {
+            assert!(
+                body.contains(step),
+                "`ci` no longer runs `{step}`; the only gate this project has just got smaller"
+            );
+        }
+        // And the degraded boot, which is the ninth and the one D-90 added.
+        assert!(
+            body.contains("degraded_check(paths"),
+            "`ci` no longer runs the degraded boot"
+        );
+    }
+
     #[test]
     fn a_mention_is_recognised_and_its_punctuation_is_not() {
         assert_eq!(mentions("see `libs/eevdf` for it"), vec!["eevdf"]);

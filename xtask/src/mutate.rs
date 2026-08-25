@@ -448,6 +448,23 @@ fn apply(original: &str, mutation: &Mutation) -> Result<String> {
     }
 }
 
+/// The check names in a self-test failure, one element at a time.
+///
+/// `correlate_selftest` joins them with `"; "` after the constant, so the list
+/// is everything past it.
+fn failed_checks(text: &str) -> impl Iterator<Item = &str> {
+    text.split_once(qemu::SELFTEST_FAILURE)
+        .map(|(_, rest)| rest.trim_start_matches(": "))
+        .unwrap_or("")
+        // The error may carry context after the list; a name never contains a
+        // newline, so the first line is the list.
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split("; ")
+        .map(str::trim)
+}
+
 /// Build and boot the self-test kernel, and report whether **this** mutation's
 /// check went red.
 ///
@@ -472,7 +489,12 @@ fn boot_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
                 // `qemu::correlate_selftest`, not from anything inferred here.
                 Caught::Check(name) => {
                     if text.contains(qemu::SELFTEST_FAILURE) {
-                        Ok(text.contains(name))
+                        // A **whole** element of the `"; "`-joined list, not a
+                        // substring of it. A future check whose name contains
+                        // another's would otherwise satisfy that other one —
+                        // D-134's own defect, re-entered through the substring
+                        // door (D-147).
+                        Ok(failed_checks(&text).any(|failed| failed == name))
                     } else if text.contains(qemu::PANIC_FAILURE) {
                         // A panic where a check was named is not this check
                         // failing; it is the kernel dying before it could say.

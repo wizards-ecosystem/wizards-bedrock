@@ -196,6 +196,61 @@ mod tests {
     }
 
     /// And every `libs/` crate, which carry `#![forbid(unsafe_code)]`.
+    /// Every `libs/` crate still forbids unsafe, and `kernel/` still denies it.
+    ///
+    /// The counter beside this measures **blocks**, deliberately — `unsafe fn`
+    /// and `unsafe impl` are declarations, not operations, and the budget is
+    /// about operations. But that leaves the crate boundary itself unchecked:
+    /// a `libs/` crate that dropped `#![forbid(unsafe_code)]` and grew an
+    /// `unsafe fn` has zero blocks and passes, and the boundary is D-13's
+    /// whole claim (D-147).
+    ///
+    /// Checked as text, because the attribute is the thing being asserted and
+    /// a build that compiles proves only that nothing violated it *yet*.
+    #[test]
+    fn the_crate_boundary_is_still_declared() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+
+        let mut crates = 0;
+        for entry in std::fs::read_dir(root.join("libs")).expect("libs") {
+            let path = entry.expect("a libs entry").path();
+            if !path.is_dir() {
+                continue;
+            }
+            let lib = path.join("src").join("lib.rs");
+            let text = std::fs::read_to_string(&lib)
+                .unwrap_or_else(|_| panic!("reading {}", lib.display()));
+            assert!(
+                text.contains("#![forbid(unsafe_code)]"),
+                "{} does not forbid unsafe",
+                lib.display()
+            );
+            crates += 1;
+        }
+        assert!(
+            crates > 10,
+            "only {crates} libs crates found; the walk is broken"
+        );
+
+        // `kernel/` denies rather than forbids, because `wost`'s `entry!`
+        // macro expands `#[allow(unsafe_code)]` items into it (D-67).
+        let main = std::fs::read_to_string(root.join("kernel/src/main.rs")).expect("main.rs");
+        assert!(
+            main.contains("#![deny(unsafe_code)]"),
+            "kernel/ does not deny unsafe"
+        );
+
+        // And `wost` is the one that lifts it, which is what makes the other
+        // two mean something.
+        let wost = std::fs::read_to_string(root.join("wost/src/lib.rs")).expect("wost lib.rs");
+        assert!(
+            wost.contains("#![allow(unsafe_code)]"),
+            "wost no longer lifts the workspace deny; the boundary has moved"
+        );
+    }
+
     #[test]
     fn no_libs_crate_has_any_unsafe() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -105,7 +105,9 @@ fn searchable(root: &Path) -> Result<Vec<std::path::PathBuf>> {
                 }
             } else if matches!(
                 path.extension().and_then(|extension| extension.to_str()),
-                Some("rs" | "md" | "toml" | "h" | "cpp" | "tla" | "cfg")
+                // `.ld` included since D-147: `kernel/linker.ld` cites D-45
+                // and D-21 and was scanned by nothing.
+                Some("rs" | "md" | "toml" | "h" | "cpp" | "tla" | "cfg" | "ld")
             ) {
                 found.push(path);
             }
