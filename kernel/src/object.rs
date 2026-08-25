@@ -32,7 +32,6 @@ use crate::wait::WaitQueue;
 /// (D-78): Zircon is at 26 and still growing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(dead_code)]
 pub(crate) enum ObjectType {
     /// A thing that can be signalled and waited on.
     Event,
@@ -62,7 +61,7 @@ impl ObjectType {
 /// A kernel object.
 #[derive(Debug)]
 #[non_exhaustive]
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) enum Object {
     /// See [`Event`].
     Event(Event),
@@ -70,7 +69,7 @@ pub(crate) enum Object {
     Channel(Channel),
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 impl Object {
     /// What kind of object this is.
     pub(crate) const fn kind(&self) -> ObjectType {
@@ -120,7 +119,7 @@ pub(crate) struct Event {
 /// opcode. Allowed rather than cfg-gated so the image carries the code the
 /// checks exercise, and on the impl rather than the module so a genuinely dead
 /// item still shows (D-116).
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 impl Event {
     /// A new, unsignalled event.
     pub(crate) fn new() -> Self {
@@ -170,7 +169,7 @@ impl Event {
 pub(crate) type ObjectRef = Arc<Object>;
 
 /// Make a new event, ready to be put in a handle table.
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) fn event() -> ObjectRef {
     Arc::new(Object::Event(Event::new()))
 }
@@ -193,7 +192,7 @@ pub(crate) struct Message {
 /// opcode. Allowed rather than cfg-gated so the image carries the code the
 /// checks exercise, and on the impl rather than the module so a genuinely dead
 /// item still shows (D-116).
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 impl Message {
     /// The most bytes one message carries.
     pub(crate) const MAX_BYTES: usize = 4096;
@@ -260,7 +259,7 @@ impl Message {
 
 /// Why a channel operation was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) enum ChannelError {
     /// More bytes than one message carries.
     TooLarge(usize),
@@ -288,7 +287,7 @@ impl fmt::Display for ChannelError {
 
 /// What one end of a channel holds.
 #[derive(Debug)]
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 struct Inbox {
     messages: VecDeque<Message>,
 }
@@ -301,7 +300,7 @@ struct Inbox {
 /// other strongly is a cycle `Arc` will not collect, and an end whose far side
 /// is dropped must report `PeerClosed` rather than leak (D-110).
 #[derive(Debug)]
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) struct Channel {
     inbox: SpinLock<Inbox>,
     waiters: WaitQueue,
@@ -310,7 +309,7 @@ pub(crate) struct Channel {
 
 /// As [`HandleTable`](crate::handle::HandleTable)'s: the checks reach these
 /// and the shipped kernel has no syscall that does yet (D-116).
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 impl Channel {
     /// The most messages one end will hold before refusing.
     ///

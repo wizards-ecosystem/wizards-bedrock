@@ -38,7 +38,7 @@ use crate::{info, queue, thread, warn};
 /// Low half, far from anything the kernel maps: an address a user mapping can
 /// occupy is by definition one the kernel does not, and the split is bit 63
 /// (`010` §10's LASS note).
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) const CODE: u64 = 0x0000_4000_0000_0000;
 
 /// Where its stack goes, well away from the code so a run-off hits nothing.
@@ -72,7 +72,7 @@ const USER_STACK_BYTES: u64 = PAGE_SIZE;
 /// the kernel left on its stack (D-102). Written by `xtask` into the image
 /// (D-100) rather than by the kernel, so this is a statement about the initrd
 /// and not a copy of something the kernel placed.
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) const PROGRAM: [u8; 4] = [0x58, 0x48, 0x85, 0xC0];
 
 /// Map the program and its stack, and report where to enter.
@@ -428,7 +428,6 @@ fn remember(regions: &mut [Option<(u64, u64)>; MAX_REGIONS], used: &mut usize, a
 /// denied (D-124).
 const MAX_REGIONS: usize = MAX_SEGMENTS + 1;
 
-#[allow(dead_code)]
 struct Bootstrap {
     /// Its tables, kept so they can be given back. `bind` borrows rather than
     /// consumes for exactly this reason (D-117).
@@ -468,7 +467,7 @@ const HANDLE_QUOTA: usize = 64;
 ///
 /// The far end of its bootstrap channel: the only way to reach it, which is
 /// what "no ambient authority" means from the other side.
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) struct Spawned {
     /// The thread slot it runs in.
     pub(crate) slot: usize,
@@ -726,7 +725,7 @@ static RECLAIMED_TABLES: AtomicUsize = AtomicUsize::new(0);
 /// Read only by the checks in the shipped kernel — the record is kept for
 /// every program either way, because a boot that wants to know what a program
 /// did should not have to be rebuilt to find out (D-117).
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LastRites {
     /// Handles in its table at the end.
@@ -1046,7 +1045,7 @@ pub(crate) fn run() -> Result<Spawned, SpawnError> {
 }
 
 /// A second one, in a space of its own, at its own addresses.
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) fn run_second() -> Result<Spawned, SpawnError> {
     spawn("user-two", 1, BEHAVE)
 }
@@ -1083,7 +1082,7 @@ pub(crate) fn run_into_the_copy_window() -> Result<Spawned, SpawnError> {
 }
 
 /// A third that faults on purpose, to show the machine survives it.
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) fn run_faulting() -> Result<Spawned, SpawnError> {
     spawn("user-fault", 2, FAULT)
 }

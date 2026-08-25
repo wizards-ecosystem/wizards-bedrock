@@ -40,7 +40,6 @@ pub(crate) struct TableId(u32);
 /// Why a handle operation was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-#[allow(dead_code)]
 pub(crate) enum HandleError {
     /// The value is not a well-formed handle at all.
     Malformed,
@@ -77,7 +76,6 @@ impl core::error::Error for HandleError {}
 
 /// What one arena slot holds while it is live.
 #[derive(Debug)]
-#[allow(dead_code)]
 struct Entry {
     owner: TableId,
     object: ObjectRef,
@@ -210,11 +208,12 @@ pub(crate) struct HandleTable {
     live: usize,
 }
 
-/// Reached by the checks and, in the shipped kernel, by nothing yet: the
-/// synchronous calls that would let a program close a handle, duplicate one or
-/// send one are on D-114's owed list. Allowed rather than cfg-gated so the
-/// image carries the code the checks exercise (D-116).
-#[allow(dead_code)]
+/// The half every spawned program uses: `user::spawn` builds a table and puts
+/// its bootstrap channel in one, and `user::orphan` asks what that handle named
+/// on the way out. It carried an `#[allow(dead_code)]` saying the shipped
+/// kernel reached none of this, which stopped being true when D-116 made the
+/// shipped kernel run a program — and an `allow` that stops being needed says
+/// nothing (D-130).
 impl HandleTable {
     /// A table holding nothing, able to hold `quota` handles.
     ///
@@ -364,7 +363,7 @@ impl HandleTable {
 /// The delegation half, reached by the checks and by no shipped caller: a
 /// program closes, duplicates or sends a handle through synchronous calls that
 /// are on D-114's owed list (D-116).
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 impl HandleTable {
     /// Copy `handle` into a second handle carrying `wanted` or fewer rights.
     ///

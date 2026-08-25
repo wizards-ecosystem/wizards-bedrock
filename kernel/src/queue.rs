@@ -404,13 +404,13 @@ impl Queue {
     }
 
     /// Operations admitted and not yet reported.
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
     pub(crate) fn outstanding(&self) -> u32 {
         self.state.lock_leaf().outstanding()
     }
 
     /// Whether the accounting still says a completion cannot be dropped.
-    #[allow(dead_code)]
+    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
     pub(crate) fn is_consistent(&self) -> bool {
         self.state.lock_leaf().is_consistent()
     }

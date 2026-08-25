@@ -535,7 +535,6 @@ pub(crate) fn spawn(name: &'static str, entry: fn()) -> Result<usize, SpawnError
 /// Create a thread of `weight` that will run `entry`, and make it runnable.
 ///
 /// Weights other than the base have no shipped caller yet; see [`yield_now`].
-#[allow(dead_code)]
 ///
 /// Returns its slot. It is placed at the queue's fair-share point with a
 /// fresh slice, so it neither jumps the queue nor waits behind everyone. It
@@ -556,10 +555,10 @@ pub(crate) fn spawn_weighted(
 
 /// Create a thread that runs on `binding`'s tables rather than the kernel's.
 ///
-/// No shipped caller: the shipped kernel reads the keyboard and runs no user
-/// program. Allowed rather than cfg-gated so the image carries the code the
-/// checks exercise, and narrowly rather than over the module.
-#[allow(dead_code)]
+/// `user::spawn`'s, and so the shipped kernel's since D-116 ran a program in
+/// one. It said the opposite until D-130 — "no shipped caller: the shipped
+/// kernel reads the keyboard and runs no user program" — under an
+/// `#[allow(dead_code)]` that had gone quietly untrue with it.
 ///
 /// `arrange` is called with the new slot while the thread is still `Reserved`
 /// — after `wost` has a slot to bind to, and before anything can schedule it.
@@ -660,9 +659,10 @@ fn spawn_prepared(
 
 /// Let another runnable thread have the CPU, if any is owed it.
 ///
-/// No shipped caller yet. Allowed rather than cfg-gated so the image carries
-/// the code the checks exercise, and narrowly rather than over the module.
-#[allow(dead_code)]
+/// No shipped caller yet, so the image carries it for the checks alone. The
+/// attribute below states that as an expectation rather than a permission: it
+/// is the build without the checks that has to find this dead, and the day a
+/// shipped caller appears the gate says so (D-130).
 ///
 /// Returns when this thread is picked again — at once, if nothing else is
 /// eligible.
@@ -672,6 +672,7 @@ fn spawn_prepared(
 /// Panics from trap context, where a switch would carry the handler's stack
 /// frame away with it (D-55), or if `wost` refuses the switch: the two
 /// tables disagree, which is a bug and not a condition.
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) fn yield_now(context: &mut ThreadContext) {
     // Flag clear from decision to switch, so an expiry cannot preempt between
     // them and act on a table that says `next` is running when it is not.
