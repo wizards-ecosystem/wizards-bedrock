@@ -88,7 +88,7 @@ message shape. mlibc needs an ABI to sit on.
 | 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, `UFrame`, per-thread `RSP0` and eager XSAVE, stacks that arrive with their thread, two processes, exactly one handle each at spawn, and `THREADS` split into a thread table and a run queue | ✅ 2026-08-24 |
 | 8 | Channels: bytes and handles, attenuate-on-send, rights declared per field with no defaults | ✅ 2026-08-24 |
 | 9 | The async queue ABI: the model before the protocol, `libs/ring-proto` under shuttle and proptest, reservation backpressure, exactly one terminal completion | ✅ 2026-08-24 |
-| 10 | The stub mlibc sysdep (D-74), on a vendored clang | |
+| 10 | The stub mlibc sysdep (D-74): written and analysed, not compiled — the toolchain wall is recorded in D-114 | ✅ 2026-08-24 |
 | 11 | Phase close: the VMware boot (D-18), the Limine base-revision-5 bump, the adversarial audit (D-77), the roadmap and this file's closing section | |
 
 ## The handle table

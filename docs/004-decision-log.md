@@ -6025,3 +6025,84 @@ than the loader's checks want. The kernel side is exercised through the shared
 page, which is the boundary that matters, and a program crossing it is what
 slice 10's libc arrives to make ordinary. Nothing blocks on a ring yet, so the
 wait queue is built and unused. And no completion carries a handle.
+
+## D-114 The POSIX layer is written and not compiled, and the finding is what it was for — Status: Accepted (2026-08-24), amends D-74
+
+**Context.** D-74 asked for an mlibc sysdep "immediately after the ABI
+stabilises, not to run real software, but to find out whether a POSIX libc can
+sit on this ABI while the ABI is still cheap to change". Slice 10's plan was to
+vendor a portable clang and lld under D-25 and build against them, and it named
+its own fallback: if the vendored clang cannot build mlibc after a bounded
+attempt, author the sysdeps and the ABI surface, **record the wall with its
+cost**, and close without a compiled libc — an ADR amending D-74, not a silent
+omission.
+
+**The wall, measured rather than estimated.** This machine has no C compiler of
+any kind. LLVM 19.1.7's Windows release is 845 MB compressed and about 3 GB
+extracted, and — the objection that actually decides it — it is the **MSVC**
+build. LLVM ships no mingw-based Windows release, so a vendored clang would
+depend on an MSVC installation this machine does not have and the project has
+no way to pin, which is the opposite of the property vendoring exists to buy
+(D-16). mlibc additionally needs meson and ninja, neither present, and a target
+triple that does not exist and would mean patching its build files.
+
+**Decision.** Take the fallback, and make it a deliverable rather than a
+shrug. `userland/abi/wizard_abi.h` states the native ABI as a C header;
+`userland/sysdeps/wizard/generic.cpp` implements mlibc's sixteen mandatory tags
+against it, each marked with which of three things it is. The counts are the
+finding: **3 MAPS, 12 OWED, 1 ABSENT.**
+
+The twelve OWED all have a kernel-side mechanism and no ring-3 door, which is a
+much better position than it sounds: `sys_close` over the handle table's close,
+the reads and writes over the ring, the memory calls over `map_user` and
+`unmap`, and the futexes over `WaitQueue::wait_unless` — which already solves
+the lost-wakeup window a futex gets wrong first (D-95).
+
+The one ABSENT is `sys_open`, and it is absent for the reason the design
+intends: there is no namespace to name a path in. A libc can be built where
+`open` resolves through a directory handle the process was given, which is
+`openat` with no `AT_FDCWD` and is what WASI's `path_open` settled on. What such
+a libc cannot do is `open("/etc/foo")` from a process nobody gave a root
+directory to.
+
+**Four things the exercise surfaced that the native ABI would never have
+raised**, which is precisely the value D-74 predicted:
+
+1. **`FS_BASE` is a fourth thing that must follow a thread.** `sys_tcb_set`
+   writes it and the kernel does not save it across a switch. `RSP0` (D-99),
+   `CR3` (D-106) and the extended state (D-108) all live in `task::prepare`;
+   this belongs there with them, and nothing native has thread-local storage so
+   nothing native would have asked.
+2. **There is no wall clock.** Uptime is monotonic and is all there is; this
+   kernel has never been told what time it is. `time()` and `stat` timestamps
+   need an epoch.
+3. **A seek is state the object holds, not the handle.** Two POSIX descriptors
+   to one file share a position — a distinction the kernel will have to make
+   about a file object, and by D-78's rule therefore a legitimate per-type
+   right.
+4. **W^X is a real incompatibility and the right one.** `PROT_WRITE|PROT_EXEC`
+   is refused (D-12, D-100), so a JIT maps twice. Named so a port that fails on
+   it fails for a stated reason.
+
+**The two questions D-74 said were cheaper now, answered.** A signal is a
+completion entry (D-80), so `sigaction` runs in userspace off the libc's own
+ring loop — and the consequence writing this made concrete is a constraint on
+the *whole* libc, not on signals: **every blocking entry point must be a ring
+submission plus a wait**, because a thread blocked in a synchronous call cannot
+be interrupted at all. Userland is static-only for now; nothing in the ABI
+forecloses a dynamic linker, since the file-backed half of `sys_vm_map` is
+OWED rather than ABSENT.
+
+**Consequences.** The header is the ABI written a second time, for a consumer
+that cannot read Rust — which is the duplication that made `x86-tables` and
+`trap-cause` disagree about vector 28. So it gets the same answer: a host test
+compares the ring address, the version, both opcodes, both statuses and the
+gate vector against the kernel's own sources, and drift from either side turns
+it red. Both directions were broken and checked.
+
+**What is owed, with its routes.** A compiled hello-world. Building LLVM from
+source against the mingw toolchain already present is hours and a large
+artefact; cross-compiling elsewhere and vendoring the result breaks the
+one-machine property D-16 is about; waiting for a mingw-based LLVM release
+costs nothing but is not a plan. The sysdeps and the analysis are the part that
+answers D-74's question; the compile is the part that confirms it.

@@ -1126,6 +1126,103 @@ mod tests {
         );
     }
 
+    /// The C header and the kernel agree about the ABI they both describe.
+    ///
+    /// `userland/abi/wizard_abi.h` is the native ABI written a second time, for
+    /// a consumer that cannot read Rust. Two transcriptions of one table is how
+    /// `x86-tables` and `trap-cause` came to disagree about vector 28, and the
+    /// answer there was a test that compares them — this is the same test, one
+    /// language further out (D-105, D-114).
+    ///
+    /// Only the numbers a program would get *wrong* are compared: an address it
+    /// reads the ring at, a version it checks, the opcodes it submits and the
+    /// statuses it decodes. A drift in any of those is a program that compiles,
+    /// runs, and reads the wrong page.
+    #[test]
+    fn the_c_header_and_the_kernel_agree_about_the_abi() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let header = std::fs::read_to_string(root.join("userland/abi/wizard_abi.h"))
+            .expect("userland/abi/wizard_abi.h");
+        let queue = std::fs::read_to_string(root.join("kernel/src/queue.rs")).expect("queue.rs");
+        let user = std::fs::read_to_string(root.join("kernel/src/user.rs")).expect("user.rs");
+        let proto =
+            std::fs::read_to_string(root.join("libs/ring-proto/src/lib.rs")).expect("ring-proto");
+
+        // `#define NAME value`, with the value taken verbatim up to any comment.
+        let defined = |name: &str| -> String {
+            header
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(&format!("#define {name} ")))
+                .map(|value| {
+                    value
+                        .split("/*")
+                        .next()
+                        .unwrap_or(value)
+                        .trim()
+                        .trim_matches(|c| c == '(' || c == ')')
+                        .to_string()
+                })
+                .unwrap_or_else(|| panic!("no `#define {name}` in wizard_abi.h"))
+        };
+        // A `pub(crate) const NAME: TYPE = value;` from a Rust source.
+        let rust = |source: &str, name: &str| -> String {
+            source
+                .lines()
+                .find_map(|line| {
+                    let line = line.trim();
+                    let rest = line
+                        .strip_prefix(&format!("pub(crate) const {name}: "))
+                        .or_else(|| line.strip_prefix(&format!("pub const {name}: ")))?;
+                    rest.split_once(" = ")
+                        .map(|(_, value)| value.trim_end_matches(';').replace('_', ""))
+                })
+                .unwrap_or_else(|| panic!("no `{name}` in the kernel source"))
+        };
+
+        // The ring's address. The one number that, if it drifted, would have a
+        // program reading a page nobody wrote.
+        assert!(
+            defined("WIZ_RING_ADDRESS").contains(&rust(&user, "RING").replace("0x", "")),
+            "the ring address drifted: header {:?}, kernel {:?}",
+            defined("WIZ_RING_ADDRESS"),
+            rust(&user, "RING")
+        );
+
+        // The protocol version, which is the field a program checks first.
+        assert_eq!(
+            defined("WIZ_RING_VERSION").trim_end_matches('u'),
+            rust(&proto, "VERSION"),
+            "the ring version drifted"
+        );
+
+        // The opcodes and statuses, which the kernel writes as match arms
+        // rather than as constants — so they are searched for as the arms.
+        assert!(
+            queue.contains("1 => Self::Echo"),
+            "WIZ_OP_ECHO is not opcode 1 in the kernel"
+        );
+        assert_eq!(defined("WIZ_OP_ECHO").trim_end_matches('u'), "1");
+        assert!(
+            queue.contains("2 => Self::Uptime"),
+            "WIZ_OP_UPTIME is not opcode 2 in the kernel"
+        );
+        assert_eq!(defined("WIZ_OP_UPTIME").trim_end_matches('u'), "2");
+
+        assert_eq!(
+            defined("WIZ_STATUS_OK").trim_end_matches('u'),
+            rust(&queue, "STATUS_OK")
+        );
+        assert_eq!(
+            defined("WIZ_STATUS_UNKNOWN_OPCODE").trim_end_matches('u'),
+            rust(&queue, "STATUS_UNKNOWN_OPCODE")
+        );
+
+        // And the gate the calls go through.
+        assert_eq!(defined("WIZ_SYSCALL_VECTOR"), "0x80");
+    }
+
     /// And the count the kernel declares is the number of checks it runs.
     ///
     /// `EXPECTED_CHECKS` is deliberately independent of the running tally, so
