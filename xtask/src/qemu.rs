@@ -143,6 +143,17 @@ const SELFTEST_FAILED: i32 = 35;
 /// The serial verdict contract shared with `kernel/src/selftest.rs`.
 const SELFTEST_VERDICT_PREFIX: &str = "selftest: verdict ";
 const SELFTEST_VERDICT_VERSION: &str = "v1";
+/// Checks the self-test kernel must report, held independently of its own
+/// tally so a deleted or skipped one turns the verdict red.
+///
+/// **Changing this number is the moment a mutation is owed.** `AGENTS.md` says
+/// to add one whenever a check is added, and twice in one day it was not —
+/// five checks landed with a hand break-test and no entry in
+/// `xtask/src/mutate.rs`, by two sessions that had been citing D-119 all day.
+/// The rule was not forgotten; it was never *reached*, because adding a check
+/// is a thing you do inside a fix and the table is a different file. This line
+/// and its twin in `kernel/src/selftest.rs` are the two you have to touch
+/// either way, so the reminder goes where the hand already is (D-28, D-119).
 const EXPECTED_SELFTEST_CHECKS: usize = 137;
 
 /// Line the self-test kernel prints immediately before its bounded wait for
