@@ -275,7 +275,7 @@ pub(super) fn write_kernel_stack(top: u64) {
 
 /// Where a trap from ring 3 will land.
 pub fn kernel_stack() -> u64 {
-    read_task_state().privilege_stack(0)
+    read_stack(TaskState::privilege_stack_offset(0))
 }
 
 /// Move the double-fault handler onto a guarded stack.
@@ -329,14 +329,33 @@ pub fn set_double_fault_stack(stack: &MappedStack) -> bool {
 
 /// Where the double-fault handler's stack currently starts.
 pub fn double_fault_stack() -> u64 {
-    read_task_state().interrupt_stack(DOUBLE_FAULT_STACK as usize)
+    read_stack(TaskState::interrupt_stack_offset(
+        DOUBLE_FAULT_STACK as usize,
+    ))
 }
 
-/// A copy of the live task-state segment.
-fn read_task_state() -> TaskState {
-    // SAFETY: `init` wrote a valid `TaskState` here before the `ltr`, and
-    // nothing writes it except this module on this CPU.
-    unsafe { task_state_pointer().read_volatile() }
+/// One stack pointer out of the segment, read the way it is written.
+///
+/// A single eight-byte load rather than a copy of the whole structure. The
+/// stores are careful to be atomic against a trap arriving mid-write (D-95),
+/// and a bulk `read_volatile` of a 104-byte structure undid that on the far
+/// side: `RSP0` moves on every context switch, so a preempted reader could
+/// see half of one stack and half of another (D-105).
+fn read_stack(at: usize) -> u64 {
+    debug_assert!(
+        task_state_pointer()
+            .addr()
+            .wrapping_add(at)
+            .is_multiple_of(8),
+        "a stack pointer in the segment is not eight-byte aligned"
+    );
+    // SAFETY: `at` is a byte offset inside the segment, from the crate that
+    // owns its layout, and the entry there is eight bytes on an eight-byte
+    // boundary — the segment is placed four-mod-eight so that it is (D-95).
+    let entry = unsafe { task_state_pointer().cast::<u8>().add(at) }.cast::<u64>();
+    // SAFETY: as above; a naturally aligned eight-byte load, so it reads one
+    // value that was written there and never a mixture.
+    unsafe { entry.read_volatile() }
 }
 
 /// The address the double-fault stack grows down from.

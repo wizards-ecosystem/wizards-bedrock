@@ -6,9 +6,12 @@
 //! all agree — which is the thing every later slice builds on and the thing
 //! that is hardest to debug once there is a loader in the way (D-96).
 //!
-//! It is deliberately not an ELF. Slice 7 brings `libs/elf64`, an initrd and
-//! `spawn`; this is the layer underneath, and keeping them apart means a
-//! failure here is a failure of the boundary rather than of a parser.
+//! It started as deliberately not an ELF, so that a failure here would be a
+//! failure of the boundary rather than of a parser. Slice 7 brought
+//! `libs/elf64` and an initrd into this same file, and the loader below now
+//! parses attacker-supplied bytes — so a failure here can be either, and the
+//! refusals are checked one mechanism at a time for exactly that reason
+//! (D-100, D-105). `spawn` and a second address space are still owed.
 
 use elf64::{Elf, ElfError, SegmentKind};
 use wost::arch::current::paging::MapError;
@@ -102,9 +105,14 @@ pub(crate) enum LoadError {
     Missing,
     /// It is not an ELF this kernel reads.
     NotAnElf(ElfError),
-    /// A segment's contents run past the image, or claim more file than
-    /// memory.
+    /// A segment claims more file than memory.
     Malformed(u64),
+    /// A segment's contents run past the end of the image.
+    Truncated(u64),
+    /// Two segments want pages that overlap.
+    Overlapping(u64),
+    /// The image has more segments than the loader will place.
+    TooManySegments,
     /// A segment asks to be both writable and executable.
     WriteExecute(u64),
     /// A segment is not in the half of the address space user code lives in.
@@ -122,7 +130,12 @@ impl core::fmt::Display for LoadError {
         match *self {
             Self::Missing => f.write_str("no initrd"),
             Self::NotAnElf(error) => write!(f, "{error}"),
-            Self::Malformed(at) => write!(f, "the segment at {at:#x} does not fit its image"),
+            Self::Malformed(at) => write!(f, "the segment at {at:#x} claims more file than memory"),
+            Self::Truncated(at) => write!(f, "the segment at {at:#x} runs past the image"),
+            Self::Overlapping(at) => write!(f, "the segment at {at:#x} overlaps another"),
+            Self::TooManySegments => {
+                f.write_str("the image has more segments than the loader places")
+            }
             Self::WriteExecute(at) => {
                 write!(
                     f,
@@ -140,12 +153,13 @@ impl core::fmt::Display for LoadError {
 /// Load the initrd's program into the running address space, at `shift` pages
 /// above where it asks to be.
 ///
-/// Every segment is checked before a page is taken: inside the image, inside
-/// user memory, and never both writable and executable. **W^X is not relaxed
-/// for a program that asks nicely** — an image wanting a writable executable
-/// page is refused, because an image that needs one does not work without it
-/// and pretending otherwise loads something that will fault later and blame
-/// the kernel (D-100).
+/// Every segment is checked before *any* page is taken: inside the image,
+/// inside user memory, never both writable and executable, and never
+/// overlapping another segment's pages. **W^X is not relaxed for a program
+/// that asks nicely** — an image wanting a writable executable page is
+/// refused, because an image that needs one does not work without it and
+/// pretending otherwise loads something that will fault later and blame the
+/// kernel (D-100).
 ///
 /// The pages are filled *before* they are mapped, so a segment that is
 /// executable is never writable even for the instant it is being written.
@@ -154,11 +168,75 @@ fn load(context: &mut ThreadContext, shift: u64) -> Result<u64, LoadError> {
     load_image(context, bytes, shift)
 }
 
+/// Fill and map one validated placement.
+fn place(
+    context: &mut ThreadContext,
+    bytes: &[u8],
+    placement: &Placement,
+) -> Result<(), LoadError> {
+    let mut run = mm::allocate_contiguous(placement.pages, 1).ok_or(LoadError::OutOfMemory)?;
+    if !run.zero() {
+        return Err(LoadError::OutOfMemory);
+    }
+    let Some(contents) = bytes.get(placement.from..placement.from + placement.len) else {
+        return Err(LoadError::Truncated(placement.at));
+    };
+    if !run.write_at(0, contents) {
+        return Err(LoadError::Truncated(placement.at));
+    }
+    mem::with_active_space(context, |space| {
+        space.map_owned(placement.at, run, placement.flags)
+    })
+    .ok_or(LoadError::OutOfMemory)?
+    .map_err(LoadError::NotMapped)
+}
+
+/// Unmap what this load already placed, returning its frames.
+fn undo(context: &mut ThreadContext, done: &[Option<Placement>]) {
+    for placement in done.iter().flatten() {
+        let len = placement.pages as u64 * PAGE_SIZE;
+        // Nothing to do about a failure here: the frames stay in the space
+        // rather than going back to the allocator, which is a leak and not a
+        // double free. Reporting it would replace the error being returned.
+        let _ = mem::with_active_space(context, |space| space.unmap(placement.at, len));
+    }
+}
+
+/// Whether two validated placements want any page in common.
+fn overlaps(a: &Placement, b: &Placement) -> bool {
+    let a_end = a.at.saturating_add(a.pages as u64 * PAGE_SIZE);
+    let b_end = b.at.saturating_add(b.pages as u64 * PAGE_SIZE);
+    a.at < b_end && b.at < a_end
+}
+
+/// The most segments this loader will place.
+///
+/// A bound rather than a heap allocation, because the validation pass has to
+/// hold every placement before the first page is taken, and an image with more
+/// than this is refused rather than partly loaded (D-105).
+const MAX_SEGMENTS: usize = 8;
+
+/// Where one validated segment goes, and what it is allowed to be.
+#[derive(Clone, Copy)]
+struct Placement {
+    at: u64,
+    pages: usize,
+    from: usize,
+    len: usize,
+    flags: Flags,
+}
+
 /// Load `bytes`, which need not be the initrd's.
 ///
 /// Split out so the checks can hand it a doctored image: the refusals below
 /// are the load-bearing half of a loader, and a refusal that is never
 /// exercised is a claim (D-100).
+///
+/// Two passes, and the split is the point. The single-pass version checked
+/// segment *N*, mapped it, then looked at *N+1* — so a refusal on the second
+/// segment left the first mapped `USER` at an address the image chose, with
+/// its frames forgotten into the space and nothing owning them. The doc above
+/// claimed the preflight this now performs (D-105).
 pub(crate) fn load_image(
     context: &mut ThreadContext,
     bytes: &[u8],
@@ -166,12 +244,16 @@ pub(crate) fn load_image(
 ) -> Result<u64, LoadError> {
     let elf = Elf::parse(bytes).map_err(LoadError::NotAnElf)?;
 
+    let mut placements = [None; MAX_SEGMENTS];
     let mut loaded = 0usize;
     for segment in elf
         .segments()
         .filter(|segment| segment.kind() == SegmentKind::Load)
     {
-        if !segment.contents_fit(bytes.len()) || segment.is_oversized() {
+        if !segment.contents_fit(bytes.len()) {
+            return Err(LoadError::Truncated(segment.address()));
+        }
+        if segment.is_oversized() {
             return Err(LoadError::Malformed(segment.address()));
         }
         if segment.is_write_execute() {
@@ -194,17 +276,6 @@ pub(crate) fn load_image(
             return Err(LoadError::NotUserMemory(at));
         }
 
-        let pages = segment.memory_size().div_ceil(PAGE_SIZE) as usize;
-        let mut run = mm::allocate_contiguous(pages, 1).ok_or(LoadError::OutOfMemory)?;
-        if !run.zero() {
-            return Err(LoadError::OutOfMemory);
-        }
-        let from = segment.offset() as usize;
-        let len = segment.file_size() as usize;
-        if !run.write_at(0, &bytes[from..from + len]) {
-            return Err(LoadError::Malformed(segment.address()));
-        }
-
         let mut flags = Flags::USER;
         if segment.is_writable() {
             flags = flags.union(Flags::WRITABLE);
@@ -212,10 +283,43 @@ pub(crate) fn load_image(
         if !segment.is_executable() {
             flags = flags.union(Flags::NO_EXECUTE);
         }
-        mem::with_active_space(context, |space| space.map_owned(at, run, flags))
-            .ok_or(LoadError::OutOfMemory)?
-            .map_err(LoadError::NotMapped)?;
+        let placement = Placement {
+            at,
+            pages: segment.memory_size().div_ceil(PAGE_SIZE) as usize,
+            from: segment.offset() as usize,
+            len: segment.file_size() as usize,
+            flags,
+        };
+
+        // The mapping rounds each segment out to whole pages, so two segments
+        // sharing one page collide in `map_owned` — after the first is already
+        // mapped. Caught here instead, where nothing has been taken yet.
+        if placements
+            .iter()
+            .flatten()
+            .any(|other: &Placement| overlaps(other, &placement))
+        {
+            return Err(LoadError::Overlapping(at));
+        }
+
+        *placements
+            .get_mut(loaded)
+            .ok_or(LoadError::TooManySegments)? = Some(placement);
         loaded += 1;
+    }
+
+    for (done, placement) in placements.iter().flatten().enumerate() {
+        match place(context, bytes, placement) {
+            Ok(()) => {}
+            Err(error) => {
+                // Validation cannot rule out a frame shortage or a collision
+                // with something already in the space, so the mapping pass
+                // walks itself back the way `map_range` does (D-94): what is
+                // returned here is what this call mapped, and nothing else.
+                undo(context, &placements[..done]);
+                return Err(error);
+            }
+        }
     }
 
     if loaded == 0 {

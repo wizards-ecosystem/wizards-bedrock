@@ -398,8 +398,20 @@ static mut SMAP_ARMED: u8 = 0;
 
 /// Let the entry path clear `AC` on the way in.
 ///
-/// Called once, after `CR4.SMAP` is on and before ring 3 exists.
+/// Called once, before ring 3 exists.
+///
+/// # Panics
+///
+/// If SMAP is not enabled. `clac` is a `#UD` without it, and the fault
+/// handler re-enters the stub that executed it — an unbreakable loop, on a
+/// machine configuration this project deliberately supports (D-90). A
+/// call-site check is what D-77 rejected: another safe caller can omit it
+/// (D-105).
 pub fn arm_access_clear() {
+    assert!(
+        cpu::Protections::enabled().smap,
+        "arming the access clear without smap would fault on every trap"
+    );
     // SAFETY: written once during boot, before any trap can be taken from
     // ring 3 and on the one CPU there is.
     unsafe { SMAP_ARMED = 1 };
@@ -429,6 +441,22 @@ pub fn enable_buffer_clear() {
     // before any return path can read it, on the one CPU there is.
     unsafe { MDS_CLEAR = 1 };
 }
+
+/// How many times the buffer flush has actually executed.
+///
+/// Counted in the asm, beside the `verw` itself. Reading the arming byte says
+/// only that the instruction was *compiled in*, which is the split D-101 found
+/// after the flush shipped unexecuted for a phase — so the check reads the
+/// instruction's own tally instead (D-105).
+pub fn buffer_clears() -> u64 {
+    let counter = core::ptr::addr_of!(BUFFER_CLEARS);
+    // SAFETY: naturally aligned and written only by an `inc` from the one
+    // CPU's own asm, so a read sees one value and never a mixture.
+    unsafe { counter.read_volatile() }
+}
+
+/// The tally [`buffer_clears`] reports, incremented where the `verw` is.
+pub(super) static mut BUFFER_CLEARS: u64 = 0;
 
 /// Whether the buffer flush is armed.
 pub fn buffer_clear_is_armed() -> bool {
@@ -763,10 +791,12 @@ global_asm!(
     "mov word ptr [rsp], {kernel_data}",
     "verw word ptr [rsp]",
     "add rsp, 8",
+    "inc qword ptr [rip + {clears}]",
     "2:",
     "iretq",
     stub_bytes = const STUB_BYTES,
     clear = sym MDS_CLEAR,
+    clears = sym BUFFER_CLEARS,
     smap = sym SMAP_ARMED,
     kernel_data = const (segment::KERNEL_DATA_BITS as u32),
     architectural = const exception::COUNT,

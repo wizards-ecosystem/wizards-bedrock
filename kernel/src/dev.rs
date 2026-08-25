@@ -89,11 +89,18 @@ pub(crate) fn console_geometry() -> Option<wost::boot::FramebufferInfo> {
 /// happened rather than returning it: there is exactly one caller and nothing
 /// it could do differently.
 pub(crate) fn attach_back_buffer() {
-    let mut guard = CONSOLE.lock();
-    let Some(console) = guard.as_mut() else {
-        return;
+    // Reported after the guard is gone. Logging takes `UART`'s `ThreadLock`,
+    // and doing that under `CONSOLE`'s would establish a `CONSOLE → UART`
+    // order that nothing else in the kernel knows about — a lock order acquired
+    // by accident is the one that closes a cycle later (D-105).
+    let attached = {
+        let mut guard = CONSOLE.lock();
+        let Some(console) = guard.as_mut() else {
+            return;
+        };
+        console.attach_back_buffer()
     };
-    if console.attach_back_buffer() {
+    if attached {
         info!("console: back buffer attached; scrolling no longer reads the device");
     } else {
         warn!("console: no memory for a back buffer; scrolling still reads the device");

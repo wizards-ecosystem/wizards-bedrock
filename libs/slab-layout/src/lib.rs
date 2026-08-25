@@ -244,17 +244,32 @@ mod tests {
         );
     }
 
+    /// A frame divides evenly into every class, and each class's slots run to
+    /// the frame's end and no further.
+    ///
+    /// `offset_of(slot)` is `slot * bytes()`, so `offset % bytes() == 0` is
+    /// `(n·b) % b == 0` — true of every implementation. D-94 deleted this
+    /// exact shape from the neighbouring test and left this one (D-105). The
+    /// divisibility of `FRAME_SIZE` is the real half, and the coverage claim
+    /// is what the arithmetic actually needs to hold.
     #[test]
-    fn every_slot_of_every_class_is_aligned_to_its_class() {
-        // The invariant the whole design rests on. A frame is FRAME_SIZE
-        // aligned, so an offset that is a multiple of the class size lands on
-        // an address that is too.
+    fn every_class_divides_the_frame_and_its_slots_fill_it() {
         for index in 0..CLASSES {
             let class = SizeClass::from_index(index).expect("in range");
-            assert!(FRAME_SIZE.is_multiple_of(class.bytes()));
-            for slot in 0..class.slots_per_frame() {
-                assert!(class.offset_of(slot).is_multiple_of(class.bytes()));
-            }
+            assert!(
+                FRAME_SIZE.is_multiple_of(class.bytes()),
+                "{} does not divide a frame",
+                class.bytes()
+            );
+            assert_eq!(
+                class.slots_per_frame() * class.bytes(),
+                FRAME_SIZE,
+                "class {} leaves the frame short or overruns it",
+                class.bytes()
+            );
+            let last = class.slots_per_frame() - 1;
+            assert_eq!(class.offset_of(0), 0);
+            assert_eq!(class.offset_of(last), FRAME_SIZE - class.bytes());
         }
     }
 

@@ -119,6 +119,67 @@ impl Flags {
         Self(self.0 | other.0)
     }
 
+    /// The permission a walk has left after passing through `self`.
+    ///
+    /// The architecture computes a page's effective permission from the whole
+    /// path, not from its leaf: `USER` and `WRITABLE` are the conjunction down
+    /// the walk, and `NO_EXECUTE` the disjunction. A caller that reads the
+    /// leaf alone states a stronger permission than the CPU will grant.
+    ///
+    /// `self` is what the walk has accumulated so far — start it at
+    /// [`Flags::EVERYTHING_ALLOWED`] — and `entry` is the level just read.
+    ///
+    /// # Examples
+    ///
+    /// A supervisor table above a user page grants no user access, however
+    /// the leaf is written:
+    ///
+    /// ```
+    /// use x86_paging::Flags;
+    ///
+    /// let supervisor = Flags::PRESENT.union(Flags::WRITABLE);
+    /// let leaf = Flags::PRESENT.union(Flags::WRITABLE).union(Flags::USER);
+    /// let walked = Flags::EVERYTHING_ALLOWED.through(supervisor).through(leaf);
+    /// assert!(!walked.effective_for(leaf).contains(Flags::USER));
+    /// ```
+    ///
+    /// And a `NO_EXECUTE` anywhere on the path forbids execution below it:
+    ///
+    /// ```
+    /// use x86_paging::Flags;
+    ///
+    /// let no_execute = Flags::PRESENT.union(Flags::WRITABLE).union(Flags::NO_EXECUTE);
+    /// let leaf = Flags::PRESENT.union(Flags::WRITABLE);
+    /// let walked = Flags::EVERYTHING_ALLOWED.through(no_execute).through(leaf);
+    /// assert!(walked.effective_for(leaf).contains(Flags::NO_EXECUTE));
+    /// ```
+    #[must_use]
+    pub const fn through(self, entry: Self) -> Self {
+        let narrowed = self.intersection(entry).intersection(Self::NARROWED);
+        let forbidden = self
+            .intersection(Self::NO_EXECUTE)
+            .union(entry.intersection(Self::NO_EXECUTE));
+        narrowed.union(forbidden)
+    }
+
+    /// Fold an accumulated walk back onto the leaf's own flags.
+    ///
+    /// The leaf keeps everything the walk does not narrow — its address bits'
+    /// companions, `PRESENT`, `HUGE`, `OWNED` — and gives up `USER` and
+    /// `WRITABLE` to the path, and gains `NO_EXECUTE` from it.
+    #[must_use]
+    pub const fn effective_for(self, leaf: Self) -> Self {
+        let kept = leaf.difference(Self::NARROWED).difference(Self::NO_EXECUTE);
+        kept.union(self.intersection(Self::NARROWED))
+            .union(self.intersection(Self::NO_EXECUTE))
+    }
+
+    /// The permissions a walk narrows rather than reads off the leaf.
+    pub const NARROWED: Self = Self::USER.union(Self::WRITABLE);
+
+    /// What a walk starts with, before any entry has narrowed it.
+    pub const EVERYTHING_ALLOWED: Self = Self::NARROWED;
+
     /// This set without the flags in `other`.
     pub const fn difference(self, other: Self) -> Self {
         Self(self.0 & !other.0)
@@ -1028,5 +1089,74 @@ mod tests {
         let both = left.intersection(right);
         assert!(left.contains(both) && right.contains(both));
         assert_eq!(both, Flags::USER);
+    }
+
+    #[test]
+    fn a_narrower_parent_beats_a_wider_leaf() {
+        let supervisor = Flags::PRESENT.union(Flags::WRITABLE);
+        let read_only = Flags::PRESENT.union(Flags::USER);
+        let leaf = Flags::PRESENT.union(Flags::WRITABLE).union(Flags::USER);
+
+        let under_supervisor = Flags::EVERYTHING_ALLOWED.through(supervisor).through(leaf);
+        assert!(!under_supervisor.effective_for(leaf).contains(Flags::USER));
+        assert!(
+            under_supervisor
+                .effective_for(leaf)
+                .contains(Flags::WRITABLE)
+        );
+
+        let under_read_only = Flags::EVERYTHING_ALLOWED.through(read_only).through(leaf);
+        assert!(
+            !under_read_only
+                .effective_for(leaf)
+                .contains(Flags::WRITABLE)
+        );
+        assert!(under_read_only.effective_for(leaf).contains(Flags::USER));
+    }
+
+    #[test]
+    fn no_execute_anywhere_on_the_path_forbids_execution() {
+        let plain = Flags::PRESENT.union(Flags::WRITABLE).union(Flags::USER);
+        let nx = plain.union(Flags::NO_EXECUTE);
+
+        for path in [[nx, plain, plain], [plain, nx, plain], [plain, plain, nx]] {
+            let mut walked = Flags::EVERYTHING_ALLOWED;
+            for entry in path {
+                walked = walked.through(entry);
+            }
+            let leaf = *path.last().expect("three entries");
+            assert!(walked.effective_for(leaf).contains(Flags::NO_EXECUTE));
+        }
+
+        let mut clean = Flags::EVERYTHING_ALLOWED;
+        for entry in [plain, plain, plain] {
+            clean = clean.through(entry);
+        }
+        assert!(!clean.effective_for(plain).contains(Flags::NO_EXECUTE));
+    }
+
+    #[test]
+    fn a_walk_that_never_narrows_reports_the_leaf_unchanged() {
+        let wide = Flags::PRESENT.union(Flags::WRITABLE).union(Flags::USER);
+        for leaf in [
+            Flags::PRESENT,
+            Flags::PRESENT.union(Flags::NO_EXECUTE),
+            Flags::PRESENT.union(Flags::OWNED),
+            Flags::PRESENT.union(Flags::HUGE).union(Flags::WRITABLE),
+            wide,
+        ] {
+            let walked = Flags::EVERYTHING_ALLOWED.through(wide).through(leaf);
+            assert_eq!(walked.effective_for(leaf), leaf, "leaf {leaf:?}");
+        }
+    }
+
+    #[test]
+    fn narrowing_never_grants_what_the_leaf_withholds() {
+        let wide = Flags::PRESENT.union(Flags::WRITABLE).union(Flags::USER);
+        let leaf = Flags::PRESENT;
+        let walked = Flags::EVERYTHING_ALLOWED.through(wide).through(leaf);
+        let effective = walked.effective_for(leaf);
+        assert!(!effective.contains(Flags::USER));
+        assert!(!effective.contains(Flags::WRITABLE));
     }
 }

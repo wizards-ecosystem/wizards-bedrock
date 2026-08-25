@@ -79,4 +79,14 @@ mod tests {
     fn the_longest_measurable_window_is_one_count_short_of_the_span() {
         assert_eq!(elapsed_ticks(0, 1), u16::MAX);
     }
+
+    /// The status byte's null-count flag is bit 6.
+    ///
+    /// Asserted by no test at all; `1 << 7` survived the suite, and it gates
+    /// the baseline read the whole calibration rests on (D-105).
+    #[test]
+    fn the_null_count_flag_is_bit_six() {
+        // 8254 datasheet, read-back status: bit 7 output, bit 6 null count.
+        assert_eq!(STATUS_NULL_COUNT, 0b0100_0000);
+    }
 }

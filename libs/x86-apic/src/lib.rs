@@ -75,8 +75,12 @@ impl Register {
     /// register in the architecture's table is both, so this fires only on a
     /// typo — at compile time, since every caller is a constant.
     pub const fn new(offset: usize) -> Self {
+        // Subtraction rather than addition: `offset + 4` wraps for the four
+        // offsets nearest `usize::MAX`, and the panic message would then name
+        // the wrong fault (D-105). `REGISTER_BYTES` is larger than four, so
+        // the subtraction cannot underflow.
         assert!(
-            offset + size_of::<u32>() <= REGISTER_BYTES,
+            offset <= REGISTER_BYTES - size_of::<u32>(),
             "register lies outside the local APIC page"
         );
         assert!(
@@ -162,5 +166,17 @@ mod tests {
             let msr = Register::new(offset).msr();
             assert!((0x800..=0x8FF).contains(&msr), "offset {offset:#x}");
         }
+    }
+
+    /// The constants the manual fixes, transcribed against literals.
+    ///
+    /// Every rejection test in this crate spells its input `FIRST_VECTOR - 1`,
+    /// which panics for *every* `FIRST_VECTOR >= 1` — algebra, not the manual.
+    /// `FIRST_VECTOR = 32` survived the whole suite (D-105).
+    #[test]
+    fn the_reserved_vector_boundary_is_sixteen() {
+        // SDM Vol. 3A §11.5.2: vectors 0 through 15 are reserved, so 16 is the
+        // lowest an APIC will deliver.
+        assert_eq!(FIRST_VECTOR, 16);
     }
 }

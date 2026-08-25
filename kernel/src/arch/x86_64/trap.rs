@@ -62,9 +62,6 @@ fn on_trap(frame: &TrapFrame) {
             }
         }
 
-        // Deliberately not dismissed: a spurious interrupt is the APIC saying
-        // it had nothing to deliver, so it never set an in-service bit and
-        // dismissing one would retire a real interrupt underneath it.
         // The one entry ring 3 has. Nothing is served yet: what is proved is
         // that a thread can cross into user mode, come back through a gate
         // meant for it, and be retired from the far side (D-96).
@@ -79,6 +76,9 @@ fn on_trap(frame: &TrapFrame) {
             }
         }
 
+        // Deliberately not dismissed: a spurious interrupt is the APIC saying
+        // it had nothing to deliver, so it never set an in-service bit and
+        // dismissing one would retire a real interrupt underneath it.
         TrapCause::Interrupt(vector::SPURIOUS) => {
             SPURIOUS.fetch_add(1, Ordering::Relaxed);
         }

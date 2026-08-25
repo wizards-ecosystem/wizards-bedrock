@@ -294,9 +294,11 @@ runtime side: D-66's assert refuses a context switch with a guard live, and
 checks is what OSTD ships, and here the second is the one that cannot be
 side-stepped.
 
-**A closure taken under a leaf guard is the live hole**, and there are three:
-`mm::with_memory_map`, `dev::with_io_apic` and `mem::with_active_space` all run
-caller-supplied code with a lock held. The obligation is on the closure and
+**A closure taken under a leaf guard is the live hole**, and there are two:
+`mm::with_memory_map` and `dev::with_io_apic` run caller-supplied code with a
+lock held. (`mem::with_active_space` was listed here and does not belong: it
+takes the token — `SPACE.lock(context)` — and is the sanctioned two-level
+nesting D-85 describes, not a leaf acquisition.) The obligation is on the closure and
 nothing checks it — a closure that logs takes the console's `ThreadLock` and
 trips D-63's assert, which is how this was found rather than reasoned. Closing
 it properly means a guard type that forbids calls, and that is a decision this
@@ -382,9 +384,10 @@ Slice 7 fixes `002` and lands the check in the same commit.
 Each was found by an adversarial pass (D-94) and each is a design decision
 rather than a repair, so each is written down instead of patched over.
 
-- **A closure taken under a leaf guard.** `mm::with_memory_map`,
-  `dev::with_io_apic` and `mem::with_active_space` all run caller-supplied code
-  with a lock held, which is exactly what `lock_leaf`'s obligation forbids. The
+- **A closure taken under a leaf guard.** `mm::with_memory_map` and
+  `dev::with_io_apic` run caller-supplied code with a lock held, which is
+  exactly what `lock_leaf`'s obligation forbids. (`mem::with_active_space` is
+  not one of them; it takes the token.) The
   obligation is on the closure and nothing checks it: a closure that logs takes
   the console's `ThreadLock` under a `SpinLock` and trips D-63's assert — which
   is how this was found, not by reasoning. Closing it means a guard type that
@@ -808,21 +811,21 @@ capability word cannot be read gets the instruction rather than the assumption.
   assumption. What is missing is per-thread buffers and a save on every switch,
   and **D-99 made it reachable**: `RSP0` follows the thread now, so two can be
   in ring 3 and two can have floating-point state to lose. Nothing does yet —
-  the program is fourteen bytes and touches no SSE — but the gap is real from
+  the program is twenty-two bytes and touches no SSE — but the gap is real from
   D-99 onward rather than hypothetical, and it arrives with the processes in
   the rest of this slice.
 
-**A ring-3 fault still stops the machine, and that is now the largest thing
-owed here.** D-31 made a fault terminal when a fault was necessarily a kernel
-bug. After D-96 it can be a *program* bug: a `ud2`, a division by zero, or a
-touch of an unmapped page in ring 3 panics the kernel. D-97 reasons from
-exactly the right premise for the copy path — *the program is the untrusted
-party* — and the trap path does not yet distinguish. The fix is that a fault
-from CPL 3 retires the thread instead, which is `retire_from_trap` with a
-different reason, and it wants the fixup table below as its neighbour.
+**A ring-3 fault used to stop the machine, and D-102 closed it.** D-31 made a
+fault terminal when a fault was necessarily a kernel bug. After D-96 it can be
+a *program* bug: a `ud2`, a division by zero, or a touch of an unmapped page in
+ring 3 would panic the kernel. The trap path now distinguishes —
+`is_the_programs` in `trap.rs` refuses `#DF`, `#MC`, NMI and anything from
+ring 0, and everything else from CPL 3 retires the caller — and
+`a_faulting_program_dies_alone` is in the gate. What remains owed is the
+neighbour below: a fault *during a user copy* is still terminal.
 
 **Still owed by this slice's neighbours.** A fault *during* a user copy is
-terminal, where a real kernel would recover and return an error — that needs a
+still terminal, where a real kernel would recover and return an error — that needs a
 fixup table keyed on the faulting instruction pointer, and the trap dispatch
 D-81 built is what would consult one. And the retired ring-3 thread keeps its
 slot and its two pages for the life of the boot; nothing reclaims a retired

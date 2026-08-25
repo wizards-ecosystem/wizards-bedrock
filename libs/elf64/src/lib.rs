@@ -1,17 +1,18 @@
 //! Just enough ELF64 to load a program: the header, and the segments.
 //!
-//! Two callers want this and they want different amounts of it. `xtask`
-//! verifies the *linked kernel* after every build (D-40) and cares about
-//! sections, names and a string table — host things, with an allocator. The
-//! kernel loads a *user program* and cares about program headers and an entry
-//! point, in `no_std`, with no allocator and no ability to panic on hostile
-//! input.
+//! The kernel loads a *user program* and cares about program headers and an
+//! entry point, in `no_std`, with no allocator and no ability to panic on
+//! hostile input. `xtask`'s image builder round-trips what it writes through
+//! this crate, which is the other caller.
 //!
-//! What they share is the format itself, and this crate is that. Keeping it in
-//! one place is not tidiness: two transcriptions of the same table is how
-//! `x86-tables` and `trap-cause` came to disagree about vector 28, and that
-//! was found by a test written to compare them rather than by either being
-//! wrong on its own.
+//! **`xtask/src/elf.rs` does not use this crate**, and it was described here
+//! as though it did. It verifies the linked kernel after every build (D-40),
+//! wants sections and a string table this crate does not read, and carries its
+//! own transcription of the magic, the class byte and every header offset.
+//! They agree today, and nothing checks that they do — which is exactly the
+//! failure this crate's existence is supposed to prevent, since two
+//! transcriptions of the same table is how `x86-tables` and `trap-cause` came
+//! to disagree about vector 28. Merging them is owed (D-105).
 //!
 //! **Nothing here allocates, indexes unchecked, or panics.** The bytes may
 //! come from an initrd a program supplied, so every read is bounds-checked
@@ -28,6 +29,7 @@
 //! image[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
 //! image[4] = 2; // ELFCLASS64
 //! image[5] = 1; // little-endian
+//! image[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
 //! image[24..32].copy_from_slice(&0x40_1000u64.to_le_bytes()); // e_entry
 //! image[32..40].copy_from_slice(&(HEADER_BYTES as u64).to_le_bytes()); // e_phoff
 //! image[54..56].copy_from_slice(&(PROGRAM_HEADER_BYTES as u16).to_le_bytes());
@@ -70,6 +72,9 @@ pub const HEADER_BYTES: usize = 64;
 /// Bytes of an ELF64 program header.
 pub const PROGRAM_HEADER_BYTES: usize = 56;
 
+/// `EM_X86_64`, the only machine this loader will run.
+pub const MACHINE_X86_64: u16 = 62;
+
 /// Why an image could not be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -87,6 +92,12 @@ pub enum ElfError {
     NotSixtyFourBit(u8),
     /// Not `ELFDATA2LSB`.
     NotLittleEndian(u8),
+    /// Not built for this machine.
+    ///
+    /// An aarch64 or i386 ELF64 parses cleanly by every other rule here and
+    /// yields segments full of instructions this CPU would fault on. The image
+    /// builder writes `EM_X86_64` and nothing read it back (D-105).
+    WrongMachine(u16),
     /// The program-header entry size is not [`PROGRAM_HEADER_BYTES`].
     ///
     /// Refused rather than honoured: a different size means a different
@@ -112,6 +123,9 @@ impl core::fmt::Display for ElfError {
             Self::NotSixtyFourBit(class) => write!(f, "elf class {class} is not 64-bit"),
             Self::NotLittleEndian(data) => {
                 write!(f, "elf data encoding {data} is not little-endian")
+            }
+            Self::WrongMachine(machine) => {
+                write!(f, "elf machine {machine} is not x86-64")
             }
             Self::WrongProgramHeaderSize(size) => {
                 write!(f, "program headers of {size} bytes are not this format's")
@@ -301,6 +315,14 @@ impl<'a> Elf<'a> {
         }
 
         let entry = read_u64(header, 24)?;
+        // `e_machine`, at offset 18. Checked because the initrd is bytes a
+        // program supplied: everything else here rules out a *malformed* ELF,
+        // and this rules out a well-formed one for another architecture.
+        let machine = read_u16(header, 18)?;
+        if machine != MACHINE_X86_64 {
+            return Err(ElfError::WrongMachine(machine));
+        }
+
         let program_offset = read_u64(header, 32)?;
         let entry_size = read_u16(header, 54)?;
         let program_count = read_u16(header, 56)?;
@@ -408,6 +430,7 @@ mod tests {
         bytes[0..4].copy_from_slice(&MAGIC);
         bytes[4] = CLASS_64;
         bytes[5] = LITTLE_ENDIAN;
+        bytes[18..20].copy_from_slice(&MACHINE_X86_64.to_le_bytes());
         bytes[24..32].copy_from_slice(&0x40_1000u64.to_le_bytes());
         bytes[32..40].copy_from_slice(&(HEADER_BYTES as u64).to_le_bytes());
         bytes[54..56].copy_from_slice(&(PROGRAM_HEADER_BYTES as u16).to_le_bytes());
@@ -606,6 +629,12 @@ mod tests {
             "../../target/x86_64-unknown-none/debug/wizard-kernel",
         ];
         let Some(bytes) = candidates.iter().find_map(|path| std::fs::read(path).ok()) else {
+            // Loud rather than silent. `ci` runs `test` before any kernel
+            // build, so on a fresh checkout this asserts nothing and reports
+            // green — a skip that looks exactly like a pass (D-105). The
+            // constants it used to be the only witness for are pinned to
+            // literals below, so the skip no longer costs coverage.
+            eprintln!("skipped: no linked kernel in target/; run after a kernel build");
             return;
         };
 
@@ -628,5 +657,44 @@ mod tests {
             assert!(segment.contents_fit(bytes.len()));
             assert!(!segment.is_oversized());
         }
+    }
+
+    #[test]
+    fn an_elf_for_another_architecture_is_refused() {
+        // Well-formed by every other rule, and full of instructions this CPU
+        // would fault on. The image builder writes `EM_X86_64` and nothing
+        // read it back (D-105).
+        let mut aarch64 = image(&[]);
+        aarch64[18..20].copy_from_slice(&183u16.to_le_bytes());
+        assert_eq!(
+            Elf::parse(&aarch64).err(),
+            Some(ElfError::WrongMachine(183))
+        );
+
+        let mut i386 = image(&[]);
+        i386[18..20].copy_from_slice(&3u16.to_le_bytes());
+        assert_eq!(Elf::parse(&i386).err(), Some(ElfError::WrongMachine(3)));
+
+        // And the fixture itself says x86-64.
+        assert!(Elf::parse(&image(&[])).is_ok());
+    }
+
+    /// The two structure sizes, against the format rather than each other.
+    ///
+    /// The fixture builds its headers *from* these constants, so every test
+    /// using it stays self-consistent when they move together — the only
+    /// witness against the real format was the linked-kernel test, which
+    /// skips (D-105).
+    #[test]
+    fn the_structure_sizes_are_the_format_s() {
+        // ELF64 file header: 16 ident + 2 type + 2 machine + 4 version
+        // + 8 entry + 8 phoff + 8 shoff + 4 flags + 2 ehsize + 2 phentsize
+        // + 2 phnum + 2 shentsize + 2 shnum + 2 shstrndx = 64.
+        assert_eq!(HEADER_BYTES, 64);
+        // ELF64 program header: 4 type + 4 flags + 8 offset + 8 vaddr
+        // + 8 paddr + 8 filesz + 8 memsz + 8 align = 56.
+        assert_eq!(PROGRAM_HEADER_BYTES, 56);
+        assert_eq!(IDENT_BYTES, 16);
+        assert_eq!(MACHINE_X86_64, 62);
     }
 }

@@ -293,4 +293,31 @@ default-members = [
             Path::new("/repo").join("build").join(IMAGE_NAME)
         );
     }
+
+    /// The names here and the paths in `boot/limine.conf` are one contract
+    /// written twice.
+    ///
+    /// `KERNEL_ON_ESP`'s doc says "must match the `path:` line" and nothing
+    /// read that file. A drift produces an unbootable image, found forty-five
+    /// seconds into `boot-check` rather than by `cargo test` — the same shape
+    /// as the `default-members` drift the test above exists for (D-105).
+    #[test]
+    fn the_boot_configuration_names_the_files_the_image_builder_writes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let config = std::fs::read_to_string(root.join("boot").join("limine.conf"))
+            .expect("boot/limine.conf");
+
+        let named = |key: &str| -> String {
+            config
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(key))
+                .map(|value| value.trim().rsplit('/').next().unwrap_or("").to_string())
+                .unwrap_or_else(|| panic!("no {key} line in boot/limine.conf"))
+        };
+
+        assert_eq!(named("path:"), KERNEL_ON_ESP);
+        assert_eq!(named("module_path:"), PROGRAM_ON_ESP);
+    }
 }

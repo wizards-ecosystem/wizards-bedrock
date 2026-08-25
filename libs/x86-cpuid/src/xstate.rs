@@ -121,6 +121,7 @@ impl Layout {
         // not x87 and SSE are enabled — the header follows it either way.
         let mut cursor = HEADER_BYTES;
 
+        let mut overflowed = false;
         for (index, offset) in offsets.iter_mut().enumerate().skip(2) {
             if mask & (1 << index) == 0 {
                 continue;
@@ -132,13 +133,22 @@ impl Layout {
             if component.is_aligned() {
                 cursor = cursor.next_multiple_of(64);
             }
-            *offset = Some(cursor as u32);
+            // Refused rather than truncated. `cursor as u32` wrapped, so a
+            // layout whose components sum past four gigabytes gave two of them
+            // the same offset — two saves into one buffer, reported consistent
+            // (D-105). No architectural component is anywhere near this; the
+            // constructor is public and takes the sizes it is given.
+            let Ok(narrowed) = u32::try_from(cursor) else {
+                overflowed = true;
+                break;
+            };
+            *offset = Some(narrowed);
             cursor += component.size() as usize;
         }
 
         Self {
             offsets,
-            size: cursor,
+            size: if overflowed { 0 } else { cursor },
         }
     }
 
@@ -170,11 +180,28 @@ impl Layout {
     /// The invariant a caller should assert before handing the size to an
     /// allocator: an offset past the end would be a save that writes outside
     /// its buffer.
+    ///
+    /// It used to be a constant `true` — every offset is the cursor *before* a
+    /// non-zero addition, so `offset < size` held by construction, and the one
+    /// input that broke it (an offset truncated to `u32`) was invisible
+    /// because the truncation happened before the comparison. A layout that
+    /// overflows now reports a zero size, which fails here rather than
+    /// silently aliasing two components (D-105).
     pub fn is_consistent(&self) -> bool {
-        self.offsets
-            .iter()
-            .flatten()
-            .all(|offset| (*offset as usize) < self.size)
+        let no_duplicates = self.offsets.iter().enumerate().all(|(index, offset)| {
+            offset.is_none_or(|offset| {
+                !self.offsets[..index]
+                    .iter()
+                    .flatten()
+                    .any(|earlier| *earlier == offset)
+            })
+        });
+        no_duplicates
+            && self
+                .offsets
+                .iter()
+                .flatten()
+                .all(|offset| (*offset as usize) < self.size)
             && self.size >= HEADER_BYTES
     }
 }
@@ -249,18 +276,21 @@ mod tests {
         let mask = 0b111 | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 19);
         let layout = Layout::compacted(mask, avx512_and_apx);
 
-        // Index order, and each after the last.
-        let mut previous = HEADER_BYTES;
-        for index in [2u32, 5, 6, 7, 8, 9, 19] {
-            let offset = layout
-                .offset_of(index)
-                .unwrap_or_else(|| panic!("component {index} was enabled but not placed"));
-            assert!(
-                offset >= previous,
-                "component {index} at {offset} overlaps what came before it"
-            );
-            previous = offset + avx512_and_apx(index).size() as usize;
-        }
+        // Transcribed, not derived. `offset >= previous` with `previous`
+        // recomputed from the layout's own answer is `f(cursor) >= cursor`,
+        // true for every size and every alignment flag and every wrong
+        // implementation of `compacted` (D-105). These are the offsets the
+        // sizes in `avx512_and_apx` produce, worked out by hand: 576, then
+        // +256, +1024, +16, +64, +64, then 64-aligned for APX.
+        assert_eq!(layout.offset_of(2), Some(576), "avx");
+        assert_eq!(layout.offset_of(5), Some(832), "opmask");
+        assert_eq!(layout.offset_of(6), Some(896), "zmm hi256");
+        assert_eq!(layout.offset_of(7), Some(1408), "hi16 zmm");
+        assert_eq!(layout.offset_of(8), Some(2432), "pt");
+        assert_eq!(layout.offset_of(9), Some(2560), "pkru");
+        // The components inside the legacy area are never placed after it.
+        assert_eq!(layout.offset_of(0), None, "x87");
+        assert_eq!(layout.offset_of(1), None, "sse");
 
         // APX asks for alignment, so it starts on a sixty-four byte boundary
         // and the area is exactly long enough to hold it.
@@ -334,5 +364,52 @@ mod tests {
         assert_eq!(layout.offset_of(40), None);
         assert_eq!(layout.offset_of(63), None);
         assert!(layout.is_consistent());
+    }
+
+    /// A layout whose components run past four gigabytes refuses rather than
+    /// giving two of them one offset.
+    ///
+    /// `cursor as u32` wrapped, so three components of `0x8000_0000` bytes
+    /// produced offsets 576, 2147484224 and 576 again — and `is_consistent`
+    /// said yes, because it compared the already-truncated value. No
+    /// architectural component is anywhere near this; `Component::new` is
+    /// public and takes whatever it is given (D-105).
+    #[test]
+    fn a_layout_that_overflows_a_u32_offset_is_not_consistent() {
+        let huge = |_| Component::new(0x8000_0000, false);
+        let layout = Layout::compacted(0b1_1100, huge);
+
+        assert!(
+            !layout.is_consistent(),
+            "offsets {:?} at size {}",
+            layout.offset_of(2),
+            layout.size()
+        );
+
+        // And no two enabled components share a starting offset.
+        let placed: Vec<Option<usize>> = (2..5).map(|index| layout.offset_of(index)).collect();
+        for (index, offset) in placed.iter().enumerate() {
+            for earlier in &placed[..index] {
+                assert!(
+                    offset.is_none() || offset != earlier,
+                    "two components at {offset:?}"
+                );
+            }
+        }
+    }
+
+    /// A duplicate offset is what `is_consistent` is for, so it must see one.
+    #[test]
+    fn two_components_at_one_offset_are_not_consistent() {
+        // Constructed directly, because the constructor now refuses to build
+        // one — the invariant still has to be checkable from the outside.
+        let mut offsets = [None; COMPONENTS];
+        offsets[2] = Some(576);
+        offsets[3] = Some(576);
+        let layout = Layout {
+            offsets,
+            size: 1024,
+        };
+        assert!(!layout.is_consistent(), "an alias passed");
     }
 }

@@ -299,6 +299,13 @@ pub(crate) fn poller_passes() -> usize {
 /// on a machine whose line is routed.
 #[cfg(feature = "selftest")]
 pub(crate) fn start_bounded_poller(rounds: usize) -> bool {
+    // Refused where the shipped poller is running: they share the round
+    // counter, so bounding the check's would silently give the real one four
+    // more rounds and then kill keyboard input for the rest of the boot. Both
+    // test machines route the line, so this was guarded by luck (D-105).
+    if !is_interrupt_driven() {
+        return false;
+    }
     POLLER_ROUNDS.store(rounds, Ordering::Release);
     crate::thread::spawn("keyboard-poll-check", poll_forever).is_ok()
 }

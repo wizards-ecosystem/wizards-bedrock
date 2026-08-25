@@ -598,12 +598,14 @@ unsafe extern "C" fn leave_for_user(entry: u64, stack_top: u64) -> ! {
         "mov word ptr [rsp], {kernel_data}",
         "verw word ptr [rsp]",
         "add rsp, 8",
+        "inc qword ptr [rip + {clears}]",
         "2:",
         "iretq",
         user_data = const (super::segment::USER_DATA_BITS as u64),
         user_code = const (super::segment::USER_CODE_BITS as u64),
         kernel_data = const (super::segment::KERNEL_DATA_BITS as u32),
         clear = sym super::interrupt::MDS_CLEAR,
+        clears = sym super::interrupt::BUFFER_CLEARS,
     )
 }
 

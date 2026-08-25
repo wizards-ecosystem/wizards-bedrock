@@ -166,12 +166,52 @@ mod tests {
         StackLayout::new(0xffff_fe00_0000_0000, 16 * 1024, 4096, 16).expect("a valid layout")
     }
 
+    /// The addresses the layout actually produces, transcribed.
+    ///
+    /// `below.stack_top() <= slot.guard_base()` reduces to
+    /// `base + stride·i <= base + stride·i` for every base, stride and slot
+    /// count — true of any implementation of `stride()`, including one that
+    /// overlaps every slot with its neighbour. Nothing in this file held an
+    /// absolute address, so the claim in the module doc — "the proof that no
+    /// two slots touch" — was resting on `X <= X` (D-105).
     #[test]
-    fn slots_ascend_without_touching() {
+    fn slots_land_where_the_arithmetic_says() {
+        let layout = layout();
+        // Stride is 4096 guard + 16384 stack = 20480 = 0x5000.
+        assert_eq!(layout.stride(), 0x5000);
+        assert_eq!(layout.base(), 0xffff_fe00_0000_0000);
+
+        let first = layout.slot(0).expect("in range");
+        assert_eq!(first.guard_base(), 0xffff_fe00_0000_0000);
+        assert_eq!(first.stack_base(), 0xffff_fe00_0000_1000);
+        assert_eq!(first.stack_top(), 0xffff_fe00_0000_5000);
+
+        let second = layout.slot(1).expect("in range");
+        assert_eq!(second.guard_base(), 0xffff_fe00_0000_5000);
+        assert_eq!(second.stack_base(), 0xffff_fe00_0000_6000);
+        assert_eq!(second.stack_top(), 0xffff_fe00_0000_a000);
+
+        let last = layout.slot(15).expect("in range");
+        assert_eq!(last.guard_base(), 0xffff_fe00_0004_b000);
+        assert_eq!(last.stack_top(), 0xffff_fe00_0005_0000);
+    }
+
+    /// No stack overlaps a neighbour's, and every gap between them is a guard.
+    ///
+    /// Stated against the *stacks* rather than against `stride`, so a stride
+    /// that swallowed the guard would be visible here: a guard page is a page
+    /// nothing maps, and it is only a guard if it is not another slot's stack.
+    #[test]
+    fn no_two_stacks_touch_and_a_guard_lies_between_them() {
         let layout = layout();
         for index in 1..layout.slots() {
             let below = layout.slot(index - 1).expect("in range");
             let slot = layout.slot(index).expect("in range");
+            assert_eq!(
+                slot.stack_base() - below.stack_top(),
+                4096,
+                "slot {index} is not one guard page above its neighbour"
+            );
             assert!(
                 below.stack_top() <= slot.guard_base(),
                 "slot {index} begins before its neighbour ends"
@@ -190,10 +230,16 @@ mod tests {
         }
     }
 
+    /// `end()` and `last.stack_top()` are the same expression written twice,
+    /// so the equality between them is `X == X`; the window's length against a
+    /// transcribed number is what says the layout is the size it claims
+    /// (D-105).
     #[test]
     fn the_window_ends_where_the_last_slot_does() {
         let layout = layout();
         let last = layout.slot(layout.slots() - 1).expect("in range");
+        assert_eq!(layout.end(), 0xffff_fe00_0005_0000);
+        assert_eq!(layout.end() - layout.base(), 16 * 0x5000);
         assert_eq!(layout.end(), last.stack_top());
         assert_eq!(layout.slot(layout.slots()), None);
     }

@@ -80,6 +80,9 @@ pub enum MapError {
     /// The range's frames are not one ascending run, so they were not mapped
     /// by a single `map_owned` and cannot be returned as one segment.
     Discontiguous(u64),
+    /// The range is outside the half this space owns. A space that shares the
+    /// kernel's tables is not a handle onto them (D-105).
+    NotYours(u64),
 }
 
 impl From<EntryError> for MapError {
@@ -124,6 +127,9 @@ impl fmt::Display for MapError {
             }
             Self::Unsplittable(address) => {
                 write!(f, "{address:#x} is inside a large page, which is not split")
+            }
+            Self::NotYours(address) => {
+                write!(f, "{address:#x} is not in the half this space owns")
             }
             Self::Discontiguous(address) => {
                 write!(f, "the frames behind {address:#x} are not one run")
@@ -206,7 +212,47 @@ pub struct AddressSpace {
     device_next: u64,
     /// Physical ranges already promised to device mappings in this space.
     devices: [Option<DeviceExtent>; MAX_DEVICE_MAPPINGS],
+    /// Which half of the address space this one may be told to change.
+    reach: Reach,
 }
+
+/// How much of an address space its owner may map.
+///
+/// A space made by [`AddressSpace::for_user`] shares the kernel's higher half
+/// **by reference** (D-104): the top-level entries are copied, so the tables
+/// beneath them are the live kernel's. A map or unmap aimed above the split
+/// would therefore write the kernel's own tables through a handle any safe
+/// caller can make — `for_user` is public, and `unmap` on a kernel stack
+/// address would clear the entries a running thread stands on and hand its
+/// frames back to the allocator (D-105).
+///
+/// So a user space may be told to change only the half that is its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reach {
+    /// The whole space. The kernel's own, which owns every table in it.
+    Everywhere,
+    /// The lower half only. Everything above is somebody else's tables.
+    UserHalfOnly,
+}
+
+/// The first address that is not user memory.
+///
+/// The canonical hole begins here; everything above it is the kernel's.
+const USER_END: u64 = 0x0000_8000_0000_0000;
+
+/// Flags a caller may not choose, whatever it asks for.
+///
+/// `OWNED` is provenance, and the only thing `unmap` consults before handing
+/// frames to the allocator (D-88). It is written by [`AddressSpace::map_owned`]
+/// and by nothing else — but `map_boot` and `map_device` took caller flags
+/// verbatim, so safe code could stamp it onto a mapping of *any* described
+/// physical address and then unmap it, releasing a frame something else still
+/// owns. Two `Frame` handles over one frame, from safe code (D-105).
+///
+/// `HUGE` goes with it because it is derived from the level, never asked for,
+/// and `Entry::page` refuses it anyway — better a mask than an error a caller
+/// has to understand.
+const NOT_THE_CALLERS: Flags = Flags::OWNED.union(Flags::HUGE);
 
 impl AddressSpace {
     /// An address space mapping nothing.
@@ -220,6 +266,7 @@ impl AddressSpace {
             root,
             device_next: DEVICE_WINDOW_START,
             devices: [None; MAX_DEVICE_MAPPINGS],
+            reach: Reach::Everywhere,
         })
     }
 
@@ -264,6 +311,26 @@ impl AddressSpace {
                 return Err(error);
             }
             offset += level.span();
+        }
+        Ok(())
+    }
+
+    /// Whether this space may be told to change `len` bytes at `at`.
+    ///
+    /// The check that makes [`for_user`](Self::for_user) safe to expose. A
+    /// space sharing the kernel's higher half by reference must not be a
+    /// handle onto the kernel's tables (D-105).
+    ///
+    /// # Errors
+    ///
+    /// [`MapError::NotYours`] for a range this space does not own outright.
+    fn may_reach(&self, at: u64, len: u64) -> Result<(), MapError> {
+        if self.reach == Reach::Everywhere {
+            return Ok(());
+        }
+        let end = at.checked_add(len).ok_or(MapError::NonCanonical(at))?;
+        if end > USER_END {
+            return Err(MapError::NotYours(at));
         }
         Ok(())
     }
@@ -363,7 +430,14 @@ impl AddressSpace {
         region: BootRegion,
         flags: Flags,
     ) -> Result<(), MapError> {
-        self.map_range(virtual_base, region.base, region.len, flags, Grain::Largest)
+        self.may_reach(virtual_base, region.len)?;
+        self.map_range(
+            virtual_base,
+            region.base,
+            region.len,
+            flags.difference(NOT_THE_CALLERS),
+            Grain::Largest,
+        )
     }
 
     /// Map a run of frames this caller owns, at `virtual_base`.
@@ -372,7 +446,8 @@ impl AddressSpace {
     /// the mapping stands, which is D-44's type discipline applied to the
     /// mapping API and the discharge of D-76's first authority debt.
     ///
-    /// On failure nothing was mapped — the whole range is preflighted before
+    /// On failure nothing was mapped — a refusal partway through walks back
+    /// the entries it wrote (D-94), rather than being preflighted before
     /// any entry is written (D-77) — so `run` is dropped here and its frames
     /// go back to the allocator, which is what the caller wants.
     ///
@@ -388,10 +463,13 @@ impl AddressSpace {
         run: Segment,
         flags: Flags,
     ) -> Result<(), MapError> {
+        self.may_reach(virtual_base, run.len())?;
         // The owned bit is what `unmap` reads to know these frames are the
         // allocator's to have back (D-88). It is written in the entry rather
         // than tracked beside it because the entry is the one thing every path
-        // to an unmap can see.
+        // to an unmap can see — and it is added *here*, after the caller's
+        // flags have been stripped of it, so this is the only place it can
+        // come from (D-105).
         // Four-kilobyte pages only, whatever the run's size and alignment.
         // A large page carrying `OWNED` would be a mapping `unmap` must refuse
         // for ever — it does not split (D-45) — so the frames could never come
@@ -401,7 +479,7 @@ impl AddressSpace {
             virtual_base,
             run.address(),
             run.len(),
-            flags.union(Flags::OWNED),
+            flags.difference(NOT_THE_CALLERS).union(Flags::OWNED),
             Grain::Pages,
         )?;
         // The run belongs to the mapping now; `unmap` is what gives it back.
@@ -494,6 +572,11 @@ impl AddressSpace {
         let kernel = active_root();
         let space = Self::new()?;
 
+        let mut space = space;
+        // Narrowed *before* the sharing, so a space that shares the kernel can
+        // never be told to change it (D-105).
+        space.reach = Reach::UserHalfOnly;
+
         for index in ENTRIES / 2..ENTRIES {
             let from = entry_pointer(kernel, index)?;
             let into = entry_pointer(space.root, index)?;
@@ -540,6 +623,7 @@ impl AddressSpace {
         if !x86_paging::is_canonical(virtual_base) || !x86_paging::is_canonical(end - 1) {
             return Err(MapError::NonCanonical(virtual_base));
         }
+        self.may_reach(virtual_base, len)?;
         let pages = len / PAGE_SIZE;
 
         // Preflight the whole range before clearing anything, so a refusal
@@ -567,7 +651,7 @@ impl AddressSpace {
         for page in 0..pages {
             let address = virtual_base + page * PAGE_SIZE;
             let slot = self.leaf(address)?;
-            // SAFETY: as above, and the preflight confirmed this slot holds a
+            // SAFETY: as above, and the rollback established that this slot holds a
             // present, owned, four-kilobyte mapping.
             unsafe { slot.write_volatile(Entry::ABSENT) };
         }
@@ -575,7 +659,7 @@ impl AddressSpace {
         Ok(Unmapped {
             base: virtual_base,
             pages,
-            // SAFETY: the preflight proved these `pages` frames from `base`
+            // SAFETY: the rollback proved these `pages` frames from `base`
             // are one ascending run that a `map_owned` moved into this space
             // and that nothing else holds, and the entries naming them have
             // just been cleared.
@@ -766,10 +850,13 @@ impl AddressSpace {
                 if current.is_huge() {
                     return Err(MapError::Conflict(virtual_address));
                 }
+                // An interior entry covers everything below it, so upgrading
+                // one to `USER` would hand ring 3 every mapping already under
+                // it. Refusing costs nothing — a user space's lower half
+                // starts empty, so its interior tables are always minted
+                // `User` on the way down (D-105).
                 if flags.contains(Flags::USER) && !current.flags().contains(Flags::USER) {
-                    let entry = Entry::table(current.address(), TablePrivilege::User)?;
-                    // SAFETY: this space is still under exclusive construction.
-                    unsafe { slot.write_volatile(entry) };
+                    return Err(MapError::Conflict(virtual_address));
                 }
                 current.address()
             } else {
@@ -780,7 +867,8 @@ impl AddressSpace {
                 } else {
                     TablePrivilege::Supervisor
                 };
-                // SAFETY: as above; this slot is in the exclusively built table.
+                // SAFETY: as above — the slot is in a table this space owns,
+                // and `&mut self` means nothing else is writing it.
                 unsafe { slot.write_volatile(Entry::table(frame, privilege)?) };
                 frame
             };
@@ -1007,17 +1095,12 @@ fn walk(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags, u64)> {
         return None;
     }
 
-    // The permission bits a walk arrives with, narrowed at every level. The
-    // architecture computes the effective permission of a page from the whole
-    // path: `USER` and `WRITABLE` are the *conjunction* down the walk, and
-    // `NO_EXECUTE` is the *disjunction*. Returning the leaf's flags alone
-    // states a stronger permission than the CPU will grant, and four callers
-    // read this as if it were the effective one (D-103).
-    /// The permissions a walk narrows rather than reads off the leaf.
-    const NARROWED: Flags = Flags::USER.union(Flags::WRITABLE);
-
-    let mut granted = NARROWED;
-    let mut forbidden = false;
+    // The fold itself is arithmetic and lives where `cargo test` reaches it:
+    // `Flags::through` and `Flags::effective_for` in `libs/x86-paging`. Here it
+    // was unfalsifiable, because `set` refuses to build a hierarchy whose
+    // parent is narrower than its child, so no check could construct the
+    // disagreement the fold exists for (D-105).
+    let mut walked = Flags::EVERYTHING_ALLOWED;
 
     let mut table = root;
     for level in Level::WALK {
@@ -1035,17 +1118,11 @@ fn walk(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags, u64)> {
 
         // The huge bit means something else entirely in a leaf table, so the
         // level is checked first.
-        granted = granted.intersection(entry.flags());
-        forbidden |= entry.flags().contains(Flags::NO_EXECUTE);
+        walked = walked.through(entry.flags());
 
         if level == Level::Pt || entry.is_huge() {
             let offset = virtual_address & (level.span() - 1);
-            // The leaf's own flags, with the narrowed ones put back as the
-            // walk computed them.
-            let mut effective = entry.flags().difference(NARROWED).union(granted);
-            if forbidden {
-                effective = effective.union(Flags::NO_EXECUTE);
-            }
+            let effective = walked.effective_for(entry.flags());
             return Some((entry.address() + offset, effective, level.span()));
         }
         table = entry.address();
@@ -1238,8 +1315,14 @@ pub struct BootRegion {
 }
 
 impl BootRegion {
-    /// Describe `len` bytes at `base`, or `None` if the memory map does not
-    /// cover all of it.
+    /// Describe `len` bytes at `base`, or `None` unless the memory map covers
+    /// all of it *with memory*.
+    ///
+    /// The second half is the part that took an audit to state: a device hole
+    /// is described too, and the direct map's writeback caching over one is a
+    /// cacheable alias of registers (D-105). What counts as memory is D-45's
+    /// answer, [`crate::boot::MemoryKind::is_direct_mapped`], because this evidence exists
+    /// to build exactly that map.
     ///
     /// `None` also before the map is up, which is the honest answer: until
     /// then nothing has described anything.
@@ -1248,7 +1331,7 @@ impl BootRegion {
         if len == 0 || !base.is_multiple_of(PAGE_SIZE) {
             return None;
         }
-        crate::mm::with_memory_map(|map| map.covers(base, end))
+        crate::mm::with_memory_map(|map| map.covers_memory(base, end))
             .unwrap_or(false)
             .then_some(Self { base, len })
     }

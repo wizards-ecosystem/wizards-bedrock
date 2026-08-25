@@ -81,8 +81,19 @@ fn take_module(request: &'static ModuleRequest) -> Result<&'static [u8], Handoff
     let response = request.get_response().ok_or(HandoffError::NoResponse)?;
     let module = response.modules().first().ok_or(HandoffError::Empty)?;
     let address = module.addr();
-    let len = module.size() as usize;
-    if address.is_null() || len == 0 {
+    let size = module.size();
+    if address.is_null() || size == 0 {
+        return Err(HandoffError::Empty);
+    }
+    // `from_raw_parts` states two bounds the bootloader's numbers do not
+    // promise: the length must fit an `isize`, and the range must not wrap.
+    // Neither is reachable from a real Limine, and neither was checked, which
+    // is the difference the audit was about (D-105).
+    let len = usize::try_from(size)
+        .ok()
+        .filter(|len| *len <= isize::MAX as usize)
+        .ok_or(HandoffError::Empty)?;
+    if (address as usize).checked_add(len).is_none() {
         return Err(HandoffError::Empty);
     }
     // SAFETY: the bootloader reports this range as a module it loaded and

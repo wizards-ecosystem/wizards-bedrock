@@ -99,8 +99,14 @@ impl Capacity {
     ///
     /// # Errors
     ///
-    /// [`CapacityError::NotAPowerOfTwo`] for zero or a non-power of two, and
-    /// [`CapacityError::TooLarge`] above [`MAX`](Self::MAX).
+    /// [`CapacityError::NotAPowerOfTwo`] for zero or a non-power of two.
+    ///
+    /// [`CapacityError::TooLarge`] is **unreachable from here** and kept as a
+    /// guard for a wider index type: the largest power of two a `u32` holds is
+    /// `1 << 31`, which is [`MAX`](Self::MAX) exactly, so the power-of-two
+    /// refusal above already excludes everything the size check would. Said
+    /// here because a doc that lists a reachable error the caller must handle
+    /// is a claim (D-105).
     pub const fn new(entries: u32) -> Result<Self, CapacityError> {
         if entries == 0 || !entries.is_power_of_two() {
             return Err(CapacityError::NotAPowerOfTwo(entries));
@@ -637,5 +643,17 @@ mod tests {
         assert_eq!(queues.complete(), None);
         assert!(queues.completions().is_empty());
         assert!(queues.is_consistent());
+    }
+
+    #[test]
+    fn every_power_of_two_a_u32_holds_is_accepted() {
+        // The claim behind `TooLarge`'s unreachability, checked rather than
+        // reasoned: nothing a `u32` can hold survives the power-of-two
+        // refusal and then exceeds `MAX` (D-105).
+        for shift in 0..u32::BITS {
+            let entries = 1u32 << shift;
+            assert!(Capacity::new(entries).is_ok(), "{entries} was refused");
+        }
+        assert_eq!(Capacity::MAX, 1 << 31);
     }
 }

@@ -187,26 +187,71 @@ mod tests {
     /// that also became a trap gate, or lost its stack, would be a different
     /// kind of entry wearing the same name — and it would work, which is what
     /// makes it worth checking (D-96).
+    ///
+    /// The equalities against `ordinary` are identities: `callable_from_user`
+    /// delegates to `interrupt` and then sets two bits of `attributes`, so the
+    /// handler, selector and stack are literally the same fields, and
+    /// `((a | 0x60) >> 5) & 3 == 3` for every `a`. Transcribed bytes instead —
+    /// the whole attribute word, against the manual (D-105).
     #[test]
     fn a_user_callable_gate_differs_only_in_privilege() {
         let selector = Selector::new(1, 0);
         let ordinary = Gate::interrupt(0xffff_8000_0000_1234, selector, 0);
         let callable = Gate::callable_from_user(0xffff_8000_0000_1234, selector, 0);
 
-        assert_eq!(ordinary.privilege(), 0, "an ordinary gate admits ring 3");
+        // Present, DPL 0, 64-bit interrupt gate: `1_00_0_1110`.
+        assert_eq!(ordinary.attributes, 0b1000_1110);
+        // Present, DPL 3, still a 64-bit *interrupt* gate — the low nibble is
+        // `0xE` and not `0xF`, which is what keeps it from being a trap gate
+        // and keeps `IF` cleared on entry.
+        assert_eq!(callable.attributes, 0b1110_1110);
+        assert_eq!(callable.attributes & 0xF, 0xE, "it became a trap gate");
         assert_eq!(callable.privilege(), 3);
-        assert_eq!(callable.handler_address(), ordinary.handler_address());
-        assert_eq!(callable.selector().bits(), ordinary.selector().bits());
-        assert_eq!(callable.interrupt_stack(), ordinary.interrupt_stack());
+        assert_eq!(ordinary.privilege(), 0, "an ordinary gate admits ring 3");
+        assert_eq!(callable.handler_address(), 0xffff_8000_0000_1234);
         assert!(callable.is_present() && ordinary.is_present());
+    }
 
-        // And the two differ in exactly the two privilege bits.
-        let difference = callable.attributes ^ ordinary.attributes;
-        assert_eq!(
-            difference,
-            0b11 << 5,
-            "something other than privilege moved"
-        );
+    /// The bytes the CPU reads are where the manual says they are.
+    ///
+    /// `tss::TaskState` got these pins from D-95 and `Gate` did not, though it
+    /// is equally a structure hardware parses byte for byte. Swapping
+    /// `interrupt_stack` and `attributes` keeps the size at sixteen and leaves
+    /// every accessor round-tripping through its own named field — the shipped
+    /// table then reads IST where DPL should be, with every test green
+    /// (D-105).
+    #[test]
+    fn a_gate_is_laid_out_the_way_the_manual_says() {
+        use core::mem::{align_of, offset_of, size_of};
+
+        assert_eq!(size_of::<Gate>(), 16);
+        assert_eq!(align_of::<Gate>(), 4);
+        assert_eq!(offset_of!(Gate, offset_low), 0);
+        assert_eq!(offset_of!(Gate, selector), 2);
+        assert_eq!(offset_of!(Gate, interrupt_stack), 4);
+        assert_eq!(offset_of!(Gate, attributes), 5);
+        assert_eq!(offset_of!(Gate, offset_middle), 6);
+        assert_eq!(offset_of!(Gate, offset_high), 8);
+        assert_eq!(offset_of!(Gate, reserved), 12);
+    }
+
+    /// And every field of a built gate holds the value the manual asks for.
+    ///
+    /// Read as fields rather than through the accessors, because an accessor
+    /// and the field it names always agree — that is what left the split of
+    /// the handler address across three fields unchecked. Together with the
+    /// offsets above this is the sixteen bytes, which `libs/` cannot
+    /// `transmute` to (D-105).
+    #[test]
+    fn a_built_gate_holds_the_encoding_the_manual_asks_for() {
+        let gate = Gate::interrupt(0xffff_8000_1234_5678, Selector::new(1, 0), 1);
+        assert_eq!(gate.offset_low, 0x5678);
+        assert_eq!(gate.selector, 0x0008);
+        assert_eq!(gate.interrupt_stack, 1);
+        assert_eq!(gate.attributes, 0x8E);
+        assert_eq!(gate.offset_middle, 0x1234);
+        assert_eq!(gate.offset_high, 0xffff_8000);
+        assert_eq!(gate.reserved, 0);
     }
 
     /// The missing gate admits nobody.

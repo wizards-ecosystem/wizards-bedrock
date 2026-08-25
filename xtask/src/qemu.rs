@@ -143,7 +143,7 @@ const SELFTEST_FAILED: i32 = 35;
 /// The serial verdict contract shared with `kernel/src/selftest.rs`.
 const SELFTEST_VERDICT_PREFIX: &str = "selftest: verdict ";
 const SELFTEST_VERDICT_VERSION: &str = "v1";
-const EXPECTED_SELFTEST_CHECKS: usize = 105;
+const EXPECTED_SELFTEST_CHECKS: usize = 108;
 
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
@@ -730,6 +730,14 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
 
     serial_outcome?;
     outcome?;
+    // Consulted once more after the join. `watch` returns as soon as the
+    // settle deadline passes, and `finish_boot_serial` reports only read
+    // errors — so a panic printed in the last poll interval, or between the
+    // deadline and the kill, was forwarded to the log and then reported as a
+    // clean boot (D-105).
+    if panicked.load(Ordering::Acquire) {
+        anyhow::bail!("the kernel panicked during the settle window");
+    }
     println!("[xtask] shipped kernel boots, responds, and settles");
     Ok(())
 }
@@ -1059,5 +1067,86 @@ mod tests {
     #[test]
     fn non_irq_monitor_output_is_not_a_zero_count() {
         assert_eq!(irq_count("unknown command: info irq\r\n(qemu)", 1), None);
+    }
+
+    /// Every constant this module shares with the kernel is read back out of
+    /// the kernel's own source.
+    ///
+    /// Four contracts are written twice — the check count, the verdict
+    /// version, the two serial markers and the panic marker — and nothing
+    /// checked the copies agreed. A count drift is invisible to `cargo test`
+    /// and surfaces only after a sixty-second boot; a marker drift makes the
+    /// harness wait for a line that will never come. This is the shape
+    /// `paths.rs`'s `default-members` test exists for, applied to the other
+    /// four lists (D-105).
+    #[test]
+    fn the_serial_contract_matches_the_kernel_source() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root")
+            .join("kernel")
+            .join("src");
+        let selftest = std::fs::read_to_string(root.join("selftest.rs")).expect("selftest.rs");
+        let main = std::fs::read_to_string(root.join("main.rs")).expect("main.rs");
+        let panic = std::fs::read_to_string(root.join("panic.rs")).expect("panic.rs");
+
+        let constant = |source: &str, name: &str| -> String {
+            source
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(&format!("const {name}: usize = ")))
+                .map(|value| value.trim_end_matches(';').to_string())
+                .unwrap_or_else(|| panic!("no `{name}` in the kernel source"))
+        };
+
+        assert_eq!(
+            constant(&selftest, "EXPECTED_CHECKS"),
+            EXPECTED_SELFTEST_CHECKS.to_string(),
+            "the check count drifted"
+        );
+        assert_eq!(
+            format!("v{}", constant(&selftest, "VERDICT_VERSION")),
+            SELFTEST_VERDICT_VERSION,
+            "the verdict version drifted"
+        );
+        assert!(
+            selftest.contains(SELFTEST_VERDICT_PREFIX.trim_end()),
+            "the kernel does not print {SELFTEST_VERDICT_PREFIX:?}"
+        );
+        assert!(
+            selftest.contains(READY_MARKER),
+            "the kernel does not print {READY_MARKER:?}"
+        );
+        assert!(
+            main.contains(SETTLED_MARKER),
+            "the kernel does not print {SETTLED_MARKER:?}"
+        );
+        assert!(
+            panic.contains(PANIC_MARKER),
+            "the kernel does not print {PANIC_MARKER:?}"
+        );
+    }
+
+    /// And the count the kernel declares is the number of checks it runs.
+    ///
+    /// `EXPECTED_CHECKS` is deliberately independent of the running tally, so
+    /// the two can disagree — and the boot that finds out costs a minute
+    /// (D-105).
+    #[test]
+    fn the_expected_count_is_the_number_of_checks_registered() {
+        let selftest = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("xtask sits below the workspace root")
+                .join("kernel")
+                .join("src")
+                .join("selftest.rs"),
+        )
+        .expect("selftest.rs");
+
+        let registered = selftest.matches("report.check(").count();
+        assert_eq!(
+            registered, EXPECTED_SELFTEST_CHECKS,
+            "the kernel registers {registered} checks and declares {EXPECTED_SELFTEST_CHECKS}"
+        );
     }
 }

@@ -54,14 +54,28 @@ mod tests {
         assert_eq!(measured_hz(1, 4), 298_296);
     }
 
-    /// Inputs at the top of the space must answer, not overflow: the rounding
-    /// addend is checked as well as the product.
+    /// Inputs at the top of the space must answer, not overflow.
+    ///
+    /// The *product*'s `checked_mul` is what these two lines exercise. The
+    /// rounding addend's `checked_add` is unreachable and the doc used to
+    /// claim it was covered: `u64::MAX mod CRYSTAL_HZ` is 958_759 and the
+    /// largest addend is `u16::MAX / 2`, so the sum never wraps — mutating it
+    /// to `wrapping_add` survived all eighteen tests (D-105). Stated rather
+    /// than tested, because the input that would reach it does not exist.
     #[test]
-    fn the_rounding_addend_cannot_overflow() {
+    fn the_product_at_the_top_of_the_space_cannot_overflow() {
         let largest_counted = u64::MAX / CRYSTAL_HZ as u64;
 
         assert!(measured_hz(largest_counted, u16::MAX) > 0);
         assert_eq!(measured_hz(largest_counted + 1, u16::MAX), 0);
+
+        // The headroom the addend relies on, so a change to `CRYSTAL_HZ` that
+        // removed it is visible here rather than nowhere.
+        let remainder = u64::MAX % CRYSTAL_HZ as u64;
+        assert!(
+            remainder >= u64::from(u16::MAX / 2),
+            "the rounding addend no longer fits: {remainder} left"
+        );
     }
 
     #[test]

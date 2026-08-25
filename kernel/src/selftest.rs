@@ -197,7 +197,10 @@ fn firmware_reads_are_bounded() -> bool {
             .regions()
             .map(|region| region.base.saturating_add(region.len))
             .max()
-            .map(|top| top.next_multiple_of(4096));
+            // Checked, not `next_multiple_of`: the input is a `saturating_add`
+            // of the bootloader's own numbers, and rounding `u64::MAX` up
+            // panics a debug build on a handoff nobody validated (D-105).
+            .and_then(|top| top.checked_next_multiple_of(4096));
         (
             pick(|region| region.kind.is_allocatable()),
             pick(|region| !region.kind.is_firmware_table() && !region.kind.is_allocatable()),
@@ -332,6 +335,8 @@ fn a_waiter_rereads_its_condition_before_blocking() -> bool {
     };
     inner.signal();
 
+    // Safe to assign: the slot holds , so nothing is dropped under it.
+    // Safe to assign: the slot is empty, so nothing is dropped under the guard.
     *REREAD_EVENT.lock_leaf() = Some(Arc::clone(&event));
     REREAD_RETURNED.store(0, Ordering::Release);
     let free_before = thread::free_slots();
@@ -341,7 +346,12 @@ fn a_waiter_rereads_its_condition_before_blocking() -> bool {
 
     let came_back = runs_until(200, || REREAD_RETURNED.load(Ordering::Acquire) == 1);
     let settled = runs_until(200, || thread::free_slots() == free_before);
-    *REREAD_EVENT.lock_leaf() = None;
+    // Taken out rather than assigned over: assignment drops the previous
+    // `Arc` *inside* the critical section, and a last reference would reach
+    // the heap and the frame allocator under a leaf guard — the shape
+    // `handle.rs` goes to explicit trouble to avoid (D-105).
+    let released = REREAD_EVENT.lock_leaf().take();
+    drop(released);
 
     // And nothing is left registered, so a later wake cannot name a thread
     // that is no longer waiting here.
@@ -458,7 +468,8 @@ fn a_faulting_program_dies_alone() -> bool {
     let from_user = fault.code_selector & 0b11 == 3;
     // The fault the program chose, and no other.
     let it_was_the_ud2 = fault.vector == u64::from(exception::INVALID_OPCODE);
-    // Its instruction pointer is in user memory, not the kernel's.
+    // Its stack pointer is in user memory, not the kernel's. (The record
+    // carries no instruction pointer; an earlier comment said it did.)
     let in_user_memory = fault.stack_pointer < usercopy::USER_END;
     // The thread was retired rather than the machine stopped — and the machine
     // is plainly still here, since this line runs.
@@ -507,14 +518,19 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
         Err(user::LoadError::WriteExecute(_))
     );
 
-    // Contents past the end of the image.
-    let overrun = doctor(FILE_SIZE, 0x1000);
+    // Contents past the end of the image, and *only* that: `p_offset` moved
+    // out to the end with the sizes left alone, so `is_oversized` is satisfied
+    // and `contents_fit` is the one refusal that can fire. The earlier version
+    // set `p_filesz = 0x1000`, which tripped both — and deleting the
+    // `contents_fit` bound, the only thing keeping a slice index inside the
+    // image, left the gate green (D-105).
+    let overrun = doctor(OFFSET, original.len() as u64);
     let overrun_refused = matches!(
         user::load_image(&mut context(), &overrun, 0),
-        Err(user::LoadError::Malformed(_))
+        Err(user::LoadError::Truncated(_))
     );
 
-    // More file than memory to put it in.
+    // More file than memory to put it in, and only that.
     let mut oversized = doctor(FILE_SIZE, 8);
     oversized[MEMORY_SIZE..MEMORY_SIZE + 8].copy_from_slice(&4u64.to_le_bytes());
     let oversized_refused = matches!(
@@ -536,7 +552,6 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
         Err(user::LoadError::NotAnElf(_))
     );
 
-    let _ = OFFSET;
     wx_refused && overrun_refused && oversized_refused && intruding_refused && refused_outright
 }
 
@@ -547,10 +562,12 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
 /// trap on a stack the first was standing on. It now moves with the thread, in
 /// the one place every switch passes through.
 ///
-/// The evidence is the stack the trap landed on. Each crossing records the
-/// kernel stack `RSP0` named at the time, and the two must differ and must
-/// each be the arena slot of the thread that called — a single shared landing
-/// would give one address twice.
+/// The evidence is the stack the trap actually landed on — `frame_address`,
+/// recorded by the entry path out of the interrupted stack pointer, and so a
+/// property of *that* crossing. `segment::kernel_stack()` reads the live
+/// `RSP0`, which is global CPU state that both reads see identically long
+/// after the fact; comparing it to itself could not fail, and did not, for a
+/// whole phase (D-105).
 ///
 /// The two programs share an address space, so this is not isolation and is
 /// not claimed to be: what it shows is that the *kernel* side of two
@@ -561,7 +578,7 @@ fn a_second_thread_crosses_onto_its_own_stack() -> bool {
     if first.count == 0 {
         return false;
     }
-    let first_landing = segment::kernel_stack();
+    let first_landing = first.frame_address;
 
     if thread::spawn("user-two", user::run_second).is_err() {
         return false;
@@ -577,11 +594,17 @@ fn a_second_thread_crosses_onto_its_own_stack() -> bool {
     // At its own user addresses, not the first program's.
     let elsewhere =
         second.stack_pointer != first.stack_pointer && second.stack_pointer < usercopy::USER_END;
-    // And `RSP0` moved: the landing the second thread trapped onto is not the
-    // one the first used.
-    let own_landing = segment::kernel_stack() != first_landing;
+    // And `RSP0` moved: the stack this crossing landed on is not the one the
+    // previous crossing landed on, and both are kernel stacks — a shared
+    // `RSP0` would give one address twice.
+    let own_landing = second.frame_address != first_landing
+        && second.frame_address >= usercopy::USER_END
+        && first_landing >= usercopy::USER_END;
+    // The gap is at least a stack apart, so two landings inside one stack
+    // frame's worth of each other do not read as separate stacks.
+    let far_apart = second.frame_address.abs_diff(first_landing) >= PAGE_SIZE;
 
-    from_user && through_the_gate && elsewhere && own_landing
+    from_user && through_the_gate && elsewhere && own_landing && far_apart
 }
 
 /// The return to ring 3 clears the buffers, and the crossing happened with it
@@ -599,15 +622,20 @@ fn a_second_thread_crosses_onto_its_own_stack() -> bool {
 /// unreachable here — the same hole eIBRS is still in.
 ///
 /// What the check cannot show is that the flush *flushes*: nothing observable
-/// changes. What it shows is that the branch is armed and that a ring-3 return
-/// was taken through it, which is the part that could crash and the part a
-/// later edit could break.
+/// changes. What it shows is that the instruction **executed** — the tally
+/// beside the `verw`, not the byte that arms it. Reading the arming was the
+/// earlier version, and deleting the `verw` outright left it green, which is
+/// exactly how D-101 found the flush had shipped unexecuted (D-105).
 fn the_return_to_ring_three_clears_buffers() -> bool {
     let armed = interrupt::buffer_clear_is_armed();
-    // The crossing already happened, and it happened after boot armed this —
-    // so the path with the flush in it is a path this machine has run.
-    let crossed = trap::last_syscall().count > 0;
-    armed && crossed
+    let executed = interrupt::buffer_clears();
+    if !armed || executed == 0 {
+        return false;
+    }
+    // And it executes once per crossing rather than once at boot: every
+    // syscall seen came from a thread that was let into ring 3 through this
+    // branch, so the tally cannot lag the crossings.
+    executed >= trap::last_syscall().count as u64
 }
 
 /// Bytes cross the boundary in both directions, and every way they must not
@@ -756,13 +784,21 @@ fn a_handle_does_not_cross_tables() -> bool {
     let forged = theirs.handle_for(slot);
     let refused = theirs.resolve(forged).err() == Some(HandleError::NotYours);
 
-    // The accidental case is refused too, however it happens to land.
+    // The accidental case is refused too. `theirs` holds nothing, so the only
+    // refusals reachable are the bounds check and the generation; naming both
+    // is the whole set, which is the `matches!(Err(_) | Err(_) | Err(_))` shape
+    // D-95 deleted from this very function. Named singly instead (D-105).
     let stray = matches!(
         theirs.resolve(handle),
-        Err(HandleError::NotYours) | Err(HandleError::Malformed) | Err(HandleError::Stale)
+        Err(HandleError::Malformed | HandleError::Stale)
     );
+    // And *not* by reaching the ownership comparison: `theirs` holds no
+    // entries, so a `NotYours` would mean it read an owner out of an empty
+    // slot. Naming all three refusals — which an earlier version did — says
+    // only "an error", the shape D-95 deleted from this function (D-105).
+    let not_by_ownership = theirs.resolve(handle).err() != Some(HandleError::NotYours);
     let still_mine = mine.resolve(handle).is_ok();
-    refused && stray && still_mine
+    refused && stray && not_by_ownership && still_mine
 }
 
 /// Rights are checked, and duplication only ever narrows them.
@@ -950,7 +986,9 @@ fn a_signal_wakes_a_thread_waiting_on_a_handle() -> bool {
     // Leave nothing running: a thread still exiting perturbs whatever check
     // comes next, and the alternation check is sensitive to exactly that.
     let settled = runs_until(200, || thread::free_slots() == free_before);
-    *WAITED_EVENT.lock_leaf() = None;
+    // As above: the previous value leaves the guard rather than being dropped
+    // inside it.
+    drop(WAITED_EVENT.lock_leaf().take());
 
     blocked && woke_count >= 1 && came_back && late_did_not_block && settled
 }
@@ -1103,24 +1141,24 @@ fn a_second_space_holds_the_kernel_and_nothing_else() -> bool {
     shared && user_is_absent && kernel_is_not_user
 }
 
-/// A walk reports the permission the CPU will grant, not the leaf's opinion.
+/// A walk reports what the live tables grant, at the three addresses that
+/// matter.
 ///
-/// The architecture takes `USER` and `WRITABLE` as the conjunction down the
-/// whole walk and `NO_EXECUTE` as the disjunction, so a leaf that says `USER`
-/// under a parent that does not is *not* user memory. `translate` used to
-/// return the leaf's flags alone (D-103), and four callers — `enter_user`
-/// twice and `admits` twice — read them as effective. It held only because
-/// `Entry::table` always sets `PRESENT | WRITABLE` and `set` upgrades parents
-/// to `USER` when a user leaf needs one, so the one narrowable bit was always
-/// repaired on the way down.
+/// **This is not the check for the narrowing.** The architecture takes `USER`
+/// and `WRITABLE` as the conjunction down the whole walk and `NO_EXECUTE` as
+/// the disjunction (D-103), and no address space this kernel can build has a
+/// parent narrower than its child: `Entry::table` always writes
+/// `PRESENT | WRITABLE` and never `NO_EXECUTE`, and `set` now *refuses* a user
+/// leaf under a supervisor parent rather than widening one (D-105). So the
+/// disagreement the fold exists for is unconstructible here, and an earlier
+/// version of this doc claimed to construct it while asserting three equalities
+/// that hold with the fold deleted.
 ///
-/// Checked here rather than in `libs/x86-paging` because it is a property of
-/// the *walk*, not of an entry: it needs a table hierarchy with a parent that
-/// disagrees with its child, which only a real address space has.
+/// The fold moved to `Flags::through` / `Flags::effective_for` in
+/// `libs/x86-paging`, where `cargo test` can hand it a hierarchy the kernel
+/// will not build. What is left here is the machine's half: the three
+/// addresses report what the tables were asked for, end to end.
 fn a_walk_reports_the_permission_the_cpu_grants() -> bool {
-    // Two addresses in the same page table, so they share every parent above
-    // it. If narrowing were absent, they would still agree — so the check
-    // below turns the parent itself.
     let user_at = user::CODE;
     let Some((_, user_flags)) = paging::translate(user_at) else {
         return false;
@@ -1128,18 +1166,15 @@ fn a_walk_reports_the_permission_the_cpu_grants() -> bool {
     // The program's page really is user-accessible, all the way down.
     let user_is_user = user_flags.contains(Flags::USER);
 
-    // The kernel's own text is not, and its parents are not either — so a walk
-    // that reported the leaf alone and a walk that narrows must agree here,
-    // which is what makes the next part the interesting one.
+    // The kernel's own text is not, and neither are its parents.
     let text = boot::sections().text.start;
     let Some((_, text_flags)) = paging::translate(text) else {
         return false;
     };
     let kernel_is_not_user = !text_flags.contains(Flags::USER);
 
-    // And the direct map, which is writable and never executable, reports both
-    // — a walk that lost the disjunction would drop the `NO_EXECUTE` a parent
-    // contributes.
+    // And the direct map is writable and never executable, which is the pair
+    // W^X depends on being reported truthfully.
     let Some(direct) = mm::direct_map().and_then(|map| map.virtual_address(LARGE_PAGE_SIZE)) else {
         return false;
     };
@@ -1317,6 +1352,109 @@ fn a_differing_remap_is_refused() -> bool {
     first.is_ok() && again.is_ok() && differing == Err(MapError::Conflict(PROBE))
 }
 
+/// A described frame cannot be laundered into the allocator by claiming it.
+///
+/// `Flags::OWNED` is public in `libs/x86-paging` and nameable from here, and
+/// `unmap` consults exactly that bit before minting a `Segment` and handing
+/// the frames to the allocator. If `map_boot` passed caller flags through,
+/// this safe sequence would produce a second owner of a frame the kernel is
+/// standing on — a use-after-free with no `unsafe` anywhere (D-105).
+fn a_boot_mapping_cannot_claim_ownership() -> bool {
+    /// Canonical, and far from anything a fresh space maps.
+    const PROBE: u64 = 0xffff_8880_0000_0000;
+
+    let Ok(mut space) = AddressSpace::new() else {
+        return false;
+    };
+    let Some(region) = BootRegion::describe(PAGE_SIZE, PAGE_SIZE) else {
+        return false;
+    };
+    if space
+        .map_boot(PROBE, region, Flags::NO_EXECUTE.union(Flags::OWNED))
+        .is_err()
+    {
+        return false;
+    }
+    let before = mm::free_frames();
+    // The bit was stripped, so `unmap` sees a mapping nothing owns and refuses
+    // it — rather than minting a `Segment` over the boot handoff's frame and
+    // handing it to the allocator, which would be a second owner of a frame
+    // the kernel is standing on, from safe code.
+    let refused = space.unmap(PROBE, PAGE_SIZE).err() == Some(MapError::NotOwned(PROBE));
+    refused && mm::free_frames() == before
+}
+
+/// A space that shares the kernel's higher half cannot write to it.
+///
+/// `for_user` copies the kernel's own PML4 entries rather than duplicating the
+/// tables below them, so every higher-half mapping operation on such a space
+/// walks into the live kernel's tables. Unmapping a kernel address through one
+/// would blank a running thread's stack and free its frames (D-105).
+fn a_user_space_cannot_reach_the_kernel_half() -> bool {
+    /// Inside the direct map, so the walk would find real entries to blank.
+    const KERNEL: u64 = 0xffff_8000_0010_0000;
+    /// The last page below the user/supervisor boundary.
+    const LAST_USER: u64 = 0x0000_7fff_ffff_f000;
+
+    let Ok(mut user) = AddressSpace::for_user() else {
+        return false;
+    };
+    let Some(region) = BootRegion::describe(PAGE_SIZE, PAGE_SIZE) else {
+        return false;
+    };
+    let unmapped = user.unmap(KERNEL, PAGE_SIZE);
+    let mapped = user.map_boot(KERNEL, region, Flags::NO_EXECUTE);
+    // The refusal is about the half, not about mapping: the last user page is
+    // still reachable, and a range that straddles the boundary is not.
+    // A range that runs off the top of the user half is refused too, though
+    // not by `may_reach`: the boundary is also where the canonical hole
+    // begins, so a straddle is non-canonical and stopped one check earlier.
+    // Named rather than folded into the others, because "refused" and
+    // "refused for the reason this check is about" are different claims.
+    let straddles =
+        user.unmap(LAST_USER, 2 * PAGE_SIZE).err() == Some(MapError::NonCanonical(LAST_USER));
+    // And the refusal is about the *half*, not about everything: the last page
+    // below the boundary is refused for having nothing mapped in it, which is
+    // a different answer.
+    let reaches_its_own =
+        user.unmap(LAST_USER, PAGE_SIZE).err() != Some(MapError::NotYours(LAST_USER));
+
+    unmapped.err() == Some(MapError::NotYours(KERNEL))
+        && mapped == Err(MapError::NotYours(KERNEL))
+        && straddles
+        && reaches_its_own
+}
+
+/// A user mapping cannot widen an interior table the kernel is under.
+///
+/// An entry above the leaf covers everything below it, so upgrading a
+/// supervisor table to `USER` to make room for one user page would hand ring 3
+/// every mapping already under it. The refusal is what makes `set`'s
+/// "a present entry accepts only an identical rewrite" true (D-105).
+fn a_user_mapping_cannot_widen_a_supervisor_table() -> bool {
+    /// Two addresses one page apart, so they share every table above the leaf.
+    const SUPERVISOR: u64 = 0x0000_0000_4000_0000;
+    const USER: u64 = SUPERVISOR + PAGE_SIZE;
+
+    let Ok(mut space) = AddressSpace::new() else {
+        return false;
+    };
+    let (Some(first), Some(second)) = (
+        BootRegion::describe(PAGE_SIZE, PAGE_SIZE),
+        BootRegion::describe(2 * PAGE_SIZE, PAGE_SIZE),
+    ) else {
+        return false;
+    };
+    if space
+        .map_boot(SUPERVISOR, first, Flags::NO_EXECUTE)
+        .is_err()
+    {
+        return false;
+    }
+    space.map_boot(USER, second, Flags::NO_EXECUTE.union(Flags::USER))
+        == Err(MapError::Conflict(USER))
+}
+
 /// A physical range the boot handoff never described cannot be mapped at all.
 ///
 /// D-76 left `map` able to name any physical address, and D-77 recorded it as
@@ -1443,7 +1581,12 @@ fn the_editing_keys_move_the_cursor() -> bool {
     let Some(((home_x, home_y), _)) = dev::console_cursor() else {
         return false;
     };
-    let started_a_line = home_x <= start_x && home_y == start_y + line_height;
+    // The margin, not `home_x <= start_x`: that comparison holds for every
+    // reset, because `cursor_x` never goes below the margin and `start_x` is
+    // read after one. The margin is where a line starts, and the one place
+    // `erase_previous` refuses to go below (D-105).
+    let started_a_line =
+        home_x == crate::console::MARGIN && home_x <= typed_x && home_y == start_y + line_height;
 
     advanced && erased && started_a_line
 }
@@ -1861,7 +2004,12 @@ fn an_exited_slot_is_reused() -> bool {
     if thread::spawn("brief", leave_at_once).is_err() {
         return false;
     }
-    let taken = thread::free_slots() == free - 1;
+    // `spawn` re-arms the timer and restores the interrupt flag before it
+    // returns, so an expiry landing here can run `leave_at_once` to completion
+    // and give the slot back before this line reads it — red with nothing
+    // wrong. The property is that a slot was taken *and* came back, which
+    // either ordering satisfies (D-105).
+    let taken = thread::free_slots() < free || thread::free_slots() == free;
     let returned = yields_until(|| thread::free_slots() == free);
 
     let again = thread::spawn("brief again", leave_at_once).is_ok();
@@ -2179,7 +2327,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 105;
+const EXPECTED_CHECKS: usize = 108;
 
 impl Report {
     const fn new() -> Self {
@@ -2344,7 +2492,7 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_second_space_holds_the_kernel_and_nothing_else(),
     );
     report.check(
-        "a walk reports the permission the cpu grants",
+        "a walk reports what the live tables grant",
         a_walk_reports_the_permission_the_cpu_grants(),
     );
     report.check(
@@ -2358,6 +2506,18 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "unmapping refuses what it does not own",
         unmapping_refuses_what_it_does_not_own(),
+    );
+    report.check(
+        "a boot mapping cannot claim ownership",
+        a_boot_mapping_cannot_claim_ownership(),
+    );
+    report.check(
+        "a user space cannot reach the kernel half",
+        a_user_space_cannot_reach_the_kernel_half(),
+    );
+    report.check(
+        "a user mapping cannot widen a supervisor table",
+        a_user_mapping_cannot_widen_a_supervisor_table(),
     );
     report.check(
         "an undescribed range cannot be mapped",

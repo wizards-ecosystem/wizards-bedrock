@@ -165,4 +165,25 @@ mod tests {
             ENABLE | X2APIC
         );
     }
+
+    /// The base MSR's fields sit where the manual puts them.
+    ///
+    /// Every x2APIC test was `f(X2APIC)` against `X2APIC`, with no literal
+    /// anywhere — `1 << 10` moved to `1 << 9` and all 51 tests stayed green,
+    /// on the bit the whole APIC bring-up switches modes with (D-105).
+    #[test]
+    fn the_base_msr_fields_are_where_the_manual_puts_them() {
+        // SDM Vol. 3A §11.4.4 / table 11-5: bit 8 BSP, bit 10 x2APIC enable,
+        // bit 11 global enable; MSR 0x1B is IA32_APIC_BASE.
+        assert_eq!(MSR, 0x1B);
+        assert_eq!(X2APIC, 0x0000_0400);
+
+        // A word with only bit 10 set is x2APIC and nothing else.
+        let only_mode = Base::from_bits(0x0000_0400);
+        assert!(only_mode.is_x2apic());
+        assert!(!only_mode.is_enabled());
+
+        // And bit 9 is not the mode bit.
+        assert!(!Base::from_bits(0x0000_0200).is_x2apic());
+    }
 }

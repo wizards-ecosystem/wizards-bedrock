@@ -217,6 +217,37 @@ mod tests {
         );
     }
 
+    /// One byte past the region is refused.
+    ///
+    /// The three tests touching this bound land at zero on the accept side and
+    /// four past it on the refuse side; `end == region_len + 1` was never
+    /// constructed, so widening the check to `end > region_len + 1` left every
+    /// test green. This is the bound `wost/src/mmio.rs` cites in three
+    /// `// SAFETY:` comments before writing past a device BAR (D-105).
+    #[test]
+    fn a_span_one_byte_past_the_region_is_refused() {
+        // Exactly the region: accepted.
+        assert!(AccessRange::repeated(0, 1, 8, 8).is_ok());
+        assert!(AccessRange::repeated(4, 1, 4, 8).is_ok());
+        // One byte more: refused.
+        assert_eq!(
+            AccessRange::repeated(8, 1, 1, 8),
+            Err(AccessError::OutOfBounds {
+                offset: 8,
+                len: 1,
+                region_len: 8,
+            })
+        );
+        assert_eq!(
+            AccessRange::repeated(1, 1, 1, 1),
+            Err(AccessError::OutOfBounds {
+                offset: 1,
+                len: 1,
+                region_len: 1,
+            })
+        );
+    }
+
     #[test]
     fn an_empty_span_is_valid_only_at_or_before_the_end() {
         assert!(AccessRange::repeated(8, 0, 4, 8).is_ok());

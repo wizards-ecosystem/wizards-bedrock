@@ -411,6 +411,20 @@ impl MemoryMap {
     /// searches the whole list. There is a bounded number of them and
     /// the one caller runs a handful of times at boot.
     pub fn covers(&self, start: u64, end: u64) -> bool {
+        self.covered_by(start, end, |_| true)
+    }
+
+    /// Whether every byte of `start..end` is covered, and covered by memory.
+    ///
+    /// "Described" and "is memory" are different claims, and mapping evidence
+    /// wants the second one: a `Reserved` stretch is described, and it is
+    /// where device holes live, so a writeback mapping over one is a cacheable
+    /// alias of registers rather than a view of RAM (D-105).
+    pub fn covers_memory(&self, start: u64, end: u64) -> bool {
+        self.covered_by(start, end, |kind| kind.is_direct_mapped())
+    }
+
+    fn covered_by(&self, start: u64, end: u64, allowed: impl Fn(MemoryKind) -> bool) -> bool {
         let mut cursor = start;
         while cursor < end {
             let Some(region) = self.regions().find(|region| {
@@ -418,6 +432,9 @@ impl MemoryMap {
             }) else {
                 return false;
             };
+            if !allowed(region.kind) {
+                return false;
+            }
             cursor = region.base.saturating_add(region.len);
         }
         true

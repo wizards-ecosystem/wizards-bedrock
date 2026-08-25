@@ -114,11 +114,6 @@ impl Entity {
         self.weight
     }
 
-    /// Convert `real` units of time into this thread's virtual time.
-    const fn virtual_units(&self, real: u64) -> u64 {
-        self.virtual_units_wide(real) as u64
-    }
-
     /// Convert without discarding wraps, for distances that must stay ordered.
     const fn virtual_units_wide(&self, real: u64) -> u128 {
         // Widened so that a large charge at a small weight cannot overflow
@@ -158,8 +153,14 @@ impl Entity {
     }
 
     /// Account `ran` units of real time the thread has just spent running.
+    ///
+    /// Clamped, like `place` and `renew_deadline`, rather than truncated.
+    /// `virtual_units` narrows the widened product with `as`, so a charge whose
+    /// virtual value is a multiple of `2^64` advanced the clock by *nothing* —
+    /// the outcome `MAX_WEIGHT`'s own doc says it exists to prevent, reached
+    /// by the other door (D-105).
     pub fn charge(&mut self, ran: u64) {
-        self.vruntime = self.vruntime.wrapping_add(self.virtual_units(ran));
+        self.vruntime = self.vruntime.wrapping_add(self.ordered_virtual_units(ran));
     }
 
     /// How far behind (positive) or ahead of (negative) `average` the thread
@@ -552,5 +553,35 @@ mod tests {
             ran[index] += 1;
         }
         assert!(ran[0] > 0, "the sleeper ran unopposed: {ran:?}");
+    }
+
+    #[test]
+    fn a_huge_charge_still_moves_the_clock() {
+        // At weight one the virtual value of 2^44 real units is exactly 2^64,
+        // which narrowing to `u64` turns into zero: the thread ran and its
+        // clock did not move, so it stays eligible for ever and starves
+        // everyone else (D-105).
+        let mut entity = Entity::new(1);
+        let before = entity.vruntime();
+        entity.charge(1 << 44);
+        assert_ne!(entity.vruntime(), before, "the clock did not move");
+        assert!(entity.slice_is_spent(), "a charge that large left slice");
+    }
+
+    #[test]
+    fn charging_never_moves_the_clock_backwards_in_order() {
+        // Every clamped charge stays inside the half-ring the wrapping
+        // comparison needs, so a sequence of huge charges keeps advancing.
+        let mut entity = Entity::new(1);
+        let mut previous = entity.vruntime();
+        for _ in 0..8 {
+            entity.charge(u64::MAX);
+            assert!(
+                before(previous, entity.vruntime()),
+                "{previous} then {}",
+                entity.vruntime()
+            );
+            previous = entity.vruntime();
+        }
     }
 }

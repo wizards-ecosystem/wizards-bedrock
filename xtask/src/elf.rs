@@ -157,11 +157,29 @@ pub enum ImageError {
         /// Name of the section.
         name: &'static str,
     },
+    /// A segment claims more file bytes than it will occupy in memory, or
+    /// bytes that run off the end of the address space.
+    ImpossibleSegment {
+        /// Where the segment begins.
+        vaddr: u64,
+        /// The file size it claims.
+        file_size: u64,
+        /// The memory size it claims.
+        memory_size: u64,
+    },
 }
 
 impl fmt::Display for ImageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ImpossibleSegment {
+                vaddr,
+                file_size,
+                memory_size,
+            } => write!(
+                f,
+                "the segment at {vaddr:#018x} claims {file_size:#x} file bytes for {memory_size:#x} memory bytes"
+            ),
             Self::EntryOutsideHigherHalf { entry } => write!(
                 f,
                 "entry point {entry:#018x} is below the higher half at {HIGHER_HALF:#018x}"
@@ -217,6 +235,19 @@ impl Image {
                     vaddr: segment.vaddr,
                 });
             }
+            // Reported rather than saturated over: `covers` checks only
+            // `vaddr + memory_size`, so a `p_filesz` past the end of the range
+            // walked past every fault and reached an unchecked addition
+            // downstream (D-105).
+            if segment.file_size > segment.memory_size
+                || segment.vaddr.checked_add(segment.file_size).is_none()
+            {
+                faults.push(ImageError::ImpossibleSegment {
+                    vaddr: segment.vaddr,
+                    file_size: segment.file_size,
+                    memory_size: segment.memory_size,
+                });
+            }
         }
 
         for section in self.sections.iter().filter(|s| s.is_allocated()) {
@@ -229,7 +260,9 @@ impl Image {
             };
             // File-backed bytes reaching past the section's start put it in
             // the file, whether or not they cover the whole segment.
-            let file_end = segment.vaddr + segment.file_size;
+            // Both operands are the file's; the unchecked add panicked the
+            // build on `p_filesz = u64::MAX` (D-105).
+            let file_end = segment.vaddr.saturating_add(segment.file_size);
             if section.is_nobits() && section.addr < file_end {
                 faults.push(ImageError::NobitsInFile {
                     name: section.name.clone(),
@@ -290,16 +323,35 @@ fn parse_segments(bytes: &[u8]) -> Result<Vec<Segment>> {
 
     (0..count)
         .map(|index| {
-            let at = table + index * stride;
+            let at = entry_at(table, index, stride)?;
             Ok(Segment {
                 kind: read_u32(bytes, at)?,
-                flags: read_u32(bytes, at + 0x04)?,
-                vaddr: read_u64(bytes, at + 0x10)?,
-                file_size: read_u64(bytes, at + 0x20)?,
-                memory_size: read_u64(bytes, at + 0x28)?,
+                flags: read_u32(bytes, field(at, 0x04)?)?,
+                vaddr: read_u64(bytes, field(at, 0x10)?)?,
+                file_size: read_u64(bytes, field(at, 0x20)?)?,
+                memory_size: read_u64(bytes, field(at, 0x28)?)?,
             })
         })
         .collect()
+}
+
+/// Where entry `index` of a header table starts, refusing rather than wrapping.
+///
+/// Every operand is a header field, so every one is the file's to choose. The
+/// unchecked form panicked the build on `e_shoff = u64::MAX` — the verifier
+/// stopping the build for the wrong reason, which is precisely what D-40 said
+/// it must not do (D-105).
+fn entry_at(table: usize, index: usize, stride: usize) -> Result<usize> {
+    index
+        .checked_mul(stride)
+        .and_then(|skip| table.checked_add(skip))
+        .context("the header table runs off the end of the address space")
+}
+
+/// A field `offset` bytes into a header entry, refusing rather than wrapping.
+fn field(at: usize, offset: usize) -> Result<usize> {
+    at.checked_add(offset)
+        .context("a header field runs off the end of the address space")
 }
 
 fn parse_sections(bytes: &[u8]) -> Result<Vec<Section>> {
@@ -313,13 +365,13 @@ fn parse_sections(bytes: &[u8]) -> Result<Vec<Section>> {
     if names_index >= count {
         bail!("the section name table index is outside the section table");
     }
-    let names = read_u64(bytes, table + names_index * stride + 0x18)? as usize;
+    let names = read_u64(bytes, field(entry_at(table, names_index, stride)?, 0x18)?)? as usize;
 
     (0..count)
         .map(|index| {
-            let at = table + index * stride;
+            let at = entry_at(table, index, stride)?;
             Ok(Section {
-                name: read_name(bytes, names + read_u32(bytes, at)? as usize)?,
+                name: read_name(bytes, field(names, read_u32(bytes, at)? as usize)?)?,
                 kind: read_u32(bytes, at + 0x04)?,
                 flags: read_u64(bytes, at + 0x08)?,
                 addr: read_u64(bytes, at + 0x10)?,
@@ -726,11 +778,20 @@ mod tests {
     fn a_file_that_is_not_an_elf_is_refused() {
         assert!(parse(b"").is_err());
         assert!(parse(b"MZ\x90\x00 a PE executable").is_err());
-        assert!(parse(&[0x7F, b'E', b'L', b'F', 1, 1]).is_err(), "32-bit");
-        assert!(
-            parse(&[0x7F, b'E', b'L', b'F', 2, 2, 0, 0]).is_err(),
-            "big-endian"
-        );
+        // Full-length identifiers, because the class and endianness checks sit
+        // behind `bytes.len() < IDENT_BYTES` and a short slice bails there
+        // instead. The six- and eight-byte versions of these two lines said
+        // "32-bit" and "big-endian" while testing neither, and deleting both
+        // checks left them green (D-105).
+        let mut thirty_two = encode(&good_image());
+        thirty_two[4] = 1;
+        let message = parse(&thirty_two).expect_err("32-bit").to_string();
+        assert!(message.contains("64-bit"), "said {message:?}");
+
+        let mut big_endian = encode(&good_image());
+        big_endian[5] = 2;
+        let message = parse(&big_endian).expect_err("big-endian").to_string();
+        assert!(message.contains("little-endian"), "said {message:?}");
     }
 
     /// A header that promises more tables than the file holds must be an
@@ -742,5 +803,42 @@ mod tests {
         for length in [0x40, 0x60, whole.len() / 2, whole.len() - 1] {
             assert!(parse(&whole[..length]).is_err(), "truncated to {length}");
         }
+    }
+
+    /// A header field near the top of the range is refused, not added to.
+    ///
+    /// Truncation shrinks the buffer and never produces a large offset, so the
+    /// sweep above cannot reach the arithmetic. These inputs panicked the
+    /// build — `xtask` builds in the dev profile, so the overflow checks are
+    /// on, and `verify_file` runs after every kernel build (D-105).
+    #[test]
+    fn a_header_field_near_the_top_of_the_range_is_refused() {
+        let mut section_table = encode(&good_image());
+        // `e_shoff`, the section header table's file offset.
+        section_table[0x28..0x30].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(parse(&section_table).is_err(), "e_shoff = u64::MAX");
+
+        let mut program_table = encode(&good_image());
+        // `e_phoff`, the program header table's file offset.
+        program_table[0x20..0x28].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(parse(&program_table).is_err(), "e_phoff = u64::MAX");
+
+        let mut names = encode(&good_image());
+        // `e_shstrndx`, chosen so the name table's own entry is far out.
+        names[0x3E..0x40].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert!(parse(&names).is_err(), "e_shstrndx = u16::MAX");
+    }
+
+    /// A segment whose file size runs off the end does not overflow the
+    /// nobits comparison.
+    ///
+    /// `covers` checks `vaddr + memory_size`, so a huge `p_filesz` walks past
+    /// it and reaches the addition in `verify` (D-105).
+    #[test]
+    fn a_segment_that_claims_the_whole_range_is_refused_rather_than_panicking() {
+        let mut image = good_image();
+        image.segments[0].file_size = u64::MAX;
+        let faults = image.verify();
+        assert!(!faults.is_empty(), "a file size of u64::MAX passed");
     }
 }

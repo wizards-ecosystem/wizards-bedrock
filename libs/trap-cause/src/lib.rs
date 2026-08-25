@@ -412,6 +412,12 @@ mod tests {
     }
 
     /// Every fault reports the name `x86_tables` gives its vector.
+    ///
+    /// `Fault::name` is `exception::name(self.vector()).unwrap_or("exception")`
+    /// and the `if let` guard fires only where that is `Some`, so the equality
+    /// alone cannot fail. The transcribed names below are what makes it a
+    /// check: two crates naming the same table is why `trap-cause` exists
+    /// (D-105).
     #[test]
     fn a_faults_name_is_its_vectors_name() {
         for vector in 0..exception::COUNT {
@@ -423,6 +429,17 @@ mod tests {
                 );
             }
         }
+
+        // SDM Vol. 3A table 6-1, spelled out here rather than derived.
+        let named = |vector: u8| match TrapCause::decode(vector, 0) {
+            TrapCause::Fault(fault) => Some(fault.name()),
+            _ => None,
+        };
+        assert_eq!(named(0), Some("divide error"));
+        assert_eq!(named(6), Some("invalid opcode"));
+        assert_eq!(named(8), Some("double fault"));
+        assert_eq!(named(13), Some("general protection fault"));
+        assert_eq!(named(14), Some("page fault"));
     }
 
     /// The report reads as a sentence, and says miss and refusal differently.

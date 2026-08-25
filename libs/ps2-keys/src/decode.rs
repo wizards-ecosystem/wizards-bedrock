@@ -210,12 +210,50 @@ mod tests {
 
     #[test]
     fn the_pause_sequence_yields_one_press_and_no_break() {
+        // Transcribed, not `PAUSE_SEQUENCE`. Feeding the constant to a decoder
+        // that compares against the constant is `x[i] == x[i]`, true for any
+        // array of any length — the constant truncated to four bytes passed
+        // all 31 tests, and the decoder then read the trailing `F0 14 F0 77`
+        // as two phantom release events (D-105).
+        const WIRE: [u8; 8] = [0xE1, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77];
+        assert_eq!(PAUSE_SEQUENCE, WIRE, "the sequence is not the wire form");
+
         let mut decoder = Decoder::new();
         assert_eq!(
-            decode(&mut decoder, &PAUSE_SEQUENCE),
+            decode(&mut decoder, &WIRE),
             event(Key::Pause, KeyState::Pressed)
         );
         assert_eq!(decoder.feed(0x1C), event(Key::A, KeyState::Pressed));
+    }
+
+    /// A short prefix of the sequence yields nothing, and the byte after a
+    /// complete one is an ordinary key.
+    ///
+    /// The length is the half nothing pinned: a decoder that stopped early
+    /// would emit `Pause` and then decode the remaining bytes as keys.
+    #[test]
+    fn no_proper_prefix_of_the_pause_sequence_decodes() {
+        const WIRE: [u8; 8] = [0xE1, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77];
+
+        for split in 1..WIRE.len() {
+            let mut decoder = Decoder::new();
+            for byte in &WIRE[..split] {
+                assert_eq!(decoder.feed(*byte), None, "byte {byte:#04x} of {split}");
+            }
+        }
+
+        // And a wrong byte anywhere in the middle abandons the sequence
+        // rather than completing it.
+        for corrupt in 1..WIRE.len() {
+            let mut decoder = Decoder::new();
+            let mut wrong = WIRE;
+            wrong[corrupt] = 0x1C;
+            let events: Vec<_> = wrong.iter().map(|byte| decoder.feed(*byte)).collect();
+            assert!(
+                !events.contains(&event(Key::Pause, KeyState::Pressed)),
+                "byte {corrupt} corrupted and Pause still fired"
+            );
+        }
     }
 
     /// The wire form of a bare PrintScreen press: fake shift, then the key.

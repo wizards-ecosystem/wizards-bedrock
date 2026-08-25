@@ -211,6 +211,10 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     /// nothing is released and the first offending frame is reported. A partial
     /// release would leave a caller's `Drop` believing it had given everything
     /// back.
+    ///
+    /// A run that overflows or runs off the end reports the first frame past
+    /// the space rather than a frame inside it — the earlier version named
+    /// `FRAME_COUNT`, which is a ceiling and not an offending frame (D-105).
     pub fn free_contiguous(&mut self, first: usize, count: usize) -> Result<(), FreeError> {
         if count == 0 {
             return Ok(());
@@ -222,6 +226,8 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
             return Err(FreeError::NotManaged(Self::FRAME_COUNT));
         };
         if end > Self::FRAME_COUNT {
+            // The first frame of the run that is not ours, which is where the
+            // space ends when the run starts inside it.
             return Err(FreeError::NotManaged(Self::FRAME_COUNT));
         }
 

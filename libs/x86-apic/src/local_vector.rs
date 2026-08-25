@@ -216,18 +216,42 @@ mod tests {
     #[test]
     #[should_panic(expected = "below 16")]
     fn an_entry_refuses_a_vector_the_apic_would_reject() {
-        let _ = Entry::fixed(FIRST_VECTOR - 1);
+        let _ = Entry::fixed(15);
     }
 
     #[test]
     #[should_panic(expected = "below 16")]
     fn a_periodic_entry_refuses_a_vector_the_apic_would_reject() {
-        let _ = Entry::periodic(FIRST_VECTOR - 1);
+        let _ = Entry::periodic(15);
     }
 
     #[test]
     #[should_panic(expected = "below 16")]
     fn a_one_shot_entry_refuses_a_vector_the_apic_would_reject() {
-        let _ = Entry::one_shot(FIRST_VECTOR - 1);
+        let _ = Entry::one_shot(15);
+    }
+
+    /// The timer-mode field is bits 18:17, both of them.
+    ///
+    /// Every mode test compares `f(TIMER_PERIODIC)` against `TIMER_PERIODIC`,
+    /// so no bit position is pinned; `0b11 << 17` narrowed to `0b01 << 17`
+    /// left all 51 tests green, and a TSC-deadline entry then read back as
+    /// one-shot — which `kernel/src/selftest.rs` asks about a value it read
+    /// off real hardware (D-105).
+    #[test]
+    fn the_timer_mode_field_is_bits_eighteen_and_seventeen() {
+        // SDM Vol. 3A table 11-2: 00 one-shot, 01 periodic, 10 TSC-deadline.
+        assert_eq!(TIMER_MODE, 0x0006_0000);
+
+        let deadline = Entry::from_bits(0x0004_0041);
+        assert!(!deadline.is_one_shot(), "a deadline entry read as one-shot");
+        assert!(!deadline.is_periodic());
+
+        let one_shot = Entry::from_bits(0x0000_0041);
+        assert!(one_shot.is_one_shot());
+
+        let periodic = Entry::from_bits(0x0002_0041);
+        assert!(periodic.is_periodic());
+        assert!(!periodic.is_one_shot());
     }
 }

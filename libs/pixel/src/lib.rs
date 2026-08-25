@@ -781,12 +781,26 @@ mod tests {
         );
     }
 
+    /// The modulus is four, not merely even.
+    ///
+    /// The witnesses were both odd, so the checks passed identically as
+    /// `is_multiple_of(2)` — under which a base of 2 constructs and every row
+    /// after the first starts two bytes out of alignment. `write_u32` then
+    /// refuses each one, and `wost/src/boot/mod.rs` discards that result: a
+    /// blank framebuffer with no diagnostic, on the only output a kernel has
+    /// (D-105).
     #[test]
     fn a_misaligned_mapping_base_is_refused() {
         assert_eq!(
             FramebufferLayout::new(1, 1, 1, 4, 4),
             Err(FramebufferLayoutError::MisalignedBase(1))
         );
+        // Even, and still not a multiple of four.
+        assert_eq!(
+            FramebufferLayout::new(2, 1, 1, 4, 4),
+            Err(FramebufferLayoutError::MisalignedBase(2))
+        );
+        assert!(FramebufferLayout::new(4, 1, 1, 4, 4).is_ok());
     }
 
     #[test]
@@ -795,6 +809,12 @@ mod tests {
             FramebufferLayout::new(0, 1, 1, 5, 4),
             Err(FramebufferLayoutError::MisalignedPitch(5))
         );
+        // Even, and still not a multiple of four.
+        assert_eq!(
+            FramebufferLayout::new(0, 1, 1, 6, 4),
+            Err(FramebufferLayoutError::MisalignedPitch(6))
+        );
+        assert!(FramebufferLayout::new(0, 1, 1, 8, 4).is_ok());
     }
 
     #[test]
@@ -842,5 +862,57 @@ mod tests {
     #[test]
     fn an_offset_with_an_overflowing_sum_is_refused() {
         assert_eq!(offset(1, 1, usize::MAX - 1, 2), None, "row plus column");
+    }
+
+    /// A channel that exactly fills the word is accepted, and one bit more is
+    /// refused — at *both* copies of the bound.
+    ///
+    /// `channel_mask` duplicates `encode`'s `size > u32::BITS - shift`, and
+    /// only `encode`'s copy had the boundary pair. Widening `channel_mask`'s
+    /// to `>=` left every test green while refusing a legal RGBx8888 report —
+    /// a kernel with no console, gate green (D-105).
+    #[test]
+    fn a_channel_that_exactly_fills_the_word_is_accepted_by_both_copies() {
+        // 24 + 8 == 32: the top channel of a standard RGBx8888 report.
+        let top = Channel::new(24, 8);
+        assert_ne!(top.encode(0xFF), 0, "encode refused a channel that fits");
+
+        let format = PixelFormat::new(Channel::new(0, 8), Channel::new(8, 8), top);
+        assert!(format.is_ok(), "channel_mask refused a channel that fits");
+
+        // And one bit past the end is refused by both.
+        let over = Channel::new(25, 8);
+        assert_eq!(
+            over.encode(0xFF),
+            0,
+            "encode accepted a channel that does not fit"
+        );
+        assert!(
+            PixelFormat::new(Channel::new(0, 8), Channel::new(8, 8), over).is_err(),
+            "channel_mask accepted a channel that does not fit"
+        );
+    }
+
+    /// Blending really reads both operands.
+    ///
+    /// The endpoints `0x000000` and `0xFFFFFF` make `mix(0, 255, t) == t`, so
+    /// the monotonicity sweep asserted `t >= t - 1` and multiplied the `from`
+    /// operand by literal zero every iteration — it passed with `from` dropped
+    /// from `mix` entirely (D-105).
+    #[test]
+    fn blending_reads_the_background_as_well_as_the_foreground() {
+        let from = Rgb::from_hex(0x4080C0);
+        let to = Rgb::from_hex(0xC04000);
+
+        assert_eq!(from.blend(to, 0), from, "t = 0 is the background");
+        assert_eq!(from.blend(to, 255), to, "t = 255 is the foreground");
+
+        // Halfway depends on both: a `blend` that ignored `from` would give
+        // 96 / 32 / 0 instead of 128 / 95 / 95.
+        let middle = from.blend(to, 128);
+        assert_eq!(middle.red, mix(0x40, 0xC0, 128));
+        assert_eq!(middle.red, 0x80);
+        assert_eq!(middle.green, 95);
+        assert_eq!(middle.blue, 95);
     }
 }

@@ -852,6 +852,11 @@ pub(crate) fn exit() -> ! {
         let mut threads = THREADS.lock_leaf();
         let current = task::current();
         assert!(current != BOOT, "the boot thread cannot exit");
+        // Charged before the slot is cleared, so a thread's last slice is
+        // accounted like every other. It changes nothing while the slot is
+        // freed immediately, and it is wrong the day exit accounting matters
+        // (D-105).
+        threads.charge(current, now);
         threads.threads[current] = Thread::FREE;
         threads.wake_due(now);
         let Some(next) = threads.choose(current, false) else {

@@ -16,7 +16,8 @@ const FONT_HEIGHT: RasterHeight = RasterHeight::Size16;
 const FONT_WEIGHT: FontWeight = FontWeight::Regular;
 
 /// Blank border kept around the text area.
-const MARGIN: usize = 8;
+/// Where a line starts, and the floor `erase_previous` will not go below.
+pub(crate) const MARGIN: usize = 8;
 
 /// Extra pixels between baselines, so ascenders and descenders do not touch.
 const LINE_GAP: usize = 2;

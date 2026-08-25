@@ -197,7 +197,11 @@ mod tests {
         for table in [key_for, extended_key_for] {
             for code in 0..=u8::MAX {
                 let Some(key) = table(code) else { continue };
-                for other in (code + 1)..=u8::MAX {
+                // Widened: `code + 1` overflows the loop counter at `0xFF`,
+                // so assigning that code a key would make this test panic in
+                // its own arithmetic rather than report (D-105).
+                for other in (u16::from(code) + 1)..=u16::from(u8::MAX) {
+                    let other = other as u8;
                     assert_ne!(table(other), Some(key), "{code:#04x} vs {other:#04x}");
                 }
             }

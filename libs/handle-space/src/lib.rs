@@ -203,7 +203,11 @@ impl Slot {
 /// tearing down has a raw counter and no handle to reuse — and open-coding the
 /// wrap in two places is how the two stop agreeing.
 pub const fn next_generation(generation: u32) -> u32 {
-    (generation + 1) % GENERATIONS
+    // Wrapping, not checked: this takes a *raw* counter from a caller that has
+    // no handle, so `u32::MAX` is a value it can be handed, and `+ 1` panics
+    // on it in a debug build — which is the profile D-65's second boot runs
+    // (D-105).
+    generation.wrapping_add(1) % GENERATIONS
 }
 
 /// What a handle permits.
@@ -640,5 +644,14 @@ mod rights_tests {
         // Universal rights are always meaningful, which is what makes them
         // universal.
         assert!(Rights::UNIVERSAL.are_meaningful_for(Rights::NONE));
+    }
+
+    #[test]
+    fn a_raw_counter_at_the_top_of_the_range_still_advances() {
+        // A caller with no handle has a bare `u32`; `+ 1` panicked on this one
+        // in the debug boot (D-105).
+        assert_eq!(next_generation(u32::MAX), 0);
+        assert_eq!(next_generation(GENERATIONS - 1), 0);
+        assert_eq!(next_generation(GENERATIONS), 1);
     }
 }

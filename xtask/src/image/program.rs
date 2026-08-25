@@ -1,6 +1,7 @@
 //! The user program that ships in the image.
 //!
-//! Four bytes of machine code inside a minimal ELF64, assembled here rather
+//! Twenty-two bytes of machine code inside a minimal ELF64, assembled here
+//! rather
 //! than compiled. That is a deliberate stopping point: a real userland needs a
 //! second crate, a second link address and a fourth pass in the gate's
 //! configuration matrix (D-22), and none of that tests the *loader*. What the
@@ -175,7 +176,7 @@ mod tests {
         );
     }
 
-    /// The code really is the four bytes, at the offset the header names.
+    /// The code really is the bytes above, at the offset the header names.
     #[test]
     fn the_bytes_are_where_the_header_says() {
         let image = build();

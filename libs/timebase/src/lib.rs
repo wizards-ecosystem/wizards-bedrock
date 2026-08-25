@@ -311,10 +311,9 @@ mod tests {
         assert!(nonsense.is_calibrated());
         assert_eq!(nonsense, Timebase::from_bits(0x3F_FFFF_FFFF));
         assert_eq!(nonsense.convert(0), 0);
-        assert_eq!(
-            nonsense.convert(u64::MAX),
-            ((u64::MAX as u128 * MAX_MULTIPLIER as u128) >> MAX_SHIFT) as u64
-        );
+        // The transcribed answer, not the expression `convert` evaluates:
+        // `(2^64 - 1) * (2^32 - 1) >> 63` is 8_589_934_589 (D-105).
+        assert_eq!(nonsense.convert(u64::MAX), 8_589_934_589);
     }
 
     /// The multiplier is the whole precision budget, and the search is what
@@ -327,6 +326,11 @@ mod tests {
                 Timebase::nanoseconds(*hz).unwrap(),
                 Timebase::ticks(*hz).unwrap(),
             ] {
+                // The two bounds below are `new`'s own loop conditions
+                // restated — `multiplier <= MAX_MULTIPLIER` is its exit test
+                // and `shift` only ever decrements from `MAX_SHIFT`. Kept as
+                // documentation of the range; the assertion after them is the
+                // one that can fail (D-105).
                 assert!(conversion.multiplier <= MAX_MULTIPLIER, "{conversion:?}");
                 assert!(conversion.shift <= MAX_SHIFT, "{conversion:?}");
                 assert!(

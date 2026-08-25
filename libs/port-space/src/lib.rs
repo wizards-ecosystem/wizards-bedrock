@@ -242,16 +242,31 @@ mod tests {
         assert!(space.is_reserved(usize::MAX));
     }
 
+    /// Availability agrees with reserving, *and* with an independent oracle.
+    ///
+    /// `is_available` and `reserve` both return `span(p, l).is_some()`, so
+    /// comparing them is `span(p,l).is_some() == span(p,l).is_some()` — true
+    /// for every implementation of `span`, correct or not. Mutating `span`'s
+    /// overlap scan killed three other tests here and never this one (D-105).
     #[test]
     fn availability_agrees_with_what_reserving_would_do() {
         let mut space = PortSpace::new();
         assert!(space.reserve(0x20, 2));
+        // Reserved: ports 0x20 and 0x21.
+        let taken = 0x20usize..0x22;
 
         for start in 0x1C..0x28 {
             for len in WIDTHS {
                 let expected = space.is_available(start, len);
                 let mut copy = space;
                 assert_eq!(copy.reserve(start, len), expected, "{len} at {start:#x}");
+
+                // The oracle: a span is available exactly when it touches no
+                // reserved port, worked out with `Range` rather than with the
+                // bitmap this is testing.
+                let end = start + len;
+                let overlaps = (start..end).any(|port| taken.contains(&port));
+                assert_eq!(expected, !overlaps, "{len} at {start:#x}");
             }
         }
     }

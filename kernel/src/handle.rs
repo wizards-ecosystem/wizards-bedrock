@@ -238,10 +238,18 @@ impl HandleTable {
             return Err(HandleError::QuotaExhausted);
         }
         // Reserved before the guard, never under it: `Vec` growth calls the
-        // allocator, and this lock is a leaf (D-85, D-95).
-        reserve_a_slot()?;
+        // allocator, and this lock is a leaf (D-85, D-95). The reservation is
+        // not a hold, so another table can consume the room in the window
+        // between dropping that guard and taking this one — retried rather
+        // than reported as a full machine, which is what it used to say
+        // (D-105).
+        let index = loop {
+            reserve_a_slot()?;
+            if let Some(index) = ARENA.lock_leaf().take() {
+                break index;
+            }
+        };
         let mut arena = ARENA.lock_leaf();
-        let index = arena.take().ok_or(HandleError::ArenaFull)?;
         let slot = &mut arena.slots[index];
         let generation = slot.generation;
         slot.entry = Some(Entry {

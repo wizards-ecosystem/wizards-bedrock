@@ -92,6 +92,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "below 16")]
     fn a_command_refuses_a_vector_the_apic_would_reject() {
-        let _ = Command::self_interrupt(FIRST_VECTOR - 1);
+        // The literal, not `FIRST_VECTOR - 1`: the derived form panics for
+        // every value the constant could hold, so it says nothing about which
+        // one it holds (D-105).
+        let _ = Command::self_interrupt(15);
     }
 }
