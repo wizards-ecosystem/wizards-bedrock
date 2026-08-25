@@ -31,9 +31,13 @@ CHECK TASKS:
     test-boot         boot a self-test kernel in QEMU and require its verdict
     boot-check        boot the shipped kernel and require it to settle
     degraded-check    boot without x2apic and require the kernel to report it
-    verify-vendor     check vendored binaries against boot/limine/CHECKSUMS
-    model-check       run TLC over models/Ring.tla (needs java)
+    verify-vendor     check vendored binaries against their CHECKSUMS files
     ci                every check above, in the order that fails fastest
+
+NOT IN CI (each needs a tool this project cannot vendor into a Rust build,
+and a gate step that fails for want of one teaches people to skip the gate):
+    model-check       run TLC over models/Ring.tla (needs java)
+    vmware            as above (needs VMware Workstation to boot the result)
 
 HOUSEKEEPING:
     clean             remove build output

@@ -46,7 +46,16 @@ non-obvious rules (`cargo build --workspace` cannot work here; never set
 `RUSTFLAGS`) — read it before reaching for a bare cargo command.
 
 Hardware behaviour is verified by booting, not by tests: `cargo xtask run`
-for QEMU, and a VMware boot as every phase's definition of done (D-18).
+for QEMU, and a VMware boot as every phase's definition of done (D-18). The
+VMware boot is not decoration — it reaches SMEP/SMAP/UMIP, the compacted
+`XSAVEC` path, a real x2APIC and a processor that reports `MD_CLEAR`, none of
+which the gate's QEMU does.
+
+Two tasks are deliberately **not** in `ci`, because each needs a tool this
+project cannot vendor into a Rust build, and a gate step that fails for want of
+one teaches people to skip the gate: `cargo xtask vmware` and `cargo xtask
+model-check` (TLC over `models/`, needs a JVM). Both are run at a phase close
+and their results recorded.
 
 ## Testing, and the rule that matters most
 
