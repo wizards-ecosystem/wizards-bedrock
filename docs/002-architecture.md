@@ -212,6 +212,12 @@ Still open:
 
 Closed since this list was written:
 
+- *Whether a POSIX libc can sit on this ABI* — asked and answered by D-114
+  rather than deferred: three of mlibc's sixteen mandatory tags map, twelve
+  need a ring-3 door to a mechanism the kernel already has, and one needs a
+  namespace this design does not have. `userland/README.md` has the four
+  things writing them surfaced that the native ABI would never have raised.
+
 - *Handle table representation & rights taxonomy* — the taxonomy half by
   `010` §3, the layout and lifetime rules by **D-78** and
   `011-userspace.md`'s handle-table section: one global arena, generation-tagged

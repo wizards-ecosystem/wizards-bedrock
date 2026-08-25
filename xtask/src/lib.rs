@@ -20,6 +20,7 @@ pub mod qemu;
 pub mod qmp;
 pub mod sha256;
 pub mod tasks;
+pub mod unsafety;
 pub mod vendor;
 pub mod vmware;
 

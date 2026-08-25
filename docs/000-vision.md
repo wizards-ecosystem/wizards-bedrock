@@ -76,10 +76,25 @@ reference — not followed linearly). Docs are numbered in creation order.
    alarm), sleeping, blocking on a wait queue, the idle thread, and D-34's
    latency debt paid 2026-08-23; closed by a settled VMware boot and the
    D-76 soundness audit. Slice table in `009-multitasking.md`*
-5. Userspace — ring 3, **handle table + rights**, spawn, ELF loading,
-   channels, **async queue ABI**, initrd. Closes with a **stub mlibc sysdep**
-   (D-74): not to run software, but to prove a POSIX libc can sit on this ABI
-   while the ABI is still cheap to change
+5. **Userspace** — ring 3, **handle table + rights**, spawn, ELF loading,
+   channels, **async queue ABI**, initrd
+   ✅ (2026-08-24) — *the lock discipline moved into the borrow checker
+   (D-85); an address space that grows after activation and carries evidence
+   for every mapping (D-86 to D-88); trap entry rebuilt FRED-shaped over
+   `libs/trap-cause`; ring 3 through one interrupt gate at DPL 3, with the
+   SMAP copy guard and `VERW` on the way out; the handle table over
+   `libs/handle-space` with rights in one word; **a table of its own for every
+   program**, installed by the same code that moves `RSP0` and the extended
+   state (D-106, D-108); D-44's untyped split with its first real caller
+   (D-107); channels carrying bytes and handles, attenuating at both ends
+   (D-110); a program born holding exactly one thing — a way to be spoken to
+   (D-111); and the queue protocol **model-checked before the kernel
+   implemented it** (D-112, D-113). Closed by a dated VMware boot and the
+   D-115 audit. 124 machine checks, 343 lines of `unsafe` in `wost` against a
+   budget of 380. The mlibc sysdep is written and analysed rather than
+   compiled: the toolchain wall is measured in D-114, and the finding — three
+   tags map, twelve need a door, one needs a namespace this design does not
+   have — is what D-74 asked the slice for. Slice table in `011-userspace.md`*
 6. VFS + storage — VFS over handles, tmpfs/devfs, and a **read-only
    third-party format** (FAT32 or ext2) over NVMe, so the block path and the
    buffer plumbing are honest at zero on-disk-write risk. WizFS is not here

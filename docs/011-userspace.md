@@ -89,7 +89,7 @@ message shape. mlibc needs an ABI to sit on.
 | 8 | Channels: bytes and handles, attenuate-on-send, rights declared per field with no defaults | ✅ 2026-08-24 |
 | 9 | The async queue ABI: the model before the protocol, `libs/ring-proto` under shuttle and proptest, reservation backpressure, exactly one terminal completion | ✅ 2026-08-24 |
 | 10 | The stub mlibc sysdep (D-74): written and analysed, not compiled — the toolchain wall is recorded in D-114 | ✅ 2026-08-24 |
-| 11 | Phase close: the VMware boot (D-18), the Limine base-revision-5 bump, the adversarial audit (D-77), the roadmap and this file's closing section | |
+| 11 | Phase close: the VMware boot (D-18), the adversarial audit (D-77), the roadmap and this file's closing section | ✅ 2026-08-24 |
 
 ## The handle table
 
@@ -830,3 +830,89 @@ fixup table keyed on the faulting instruction pointer, and the trap dispatch
 D-81 built is what would consult one. And the retired ring-3 thread keeps its
 slot and its two pages for the life of the boot; nothing reclaims a retired
 thread until `spawn` has a counterpart.
+
+## The phase closes (2026-08-24)
+
+### The debts, settled
+
+Every row of the table at the top of this file, with what actually happened
+rather than what was proposed. Where the answer is "not paid", it says so and
+says where it went.
+
+| Debt | Settled |
+|---|---|
+| Boot and double-fault stacks unguarded | **Paid.** D-89 guards the double-fault stack; D-92 moves the boot thread onto a guarded one, since the bootloader's could not be guarded where it sat |
+| The address space cannot grow after boot | **Paid.** D-86: `activate` borrows rather than consumes, and mapping is reachable on a live space |
+| Memory objects, moved out of Phase 3 | **Paid in the part that had a caller.** Owned frames, `map_user`, `map_shared` and the untyped split are here; a first-class `MemoryObject` in the handle table is not, and belongs with the VFS that will hand them out |
+| `map` accepts any physical address without evidence | **Paid.** D-87: every mapping entry takes evidence — an owned run, a `BootRegion`, or a `USegment` — and D-105 closed the two doors that let the evidence be forged |
+| The untyped split, absent on purpose | **Paid.** D-107, with the caller it was waiting for |
+| Port claims prove exclusivity, not entitlement | **Not this phase, as planned.** Phase 6, with PCI discovery |
+| XSAVE | **Paid.** D-108: eager, boot-sized, out of line, and the compacted form is live — the VMware boot reports `compacted`, which QEMU never exercised |
+| `swapgs` and the GS base | **Not paid, and the reason changed.** Nothing needs a per-CPU word yet: there is one CPU, `SPINLOCKS_HELD` is a global, and the thing `swapgs` exists to protect — a kernel entry finding the wrong `GS` — cannot happen until there is a second CPU or a `syscall` instruction. It moves to Phase 12 with SMP, where it has a reason rather than a slot |
+| No ring-3 descriptors | **Paid.** D-96 |
+| The lock discipline in the borrow checker | **Paid.** D-85, first, so nothing here was written twice |
+| No preempt-disable mechanism | **Not paid, and it should be said plainly.** Every lock a trap handler can reach still disables interrupts, which is correct and is not what D-70 rule 2 asked for. A preempt-only lock has no caller that would benefit on one CPU, and building one without a caller is how an abstraction gets the wrong shape. Phase 12 |
+| The per-CPU word widens | **Not paid**, with `swapgs`, and for the same reason |
+| Per-process quota | **Paid at the handle layer** (D-111: 64 handles per process). **Not paid** for frames or for per-message allocation, which is D-44's other half and needs an accounting owner |
+| A wait with a timeout, and a wait on two queues | **Not paid.** Both were to fall out of the completion queue, and the ring is built but nothing blocks on it yet. The queue's wait exists and is unused |
+| The thread cap of sixteen is a real cap | **Paid in principle, not in fact.** D-86 and D-88 made a stack mappable at spawn and unmappable at exit; the arena is still committed at table-build time, so sixteen is still sixteen. What changed is that it is now a default rather than a ceiling |
+| Every new hardcoded window is KASLR interest | **Paid as interest.** Two more windows: the ring at `0x0000_2000_0000_0000` and the boundary probe's pages. The ledger is D-46's |
+| `002`'s false claim about delegation | **Paid.** D-111 makes the corrected sentence a check that counts the table |
+
+### What the phase cost, measured
+
+- **124 machine checks**, from 79 at the Phase 4 close.
+- **343 lines of `unsafe` in `wost`**, in 143 blocks, against a budget of 380
+  that `cargo test` now enforces. `kernel/` and every `libs/` crate have none,
+  and the counter checks that too rather than trusting the lint.
+- **Fifteen new decisions**, D-100 through D-114, and five amendments.
+- **Four adversarial audits** during the phase (D-94, D-95, D-101, D-105) plus
+  the closing one, D-115.
+
+### What the VMware boot showed that QEMU cannot
+
+Recorded the day it happened (D-18), and it earned its place rather than
+confirming a green already had:
+
+```
+cpu: protections smep smap umip nx
+cpu: extended state 832 bytes, xcr0 0x7, compacted
+cpu: capabilities 0x44 rsba
+cpu: buffers cleared on every return to ring 3
+apic: x2apic id 0 version 0x15 (bootstrap)
+time: tickless: counter at 3412636204 hz (invariant), apic timer at 65939442 hz
+kernel: reading the keyboard, uptime 4 ms
+```
+
+Four things there are not reachable under the gate's QEMU: SMEP, SMAP and UMIP
+actually enabled; the **compacted** `XSAVEC` path, where QEMU takes the
+uncompacted one; a real x2APIC, where the gate's degraded boot has none by
+design; and a processor that reports `MD_CLEAR`, so the `VERW` on the way out
+of ring 3 is doing something rather than merely executing. D-91 recorded that
+QEMU reports no capability word; this is the machine that does.
+
+### Still owed, and where it went
+
+Nothing here is a surprise; each is named in the ADR that created it.
+
+- **A program cannot drive its own ring.** The kernel side is complete and
+  checked through the shared page, which is the boundary that matters. What is
+  missing is a program big enough to write an entry and bump a tail — the
+  initrd is twenty-two bytes of hand-written assembly, and the thing that makes
+  a bigger one ordinary is the libc D-114 could not compile.
+- **`FS_BASE` is a fourth thing that must follow a thread**, found by writing
+  the sysdeps (D-114). `RSP0`, `CR3` and the extended state all live in
+  `task::prepare`; this belongs there with them.
+- **Nothing is reclaimed.** A retired thread keeps its slot, its stack, its
+  address space, its handle table and its ring for the life of the boot. Three
+  programs a boot makes that bounded and uninteresting; it stops being either
+  the moment something spawns in a loop.
+- **A fault during a user copy is still terminal**, where a real kernel would
+  recover and return an error. That needs a fixup table keyed on the faulting
+  instruction pointer, and the trap dispatch D-81 built is what would consult
+  one.
+- **`xtask/src/elf.rs` still carries its own transcription** of the ELF header
+  offsets rather than using `libs/elf64` — the duplication that crate exists to
+  prevent. D-105 recorded it; it is still true.
+- **No completion carries a handle**, so the ring cannot yet be the delegation
+  path the channels are.
