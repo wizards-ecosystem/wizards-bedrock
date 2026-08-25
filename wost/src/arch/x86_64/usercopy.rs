@@ -26,9 +26,10 @@ use super::{cpu, interrupt, paging};
 
 /// The first address that is not user memory.
 ///
-/// The canonical hole begins here, and everything above it is the kernel's.
-/// This is the range check that replaces the shift.
-pub const USER_END: u64 = 0x0000_8000_0000_0000;
+/// The boundary [`paging`] maps against, re-exported rather than transcribed:
+/// the range a copy may touch and the range a mapping may cover are the same
+/// range, and a second literal is a way for them to stop being (D-124).
+pub use super::paging::USER_END;
 
 // The copy itself, written out so that the instructions which can fault have
 // addresses this crate knows.

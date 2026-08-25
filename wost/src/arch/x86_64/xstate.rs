@@ -245,9 +245,22 @@ unsafe fn set_extended_control(mask: u64) {
 /// lets the switch's save sit before the switch (D-108). Written down because
 /// soundness resting on a build flag should be visible where the flag is
 /// relied on (D-115).
-pub fn write_vector_probe(value: u64) {
+///
+/// **Refuses where the register is not there to write**, returning `false`.
+/// `movq xmm0, r64` is an SSE instruction, and an SSE instruction is a `#UD`
+/// unless `CR4.OSFXSR` is set and `CR0.EM` is clear. `enable_extended_state`
+/// is the only thing in this kernel that arranges either, and it runs exactly
+/// when [`is_enabled`] goes true — so that is the guard, and a machine with no
+/// `XSAVE` gets a refusal rather than a fault. This was a `pub fn` with no
+/// guard at all: safe code, in `kernel`, one call from an undefined opcode on
+/// a processor this kernel is meant to report and settle on (D-123, D-124).
+pub fn write_vector_probe(value: u64) -> bool {
+    if !is_enabled() {
+        return false;
+    }
     // SAFETY: writes one register no compiled code in this kernel holds, per
-    // the note above, and reads nothing else.
+    // the note above, and reads nothing else. `is_enabled` is evidence the
+    // instruction is not a `#UD`.
     unsafe {
         asm!(
             "movq xmm0, {value}",
@@ -255,10 +268,15 @@ pub fn write_vector_probe(value: u64) {
             options(nomem, nostack, preserves_flags),
         );
     }
+    true
 }
 
-/// Read back what [`write_vector_probe`] put there.
-pub fn read_vector_probe() -> u64 {
+/// Read back what [`write_vector_probe`] put there, or `None` where there is
+/// no such register to read.
+pub fn read_vector_probe() -> Option<u64> {
+    if !is_enabled() {
+        return None;
+    }
     let value: u64;
     // SAFETY: as above, reading rather than writing.
     unsafe {
@@ -268,7 +286,7 @@ pub fn read_vector_probe() -> u64 {
             options(nomem, nostack, preserves_flags),
         );
     }
-    value
+    Some(value)
 }
 
 /// Read `XCR0` back, for the check that the write took.

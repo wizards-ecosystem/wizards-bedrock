@@ -599,8 +599,7 @@ fn a_vector_register_survives_a_switch() -> bool {
     // The register the write went to is the register the read comes from,
     // before anything else runs — a conjunct that would hold with the whole
     // save path deleted, and named so it is not mistaken for the property.
-    xstate::write_vector_probe(MINE);
-    if xstate::read_vector_probe() != MINE {
+    if !xstate::write_vector_probe(MINE) || xstate::read_vector_probe() != Some(MINE) {
         return false;
     }
 
@@ -614,7 +613,7 @@ fn a_vector_register_survives_a_switch() -> bool {
 
     // The other thread wrote its own value and this one is unchanged, which is
     // only true if the switch away saved and the switch back restored.
-    let kept = xstate::read_vector_probe() == MINE;
+    let kept = xstate::read_vector_probe() == Some(MINE);
     let intruded = VECTOR_INTRUDER_SAW.load(Ordering::Acquire) == THEIRS as usize;
 
     // And `XCR0` holds what boot asked for.
@@ -637,10 +636,13 @@ static VECTOR_INTRUDER_SAW: AtomicUsize = AtomicUsize::new(0);
 /// Put a different value in `xmm0` and read it back, on another thread.
 fn clobber_a_vector_register() {
     const THEIRS: u64 = 0x5A5A_8765_4321_5A5A;
-    xstate::write_vector_probe(THEIRS);
+    if !xstate::write_vector_probe(THEIRS) {
+        return;
+    }
     let mut context = context();
     thread::yield_now(&mut context);
-    VECTOR_INTRUDER_SAW.store(xstate::read_vector_probe() as usize, Ordering::Release);
+    let seen = xstate::read_vector_probe().unwrap_or(0) as usize;
+    VECTOR_INTRUDER_SAW.store(seen, Ordering::Release);
     VECTOR_INTRUDER_RAN.store(1, Ordering::Release);
 }
 

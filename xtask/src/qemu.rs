@@ -1351,12 +1351,22 @@ mod tests {
             );
         }
 
-        // And the user boundary, which `usercopy` and the header both state.
+        // And the user boundary, read from the one place that defines it.
+        // `usercopy` re-exports this rather than transcribing it (D-124), so
+        // the assertion follows the definition rather than the re-export —
+        // and the re-export is checked too, because a second literal
+        // reappearing there is the thing that was fixed.
+        let paging = std::fs::read_to_string(root.join("wost/src/arch/x86_64/paging.rs"))
+            .expect("paging.rs");
+        assert!(
+            paging.contains("pub const USER_END: u64 = 0x0000_8000_0000_0000;"),
+            "the kernel's user boundary moved"
+        );
         let usercopy = std::fs::read_to_string(root.join("wost/src/arch/x86_64/usercopy.rs"))
             .expect("usercopy.rs");
         assert!(
-            usercopy.contains("USER_END: u64 = 0x0000_8000_0000_0000"),
-            "the kernel's user boundary moved"
+            usercopy.contains("pub use super::paging::USER_END;"),
+            "usercopy states the boundary again instead of re-exporting it"
         );
         assert!(
             defined("WIZ_USER_END").contains("0x0000800000000000"),

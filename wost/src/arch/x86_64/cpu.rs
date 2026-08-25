@@ -453,12 +453,19 @@ impl WriteCombining {
     }
 }
 
+/// The page attribute table, `IA32_PAT`.
+///
+/// One definition. It was transcribed three times in this file — once in each
+/// of the two public functions and once in `Drop` — so a typo in any of them
+/// would have named a different MSR entirely, and nothing compared them
+/// (D-124).
+const PAT: u32 = 0x277;
+
 impl Drop for WriteCombining {
     fn drop(&mut self) {
         if !self.restore {
             return;
         }
-        const PAT: u32 = 0x277;
         let current = msr::read(PAT);
         let restored = (current & !(0xff << 8)) | (u64::from(self.previous) << 8);
         // SAFETY: only PAT entry 1 is restored to the byte read from it before
@@ -485,9 +492,6 @@ impl Drop for WriteCombining {
 /// manual asks for a TLB flush after repurposing a live PAT entry, and the
 /// `CR3` load in `activate` is exactly that.
 pub fn enable_write_combining() -> Option<WriteCombining> {
-    /// The page attribute table.
-    const PAT: u32 = 0x277;
-
     /// `cpuid` leaf 1, `EDX` bit 16.
     const SUPPORTED: u32 = 1 << 16;
 
@@ -522,9 +526,6 @@ fn reload_page_table() {
 /// the whole point of the entry is that a mapping selecting it behaves
 /// differently.
 pub fn write_combining_is_enabled() -> bool {
-    /// The page attribute table.
-    const PAT: u32 = 0x277;
-
     /// Encoding of write-combining in a PAT entry.
     const WRITE_COMBINING: u64 = 0x01;
 

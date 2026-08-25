@@ -59,8 +59,11 @@ pub(crate) const RING: u64 = 0x0000_2000_0000_0000;
 /// record from another's without reading the tables.
 const APART: u64 = 0x1_0000;
 
-/// Bytes of stack, which is one page: it makes one call and never returns.
-const STACK_BYTES: u64 = PAGE_SIZE;
+/// Bytes of the *program*'s stack, which is one page: it makes one call and
+/// never returns. Named apart from `thread::STACK_BYTES`, which is the
+/// thirty-two kilobytes a *kernel* thread gets — one name for two sizes reads
+/// like one size (D-124).
+const USER_STACK_BYTES: u64 = PAGE_SIZE;
 
 /// The program's first four bytes, for the check that reads them back across
 /// the boundary.
@@ -80,7 +83,7 @@ pub(crate) const PROGRAM: [u8; 4] = [0x58, 0x48, 0x85, 0xC0];
 /// memory exists (D-12).
 fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
     let at = STACK + which * APART;
-    let mut stack = mm::allocate_contiguous((STACK_BYTES / PAGE_SIZE) as usize, 1)?;
+    let mut stack = mm::allocate_contiguous((USER_STACK_BYTES / PAGE_SIZE) as usize, 1)?;
     if !stack.zero() {
         return None;
     }
@@ -547,7 +550,7 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     let entry =
         load(&mut space, which * APART, &mut regions, &mut mapped).map_err(SpawnError::Load)?;
     let stack = place_stack(&mut space, which).ok_or(SpawnError::NoStack)?;
-    remember(&mut regions, &mut mapped, stack, STACK_BYTES);
+    remember(&mut regions, &mut mapped, stack, USER_STACK_BYTES);
 
     // Its ring, at the same address every program's is — which is what having
     // a space of its own buys. The pages stay the kernel's: `map_shared`
@@ -995,7 +998,7 @@ fn cross() {
     // everything it is ever given. Sixteen bytes down so the pointer handed to
     // `iretq` is aligned as the ABI wants; the program's first instruction
     // pops it.
-    let top = launch.stack + STACK_BYTES - 16;
+    let top = launch.stack + USER_STACK_BYTES - 16;
     if usercopy::copy_to_user(top, &launch.argument.to_le_bytes()).is_err() {
         warn!("user {which}: could not write its argument");
         return;

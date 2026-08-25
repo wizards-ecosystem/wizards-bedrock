@@ -267,7 +267,14 @@ enum Reach {
 /// The first address that is not user memory.
 ///
 /// The canonical hole begins here; everything above it is the kernel's.
-const USER_END: u64 = 0x0000_8000_0000_0000;
+///
+/// **Defined once, here.** `usercopy` re-exports this rather than transcribing
+/// it, which is what it used to do: two `0x0000_8000_0000_0000` literals in one
+/// crate, one bounding the mappings a space will accept and the other bounding
+/// the ranges a copy will touch, with nothing comparing them. They must agree —
+/// a copy allowed past what a mapping permits is a copy into the kernel's half
+/// — and nothing said so (D-124).
+pub const USER_END: u64 = 0x0000_8000_0000_0000;
 
 /// Whether `address` is one ring 3 could name.
 ///
