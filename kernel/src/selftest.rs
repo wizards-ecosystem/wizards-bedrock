@@ -2379,6 +2379,79 @@ static WINDOW_CHANNEL: SpinLock<Option<object::ObjectRef>> = SpinLock::new(None)
 /// One once the window waiter has come back.
 static WINDOW_RETURNED: AtomicUsize = AtomicUsize::new(0);
 
+/// A receiver that is **already blocked** learns that its peer has died.
+///
+/// `receive_blocking` returns `None` when the far end is gone, and the check
+/// beside this one drove that by polling `is_orphaned` without ever blocking —
+/// which is the one arrangement that cannot fail. A thread that has blocked
+/// re-reads its condition only when something wakes it, and until D-127
+/// nothing did: `Channel` had no `Drop`, so an end could die with a waiter on
+/// the other side and never say so. That waiter slept for the rest of the
+/// boot, holding its slot.
+///
+/// It is not a hypothetical arrangement. `user::reclaim` drops a dead
+/// program's handle table precisely so that "the parent's end learns its peer
+/// is gone", and that sentence was false for a parent that was waiting.
+///
+/// Nothing is ever sent here, so the wake under test is the only thing that
+/// can end the wait — which is what makes this red rather than slow when the
+/// wake is absent (D-127).
+fn a_blocked_receiver_learns_its_peer_is_gone() -> bool {
+    let Some((near, far)) = object::channel() else {
+        return false;
+    };
+
+    *ORPHANED_CHANNEL.lock_leaf() = Some(Arc::clone(&far));
+    ORPHANED_RECEIVER.store(0, Ordering::Release);
+    let free_before = thread::free_slots();
+    if thread::spawn("channel-orphan", block_until_orphaned).is_err() {
+        return false;
+    }
+
+    // Asleep rather than spinning: its slot is taken and it has reported
+    // nothing, which is the state the wake has to reach.
+    let blocked = yields_until(|| {
+        thread::free_slots() < free_before && ORPHANED_RECEIVER.load(Ordering::Acquire) == 0
+    });
+
+    // The last strong reference to the other end: `far` holds only a `Weak`
+    // back. This is the death the waiter has to be told about.
+    drop(near);
+
+    let learned = runs_until(500, || ORPHANED_RECEIVER.load(Ordering::Acquire) == 1);
+    let settled = runs_until(500, || thread::free_slots() >= free_before);
+    // And nothing is left registered, so a later wake cannot name a thread
+    // that is no longer waiting here.
+    let idle = far
+        .as_channel()
+        .is_some_and(|end| end.waiters_for_test().is_idle());
+    drop(ORPHANED_CHANNEL.lock_leaf().take());
+
+    blocked && learned && settled && idle
+}
+
+/// The end the orphaned receiver blocks on.
+static ORPHANED_CHANNEL: SpinLock<Option<object::ObjectRef>> = SpinLock::new(None);
+
+/// One once that receiver has come back with nothing, which is the answer.
+static ORPHANED_RECEIVER: AtomicUsize = AtomicUsize::new(0);
+
+/// Block until a message arrives or the far end dies, and report only the
+/// second: nothing is ever sent to this end, so a message would be a bug in
+/// the check rather than a pass.
+fn block_until_orphaned() {
+    let Some(end) = ORPHANED_CHANNEL.lock_leaf().clone() else {
+        return;
+    };
+    let Some(channel) = end.as_channel() else {
+        return;
+    };
+    let mut context = context();
+    if channel.receive_blocking(&mut context).is_none() {
+        ORPHANED_RECEIVER.store(1, Ordering::Release);
+    }
+}
+
 /// A handle names its object, and a closed one names nothing.
 ///
 /// The lifetime property the whole model rests on (D-78). A handle kept across
@@ -2538,6 +2611,46 @@ fn a_table_cannot_exceed_its_quota() -> bool {
     let room_again = table.insert(object::event(), Rights::UNIVERSAL).is_ok();
 
     refused && full && room_again
+}
+
+/// The arena grows twice over, and every handle survives both moves.
+///
+/// Sixteen live handles is the number no boot had ever reached, and it is
+/// where `reserve_a_slot` stops being exercised only in its easy case. The
+/// first growth hands back a `Vec` with no allocation behind it; the second
+/// hands back a real one, and freeing that is an acquisition of `HEAP` —
+/// taken, until now, with `ARENA`'s leaf guard still live. The order D-85
+/// deleted, rebuilt inside the one function whose doc says it exists to
+/// prevent it.
+///
+/// So the assertions below are half of this check. The other half is
+/// [`a_leaf_guard_is_the_last_lock`], which sees the violation only on a boot
+/// that walks the path — and no boot did. D-126 records that limit; this is
+/// the boot that removes it for this one path (D-128).
+fn the_handle_arena_grows_more_than_once() -> bool {
+    /// Two reallocations past an empty arena, whose capacity runs 16, 32, 64.
+    const HELD: usize = 40;
+
+    let mut table = HandleTable::new(HELD);
+    let mut handles = Vec::new();
+    for _ in 0..HELD {
+        match table.insert(object::event(), Rights::UNIVERSAL) {
+            Ok(handle) => handles.push(handle),
+            Err(_) => return false,
+        }
+    }
+
+    // Every one still names its own object across both moves. A handle is an
+    // index into the arena, so relocating the arena is exactly the operation
+    // that could invalidate one.
+    let all_resolve = handles.iter().all(|handle| table.kind_of(*handle).is_ok());
+    let live = table.live() == HELD;
+    // And no two name one slot, which a move that lost entries would produce.
+    let distinct = handles
+        .iter()
+        .all(|handle| handles.iter().filter(|other| *other == handle).count() == 1);
+
+    all_resolve && live && distinct
 }
 
 /// An object outlives every handle to it, and no longer.
@@ -4120,7 +4233,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 134;
+const EXPECTED_CHECKS: usize = 136;
 
 impl Report {
     const fn new() -> Self {
@@ -4277,6 +4390,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_blocked_receiver_wakes_with_its_message(),
     );
     report.check(
+        "a blocked receiver learns its peer is gone",
+        a_blocked_receiver_learns_its_peer_is_gone(),
+    );
+    report.check(
         "kernel memory cannot be published to ring three",
         kernel_memory_cannot_be_published_to_ring_three(),
     );
@@ -4359,6 +4476,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a table cannot exceed its quota",
         a_table_cannot_exceed_its_quota(),
+    );
+    report.check(
+        "the handle arena grows more than once",
+        the_handle_arena_grows_more_than_once(),
     );
     report.check(
         "an object lives exactly as long as its handles",

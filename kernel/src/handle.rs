@@ -145,6 +145,14 @@ static ARENA: SpinLock<Arena> = SpinLock::new(Arena::new());
 /// guard would rebuild the very lock order D-85 deleted. Reserving first costs
 /// a second acquisition and keeps every one of them a leaf (D-95).
 ///
+/// **Growing is two allocator operations, not one**, and only the first was
+/// moved out. The handover used to be `arena.slots = grown`, and that
+/// assignment drops the vector it replaces — which after `append` still owns
+/// its buffer, so the free was a `HEAP` acquisition under this guard. Latent
+/// rather than harmless: the first growth hands back a vector with no
+/// allocation behind it, so nothing was reached until a boot held sixteen
+/// handles at once and none did (D-128).
+///
 /// # Errors
 ///
 /// [`HandleError::ArenaFull`] when every slot the arena may ever hold exists
@@ -169,11 +177,21 @@ fn reserve_a_slot() -> Result<(), HandleError> {
         // assuming.
         let room: Vec<ArenaSlot> = Vec::with_capacity(wanted);
         let mut arena = ARENA.lock_leaf();
-        if arena.slots.capacity() < wanted {
+        // Whichever vector this call is left holding: the arena's old buffer
+        // where the handover happened, and the unused room where another
+        // caller got there first. Named so it can be freed below rather than
+        // where it stops being wanted.
+        let discarded = if arena.slots.capacity() < wanted {
             let mut grown = room;
             grown.append(&mut arena.slots);
-            arena.slots = grown;
-        }
+            core::mem::replace(&mut arena.slots, grown)
+        } else {
+            room
+        };
+        // The guard first, then the free. The other order is the one this
+        // function exists to prevent.
+        drop(arena);
+        drop(discarded);
     }
 }
 

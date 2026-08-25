@@ -421,16 +421,52 @@ impl Channel {
     }
 }
 
+impl Drop for Channel {
+    /// Tell the far end, which is now waiting on a peer that does not exist.
+    ///
+    /// [`receive_blocking`](Channel::receive_blocking) promises `None` when the
+    /// other end is gone, and [`WaitQueue::wait_unless`] re-reads its condition
+    /// only after a wake — so without this the promise held for a receiver that
+    /// had not blocked yet and for no other. One that had was never told, and
+    /// slept for the rest of the boot holding its slot. `user::reclaim` drops a
+    /// dead program's handle table so that the parent's end learns its peer is
+    /// gone, and that was the sentence this makes true (D-127).
+    ///
+    /// `get_mut` rather than a guard, and it is not a convenience: a `Drop`
+    /// runs wherever the last reference dies, so a lock taken here is a lock
+    /// taken under whatever that caller happened to be holding — which is the
+    /// one thing `lock_leaf` forbids (D-121, D-126). Nothing is locked here at
+    /// all.
+    ///
+    /// The recursion is two deep and stops: reaching the peer takes a strong
+    /// reference, and releasing it can destroy the peer in turn — whose own
+    /// drop finds this end's count already at zero and upgrades nothing.
+    fn drop(&mut self) {
+        let peer = self.peer.get_mut().upgrade();
+        if let Some(far) = peer.as_ref().and_then(|object| object.as_channel()) {
+            far.waiters.wake_all();
+        }
+    }
+}
+
 /// Make a pair of channel ends, each naming the other.
 ///
 /// The only way to make a `Channel`: an end with no peer would be a pipe with
 /// one side, and there is no operation that could give it one later.
+///
+/// `None` rather than an unlinked pair if the two allocations somehow do not
+/// hold what they were just built from. Unreachable, and written as a refusal
+/// anyway: the alternative returned two ends that satisfy the type and violate
+/// the invariant, and every `send` on one would report `PeerClosed` for a peer
+/// that was never opened — a failure arriving arbitrarily far from its cause
+/// (D-127).
 pub(crate) fn channel() -> Option<(ObjectRef, ObjectRef)> {
     let first: ObjectRef = Arc::new(Object::Channel(Channel::new()?));
     let second: ObjectRef = Arc::new(Object::Channel(Channel::new()?));
-    if let (Some(one), Some(two)) = (first.as_channel(), second.as_channel()) {
-        *one.peer.lock_leaf() = Arc::downgrade(&second);
-        *two.peer.lock_leaf() = Arc::downgrade(&first);
-    }
+    let (Some(one), Some(two)) = (first.as_channel(), second.as_channel()) else {
+        return None;
+    };
+    *one.peer.lock_leaf() = Arc::downgrade(&second);
+    *two.peer.lock_leaf() = Arc::downgrade(&first);
     Some((first, second))
 }
