@@ -3988,11 +3988,12 @@ fn the_blocked_reader_woke_with_the_key() -> bool {
 /// D-37's path had never run: both test machines have an I/O APIC. Started
 /// here for a bounded number of rounds, on the code the shipped fallback runs.
 /// It must make progress *and* leave, so the exit is half the claim.
-fn the_polled_fallback_drains_and_sleeps() -> bool {
+fn the_polled_fallback_runs_its_rounds_and_sleeps() -> bool {
     const ROUNDS: usize = 4;
 
     let free = thread::free_slots();
     let before = input::poller_passes();
+    let expiries_before = time::expiries();
     if !input::start_bounded_poller(ROUNDS) {
         return false;
     }
@@ -4002,7 +4003,14 @@ fn the_polled_fallback_drains_and_sleeps() -> bool {
     let passes = input::poller_passes() - before;
     let exited = yields_until(|| thread::free_slots() == free);
 
-    passes == ROUNDS && exited
+    // **And it slept between them**, which the count alone does not show: a
+    // poller that spun would run its four rounds and exit just as fast, and
+    // every conjunct above would hold. Each sleep arms a timer, so the
+    // expiries are the poller's own — one of them is this thread's sleep, so
+    // the bound is the rounds rather than the rounds plus one (D-124).
+    let slept = time::expiries() - expiries_before >= ROUNDS as u64;
+
+    passes == ROUNDS && exited && slept
 }
 
 /// The idle thread runs when nothing else can, and never when something can.
@@ -4603,8 +4611,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         the_idle_thread_runs_only_when_nothing_else_can(),
     );
     report.check(
-        "the polled keyboard fallback drains, sleeps and stops",
-        the_polled_fallback_drains_and_sleeps(),
+        "the polled keyboard fallback runs its rounds, sleeps and stops",
+        the_polled_fallback_runs_its_rounds_and_sleeps(),
     );
 
     report.check("the keyboard controller came up", input::is_ready());
