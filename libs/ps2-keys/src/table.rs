@@ -148,15 +148,17 @@ mod tests {
     /// set 2" — the table Linux's own documentation points at. The numbers are
     /// the specification's, so they are written out rather than derived.
     ///
-    /// **Backslash is deliberately absent.** The source read as `0x5C` and this
-    /// table has `0x5D`; mainstream references agree with the table, and a
-    /// second primary source could not be reached to settle it. Asserting
-    /// either would be asserting a guess — and asserting the table's own value
-    /// would be the definition-restated defect this test exists to remove. One
-    /// code unanchored and said so beats sixty-nine with one invented.
+    /// **Backslash was the one code left unanchored, and is now anchored.**
+    /// D-156 recorded a conflict — the source read as `0x5C` where the table
+    /// has `0x5D` — and refused to assert either without a second source. The
+    /// conflict was a misread column, not an ambiguity: Brouwer's
+    /// correspondence table gives backslash as `0x2B` in set 1, `0x5D` in set
+    /// **2**, and `0x5C` in set **3**, and Vetra's translation table agrees
+    /// independently. `0x5C` is the set-3 value for a keyboard this kernel
+    /// never puts in set 3 (D-162).
     #[test]
     fn every_single_byte_make_code_is_the_specification_s() {
-        const SET_2: [(u8, Key); 68] = [
+        const SET_2: [(u8, Key); 69] = [
             (0x1C, Key::A),
             (0x32, Key::B),
             (0x21, Key::C),
@@ -213,6 +215,7 @@ mod tests {
             (0x41, Key::Comma),
             (0x49, Key::Period),
             (0x4A, Key::Slash),
+            (0x5D, Key::Backslash),
             (0x05, Key::F1),
             (0x06, Key::F2),
             (0x04, Key::F3),

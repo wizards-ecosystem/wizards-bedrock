@@ -96,6 +96,31 @@ mod tests {
         Divide::By128,
     ];
 
+    /// `ALL` is every `Divide` there is.
+    ///
+    /// The match is the check and the compiler runs it: a ninth variant makes
+    /// it non-exhaustive and the crate stops building. The length is asserted
+    /// after it because a variant can be added to the enum *and* to the match
+    /// and still be missing from the list the other tests iterate — which
+    /// would quietly shrink their coverage rather than fail (D-161).
+    #[test]
+    fn all_is_every_divide_the_enum_has() {
+        for divide in ALL {
+            let itself = match divide {
+                Divide::By1 => Divide::By1,
+                Divide::By2 => Divide::By2,
+                Divide::By4 => Divide::By4,
+                Divide::By8 => Divide::By8,
+                Divide::By16 => Divide::By16,
+                Divide::By32 => Divide::By32,
+                Divide::By64 => Divide::By64,
+                Divide::By128 => Divide::By128,
+            };
+            assert_eq!(*divide, itself);
+        }
+        assert_eq!(ALL.len(), 8, "ALL has fallen behind the enum");
+    }
+
     /// SDM Vol. 3A §11.5.4's divide-value table, transcribed rather than
     /// derived: bits 1:0 carry the low half of the value and bit 3 the high
     /// bit, with divide-by-one the all-set case.

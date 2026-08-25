@@ -78,6 +78,40 @@ mod tests {
         ("divide configuration", DIVIDE_CONFIGURATION),
     ];
 
+    /// `ALL` names every register the crate defines.
+    ///
+    /// The comment above it says so, and nothing checked it. A fifteenth
+    /// `pub const NAME: Register` added and left out would silently shrink
+    /// three sweeps at once — the alignment check, the collision check and the
+    /// MSR anchoring — and all three would go on reporting success (D-161).
+    ///
+    /// Compared by offset rather than by count: a list that dropped one
+    /// register and repeated another has the right length, and only the
+    /// offsets say so.
+    #[test]
+    fn all_names_every_register_the_crate_defines() {
+        let mut defined: Vec<usize> = include_str!("register.rs")
+            .lines()
+            .filter(|line| line.starts_with("pub const "))
+            .filter_map(|line| line.split_once("Register::new(0x"))
+            .filter_map(|(_, rest)| rest.split_once(')'))
+            .filter_map(|(digits, _)| usize::from_str_radix(digits, 16).ok())
+            .collect();
+        assert!(
+            defined.len() >= 14,
+            "the scan read {} registers out of the source, so the scan is wrong",
+            defined.len()
+        );
+
+        let mut listed: Vec<usize> = ALL.iter().map(|(_, register)| register.offset()).collect();
+        defined.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(
+            listed, defined,
+            "ALL and the registers the crate defines are not the same set"
+        );
+    }
+
     /// `Register::new` enforces this, but it is a `const` assertion that fires
     /// at compile time — this is the check that would notice it being loosened.
     #[test]
@@ -122,7 +156,7 @@ mod tests {
     /// independent to be wrong against.
     #[test]
     fn every_register_lands_on_the_msr_the_manual_gives() {
-        for (name, register, msr) in [
+        let anchored = [
             ("id", ID, 0x802),
             ("version", VERSION, 0x803),
             ("task priority", TASK_PRIORITY, 0x808),
@@ -137,7 +171,17 @@ mod tests {
             ("initial count", INITIAL_COUNT, 0x838),
             ("current count", CURRENT_COUNT, 0x839),
             ("divide configuration", DIVIDE_CONFIGURATION, 0x83E),
-        ] {
+        ];
+
+        // Tied to `ALL`, which is tied to the source: a register the crate
+        // defines and this list forgets is a register with no manual value
+        // behind it, and the loop alone would never say so.
+        assert_eq!(
+            anchored.len(),
+            ALL.len(),
+            "a register is defined without an MSR anchored to the manual"
+        );
+        for (name, register, msr) in anchored {
             assert_eq!(register.msr(), msr, "{name}");
         }
     }
