@@ -9169,3 +9169,314 @@ round-up for the multipliers its tests use; `libs/pixel`'s `span` is only ever
 exercised where `pitch == width * bytes_per_pixel`, so a padded framebuffer
 would map short. Each is a real hole in a real check and each needs a table of
 values from outside the crate, which is a session's work rather than an hour's.
+
+## D-149 The ABI is extended before the filesystem is written — Status: Accepted (2026-08-25)
+
+**Context.** `000`'s roadmap makes Phase 6 "VFS + storage": a VFS over handles,
+tmpfs and devfs, and a read-only third-party format over NVMe. `013` was
+drafted as a separate "Phase 6.5" to follow it, holding three constraints on
+what a program may ask for.
+
+The ordering is the decision, and it is not cosmetic. **A VFS is the first
+subsystem this kernel has with genuinely blocking operations.** Everything
+before it either cannot wait — the clock, `exit`, `tcb_set` — or waits on
+something the kernel already owns. `read()` waits on a device.
+
+**Options.**
+
+1. **VFS first, platform after**, as the roadmap reads. Fastest to a machine
+   that can open a file.
+2. **Platform as its own phase, VFS after.** Cleanest separation; the machine
+   still cannot store anything at the end of it.
+3. **One phase: the ABI extensions as slices 1–3, the filesystem on top.**
+
+**Decision.** Option 3. Phase 6's first three slices are `013`'s work —
+completions that carry handles, the time page, what happens to an operation
+whose program has retired — and the filesystem is written against them, ring
+native from its first `read`.
+
+**Rationale.** Build `read()` synchronous and add the ring form afterwards and
+the kernel has two doors to the same operation for ever. That is not a
+hypothetical: it is what `011` records Phase 5 avoiding by freezing the handle
+table and the queue ABI *before* writing their callers, on the argument that
+both get frozen by their first caller. The queue's first caller echoed a word
+back. Its second waits on a disk, and it is the second that fixes the shape.
+
+The cost is a slower start — three slices before anything is stored — and it is
+the same cost D-19 charges for every charter.
+
+**Consequences.**
+
+- `013` stops being a phase and becomes Phase 6's first three slices. Its own
+  framing said it was "not a phase in the sense the others are"; this makes
+  that true rather than apologetic.
+- Phase 6's charter is written after `012-research-notes-4`, and covers both
+  halves.
+- Phase 7 opens against an ABI that has already met something that waits.
+
+**Left owed.** Nothing here says what the VFS *is* — the handle-per-file shape,
+tmpfs, devfs, and whether the third-party format is FAT32 or ext2 are the
+research pass's questions and the charter's answers.
+
+## D-150 No blocking-only door, as a project rule — Status: Accepted (2026-08-25)
+
+**Context.** `013`'s first constraint: every operation that can wait gets a ring
+form. The question left open was whether that binds Phase 6 or the project.
+
+**Options.** A phase rule is weaker and gets re-argued. A project rule is
+stronger and forecloses a synchronous door somebody may later want for an
+operation that only *looks* blocking.
+
+**Decision.** The project. **Every operation that can wait has a ring form, and
+no operation is reachable only by a call that blocks.**
+
+The carve-out that makes it liveable already exists and is not an exception:
+**a door that cannot wait may stay direct.** `exit`, `tcb_set` and the clock
+are all such doors today. The rule is about waiting, not about syscalls.
+
+**Rationale.** The reason to make it a project rule is the reason it would be
+re-argued: the first person to want a synchronous `stat` will have a good
+local argument, and granting it costs the property that makes the ring worth
+having. D-117 caps this machine at sixteen concurrent programs, so
+thread-per-outstanding-operation is already wrong here; and any userspace that
+multiplexes work onto fewer threads than it has work dies against a
+blocking-only door, which is what every language runtime with a scheduler
+does.
+
+Stated as a rule rather than a preference because the alternative is not "we
+will think about it" but "the second caller decides", and the second caller
+will be whoever is in a hurry.
+
+**Consequences.**
+
+- Phase 6's `read`, `write` and `open` are submissions. A blocking read is a
+  submission plus a wait, which is also what makes it interruptible by a
+  signal, since a signal is a completion (D-80).
+- The rule is checkable at review time and not by machine: nothing can tell a
+  door that *cannot* wait from one that merely does not yet.
+
+**Left owed.** The check. A door that can wait is a property of what it calls,
+and this project has declined whole-program analysis before for good reasons
+(D-147). The honest position is that this is a rule a reviewer applies, and
+the entry exists so the reviewer knows to.
+
+## D-151 A completion may carry a handle, and the receiver reserves its slot — Status: Accepted (2026-08-25)
+
+**Context.** `011` closed Phase 5 owing this: *"no completion carries a handle,
+so the ring cannot be the delegation path the channels are."* Phase 6 makes it
+concrete, because `open` is the first operation whose whole purpose is
+producing authority.
+
+The question is who accounts for the handle-table slot.
+
+**Options.**
+
+1. **The kernel installs it** at completion time. Simplest: the operation
+   finishes, the kernel puts the handle in the receiver's table, the completion
+   names it.
+2. **The receiver reserves it at submission**, from the same quota and by the
+   same admission the completion slot already uses.
+3. **Defer** — the ring stays data-only and every authority-producing operation
+   detours through a channel.
+
+**Decision.** Option 2. A submission that may produce a handle reserves a
+handle-table slot alongside its completion slot, and is refused at admission if
+either is unavailable.
+
+**Rationale.** Option 1 reintroduces exactly the failure the reservation model
+exists to delete. D-79 chose RIO-style admission over io_uring's `CQ_NODROP`
+so that **an unreportable operation is impossible rather than unlikely**; a
+handle installed at completion time can fail for a reason the submitter was
+never told about, and the ring then has two flow-control models — one for the
+completion, none for the authority it carries.
+
+**The field converged here the hard way, and that is the evidence worth
+recording.** io_uring's `IORING_OP_ACCEPT` returns a descriptor installed at
+completion time. It had to grow **direct descriptors** —
+`IORING_OP_ACCEPT_DIRECT`, placing into a slot the application pre-registered —
+precisely because completion-time installation has no backpressure and
+exhausts the descriptor table under load. That is option 1 failing in
+production and being replaced by option 2. Zircon is the same shape from the
+start: a channel read takes a caller-supplied handle array, so the space is
+committed before the message moves.
+
+Option 3's cost is two mechanisms and two round trips for one idea, and it
+does not avoid the decision — it moves it to whoever writes `open`.
+
+**Consequences.**
+
+- A submission carries what it may produce. The opcode says whether a handle
+  can come back, and admission checks the handle quota then, not later.
+- Refusal is backpressure and reads like it: the program is told at submit,
+  which is the moment it can do something about it.
+- The rights on a handle arriving by completion **attenuate the way D-110 makes
+  the channel path attenuate**. Otherwise the ring becomes the widening path
+  around that discipline, which is the one thing that would make it worse than
+  the channels it is joining.
+- Quota accounting moves earlier and has to be released if the operation is
+  cancelled or its program retires (D-153).
+
+**Left owed.** The reservation must be *returned* on every terminal path — a
+refused operation, a cancelled one, a retired program's. That is three paths
+and the third is D-153's, so this entry does not close it.
+
+## D-152 Time is read from a page, and the page is global — Status: Accepted (2026-08-25)
+
+**Context.** Phase 4 made the counter the clock (D-57). Reading it from ring 3
+currently means a trap. Every OS that cares eventually publishes a read-only
+page instead — Linux's vDSO `clock_gettime`, Zircon's vDSO — and this is one
+step behind the work already done.
+
+Two questions. Whether time is ambient at all, and if so, whether the page is
+per-program or shared.
+
+**Options for the second.** One shared read-only page, mapped into every
+program. Or a page per program, which is what a future that wants to
+*virtualise* time would need.
+
+**Decision.** A read-only page, mapped into every program, **global**. It
+carries the counter's zero, its frequency, and enough for a program to convert
+a `rdtsc` into nanoseconds without trapping.
+
+**Rationale.** `005` forbids the speculative API, and a per-program page is one:
+nothing this OS has decided to want needs it. Virtualising time is a
+container's problem, and this project has no containers and no plan for them;
+adding the machinery now means a page per program, an accounting question, and
+a second thing to keep in step, for a capability nobody has asked for.
+
+**Time being ambient at all is the more interesting half, and it is deliberate
+rather than incidental.** WASI makes clocks capabilities: a program that was
+not given a clock cannot read one. Zircon treats monotonic time as ambient.
+Both are defensible and this project should not arrive at either because a page
+was easier than a door. The argument for ambient here: monotonic time carries
+no authority — it names no object, grants no access, and a program that cannot
+read it can still measure duration by spinning. What it would buy is
+*determinism*, which is a replay and sandboxing property, and this OS has not
+claimed it. Recorded so that a future that wants deterministic replay knows it
+is giving up a page and not a principle.
+
+**Consequences.**
+
+- `sys_clock_get` stops being OWED and becomes a load. `libs/timebase` already
+  has the arithmetic and it moves to ring 3 unchanged.
+- The page is one more thing mapped into every program, and one more thing in
+  the address-space layout — an entry in D-46's KASLR ledger.
+- A wall clock is still absent. This publishes the monotonic counter;
+  `CLOCK_REALTIME` needs an epoch and this kernel has never been told what time
+  it is.
+
+**Left owed.** The page's layout is a shared structure a program reads, so it
+needs a version field for the reason the ring header has one (D-79), and the
+same copy-out-then-validate discipline does *not* apply — the kernel is the
+only writer. Both go in the charter.
+
+## D-153 An operation in flight is collected with its program's zombie — Status: Accepted (2026-08-25)
+
+**Context.** A program submits an operation and retires before it completes.
+The completion has somewhere to go only while the program's ring exists, and
+D-117 already makes a retired program's resources a zombie that somebody
+collects later. What happens to the operation was unspecified, and it touches
+D-117 directly: **a completion landing for an already-collected slot is the
+shape of the bug.**
+
+**Options.**
+
+1. **Dropped at post.** The poster checks whether the program is still there
+   and discards the completion if not.
+2. **Refused at submit** once the program is retiring, so nothing is in flight
+   when it goes.
+3. **Collected with the zombie.** The ring outlives the program until whoever
+   collects the zombie collects it too.
+
+**Decision.** Option 3.
+
+**Rationale.** It is the machinery that already exists. `LastRites`, `orphan`
+and `collect` were built by D-117 for the program's *memory*; an operation in
+flight is one more thing the zombie holds until a thread with nothing better to
+do picks it up. `Bootstrap::ring` is already an `Arc` (D-126), so the ring
+already outlives the moment the program stops running.
+
+Option 1 needs the poster to know the slot's **generation** — not just that a
+program is there, but that it is the same one — which is the check every other
+use-after-free in this kernel has needed and the reason handles are
+generation-tagged at all. Getting it right means reinventing that here; getting
+it wrong means posting into a re-used slot.
+
+Option 2 needs the submitter to lose a race it cannot see: retirement is
+decided elsewhere, and "is it retiring" is true a moment after it is asked.
+
+The cost is that reclamation is not complete until in-flight operations have
+finished or been abandoned, so a zombie can outlive its program by an operation
+rather than by a scheduling quantum. That is the honest cost of the thing being
+asynchronous.
+
+**Consequences.**
+
+- `LastRites` grows what the ring was holding. `collect` releases the
+  reservations D-151 took — handle-table slots included — which is the third
+  terminal path that entry left owed.
+- A completion posted to a zombie's ring is written and never read. That is
+  correct: exactly one terminal completion is still posted for every operation
+  (D-79), and nobody is waiting for it.
+- The check is that frames, handles and reservations all come back after a
+  program retires *with an operation outstanding* — which is a state the
+  existing reclamation checks do not reach.
+
+**Left owed.** Cancellation is not this. An operation whose program retires is
+abandoned; an operation a *living* program wants to stop needs the advisory
+cancel D-79 describes, and nothing here builds it.
+
+## D-154 SMP stays at Phase 12; its seam is paid now — Status: Accepted (2026-08-25)
+
+**Context.** Four entries carry debts that cannot be discharged on one CPU:
+D-126 owes `LEAVES_HELD` a move into `arch::percpu`; D-129 owes the two-caller
+race in `pic::silence`; D-141 and D-145 owe the interleavings in the handle
+arena and `receive_blocking`, neither of which can be reproduced without a
+second thread inside a window between two lock acquisitions.
+
+Meanwhile the whole lock discipline — D-105's borrow token, D-121's no-closure
+rule, D-126's leaf detector, D-70's rules — was **designed** for SMP and has
+only ever been **exercised** by one CPU.
+
+**Options.**
+
+1. **Pull SMP forward, before storage.** Exercise the concurrency design at its
+   smallest, so every later phase is written against a real second CPU.
+2. **Pull it to just after Phase 6.** Storage first, so the machine is useful,
+   then a second CPU before the network stack, where concurrency bites hardest.
+3. **Leave it at Phase 12 and change nothing.**
+4. **Leave it at Phase 12 and pay the seam now.**
+
+**Decision.** Option 4. SMP stays where the roadmap put it. The **per-CPU
+seam** is made real now: state that must become per-CPU moves into
+`arch::percpu` while there is one CPU and the move is mechanical.
+
+**Rationale.** The argument for pulling SMP forward is real — retrofitting it
+is the classic disaster, and four debts wait on it. The argument against is
+that this kernel has already done the expensive half: the lock ranks, the leaf
+discipline, the borrow token and the `arch::percpu` accessor all exist because
+D-56 and D-70 asked for them in Phase 5. What is missing is not design, it is a
+second processor to run it on.
+
+And an OS that can schedule on two CPUs and still cannot open a file is worse
+than one that can open a file. Storage is what makes the machine a machine.
+
+**What makes option 4 different from option 3** is that the debts stop
+accumulating. Every static that will need to be per-CPU is cheaper to move
+today than after the network stack has three more of them, and moving it is a
+mechanical change with no behaviour to get wrong while there is one CPU. The
+*races* stay unreproducible; the *structure* stops being owed.
+
+**Consequences.**
+
+- `LEAVES_HELD`, `SPINLOCKS_HELD` and the leaf-violation record move behind
+  `arch::percpu`. D-126's owed item is discharged structurally.
+- The three races remain recorded and unreproducible. Their entries say so, and
+  none of them is reachable.
+- Phase 12 inherits a smaller job: bring up an AP, and the state it needs is
+  already where it needs to be.
+
+**Left owed.** The honest test for an unreproducible interleaving is a stress
+check with a flake budget, and this project has no flake budget and does not
+want one. Whoever brings up the second CPU decides what that costs; it is named
+in D-141 and D-145 and not decided here.
