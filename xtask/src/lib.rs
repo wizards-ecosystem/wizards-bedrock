@@ -12,6 +12,7 @@
 
 pub mod cargo;
 pub mod cli;
+pub mod decisions;
 pub mod elf;
 pub mod image;
 pub mod model;
