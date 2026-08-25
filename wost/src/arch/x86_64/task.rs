@@ -25,6 +25,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use super::cpu;
 use super::interrupt::{self, TrapFrame};
 use super::paging::{self, Binding, MappedStack, StackArena};
+use super::xstate;
 use crate::cell::HardwareCell;
 use crate::panic::PanicToken;
 use crate::sync::{Once, SpinLock};
@@ -153,6 +154,19 @@ static TABLE: SpinLock<Table> = SpinLock::new(Table {
 /// Every access happens with the interrupt flag clear and the slot's state
 /// settled under [`TABLE`], which on one CPU is exclusivity.
 static CONTEXTS: HardwareCell<[u64; MAX_TASKS]> = HardwareCell::new([0; MAX_TASKS]);
+
+/// One extended-state save area per slot, out of line and aligned.
+///
+/// In `.bss` rather than on the heap because the switch must not allocate and
+/// must not fail: a thread cannot be told "no room to save your registers".
+/// Out of line rather than inside the thread struct, which is what D-82 asked
+/// for — the *size* is `CPUID`'s and is checked against this ceiling at boot,
+/// so the array is room and not layout (D-108).
+#[repr(C, align(64))]
+struct SaveAreas([[u8; xstate::CEILING]; MAX_TASKS]);
+
+static EXTENDED: HardwareCell<SaveAreas> =
+    HardwareCell::new(SaveAreas([[0; xstate::CEILING]; MAX_TASKS]));
 
 static CURRENT: AtomicUsize = AtomicUsize::new(BOOT);
 
@@ -440,6 +454,28 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
         // interrupt flag is clear and the lock is held, so nothing runs
         // between the write and the return.
         unsafe { cpu::set_page_table_base(wanted) };
+    }
+
+    // Eager, and here because this is the one place every switch passes
+    // through. Between these two instructions and the switch itself the kernel
+    // executes only integer code — `+soft-float` is what guarantees that, and
+    // it is the reason this can sit before the switch rather than inside it
+    // (D-82, D-108).
+    if xstate::is_enabled() {
+        let areas = EXTENDED.as_mut_ptr().cast::<u8>();
+        // SAFETY: both indices are below `MAX_TASKS`, so each offset names a
+        // whole `CEILING`-byte area inside the array; the array is 64-byte
+        // aligned and `CEILING` is a multiple of 64, so every area is too.
+        let leaving = unsafe { areas.add(current * xstate::CEILING) };
+        // SAFETY: as above.
+        let arriving = unsafe { areas.add(slot * xstate::CEILING) };
+        // SAFETY: aligned and `CEILING` long, which is at least `bytes()` —
+        // `init` refused otherwise. The lock is held and the flag is clear, so
+        // nothing else touches these bytes.
+        unsafe { xstate::save(leaving) };
+        // SAFETY: as above, and the area holds either zeros — which `XRSTOR`
+        // reads as the initial state — or what a `save` wrote.
+        unsafe { xstate::restore(arriving) };
     }
 
     let contexts = CONTEXTS.as_mut_ptr().cast::<u64>();

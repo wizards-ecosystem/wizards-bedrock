@@ -42,7 +42,7 @@ mod wait;
 use core::fmt::Write;
 
 use crate::arch::current::uart::UartError;
-use wost::arch::current::{apic, cpu, interrupt, pic, segment, task};
+use wost::arch::current::{apic, cpu, interrupt, pic, segment, task, xstate};
 use wost::boot::BootInfo;
 use wost::sync::SpinLock;
 
@@ -75,6 +75,22 @@ fn kernel_main(boot: BootInfo) -> ! {
     info!("cpu: descriptor tables installed");
     let protections = cpu::enable_protections();
     info!("cpu: protections {protections}");
+
+    // Before any thread but this one exists, because every switch saves and
+    // restores from here on (D-108).
+    match xstate::init() {
+        Some(extended) => info!(
+            "cpu: extended state {} bytes, xcr0 {:#x}{}",
+            extended.bytes,
+            extended.mask,
+            if extended.compacted {
+                ", compacted"
+            } else {
+                ""
+            }
+        ),
+        None => info!("cpu: no extended state to save"),
+    }
 
     // Before anything can enter ring 3, and only where the instruction exists:
     // `AC` survives interrupt delivery and is writable at CPL 3, so a ring-3

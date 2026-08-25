@@ -9,6 +9,7 @@ pub mod port;
 pub mod segment;
 pub mod task;
 pub mod usercopy;
+pub mod xstate;
 
 mod msr;
 mod table;

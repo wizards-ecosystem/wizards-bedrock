@@ -23,7 +23,7 @@ use handle_space::Rights;
 use wost::arch::current::cpu::{self, Protections};
 use wost::arch::current::paging::{self, ActivateError, AddressSpace, BootRegion, MapError};
 use wost::arch::current::usercopy::{self, UserCopyError};
-use wost::arch::current::{apic, interrupt, pic, port, segment};
+use wost::arch::current::{apic, interrupt, pic, port, segment, xstate};
 use wost::boot::{self, FramebufferInfo, Rgb};
 use wost::mm;
 use wost::sync::{Once, SpinLock};
@@ -540,6 +540,73 @@ fn two_spaces_map_one_address_to_different_memory() -> bool {
     let shared_kernel = first.lookup(text) == second.lookup(text) && first.lookup(text).is_some();
 
     separate && both_user && shared_kernel
+}
+
+/// What one thread has in a vector register, another thread cannot see, and
+/// the first still has it afterwards.
+///
+/// Eager extended-state save and restore (D-82, D-108). Lazy is CVE-2018-3665
+/// and was never on the table; what was owed was doing it at all, and D-99
+/// made the gap reachable — two threads can be in ring 3, so two threads can
+/// have floating-point state to lose.
+///
+/// `xmm0` is the probe because it is the one vector register anything in this
+/// kernel touches: the build is `+soft-float`, so no compiled code holds
+/// anything there, which is also why the save can sit before the switch rather
+/// than inside it.
+fn a_vector_register_survives_a_switch() -> bool {
+    /// What this thread puts there.
+    const MINE: u64 = 0xA5A5_1234_5678_A5A5;
+    /// What the other thread puts there.
+    const THEIRS: u64 = 0x5A5A_8765_4321_5A5A;
+
+    if !xstate::is_enabled() {
+        // A processor with no `XSAVE` has nothing to save, and reports so.
+        return xstate::bytes() == 0 && xstate::extended_control() == 0;
+    }
+
+    // The register the write went to is the register the read comes from,
+    // before anything else runs — a conjunct that would hold with the whole
+    // save path deleted, and named so it is not mistaken for the property.
+    xstate::write_vector_probe(MINE);
+    if xstate::read_vector_probe() != MINE {
+        return false;
+    }
+
+    VECTOR_INTRUDER_RAN.store(0, Ordering::Release);
+    if thread::spawn("vector-intruder", clobber_a_vector_register).is_err() {
+        return false;
+    }
+    if !runs_until(500, || VECTOR_INTRUDER_RAN.load(Ordering::Acquire) == 1) {
+        return false;
+    }
+
+    // The other thread wrote its own value and this one is unchanged, which is
+    // only true if the switch away saved and the switch back restored.
+    let kept = xstate::read_vector_probe() == MINE;
+    let intruded = VECTOR_INTRUDER_SAW.load(Ordering::Acquire) == THEIRS as usize;
+
+    // And `XCR0` holds what boot asked for.
+    let mask = xstate::extended_control();
+    let masked = mask & 0b111 == 0b111 && xstate::bytes() >= 576;
+
+    kept && intruded && masked
+}
+
+/// Set by the intruding thread once it has run.
+static VECTOR_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
+
+/// What the intruding thread read back from its own register.
+static VECTOR_INTRUDER_SAW: AtomicUsize = AtomicUsize::new(0);
+
+/// Put a different value in `xmm0` and read it back, on another thread.
+fn clobber_a_vector_register() {
+    const THEIRS: u64 = 0x5A5A_8765_4321_5A5A;
+    xstate::write_vector_probe(THEIRS);
+    let mut context = context();
+    thread::yield_now(&mut context);
+    VECTOR_INTRUDER_SAW.store(xstate::read_vector_probe() as usize, Ordering::Release);
+    VECTOR_INTRUDER_RAN.store(1, Ordering::Release);
 }
 
 /// A run of frames the kernel owns cannot be mapped where ring 3 can read it.
@@ -2586,7 +2653,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 111;
+const EXPECTED_CHECKS: usize = 112;
 
 impl Report {
     const fn new() -> Self {
@@ -2689,6 +2756,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "two spaces map one address to different memory",
         two_spaces_map_one_address_to_different_memory(),
+    );
+    report.check(
+        "a vector register survives a switch",
+        a_vector_register_survives_a_switch(),
     );
     report.check(
         "kernel memory cannot be published to ring three",

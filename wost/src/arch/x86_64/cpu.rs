@@ -202,6 +202,32 @@ impl fmt::Display for Protections {
     }
 }
 
+/// Turn on `CR4.OSXSAVE`, which is what makes `XGETBV`, `XSETBV` and the save
+/// instructions legal.
+///
+/// Safe for the same reason [`enable_protections`] is: the bit cannot produce
+/// undefined behaviour, and a processor that does not support it faults, which
+/// is a trap the kernel reports. Called only by
+/// [`xstate::init`](super::xstate::init), which has already asked `CPUID`.
+pub fn enable_extended_state() {
+    /// `CR4.OSFXSR`: without it every SSE instruction is a `#UD`, whatever
+    /// `XCR0` says. Setting `OSXSAVE` alone bought a fault, not a register.
+    const CR4_OSFXSR: u64 = 1 << 9;
+    /// `CR4.OSXMMEXCPT`: SSE numeric errors arrive as `#XM` rather than as the
+    /// `#UD` a processor raises when the kernel has not said it can handle
+    /// them.
+    const CR4_OSXMMEXCPT: u64 = 1 << 10;
+    /// `CR4.OSXSAVE`.
+    const CR4_OSXSAVE: u64 = 1 << 18;
+    /// `CR0.MP`: monitor coprocessor, which the manual pairs with `EM` clear.
+    const CR0_MONITOR: u64 = 1 << 1;
+    /// `CR0.EM`: emulation. Set, every SSE instruction faults.
+    const CR0_EMULATE: u64 = 1 << 2;
+
+    write_cr0((read_cr0() | CR0_MONITOR) & !CR0_EMULATE);
+    write_cr4(read_cr4() | CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_OSXSAVE);
+}
+
 /// Enable every protection in [`Protections`] this CPU supports, and report
 /// what is now on.
 ///
@@ -344,6 +370,32 @@ fn cpuid(leaf: u32, sub_leaf: u32) -> CpuidResult {
         ebx: result.ebx,
         ecx: result.ecx,
         edx: result.edx,
+    }
+}
+
+fn read_cr0() -> u64 {
+    let value: u64;
+    // SAFETY: reading a control register in ring 0 has no preconditions and no
+    // effects.
+    unsafe {
+        asm!(
+            "mov {value}, cr0",
+            value = out(reg) value,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    value
+}
+
+fn write_cr0(value: u64) {
+    // SAFETY: the only bits this crate changes are `MP` and `EM`, which govern
+    // whether SSE instructions fault and nothing about memory or privilege.
+    unsafe {
+        asm!(
+            "mov cr0, {value}",
+            value = in(reg) value,
+            options(nostack, preserves_flags),
+        );
     }
 }
 
