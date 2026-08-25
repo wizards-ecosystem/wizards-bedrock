@@ -7832,8 +7832,20 @@ So the check reads a counter of wakes-from-a-handler that armed here. The
 keyboard is the only handler that wakes anything today, which is what makes a
 zero a falsifiable claim rather than an absence of evidence — the check
 requires the blocked reader to have woken *and* the counter to have moved.
-Broken and watched go red (D-28): with the exemption restored, the reader still
-wakes and the counter stays at zero.
+Broken and watched go red (D-28). The two lines together are the argument, and
+they are worth reading in the order the boot printed them:
+
+```
+[info ] selftest: the blocked reader woke with the injected key, without polling
+[error] selftest: a wake from a handler arms the timer for what it woke FAILED
+[error] selftest: verdict v1 FAIL passed=136 failed=1 expected=137
+```
+
+**The reader still wakes.** The keyboard arm reschedules a moment later, so the
+consequence arrives whether or not `unblock` armed anything — and every check
+that asserts the consequence is green on that boot. Only the counter is red.
+Any version of this check written against "did the thread run" would have
+passed against the defect it was written for.
 
 **Consequences.**
 

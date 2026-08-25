@@ -191,6 +191,42 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "        if false && self.bound && released.is_none() {",
         breaks: "a bound space is not reclaimed under its own thread",
     },
+    // D-127's wake. The `Drop` still runs and still reaches the peer; it just
+    // says nothing, which is the state the kernel was in before it existed. A
+    // receiver already blocked then sleeps for the rest of the boot, so the
+    // check that drops the far end under one is what has to notice.
+    Mutation {
+        file: "kernel/src/object.rs",
+        find: "            far.waiters.wake_all();",
+        replace: "            let _ = far;",
+        breaks: "a blocked receiver learns its peer is gone",
+    },
+    // The arena's move, made to lose what it was moving. Aimed at D-128's own
+    // check rather than at the lock order it also fixed: the leaf-nesting
+    // property already has a mutation, and one defect per property is what
+    // makes a survivor mean something.
+    //
+    // Nothing is lost on the first growth, because the arena is empty then.
+    // The second is the one that drops live handles on the floor, and reaching
+    // a second growth is the whole reason that check holds forty at once.
+    Mutation {
+        file: "kernel/src/handle.rs",
+        find: "            grown.append(&mut arena.slots);",
+        replace: "            grown.clear();",
+        breaks: "the handle arena grows more than once",
+    },
+    // D-133's exemption, put back. The inner test is left in place so the
+    // counter still cannot move, which is the point: the woken thread runs
+    // either way, because the keyboard arm reschedules a moment later, so only
+    // a check that reads the arming can tell the two boots apart.
+    Mutation {
+        file: "kernel/src/thread.rs",
+        find: "    if woken > 0 {
+        if interrupt::in_trap() {",
+        replace: "    if woken > 0 && !interrupt::in_trap() {
+        if interrupt::in_trap() {",
+        breaks: "a wake from a handler arms the timer for what it woke",
+    },
 ];
 
 /// Apply each mutation, boot, and require something to go red.

@@ -4257,6 +4257,15 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
+///
+/// **Changing this number is the moment a mutation is owed** (`AGENTS.md`,
+/// D-119). Five checks landed in one day without one, three of them here, by
+/// sessions that were citing D-119 while writing them. The rule was not
+/// forgotten so much as never *reached*: adding a check happens inside a fix,
+/// and `xtask/src/mutate.rs` is a different file nothing on that path makes you
+/// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
+/// to touch either way, so the reminder lives on them rather than in a resolve
+/// to be more careful.
 const EXPECTED_CHECKS: usize = 137;
 
 impl Report {
