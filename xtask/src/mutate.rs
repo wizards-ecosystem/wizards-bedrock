@@ -129,6 +129,15 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "if false && usercopy::recover(frame) =>",
         breaks: "a faulting user copy resumes instead of stopping the machine",
     },
+    // Its failure mode is a panic: the assert in `ThreadLock` fires, which is
+    // the defect being a defect. A program reaching this halted the machine
+    // (D-122).
+    Mutation {
+        file: "kernel/src/user.rs",
+        find: "            REFUSED_CALLS.fetch_add(1, Ordering::Relaxed);",
+        replace: "            crate::warn!(\"refused\");",
+        breaks: "an unserved call does not log from trap context",
+    },
 ];
 
 /// Apply each mutation, boot, and require something to go red.

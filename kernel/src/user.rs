@@ -820,6 +820,55 @@ impl Call {
     }
 }
 
+/// Calls refused because this kernel does not serve them.
+static REFUSED_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// The last such number, so a report can say *what* was asked for.
+static LAST_REFUSED: AtomicUsize = AtomicUsize::new(0);
+
+/// Ring-enter answers that could not be written back.
+///
+/// Should stay at zero: the frame a handler is running on is the innermost
+/// live one by construction.
+static UNANSWERED: AtomicUsize = AtomicUsize::new(0);
+
+/// Refusals already reported, so each is said once.
+static REPORTED: AtomicUsize = AtomicUsize::new(0);
+
+/// Say what the syscall handler could not, if there is anything new.
+///
+/// Called from the idle thread, which is a kernel thread and may take the
+/// console's lock — the handler may not, and that assert is what a program
+/// used to halt the machine with (D-122). Reports once per refusal and then
+/// falls quiet, so a program in a loop cannot turn a refusal into a flood.
+///
+/// `true` if something was said, so the caller knows it did work.
+pub(crate) fn report_refusals() -> bool {
+    let refused = REFUSED_CALLS.load(Ordering::Acquire);
+    let reported = REPORTED.load(Ordering::Acquire);
+    if refused <= reported {
+        return false;
+    }
+    let number = LAST_REFUSED.load(Ordering::Acquire);
+    REPORTED.store(refused, Ordering::Release);
+    warn!("user: refused {refused} call(s), last was {number:#x}");
+    true
+}
+
+/// Calls this kernel refused, and the last number asked for.
+///
+/// Read from outside trap context, which is the whole point: the handler
+/// cannot take the console's lock, so it leaves a number for something that
+/// can (D-122).
+#[cfg(feature = "selftest")]
+pub(crate) fn refusals() -> (usize, usize, usize) {
+    (
+        REFUSED_CALLS.load(Ordering::Acquire),
+        LAST_REFUSED.load(Ordering::Acquire),
+        UNANSWERED.load(Ordering::Acquire),
+    )
+}
+
 /// `-ENOSYS`, as `abis/linux` numbers it and as the ABI header states.
 const ENOSYS: u64 = (-38i64) as u64;
 
@@ -848,9 +897,9 @@ pub(crate) fn call(frame: &TrapFrame) {
             let served = serve_ring(slot);
             // The frame is the innermost live one — this is a handler running
             // on it — so the write cannot be refused for any reason a caller
-            // could cause.
+            // could cause. Counted rather than logged; see below.
             if !interrupt::answer(frame, served) {
-                warn!("user: could not answer a ring enter on slot {slot}");
+                UNANSWERED.fetch_add(1, Ordering::Relaxed);
             }
         }
         Call::ThreadBase => {
@@ -870,7 +919,17 @@ pub(crate) fn call(frame: &TrapFrame) {
             // nothing back cannot tell a call it made wrong from one the
             // kernel dropped, and would wait for ever on the difference.
             let _ = interrupt::answer(frame, ENOSYS);
-            warn!("user {slot}: refused call {number}");
+            // **Counted, not logged.** This runs in trap context, and `warn!`
+            // takes the console's `ThreadLock`, whose first line asserts it is
+            // *not* in a trap (D-63). So logging here was a program halting
+            // the machine with `mov rax, 3; int 0x80` — unprivileged,
+            // unconditional, and shipped, because no check had ever issued an
+            // unrecognised call number (D-122).
+            //
+            // The count and the last number are read by the boot report and
+            // by the checks, from outside the handler where a lock is legal.
+            REFUSED_CALLS.fetch_add(1, Ordering::Relaxed);
+            LAST_REFUSED.store(number as usize, Ordering::Relaxed);
         }
     }
 }
@@ -948,6 +1007,18 @@ pub(crate) fn run() -> Result<Spawned, SpawnError> {
 pub(crate) fn run_second() -> Result<Spawned, SpawnError> {
     spawn("user-two", 1, BEHAVE)
 }
+
+/// A fifth, which asks for a call this kernel does not serve.
+#[cfg(feature = "selftest")]
+pub(crate) fn run_probing() -> Result<Spawned, SpawnError> {
+    spawn("user-probe", 4, PROBE)
+}
+
+/// The argument that makes the program ask for an unserved call.
+///
+/// Must match the behaviour `xtask/src/image/program.rs` emits for it.
+#[cfg(feature = "selftest")]
+const PROBE: u64 = 2;
 
 /// A fourth, for the check that counts what a program is given at birth.
 #[cfg(feature = "selftest")]

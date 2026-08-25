@@ -1286,38 +1286,41 @@ fn kernel_image_gap(candidate: Paddr, current: Paddr) -> Option<u64> {
 /// refused while the refusal can still be a `Result`.
 fn direct_map_gap(root: Paddr) -> Option<u64> {
     let offset = mm::direct_map()?.offset();
-    mm::with_memory_map(|map| {
-        for region in map
-            .regions()
-            .filter(|region| region.kind.is_direct_mapped())
-        {
-            let base = region.base & !(PAGE_SIZE - 1);
-            let end = region
-                .base
-                .saturating_add(region.len)
-                .next_multiple_of(PAGE_SIZE);
-            let mut physical = base;
-            while physical < end {
-                let Some(virtual_address) = offset.checked_add(physical) else {
-                    return Some(physical);
-                };
-                match walk(root, virtual_address) {
-                    Some((mapped, flags, span))
-                        if mapped == physical
-                            && if region.kind == crate::boot::MemoryKind::KernelAndModules {
-                                !flags.is_write_execute()
-                            } else {
-                                flags.contains(Flags::WRITABLE) && flags.contains(Flags::NO_EXECUTE)
-                            } =>
-                    {
-                        physical += span - (virtual_address & (span - 1));
-                    }
-                    _ => return Some(virtual_address),
+
+    // The extents are copied out first and the tables walked afterwards, so
+    // the map's leaf guard is held only while numbers are read — a walk under
+    // it was a caller's loop running with a lock held, which is what
+    // `lock_leaf` forbids (D-121).
+    let (extents, found) = mm::direct_mapped_extents();
+    if found > extents.len() {
+        // More stretches than can be checked. Refusing is the only honest
+        // answer: a switch onto tables whose direct map was checked in part is
+        // a switch onto tables that may lose an address the kernel needs.
+        return Some(offset);
+    }
+
+    for extent in &extents[..found] {
+        let mut physical = extent.base;
+        while physical < extent.end {
+            let Some(virtual_address) = offset.checked_add(physical) else {
+                return Some(physical);
+            };
+            match walk(root, virtual_address) {
+                Some((mapped, flags, span))
+                    if mapped == physical
+                        && if extent.kind == crate::boot::MemoryKind::KernelAndModules {
+                            !flags.is_write_execute()
+                        } else {
+                            flags.contains(Flags::WRITABLE) && flags.contains(Flags::NO_EXECUTE)
+                        } =>
+                {
+                    physical += span - (virtual_address & (span - 1));
                 }
+                _ => return Some(virtual_address),
             }
         }
-        None
-    })?
+    }
+    None
 }
 
 /// Whether the kernel is running on tables it built itself.
@@ -1629,9 +1632,7 @@ impl BootRegion {
         if len == 0 || !base.is_multiple_of(PAGE_SIZE) {
             return None;
         }
-        crate::mm::with_memory_map(|map| map.covers_memory(base, end))
-            .unwrap_or(false)
-            .then_some(Self { base, len })
+        crate::mm::map_covers_memory(base, end).then_some(Self { base, len })
     }
 }
 

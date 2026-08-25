@@ -145,10 +145,43 @@ pub(crate) fn keyboard_gsi() -> u32 {
 /// Set by [`keep_io_apic`]; meaningless unless there is an I/O APIC.
 static KEYBOARD_GSI: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
-/// Ask the I/O APIC something, if there is one.
+/// How the I/O APIC routes one global system interrupt.
+///
+/// A value rather than a closure. `with_io_apic` used to hand a caller `&mut
+/// IoApic` under a leaf guard, whose whole obligation is that *nothing is
+/// called while it is live* — and a closure is a call by construction. The
+/// obligation was on the caller and nothing checked it (D-105, D-121).
+///
+/// `None` where there is no I/O APIC, or where it does not route `gsi`. The
+/// two are the same answer to the question a caller is asking, which is "what
+/// happens to this line".
 #[cfg(feature = "selftest")]
-pub(crate) fn with_io_apic<T>(f: impl FnOnce(&mut IoApic) -> T) -> Option<T> {
-    IO_APIC.lock_leaf().as_mut().map(f)
+pub(crate) fn routing_of(gsi: u32) -> Option<Routing> {
+    let mut guard = IO_APIC.lock_leaf();
+    let io_apic = guard.as_mut()?;
+    if !io_apic.handles(gsi) {
+        return None;
+    }
+    Some(Routing {
+        masked: io_apic.is_masked(gsi).ok()?,
+        vector: io_apic.vector_of(gsi).ok()?,
+    })
+}
+
+/// What the I/O APIC does with one line.
+#[cfg(feature = "selftest")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Routing {
+    /// Whether the line is masked.
+    pub(crate) masked: bool,
+    /// The vector it is delivered on.
+    pub(crate) vector: u8,
+}
+
+/// The lowest line the I/O APIC routes, if there is one.
+#[cfg(feature = "selftest")]
+pub(crate) fn io_apic_base() -> Option<u32> {
+    IO_APIC.lock_leaf().as_ref().map(IoApic::base)
 }
 
 /// Where the console's framebuffer is reachable now.

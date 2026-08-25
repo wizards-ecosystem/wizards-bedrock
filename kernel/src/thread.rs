@@ -507,6 +507,13 @@ fn idle_loop() {
         if crate::user::collect().is_some() {
             continue;
         }
+        // And where what the syscall handler could not say gets said. A
+        // handler cannot take the console's lock — that assert is what a
+        // program used to halt the machine with (D-122) — so it leaves a
+        // count, and this is a context where reporting one is legal.
+        if crate::user::report_refusals() {
+            continue;
+        }
         IDLE_HALTS.fetch_add(1, Ordering::Relaxed);
         // Nothing is armed for this thread; the halt ends on whatever the
         // rest of the machine was already waiting for.

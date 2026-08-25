@@ -185,33 +185,24 @@ fn the_direct_map_is_not_executable() -> bool {
 fn firmware_reads_are_bounded() -> bool {
     const WORD: usize = 8;
 
-    // Chosen under the map's lock, used outside it: the reader takes it again.
-    let addresses = mm::with_memory_map(|map| {
-        let pick = |wanted: fn(&wost::boot::MemoryRegion) -> bool| {
-            map.regions()
-                .find(|region| wanted(region) && region.len >= WORD as u64)
-                .map(|region| region.base)
-        };
+    // Queries rather than a closure over the map: `mm` takes its own lock for
+    // each and hands back a number, so nothing of this function's runs under
+    // it (D-121). The four calls take the lock four times, which costs
+    // nothing at boot and is what makes the obligation checkable.
+    let pick = mm::first_region;
+    let addresses = (
+        pick(|region| region.kind.is_allocatable(), WORD as u64),
+        pick(
+            |region| !region.kind.is_firmware_table() && !region.kind.is_allocatable(),
+            WORD as u64,
+        ),
+        pick(|region| region.kind.is_firmware_table(), WORD as u64),
         // Inside the address space, so only the map can refuse it — an address
         // at the top would be caught by an overflow guard instead.
-        let undescribed = map
-            .regions()
-            .map(|region| region.base.saturating_add(region.len))
-            .max()
-            // Checked, not `next_multiple_of`: the input is a `saturating_add`
-            // of the bootloader's own numbers, and rounding `u64::MAX` up
-            // panics a debug build on a handoff nobody validated (D-105).
-            .and_then(|top| top.checked_next_multiple_of(4096));
-        (
-            pick(|region| region.kind.is_allocatable()),
-            pick(|region| !region.kind.is_firmware_table() && !region.kind.is_allocatable()),
-            pick(|region| region.kind.is_firmware_table()),
-            undescribed,
-        )
-    });
+        mm::past_every_region(),
+    );
 
-    let Some((Some(usable), Some(unreachable), Some(readable), Some(undescribed))) = addresses
-    else {
+    let (Some(usable), Some(unreachable), Some(readable), Some(undescribed)) = addresses else {
         return false;
     };
 
@@ -1587,6 +1578,48 @@ fn a_dead_program_gives_its_memory_back() -> bool {
     let steady = mm::free_frames() >= free_at_start;
 
     slot_returned && collected && gave_back && no_worse && drained && repeated && steady
+}
+
+/// A program asking for a call this kernel does not serve is refused, and the
+/// machine survives it.
+///
+/// **Two instructions used to halt the machine.** `mov rax, 3; int 0x80` from
+/// ring 3 reached a `warn!` in the syscall handler, and logging takes the
+/// console's `ThreadLock`, whose first line asserts it is *not* in a trap
+/// (D-63). Unprivileged, unconditional, and shipped — because no check had
+/// ever issued an unrecognised call number, which is why the arm was green
+/// (D-122).
+///
+/// The refusal is counted rather than logged now, and the count is what this
+/// reads: "the machine is still here" is the weaker half, since a check that
+/// runs at all has already established it.
+fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
+    // Runs after the ring-3 group and waits for its program, for the reason
+    // the bootstrap check does: every check that reads `last_syscall` or
+    // `last_user_fault` sees whichever program crossed most recently, so one
+    // spawned here and left running is a race it creates for its neighbours.
+    let (refused_before, _, _) = user::refusals();
+    let retirements_before = thread::retirements();
+    let faults_before = trap::last_user_fault().count;
+
+    let Ok(_) = user::run_probing() else {
+        return false;
+    };
+    if !runs_until(2000, || thread::retirements() > retirements_before) {
+        return false;
+    }
+
+    let (refused_after, number, unanswered) = user::refusals();
+    // Exactly one refusal, of the number the program asked for.
+    let counted = refused_after == refused_before + 1 && number == 0x0BAD_0BAD;
+    // Every answer was written back: a program that got nothing cannot tell a
+    // call it made wrong from one the kernel dropped.
+    let answered = unanswered == 0;
+    // And it left by exiting, not by faulting — so the refusal really did
+    // return to ring 3 and the program ran on.
+    let exited = trap::last_user_fault().count == faults_before;
+
+    counted && answered && exited
 }
 
 /// A program posts an operation, rings the doorbell, and reads its own answer.
@@ -3038,11 +3071,8 @@ fn the_keyboard_line_is_routed() -> bool {
     // firmware may map any IRQ to any global system interrupt.
     let gsi = dev::keyboard_gsi();
 
-    dev::with_io_apic(|io_apic| {
-        matches!(io_apic.is_masked(gsi), Ok(false))
-            && matches!(io_apic.vector_of(gsi), Ok(vector::KEYBOARD))
-    })
-    .unwrap_or(false)
+    dev::routing_of(gsi)
+        .is_some_and(|routing| !routing.masked && routing.vector == vector::KEYBOARD)
 }
 
 /// The controller refuses an interrupt it does not route.
@@ -3050,17 +3080,22 @@ fn the_keyboard_line_is_routed() -> bool {
 /// Below its base the line arithmetic wraps, and in release it wrapped
 /// silently into an unrelated register.
 fn the_io_apic_refuses_a_line_it_does_not_own() -> bool {
-    dev::with_io_apic(|io_apic| {
-        let mut refused = 0;
-        for gsi in [u32::MAX, dev::keyboard_gsi().wrapping_sub(1)] {
-            if !io_apic.handles(gsi) && io_apic.vector_of(gsi).is_err() {
-                refused += 1;
-            }
-        }
-        // Only the first always exists: a base of zero has nothing below it.
-        refused > 0
-    })
-    .unwrap_or(false)
+    let Some(base) = dev::io_apic_base() else {
+        return false;
+    };
+    // Past the end, which every controller has.
+    let past_the_end = dev::routing_of(u32::MAX).is_none();
+    // And below the base, which only a controller whose base is above zero
+    // has. The old version asked about `keyboard_gsi() - 1` and accepted
+    // "one of the two refused", which on this machine — base zero, keyboard on
+    // line one — meant the wrap-below arithmetic it names was never reached
+    // and the check could not have noticed if it broke (D-105, D-121).
+    let below_the_base = base == 0 || dev::routing_of(base - 1).is_none();
+    // And the line it *does* own is routed, so this is not the answer "no" to
+    // every question.
+    let owns_its_own = dev::routing_of(dev::keyboard_gsi()).is_some();
+
+    past_the_end && below_the_base && owns_its_own
 }
 
 /// Keystrokes reached the kernel as interrupts, not by polling.
@@ -3747,7 +3782,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 128;
+const EXPECTED_CHECKS: usize = 129;
 
 impl Report {
     const fn new() -> Self {
@@ -3926,6 +3961,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a program drives its own ring",
         a_program_drives_its_own_ring(),
+    );
+    report.check(
+        "an unserved call is refused without stopping the machine",
+        an_unserved_call_is_refused_without_stopping_the_machine(),
     );
     report.check(
         "a spawned program holds exactly one handle",

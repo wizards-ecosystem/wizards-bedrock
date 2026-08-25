@@ -20,7 +20,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use frame_space::{FRAME_SIZE, FrameSpace, words_for};
 
-use crate::boot::{DirectMap, MemoryMap, MemoryRegion};
+use crate::boot::{DirectMap, MemoryKind, MemoryMap, MemoryRegion};
 use crate::panic::PanicToken;
 use crate::sync::{Once, SpinLock};
 
@@ -93,7 +93,7 @@ impl fmt::Display for Report {
 /// Take every allocatable region of `map` under management.
 ///
 /// Idempotent: the second caller returns the same report having changed
-/// nothing. Only [`MemoryKind::Usable`](crate::boot::MemoryKind::Usable) is
+/// nothing. Only [`MemoryKind::Usable`] is
 /// inserted, so the kernel image, the bootloader's structures and the ACPI
 /// tables are excluded by the map itself rather than by a range this code
 /// would have to compute — including the megabyte of bitmap below, which lives
@@ -222,11 +222,20 @@ pub(crate) fn device_range_is_eligible(start: Paddr, end: Paddr) -> bool {
 /// The memory map [`init`] was given, for ownership and firmware checks.
 static MAP: SpinLock<Option<MemoryMap>> = SpinLock::new(None);
 
-/// Run `f` against the memory map [`init`] recorded, if there is one.
+/// Whether the memory map covers `start..end` **with memory**.
 ///
-/// The lock is held for the call, so `f` must not try to acquire it again.
-pub fn with_memory_map<T>(f: impl FnOnce(&MemoryMap) -> T) -> Option<T> {
-    MAP.lock_leaf().as_ref().map(f)
+/// One of the queries that replaced `with_memory_map` (D-121). The closure
+/// form is gone: it handed a caller `&MemoryMap` under a leaf guard, whose
+/// obligation is that nothing is called while it is live — and a closure is a
+/// call by construction. Nothing checked it, and one caller was walking page
+/// tables under it.
+///
+/// `false` before the map is up, which is the honest answer: until then
+/// nothing has described anything.
+pub fn map_covers_memory(start: Paddr, end: Paddr) -> bool {
+    MAP.lock_leaf()
+        .as_ref()
+        .is_some_and(|map| map.covers_memory(start, end))
 }
 
 /// The direct map [`init`] recorded, or `None` before it has run.
@@ -663,6 +672,95 @@ impl USegment {
     pub(crate) fn into_inner(self) -> Segment {
         self.0
     }
+}
+
+/// The base of the first region satisfying `wanted` and at least `len` long.
+///
+/// A query rather than a closure over the map. `with_memory_map` hands a
+/// caller `&MemoryMap` under a leaf guard, whose obligation is that *nothing
+/// is called while it is live* — and a closure is a call by construction. A
+/// `fn` pointer over one region is narrow enough to audit: it cannot capture,
+/// so it cannot reach a lock a caller happened to be holding (D-105, D-121).
+pub fn first_region(wanted: fn(&MemoryRegion) -> bool, len: u64) -> Option<Paddr> {
+    let guard = MAP.lock_leaf();
+    let map = guard.as_ref()?;
+    map.regions()
+        .find(|region| wanted(region) && region.len >= len)
+        .map(|region| region.base)
+}
+
+/// The first page-aligned address past everything the map describes.
+///
+/// `None` before the map is up, and `None` where the top of the highest region
+/// cannot be rounded up — the input is a `saturating_add` of the bootloader's
+/// own numbers, and `next_multiple_of` panics a debug build on `u64::MAX`.
+pub fn past_every_region() -> Option<Paddr> {
+    let guard = MAP.lock_leaf();
+    let map = guard.as_ref()?;
+    map.regions()
+        .map(|region| region.base.saturating_add(region.len))
+        .max()?
+        .checked_next_multiple_of(FRAME_SIZE)
+}
+
+/// One stretch of physical memory the direct map covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Extent {
+    /// First byte, rounded down to a frame.
+    pub base: Paddr,
+    /// One past the last, rounded up to a frame.
+    pub end: Paddr,
+    /// What it is for, which decides what protection it wants.
+    pub kind: MemoryKind,
+}
+
+/// The most direct-mapped extents this will report.
+pub const MAX_EXTENTS: usize = 64;
+
+/// Every stretch the direct map covers, copied out.
+///
+/// **Copied, so nothing runs under the guard.** The caller of this walks page
+/// tables for each extent, which is a second structure with its own reachable
+/// locks — and `with_memory_map` used to hand it `&MemoryMap` and let it do
+/// that *while holding* the map's leaf guard, whose whole obligation is that
+/// nothing is called while it is live (D-105, D-121).
+///
+/// Sixty-four extents of twenty-four bytes is a page and a half of stack,
+/// which the one caller — a boot-time walk on a thirty-two kilobyte stack —
+/// has room for. Past the ceiling the count reports more than were returned,
+/// so a caller can refuse rather than silently walk part of memory.
+///
+/// Returns the extents and how many the map actually had.
+pub fn direct_mapped_extents() -> ([Extent; MAX_EXTENTS], usize) {
+    const NOTHING: Extent = Extent {
+        base: 0,
+        end: 0,
+        kind: MemoryKind::Reserved,
+    };
+
+    let mut extents = [NOTHING; MAX_EXTENTS];
+    let mut found = 0;
+    let guard = MAP.lock_leaf();
+    let Some(map) = guard.as_ref() else {
+        return (extents, 0);
+    };
+    for region in map
+        .regions()
+        .filter(|region| region.kind.is_direct_mapped())
+    {
+        if let Some(slot) = extents.get_mut(found) {
+            *slot = Extent {
+                base: region.base & !(FRAME_SIZE - 1),
+                end: region
+                    .base
+                    .saturating_add(region.len)
+                    .next_multiple_of(FRAME_SIZE),
+                kind: region.kind,
+            };
+        }
+        found += 1;
+    }
+    (extents, found)
 }
 
 /// Allocate one frame, with unspecified contents.

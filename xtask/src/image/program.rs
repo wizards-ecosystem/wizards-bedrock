@@ -92,13 +92,29 @@ fn code() -> Vec<u8> {
 
     let mut code = Vec::new();
 
-    // The argument word, and the two behaviours it chooses.
+    // The argument word, and the three behaviours it chooses.
     code.extend_from_slice(&[0x58]); // pop rax
     code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
-    code.extend_from_slice(&[0x74, 0x02]); // jz behave
-    code.extend_from_slice(&[0x0F, 0x0B]); // ud2
+    // Patched from the label like every other branch. Hand-computing this one
+    // put it two bytes past `behave` and into the middle of the probe's exit,
+    // which assembled, ran, and did something else — the exact failure the
+    // patch machinery exists to prevent, made by the person who wrote it.
+    let behaving = branch(&mut code, 0x74); // jz behave
+    code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x02]); // cmp rax, 2
+    let not_probing = branch(&mut code, 0x75); // jne die
+
+    // Argument two: ask for a call this kernel does not serve, and then exit
+    // normally. Logging that refusal from trap context halted the machine
+    // (D-122), so a program doing it is the check.
+    code.extend_from_slice(&[0xB8]); // mov eax, imm32
+    code.extend_from_slice(&UNSERVED_CALL.to_le_bytes());
+    code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
+    code.extend_from_slice(&[0x31, 0xC0]); // xor eax, eax
+    code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
 
     // Set `AC`, which the entry path must clear.
+    let behave = code.len();
+    patch(&mut code, behaving, behave);
     code.extend_from_slice(&[0x9C]); // pushfq
     code.extend_from_slice(&[0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00]);
     code.extend_from_slice(&[0x9D]); // popfq
@@ -156,7 +172,7 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&[0x0F, 0x0B]); // ud2
     code.extend_from_slice(&[0xEB, 0xFE]); // jmp .
 
-    for site in [served, echoed, clean] {
+    for site in [not_probing, served, echoed, clean] {
         patch(&mut code, site, die);
     }
     code
@@ -167,6 +183,12 @@ const PROGRAM_TAG: u32 = 0x0000_1234;
 
 /// The word it asks the kernel to echo.
 const PROGRAM_ARGUMENT: u32 = 0x00C0_FFEE;
+
+/// A call number this kernel does not serve.
+///
+/// Far above anything `enum wiz_call` names, so adding a call cannot turn this
+/// into a real one by accident.
+const UNSERVED_CALL: u32 = 0x0BAD_0BAD;
 
 /// Emit a two-byte conditional jump with a placeholder, and report where its
 /// displacement byte is.
@@ -340,54 +362,80 @@ mod tests {
             &[0x58, 0x48, 0x85, 0xC0],
             "pop rax; test rax, rax"
         );
-        // The fault behaviour, at the offset the `jz` skips to.
-        assert_eq!(&code[4..8], &[0x74, 0x02, 0x0F, 0x0B], "jz +2; ud2");
-        // Setting `AC`, which the entry path must clear.
-        assert_eq!(
-            &code[8..18],
-            &[0x9C, 0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00, 0x9D],
-            "pushfq; or qword [rsp], 0x40000; popfq"
-        );
+        // Three behaviours, chosen by the argument: zero behaves, two asks for
+        // a call this kernel does not serve, anything else faults.
+        assert_eq!(code[4], 0x74, "jz behave");
+        assert_eq!(&code[6..10], &[0x48, 0x83, 0xF8, 0x02], "cmp rax, 2");
+        assert_eq!(code[10], 0x75, "jne die");
+
+        // Setting `AC`, which the entry path must clear. Searched for rather
+        // than indexed, so adding a behaviour above it moves the assertion
+        // with the code instead of silently onto different bytes.
+        let flags = code
+            .windows(10)
+            .position(|w| w == [0x9C, 0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00, 0x9D])
+            .expect("pushfq; or qword [rsp], 0x40000; popfq");
+
         // The ring's address, which must be `user::RING`.
-        assert_eq!(&code[18..20], &[0x48, 0xBB], "mov rbx, imm64");
+        let ring = flags + 10;
+        assert_eq!(&code[ring..ring + 2], &[0x48, 0xBB], "mov rbx, imm64");
         assert_eq!(
-            u64::from_le_bytes(code[20..28].try_into().expect("eight bytes")),
+            u64::from_le_bytes(code[ring + 2..ring + 10].try_into().expect("eight bytes")),
             0x0000_2000_0000_0000,
             "the program looks for its ring where the kernel maps it"
         );
 
-        // Two `int 0x80`s: the doorbell and the exit, in that order.
+        // Four `int 0x80`s: the unserved probe and its exit, then the doorbell
+        // and its exit.
         let calls: Vec<usize> = code
             .windows(2)
             .enumerate()
             .filter(|(_, pair)| *pair == [0xCD, 0x80])
             .map(|(at, _)| at)
             .collect();
-        assert_eq!(calls.len(), 2, "one doorbell and one exit");
+        assert_eq!(calls.len(), 4, "two calls and two exits");
         assert_eq!(
             &code[calls[0] - 5..calls[0]],
+            &[0xB8, 0xAD, 0x0B, 0xAD, 0x0B],
+            "mov eax, a call the kernel does not serve"
+        );
+        assert_eq!(&code[calls[1] - 2..calls[1]], &[0x31, 0xC0], "xor eax, eax");
+        assert_eq!(
+            &code[calls[2] - 5..calls[2]],
             &[0xB8, 1, 0, 0, 0],
             "mov eax, 1"
         );
-        assert_eq!(&code[calls[1] - 2..calls[1]], &[0x31, 0xC0], "xor eax, eax");
+        assert_eq!(&code[calls[3] - 2..calls[3]], &[0x31, 0xC0], "xor eax, eax");
 
         // Every branch lands on the `ud2`, and none in the middle of an
         // instruction: the displacements are patched from one label, so if any
         // is wrong they all point somewhere that is not it.
         let die = code.len() - 4;
         assert_eq!(&code[die..], &[0x0F, 0x0B, 0xEB, 0xFE], "ud2; jmp .");
+        // Scanned from the start rather than from an offset: the first branch
+        // now precedes the flags block, and no immediate this program emits
+        // contains 0x75.
         let branches: Vec<usize> = code
             .iter()
             .enumerate()
-            .skip(28)
             .filter(|(at, byte)| **byte == 0x75 && *at + 1 < code.len())
             .map(|(at, _)| at)
             .collect();
-        assert_eq!(branches.len(), 3, "three ways to fail");
+        assert_eq!(branches.len(), 4, "four ways to fail");
         for site in branches {
             let displacement = i64::from(code[site + 1] as i8);
             let target = site as i64 + 2 + displacement;
             assert_eq!(target, die as i64, "a branch at {site} misses the ud2");
         }
+
+        // And the one branch that is not a way to fail lands on the flags
+        // block. Hand-computing it put it two bytes past, in the middle of an
+        // instruction, where it assembled and ran and did something else.
+        let behaving = i64::from(code[5] as i8);
+        assert_eq!(
+            4 + 2 + behaving,
+            flags as i64,
+            "the jz misses the start of the behaving path"
+        );
     }
 }

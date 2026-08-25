@@ -143,6 +143,17 @@ impl IoApic {
         Ok(io_apic)
     }
 
+    /// The lowest global system interrupt this controller routes.
+    ///
+    /// Reported so a check can say whether "below the base" is even a place —
+    /// on a machine whose base is zero it is not, and a check that required a
+    /// refusal there would be requiring one for an address that does not exist
+    /// (D-121).
+    #[cfg(feature = "selftest")]
+    pub(crate) const fn base(&self) -> u32 {
+        self.gsi_base
+    }
+
     /// The global system interrupts this controller routes.
     pub(crate) const fn handles(&self, gsi: u32) -> bool {
         gsi >= self.gsi_base && gsi - self.gsi_base < self.entries
