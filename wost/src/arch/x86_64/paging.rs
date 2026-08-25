@@ -169,6 +169,11 @@ pub enum ActivateError {
     /// The new tables do not give this address of the direct map the writable,
     /// never-executable mapping every frame access assumes.
     DirectMapGap(u64),
+    /// A space offered for binding disagrees with the kernel's about the
+    /// higher half, at this top-level slot.
+    KernelHalfDiffers(usize),
+    /// A space offered for binding was not built to share the kernel's half.
+    NotAUserSpace,
 }
 
 impl fmt::Display for ActivateError {
@@ -191,6 +196,13 @@ impl fmt::Display for ActivateError {
             }
             Self::DirectMapGap(address) => {
                 write!(f, "the direct map at {address:#x} is missing or wrong")
+            }
+            Self::KernelHalfDiffers(index) => write!(
+                f,
+                "top-level slot {index} of the higher half is not the kernel's"
+            ),
+            Self::NotAUserSpace => {
+                f.write_str("this space does not share the kernel's higher half")
             }
         }
     }
@@ -591,6 +603,55 @@ impl AddressSpace {
         Ok(space)
     }
 
+    /// Give this space up to be installed on a context switch.
+    ///
+    /// Consuming, and the returned [`Binding`] is neither `Copy` nor `Clone`:
+    /// one space binds to one slot. The tables live for the kernel's life
+    /// whatever happens to the space — `take_table` leaks them deliberately —
+    /// so the root handed out here never dangles.
+    ///
+    /// What makes the switch safe is checked here rather than assumed: every
+    /// top-level entry of the higher half must be *identical* to the kernel's.
+    /// That covers the kernel's code, its stacks, the direct map, the trap
+    /// tables and the device window in one comparison, and it is total where
+    /// sampling addresses is not (D-106).
+    ///
+    /// # Errors
+    ///
+    /// [`ActivateError::NotAUserSpace`] for a space that does not share the
+    /// kernel's half, [`ActivateError::KernelHalfDiffers`] naming the first
+    /// slot that disagrees, and `AlreadyActive` inverted — before the kernel
+    /// installs its own tables there is nothing to agree with.
+    pub fn bind(self) -> Result<Binding, ActivateError> {
+        if !is_active() {
+            return Err(ActivateError::AlreadyActive);
+        }
+        if self.reach != Reach::UserHalfOnly {
+            return Err(ActivateError::NotAUserSpace);
+        }
+        let kernel = active_root();
+        for index in ENTRIES / 2..ENTRIES {
+            let theirs = entry_pointer(kernel, index)
+                .map_err(|_| ActivateError::KernelHalfDiffers(index))?;
+            let ours = entry_pointer(self.root, index)
+                .map_err(|_| ActivateError::KernelHalfDiffers(index))?;
+            // SAFETY: `entry_pointer` confirmed the slot is inside the live
+            // kernel table and reachable through the direct map.
+            let expected = unsafe { theirs.read_volatile() };
+            // SAFETY: as above, for a table this space owns.
+            let found = unsafe { ours.read_volatile() };
+            if expected != found {
+                return Err(ActivateError::KernelHalfDiffers(index));
+            }
+        }
+        // Nothing to release: `take_table` leaks every table frame on purpose,
+        // so an `AddressSpace` has no `Drop` and its tables outlive it. That is
+        // what makes handing the root out safe, and it is also why a space
+        // built and dropped without binding costs frames rather than freeing
+        // them — the accounting D-44 will have to answer for.
+        Ok(Binding { root: self.root })
+    }
+
     /// Take a mapping away, and hand back what it owned.
     ///
     /// The range must be exactly what one [`map_owned`](Self::map_owned) put
@@ -715,6 +776,11 @@ impl AddressSpace {
         // The window keeps the device's offset from a page boundary, so the
         // region's base inherits its low bits — and an `MmioRegion` makes
         // thirty-two-bit accesses. Refused here, where it can be reported.
+        // The window is in the higher half, which a space that shares the
+        // kernel's may not write — the same refusal `map_boot` and `unmap`
+        // take, arrived at by a third door. Without it a user space walks into
+        // the kernel's own device tables and edits them (D-106).
+        self.may_reach(DEVICE_WINDOW_START, DEVICE_WINDOW_END - DEVICE_WINDOW_START)?;
         if !physical.is_multiple_of(size_of::<u32>() as u64) {
             return Err(MapError::UnalignedDevice(physical));
         }
@@ -1300,6 +1366,24 @@ enum Grain {
     Largest,
     /// Four kilobytes throughout.
     Pages,
+}
+
+/// A space that may be installed on a context switch.
+///
+/// The evidence that [`AddressSpace::bind`] checked the higher half, carried
+/// as a value so a caller cannot install a space that was never compared.
+/// Neither `Copy` nor `Clone`: two slots naming one space would let a thread
+/// exit and take another's tables with it.
+#[derive(Debug)]
+pub struct Binding {
+    root: Paddr,
+}
+
+impl Binding {
+    /// The table to load into `CR3`.
+    pub const fn root(&self) -> Paddr {
+        self.root
+    }
 }
 
 /// Evidence that a physical range is one the boot handoff described.

@@ -22,8 +22,9 @@ use core::arch::naked_asm;
 use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use super::cpu;
 use super::interrupt::{self, TrapFrame};
-use super::paging::{self, MappedStack, StackArena};
+use super::paging::{self, Binding, MappedStack, StackArena};
 use crate::cell::HardwareCell;
 use crate::panic::PanicToken;
 use crate::sync::{Once, SpinLock};
@@ -117,6 +118,10 @@ struct Slot {
     entry: Option<(Entry, usize)>,
     /// Whether the thread should be accepting interrupts on its first run.
     starts_interruptible: bool,
+    /// The tables to install when this thread runs, or zero to keep the
+    /// kernel's. Written only through [`bind_address_space`], which takes the
+    /// evidence that the space agrees with the kernel about the higher half.
+    page_table: u64,
 }
 
 impl Slot {
@@ -125,6 +130,7 @@ impl Slot {
         stack_top: 0,
         entry: None,
         starts_interruptible: false,
+        page_table: 0,
     };
 }
 
@@ -262,6 +268,9 @@ pub fn fabricate(slot: usize, entry: Entry, arg: usize) -> Result<(), TaskError>
         stack_top: top,
         entry: Some((entry, arg)),
         starts_interruptible,
+        // Kernel tables until something binds a space to it. A thread that
+        // never enters ring 3 never needs its own.
+        page_table: 0,
     };
     Ok(())
 }
@@ -414,6 +423,25 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
         super::segment::write_kernel_stack(landing);
     }
 
+    // The tables move with the thread, for the same reason `RSP0` does: this
+    // is the one place every switch passes through. A slot with no space of
+    // its own runs on the kernel's, which is where the boot thread and every
+    // kernel thread live (D-106).
+    let wanted = if table.slots[slot].page_table == 0 {
+        paging::active_root()
+    } else {
+        table.slots[slot].page_table
+    };
+    if wanted != 0 && wanted != cpu::page_table_base() {
+        // SAFETY: `bind_address_space` compared every top-level entry of the
+        // higher half against the kernel's before this root was stored, so
+        // the code about to execute the switch, the stack it is on, the trap
+        // tables and the direct map are all mapped identically across it. The
+        // interrupt flag is clear and the lock is held, so nothing runs
+        // between the write and the return.
+        unsafe { cpu::set_page_table_base(wanted) };
+    }
+
     let contexts = CONTEXTS.as_mut_ptr().cast::<u64>();
     // SAFETY: both indices are below `MAX_TASKS`; the lock is held and the
     // flag is clear, so the assembly that also touches these words is not
@@ -424,6 +452,49 @@ fn prepare(slot: usize, leaving: State) -> Result<(*mut u64, u64), TaskError> {
     // SAFETY: as above, and the word was written by `fabricate` or a switch.
     let load = unsafe { target.read() };
     Ok((save, load))
+}
+
+/// Install `binding`'s tables whenever `slot` runs.
+///
+/// Takes the evidence rather than a bare address: a `CR3` naming tables that
+/// do not map the kernel is a triple fault at the next instruction, and
+/// [`paging::AddressSpace::bind`](super::paging::AddressSpace::bind) is where
+/// that is checked. The binding is consumed, so one space serves one slot.
+///
+/// # Errors
+///
+/// [`TaskError::OutOfRange`] past the table, [`TaskError::Vacant`] for a slot
+/// with no thread, and [`TaskError::Current`] for the running one — changing
+/// the tables under a thread that is already on them is a job for the switch,
+/// not for this.
+pub fn bind_address_space(slot: usize, binding: Binding) -> Result<(), TaskError> {
+    let saved = interrupt::disable();
+    let mut table = TABLE.lock_leaf();
+    let result = if slot >= table.count {
+        Err(TaskError::OutOfRange(slot))
+    } else if table.slots[slot].state != State::Alive {
+        Err(TaskError::Vacant(slot))
+    } else if slot == CURRENT.load(Ordering::Acquire) {
+        Err(TaskError::Current(slot))
+    } else {
+        table.slots[slot].page_table = binding.root();
+        Ok(())
+    };
+    drop(table);
+    saved.restore();
+    result
+}
+
+/// Which tables `slot` runs on, or zero for the kernel's.
+pub fn address_space_of(slot: usize) -> u64 {
+    let saved = interrupt::disable();
+    let root = TABLE
+        .lock_leaf()
+        .slots
+        .get(slot)
+        .map_or(0, |slot| slot.page_table);
+    saved.restore();
+    root
 }
 
 /// Bytes the fabricated frame occupies below the stack top.

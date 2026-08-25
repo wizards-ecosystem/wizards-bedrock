@@ -373,7 +373,7 @@ fn a_waiter_rereads_its_condition_before_blocking() -> bool {
 fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
     let before = trap::last_syscall();
     let retirements_before = thread::retirements();
-    if thread::spawn("user", user::run).is_err() {
+    if user::run().is_err() {
         return false;
     }
 
@@ -455,7 +455,7 @@ fn a_program_cannot_bring_smap_down_with_it() -> bool {
 fn a_faulting_program_dies_alone() -> bool {
     let before = trap::last_user_fault();
     let retirements_before = thread::retirements();
-    if thread::spawn("user-fault", user::run_faulting).is_err() {
+    if user::run_faulting().is_err() {
         return false;
     }
 
@@ -478,6 +478,108 @@ fn a_faulting_program_dies_alone() -> bool {
     from_user && it_was_the_ud2 && in_user_memory && retired
 }
 
+/// Two programs at the same address see different memory.
+///
+/// The isolation claim, stated the strongest way the machine allows: two
+/// spaces, one virtual address, two frames. Until D-106 a second program meant
+/// a second *pair of addresses* in the one space the kernel ran on, which
+/// proved that `RSP0` follows the thread and nothing about isolation.
+///
+/// Checked from the kernel rather than by running both, because the point is
+/// what the tables say and a program cannot report on a space it cannot reach.
+/// The frames are written through the direct map, which is the one view that
+/// sees both.
+fn two_spaces_map_one_address_to_different_memory() -> bool {
+    /// A user address neither space has anything else at.
+    const SHARED: u64 = user::CODE + 0x10_0000;
+
+    let (Ok(mut first), Ok(mut second)) = (AddressSpace::for_user(), AddressSpace::for_user())
+    else {
+        return false;
+    };
+    // Different roots to begin with, or nothing below means anything.
+    if first.root() == second.root() {
+        return false;
+    }
+
+    let writable = Flags::USER.union(Flags::WRITABLE).union(Flags::NO_EXECUTE);
+    let (Some(mut one), Some(mut two)) =
+        (mm::allocate_contiguous(1, 1), mm::allocate_contiguous(1, 1))
+    else {
+        return false;
+    };
+    if !one.zero() || !two.zero() {
+        return false;
+    }
+    // Distinct bytes, written through the direct map before either is mapped.
+    if !one.write_at(0, &[0xA5]) || !two.write_at(0, &[0x5A]) {
+        return false;
+    }
+    let (one_at, two_at) = (one.address(), two.address());
+    if one_at == two_at {
+        return false;
+    }
+    if first.map_owned(SHARED, one, writable).is_err()
+        || second.map_owned(SHARED, two, writable).is_err()
+    {
+        return false;
+    }
+
+    // One address, two answers.
+    let (Some((first_frame, first_flags)), Some((second_frame, second_flags))) =
+        (first.lookup(SHARED), second.lookup(SHARED))
+    else {
+        return false;
+    };
+    let separate = first_frame == one_at && second_frame == two_at && first_frame != second_frame;
+    let both_user = first_flags.contains(Flags::USER) && second_flags.contains(Flags::USER);
+
+    // The kernel's half is the same in both, which is what makes a switch
+    // between them safe at all (D-104).
+    let text = boot::sections().text.start;
+    let shared_kernel = first.lookup(text) == second.lookup(text) && first.lookup(text).is_some();
+
+    separate && both_user && shared_kernel
+}
+
+/// Only a space that agrees with the kernel about the higher half is
+/// installable, and a user space cannot make one that does not.
+///
+/// A `CR3` naming tables that do not map the kernel's code is a triple fault
+/// at the next instruction, so `bind` compares every top-level entry of the
+/// higher half rather than sampling addresses (D-106). The comparison itself
+/// cannot be made to fail through the public API, which is the point: the
+/// three doors into the higher half — `map_boot`, `unmap` and `map_device` —
+/// all refuse a space that shares the kernel's. `map_device` was the one that
+/// did not, and it walked into the kernel's own device tables.
+fn only_a_space_that_matches_the_kernel_can_be_installed() -> bool {
+    // A space that never shared the kernel's half is refused outright: it maps
+    // no kernel code, so installing it is a triple fault.
+    let Ok(bare) = AddressSpace::new() else {
+        return false;
+    };
+    let bare_refused = matches!(bare.bind(), Err(ActivateError::NotAUserSpace));
+
+    // One that did share it binds.
+    let Ok(shared) = AddressSpace::for_user() else {
+        return false;
+    };
+    let binds = shared.bind().is_ok();
+
+    // And no door into the higher half is open to it. The device window is
+    // where the kernel's own registers live, so a mapping there is an edit of
+    // the tables every space shares.
+    let Ok(mut probe) = AddressSpace::for_user() else {
+        return false;
+    };
+    let device_refused = matches!(
+        probe.map_device(0xfee0_0000, PAGE_SIZE),
+        Err(MapError::NotYours(_))
+    );
+
+    bare_refused && binds && device_refused
+}
+
 /// The loader refuses an image that asks for what it may not map.
 ///
 /// The half of a loader that matters. An image is bytes a program supplied,
@@ -492,10 +594,16 @@ fn a_faulting_program_dies_alone() -> bool {
 ///
 /// Each is a copy of the real initrd with one field changed, so what is being
 /// refused differs from what loads by exactly the thing under test.
+///
+/// Loaded into a throwaway space rather than the running one (D-106), so a
+/// refusal that half-loaded leaves its mappings somewhere nothing else walks.
+/// The space itself is abandoned, which costs table frames — bounded by the
+/// number of refusals here, and the price of not editing the live tables.
 fn the_loader_refuses_what_it_may_not_map() -> bool {
     let Some(original) = user::image() else {
         return false;
     };
+    let scratch = || AddressSpace::for_user().expect("a space to load into");
     /// Offset of the first program header's flags, from the ELF64 layout.
     const FLAGS: usize = elf64::HEADER_BYTES + 4;
     /// Its `p_offset`, `p_filesz` and `p_vaddr`.
@@ -514,7 +622,7 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
     let mut write_execute = original.to_vec();
     write_execute[FLAGS..FLAGS + 4].copy_from_slice(&0b111u32.to_le_bytes());
     let wx_refused = matches!(
-        user::load_image(&mut context(), &write_execute, 0),
+        user::load_image(&mut scratch(), &write_execute, 0),
         Err(user::LoadError::WriteExecute(_))
     );
 
@@ -526,7 +634,7 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
     // image, left the gate green (D-105).
     let overrun = doctor(OFFSET, original.len() as u64);
     let overrun_refused = matches!(
-        user::load_image(&mut context(), &overrun, 0),
+        user::load_image(&mut scratch(), &overrun, 0),
         Err(user::LoadError::Truncated(_))
     );
 
@@ -534,21 +642,21 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
     let mut oversized = doctor(FILE_SIZE, 8);
     oversized[MEMORY_SIZE..MEMORY_SIZE + 8].copy_from_slice(&4u64.to_le_bytes());
     let oversized_refused = matches!(
-        user::load_image(&mut context(), &oversized, 0),
+        user::load_image(&mut scratch(), &oversized, 0),
         Err(user::LoadError::Malformed(_))
     );
 
     // Placed in the kernel's half.
     let intruding = doctor(VADDR, 0xffff_8000_0000_0000);
     let intruding_refused = matches!(
-        user::load_image(&mut context(), &intruding, 0),
+        user::load_image(&mut scratch(), &intruding, 0),
         Err(user::LoadError::NotUserMemory(_))
     );
 
     // And something that is not an ELF at all.
     let not_an_elf = [0u8; 64];
     let refused_outright = matches!(
-        user::load_image(&mut context(), &not_an_elf, 0),
+        user::load_image(&mut scratch(), &not_an_elf, 0),
         Err(user::LoadError::NotAnElf(_))
     );
 
@@ -580,7 +688,7 @@ fn a_second_thread_crosses_onto_its_own_stack() -> bool {
     }
     let first_landing = first.frame_address;
 
-    if thread::spawn("user-two", user::run_second).is_err() {
+    if user::run_second().is_err() {
         return false;
     }
     if !runs_until(2000, || trap::last_syscall().count > first.count) {
@@ -651,18 +759,73 @@ fn the_return_to_ring_three_clears_buffers() -> bool {
 /// an unmapped page, and a write to a page that is user-readable but not
 /// user-writable — the last being the code page, which is executable and
 /// read-only precisely so that W^X holds for user memory too.
+/// A read-only executable page and a writable page, user-accessible in the
+/// *running* space.
+///
+/// `copy_from_user` and `copy_to_user` are about the tables the CPU is
+/// walking, and since D-106 those are the kernel's for every kernel thread —
+/// a program's pages live in a space this thread cannot reach. So the checks
+/// about the boundary build their own pages, which is also the honest
+/// arrangement: what they test is the copy, not the loader.
+///
+/// Mapped once and remembered: a second `map_owned` at the same address is a
+/// `Conflict`, and every caller wants the same two pages.
+fn boundary_probe() -> Option<(u64, u64)> {
+    /// Well clear of anything a program is loaded at.
+    const CODE: u64 = user::CODE + 0x20_0000;
+    const STACK: u64 = user::STACK + 0x20_0000;
+
+    static PROBE: SpinLock<Option<(u64, u64)>> = SpinLock::new(None);
+
+    if let Some(pages) = *PROBE.lock_leaf() {
+        return Some(pages);
+    }
+
+    let mut code = mm::allocate_contiguous(1, 1)?;
+    if !code.zero() || !code.write_at(0, &user::PROGRAM) {
+        return None;
+    }
+    let mut stack = mm::allocate_contiguous(1, 1)?;
+    if !stack.zero() {
+        return None;
+    }
+
+    let mut context = context();
+    // Read-only and executable, as a program's text is: the write refusal
+    // below is about the leaf's own permission and needs a page that has it.
+    mem::with_active_space(&mut context, |space| {
+        space.map_owned(CODE, code, Flags::USER)
+    })?
+    .ok()?;
+    mem::with_active_space(&mut context, |space| {
+        space.map_owned(
+            STACK,
+            stack,
+            Flags::USER.union(Flags::WRITABLE).union(Flags::NO_EXECUTE),
+        )
+    })?
+    .ok()?;
+
+    *PROBE.lock_leaf() = Some((CODE, STACK));
+    Some((CODE, STACK))
+}
+
 fn bytes_cross_the_boundary_only_where_they_may() -> bool {
+    let Some((code, stack)) = boundary_probe() else {
+        return false;
+    };
+
     let mut read = [0u8; user::PROGRAM.len()];
-    if usercopy::copy_from_user(user::CODE, &mut read).is_err() {
+    if usercopy::copy_from_user(code, &mut read).is_err() {
         return false;
     }
     let program_matches = read == user::PROGRAM;
 
-    // A round trip through the user stack, which is writable.
+    // A round trip through the writable page.
     let written = [0xA5u8; 8];
     let mut echoed = [0u8; 8];
-    let round_trip = usercopy::copy_to_user(user::STACK, &written).is_ok()
-        && usercopy::copy_from_user(user::STACK, &mut echoed).is_ok()
+    let round_trip = usercopy::copy_to_user(stack, &written).is_ok()
+        && usercopy::copy_from_user(stack, &mut echoed).is_ok()
         && echoed == written;
 
     let mut scratch = [0u8; 8];
@@ -689,7 +852,7 @@ fn bytes_cross_the_boundary_only_where_they_may() -> bool {
     // And a write to the program's own page, which ring 3 may execute and
     // neither ring may write.
     let read_only_refused = matches!(
-        usercopy::copy_to_user(user::CODE, &written),
+        usercopy::copy_to_user(code, &written),
         Err(UserCopyError::ReadOnly(_))
     );
 
@@ -1104,9 +1267,11 @@ fn the_double_fault_stack_is_guarded() -> bool {
 /// virtual address is what sharing means.
 ///
 /// And the emptiness is checked at an address the live space *does* have a
-/// mapping for — the running program's code page. A fresh space that lacked it
-/// would be indistinguishable from one that lacked everything, and this way
-/// the difference between the halves is what the check sees.
+/// mapping for — the boundary probe's page, which the kernel's own space
+/// carries. A fresh space that lacked it would be indistinguishable from one
+/// that lacked everything, and this way the difference between the halves is
+/// what the check sees. (It used to be the running program's code page; since
+/// D-106 no program is in the running space.)
 fn a_second_space_holds_the_kernel_and_nothing_else() -> bool {
     let Ok(space) = AddressSpace::for_user() else {
         return false;
@@ -1127,9 +1292,11 @@ fn a_second_space_holds_the_kernel_and_nothing_else() -> bool {
             _ => false,
         });
 
-    // And nothing of the program's, though the live space has it.
-    let user_is_absent =
-        paging::translate(user::CODE).is_some() && space.lookup(user::CODE).is_none();
+    // And nothing of the low half, though the live space has this page.
+    let Some((probe, _)) = boundary_probe() else {
+        return false;
+    };
+    let user_is_absent = paging::translate(probe).is_some() && space.lookup(probe).is_none();
 
     // The half it shares is not reachable from ring 3, whatever the leaves
     // say: a shared top-level entry that carried `USER` would hand every
@@ -1159,11 +1326,13 @@ fn a_second_space_holds_the_kernel_and_nothing_else() -> bool {
 /// will not build. What is left here is the machine's half: the three
 /// addresses report what the tables were asked for, end to end.
 fn a_walk_reports_the_permission_the_cpu_grants() -> bool {
-    let user_at = user::CODE;
+    let Some((user_at, _)) = boundary_probe() else {
+        return false;
+    };
     let Some((_, user_flags)) = paging::translate(user_at) else {
         return false;
     };
-    // The program's page really is user-accessible, all the way down.
+    // The user page really is user-accessible, all the way down.
     let user_is_user = user_flags.contains(Flags::USER);
 
     // The kernel's own text is not, and neither are its parents.
@@ -2327,7 +2496,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 108;
+const EXPECTED_CHECKS: usize = 110;
 
 impl Report {
     const fn new() -> Self {
@@ -2426,6 +2595,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a faulting program dies alone",
         a_faulting_program_dies_alone(),
+    );
+    report.check(
+        "two spaces map one address to different memory",
+        two_spaces_map_one_address_to_different_memory(),
+    );
+    report.check(
+        "only a space that matches the kernel can be installed",
+        only_a_space_that_matches_the_kernel_can_be_installed(),
     );
     report.check(
         "the loader refuses what it may not map",

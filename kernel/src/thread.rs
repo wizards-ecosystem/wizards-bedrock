@@ -23,7 +23,7 @@ use eevdf::{BASE_WEIGHT, Entity};
 use stack_layout::StackLayout;
 use wost::arch::current::cpu;
 use wost::arch::current::interrupt::{self, TrapFrame};
-use wost::arch::current::paging::StackArena;
+use wost::arch::current::paging::{Binding, StackArena};
 use wost::arch::current::task::{self, BOOT, TaskError};
 pub(crate) use wost::sync::ThreadContext;
 use wost::sync::{Once, SpinLock};
@@ -478,6 +478,42 @@ pub(crate) fn spawn_weighted(
     entry: fn(),
     weight: u32,
 ) -> Result<usize, SpawnError> {
+    spawn_prepared(name, entry, weight, None, |_| {})
+}
+
+/// Create a thread that runs on `binding`'s tables rather than the kernel's.
+///
+/// No shipped caller: the shipped kernel reads the keyboard and runs no user
+/// program. Allowed rather than cfg-gated so the image carries the code the
+/// checks exercise, and narrowly rather than over the module.
+#[allow(dead_code)]
+///
+/// `arrange` is called with the new slot while the thread is still `Reserved`
+/// — after `wost` has a slot to bind to, and before anything can schedule it.
+/// That window is the only place a caller can name a thread that does not yet
+/// run, and both the address space and whatever the entry point needs to find
+/// have to be in place before its first instruction (D-106).
+///
+/// # Errors
+///
+/// As [`spawn_weighted`], plus [`SpawnError::Task`] if `wost` refuses the
+/// binding.
+pub(crate) fn spawn_in_space(
+    name: &'static str,
+    entry: fn(),
+    binding: Binding,
+    arrange: impl FnOnce(usize),
+) -> Result<usize, SpawnError> {
+    spawn_prepared(name, entry, BASE_WEIGHT, Some(binding), arrange)
+}
+
+fn spawn_prepared(
+    name: &'static str,
+    entry: fn(),
+    weight: u32,
+    binding: Option<Binding>,
+    arrange: impl FnOnce(usize),
+) -> Result<usize, SpawnError> {
     let slot = {
         let mut threads = THREADS.lock_leaf();
         if threads.spawnable == 0 {
@@ -503,6 +539,17 @@ pub(crate) fn spawn_weighted(
         THREADS.lock_leaf().threads[slot] = Thread::FREE;
         return Err(SpawnError::Task(error));
     }
+
+    // Still `Reserved`: nothing can schedule this slot, so the tables and
+    // whatever the entry point reads are both in place before its first
+    // instruction rather than racing it.
+    if let Some(binding) = binding
+        && let Err(error) = task::bind_address_space(slot, binding)
+    {
+        THREADS.lock_leaf().threads[slot] = Thread::FREE;
+        return Err(SpawnError::Task(error));
+    }
+    arrange(slot);
 
     // The new thread is the second runnable one, which is the moment the
     // running thread's slice starts mattering — so this is an arming point

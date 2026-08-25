@@ -11,19 +11,22 @@
 //! `libs/elf64` and an initrd into this same file, and the loader below now
 //! parses attacker-supplied bytes — so a failure here can be either, and the
 //! refusals are checked one mechanism at a time for exactly that reason
-//! (D-100, D-105). `spawn` and a second address space are still owed.
+//! (D-100, D-105). Each program now runs in a table of its own (D-106).
+
+use core::fmt;
 
 use elf64::{Elf, ElfError, SegmentKind};
-use wost::arch::current::paging::MapError;
+use wost::arch::current::cpu;
+use wost::arch::current::paging::{ActivateError, AddressSpace, MapError};
 use wost::arch::current::task;
 use wost::arch::current::usercopy;
 use wost::boot::HandoffError;
 use wost::mm;
+use wost::mm::Paddr;
 use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
-use crate::thread::ThreadContext;
-use crate::{info, mem, warn};
+use crate::{info, thread, warn};
 
 /// Where the first user program's page of code goes.
 ///
@@ -35,12 +38,12 @@ pub(crate) const CODE: u64 = 0x0000_4000_0000_0000;
 /// Where its stack goes, well away from the code so a run-off hits nothing.
 pub(crate) const STACK: u64 = 0x0000_3000_0000_0000;
 
-/// How far apart two programs' pages sit.
+/// How far apart two programs' pages sit *within* their own spaces.
 ///
-/// They share one address space until slice 7 gives each a table of its own,
-/// so for now "another program" means "another pair of addresses". That is not
-/// isolation and is not claimed to be — what the second one proves is that
-/// `RSP0` follows the thread (D-99).
+/// Each program now has a table of its own (D-106), so this is no longer what
+/// keeps them apart — the tables are. It is kept so that a program's addresses
+/// differ from its neighbour's, which is what lets a check tell one crossing's
+/// record from another's without reading the tables.
 const APART: u64 = 0x1_0000;
 
 /// Bytes of stack, which is one page: it makes one call and never returns.
@@ -61,20 +64,19 @@ pub(crate) const PROGRAM: [u8; 4] = [0x58, 0x48, 0x85, 0xC0];
 /// the code page is read-only and executable, the stack is writable and never
 /// executable. W^X is not relaxed for user memory — it is the reason user
 /// memory exists (D-12).
-fn place_stack(context: &mut ThreadContext, which: u64) -> Option<u64> {
+fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
     let at = STACK + which * APART;
     let mut stack = mm::allocate_contiguous((STACK_BYTES / PAGE_SIZE) as usize, 1)?;
     if !stack.zero() {
         return None;
     }
-    mem::with_active_space(context, |space| {
-        space.map_owned(
+    space
+        .map_owned(
             at,
             stack,
             Flags::USER.union(Flags::WRITABLE).union(Flags::NO_EXECUTE),
         )
-    })?
-    .ok()?;
+        .ok()?;
     Some(at)
 }
 
@@ -163,17 +165,13 @@ impl core::fmt::Display for LoadError {
 ///
 /// The pages are filled *before* they are mapped, so a segment that is
 /// executable is never writable even for the instant it is being written.
-fn load(context: &mut ThreadContext, shift: u64) -> Result<u64, LoadError> {
+fn load(space: &mut AddressSpace, shift: u64) -> Result<u64, LoadError> {
     let bytes = (*IMAGE.lock_leaf()).ok_or(LoadError::Missing)?;
-    load_image(context, bytes, shift)
+    load_image(space, bytes, shift)
 }
 
 /// Fill and map one validated placement.
-fn place(
-    context: &mut ThreadContext,
-    bytes: &[u8],
-    placement: &Placement,
-) -> Result<(), LoadError> {
+fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Result<(), LoadError> {
     let mut run = mm::allocate_contiguous(placement.pages, 1).ok_or(LoadError::OutOfMemory)?;
     if !run.zero() {
         return Err(LoadError::OutOfMemory);
@@ -184,21 +182,19 @@ fn place(
     if !run.write_at(0, contents) {
         return Err(LoadError::Truncated(placement.at));
     }
-    mem::with_active_space(context, |space| {
-        space.map_owned(placement.at, run, placement.flags)
-    })
-    .ok_or(LoadError::OutOfMemory)?
-    .map_err(LoadError::NotMapped)
+    space
+        .map_owned(placement.at, run, placement.flags)
+        .map_err(LoadError::NotMapped)
 }
 
 /// Unmap what this load already placed, returning its frames.
-fn undo(context: &mut ThreadContext, done: &[Option<Placement>]) {
+fn undo(space: &mut AddressSpace, done: &[Option<Placement>]) {
     for placement in done.iter().flatten() {
         let len = placement.pages as u64 * PAGE_SIZE;
         // Nothing to do about a failure here: the frames stay in the space
         // rather than going back to the allocator, which is a leak and not a
         // double free. Reporting it would replace the error being returned.
-        let _ = mem::with_active_space(context, |space| space.unmap(placement.at, len));
+        let _ = space.unmap(placement.at, len);
     }
 }
 
@@ -238,7 +234,7 @@ struct Placement {
 /// its frames forgotten into the space and nothing owning them. The doc above
 /// claimed the preflight this now performs (D-105).
 pub(crate) fn load_image(
-    context: &mut ThreadContext,
+    space: &mut AddressSpace,
     bytes: &[u8],
     shift: u64,
 ) -> Result<u64, LoadError> {
@@ -309,14 +305,14 @@ pub(crate) fn load_image(
     }
 
     for (done, placement) in placements.iter().flatten().enumerate() {
-        match place(context, bytes, placement) {
+        match place(space, bytes, placement) {
             Ok(()) => {}
             Err(error) => {
                 // Validation cannot rule out a frame shortage or a collision
                 // with something already in the space, so the mapping pass
                 // walks itself back the way `map_range` does (D-94): what is
                 // returned here is what this call mapped, and nothing else.
-                undo(context, &placements[..done]);
+                undo(space, &placements[..done]);
                 return Err(error);
             }
         }
@@ -330,6 +326,89 @@ pub(crate) fn load_image(
         .ok_or(LoadError::NotUserMemory(elf.entry()))
 }
 
+/// What a thread needs to find when it wakes up in a space of its own.
+///
+/// Arranged by [`spawn`] while the slot is still `Reserved`, so it is there
+/// before the thread's first instruction rather than racing it.
+#[derive(Clone, Copy)]
+struct Launch {
+    entry: u64,
+    stack: u64,
+    argument: u64,
+    which: u64,
+    root: Paddr,
+}
+
+/// One per thread slot. A leaf: nothing is called while it is held.
+static LAUNCHES: SpinLock<[Option<Launch>; thread::CAPACITY]> =
+    SpinLock::new([None; thread::CAPACITY]);
+
+/// Why a program could not be started.
+#[derive(Debug)]
+pub(crate) enum SpawnError {
+    /// No address space could be built for it.
+    NoSpace(MapError),
+    /// The image would not load.
+    Load(LoadError),
+    /// No memory for its stack.
+    NoStack,
+    /// The space could not be bound to a thread.
+    NotBindable(ActivateError),
+    /// No thread could be created.
+    NoThread(thread::SpawnError),
+}
+
+impl fmt::Display for SpawnError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoSpace(error) => write!(f, "no address space: {error}"),
+            Self::Load(error) => write!(f, "{error}"),
+            Self::NoStack => f.write_str("no memory for a stack"),
+            Self::NotBindable(error) => write!(f, "the space cannot be installed: {error}"),
+            Self::NoThread(error) => write!(f, "no thread: {error}"),
+        }
+    }
+}
+
+/// Start a program in an address space of its own.
+///
+/// The order is forced and each step is why the next one is possible: a space
+/// that shares only the kernel's higher half (D-104), the image loaded into
+/// *that* space rather than into the running one, a stack, the binding that
+/// proves the space is installable, and a thread whose tables are set before
+/// anything can schedule it (D-106).
+///
+/// A failure partway leaves no thread naming anything, but it does leak: an
+/// `AddressSpace` has no `Drop`, because its table frames are leaked on
+/// purpose, and the frames a half-load mapped go with them. Bounded — this is
+/// called three times a boot — and it is the same debt `undo` pays down inside
+/// one load. D-44's accounting is where it is settled.
+///
+/// # Errors
+///
+/// [`SpawnError`], naming which of those steps refused.
+pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<usize, SpawnError> {
+    let mut space = AddressSpace::for_user().map_err(SpawnError::NoSpace)?;
+    let entry = load(&mut space, which * APART).map_err(SpawnError::Load)?;
+    let stack = place_stack(&mut space, which).ok_or(SpawnError::NoStack)?;
+    let root = space.root();
+    let binding = space.bind().map_err(SpawnError::NotBindable)?;
+
+    thread::spawn_in_space(name, cross, binding, |slot| {
+        *LAUNCHES
+            .lock_leaf()
+            .get_mut(slot)
+            .expect("a slot wost accepted is inside the table") = Some(Launch {
+            entry,
+            stack,
+            argument,
+            which,
+            root,
+        });
+    })
+    .map_err(SpawnError::NoThread)
+}
+
 /// Cross into ring 3, and never come back on this thread.
 ///
 /// Runs as an ordinary kernel thread until its last instruction, and is retired
@@ -337,55 +416,58 @@ pub(crate) fn load_image(
 ///
 /// No stack is arranged for the trap out: the context switch that scheduled
 /// this thread already pointed `RSP0` at its own kernel stack, and will point
-/// it somewhere else the moment another thread runs (D-99). That is what lets
-/// there be more than one of these.
-fn cross(which: u64, argument: u64) {
-    let mut context = ThreadContext::require();
-
-    // The program comes off the initrd through the same reader `xtask` builds
-    // it with (D-100); its stack is the kernel's to provide, because an image
-    // does not carry one.
-    let entry = match load(&mut context, which * APART) {
-        Ok(entry) => entry,
-        Err(reason) => {
-            warn!("user {which}: could not load the program: {reason}");
-            return;
-        }
-    };
-    let Some(stack) = place_stack(&mut context, which) else {
-        warn!("user {which}: could not map a stack");
+/// it somewhere else the moment another thread runs (D-99). The same switch
+/// installed this thread's tables, which is what makes the copy below reach
+/// *its* stack and no other program's (D-106).
+fn cross() {
+    let slot = task::current();
+    let Some(launch) = LAUNCHES.lock_leaf().get(slot).copied().flatten() else {
+        warn!("user: thread {slot} has no program to run");
         return;
     };
+    let which = launch.which;
+
+    // The tables really are this thread's. Checked rather than assumed
+    // because everything below writes to addresses that mean something
+    // different in another space, and a missed switch would put one program's
+    // argument on another's stack.
+    if cpu::page_table_base() != launch.root {
+        warn!("user {which}: running on tables that are not its own");
+        return;
+    }
 
     // One word of argument, on the program's own stack, written across the
     // boundary with the checked copy (D-97) — which is how a program will get
     // everything it is ever given. Sixteen bytes down so the pointer handed to
     // `iretq` is aligned as the ABI wants; the program's first instruction
     // pops it.
-    let top = stack + STACK_BYTES - 16;
-    if usercopy::copy_to_user(top, &argument.to_le_bytes()).is_err() {
+    let top = launch.stack + STACK_BYTES - 16;
+    if usercopy::copy_to_user(top, &launch.argument.to_le_bytes()).is_err() {
         warn!("user {which}: could not write its argument");
         return;
     }
 
-    info!("user {which}: entering ring 3 at {entry:#x} with {argument}");
-    let refused = task::enter_user(entry, top);
+    info!(
+        "user {which}: entering ring 3 at {:#x} with {} on {:#x}",
+        launch.entry, launch.argument, launch.root
+    );
+    let refused = task::enter_user(launch.entry, top);
     warn!("user {which}: refused entry to ring 3: {refused}");
 }
 
 /// The first user program, which calls the kernel.
-pub(crate) fn run() {
-    cross(0, BEHAVE);
+pub(crate) fn run() -> Result<usize, SpawnError> {
+    spawn("user", 0, BEHAVE)
 }
 
-/// A second one, at its own addresses, to show `RSP0` moves with the thread.
-pub(crate) fn run_second() {
-    cross(1, BEHAVE);
+/// A second one, in a space of its own, at its own addresses.
+pub(crate) fn run_second() -> Result<usize, SpawnError> {
+    spawn("user-two", 1, BEHAVE)
 }
 
 /// A third that faults on purpose, to show the machine survives it.
-pub(crate) fn run_faulting() {
-    cross(2, FAULT);
+pub(crate) fn run_faulting() -> Result<usize, SpawnError> {
+    spawn("user-fault", 2, FAULT)
 }
 
 /// The argument that makes the program call the kernel.
