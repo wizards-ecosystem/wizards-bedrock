@@ -225,26 +225,6 @@ fn reload_selectors() {
     }
 }
 
-/// Point the CPU at the stack a trap from ring 3 should switch to.
-///
-/// `RSP0` in the task-state segment, which the hardware loads when an
-/// interrupt crosses from ring 3 to ring 0. Without it a trap from user code
-/// would keep running on the user stack — which the user chose, and which is
-/// why every privilege boundary starts here.
-///
-/// Takes a [`MappedStack`] for the same reason
-/// [`set_double_fault_stack`] does: an address alone is not evidence that a
-/// stack is there.
-///
-/// `false` if the stack belongs to an address space this CPU is not walking.
-pub fn set_kernel_stack(stack: &MappedStack) -> bool {
-    if !stack.is_installed() {
-        return false;
-    }
-    write_kernel_stack(stack.top());
-    true
-}
-
 /// Point `RSP0` at `top`, with no evidence asked for.
 ///
 /// `pub(super)` and no further: the only caller is the context switch, and the
@@ -254,6 +234,14 @@ pub fn set_kernel_stack(stack: &MappedStack) -> bool {
 /// those stacks. A bare address from *outside* the arch module is exactly what
 /// D-95 refused; from inside it, with that walk behind it, it is the same
 /// evidence by a different route (D-99).
+///
+/// **There was a `pub fn set_kernel_stack(&MappedStack)` beside this, and it
+/// is gone.** It asked for the evidence this one does not, and had no callers:
+/// the switch writes `RSP0` *before* it installs the arriving thread's tables,
+/// so `MappedStack::is_installed` — which walks the running tables since
+/// D-125 — would refuse the arriving stack every time. A safe wrapper its only
+/// intended caller cannot use by construction is the speculative API `005`
+/// forbids, and keeping it suggested a road that was never open (D-129).
 pub(super) fn write_kernel_stack(top: u64) {
     let at = TaskState::privilege_stack_offset(0);
     debug_assert!(

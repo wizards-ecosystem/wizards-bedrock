@@ -9,6 +9,16 @@
 //! `out dx, eax` to port `n` drives `n..n + 4`, so a `Port<u32>` reserves four.
 //! The bookkeeping is `port_space::PortSpace`, where it is host-tested; this
 //! module is the lock around it and the instructions underneath it.
+//!
+//! **A claim is permanent, and a caller that wants two must survive getting
+//! one.** [`PortBlock`] and [`Port`] have no `Drop` and the registry never
+//! releases — which is right for a driver that owns its registers for the life
+//! of the kernel, and is a trap for a caller claiming a set. Take two blocks
+//! and have the second refuse, and the first is claimed and stranded: nothing
+//! can ever claim it again, so whatever needed both can never be built, on
+//! this boot or any later attempt within it. `pic::silence` is the one caller
+//! that does this today, and it names the consequence rather than guarding
+//! against it, because on the one path it runs the ports are free (D-129).
 
 use core::arch::asm;
 use core::marker::PhantomData;

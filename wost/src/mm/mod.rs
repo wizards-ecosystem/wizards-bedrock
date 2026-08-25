@@ -135,11 +135,6 @@ pub fn free_frames() -> usize {
     FRAMES.lock_leaf().free_count()
 }
 
-/// Frames under management, allocated or not.
-pub fn managed_frames() -> usize {
-    FRAMES.lock_leaf().managed_count()
-}
-
 /// Read-only access to physical firmware tables.
 ///
 /// This deliberately cannot read usable, bootloader, kernel, reserved, or

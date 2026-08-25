@@ -98,15 +98,36 @@ pub fn silence() -> Result<(), PicError> {
         return Ok(());
     }
 
-    // Claimed here, between the two guards rather than under either. The
-    // claims are permanent, so the only caller that can fail to get them is a
-    // second one — which is the case the recheck below answers.
+    // Claimed here, between the two guards rather than under either.
+    //
+    // **Two callers can still get a wrong answer, and the recheck below does
+    // not fix it** — an earlier comment here said it did. Interleave two: B
+    // reads `CONTROLLERS` as `None` and drops the guard; A claims both blocks;
+    // B's claims both fail; B takes the guard and finds it *still* `None`,
+    // because A is queued behind B on that same guard; B reports
+    // `PortsUnavailable` for a PIC that is about to be silenced correctly. The
+    // recheck only closes the window once A has stored, and nothing makes it
+    // have done.
+    //
+    // Left as it is, deliberately. This runs once, at boot, from one caller,
+    // and the flag is set between the two guards — so it is a preemption away
+    // rather than SMP-only, and it is still not reachable. Making it race-free
+    // buys a code path nothing on this machine can exercise, for a hazard that
+    // arrives with the second CPU. It belongs with D-56's per-CPU work,
+    // alongside `LEAVES_HELD` moving into `arch::percpu` (D-126, D-129).
+    //
+    // **A failed claim is a permanent loss.** `PortBlock` has no `Drop` and
+    // the registry never releases, so if `SECONDARY` is unavailable the
+    // `PRIMARY` block below is claimed and stranded — and no later caller can
+    // ever silence the PIC. That is a standing property of the port registry
+    // rather than of this function; `?`-chaining the two claims had the same
+    // outcome and merely reached it less reliably (D-129).
     let claims = port::claim_block(PRIMARY).zip(port::claim_block(SECONDARY));
 
     let mut controllers = CONTROLLERS.lock_leaf();
     if controllers.is_some() {
-        // Someone else finished between the two guards. Nothing was claimed —
-        // they hold the ports — and nothing needs undoing.
+        // Someone else finished between the two guards. Whatever this claimed
+        // is dropped here, which returns nothing — see above.
         return Ok(());
     }
     let (primary, secondary) = claims.ok_or(PicError::PortsUnavailable)?;

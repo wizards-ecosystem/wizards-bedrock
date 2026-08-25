@@ -217,17 +217,31 @@ the message reads as "while doing X" when chained. No `unwrap`.
 
 ## Tests
 
-**Every change lands with the check that proves it.** There are exactly two
-places a check can go, and which one is a property of the code, not a
+**Every change lands with the check that proves it.** There are three places
+a check can go, and which one is a property of the thing being checked, not a
 preference:
 
 | The thing under test | Where it goes | How it runs |
 |---|---|---|
 | Arithmetic, bit layout, parsing — no hardware | a `libs/` crate | `cargo test` |
 | Anything needing a real machine | `kernel/src/selftest.rs` | `cargo xtask test-boot` |
+| **What this repository says about itself** | a host test in `xtask/` | `cargo test` |
 
-If a check fits neither, that is usually a sign the logic should be split so
-that the interesting half fits the first row. `libs/pixel` exists because the
+The third row is the newest and the least obvious. A document that names a
+crate, a constant that states a count, a comment that claims a privilege — each
+is an assertion about the tree, and each was found wrong during the Phase 0–6
+sweep. So they are checked like any other: `xtask/src/decisions.rs` requires
+every `D-NNN` cited anywhere to name an entry the log defines and the log to
+have no gaps; `xtask/src/prose.rs` requires every `libs/` crate the documents
+name to exist or be declared absent with a reason, and the README's count of
+`ci`'s boots to match what `ci` runs; `xtask/src/unsafety.rs` pins `wost`'s
+unsafe line count rather than only capping it; `xtask/src/qemu.rs` compares the
+C header against the kernel's own constants and the sysdep tags against the
+counts in `userland/README.md`. Prose that cannot be checked should not state a
+number — point at the place that can (D-124).
+
+If a check fits none of the three, that is usually a sign the logic should be
+split so that the interesting half fits the first row. `libs/pixel` exists because the
 framebuffer's arithmetic was worth testing and its hardware access was not.
 
 `cargo test -p wizard-kernel` will never work: a `#![no_std] #![no_main]`
@@ -246,8 +260,10 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   reservation bitmap sat inside `wost`, where nothing could test it, and it
   spent Phase 2 recording one port per claim however wide the access it
   authorised (D-39). Page-table bit packing has since become
-  `libs/x86-paging`; add crates on the same pattern for ELF parsing, ring index
-  arithmetic, and the WizFS on-disk format as those arrive.
+  `libs/x86-paging`, ELF parsing `libs/elf64`, ring index arithmetic
+  `libs/ring-proto`, and handle encoding `libs/handle-space`; add crates on the
+  same pattern for the WizFS on-disk format and its crash-injection harness as
+  those arrive.
 - **The gate runs over a configuration matrix, not a codebase.** A cargo
   feature is a different crate graph, and a lint that fires in one need not
   fire in the other: `cargo xtask ci` covers the host packages, the kernel
@@ -271,8 +287,21 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   headless and reads its verdict from QEMU's exit code (D-28). Keep each check
   small, named as the property it asserts, and free of side effects on the
   running kernel — they execute against a live machine, not a fixture.
-- A check that cannot fail is worth nothing. When adding one, break it once and
-  confirm the harness goes red before trusting it green.
+- A check that cannot fail is worth **less than no check**, because it is also
+  a claim. When adding one, break it once and confirm the harness goes red
+  before trusting it green (D-28).
+
+  Two things the sweeps since have added to that rule, both learned the hard
+  way. **Breaking it by hand happens once**, at the moment the check is
+  written, and never again — so a check that *stops* being able to fail,
+  because the code around it moved, is invisible from then on. `cargo xtask
+  mutate` is that rule made repeatable: each entry is a real defect applied to
+  the tree, and a boot must go red (D-119). And **write the check from the
+  claim, not from the implementation**. Restating what the code does always
+  passes and reads exactly like a check: `assert_eq!(GENERATION_BITS, 32 -
+  INDEX_BITS - RESERVED_BITS)` is a definition, and a frame-allocator check
+  that asserts the address, the count and the tally has checked the
+  allocator's *description* rather than its frames (D-124).
 - Hardware behaviour is *also* verified by eye: `cargo xtask run` for the loop,
   a VMware boot as every phase's definition of done (D-18). The self-test
   catches regressions; the eye catches things nobody thought to assert.
