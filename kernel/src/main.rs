@@ -35,6 +35,7 @@ mod selftest;
 mod theme;
 mod thread;
 mod time;
+mod timepage;
 mod user;
 mod wait;
 
@@ -292,6 +293,29 @@ fn start_interrupts() {
             }
         }
         Err(reason) => warn!("clock: {reason}; uptime stays at zero, nothing preempts"),
+    }
+
+    // The page exists whether or not the clock does, because the ABI says it
+    // is there: a program that reads `TIME` on a machine with no clock must
+    // find `MODE_NONE` and fall back, not take a page fault (D-166).
+    if timepage::init(time::counter_hz()) {
+        let mode = if time::is_calibrated() {
+            timepage::MODE_COUNTER
+        } else {
+            timepage::MODE_NONE
+        };
+        timepage::publish(mode, time::origin_ticks(), time::conversion());
+        info!(
+            "time: published at {:#x}, {}",
+            timepage::TIME,
+            if mode == timepage::MODE_COUNTER {
+                "readable without a call"
+            } else {
+                "revoked; readers must ask"
+            }
+        );
+    } else {
+        warn!("time: no page to publish the clock in; every read is a call");
     }
 
     interrupt::enable();

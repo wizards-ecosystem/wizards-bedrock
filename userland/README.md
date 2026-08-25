@@ -36,8 +36,8 @@ The tags divide three ways. The counts are the finding.
 
 | | Count | |
 |---|---|---|
-| **MAPS** | 4 | the native ABI already has the shape POSIX wants |
-| **OWED** | 11 | the kernel has the mechanism and no ring-3 door |
+| **MAPS** | 5 | the native ABI already has the shape POSIX wants |
+| **OWED** | 10 | the kernel has the mechanism and no ring-3 door |
 | **ABSENT** | 1 | the native ABI has nothing of the kind, deliberately |
 
 **MAPS (4):** `sys_libc_panic`, `sys_exit`, `sys_tcb_set`, and the *shape* of

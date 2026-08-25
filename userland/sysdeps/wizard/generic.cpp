@@ -99,22 +99,56 @@ void sys_libc_log(const char *message) {
 	__builtin_unreachable();
 }
 
-// sys_clock_get. OWED, and under the heading above rather than beside the
-// other OWED entries because it is the last of the four a libc reaches
-// through the bare gate. `libs/timebase` already converts the TSC to nanoseconds
-// and the ring has an uptime opcode, so the mechanism is complete and the door
-// is missing. Note what POSIX wants that the kernel does not have: a *wall
-// clock*. Uptime is monotonic; `CLOCK_REALTIME` needs an epoch, and this
-// kernel has never been told what time it is.
+// sys_clock_get. MAPS, and it stopped being a call to get there. The kernel
+// publishes the clock in a page every process has read-only at
+// `WIZ_TIME_ADDRESS`, so this is a load and a multiply-add — no gate crossing
+// at all (D-152, D-166). `mode` is the gate: a kernel that does not trust its
+// counter sets it to zero, and then the ring's uptime opcode is the fallback,
+// which is why that opcode is not decoration.
+//
+// Note what POSIX wants that the kernel does not have: a *wall clock*. Uptime
+// is monotonic; `CLOCK_REALTIME` needs an epoch, and this kernel has never
+// been told what time it is.
 int sys_clock_get(int clock, time_t *secs, long *nanos) {
-	long value = 0;
-	long result = call3(WIZ_CALL_CLOCK_GET, clock,
-	                    reinterpret_cast<long>(&value), 0);
-	if(result < 0)
-		return as_errno(result);
-	*secs = value / 1000000000L;
-	*nanos = value % 1000000000L;
-	return 0;
+	auto *c = reinterpret_cast<volatile wiz_time_clock *>(
+	    WIZ_TIME_ADDRESS + WIZ_TIME_CLOCK_AT);
+
+	// The seqlock. Bounded rather than looped for ever: a page whose writer
+	// never finishes is a broken kernel, and spinning on it forgives exactly
+	// the failure worth reporting.
+	for(int attempt = 0; attempt < 64; attempt++) {
+		uint32_t before = c->seq;
+		if(before & 1u)
+			continue;
+		__atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+		uint32_t mode = c->mode;
+		uint64_t base = c->base_ns;
+		uint64_t fraction = c->fraction;
+		uint64_t last = c->last_ticks;
+		uint64_t multiplier = c->multiplier;
+		uint32_t shift = c->shift;
+
+		__atomic_thread_fence(__ATOMIC_ACQUIRE);
+		if(c->seq != before)
+			continue;
+
+		if(mode != WIZ_TIME_MODE_COUNTER)
+			break;  // Revoked: fall back to asking.
+
+		uint64_t ticks = __builtin_ia32_rdtsc() - last;
+		uint64_t ns = base + ((fraction + ticks * multiplier) >> shift);
+		*secs = static_cast<time_t>(ns / 1000000000ull);
+		*nanos = static_cast<long>(ns % 1000000000ull);
+		return 0;
+	}
+
+	// The fallback, which D-152 requires to stay reachable. Not built yet:
+	// submitting `WIZ_OP_UPTIME` needs the ring, and the ring belongs to the
+	// caller rather than to a sysdep. OWED, and named so it is a refusal the
+	// caller can see rather than a silent wrong answer.
+	(void)clock;
+	return ENOSYS;
 }
 
 // --- The file-descriptor five: four OWED, and `open` ---------------------

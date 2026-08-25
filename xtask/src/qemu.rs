@@ -158,7 +158,7 @@ const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// is a thing you do inside a fix and the table is a different file. This line
 /// and its twin in `kernel/src/selftest.rs` are the two you have to touch
 /// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 151;
+const EXPECTED_SELFTEST_CHECKS: usize = 156;
 
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
@@ -1323,7 +1323,7 @@ mod tests {
             "mlibc's sixteen mandatory tags, one tag line each; found {tags:?}"
         );
 
-        for (tag, expected) in [("MAPS", 4), ("OWED", 11), ("ABSENT", 1)] {
+        for (tag, expected) in [("MAPS", 5), ("OWED", 10), ("ABSENT", 1)] {
             let counted = tags.iter().filter(|(_, found)| *found == tag).count();
             // The README states it as a table row.
             let declared = readme
@@ -1422,6 +1422,18 @@ mod tests {
             "WIZ_OP_UPTIME is not opcode 2 in the kernel"
         );
         assert_eq!(defined("WIZ_OP_UPTIME").trim_end_matches('u'), "2");
+        for (name, number, arm) in [
+            ("WIZ_OP_DUPLICATE", "3", "3 => Self::Duplicate"),
+            ("WIZ_OP_TIMER", "4", "4 => Self::Timer"),
+            ("WIZ_OP_CANCEL", "5", "5 => Self::Cancel"),
+        ] {
+            assert!(queue.contains(arm), "the kernel does not decode `{arm}`");
+            assert_eq!(
+                defined(name).trim_end_matches('u'),
+                number,
+                "{name} drifted"
+            );
+        }
 
         assert_eq!(
             defined("WIZ_STATUS_OK").trim_end_matches('u'),
@@ -1431,6 +1443,77 @@ mod tests {
             defined("WIZ_STATUS_UNKNOWN_OPCODE").trim_end_matches('u'),
             rust(&queue, "STATUS_UNKNOWN_OPCODE")
         );
+        for (name, konstant) in [
+            ("WIZ_STATUS_NO_HANDLE_SLOT", "STATUS_NO_HANDLE_SLOT"),
+            ("WIZ_STATUS_BAD_HANDLE", "STATUS_BAD_HANDLE"),
+            ("WIZ_STATUS_DENIED", "STATUS_DENIED"),
+            ("WIZ_STATUS_CANCELLED", "STATUS_CANCELLED"),
+            ("WIZ_STATUS_NOT_FOUND", "STATUS_NOT_FOUND"),
+            ("WIZ_STATUS_NO_ROOM", "STATUS_NO_ROOM"),
+        ] {
+            assert_eq!(
+                defined(name).trim_end_matches('u'),
+                rust(&queue, konstant),
+                "{name} drifted from the kernel"
+            );
+        }
+
+        // The time page. Its address is the one number that, if it drifted,
+        // would have a program reading the clock out of an unmapped page — and
+        // its layout is a second transcription of `timepage.rs`'s offsets,
+        // which is exactly the arrangement this test exists for (D-166).
+        let timepage =
+            std::fs::read_to_string(root.join("kernel/src/timepage.rs")).expect("timepage.rs");
+        assert_eq!(
+            defined("WIZ_TIME_ADDRESS")
+                .replace("uintptr_t)", "")
+                .replace("ull", ""),
+            rust(&timepage, "TIME"),
+            "the time page's address is not the kernel's"
+        );
+        assert_eq!(
+            defined("WIZ_TIME_VERSION").trim_end_matches('u'),
+            rust(&timepage, "VERSION")
+        );
+        assert_eq!(
+            defined("WIZ_TIME_MODE_NONE").trim_end_matches('u'),
+            rust(&timepage, "MODE_NONE")
+        );
+        assert_eq!(
+            defined("WIZ_TIME_MODE_COUNTER").trim_end_matches('u'),
+            rust(&timepage, "MODE_COUNTER")
+        );
+        // The clock region's offset, which the header states as a number and
+        // the kernel as a private constant.
+        let clock_at = timepage
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("const CLOCK_AT: usize = "))
+            .map(|value| value.trim_end_matches(';').to_string())
+            .expect("no CLOCK_AT in timepage.rs");
+        assert_eq!(defined("WIZ_TIME_CLOCK_AT").trim_end_matches('u'), clock_at);
+
+        // And the field offsets, which are the part a program gets wrong
+        // silently: a `mode` read from the wrong place is a clock that reads as
+        // revoked, or worse, as usable when it is not.
+        for (field, offset) in [
+            ("SEQ", 0usize),
+            ("MODE", 4),
+            ("BASE_NS", 8),
+            ("FRACTION", 16),
+            ("LAST_TICKS", 24),
+            ("MULTIPLIER", 32),
+            ("SHIFT", 40),
+        ] {
+            let declared = timepage
+                .lines()
+                .find_map(|line| {
+                    line.trim()
+                        .strip_prefix(&format!("pub(super) const {field}: usize = "))
+                })
+                .map(|value| value.trim_end_matches(';').to_string())
+                .unwrap_or_else(|| panic!("no clock::{field} in timepage.rs"));
+            assert_eq!(declared, offset.to_string(), "clock::{field} moved");
+        }
 
         // And the gate the calls go through — read from `vector.rs`, not from
         // a literal. Comparing the header to `"0x80"` never opened the kernel
@@ -1469,6 +1552,7 @@ mod tests {
             ("WIZ_CALL_EXIT", "0"),
             ("WIZ_CALL_RING_ENTER", "1"),
             ("WIZ_CALL_TCB_SET", "2"),
+            ("WIZ_CALL_RING_WAIT", "3"),
         ] {
             let declared = header
                 .lines()
@@ -1482,6 +1566,7 @@ mod tests {
             "0 => Self::Exit",
             "1 => Self::RingEnter",
             "2 => Self::ThreadBase",
+            "3 => Self::RingWait",
         ] {
             assert!(calls.contains(arm), "the kernel does not decode `{arm}`");
         }
@@ -1505,9 +1590,23 @@ mod tests {
             "WIZ_RING_ENTRIES_AT",
             "WIZ_OP_ECHO",
             "WIZ_OP_UPTIME",
+            "WIZ_OP_DUPLICATE",
+            "WIZ_OP_TIMER",
+            "WIZ_OP_CANCEL",
             "WIZ_OP_SIGNAL",
             "WIZ_STATUS_OK",
             "WIZ_STATUS_UNKNOWN_OPCODE",
+            "WIZ_STATUS_NO_HANDLE_SLOT",
+            "WIZ_STATUS_BAD_HANDLE",
+            "WIZ_STATUS_DENIED",
+            "WIZ_STATUS_CANCELLED",
+            "WIZ_STATUS_NOT_FOUND",
+            "WIZ_STATUS_NO_ROOM",
+            "WIZ_TIME_ADDRESS",
+            "WIZ_TIME_VERSION",
+            "WIZ_TIME_CLOCK_AT",
+            "WIZ_TIME_MODE_NONE",
+            "WIZ_TIME_MODE_COUNTER",
             "WIZ_SYSCALL_VECTOR",
             "WIZ_USER_END",
             "WIZ_ENOSYS",

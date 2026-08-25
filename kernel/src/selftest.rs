@@ -39,6 +39,7 @@ use crate::handle::{HandleError, HandleTable};
 use crate::object::{self, ObjectRef, ObjectType};
 use crate::queue;
 use crate::thread::ThreadContext;
+use crate::timepage;
 use crate::user;
 use crate::{dev, error, info, input, mem, thread, time};
 
@@ -1307,6 +1308,184 @@ fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
 #[cfg(feature = "selftest")]
 fn a_table() -> alloc::sync::Arc<crate::handle::HandleTable> {
     alloc::sync::Arc::new(crate::handle::HandleTable::new(8))
+}
+
+/// The constants region says what the kernel measured.
+///
+/// No sequence counter guards this region and none is needed: it is written
+/// before the page can be mapped anywhere and never again (D-166). What is
+/// checked is that it was written *at all* and with the right numbers — a
+/// zeroed region reads as a plausible page with a version of zero, which is
+/// what a reader would then refuse.
+fn the_time_page_states_the_clock_the_kernel_measured() -> bool {
+    let Some((version, page_bytes, counter_hz)) = timepage::constants() else {
+        return false;
+    };
+
+    version == timepage::VERSION
+        && page_bytes == PAGE_SIZE as u32
+        // The measured rate, not merely a non-zero one: a page publishing
+        // somebody else's clock would still pass a "is it plausible" test.
+        && counter_hz == crate::time::counter_hz()
+        && counter_hz > 0
+}
+
+/// The page and the call tell the same time.
+///
+/// The whole claim of D-152: `sys_clock_get` stops being a call and becomes a
+/// load, and the two answers have to be *the same answer* rather than two
+/// plausible ones. So this is a sandwich rather than a tolerance — the page's
+/// reading is taken between two calls and must lie between them. No slack, and
+/// a multiplier or shift off by one breaks it immediately.
+fn the_time_page_and_the_call_tell_the_same_time() -> bool {
+    let Some(reading) = timepage::read() else {
+        return false;
+    };
+    if reading.mode != timepage::MODE_COUNTER {
+        return false;
+    }
+
+    let before = crate::time::now_ns();
+    let published = reading.at(cpu::timestamp());
+    let after = crate::time::now_ns();
+
+    let agrees = before <= published && published <= after;
+
+    // And it *advances*: a page whose conversion is zero answers the same
+    // number every time, which sits inside any sandwich taken quickly enough.
+    let first = reading.at(cpu::timestamp());
+    let moved = spins_until(1_000_000, || reading.at(cpu::timestamp()) > first);
+
+    agrees && moved && reading.conversion.is_calibrated()
+}
+
+/// Revoking the clock sends readers back to the call.
+///
+/// The gate D-152 asks for, exercised rather than described. Three things have
+/// to hold at once: the revocation is visible, the sequence counter moved by
+/// exactly two so no reader can be left mid-update, and **the syscall still
+/// answers** — a fallback that is not reachable is not a fallback.
+///
+/// The clock is put back afterwards. Nothing else reads the page, so the
+/// window is the kernel's own.
+fn revoking_the_clock_sends_readers_back_to_the_call() -> bool {
+    let Some(before) = timepage::read() else {
+        return false;
+    };
+
+    if !timepage::publish(
+        timepage::MODE_NONE,
+        crate::time::origin_ticks(),
+        crate::time::conversion(),
+    ) {
+        return false;
+    }
+
+    let Some(revoked) = timepage::read() else {
+        return false;
+    };
+    // Exactly two: one to say a write began and one to say it ended. A writer
+    // that moved it by one leaves the page permanently odd and every reader
+    // spinning.
+    let stepped = revoked.seq == before.seq.wrapping_add(2);
+    let closed = revoked.mode == timepage::MODE_NONE;
+
+    // The fallback, on the path a program would actually use.
+    let queue_answers = {
+        let Some(queue) = queue::Queue::new() else {
+            return false;
+        };
+        queue.post_submission_for_test(
+            0,
+            queue::Submission {
+                opcode: queue::Opcode::Uptime,
+                token: 0x7EA,
+                argument: 0,
+            },
+        );
+        queue.publish_tail_for_test(1);
+        let table = a_table();
+        let served = queue.serve(&table) == 1;
+        let completion = queue.read_completion(0);
+        served
+            && completion.token == 0x7EA
+            && completion.status == queue::STATUS_OK
+            && completion.value > 0
+    };
+
+    let restored = timepage::publish(
+        timepage::MODE_COUNTER,
+        crate::time::origin_ticks(),
+        crate::time::conversion(),
+    ) && timepage::read()
+        .is_some_and(|reading| reading.mode == timepage::MODE_COUNTER);
+
+    stepped && closed && queue_answers && restored
+}
+
+/// The clock's update window is never preemptible, and never left open.
+///
+/// D-152 makes this a **precondition, not a comment**: Linux's naive reader
+/// spin is only tolerable because its update runs with interrupts off, and a
+/// writer preempted with the sequence counter odd leaves every reader spinning
+/// for a scheduling quantum.
+///
+/// Two claims, and the first version had only a worse form of the second. It
+/// counted *calls* made with interrupts on and failed, correctly, because a
+/// kernel thread calling `publish` with interrupts on is fine — the guard
+/// clears the flag before the counter goes odd (D-166). What matters is the
+/// window, so that is what is counted now.
+///
+/// The second claim is that the window always closes: the counter is even at
+/// rest. A writer that returned early between its two increments would leave
+/// the page permanently odd and every reader spinning, and no amount of
+/// interrupt discipline would help.
+fn the_clocks_update_window_is_never_preemptible() -> bool {
+    // The revocation check has published twice by now, so this is not a count
+    // that has never been exercised.
+    let Some(seq) = timepage::sequence() else {
+        return false;
+    };
+
+    timepage::is_published()
+        && timepage::windows_left_preemptible() == 0
+        // Every update marked its window open. On one CPU nothing else can
+        // witness the odd value — the guard clears the interrupt flag, so no
+        // other context runs between the two increments — and a writer that
+        // skipped the odd write left every other check on this page green
+        // (D-166). The writer reads its own marker back, and this is that.
+        && timepage::windows_never_opened() == 0
+        && timebase::Seq::is_stable(seq)
+        // Publishing moves it, so "even" is not merely "never written".
+        && seq >= 4
+}
+
+/// A program is shown the time page and cannot write it.
+///
+/// Readable from ring 3, and nothing else: a writable time page is a program
+/// able to tell every other program a lie about the time, and an executable one
+/// is a page of attacker-chosen bytes in every address space.
+fn a_program_sees_the_time_page_and_cannot_write_it() -> bool {
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    if timepage::install(&mut space).is_err() {
+        return false;
+    }
+
+    let Some((_, flags)) = space.lookup(timepage::TIME) else {
+        return false;
+    };
+
+    flags.contains(Flags::USER)
+        && !flags.contains(Flags::WRITABLE)
+        && flags.contains(Flags::NO_EXECUTE)
+        // And not the space's to give away: the frame is the kernel's, so an
+        // unmap must not hand it to the allocator.
+        && matches!(
+            space.unmap(timepage::TIME, PAGE_SIZE),
+            Err(MapError::NotOwned(_))
+        )
 }
 
 /// A completion carries a handle, and the rights narrow on the way in.
@@ -4700,7 +4879,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 151;
+const EXPECTED_CHECKS: usize = 156;
 
 impl Report {
     const fn new() -> Self {
@@ -4843,6 +5022,26 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a ring announces its shape and keeps its pages",
         a_ring_announces_its_shape_and_keeps_its_pages(),
+    );
+    report.check(
+        "the time page states the clock the kernel measured",
+        the_time_page_states_the_clock_the_kernel_measured(),
+    );
+    report.check(
+        "the time page and the call tell the same time",
+        the_time_page_and_the_call_tell_the_same_time(),
+    );
+    report.check(
+        "revoking the clock sends readers back to the call",
+        revoking_the_clock_sends_readers_back_to_the_call(),
+    );
+    report.check(
+        "the clock's update window is never preemptible",
+        the_clocks_update_window_is_never_preemptible(),
+    );
+    report.check(
+        "a program sees the time page and cannot write it",
+        a_program_sees_the_time_page_and_cannot_write_it(),
     );
     report.check(
         "a completion carries a handle with narrowed rights",

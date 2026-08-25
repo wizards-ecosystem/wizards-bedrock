@@ -114,12 +114,85 @@ struct wiz_completion {
 /* Opcodes. Minimal on purpose and with no privileged ones: io_uring's exploit
  * record is a warning about surface growth, and Google's kernelCTF disables it
  * outright (`002`). */
-#define WIZ_OP_ECHO   1u
-#define WIZ_OP_UPTIME 2u
+#define WIZ_OP_ECHO      1u
+#define WIZ_OP_UPTIME    2u
+/* Duplicate a handle, narrowing its rights. The argument packs the handle in
+ * its low half and the rights you are willing to hold in its high half; the
+ * completion's value is the new handle. Rights are the *narrower* of what you
+ * hold and what you asked for, and asking for more is refused rather than
+ * quietly reduced (D-151, D-163). */
+#define WIZ_OP_DUPLICATE 3u
+/* Complete once `argument` nanoseconds have passed. Admitted now, completed
+ * later; `WIZ_CALL_RING_WAIT` is how you wait for it without spinning. */
+#define WIZ_OP_TIMER     4u
+/* End an operation still in flight, naming it by its token. Its own operation
+ * with its own completion: the target still gets exactly one, carrying
+ * `WIZ_STATUS_CANCELLED` (D-164). */
+#define WIZ_OP_CANCEL    5u
 
 /* Completion statuses. */
 #define WIZ_STATUS_OK             0u
 #define WIZ_STATUS_UNKNOWN_OPCODE 1u
+/* Your handle table has no room for what this would produce. Reported at
+ * submission, which is the point: you can close something and ask again. */
+#define WIZ_STATUS_NO_HANDLE_SLOT 2u
+#define WIZ_STATUS_BAD_HANDLE     3u
+#define WIZ_STATUS_DENIED         4u
+#define WIZ_STATUS_CANCELLED      5u
+/* A cancellation named no operation in flight. Advisory, not an error: an
+ * operation that finished between your submission and its service is a race
+ * you cannot avoid, and io_uring reports the same case as `-EALREADY`. */
+#define WIZ_STATUS_NOT_FOUND      6u
+#define WIZ_STATUS_NO_ROOM        7u
+
+/* ------------------------------------------------------------------ *
+ * The time page
+ * ------------------------------------------------------------------ */
+
+/* Where the kernel maps the clock, read-only, in every process. Reading the
+ * time is a *load*, not a call (D-152, D-166). */
+#define WIZ_TIME_ADDRESS ((uintptr_t)0x0000100000000000ull)
+
+#define WIZ_TIME_VERSION 1u
+
+/* The constants. Written before the page is mapped anywhere and never again,
+ * so there is no sequence counter here and none is needed. */
+struct wiz_time_constants {
+	uint32_t version;
+	uint32_t page_bytes;
+	uint64_t counter_hz;   /* The measured rate of the counter below. */
+};
+
+/* Where the clock region begins: its own cache line, because the constants are
+ * read once and the clock is read constantly. */
+#define WIZ_TIME_CLOCK_AT 64u
+
+/* The clock. Linux's seqlock: `seq` is odd while the kernel is writing, so a
+ * reader takes it, checks it is even, reads the rest, and takes it again — and
+ * keeps what it read only if the two agree. Both reads need a compiler
+ * barrier around the fields between them. */
+struct wiz_time_clock {
+	uint32_t seq;
+	uint32_t mode;         /* WIZ_TIME_MODE_*, and the gate on all of it. */
+	uint64_t base_ns;      /* Whole nanoseconds at `last_ticks`. */
+	uint64_t fraction;     /* The fraction carried past `base_ns`. */
+	uint64_t last_ticks;   /* The counter reading `base_ns` belongs to. */
+	uint64_t multiplier;
+	uint32_t shift;
+};
+
+/* `mode`: do not use this page. Ask instead — `WIZ_OP_UPTIME` through the ring
+ * is always reachable, which is what makes revocation possible at all. */
+#define WIZ_TIME_MODE_NONE    0u
+/* `mode`: the counter is good, and the conversion below is its. */
+#define WIZ_TIME_MODE_COUNTER 1u
+
+/* The reading, once you have a stable copy of the struct above and a counter
+ * value: one multiply-add and one shift, and no division.
+ *
+ *   ticks = rdtsc() - c.last_ticks;
+ *   ns    = c.base_ns + ((c.fraction + ticks * c.multiplier) >> c.shift);
+ */
 
 /* ------------------------------------------------------------------ *
  * Synchronous calls
@@ -140,20 +213,27 @@ enum wiz_call {
 	WIZ_CALL_EXIT = 0,
 	WIZ_CALL_RING_ENTER = 1,    /* Serve what has been submitted. */
 	WIZ_CALL_TCB_SET = 2,       /* Point `fs:` at thread-local storage. */
+	WIZ_CALL_RING_WAIT = 3,     /* Wait for an operation in flight (D-164). */
 
 	/* Owed. Every one of these has a kernel-side mechanism already and no
 	 * ring-3 entry point; the sysdeps name them so that what is missing is
-	 * a refusal the caller can see and not a silent wrong answer (D-114). */
-	WIZ_CALL_HANDLE_CLOSE = 3,
-	WIZ_CALL_HANDLE_DUPLICATE = 4,
-	WIZ_CALL_CHANNEL_SEND = 5,
-	WIZ_CALL_CHANNEL_RECEIVE = 6,
-	WIZ_CALL_VM_MAP = 7,
-	WIZ_CALL_VM_UNMAP = 8,
-	WIZ_CALL_CLOCK_GET = 9,
+	 * a refusal the caller can see and not a silent wrong answer (D-114).
+	 *
+	 * Renumbered when `WIZ_CALL_RING_WAIT` took 3, the way D-118 renumbered
+	 * them before: none is implemented, so moving them costs nothing now and
+	 * would cost an ABI break later. */
+	WIZ_CALL_HANDLE_CLOSE = 4,
+	WIZ_CALL_HANDLE_DUPLICATE = 5,
+	WIZ_CALL_CHANNEL_SEND = 6,
+	WIZ_CALL_CHANNEL_RECEIVE = 7,
+	WIZ_CALL_VM_MAP = 8,
+	WIZ_CALL_VM_UNMAP = 9,
 	WIZ_CALL_FUTEX_WAIT = 10,
 	WIZ_CALL_FUTEX_WAKE = 11,
 };
+
+/* `WIZ_CALL_CLOCK_GET` is gone, and its absence is the point: the time is a
+ * page, not a call (D-166). A libc reads `WIZ_TIME_ADDRESS`. */
 
 /* Errors, as Linux numbers them, because that is what `abis/linux` brings. */
 typedef int wiz_errno_t;

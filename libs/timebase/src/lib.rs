@@ -99,6 +99,87 @@ impl Timebase {
         }
     }
 
+    /// Rebuild a conversion from a multiplier and a shift.
+    ///
+    /// For reading one back out of a page rather than computing it: the two
+    /// numbers are the whole of a conversion, and a reader that has them has
+    /// the conversion. Unvalidated on purpose — a multiplier of zero is
+    /// [`UNCALIBRATED`](Self::UNCALIBRATED), which is what a page nobody has
+    /// published yet holds, and that is a state a reader must be able to
+    /// represent rather than one it should refuse to parse.
+    pub const fn from_parts(multiplier: u64, shift: u32) -> Self {
+        Self { multiplier, shift }
+    }
+
+    /// The multiplier this conversion applies.
+    ///
+    /// For a clock that is *published* rather than called: a reader with no
+    /// lock cannot ask a `Timebase` anything, so the two numbers have to be
+    /// written into a page it can see.
+    pub const fn multiplier(self) -> u64 {
+        self.multiplier
+    }
+
+    /// The shift this conversion applies.
+    pub const fn shift(self) -> u32 {
+        self.shift
+    }
+
+    /// Read a published clock: whole nanoseconds, a carried fraction, and
+    /// `ticks` of the counter since it was published.
+    ///
+    /// **One multiply-add and one shift, no division**, which is what D-152
+    /// asks of the reader — a program with no lock and no syscall has to be
+    /// able to do this in a few instructions.
+    ///
+    /// The base is split rather than stored wholly pre-shifted, and that is
+    /// not a detail. `base_ns << shift` overflows a `u64` after about eight
+    /// seconds of uptime at a 1 GHz counter's shift, so the obvious form is
+    /// wrong on any machine that has been on for a minute. Linux splits it the
+    /// same way — whole seconds beside a shifted remainder — for the same
+    /// reason. What is carried here is a *fraction of a nanosecond*, always
+    /// below `1 << shift`, so the sum below cannot overflow for any tick count
+    /// a real update interval produces.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use timebase::Timebase;
+    ///
+    /// let clock = Timebase::nanoseconds(1_000_000_000).expect("a 1 GHz counter");
+    ///
+    /// // A thousand ticks of a 1 GHz counter is a thousand nanoseconds.
+    /// assert_eq!(clock.resume(5_000, 0, 1_000), 6_000);
+    /// ```
+    pub const fn resume(self, base_ns: u64, base_fraction: u64, ticks: u64) -> u64 {
+        let advanced = base_fraction as u128 + (ticks as u128 * self.multiplier as u128);
+        let whole = advanced >> self.shift;
+        if whole > u64::MAX as u128 {
+            return u64::MAX;
+        }
+        base_ns.saturating_add(whole as u64)
+    }
+
+    /// Advance a published clock by `ticks`, keeping the fraction.
+    ///
+    /// What the kernel does at each update, and the reason the fraction exists
+    /// at all: throwing it away would lose up to a nanosecond *per update*, so
+    /// a clock updated a thousand times a second would fall a microsecond
+    /// behind every second. Carrying it costs one mask.
+    ///
+    /// The reading this produces is the one [`resume`](Self::resume) would
+    /// have given for the same arguments, which is what lets a program's own
+    /// read and the kernel's agree rather than merely resemble each other.
+    pub const fn advance(self, base_ns: u64, base_fraction: u64, ticks: u64) -> (u64, u64) {
+        let advanced = base_fraction as u128 + (ticks as u128 * self.multiplier as u128);
+        let whole = advanced >> self.shift;
+        if whole > u64::MAX as u128 {
+            return (u64::MAX, 0);
+        }
+        let carried = advanced - (whole << self.shift);
+        (base_ns.saturating_add(whole as u64), carried as u64)
+    }
+
     /// Ticks of a counter running at `hz`, into nanoseconds.
     pub const fn nanoseconds(hz: u64) -> Option<Self> {
         Self::new(NANOSECONDS_PER_SECOND, hz)
@@ -384,5 +465,228 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+/// The sequence counter of a clock published to readers that cannot lock.
+///
+/// Linux's seqlock, and D-152 adopts it verbatim including **both** memory
+/// barriers. The protocol is three rules and they are stated here rather than
+/// in each reader:
+///
+/// - **Odd means a write is in progress.** The writer increments before it
+///   touches anything and again after, so a reader that sees an odd value has
+///   caught it mid-update and must try again.
+/// - **A reader compares before with after.** Equal *and* even is the only
+///   combination that means the fields between them were not being rewritten.
+/// - **It wraps, and wrapping is fine.** What matters is whether the value
+///   changed, not how far — `u32` is thirty-five years of updates at a
+///   thousand a second, and equality after a full wrap needs four billion
+///   updates inside one read.
+///
+/// This lives beside the conversion rather than in a crate of its own because
+/// it has exactly one user: the page that publishes this clock. A second user
+/// is the moment it earns a crate (D-41).
+///
+/// # Examples
+///
+/// ```
+/// use timebase::Seq;
+///
+/// let quiet = 4;
+/// assert!(Seq::is_stable(quiet));
+///
+/// let writing = Seq::begin(quiet);
+/// assert!(!Seq::is_stable(writing));
+/// assert!(!Seq::agrees(quiet, writing));
+///
+/// let written = Seq::end(writing);
+/// assert!(Seq::is_stable(written));
+/// // A reader that started before the write does not accept what it read.
+/// assert!(!Seq::agrees(quiet, written));
+/// ```
+#[derive(Debug)]
+pub struct Seq;
+
+impl Seq {
+    /// What a page holds before anything has ever been published.
+    pub const QUIET: u32 = 0;
+
+    /// Whether no write is in progress.
+    pub const fn is_stable(seq: u32) -> bool {
+        seq.is_multiple_of(2)
+    }
+
+    /// The value a writer stores before it begins.
+    pub const fn begin(seq: u32) -> u32 {
+        seq.wrapping_add(1)
+    }
+
+    /// The value a writer stores when it is done.
+    pub const fn end(seq: u32) -> u32 {
+        seq.wrapping_add(1)
+    }
+
+    /// Whether a read that saw `before` and then `after` may keep what it read.
+    ///
+    /// Both conditions, and they are different: **equal** rules out a write
+    /// that started and finished inside the read, and **even** rules out one
+    /// that was already in progress when it started. Checking only equality
+    /// accepts a read taken entirely inside an update, which is the mistake
+    /// that makes a seqlock look like it works.
+    pub const fn agrees(before: u32, after: u32) -> bool {
+        before == after && Self::is_stable(before)
+    }
+}
+
+#[cfg(test)]
+mod published_tests {
+    use super::{Seq, Timebase};
+
+    /// A published reading is the reading the conversion would have given.
+    ///
+    /// The two must not drift, because one is what the kernel writes into the
+    /// page and the other is what `now_ns` answers a syscall with — and D-152
+    /// requires the syscall fallback to stay reachable, which means it has to
+    /// stay *right*.
+    ///
+    /// Exactly equal when the fraction starts at zero: both are
+    /// `(ticks * mult) >> shift` and the base is added outside the shift.
+    #[test]
+    fn a_published_reading_matches_the_conversion_it_came_from() {
+        for hz in [1_000_000_000, 2_400_000_000, 3_192_000_000, 14_318_180, 100] {
+            let clock = Timebase::nanoseconds(hz).expect("a real rate");
+            for base in [0u64, 1, 999, 1_000_000, 86_400_000_000_000] {
+                for ticks in [0u64, 1, 3, 1_000, 1_000_000, 1_000_000_007] {
+                    assert_eq!(
+                        clock.resume(base, 0, ticks),
+                        base + clock.convert(ticks),
+                        "{hz} Hz, base {base}, {ticks} ticks"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A published clock advances by what the counter advanced.
+    ///
+    /// The property a reader depends on and the one a wrong shift breaks
+    /// silently: a base in the wrong domain still produces plausible numbers,
+    /// and only the *difference* between two readings shows it.
+    #[test]
+    fn a_published_clock_advances_with_its_counter() {
+        let clock = Timebase::nanoseconds(1_000_000_000).expect("a 1 GHz counter");
+
+        let first = clock.resume(1_000_000, 0, 0);
+        let later = clock.resume(1_000_000, 0, 250_000);
+
+        assert_eq!(first, 1_000_000, "no ticks is the base itself");
+        assert_eq!(later - first, 250_000, "a 1 GHz tick is a nanosecond");
+    }
+
+    /// Updating a thousand times does not drift from converting once.
+    ///
+    /// This is what the carried fraction is *for*, and the check that fails
+    /// without it. A counter whose rate is not a whole number of nanoseconds
+    /// loses part of one at every update; dropping the fraction costs up to a
+    /// nanosecond a time, so a clock updated at a kilohertz falls a microsecond
+    /// behind every second and nothing else in this file would notice.
+    #[test]
+    fn a_thousand_updates_do_not_drift_from_one_conversion() {
+        // Both numbers are chosen so the two answers *can* differ, which took
+        // two attempts: 3.192 GHz is a real processor, but a step of 3_192_000
+        // ticks is exactly a millisecond, so the conversion has no fraction to
+        // lose and dropping the carry left this green (D-155, again).
+        let clock = Timebase::nanoseconds(3_192_000_000).expect("a real rate");
+        const STEP: u64 = 1_000_000;
+        const UPDATES: u64 = 1_000;
+
+        let (mut base, mut fraction) = (0u64, 0u64);
+        for _ in 0..UPDATES {
+            (base, fraction) = clock.advance(base, fraction, STEP);
+        }
+
+        let at_once = clock.convert(STEP * UPDATES);
+        let apart = base.abs_diff(at_once);
+        assert!(
+            apart <= 1,
+            "{UPDATES} updates read {base}, one conversion reads {at_once}: {apart} ns apart"
+        );
+    }
+
+    /// An update leaves the clock where a read of the same moment would.
+    ///
+    /// The two are the same arithmetic and must stay so: the kernel advances
+    /// the base with one and a program reads between updates with the other.
+    #[test]
+    fn advancing_lands_where_reading_the_same_moment_does() {
+        let clock = Timebase::nanoseconds(2_400_000_000).expect("a real rate");
+        for fraction in [0u64, 1, 12_345] {
+            for ticks in [0u64, 7, 2_400_000, 999_999_999] {
+                let (advanced, carried) = clock.advance(1_000, fraction, ticks);
+                assert_eq!(advanced, clock.resume(1_000, fraction, ticks));
+                assert!(
+                    carried < 1 << clock.shift(),
+                    "the carry is a fraction of a nanosecond, not a nanosecond"
+                );
+            }
+        }
+    }
+
+    /// A reading too large for the word saturates rather than wrapping.
+    ///
+    /// A wrap here is time going *backwards*, which every reader treats as
+    /// impossible.
+    #[test]
+    fn a_reading_too_large_for_the_word_saturates() {
+        let clock = Timebase::nanoseconds(1_000_000_000).expect("a 1 GHz counter");
+
+        assert_eq!(clock.resume(u64::MAX, 0, u64::MAX), u64::MAX);
+        assert_eq!(clock.resume(0, 0, u64::MAX), u64::MAX);
+        assert_eq!(clock.advance(u64::MAX, 0, u64::MAX), (u64::MAX, 0));
+    }
+
+    /// The sequence counter says "stable" only when it is even and unchanged.
+    ///
+    /// Both halves are checked separately, because a reader that tests only
+    /// equality accepts a read taken entirely inside one update — the mistake
+    /// that leaves a seqlock looking correct.
+    #[test]
+    fn a_reader_keeps_what_it_read_only_when_nothing_moved() {
+        let quiet = Seq::QUIET;
+        assert!(Seq::is_stable(quiet));
+        assert!(Seq::agrees(quiet, quiet));
+
+        let writing = Seq::begin(quiet);
+        assert!(!Seq::is_stable(writing));
+        // Caught mid-write, twice over: unchanged but odd is still a refusal.
+        assert!(!Seq::agrees(writing, writing));
+        assert!(!Seq::agrees(quiet, writing));
+
+        let written = Seq::end(writing);
+        assert!(Seq::is_stable(written));
+        assert_ne!(written, quiet, "a write must be visible as a change");
+        assert!(!Seq::agrees(quiet, written));
+        assert!(Seq::agrees(written, written));
+    }
+
+    /// The counter wraps without ever reading as stable at the seam.
+    ///
+    /// Thirty-five years of updates at a thousand a second, so this is not a
+    /// reachable state — which is why it is checked here, where reaching it
+    /// costs nothing.
+    #[test]
+    fn the_sequence_counter_wraps_without_going_odd_at_the_seam() {
+        let last_even = u32::MAX - 1;
+        assert!(Seq::is_stable(last_even));
+
+        let writing = Seq::begin(last_even);
+        assert_eq!(writing, u32::MAX);
+        assert!(!Seq::is_stable(writing));
+
+        let wrapped = Seq::end(writing);
+        assert_eq!(wrapped, 0);
+        assert!(Seq::is_stable(wrapped));
+        assert!(!Seq::agrees(last_even, wrapped));
     }
 }

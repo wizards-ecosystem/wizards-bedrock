@@ -520,6 +520,8 @@ pub(crate) enum SpawnError {
     NoThread(thread::SpawnError),
     /// Its bootstrap channel could not be put in its table.
     NoBootstrap(HandleError),
+    /// The time page could not be shown to it.
+    NoTimePage(crate::timepage::TimePageError),
     /// No memory for its ring.
     NoRing,
     /// No memory for its bootstrap channel.
@@ -535,6 +537,7 @@ impl fmt::Display for SpawnError {
             Self::NotBindable(error) => write!(f, "the space cannot be installed: {error}"),
             Self::NoThread(error) => write!(f, "no thread: {error}"),
             Self::NoBootstrap(error) => write!(f, "no bootstrap channel: {error}"),
+            Self::NoTimePage(error) => write!(f, "the time page: {error}"),
             Self::NoRing => f.write_str("no memory for a ring"),
             Self::NoChannel => f.write_str("no memory for a bootstrap channel"),
         }
@@ -579,6 +582,11 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     // not the space's, so unmapping them must not return them — `map_shared`
     // wrote no owned bit and `unmap` would refuse anyway. They go back when
     // the ring drops.
+    // Before the ring, because a program that cannot be shown the time is
+    // refused rather than given a space with a hole where the ABI says a page
+    // is (D-166).
+    crate::timepage::install(&mut space).map_err(SpawnError::NoTimePage)?;
+
     let mut ring = queue::Queue::new().ok_or(SpawnError::NoRing)?;
     ring.install(&mut space, RING)
         .map_err(SpawnError::NoSpace)?;

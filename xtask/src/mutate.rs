@@ -425,6 +425,47 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a cancelled operation still gets its own completion",
         reddens: Caught::Check("a cancelled operation and its cancellation complete separately"),
     },
+    // Slice 2, one defect per property (D-119).
+    //
+    // The published shift moved by one, which halves or doubles every reading
+    // a program takes while the syscall keeps answering correctly. Silent: the
+    // numbers stay plausible and only a comparison between the two doors shows
+    // it.
+    Mutation {
+        file: "kernel/src/timepage.rs",
+        find: "    write_u32(page, CLOCK_AT + clock::SHIFT, conversion.shift());",
+        replace: "    write_u32(page, CLOCK_AT + clock::SHIFT, conversion.shift() - 1);",
+        breaks: "the page and the call tell the same time",
+        reddens: Caught::Check("the time page and the call tell the same time"),
+    },
+    // The window left open: the counter goes odd and never comes back, so
+    // every correct reader spins for ever and gives up.
+    Mutation {
+        file: "kernel/src/timepage.rs",
+        find: "    write_u32(page, CLOCK_AT + clock::SEQ, Seq::end(Seq::begin(seq)));",
+        replace: "    write_u32(page, CLOCK_AT + clock::SEQ, Seq::begin(seq));",
+        breaks: "a published clock closes its update window",
+        reddens: Caught::Check("the time page and the call tell the same time"),
+    },
+    // The revocation gate ignored. A kernel that has stopped trusting its
+    // counter goes on telling every program the counter is good, which is the
+    // one failure the gate exists to prevent.
+    Mutation {
+        file: "kernel/src/timepage.rs",
+        find: "    write_u32(page, CLOCK_AT + clock::MODE, mode);",
+        replace: "    write_u32(page, CLOCK_AT + clock::MODE, MODE_COUNTER);",
+        breaks: "a revoked clock reads as revoked",
+        reddens: Caught::Check("revoking the clock sends readers back to the call"),
+    },
+    // The time page mapped writable, which is a program able to tell every
+    // other program a lie about the time.
+    Mutation {
+        file: "kernel/src/timepage.rs",
+        find: "    let result = space.map_shared(TIME, &shared, Flags::NO_EXECUTE);",
+        replace: "    let result = space.map_shared(TIME, &shared, Flags::NO_EXECUTE.union(Flags::WRITABLE));",
+        breaks: "the time page is read-only to ring 3",
+        reddens: Caught::Check("a program sees the time page and cannot write it"),
+    },
     // D-133's exemption, put back. The inner test is left in place so the
     // counter still cannot move, which is the point: the woken thread runs
     // either way, because the keyboard arm reschedules a moment later, so only

@@ -322,6 +322,20 @@ pub(crate) fn now_ns() -> u64 {
     elapsed.convert(cpu::timestamp().wrapping_sub(ORIGIN.load(Ordering::Relaxed)))
 }
 
+/// The counter reading the clock's zero sits at.
+///
+/// For the page that publishes this clock (D-152): a reader computes
+/// `convert(rdtsc - origin)`, which is what [`now_ns`] computes, so the two
+/// cannot drift.
+pub(crate) fn origin_ticks() -> u64 {
+    ORIGIN.load(Ordering::Relaxed)
+}
+
+/// How counter ticks become nanoseconds.
+pub(crate) fn conversion() -> Timebase {
+    Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed))
+}
+
 /// Milliseconds since the clock started, for anything that reports to a
 /// person.
 pub(crate) fn uptime_ms() -> u64 {
@@ -369,7 +383,6 @@ pub(crate) fn expiries() -> u64 {
 }
 
 /// The measured rate of the timestamp counter; zero if calibration declined.
-#[cfg(feature = "selftest")]
 pub(crate) fn counter_hz() -> u64 {
     TSC_HZ.load(Ordering::Relaxed)
 }

@@ -66,7 +66,7 @@ before its abstraction is anything but a guess.
 | Slice | Contents | Status |
 |---|---|---|
 | 1 | **A completion carries a handle.** Reservation extended to handle-table slots, attenuation on arrival, and the first operation that genuinely waits | Done |
-| 2 | **The time page.** Two regions — immutable constants, and a versioned clock with a revocation gate and a syscall fallback | |
+| 2 | **The time page.** Two regions — immutable constants, and a versioned clock with a revocation gate and a syscall fallback | Done |
 | 3 | **Death mid-operation.** In-flight operations collected with the zombie; exit is a *wait*, not a signal | |
 | 4 | **PCI, and a device that is claimed.** CF8/CFC enumeration recursing through bridges, a `Device` capability that supersedes bare port claims, BAR mapping uncacheable | |
 | 5 | **NVMe, polled.** Twelve-step init, one I/O queue pair, `IEN=0`, PRP construction in `libs/`, and the `size − 1` capacity rule proved | |
@@ -480,3 +480,64 @@ the program is told, which is D-151's whole argument for reserving at all.
 - **`Queue`'s `WaitQueue` is still unused by ring 3**, and that is not an
   oversight: it takes a `ThreadContext`, so it is what a *kernel* thread waits
   on. A ring-3 thread waits through the scheduler.
+
+---
+
+## Slice 2 — The time page
+
+**Landed 2026-08-25.** D-166. 156 machine checks, 620 host tests, 37 mutations.
+
+`sys_clock_get` was OWED over `libs/timebase` (D-114) — the mechanism complete
+and the door missing. It is answered by not being a door. One page, read-only
+in every program at `0x0000_1000_0000_0000`, with the constants in one region
+and the clock in another.
+
+### What the research asked for, and what turned out to be wrong
+
+**"nsec stored pre-shifted"** cannot be taken literally. `base_ns << shift`
+overflows a `u64` after about eight seconds of uptime at a 1 GHz counter's
+shift, so the base is split — whole nanoseconds beside a carried fraction of
+one, which is what Linux does and for the same reason. The fraction is not a
+detail: a clock updated at a kilohertz that dropped it falls a microsecond
+behind every second.
+
+**This clock needs no periodic update at all**, and that is not a shortcut.
+`time::init` refuses to calibrate unless the counter is invariant, so the
+conversion is fixed and the origin never moves; a reader computes
+`convert(rdtsc - origin)`, which is *exactly* what `now_ns` computes. The
+seqlock is still here and still correct, because the page is republished on the
+two transitions that exist — calibration and revocation.
+
+### Three things that were wrong first
+
+**The page has to exist even when the clock does not.** The ABI says there is a
+page at that address, and a program that reads it and faults has been lied to.
+It is built at boot whatever the clock did, `mode` is `MODE_NONE`, and a spawn
+that cannot show it is refused.
+
+**The preemption precondition was measured in the wrong place.** The first
+counter recorded *calls* made with interrupts on, and the check built on it
+failed immediately — correctly, because a kernel thread calling `publish` with
+interrupts on is fine. What matters is the window, and the guard closes it.
+
+**The odd marker has no witness on one CPU.** Deleting the write that opens the
+window left every check green: nothing else runs between the two increments.
+This is D-154's class, and the answer is the same — the writer reads its own
+marker back, so a writer that stops announcing itself is caught by the only
+observer that exists.
+
+### The check that has no tolerance
+
+*The time page and the call tell the same time* is a **sandwich**: the page's
+reading is taken between two calls to `now_ns` and must lie between them. Not a
+bound, not a tolerance — a multiplier or shift off by one fails at once, and
+there is no slack for it to hide in.
+
+### What moved in the ABI
+
+`WIZ_CALL_CLOCK_GET` is **deleted**, and its absence is the point.
+`WIZ_CALL_RING_WAIT` takes 3 and the owed calls renumber, which costs nothing
+while none is implemented and would cost an ABI break later. The C header gains
+the page's address, version, modes and every field offset, and the cross-check
+compares all of them against `timepage.rs` — a `mode` read from the wrong place
+is a clock that reads as usable when it is not.
