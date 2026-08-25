@@ -51,11 +51,19 @@ VMware boot is not decoration — it reaches SMEP/SMAP/UMIP, the compacted
 `XSAVEC` path, a real x2APIC and a processor that reports `MD_CLEAR`, none of
 which the gate's QEMU does.
 
-Two tasks are deliberately **not** in `ci`, because each needs a tool this
+**`cargo xtask mutate` is how D-28 is kept true over time.** Breaking a check
+by hand happens once, when it is written; a check that *stops* being able to
+fail is invisible from then on. The task applies known defects and requires a
+check to go red for each. Add a mutation whenever you add a check — `cargo
+test` verifies every mutation still matches its source, so a rotted one is
+caught in milliseconds even though the sweep itself costs a boot apiece.
+
+Three tasks are deliberately **not** in `ci`, because each needs a tool this
 project cannot vendor into a Rust build, and a gate step that fails for want of
-one teaches people to skip the gate: `cargo xtask vmware` and `cargo xtask
-model-check` (TLC over `models/`, needs a JVM). Both are run at a phase close
-and their results recorded.
+one teaches people to skip the gate: `cargo xtask vmware`, `cargo xtask
+model-check` (TLC over `models/`, needs a JVM) and `cargo xtask mutate` (one
+QEMU boot per mutation). All three are run at a phase close and their results
+recorded.
 
 ## Testing, and the rule that matters most
 

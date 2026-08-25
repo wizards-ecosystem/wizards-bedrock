@@ -161,6 +161,15 @@ const SHIPPED_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(5);
 /// from an exit code: a panicking kernel halts, it does not exit.
 const PANIC_MARKER: &str = "KERNEL PANIC";
 
+/// How a red self-test reports itself, and how a dead one does.
+///
+/// Named rather than written twice because `cargo xtask mutate` has to tell a
+/// kernel that *noticed* a deliberate defect from one that would not build —
+/// the first is the mutation being caught and the second proves nothing
+/// (D-119).
+pub const SELFTEST_FAILURE: &str = "self-test reported failures - see the log above";
+pub const PANIC_FAILURE: &str = "the self-test kernel panicked — see the log above";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VerdictStatus {
     Pass,
@@ -268,7 +277,7 @@ fn correlate_selftest(exit_code: Option<i32>, observation: SerialObservation) ->
     match (exit_code, verdict.status) {
         (Some(SELFTEST_PASSED), VerdictStatus::Pass) => Ok(()),
         (Some(SELFTEST_FAILED), VerdictStatus::Fail) => {
-            bail!("self-test reported failures - see the log above")
+            bail!(SELFTEST_FAILURE)
         }
         (Some(SELFTEST_PASSED | SELFTEST_FAILED), _) => {
             bail!("self-test serial verdict contradicts its debug-exit status")
@@ -438,7 +447,7 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
         if panicked.load(Ordering::Acquire) {
             let _ = child.kill();
             finish_selftest_serial(forwarder)?;
-            bail!("the self-test kernel panicked — see the log above");
+            bail!(PANIC_FAILURE);
         }
         if serial_failed.load(Ordering::Acquire) {
             let _ = child.kill();

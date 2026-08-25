@@ -38,6 +38,8 @@ NOT IN CI (each needs a tool this project cannot vendor into a Rust build,
 and a gate step that fails for want of one teaches people to skip the gate):
     model-check       run TLC over models/Ring.tla (needs java)
     vmware            as above (needs VMware Workstation to boot the result)
+    mutate            break the kernel on purpose, once per known defect, and
+                      require a check to go red (one QEMU boot each)
 
 HOUSEKEEPING:
     clean             remove build output
@@ -94,6 +96,8 @@ pub enum Task {
     VerifyVendor,
     /// Check the queue protocol's TLA+ model.
     ModelCheck,
+    /// Break the kernel on purpose and require the checks to notice.
+    Mutate,
     /// Everything CI runs.
     Ci,
     /// Remove build output.
@@ -183,6 +187,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         "degraded-check" => Ok(Task::DegradedCheck(profile)),
         "verify-vendor" => Ok(Task::VerifyVendor),
         "model-check" => Ok(Task::ModelCheck),
+        "mutate" => Ok(Task::Mutate),
         "ci" => Ok(Task::Ci),
         "clean" => Ok(Task::Clean(if all {
             CleanScope::Everything
@@ -306,6 +311,7 @@ mod tests {
             "degraded-check",
             "verify-vendor",
             "model-check",
+            "mutate",
             "ci",
             "clean",
         ];

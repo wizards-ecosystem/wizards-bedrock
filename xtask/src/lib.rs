@@ -15,6 +15,7 @@ pub mod cli;
 pub mod elf;
 pub mod image;
 pub mod model;
+pub mod mutate;
 pub mod paths;
 pub mod qemu;
 pub mod qmp;
@@ -57,6 +58,7 @@ pub fn run(task: Task) -> Result<()> {
         Task::DegradedCheck(profile) => tasks::degraded_check(&paths, profile),
         Task::VerifyVendor => vendor::verify(&paths),
         Task::ModelCheck => model::check(&paths),
+        Task::Mutate => mutate::run(&paths),
         Task::Ci => tasks::ci(&paths),
         Task::Clean(scope) => tasks::clean(&paths, scope),
     }
