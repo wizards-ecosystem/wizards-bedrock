@@ -23,11 +23,28 @@ use anyhow::{Context, Result};
 
 /// Lines of `unsafe` `wost` may hold.
 ///
-/// 343 at the Phase 5 close, in 8168 lines of the crate. Phase 5 added the
-/// most unsafe of any phase so far — ring 3, the extended state, the address
-/// space that grows — which is why this is where the number gets a budget
-/// rather than a note.
+/// 354 lines in 154 blocks, in 9168 lines of the crate, measured 2026-08-24
+/// after the Phase 0–6 sweep. It was 343 in 8168 at the Phase 5 close; the
+/// eleven added are D-120's fixup recovery and D-123's four soundness fixes,
+/// and the crate grew a thousand lines around them.
+///
+/// Phase 5 added the most unsafe of any phase so far — ring 3, the extended
+/// state, the address space that grows — which is why this is where the number
+/// gets a budget rather than a note.
+///
+/// **The numbers in this comment are checked**, not merely written down: a
+/// stale count in the one comment whose whole job is to be a count was what
+/// the sweep found here (D-124).
 pub const BUDGET: usize = 380;
+
+/// What the crate measured when [`BUDGET`] was last reviewed.
+///
+/// The budget is a ceiling and says nothing about where the number actually
+/// is. A ceiling of 380 is satisfied at 354 and at 200, and only one of those
+/// is the truth — so the measurement is recorded beside it and checked, which
+/// makes drift toward the ceiling visible rather than something a reader
+/// infers from a comment that may be a phase out of date.
+pub const MEASURED: usize = 354;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///
@@ -150,6 +167,14 @@ mod tests {
         );
         // And it is not zero, which would mean the scan stopped working.
         assert!(lines > 100, "only {lines} lines found; the scan is broken");
+
+        // And it is where the comment on [`BUDGET`] says it is. A ceiling
+        // alone leaves the true number free to drift up to it unremarked,
+        // which is how the doc came to state a count two phases old (D-124).
+        assert_eq!(
+            lines, MEASURED,
+            "wost holds {lines} lines of unsafe, not the {MEASURED} recorded beside the budget;              update MEASURED and say in the commit what was added"
+        );
     }
 
     /// `kernel/` has none at all, which `#![deny(unsafe_code)]` enforces — so

@@ -116,8 +116,10 @@ with no entry glue use `forbid`.
 - Casing per RFC 430, and `as_` / `to_` / `into_` used with their standard
   meanings (C-CASE, C-CONV).
 - Consistent word order across an API (C-WORD-ORDER): verb then noun, and the
-  same verb for the same operation — `write_pixel` / `read_pixel`,
-  `fill_rows` / `copy_rows`, `write_u32` / `read_u32`.
+  same verb for the same operation — `fill_rows` / `copy_rows`, `write_u32` /
+  `read_u32`. The example here used to be `write_pixel` / `read_pixel`; there
+  is no `read_pixel` and there is not meant to be, because framebuffer memory
+  is uncached and reading it is what the back buffer exists to avoid.
 - **Arguments convey meaning through types, not `bool`** (C-CUSTOM-TYPE).
   `fmt(paths, true)` says nothing; `fmt(paths, FmtMode::Check)` says everything.
   This applies hardest to two adjacent parameters of the same type — hence

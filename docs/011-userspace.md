@@ -930,9 +930,12 @@ Nothing here is a surprise; each is named in the ADR that created it.
   the initrd's program posts an operation, rings the doorbell and reads its own
   answer. The shipped kernel runs it — a kernel that has userspace and never
   enters it has not shipped userspace. 125 checks.
-- **`FS_BASE` is a fourth thing that must follow a thread**, found by writing
-  the sysdeps (D-114). `RSP0`, `CR3` and the extended state all live in
-  `task::prepare`; this belongs there with them.
+- ~~**`FS_BASE` is a fourth thing that must follow a thread**, found by
+  writing the sysdeps (D-114).~~ **Closed by D-118.** It lives in
+  `task::prepare` with `RSP0`, `CR3` and the extended state, and
+  `sys_tcb_set` is one of the four sysdeps that MAPS because of it. The
+  kernel range-checks the base against `USER_END`: a program asking to point
+  `fs:` at kernel memory has no reason it could be given.
 - ~~Nothing is reclaimed.~~ **Closed by D-117.** A retired program's resources
   become a zombie and are collected by the idle thread — which *is* "the
   machine has nothing better to do" — or by the next spawn, on a machine busy

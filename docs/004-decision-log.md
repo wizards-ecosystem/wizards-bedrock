@@ -3666,14 +3666,19 @@ saved size leaks into per-thread stack arithmetic, so it has to be settled
 before the stack allocator is.
 
 **Decision.** Eager, compacted, boot-sized, out-of-line, CPUID-derived, with
-the arithmetic in `libs/xstate`.
+the arithmetic in a `libs/` crate. (**`libs/xstate` was never written.** The
+compacted-offset table it was to hold turned out to be four instructions and a
+CPUID read, which live in `wost/src/arch/x86_64/xstate.rs` — the arithmetic
+that would have justified a crate was not there. Recorded rather than quietly
+dropped, because three lines below still name it.)
 
 - **Eager only. Never lazy.**
 - **`XSAVES` → `XSAVEC` → `XSAVE`, and never `XSAVEOPT`.**
 - **`XCR0` = x87 + SSE + AVX.** No AVX-512, no AMX.
 - **`XstateBuf` out-of-line and growable**, 64-byte aligned, sized at boot from
   the mask — never a fixed array inside the thread struct.
-- **Offsets are computed from `CPUID.0DH` into a table** in `libs/xstate`,
+- **Offsets are computed from `CPUID.0DH` into a table** in `libs/xstate` — a
+  crate that was never written; see the note above,
   host-tested against synthetic CPUID snapshots. `wost` keeps the four
   instructions and the MSR writes.
 - **`#NM` (vector 7) is reserved** for a future XFD-based allocator; nothing is
@@ -3712,7 +3717,7 @@ time); assuming component offsets increase with index (rejected: APX).
 
 **Consequences.**
 
-- `libs/xstate` is a new host-tested crate; the APX snapshot is one of its
+- `libs/xstate` was to be a new host-tested crate; the APX snapshot is one of its
   tests, and the break-test is widening `XCR0` by a bit and confirming the size
   arithmetic notices.
 - The stack allocator in slice 3 must know the boot-computed size, and must
@@ -5547,9 +5552,11 @@ Left owed, and named rather than quietly carried: `xtask/src/elf.rs` still
 carries its own transcription of the ELF header offsets rather than using
 `libs/elf64`, which is the duplication that crate exists to prevent —
 `libs/elf64`'s module doc claimed the merge had happened and now says it has
-not. `mm::with_memory_map` and `dev::with_io_apic` are still closures taken
-under a leaf guard. And a retired ring-3 thread still keeps its slot and its
-pages for the life of the boot.
+not. ~~`mm::with_memory_map` and `dev::with_io_apic` are still closures taken
+under a leaf guard.~~ **Closed by D-121**: both are gone, replaced by queries
+that take the lock, read what was asked, and give it back. ~~And a retired
+ring-3 thread still keeps its slot and its pages for the life of the boot.~~
+**Closed by D-117**: it becomes a zombie and is collected.
 
 ## D-106 A thread's address space is installed by the switch, and the binding is evidence — Status: Accepted (2026-08-24)
 
@@ -5607,13 +5614,14 @@ The isolation claim is now the strong one, and checked: two spaces, one virtual
 address, two frames, and the same kernel in both. `two_spaces_map_one_address_to_different_memory`
 is in the gate at 110 checks.
 
-Left owed. An `AddressSpace` has no `Drop`, because `take_table` leaks its
-table frames on purpose — so a space built and abandoned costs frames rather
-than freeing them, and so does a half-loaded program's memory. Bounded today
-(three programs and a handful of refusals per boot) and named here rather than
-carried quietly; D-44's accounting is where it is settled. Nothing yet unmaps
-a retired thread's space, and `APART` still separates two programs' addresses
-where it no longer needs to.
+Left owed. An `AddressSpace` still has no `Drop` — the deliberate path is
+`reclaim`, which D-117 added and the zombie collector calls, so a *retired
+program's* space is given back. A space built and **abandoned** without that
+call still costs its table frames, and so does a half-loaded program's memory.
+Bounded today (three programs and a handful of refusals per boot) and named
+here rather than carried quietly; D-44's accounting is where it is settled.
+~~Nothing yet unmaps a retired thread's space~~ — **closed by D-117** — and
+`APART` still separates two programs' addresses where it no longer needs to.
 
 ## D-107 The untyped split is a type, and "untyped" means externally modifiable — Status: Accepted (2026-08-24)
 
@@ -6050,9 +6058,13 @@ triple that does not exist and would mean patching its build files.
 shrug. `userland/abi/wizard_abi.h` states the native ABI as a C header;
 `userland/sysdeps/wizard/generic.cpp` implements mlibc's sixteen mandatory tags
 against it, each marked with which of three things it is. The counts are the
-finding: **3 MAPS, 12 OWED, 1 ABSENT.**
+finding: **3 MAPS, 12 OWED, 1 ABSENT** — since revised to **4 MAPS, 11 OWED,
+1 ABSENT** by D-118, which paid `sys_tcb_set`. The current counts are in
+`userland/README.md` and are checked against the sysdeps' own tags at every
+commit (D-124); the numbers in this paragraph are the finding as it stood on
+the day, and are left as they were.
 
-The twelve OWED all have a kernel-side mechanism and no ring-3 door, which is a
+The OWED all have a kernel-side mechanism and no ring-3 door, which is a
 much better position than it sounds: `sys_close` over the handle table's close,
 the reads and writes over the ring, the memory calls over `map_user` and
 `unmap`, and the futexes over `WaitQueue::wait_unless` — which already solves
@@ -6233,7 +6245,8 @@ is a public pure function of a small counter, so slot occupancy leaks across
 tables — no authority crosses, and the crate doc is honest that the mixer only
 removes the accidental case); three unreachable paths in `queue.rs` that
 consume a submission without posting its completion, now loud in debug; and the
-two `lock_leaf` closure holes D-105 recorded, still open.
+two `lock_leaf` closure holes D-105 recorded — ~~still open~~, **closed by
+D-121**.
 
 ## D-116 A program drives its own ring, and the shipped kernel runs one — Status: Accepted (2026-08-24)
 
@@ -6317,7 +6330,8 @@ a second, where before it would have cost a sixty-second boot to find.
 
 Left owed: the ring carries no handle, so it is not yet the delegation path
 channels are; nothing blocks on a completion, so the wait queue is still built
-and unused; and the twelve OWED sysdeps of D-114 are still owed — this decision
+and unused; and the OWED sysdeps of D-114 are still owed (eleven, after D-118
+paid `sys_tcb_set`) — this decision
 adds the two calls a program needed to prove the ABI works, not the ones a libc
 needs to be one.
 
