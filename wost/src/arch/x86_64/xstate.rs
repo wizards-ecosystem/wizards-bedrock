@@ -151,6 +151,69 @@ pub fn is_enabled() -> bool {
     FORM.load(Ordering::Acquire) != 0
 }
 
+/// Whether a save writes only inside the area [`bytes`] asks for.
+///
+/// The hazard this exists for: `bytes` is computed for whichever form `init`
+/// chose, and [`save`] dispatches on a separate word. They are stored together
+/// and agree — and nothing checked that they still do. A `FORM` naming the
+/// uncompacted path with a compacted `bytes` writes **past the end of every
+/// save area on the machine**, which is a `ThreadContext`-sized buffer inside
+/// a thread's slot.
+///
+/// Checked by consequence rather than by label: the area is followed by a
+/// sentinel, and the save must not touch it. That catches the disagreement
+/// whichever direction it goes, and would catch a `bytes` that was simply too
+/// small for reasons nobody has thought of yet (D-144).
+///
+/// `false` where extended state is off, since there is nothing to save.
+pub fn save_stays_inside_its_area() -> bool {
+    /// Generous beside any `XCR0` this kernel enables — x87, SSE and AVX come
+    /// to well under a kilobyte — and the check refuses rather than overflows
+    /// if that ever stops being true.
+    const ROOM: usize = 4096;
+    /// Bytes of sentinel past the area, and the pattern written into them.
+    const SENTINEL: usize = 128;
+    const MARK: u8 = 0xC3;
+
+    #[repr(C, align(64))]
+    struct Area([u8; ROOM]);
+
+    if !is_enabled() {
+        return false;
+    }
+    let bytes = bytes();
+    if bytes == 0 || bytes + SENTINEL > ROOM {
+        return false;
+    }
+
+    let mut area = Area([MARK; ROOM]);
+    // `XSAVE` writes only the components whose bits it is given and the header;
+    // the rest of the area is left as it was, so the sentinel is the only part
+    // this reads back.
+    // SAFETY: `area` is `ALIGNMENT`-aligned by its `repr` and at least `bytes`
+    // long, checked above — which is exactly `save`'s contract.
+    unsafe { save(area.0.as_mut_ptr()) };
+
+    area.0[bytes..bytes + SENTINEL]
+        .iter()
+        .all(|byte| *byte == MARK)
+}
+
+/// Whether [`save`] uses the compacted form.
+///
+/// Read from the dispatch's own word, not from what `CPUID` reported. Nothing
+/// read this, and the two can disagree: [`bytes`] is computed for whichever
+/// form `init` chose, so a `FORM` naming the *uncompacted* path with a
+/// *compacted* size writes past the end of every save area on the machine.
+/// They are stored together and agreed; what was missing was any way to find
+/// out if they stopped (D-144).
+///
+/// `main.rs` prints ", compacted" from `Extended::compacted`, a `CPUID` bool —
+/// so the banner would have gone on saying it with the dispatch switched.
+pub fn saves_compacted() -> bool {
+    FORM.load(Ordering::Acquire) == 2
+}
+
 /// Save this CPU's extended state into `area`.
 ///
 /// # Safety

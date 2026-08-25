@@ -4313,7 +4313,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 143;
+const EXPECTED_CHECKS: usize = 144;
 
 impl Report {
     const fn new() -> Self {
@@ -4354,6 +4354,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a claimed port cannot be claimed twice",
         ports_are_exclusive(),
+    );
+    report.check(
+        "a save stays inside its area",
+        a_save_stays_inside_its_area(),
     );
     report.check(
         "filling the arena never repeats a slot",
@@ -5013,6 +5017,35 @@ fn channels_are_disjoint(geometry: FramebufferInfo) -> bool {
 /// refused — the whole block, and any single port inside it.
 fn ports_are_exclusive() -> bool {
     port::claim_block::<8>(uart::COM1).is_none() && port::claim::<u8>(uart::COM1).is_none()
+}
+
+/// A save writes only inside the area the kernel sized for it.
+///
+/// `bytes()` is computed for whichever form `init` chose, and `save`
+/// dispatches on a separate word. Nothing read the second one — `main.rs`
+/// prints ", compacted" from a `CPUID` bool, not from the dispatch — so
+/// storing the uncompacted form with a compacted size would have gone on
+/// announcing the right thing while writing **past the end of every save area
+/// on the machine**, each of which lives inside a thread's slot (D-144).
+///
+/// Checked by consequence: a sentinel past the area must survive the save.
+///
+/// **Not by asserting the form**, and the first version of this did. QEMU's
+/// `-cpu max` reports no `XSAVEC`, so the gate runs the *uncompacted* path;
+/// `AGENTS.md` names the compacted one as something only the VMware boot
+/// reaches. A check requiring "compacted" is red on one machine and green on
+/// the other, which is a check about the hardware. The sentinel is meaningful
+/// on both — and since D-135 put the self-test into the VMware image, this is
+/// the first thing that will exercise the compacted path with a check
+/// watching.
+fn a_save_stays_inside_its_area() -> bool {
+    if !xstate::is_enabled() {
+        // Nothing to save, and nothing to overflow.
+        return xstate::bytes() == 0;
+    }
+    // The form is whatever the processor supports; what must hold on every
+    // processor is that the area was sized for the form in use.
+    xstate::save_stays_inside_its_area()
 }
 
 /// Filling the arena never hands the same slot out twice.
