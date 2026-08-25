@@ -406,6 +406,45 @@ mod tests {
     }
 
     /// Only powers of two, and not more than half the counter range.
+    /// The wire version is a number, not a name for itself.
+    ///
+    /// `VERSION` appeared on both sides of every comparison — the kernel
+    /// writes it into the header and the checks compare the header against it
+    /// — so `= 7` survived the whole workspace. The header is a shared
+    /// structure a program reads, which is what a version field is *for*
+    /// (D-148).
+    #[test]
+    fn the_wire_version_is_one() {
+        assert_eq!(VERSION, 1, "the ring layout has not changed");
+    }
+
+    /// The consistency oracle can say no.
+    ///
+    /// `is_consistent` is asserted *true* at every call site and six machine
+    /// checks use it as their oracle — including the one that catches a lying
+    /// completion head. `{ true }` survived the suite (D-148).
+    #[test]
+    fn the_consistency_oracle_refuses_an_over_reserved_ring() {
+        let queues = Queues::new(capacity(4), capacity(8)).expect("a usable pair");
+        assert!(queues.is_consistent(), "a fresh pair is consistent");
+
+        // Submit until the submission ring is full, checking the invariant at
+        // every step: each `submit` takes a completion slot as well, which is
+        // the reservation the oracle is about.
+        let mut busy = Queues::new(capacity(4), capacity(8)).expect("a usable pair");
+        let mut admitted = 0;
+        while busy.submit().is_some() {
+            admitted += 1;
+            assert!(
+                busy.is_consistent(),
+                "reserving the {admitted}th slot broke the invariant"
+            );
+        }
+        assert!(admitted > 0, "nothing was admitted; the check is vacuous");
+        assert!(busy.submit().is_none(), "a full ring admits nothing more");
+        assert!(busy.is_consistent(), "and refusing kept the invariant");
+    }
+
     #[test]
     fn a_capacity_is_a_power_of_two_that_leaves_room_to_count() {
         for good in [1, 2, 4, 8, 1024, Capacity::MAX] {

@@ -78,6 +78,35 @@ mod tests {
     /// so this is the readable copy it is checked against.
     const WITH_ERROR_CODE: [u8; 10] = [8, 10, 11, 12, 13, 14, 17, 21, 29, 30];
 
+    /// The named constants are the vectors `name` answers for.
+    ///
+    /// `name(14)` was spelled as a literal on both sides, so `PAGE_FAULT`
+    /// itself was read by nothing and could have named any vector. `COUNT` was
+    /// satisfied by any value at or above 31 (D-148).
+    #[test]
+    fn the_named_vectors_are_the_ones_the_table_names() {
+        // SDM Vol. 3A table 6-1, transcribed. Each constant is used to *index*
+        // the table, so a wrong constant gives the wrong name.
+        for (constant, expected) in [
+            (BREAKPOINT, "breakpoint"),
+            (INVALID_OPCODE, "invalid opcode"),
+            (DOUBLE_FAULT, "double fault"),
+            (PAGE_FAULT, "page fault"),
+        ] {
+            assert_eq!(
+                name(constant),
+                Some(expected),
+                "vector {constant} is not `{expected}`"
+            );
+        }
+
+        // Thirty-two architectural vectors, exactly: 31 is the last reserved
+        // one and 32 is the first the APIC may deliver.
+        assert_eq!(COUNT, 32);
+        assert!(name(COUNT - 1).is_none(), "31 is reserved and unnamed");
+        assert!(name(COUNT).is_none(), "32 is not an exception");
+    }
+
     #[test]
     fn the_error_code_mask_lists_exactly_the_documented_vectors() {
         for vector in 0..=u8::MAX {

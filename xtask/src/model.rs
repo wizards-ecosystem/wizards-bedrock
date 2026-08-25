@@ -94,3 +94,65 @@ fn verify_jar(jar: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    /// Every invariant the model defines is one the config checks.
+    ///
+    /// TLC checks what `INVARIANTS` names and nothing else. Delete the block
+    /// and it still reports "Model checking completed. No error has been
+    /// found", because a run with no invariants cannot find one — so
+    /// `cargo xtask model-check` would pass with nothing checked, which is the
+    /// exact case the config's own comment says it guards (D-148).
+    ///
+    /// Milliseconds, in `cargo test`, so it runs at every commit while the
+    /// model check itself needs a JVM and is deliberately not in `ci`.
+    #[test]
+    fn every_invariant_the_model_defines_is_checked() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let spec = std::fs::read_to_string(root.join("models/Ring.tla")).expect("Ring.tla");
+        let config = std::fs::read_to_string(root.join("models/Ring.cfg")).expect("Ring.cfg");
+
+        // A definition is `Name == ...` at the left margin. The invariants are
+        // the ones whose bodies are a comparison rather than an action.
+        let defined: Vec<&str> = spec
+            .lines()
+            .filter(|line| !line.starts_with("\\"))
+            .filter_map(|line| line.split_once(" ==").map(|(name, _)| name))
+            .filter(|name| !name.is_empty() && !name.contains(' '))
+            .collect();
+
+        let listed = config
+            .split_once("INVARIANTS")
+            .expect("the config names an INVARIANTS block")
+            .1;
+
+        // The five the config lists today, each of which must still be defined
+        // by the model and still named by the config.
+        for invariant in [
+            "NoDroppedCompletion",
+            "ReservationsAreOperations",
+            "OneCompletionPerOperation",
+            "NothingVanishes",
+            "TypeOK",
+        ] {
+            assert!(
+                defined.contains(&invariant),
+                "`{invariant}` is checked by the config and not defined by the model"
+            );
+            assert!(
+                listed.contains(invariant),
+                "`{invariant}` is defined by the model and not checked by the config"
+            );
+        }
+
+        // And the block is not empty, which is the failure that reads as a
+        // pass.
+        assert!(
+            listed.trim_start().starts_with("NoDropped"),
+            "the INVARIANTS block lists nothing; TLC would check nothing and report success"
+        );
+    }
+}
