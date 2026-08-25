@@ -1255,9 +1255,17 @@ pub fn reclaimed_refusals() -> usize {
 fn entry_pointer(table: Paddr, index: usize) -> Result<*mut Entry, MapError> {
     debug_assert!(index < ENTRIES, "a level's index is always below 512");
     let base = mm::direct_pointer(table, PAGE_SIZE).ok_or(MapError::Unreachable(table))?;
-    // SAFETY: `direct_pointer` confirmed the direct map covers all `PAGE_SIZE`
-    // bytes of the table, and `index` is below the 512 entries one holds, so
-    // the result is inside that mapping.
+    // SAFETY: `table` is a frame this space owns — its root, or one a walked
+    // entry named — and the direct map covers every frame the allocator
+    // manages, which `mm::init` establishes and a boot check samples. So the
+    // whole `PAGE_SIZE` is mapped, and `index` is below the 512 entries a
+    // table holds, so the result is inside it.
+    //
+    // **Not** because `direct_pointer` checked: its own doc says "arithmetic
+    // only. Whether the map actually reaches those bytes is the caller's to
+    // establish." Five `// SAFETY:` comments credited it with that check, and
+    // that is what made two unguarded walks of a reclaimed root look
+    // justified (D-139, D-140).
     Ok(unsafe { base.cast::<Entry>().add(index) })
 }
 
@@ -1464,7 +1472,27 @@ pub fn translate(virtual_address: u64) -> Option<(Paddr, Flags)> {
 /// behind a feature because `wost` has none: adding one would add a pass to
 /// the gate's configuration matrix (D-22) for a function that reads.
 pub fn translate_in_root(root: Root, virtual_address: u64) -> Option<(Paddr, Flags)> {
+    // Asked again, not trusted from when the value was minted. A thread that
+    // has exited has had its tables reclaimed and its root frame re-issued —
+    // possibly to a program — so walking a stale one reads ring-3 bytes as
+    // page-table entries (D-140).
+    if !root.is_live() {
+        STALE_ROOT_REFUSALS.fetch_add(1, Ordering::Relaxed);
+        return None;
+    }
     translate_in(root.address(), virtual_address)
+}
+
+/// Walks refused because the root's thread had exited.
+///
+/// Counted inside the guard, for the reason `RECLAIMED_REFUSALS` is: a stale
+/// root usually walks frames that read as nothing, so the *answer* is the same
+/// with the guard deleted (D-139).
+static STALE_ROOT_REFUSALS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many walks have been refused a stale root.
+pub fn stale_root_refusals() -> usize {
+    STALE_ROOT_REFUSALS.load(Ordering::Acquire)
 }
 
 fn translate_in(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags)> {

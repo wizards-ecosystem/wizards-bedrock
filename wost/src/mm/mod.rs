@@ -460,8 +460,11 @@ impl Segment {
         let Some(base) = direct_pointer(self.address(), self.len()) else {
             return false;
         };
-        // SAFETY: the bounds check above places `offset` inside the run, which
-        // `direct_pointer` confirmed the map covers in full.
+        // SAFETY: the bounds check above places `offset` inside the run, and
+        // `self` owns every frame of it — the direct map covers every frame
+        // the allocator manages, so the whole run is mapped. `direct_pointer`
+        // did the arithmetic and refused an overflow; it checked no coverage,
+        // and its doc says so (D-140).
         let destination = unsafe { base.add(offset) };
         // SAFETY: `self` owns every frame in the run — one handle per run, and
         // this takes `&mut self` — and `bytes` ends inside it. The two cannot
@@ -497,8 +500,10 @@ impl Segment {
         let Some(base) = direct_pointer(self.address(), self.len()) else {
             return false;
         };
-        // SAFETY: the bounds check above places `offset` inside the run, which
-        // `direct_pointer` confirmed the map covers in full.
+        // SAFETY: as the write above — the bounds check places `offset` inside
+        // the run, `self` owns every frame of it, and the direct map covers
+        // every frame the allocator manages. `direct_pointer` did arithmetic,
+        // not a coverage check (D-140).
         let source = unsafe { base.add(offset) };
         // SAFETY: `self` owns every frame in the run — one handle per run —
         // and `into` is the caller's, so the two cannot overlap.

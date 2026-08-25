@@ -4313,7 +4313,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 141;
+const EXPECTED_CHECKS: usize = 142;
 
 impl Report {
     const fn new() -> Self {
@@ -4354,6 +4354,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a claimed port cannot be claimed twice",
         ports_are_exclusive(),
+    );
+    report.check(
+        "a stale root authorises no walk",
+        a_stale_root_authorises_no_walk(),
     );
     report.check(
         "ring three has no fast-syscall door",
@@ -4998,6 +5002,45 @@ fn channels_are_disjoint(geometry: FramebufferInfo) -> bool {
 /// refused — the whole block, and any single port inside it.
 fn ports_are_exclusive() -> bool {
     port::claim_block::<8>(uart::COM1).is_none() && port::claim::<u8>(uart::COM1).is_none()
+}
+
+/// A root outlives its thread as a value and not as authority.
+///
+/// `Root` is unforgeable — only `task::address_space_of` mints one — and that
+/// was taken to settle it. It does not: a caller can hold one across the
+/// thread's exit, and `collect` then reclaims the space and returns the root
+/// frame to the allocator, which may hand it to a *program*. The walk would
+/// read ring-3-authored bytes as top-level page-table entries, which is the
+/// arbitrary physical read the type exists to prevent, reached by staleness
+/// rather than forgery (D-140).
+///
+/// Counted rather than observed, for D-139's reason: a stale root usually
+/// walks frames that read as nothing, so the answer is `None` either way.
+fn a_stale_root_authorises_no_walk() -> bool {
+    let Ok(spawned) = user::run_for_bootstrap() else {
+        return false;
+    };
+    let Some(root) = task::address_space_of(spawned.slot) else {
+        return false;
+    };
+
+    // Alive: the walk is authorised, and the kernel half is mapped in every
+    // space, so this is a translation that really resolves.
+    let live = root.is_live();
+    let answered = paging::translate_in_root(root, mem::direct_map_base()).is_some();
+
+    // Let it run to completion and be collected.
+    if !runs_until(2000, || task::address_space_of(spawned.slot).is_none()) {
+        return false;
+    }
+    user::collect();
+
+    let refusals = paging::stale_root_refusals();
+    let dead = !root.is_live();
+    let refused = paging::translate_in_root(root, mem::direct_map_base()).is_none();
+    let counted = paging::stale_root_refusals() == refusals + 1;
+
+    live && answered && dead && refused && counted
 }
 
 /// `syscall` and `sysenter` are shut, **by this kernel**.

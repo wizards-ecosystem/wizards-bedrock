@@ -91,9 +91,11 @@ impl Heap {
         self.slab_frames += 1;
 
         for slot in 0..class.slots_per_frame() {
-            // SAFETY: `direct_pointer` confirmed the map covers the whole
-            // frame, and `offset_of` is below `FRAME_SIZE` by construction, so
-            // the result is inside it.
+            // SAFETY: the caller's contract is that `base` addresses a whole
+            // free frame reachable through the direct map, and `offset_of` is
+            // below `FRAME_SIZE` by construction, so the result is inside it.
+            // That contract is the ground here — `direct_pointer` is
+            // arithmetic, and this function never calls it (D-140).
             let address = unsafe { base.add(class.offset_of(slot)) };
             // SAFETY: the frame was just allocated, so no other code holds any
             // slot in it; writing the link is the first use of each.
@@ -170,8 +172,10 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 core::mem::forget(frame);
                 let mut heap = HEAP.lock_leaf();
                 // SAFETY: the frame was just allocated, so nothing else holds
-                // any slot in it, and `direct_pointer` confirmed the map
-                // covers the whole of it.
+                // any slot in it, and the direct map covers every frame the
+                // allocator manages — which is what makes the whole of it
+                // reachable. `direct_pointer` returned a pointer; it checked
+                // no coverage (D-140).
                 unsafe { heap.refill_with(class, base) };
                 heap.take_slot(class)
             }

@@ -635,7 +635,10 @@ pub fn address_space_of(slot: usize) -> Option<Root> {
         }
     });
     saved.restore();
-    (root != 0).then_some(Root(root))
+    (root != 0).then_some(Root {
+        slot,
+        address: root,
+    })
 }
 
 /// Evidence that no live slot will be switched onto `root`.
@@ -694,13 +697,38 @@ pub fn release_address_space(root: u64) -> Option<Released> {
 /// a table would be an arbitrary physical read — which is what D-77 named as
 /// an authority debt on the mapping side and what this closes on the reading
 /// side (D-115).
+///
+/// **Unforgeable is not the same as fresh.** The value records which slot it
+/// came from, and [`is_live`](Self::is_live) asks the task table again. Without
+/// that a caller could hold one across the thread's exit: `collect` reclaims
+/// the space, the root frame goes back to the allocator, and a later
+/// `map_user` hands it to a *program* — so the walk reads ring-3-authored
+/// bytes as top-level entries. That is the arbitrary physical read this type
+/// exists to close, reopened by staleness rather than by forgery.
+///
+/// Every sibling evidence type here is deliberately not `Copy`
+/// — `Binding`, `MappedStack`, `StackArena` — because one caller owning the
+/// evidence is half of what makes it evidence. `Root` is `Copy` and keeps
+/// being: copying it is harmless once the *reading* is guarded, and the walk
+/// is the only thing it authorises (D-140).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Root(u64);
+pub struct Root {
+    slot: usize,
+    address: u64,
+}
 
 impl Root {
     /// The physical address of the top-level table.
     pub const fn address(self) -> u64 {
-        self.0
+        self.address
+    }
+
+    /// Whether the thread this came from still runs on these tables.
+    ///
+    /// False once the thread has exited, which is when its root stops being
+    /// its root and starts being whatever the allocator did with the frame.
+    pub fn is_live(self) -> bool {
+        address_space_of(self.slot) == Some(self)
     }
 }
 
