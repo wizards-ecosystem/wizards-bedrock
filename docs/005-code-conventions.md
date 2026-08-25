@@ -302,6 +302,22 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   INDEX_BITS - RESERVED_BITS)` is a definition, and a frame-allocator check
   that asserts the address, the count and the tally has checked the
   allocator's *description* rather than its frames (D-124).
+- **Choose inputs where the answers differ.** A realistic test value can be
+  worse than a contrived one, and this has now cost three checks.
+  `TYPICAL = 0xFEE0_0900` is a real `IA32_APIC_BASE` value that sets both the
+  bootstrap and enable bits, so every test using it was satisfied by the two
+  constants swapped (D-142). A framebuffer whose pitch equals its visible row
+  is a real configuration in which `pitch` and `width * bpp` are
+  interchangeable, so computing the span from the wrong one survives (D-155).
+  A clock frequency whose ratio lands nowhere near a halfway point is a real
+  clock that proves nothing about rounding.
+
+  Two rules follow, and they are the same rule from opposite ends: **make the
+  values pairwise distinct**, so no field or constant can stand in for another
+  (D-136); and **check the claim, not the trick** — "the multiplier is the
+  nearest integer to the ratio" is testable against both neighbours without
+  ever mentioning the `+ denominator / 2` that achieves it.
+
 - **Measure what a tool does; do not reason about it.** This is the one rule
   here that was learned twice in a day, in opposite directions, and it is
   narrower and more useful than "check your assumptions".
@@ -315,7 +331,8 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   happen (D-131).
 
   The mutation sweep's `strip_suffix(" FAILED")` looked stricter than the
-  verdict check it replaced. Serial lines carry a trailing ``, so it matched
+  verdict check it replaced. Serial lines carry a trailing `
+`, so it matched
   nothing, and the first strict run reported **eighteen survivors on boots that
   had each reddened exactly the right check** — a stricter-looking tool that
   was strictly worse, reporting failure for defects that were caught (D-134).
