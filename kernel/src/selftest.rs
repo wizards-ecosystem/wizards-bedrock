@@ -1021,6 +1021,44 @@ fn bytes_cross_the_boundary_only_where_they_may() -> bool {
         && read_only_refused
 }
 
+/// A freshly spawned program holds exactly one handle, and it is a channel.
+///
+/// `002`'s pillar 1, converted from a sentence into a check (D-111): *a
+/// process receives exactly one handle at spawn — its bootstrap channel — and
+/// every later handle arrived through a channel.* The table is the process's
+/// whole power, so counting it is the strongest form the claim has, and the
+/// count is the half that a second grant would break silently.
+///
+/// The parent's evidence is the other end. It is the only way to reach the
+/// child, which is what "no ambient authority" looks like from this side: a
+/// spawner that dropped its end could never speak to what it spawned.
+fn a_spawned_program_holds_exactly_one_handle() -> bool {
+    // Its own program rather than a shared launcher: every ring-3 check
+    // counts crossings, and an extra one from here would be attributed to
+    // whichever check happened to look next.
+    let Ok(spawned) = user::run_for_bootstrap() else {
+        return false;
+    };
+
+    let Some((entries, kind)) = user::bootstrap_of(spawned.slot) else {
+        return false;
+    };
+    let exactly_one = entries == 1;
+    let a_channel = kind == object::ObjectType::Channel;
+
+    // The parent's end is live and is the far side of the child's: a message
+    // put in here is one the child could read, which is what makes it a
+    // bootstrap rather than a decoration.
+    let Some(ours) = spawned.channel.as_channel() else {
+        return false;
+    };
+    let paired = !ours.is_orphaned();
+    let usable =
+        object::Message::new(b"hello, child").is_ok_and(|message| ours.send(message).is_ok());
+
+    exactly_one && a_channel && paired && usable
+}
+
 /// Bytes sent down one end of a channel come out of the other, once.
 ///
 /// The IPC primitive (`002`), and the smallest true thing about it: a message
@@ -3039,7 +3077,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 118;
+const EXPECTED_CHECKS: usize = 119;
 
 impl Report {
     const fn new() -> Self {
@@ -3186,6 +3224,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a second thread crosses onto its own stack",
         a_second_thread_crosses_onto_its_own_stack(),
+    );
+    report.check(
+        "a spawned program holds exactly one handle",
+        a_spawned_program_holds_exactly_one_handle(),
     );
     report.check(
         "the return to ring three clears buffers",

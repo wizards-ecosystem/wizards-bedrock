@@ -16,6 +16,7 @@
 use core::fmt;
 
 use elf64::{Elf, ElfError, SegmentKind};
+use handle_space::Rights;
 use wost::arch::current::cpu;
 use wost::arch::current::paging::{ActivateError, AddressSpace, MapError};
 use wost::arch::current::task;
@@ -26,6 +27,8 @@ use wost::mm::Paddr;
 use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
+use crate::handle::{HandleError, HandleTable};
+use crate::object::{self, ObjectRef, ObjectType};
 use crate::{info, thread, warn};
 
 /// Where the first user program's page of code goes.
@@ -341,6 +344,49 @@ struct Launch {
 static LAUNCHES: SpinLock<[Option<Launch>; thread::CAPACITY]> =
     SpinLock::new([None; thread::CAPACITY]);
 
+/// What a program is given at birth, and the whole of it.
+///
+/// `002`'s pillar 1, stated as an invariant a check can hold us to: **a
+/// process receives exactly one handle at spawn — its bootstrap channel — and
+/// every later handle arrived through a channel.** The table is the process's
+/// whole power, so "one entry" is the strongest form the claim has (D-111).
+struct Bootstrap {
+    table: HandleTable,
+    /// The one handle. Kept so a check can ask what it names rather than
+    /// inferring it from the count.
+    handle: u32,
+}
+
+/// One per thread slot, alongside its [`Launch`].
+static BOOTSTRAPS: SpinLock<[Option<Bootstrap>; thread::CAPACITY]> =
+    SpinLock::new([const { None }; thread::CAPACITY]);
+
+/// Handles a process may hold at once.
+///
+/// A quota, and the answer to kernel-memory exhaustion at the handle layer
+/// (D-78). Small because nothing yet gives a program a second handle.
+const HANDLE_QUOTA: usize = 64;
+
+/// What the parent keeps of a spawned program.
+///
+/// The far end of its bootstrap channel: the only way to reach it, which is
+/// what "no ambient authority" means from the other side.
+pub(crate) struct Spawned {
+    /// The thread slot it runs in.
+    pub(crate) slot: usize,
+    /// The parent's end of its bootstrap channel.
+    pub(crate) channel: ObjectRef,
+}
+
+/// What a spawned program's table holds, for the check that counts it.
+#[cfg(feature = "selftest")]
+pub(crate) fn bootstrap_of(slot: usize) -> Option<(usize, ObjectType)> {
+    let guard = BOOTSTRAPS.lock_leaf();
+    let bootstrap = guard.get(slot)?.as_ref()?;
+    let kind = bootstrap.table.kind_of(bootstrap.handle).ok()?;
+    Some((bootstrap.table.live(), kind))
+}
+
 /// Why a program could not be started.
 #[derive(Debug)]
 pub(crate) enum SpawnError {
@@ -354,6 +400,8 @@ pub(crate) enum SpawnError {
     NotBindable(ActivateError),
     /// No thread could be created.
     NoThread(thread::SpawnError),
+    /// Its bootstrap channel could not be put in its table.
+    NoBootstrap(HandleError),
 }
 
 impl fmt::Display for SpawnError {
@@ -364,6 +412,7 @@ impl fmt::Display for SpawnError {
             Self::NoStack => f.write_str("no memory for a stack"),
             Self::NotBindable(error) => write!(f, "the space cannot be installed: {error}"),
             Self::NoThread(error) => write!(f, "no thread: {error}"),
+            Self::NoBootstrap(error) => write!(f, "no bootstrap channel: {error}"),
         }
     }
 }
@@ -385,14 +434,27 @@ impl fmt::Display for SpawnError {
 /// # Errors
 ///
 /// [`SpawnError`], naming which of those steps refused.
-pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<usize, SpawnError> {
+pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spawned, SpawnError> {
     let mut space = AddressSpace::for_user().map_err(SpawnError::NoSpace)?;
     let entry = load(&mut space, which * APART).map_err(SpawnError::Load)?;
     let stack = place_stack(&mut space, which).ok_or(SpawnError::NoStack)?;
     let root = space.root();
     let binding = space.bind().map_err(SpawnError::NotBindable)?;
 
-    thread::spawn_in_space(name, cross, binding, |slot| {
+    // Its whole power, made before the thread exists so the table is never
+    // observable holding anything else. The child's end can be used and sent
+    // on; the parent keeps the other (D-111).
+    let (theirs, ours) = object::channel();
+    let mut table = HandleTable::new(HANDLE_QUOTA);
+    let handle = table
+        .insert(
+            theirs,
+            Rights::UNIVERSAL.union(Rights::READ).union(Rights::WRITE),
+        )
+        .map_err(SpawnError::NoBootstrap)?;
+
+    let mut bootstrap = Some(Bootstrap { table, handle });
+    let slot = thread::spawn_in_space(name, cross, binding, |slot| {
         *LAUNCHES
             .lock_leaf()
             .get_mut(slot)
@@ -403,8 +465,17 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<usi
             which,
             root,
         });
+        *BOOTSTRAPS
+            .lock_leaf()
+            .get_mut(slot)
+            .expect("a slot wost accepted is inside the table") = bootstrap.take();
     })
-    .map_err(SpawnError::NoThread)
+    .map_err(SpawnError::NoThread)?;
+
+    Ok(Spawned {
+        slot,
+        channel: ours,
+    })
 }
 
 /// Cross into ring 3, and never come back on this thread.
@@ -454,17 +525,23 @@ fn cross() {
 }
 
 /// The first user program, which calls the kernel.
-pub(crate) fn run() -> Result<usize, SpawnError> {
+pub(crate) fn run() -> Result<Spawned, SpawnError> {
     spawn("user", 0, BEHAVE)
 }
 
 /// A second one, in a space of its own, at its own addresses.
-pub(crate) fn run_second() -> Result<usize, SpawnError> {
+pub(crate) fn run_second() -> Result<Spawned, SpawnError> {
     spawn("user-two", 1, BEHAVE)
 }
 
+/// A fourth, for the check that counts what a program is given at birth.
+#[cfg(feature = "selftest")]
+pub(crate) fn run_for_bootstrap() -> Result<Spawned, SpawnError> {
+    spawn("user-bootstrap", 3, BEHAVE)
+}
+
 /// A third that faults on purpose, to show the machine survives it.
-pub(crate) fn run_faulting() -> Result<usize, SpawnError> {
+pub(crate) fn run_faulting() -> Result<Spawned, SpawnError> {
     spawn("user-fault", 2, FAULT)
 }
 

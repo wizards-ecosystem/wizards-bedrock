@@ -5829,3 +5829,51 @@ per-message allocation is charged to no quota (D-44). And a channel end has no
 `Drop` that wakes its peer's waiters, so an end dropped while a thread is
 blocked on the other side is only noticed at the next wake; the check that
 would catch it is the one owed with reclamation.
+
+## D-111 A program receives exactly one handle at birth, and it is a channel — Status: Accepted (2026-08-24)
+
+**Context.** `002`'s pillar 1 was amended once already, because its original
+wording — "channels are the sole delegation mechanism" — was false even of
+Zircon, which also passes handles through `zx_process_start`. The replacement
+was chosen to be checkable: *a process receives exactly one handle at spawn —
+its bootstrap channel — and every later handle arrived through a channel.*
+Until D-110 there were no channels to give one.
+
+**Decision.** `user::spawn` builds a channel pair before the thread exists,
+puts the child's end in a fresh `HandleTable` as its only entry, and returns
+the parent's end. The table is made and filled inside the `Reserved` window
+`spawn_in_space` opens (D-106), so it is never observable holding anything
+else — not "we only ever insert once", but "there is no moment at which a
+second entry could be seen".
+
+The parent keeps the far end and nothing else. That is what no ambient
+authority looks like from the spawning side: a parent that dropped its end
+could never speak to what it spawned again, and there is no name it could look
+the child up by.
+
+**Rationale.** The count is the load-bearing half. "It has a bootstrap channel"
+would hold with a second handle granted beside it, and a second grant is
+exactly the regression this invariant exists to prevent — it is one line, it
+looks harmless, and it quietly turns a capability system into an ambient one.
+`bootstrap_of` reports the table's live count so the check can assert `== 1`,
+and adding an event alongside the channel turns it red.
+
+Quota is 64 handles per process (D-78), which is the answer to kernel-memory
+exhaustion at the handle layer. Nothing yet gives a program a second handle, so
+the number is room rather than a measurement.
+
+**Consequences.** `spawn` returns a `Spawned` — the thread slot and the
+parent's channel end — rather than a bare slot. The check spawns its own
+program rather than reusing a launcher, because every ring-3 check counts
+crossings and an extra one from here would be attributed to whichever check
+looked next; that cost two red checks before it was noticed, and the fix is
+that a check which spawns owns its program. 119 checks.
+
+`002`'s Zircon correction was already made when the pillar was reworded; what
+this decision adds is the code that makes the sentence true of *this* kernel
+rather than a claim about someone else's.
+
+Left owed: the program cannot yet *use* its bootstrap channel — that needs a
+syscall surface, which is slice 9's ring. Nothing reclaims a bootstrap when a
+program retires, so a table and its channel end live for the boot; that is the
+same reclamation debt D-106 recorded and it now has a second holder.

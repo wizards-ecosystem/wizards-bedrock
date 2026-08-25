@@ -85,8 +85,8 @@ message shape. mlibc needs an ABI to sit on.
 | 4 | Trap entry, FRED-shaped: `libs/trap-cause` and table dispatch, the boot thread's own guarded stack, eIBRS and the speculation report, x2APIC as a checked precondition | ✅ 2026-08-24 |
 | 5 | Ring 3: user descriptors, one gate at DPL 3, the SMAP copy guard, `VERW` on the way out, the XSAVE layout in `libs/x86-cpuid` | ✅ 2026-08-24 |
 | 6 | The handle table: `libs/handle-space`, rights in one `u32`, a refcounted table, the object header, per-process quota | ✅ 2026-08-24 |
-| 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, `UFrame`, per-thread `RSP0` and eager XSAVE, stacks that arrive with their thread, two processes, exactly one handle each at spawn, and `THREADS` split into a thread table and a run queue | |
-| 8 | Channels: bytes and handles, attenuate-on-send, rights declared per field with no defaults | |
+| 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, `UFrame`, per-thread `RSP0` and eager XSAVE, stacks that arrive with their thread, two processes, exactly one handle each at spawn, and `THREADS` split into a thread table and a run queue | ✅ 2026-08-24 |
+| 8 | Channels: bytes and handles, attenuate-on-send, rights declared per field with no defaults | ✅ 2026-08-24 |
 | 9 | The async queue ABI: the model before the protocol, `libs/ring-proto` under shuttle and proptest, reservation backpressure, exactly one terminal completion | |
 | 10 | The stub mlibc sysdep (D-74), on a vendored clang | |
 | 11 | Phase close: the VMware boot (D-18), the Limine base-revision-5 bump, the adversarial audit (D-77), the roadmap and this file's closing section | |
