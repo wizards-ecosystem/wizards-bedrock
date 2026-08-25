@@ -4679,10 +4679,6 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         dev::console_has_back_buffer(),
     );
 
-    report.check(
-        "no lock is taken while a leaf guard is held",
-        a_leaf_guard_is_the_last_lock(),
-    );
     report.check("threads are available", thread::is_available());
     report.check(
         "an unmapped stack is no longer installed",
@@ -4926,6 +4922,17 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the local apic has recorded no error",
         apic::error_status() == 0,
+    );
+
+    // **Last, and deliberately**, for a different reason from the scroll check
+    // below: this one *reads* a value every other check can change. It sat at
+    // position eighty of a hundred and forty-three, so a violation in any of
+    // the sixty checks after it — `input.rs` alone has twelve `lock_leaf`
+    // sites — happened after the only read and was never reported. A detector
+    // is worth what it is read at the end of (D-143).
+    report.check(
+        "no lock is taken while a leaf guard is held",
+        a_leaf_guard_is_the_last_lock(),
     );
 
     // **Last, and deliberately.** This one writes a screenful of blank lines
@@ -5261,9 +5268,21 @@ const MASKED: u8 = 0xFF;
 fn a_lock_excludes_interrupts() -> bool {
     let outer = SpinLock::new(0u32);
     let inner = SpinLock::new(0u32);
+    let mut context = context();
 
     let before = interrupt::are_enabled();
-    let outer_guard = outer.lock_leaf();
+    // The **token-bearing** form for the outer one, and the leaf for the
+    // inner. That is the sanctioned direction — a leaf under a `lock` is what
+    // makes D-47's `HEAP` → `FRAMES` order sound — and it is what this check
+    // needs anyway: the property is that dropping an inner guard does not
+    // re-enable interrupts, not that two leaves may nest.
+    //
+    // Both were leaves before, which is the one direction `lock_leaf` forbids,
+    // and the leaf-nesting detector reported it the moment its read moved to
+    // the end of the run. A deliberate violation in a check is still a
+    // violation, and it would have masked every later real one — the detector
+    // keeps the first (D-143).
+    let outer_guard = outer.lock(&mut context);
     let excluded = !interrupt::are_enabled();
 
     let inner_guard = inner.lock_leaf();

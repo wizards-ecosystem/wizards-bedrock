@@ -856,8 +856,15 @@ global_asm!(
     "sub rsp, 8",
     "mov word ptr [rsp], {kernel_data}",
     "verw word ptr [rsp]",
-    "add rsp, 8",
+    // `verw` sets ZF when the selector is writable, which the kernel data
+    // segment is — so the tally counts the *instruction*, not its neighbour.
+    // It sat beside the `verw` before, and deleting the `verw` alone left the
+    // count intact and every check green: adjacency is not causation, which
+    // is the split D-101 already cost this project once (D-143).
+    "jnz 3f",
     "inc qword ptr [rip + {clears}]",
+    "3:",
+    "add rsp, 8",
     "2:",
     "iretq",
     stub_bytes = const STUB_BYTES,

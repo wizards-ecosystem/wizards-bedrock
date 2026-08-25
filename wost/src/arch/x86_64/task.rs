@@ -955,8 +955,12 @@ unsafe extern "C" fn leave_for_user(entry: u64, stack_top: u64) -> ! {
         "sub rsp, 8",
         "mov word ptr [rsp], {kernel_data}",
         "verw word ptr [rsp]",
-        "add rsp, 8",
+        // As the trap-exit stub: the tally is gated on `verw`'s own ZF, so it
+        // counts the instruction rather than sitting next to it (D-143).
+        "jnz 3f",
         "inc qword ptr [rip + {clears}]",
+        "3:",
+        "add rsp, 8",
         "2:",
         "iretq",
         user_data = const (super::segment::USER_DATA_BITS as u64),
