@@ -5,62 +5,16 @@ use core::fmt;
 use core::hint::spin_loop;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::arch::current::interrupt::{self, InterruptState};
+// The counters and the leaf-violation record live here now: they were
+// `static`s, which on one processor is indistinguishable from per-CPU and
+// wrong the moment a second starts (D-154).
+use crate::arch::current::percpu;
 use crate::panic::PanicToken;
 
 /// How many [`SpinLock`]s this CPU is holding.
-///
-/// A [`ThreadLock`] may not be taken while any is held: the holder has
-/// interrupts off, so if the thread holding the `ThreadLock` was preempted it
-/// can never be scheduled and the wait never ends. One CPU, one counter;
-/// per-CPU when SMP lands (D-56).
-static SPINLOCKS_HELD: AtomicUsize = AtomicUsize::new(0);
-
-/// How many *leaf* guards this CPU holds.
-///
-/// Separate from the count above, because the obligation is asymmetric. A leaf
-/// lock taken while a token-bearing one is held is the design — it is what
-/// makes D-47's `HEAP` → `FRAMES` order sound, and it is the only acquisition
-/// a `Drop` can perform. Anything taken **while a leaf is held** is the
-/// violation: the leaf's whole obligation is that nothing is called while it
-/// is live, and a second acquisition is a call (D-121).
-static LEAVES_HELD: AtomicUsize = AtomicUsize::new(0);
-
-/// Where a lock was taken under a leaf guard, if one ever was.
-///
-/// `None` on a boot where the obligation held everywhere. This is the check
-/// that `pic::silence` needed and did not have: it took `CONTROLLERS`' leaf
-/// guard and claimed ports under it, which takes `CLAIMED`'s — an order
-/// `CONTROLLERS → CLAIMED` established by accident, which is the kind that
-/// closes a cycle later (D-124).
-static UNDER_A_LEAF: core::sync::atomic::AtomicPtr<core::panic::Location<'static>> =
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-
-/// The leaf guard that was live when the violation happened.
-static THE_LEAF: core::sync::atomic::AtomicPtr<core::panic::Location<'static>> =
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-
-/// The most recent leaf acquisition, so a violation can name what it was under.
-static LAST_LEAF: core::sync::atomic::AtomicPtr<core::panic::Location<'static>> =
-    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
-
-/// The leaf guard a violation happened under, if there was one.
-pub fn the_leaf_it_was_under() -> Option<&'static core::panic::Location<'static>> {
-    let at = THE_LEAF.load(Ordering::Acquire);
-    // SAFETY: as for `taken_under_a_leaf`.
-    (!at.is_null()).then(|| unsafe { &*at.cast_const() })
-}
-
-/// Where a lock was taken while a leaf guard was held, if anywhere.
-pub fn taken_under_a_leaf() -> Option<&'static core::panic::Location<'static>> {
-    let at = UNDER_A_LEAF.load(Ordering::Acquire);
-    // SAFETY: only ever stored from `Location::caller()`, which is `'static`
-    // by the signature of that function, and never freed.
-    (!at.is_null()).then(|| unsafe { &*at.cast_const() })
-}
-
 /// How many spin locks this CPU holds.
 ///
 /// For the two invariants that read it from outside this module: setting the
@@ -69,7 +23,23 @@ pub fn taken_under_a_leaf() -> Option<&'static core::panic::Location<'static>> {
 /// checker rules out both statically now (D-69); this stays as the backstop
 /// for the paths it cannot see.
 pub fn spinlocks_held() -> usize {
-    SPINLOCKS_HELD.load(Ordering::Relaxed)
+    percpu::current().spinlocks_held()
+}
+
+/// Where a lock was taken while a leaf guard was held, if anywhere.
+///
+/// `None` on a boot where the obligation held everywhere. This is the check
+/// that `pic::silence` needed and did not have: it took `CONTROLLERS`' leaf
+/// guard and claimed ports under it, which takes `CLAIMED`'s — an order
+/// `CONTROLLERS → CLAIMED` established by accident, which is the kind that
+/// closes a cycle later (D-124).
+pub fn taken_under_a_leaf() -> Option<&'static core::panic::Location<'static>> {
+    percpu::current().taken_under_a_leaf()
+}
+
+/// The leaf guard a violation happened under, if there was one.
+pub fn the_leaf_it_was_under() -> Option<&'static core::panic::Location<'static>> {
+    percpu::current().the_leaf_it_was_under()
 }
 
 /// Evidence that the caller is in thread context, not inside a trap handler.
@@ -315,22 +285,10 @@ impl<T> SpinLock<T> {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         {
             Ok(_) => {
-                // Read before this one is counted: the question is whether a
-                // leaf was already held when this acquisition happened.
-                let here = core::ptr::from_ref(core::panic::Location::caller()).cast_mut();
-                if LEAVES_HELD.load(Ordering::Relaxed) > 0 {
-                    THE_LEAF.store(LAST_LEAF.load(Ordering::Relaxed), Ordering::Release);
-                    UNDER_A_LEAF.store(here, Ordering::Release);
-                }
-                SPINLOCKS_HELD.fetch_add(1, Ordering::Relaxed);
-                if leaf && LEAVES_HELD.fetch_add(1, Ordering::Relaxed) == 0 {
-                    // The *outermost* leaf, which is the one still held when a
-                    // violation is seen. Recording every leaf acquisition made
-                    // this name whichever one had been taken most recently,
-                    // held or not, which sent the first reading of this check
-                    // to the wrong function entirely.
-                    LAST_LEAF.store(here, Ordering::Relaxed);
-                }
+                // One call, because the answer is about the state *before*
+                // this acquisition and a caller splitting it into a read and a
+                // write would have to get the order right (D-154).
+                percpu::current().took_lock(leaf, core::panic::Location::caller());
                 Some(SpinLockGuard {
                     lock: self,
                     leaf,
@@ -420,10 +378,7 @@ impl<T> Drop for SpinLockGuard<'_, T> {
     /// Release, then restore. The other order would open a window in which an
     /// interrupt could arrive at code still holding this lock.
     fn drop(&mut self) {
-        if self.leaf {
-            LEAVES_HELD.fetch_sub(1, Ordering::Relaxed);
-        }
-        SPINLOCKS_HELD.fetch_sub(1, Ordering::Relaxed);
+        percpu::current().released_lock(self.leaf);
         self.lock.locked.store(false, Ordering::Release);
         self.interrupts.restore_in_place();
     }
@@ -489,7 +444,7 @@ impl<T> ThreadLock<T> {
             "a trap handler may not take a thread lock"
         );
         assert!(
-            SPINLOCKS_HELD.load(Ordering::Relaxed) == 0 || crate::panic::is_panicking(),
+            percpu::current().spinlocks_held() == 0 || crate::panic::is_panicking(),
             "a spin lock is held, so waiting for a thread lock could never end"
         );
         loop {

@@ -7154,11 +7154,13 @@ argument for the runtime counter than anything in this entry.
   is a decoder pretending not to be one, and this is the second time that has
   cost something (D-115's jump displacement was the first).
 
-**Left owed.** The check is one word for the whole machine, which is right on
+**Left owed.** ~~The check is one word for the whole machine, which is right on
 one CPU and wrong the moment there are two — `LEAVES_HELD` must move into
 `arch::percpu` beside `SPINLOCKS_HELD` before an AP starts, or two CPUs will
-report each other's nesting. Named here rather than carried quietly; D-56's
-per-CPU list is where it settles.
+report each other's nesting.~~ **Closed by D-154**, which built
+`arch::percpu` and moved both counters and the violation record behind it.
+`arch::percpu` did not exist when this was written, which is why the sentence
+says "move into" a module that had to be created first.
 
 `lock_from_trap` counts as a leaf, which is conservative: a trap handler's
 acquisition is take-mutate-return by the same argument, but nothing checks that
@@ -9453,10 +9455,18 @@ seam** is made real now: state that must become per-CPU moves into
 
 **Rationale.** The argument for pulling SMP forward is real — retrofitting it
 is the classic disaster, and four debts wait on it. The argument against is
-that this kernel has already done the expensive half: the lock ranks, the leaf
-discipline, the borrow token and the `arch::percpu` accessor all exist because
-D-56 and D-70 asked for them in Phase 5. What is missing is not design, it is a
-second processor to run it on.
+that this kernel has already done most of the expensive half: the lock ranks, the
+leaf discipline and the borrow token all exist because D-56 and D-70 asked for
+them in Phase 5.
+
+**`arch::percpu` does not, and an earlier draft of this entry said it did.**
+D-81 wrote "`arch::percpu` has to exist for ring 3 regardless" — and it did
+not, because ring 3 went through an interrupt gate rather than `syscall`
+(D-96), so `swapgs` was never needed and the module was never written. The
+claim was corrected before this entry was an hour old, which is the same
+defect class D-140 is about and is why that entry says a `SAFETY` comment
+naming the wrong reason passes review exactly as well as one naming the right
+one.
 
 And an OS that can schedule on two CPUs and still cannot open a file is worse
 than one that can open a file. Storage is what makes the machine a machine.
@@ -9467,10 +9477,20 @@ today than after the network stack has three more of them, and moving it is a
 mechanical change with no behaviour to get wrong while there is one CPU. The
 *races* stay unreproducible; the *structure* stops being owed.
 
+So the seam is **built**, not merely moved into: `arch::percpu` becomes a
+module holding one `PerCpu` block, with an accessor every caller goes through.
+On one processor the accessor returns the single instance. When an AP starts,
+the accessor reads `gs:` and **nothing else in the tree changes** — which is
+the entire value, and the reason it is worth doing before there is a second
+CPU rather than during.
+
 **Consequences.**
 
-- `LEAVES_HELD`, `SPINLOCKS_HELD` and the leaf-violation record move behind
-  `arch::percpu`. D-126's owed item is discharged structurally.
+- `arch::percpu` exists, holding `spinlocks_held`, `leaves_held` and the
+  leaf-violation record. Every caller goes through it. D-126's owed item is
+  discharged structurally.
+- The `gs:`-based accessor is **not** built, because there is nothing to point
+  it at. The seam is the module boundary, not the segment register.
 - The three races remain recorded and unreproducible. Their entries say so, and
   none of them is reachable.
 - Phase 12 inherits a smaller job: bring up an AP, and the state it needs is

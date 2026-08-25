@@ -113,8 +113,10 @@ pub fn silence() -> Result<(), PicError> {
     // and the flag is set between the two guards — so it is a preemption away
     // rather than SMP-only, and it is still not reachable. Making it race-free
     // buys a code path nothing on this machine can exercise, for a hazard that
-    // arrives with the second CPU. It belongs with D-56's per-CPU work,
-    // alongside `LEAVES_HELD` moving into `arch::percpu` (D-126, D-129).
+    // arrives with the second CPU, and belongs with D-56's per-CPU work. The
+    // structural half of that is paid — the counters live in `arch::percpu`
+    // since D-154 — but this race needs an actual second processor to be
+    // reachable, so it waits for Phase 12 (D-129).
     //
     // **Both or neither.** A claim is permanent, so taking `PRIMARY` and then
     // failing on `SECONDARY` stranded the first and no later caller could ever
