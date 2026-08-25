@@ -67,8 +67,9 @@ reference — not followed linearly). Docs are numbered in creation order.
    console back buffer; the I/O APIC, which retires the polled keyboard
    (D-37) and takes down D-33's wall; write-combining. KASLR is deferred to
    Phase 12 with its cost named (D-46). Guarding the boot and double-fault
-   stacks and moving to growable stacks remain Phase-5 work; memory objects
-   also move to Phase 5 with D-44's untyped decision.
+   stacks and moving to growable stacks were left to Phase 5 and done there
+   (D-89, D-92); memory objects moved there too, with D-44's untyped
+   decision.
    Slice table in `007-memory.md`*
 4. Multitasking — kernel threads, EEVDF-style scheduler, tickless idle
    ✅ (2026-08-23) — *threads and the naked switch, the EEVDF seam over
@@ -90,11 +91,16 @@ reference — not followed linearly). Docs are numbered in creation order.
    (D-110); a program born holding exactly one thing — a way to be spoken to
    (D-111); and the queue protocol **model-checked before the kernel
    implemented it** (D-112, D-113). Closed by a dated VMware boot and the
-   D-115 audit. 124 machine checks, 343 lines of `unsafe` in `wost` against a
-   budget of 380. The mlibc sysdep is written and analysed rather than
-   compiled: the toolchain wall is measured in D-114, and the finding — three
-   tags map, twelve need a door, one needs a namespace this design does not
-   have — is what D-74 asked the slice for. Slice table in `011-userspace.md`*
+   D-115 audit. 124 machine checks at the close, and 343 lines of `unsafe` in
+   `wost` against a budget of 380 — both have moved since, and
+   `xtask/src/unsafety.rs` holds the current one because a number in prose
+   cannot be checked. The mlibc sysdep is written and analysed rather than
+   compiled: the toolchain wall is measured in D-114, and the finding — a few
+   tags map, most need a ring-3 door to a mechanism the kernel already has,
+   and one needs a namespace this design does not have — is what D-74 asked
+   the slice for. The counts are in `userland/README.md`, where the gate
+   checks them against the sysdeps' own tags. Slice table in
+   `011-userspace.md`*
 6. VFS + storage — VFS over handles, tmpfs/devfs, and a **read-only
    third-party format** (FAT32 or ext2) over NVMe, so the block path and the
    buffer plumbing are honest at zero on-disk-write risk. WizFS is not here

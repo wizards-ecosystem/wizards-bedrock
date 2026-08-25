@@ -47,15 +47,23 @@ override that.
 
 ```
 cargo xtask ci       # the gate: fmt --check, clippy, doc, tests, vendor digests,
-                     #   then three boots — test-boot (release), test-boot
-                     #   (debug, overflow checks on), boot-check (D-65)
+                     #   then four boots — test-boot (release), test-boot
+                     #   (debug, overflow checks on), boot-check (D-65), and
+                     #   degraded-check (no x2apic, D-83)
 ```
 
-`ci` is the only gate — there is no hosted CI (D-26). Individual pieces:
-`cargo xtask fmt`, `cargo xtask clippy`, `cargo xtask doc`, `cargo xtask test`,
-`cargo xtask test-boot`, `cargo xtask boot-check`, `cargo xtask verify-vendor`,
-`cargo xtask clean [--all]`. `boot-check` boots the shipped kernel and requires
-it to settle at its prompt.
+`ci` is the only gate — there is no hosted CI (D-26). `cargo xtask help` lists
+every task and is the authority; a check requires this paragraph to name the
+same set, because a task the README does not mention is a task nobody runs.
+`boot-check` boots the shipped kernel and requires it to settle at its prompt;
+`degraded-check` boots it on a processor with no x2APIC and requires it to
+report that and settle rather than triple-fault.
+
+Three tasks are deliberately **not** in `ci`, each because it needs a tool this
+project cannot vendor into a Rust build: `model-check` (TLC, needs Java),
+`vmware` (needs VMware Workstation to boot the result), and `mutate` (one QEMU
+boot per known defect, which is minutes rather than seconds). A gate step that
+fails for want of a tool teaches people to skip the gate.
 
 `test` runs the host suite; `test-boot` boots a kernel built with the
 `selftest` feature headless in QEMU, injects a keystroke over QMP when the
