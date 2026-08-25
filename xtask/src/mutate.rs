@@ -138,6 +138,21 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "            crate::warn!(\"refused\");",
         breaks: "an unserved call does not log from trap context",
     },
+    // The dropping road no check can observe: those frames go to the
+    // allocator, and reading them again needs it to hand back the same ones.
+    // This is what covers it (D-123).
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "            if frames.zero() {",
+        replace: "            if false && frames.zero() {",
+        breaks: "a dropped user range is cleared before its frames go back",
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        if self.bound && released.is_none_or(|released| released.root() != self.root) {",
+        replace: "        if false && self.bound && released.is_none() {",
+        breaks: "a bound space is not reclaimed under its own thread",
+    },
 ];
 
 /// Apply each mutation, boot, and require something to go red.

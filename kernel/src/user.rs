@@ -650,9 +650,15 @@ fn reclaim(bootstrap: Bootstrap) -> Reclaimed {
     drop(table);
     drop(ring);
 
-    // Refused if these are the tables the CPU is walking, which is the one way
-    // this could be catastrophic rather than wrong.
-    let (tables, lost) = space.reclaim().unwrap_or((0, 0));
+    // The task table is asked whether anything still runs on these, and the
+    // answer is what `reclaim` takes. Refused if the CPU is walking them, or
+    // if a live slot still names them — the second being the case a `CR3`
+    // comparison cannot see (D-123).
+    let released = task::release_address_space(space.root());
+    // `None` means something still names it. The tables stay, which is a leak
+    // and not a fault — and the alternative is a `CR3` pointing at re-issued
+    // frames the next time that thread is scheduled.
+    let (tables, lost) = space.reclaim(released).unwrap_or((0, 0));
 
     Reclaimed {
         pages: unmapped,

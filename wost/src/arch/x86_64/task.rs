@@ -624,13 +624,67 @@ pub fn retire(slot: usize) -> Result<(), TaskError> {
 /// address it liked (D-115).
 pub fn address_space_of(slot: usize) -> Option<Root> {
     let saved = interrupt::disable();
-    let root = TABLE
-        .lock_leaf()
-        .slots
-        .get(slot)
-        .map_or(0, |slot| slot.page_table);
+    let root = TABLE.lock_leaf().slots.get(slot).map_or(0, |slot| {
+        // A dead slot's tables are nobody's. The question is which tables this
+        // *thread* runs on, and a thread that has exited runs on none — so
+        // reporting the last root it had is an answer about the past (D-123).
+        if slot.state == State::Alive {
+            slot.page_table
+        } else {
+            0
+        }
+    });
     saved.restore();
     (root != 0).then_some(Root(root))
+}
+
+/// Evidence that no live slot will be switched onto `root`.
+///
+/// Minted only by [`release_address_space`], which looks. A space is safe to
+/// reclaim when nothing names it, and "nothing names it" is a property of the
+/// *task table* — `AddressSpace` cannot see that, so it takes the answer
+/// rather than guessing at it with a `CR3` comparison that is true of one
+/// instant (D-123).
+#[derive(Debug)]
+pub struct Released {
+    root: u64,
+}
+
+impl Released {
+    /// The root nothing names.
+    pub const fn root(&self) -> u64 {
+        self.root
+    }
+}
+
+/// Give up `root`, if no live slot runs on it.
+///
+/// Clears the binding from every slot naming it — which are all dead by then —
+/// and hands back the evidence [`AddressSpace::reclaim`](super::paging::AddressSpace::reclaim) needs.
+///
+/// `None` if any **live** slot still names it, because that thread will be
+/// switched onto those tables and freeing them is a fault deferred to whenever
+/// it is next scheduled.
+pub fn release_address_space(root: u64) -> Option<Released> {
+    if root == 0 {
+        return None;
+    }
+    let saved = interrupt::disable();
+    let mut table = TABLE.lock_leaf();
+    let live = table
+        .slots
+        .iter()
+        .any(|slot| slot.state == State::Alive && slot.page_table == root);
+    if !live {
+        for slot in &mut table.slots {
+            if slot.page_table == root {
+                slot.page_table = 0;
+            }
+        }
+    }
+    drop(table);
+    saved.restore();
+    (!live).then_some(Released { root })
 }
 
 /// A page-table root this kernel installed.

@@ -20,6 +20,7 @@
 
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
+use x86_tables::exception;
 
 use x86_apic::Register;
 use x86_apic::base::{self, Base};
@@ -203,8 +204,21 @@ pub fn end_of_interrupt() {
 ///
 /// # Panics
 ///
-/// Panics if `vector` is below 16, which the APIC would refuse to deliver.
+/// Panics if `vector` is below 16, which the APIC would refuse to deliver, or
+/// if the CPU pushes an error code for it.
+///
+/// The second is not a nicety. The entry stubs push a synthetic zero error
+/// code exactly where the CPU does not, so a vector the CPU *would* have
+/// pushed for enters a stub that assumes one is there — and the frame is eight
+/// bytes out for the rest of its life. The tail's `add rsp, 16; iretq` then
+/// pops `CS` as `RIP`, and the ring-3 test reads the wrong slot. An APIC
+/// delivery pushes no error code whatever the vector means, so `self_interrupt`
+/// on 17 was a safe call into that state (D-123).
 pub fn send_self_interrupt(vector: u8) {
+    assert!(
+        !exception::pushes_error_code(vector),
+        "the cpu pushes an error code for this vector, and a delivered          interrupt does not"
+    );
     // The upper half of the command is the destination, which the self
     // shorthand makes irrelevant, so it is written as the zeros the
     // architecture reserves it to be. No wait for delivery afterwards: x2APIC
@@ -259,8 +273,13 @@ pub fn disarm_timer() {
 ///
 /// # Panics
 ///
-/// Panics if `vector` is below 16, which the APIC would refuse.
+/// Panics if `vector` is below 16, which the APIC would refuse, or if the CPU
+/// pushes an error code for it — see [`send_self_interrupt`] (D-123).
 pub fn set_timer_one_shot(vector: u8) {
+    assert!(
+        !exception::pushes_error_code(vector),
+        "the cpu pushes an error code for this vector, and a timer interrupt          does not"
+    );
     write(register::LVT_TIMER, Entry::one_shot(vector).bits().into());
 }
 

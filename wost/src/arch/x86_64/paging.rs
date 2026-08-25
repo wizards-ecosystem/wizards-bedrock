@@ -28,7 +28,7 @@
 //! [`AddressSpace::map_device`] refuses anything that is not a device hole.
 
 use core::fmt;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use stack_layout::{Slot, StackLayout};
 use x86_paging::{
@@ -37,7 +37,7 @@ use x86_paging::{
 };
 
 use super::cpu;
-use super::task::Root;
+use super::task::{Released, Root};
 use crate::mm::{self, Paddr, Segment, Shared, USegment};
 use crate::mmio::MmioRegion;
 use crate::sync::Once;
@@ -371,6 +371,11 @@ impl AddressSpace {
     ///
     /// [`MapError::NotYours`] for a range this space does not own outright.
     fn may_reach(&self, at: u64, len: u64) -> Result<(), MapError> {
+        // A reclaimed space has no tables. Mapping into one would walk frames
+        // the allocator has given to something else (D-123).
+        if self.is_reclaimed() {
+            return Err(MapError::NotYours(at));
+        }
         if self.reach == Reach::Everywhere {
             return Ok(());
         }
@@ -804,6 +809,7 @@ impl AddressSpace {
         // Preflight the whole range before clearing anything, so a refusal
         // leaves the space exactly as it was — the rule D-77 gave `map`.
         let mut first = None;
+        let mut was_user = false;
         for page in 0..pages {
             let address = virtual_base
                 .checked_add(page * PAGE_SIZE)
@@ -815,6 +821,10 @@ impl AddressSpace {
             if !entry.flags().contains(Flags::OWNED) {
                 return Err(MapError::NotOwned(address));
             }
+            // Any page ring 3 could reach makes the whole run untyped: a run
+            // is handed back as one thing, and one page of a program's bytes
+            // is a disclosure whatever the others held (D-123).
+            was_user |= entry.flags().contains(Flags::USER);
             match first {
                 None => first = Some(entry.address()),
                 Some(base) if entry.address() == base + page * PAGE_SIZE => {}
@@ -826,19 +836,22 @@ impl AddressSpace {
         for page in 0..pages {
             let address = virtual_base + page * PAGE_SIZE;
             let slot = self.leaf(address)?;
-            // SAFETY: as above, and the rollback established that this slot holds a
-            // present, owned, four-kilobyte mapping.
+            // SAFETY: as above, and the preflight above established that this
+            // slot holds a present, owned, four-kilobyte mapping. (It is a
+            // preflight; two SAFETY comments here called it a rollback, which
+            // is `map_range`'s different mechanism in a different function.)
             unsafe { slot.write_volatile(Entry::ABSENT) };
         }
 
         Ok(Unmapped {
             base: virtual_base,
             pages,
-            // SAFETY: the rollback proved these `pages` frames from `base`
+            // SAFETY: the preflight proved these `pages` frames from `base`
             // are one ascending run that a `map_owned` moved into this space
             // and that nothing else holds, and the entries naming them have
             // just been cleared.
             frames: Some(unsafe { Segment::from_raw(base, pages as usize) }),
+            was_user,
         })
     }
 
@@ -1121,18 +1134,36 @@ impl AddressSpace {
     /// unmapped first, or its frames go with the tables and are lost. The
     /// caller does that, because only it knows what it mapped.
     ///
-    /// Consuming, and it refuses if this space is the one the CPU is walking —
-    /// freeing the tables under `CR3` is a triple fault at the next memory
-    /// access, and it is exactly the mistake a reclaim path makes.
+    /// Consuming, and it refuses a space that is **bound** or that is the one
+    /// the CPU is walking. Freeing the tables under `CR3` is a triple fault at
+    /// the next memory access; freeing a bound space's is the same fault
+    /// deferred to whenever its thread is next scheduled, which is worse for
+    /// being harder to attribute.
     ///
-    /// Reports how many frames went back, and how many were never remembered.
+    /// So a space is reclaimed only after nothing names it — which for the one
+    /// caller means after the thread has retired and its slot has been given
+    /// back.
     ///
-    /// # Errors
-    ///
-    /// [`ActivateError::AlreadyActive`] if these are the tables in `CR3`.
-    pub fn reclaim(self) -> Result<(usize, usize), ActivateError> {
+    /// `None` on a refusal, with the space untouched — a refusal that consumed
+    /// the thing it declined to act on would leave a caller unable to try
+    /// again and would leak the tables it was protecting. On success the space
+    /// is *emptied*: [`is_reclaimed`](Self::is_reclaimed) is true and every
+    /// operation refuses, which is what replaces consuming it (D-123).
+    pub fn reclaim(&mut self, released: Option<Released>) -> Option<(usize, usize)> {
+        // A **bound** space has a thread that will be switched onto it —
+        // `prepare` loads the root unconditionally — so freeing its tables is
+        // a `CR3` pointing at re-issued frames whenever that thread is next
+        // scheduled. A `CR3` comparison catches only "these tables, right
+        // now", which a caller reaches by not being the thread in question.
+        //
+        // Whether anything still names it is a property of the *task table*,
+        // which this type cannot see. So it takes the answer: `Released` is
+        // minted by `task::release_address_space`, which looks (D-123).
+        if self.bound && released.is_none_or(|released| released.root() != self.root) {
+            return None;
+        }
         if cpu::page_table_base() == self.root {
-            return Err(ActivateError::AlreadyActive);
+            return None;
         }
 
         let mut returned = 0;
@@ -1147,7 +1178,24 @@ impl AddressSpace {
         // The root, which `new` took before there was anywhere to record it.
         // SAFETY: as above.
         drop(unsafe { mm::Frame::from_raw(self.root) });
-        Ok((returned + 1, self.tables_lost))
+        // Emptied rather than consumed, so every later operation on it
+        // refuses: a space whose tables are gone must not be mappable, and
+        // borrowing rather than consuming is what lets a *refusal* hand it
+        // back without a thousand-byte error variant (D-123).
+        let root = self.root;
+        self.root = 0;
+        self.tables_used = 0;
+        let _ = root;
+
+        Some((returned + 1, self.tables_lost))
+    }
+
+    /// Whether this space's tables have gone back to the allocator.
+    ///
+    /// A reclaimed space answers nothing and maps nothing. It is kept as a
+    /// value rather than consumed so a refused reclaim can give it back.
+    pub const fn is_reclaimed(&self) -> bool {
+        self.root == 0
     }
 }
 
@@ -1536,6 +1584,13 @@ pub struct Unmapped {
     base: u64,
     pages: u64,
     frames: Option<Segment>,
+    /// Whether ring 3 could reach these pages.
+    ///
+    /// The frames then hold a program's bytes, and handing them back as a
+    /// plain `Segment` is a second road out of the untyped discipline —
+    /// `USegment`'s own doc says `reclaim` is the only one, and `unmap`
+    /// checked `OWNED` and never `USER` (D-123).
+    was_user: bool,
 }
 
 impl Unmapped {
@@ -1543,9 +1598,35 @@ impl Unmapped {
     ///
     /// The order is the whole point: the cached translations go first, and
     /// only then does anything else become able to allocate these frames.
+    ///
+    /// **`None` for a range ring 3 could reach** — those come back through
+    /// [`USegment::reclaim`](crate::mm::USegment::reclaim), which zeroes. A `flush` that handed them
+    /// over as they stood was the one road back `USegment` exists to close,
+    /// open in the function every reclamation path calls (D-107, D-123).
     pub fn flush(mut self) -> Option<Segment> {
         self.invalidate();
+        if self.was_user {
+            return None;
+        }
         self.frames.take()
+    }
+
+    /// Invalidate, and hand back what ring 3 could reach, as untyped.
+    ///
+    /// The counterpart to [`flush`](Self::flush) for a user range. The type is
+    /// the point: what comes out holds a program's bytes, and the only way to
+    /// make it the kernel's again is [`USegment::reclaim`], which clears them.
+    pub fn take_user(mut self) -> Option<USegment> {
+        self.invalidate();
+        self.was_user
+            .then(|| self.frames.take())
+            .flatten()
+            .map(Into::into)
+    }
+
+    /// Whether ring 3 could reach the range this took away.
+    pub const fn was_user(&self) -> bool {
+        self.was_user
     }
 
     /// How many pages this took away.
@@ -1565,9 +1646,45 @@ impl Drop for Unmapped {
     /// Invalidate, then let the frames go back. A token that is simply dropped
     /// is as correct as one that is flushed; it just returns the frames to the
     /// allocator instead of to the caller.
+    ///
+    /// **A user range is cleared on the way.** This is the path reclamation
+    /// takes — `user::reclaim` drops its token rather than flushing it — so
+    /// dropping without clearing returned a dead program's pages to the
+    /// allocator holding its bytes. Nothing disclosed them, because every
+    /// consumer happens to zero on the way in; the mechanism `USegment`
+    /// names was simply not the one doing the work (D-107, D-123).
     fn drop(&mut self) {
         self.invalidate();
+        if self.was_user
+            && let Some(frames) = self.frames.as_mut()
+        {
+            // Nothing to do about a failure: the frames stay allocated rather
+            // than going back with a program's bytes in them, which is the
+            // safe half — a leak and not a disclosure.
+            if frames.zero() {
+                CLEARED_ON_DROP.fetch_add(frames.frames(), Ordering::Relaxed);
+            } else {
+                // Nothing to do about a failure: the frames stay allocated
+                // rather than going back with a program's bytes in them,
+                // which is the safe half — a leak and not a disclosure.
+                core::mem::forget(self.frames.take());
+            }
+        }
     }
+}
+
+/// User frames cleared on the way back to the allocator.
+///
+/// Counted because the dropping road is otherwise unobservable: those frames
+/// go to the allocator, and reading them again needs it to hand back the same
+/// ones, which it does not promise. A tally makes the line testable, which is
+/// what `cargo xtask mutate` reporting the mutation as a **survivor** said it
+/// was not (D-123).
+static CLEARED_ON_DROP: AtomicUsize = AtomicUsize::new(0);
+
+/// Frames cleared on their way back from a user mapping.
+pub fn cleared_on_drop() -> usize {
+    CLEARED_ON_DROP.load(Ordering::Acquire)
 }
 
 /// How large the pages of a mapping may be.

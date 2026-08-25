@@ -226,7 +226,11 @@ pub fn extended_state_is_enabled() -> bool {
 /// [`xstate::init`](super::xstate::init) has been made. A path that enabled
 /// and then refused would leave the register file shared between processes
 /// with nothing saving it (D-115).
-pub fn enable_extended_state() {
+///
+/// `pub(super)` for that reason: the ordering argument is about one call site,
+/// and a `pub` front door let any safe caller reach the state D-115 fixed
+/// inside `init` — which is the same defect one level out (D-123).
+pub(super) fn enable_extended_state() {
     /// `CR4.OSFXSR`: without it every SSE instruction is a `#UD`, whatever
     /// `XCR0` says. Setting `OSXSAVE` alone bought a fault, not a register.
     const CR4_OSFXSR: u64 = 1 << 9;

@@ -379,6 +379,17 @@ pub(crate) struct TrapSuspension {
 /// name its code selector — or if the generated stub table is not the size the
 /// indexing assumes.
 pub fn init(handler: Handler, user_gate: Option<u8>) {
+    // The third door to the same eight-byte frame shift as
+    // `apic::send_self_interrupt`: a gate on a vector the CPU pushes an error
+    // code for enters a stub that pushes a second one, and a *ring-3-callable*
+    // one at that. `int n` from ring 3 pushes no error code whatever `n`
+    // means, so the vector's meaning and the frame's shape disagree (D-123).
+    if let Some(vector) = user_gate {
+        assert!(
+            !exception::pushes_error_code(vector),
+            "a user gate on a vector the cpu pushes an error code for"
+        );
+    }
     if !INIT.claim() {
         return;
     }

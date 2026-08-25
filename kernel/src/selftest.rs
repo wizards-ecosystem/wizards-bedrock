@@ -1497,6 +1497,156 @@ fn set_another_thread_base() {
     BASE_INTRUDER_RAN.store(1, Ordering::Release);
 }
 
+/// A page ring 3 could reach comes back to the allocator cleared, whichever
+/// road it takes.
+///
+/// D-107 said `USegment::reclaim` was the only road back and that it zeroes.
+/// It was not: `unmap` checked `OWNED` and never `USER`, so it handed a
+/// program's pages over as a plain `Segment` — and the reclamation path takes
+/// exactly that road, dropping its token rather than flushing it. Nothing
+/// disclosed anything, because every consumer happens to zero on the way in;
+/// the mechanism named as the guarantee was simply not the one doing the work
+/// (D-123).
+fn a_user_page_comes_back_cleared() -> bool {
+    /// Two user addresses nothing else uses.
+    const FIRST: u64 = user::STACK + 0xA0_0000;
+    const SECOND: u64 = user::STACK + 0xA1_0000;
+    /// What a program would have left in the page.
+    const SECRET: [u8; 8] = [0xDE; 8];
+
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    let writable = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+
+    // One page, holding what a program would have left in it.
+    let Some(mut run) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if !run.zero() || !run.write_at(0, &SECRET) {
+        return false;
+    }
+    let address = run.address();
+    if space.map_user(FIRST, run.into(), writable).is_err() {
+        return false;
+    }
+
+    // It comes back untyped, and the only way to make it the kernel's again
+    // is a clearing one. Deterministic: the handle is followed the whole way
+    // rather than the allocator being asked for the frame back.
+    let Ok(unmapped) = space.unmap(FIRST, PAGE_SIZE) else {
+        return false;
+    };
+    let knows = unmapped.was_user();
+    let Some(untyped) = unmapped.take_user() else {
+        return false;
+    };
+    let Some(back) = untyped.reclaim() else {
+        return false;
+    };
+    let mut recovered = [0xFFu8; 8];
+    let cleared = back.address() == address
+        && back.read_at(0, &mut recovered)
+        && recovered == [0u8; 8]
+        && recovered != SECRET;
+    drop(back);
+
+    // And the kernel road is closed: `flush` hands a plain `Segment` over,
+    // and a user range is not one it may hand over.
+    let Some(mut other) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if !other.zero() {
+        return false;
+    }
+    if space.map_user(SECOND, other.into(), writable).is_err() {
+        return false;
+    }
+    let Ok(second) = space.unmap(SECOND, PAGE_SIZE) else {
+        return false;
+    };
+    let refused_as_kernel = second.flush().is_none();
+
+    // The **dropping** road — the one reclamation takes. Its frames go to the
+    // allocator, so reading them back needs it to hand the same ones over,
+    // which it does not promise; a conjunct conditional on that would be
+    // skipped on most boots. So the clear is *counted* instead, and the tally
+    // is what makes the line testable.
+    //
+    // I first claimed `cargo xtask mutate` covered this. It did not: removing
+    // the clear left every check green and the tool reported the mutation as a
+    // **survivor**, which is exactly what it is for (D-119, D-123).
+    let cleared_before = paging::cleared_on_drop();
+    let Some(mut third) = mm::allocate_contiguous(2, 1) else {
+        return false;
+    };
+    if !third.zero() {
+        return false;
+    }
+    if space
+        .map_user(SECOND + PAGE_SIZE * 4, third.into(), writable)
+        .is_err()
+    {
+        return false;
+    }
+    let Ok(dropped) = space.unmap(SECOND + PAGE_SIZE * 4, 2 * PAGE_SIZE) else {
+        return false;
+    };
+    drop(dropped);
+    let counted = paging::cleared_on_drop() == cleared_before + 2;
+
+    knows && cleared && refused_as_kernel && counted
+}
+
+/// A space a thread will be switched onto is not reclaimed, whatever `CR3`
+/// says at the moment of asking.
+///
+/// Freeing the tables under the register walking them is a triple fault at the
+/// next memory access. Freeing a **bound** space's is the same fault deferred
+/// to whenever its thread is next scheduled — worse for being harder to
+/// attribute, and reachable by a caller simply not being that thread. The
+/// `CR3` comparison alone catches only "these tables, right now" (D-123).
+///
+/// Whether anything still names a space is a property of the *task table*,
+/// which `AddressSpace` cannot see, so it takes the answer as evidence rather
+/// than guessing.
+fn a_bound_space_is_not_reclaimed() -> bool {
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    let root = space.root();
+    let Ok(binding) = space.bind() else {
+        return false;
+    };
+
+    // A thread to bind it to, which is what makes it un-reclaimable.
+    let Ok(slot) = thread::spawn_in_space("bound-space", leave_at_once, binding, |_| {}) else {
+        return false;
+    };
+
+    // Refused with no evidence, and refused with evidence for another space:
+    // the token names a root, and one minted for a different one is not an
+    // answer about this.
+    // The space comes back with the refusal, which is what lets the rest of
+    // this check happen at all — and is the reason `reclaim` reports its error
+    // that way.
+    // Refused, and the space is untouched — which is what lets the rest of
+    // this check happen at all.
+    let refused = space.reclaim(None).is_none() && !space.is_reclaimed();
+
+    // And once the thread is gone, the task table says so and the space comes
+    // back — so this is not simply "reclaim never works".
+    let gone = runs_until(500, || task::address_space_of(slot).is_none());
+    let released = task::release_address_space(root);
+    let had_evidence = released.is_some();
+    let reclaimed = space
+        .reclaim(released)
+        .is_some_and(|(tables, _)| tables > 0)
+        && space.is_reclaimed();
+
+    refused && gone && had_evidence && reclaimed
+}
+
 /// A program that has ended gives its memory back — its pages, its tables,
 /// and its slot.
 ///
@@ -3782,7 +3932,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 129;
+const EXPECTED_CHECKS: usize = 131;
 
 impl Report {
     const fn new() -> Self {
@@ -3953,6 +4103,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "thread local storage follows the thread",
         thread_local_storage_follows_the_thread(),
+    );
+    report.check(
+        "a bound space is not reclaimed",
+        a_bound_space_is_not_reclaimed(),
+    );
+    report.check(
+        "a user page comes back cleared",
+        a_user_page_comes_back_cleared(),
     );
     report.check(
         "a dead program gives its memory back",
