@@ -91,6 +91,16 @@ pub const GENERATIONS: u32 = 1 << GENERATION_BITS;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mixer(u32);
 
+/// What a table number is multiplied by to become a mixer.
+///
+/// The golden ratio scaled to thirty-two bits, and **odd**, which is the part
+/// that matters: an odd multiplier makes the map a bijection, so two table
+/// numbers cannot produce the same mixer before the reserved bits are cleared.
+const MULTIPLIER: u32 = 0x9E37_79B9;
+
+/// What is added after the multiply, so that table zero is not a fixed point.
+const ADDEND: u32 = 0x7F4A_7C15;
+
 impl Mixer {
     /// A mixer built from `seed`.
     ///
@@ -112,8 +122,20 @@ impl Mixer {
     /// so its handles were unmixed and its first one was the literal integer
     /// three (D-95). The odd constant is added *after* the multiply so that
     /// `id` zero is not a fixed point.
+    ///
+    /// **"Never" is now true.** The multiplier is odd, so the multiply is a
+    /// bijection over the whole range — which means exactly four `id`s land in
+    /// `0..=RESERVED`, and [`new`](Self::new) clears those to zero. Four out of
+    /// four billion, so no kernel counting tables would ever reach one; that is
+    /// also what was true of `Mixer(0)` until the day it was not (D-132).
     pub const fn for_table(id: u32) -> Self {
-        Self::new(id.wrapping_mul(0x9E37_79B9).wrapping_add(0x7F4A_7C15))
+        let mixed = Self::new(id.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND));
+        if mixed.is_identity() {
+            // The multiplier itself, which is odd and so survives the clearing.
+            Self::new(MULTIPLIER)
+        } else {
+            mixed
+        }
     }
 
     /// Whether this mixer actually mixes.
@@ -488,6 +510,69 @@ mod tests {
         // And decoding one in the other names something else, or nothing —
         // never the same slot.
         assert_ne!(Slot::decode(slot.encode(here), there), Some(slot));
+    }
+
+    /// **No table number gets a mixer that mixes nothing**, the four that
+    /// nearly did included.
+    ///
+    /// D-95 is the whole reason `for_table` exists: the kernel derived its own
+    /// mixer, got `Mixer(0)` for the first table, and every handle in it came
+    /// out unmixed. `is_identity` was written to ask exactly that question, and
+    /// **nothing called it** — nor did any test here call `for_table` at all,
+    /// so D-95's fix had a name for its property and no check of it.
+    ///
+    /// The doc said "never the identity" and the arithmetic said almost: the
+    /// multiplier is odd, so the map is a bijection, so exactly four `id`s land
+    /// in `0..=RESERVED` and `new` clears them to zero (D-132).
+    #[test]
+    fn no_table_number_gets_a_mixer_that_mixes_nothing() {
+        // The multiplier's inverse mod 2^32, by Newton's iteration: each step
+        // doubles the number of correct bits, so five reach thirty-two.
+        // Computed rather than written down — a constant here would only equal
+        // itself, which is what D-124 was about.
+        let mut inverse = MULTIPLIER;
+        for _ in 0..5 {
+            inverse = inverse.wrapping_mul(2u32.wrapping_sub(MULTIPLIER.wrapping_mul(inverse)));
+        }
+        assert_eq!(MULTIPLIER.wrapping_mul(inverse), 1, "not an inverse");
+
+        // The four table numbers whose product lands where `new` clears.
+        for cleared in 0..=RESERVED {
+            let id = cleared.wrapping_sub(ADDEND).wrapping_mul(inverse);
+            assert_eq!(
+                id.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND),
+                cleared,
+                "the inverse did not name the id landing on {cleared}"
+            );
+            assert!(
+                !Mixer::for_table(id).is_identity(),
+                "table {id} got a mixer that mixes nothing"
+            );
+        }
+
+        // And the ordinary ones, table zero — D-95's own — among them.
+        for id in 0..1024 {
+            assert!(!Mixer::for_table(id).is_identity(), "table {id}");
+        }
+    }
+
+    /// Two table numbers do not share a mixer, which is what the mixing is for.
+    ///
+    /// Only *nearly* true, and the bound is worth stating rather than
+    /// discovering: the multiply is a bijection, but `new` then clears two
+    /// bits, so mixers collide four ways. That is a property of the format and
+    /// not a fault — a table's identity is checked separately, and the mixer
+    /// only has to remove the accidental case (D-78).
+    #[test]
+    fn table_numbers_spread_across_mixers() {
+        let mut seen = Vec::new();
+        for id in 0..256 {
+            seen.push(Mixer::for_table(id).bits());
+        }
+        seen.sort_unstable();
+        let before = seen.len();
+        seen.dedup();
+        assert_eq!(seen.len(), before, "two table numbers shared a mixer");
     }
 
     /// A mixer cannot disturb the reserved bits, whatever seed it is given.

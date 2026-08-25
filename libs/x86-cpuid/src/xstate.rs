@@ -154,8 +154,15 @@ impl Layout {
 
     /// How many bytes a save area needs.
     ///
-    /// Never less than [`HEADER_BYTES`], because the legacy area and the
-    /// header are there whatever is enabled.
+    /// [`HEADER_BYTES`] or more for a layout that came out consistent, because
+    /// the legacy area and the header are there whatever is enabled — and
+    /// **zero for one that did not**, which is how an overflowing layout
+    /// reports itself rather than by aliasing two components. This said "never
+    /// less than [`HEADER_BYTES`]" two lines above the very function written to
+    /// catch that case (D-124, D-132), so a caller reading it would size an
+    /// allocator from a number this cannot promise. Ask
+    /// [`is_consistent`](Self::is_consistent) first; it is the invariant, and
+    /// this is only a number.
     pub const fn size(&self) -> usize {
         self.size
     }

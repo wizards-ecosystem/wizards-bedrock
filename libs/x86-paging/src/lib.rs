@@ -190,11 +190,6 @@ impl Flags {
         self.0 & other.0 == other.0
     }
 
-    /// Whether any flag in `other` is present here.
-    pub const fn intersects(self, other: Self) -> bool {
-        self.0 & other.0 != 0
-    }
-
     /// Whether this mapping is both writable and executable.
     ///
     /// The predicate W^X is the absence of. Named here rather than spelled out
