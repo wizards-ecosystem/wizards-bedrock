@@ -90,10 +90,12 @@ produce authority.
 Without it there are two delegation mechanisms with different powers: channels
 can move a handle and the ring cannot, so every authority-producing operation
 detours through a channel — two round trips and two mechanisms for one idea.
-The near prior art is io_uring's direct descriptors (`open_direct`,
-`accept_direct`), which install into a ring-private table; the model for the
-*capability* half is Zircon, where a channel message carrying handles is the
-ordinary case rather than an extension.
+The near prior art is io_uring's *direct descriptors* — `IORING_OP_ACCEPT`
+and `IORING_OP_OPENAT` with `sqe->file_index` set, installing into a
+ring-private table rather than the process's. (`accept_direct` and
+`open_direct` are liburing helpers; there are no such opcodes.) The model for
+the *capability* half is Zircon, where a channel message carrying handles is
+the ordinary case rather than an extension.
 
 ### C-3 — The filesystem has no root
 
@@ -244,12 +246,12 @@ each one names is the reason the answer is not obvious.
 
    **The receiver reserves it, at submission (D-151.)** The ring already
    admits by reservation (D-79), so this is the flow control it has rather
-   than a second one. The field converged here the hard way: io_uring's
-   `IORING_OP_ACCEPT` installed a descriptor at completion time and had to
-   grow *direct descriptors* — `ACCEPT_DIRECT` into a pre-registered slot —
-   because completion-time installation has no backpressure and exhausts the
-   table. Zircon's channels are the same shape: the receiver supplies the
-   handle array, so the space is committed before the message moves.
+   than a second one — and having refused io_uring's unbounded completion
+   backlog (`IORING_FEAT_NODROP`), completion-time installation has nowhere
+   to put a failure. Zircon's channels are the shape chosen here: the receiver
+   supplies the handle array, so the space is committed before the message
+   moves. D-151 records what the io_uring record actually says, which is not
+   what an earlier draft of this line claimed.
 3. **Is the time page per-program or global?** One shared read-only page is
    simplest; a per-program page is what a future that wants to virtualise time
    would need. Nothing needs the second today.

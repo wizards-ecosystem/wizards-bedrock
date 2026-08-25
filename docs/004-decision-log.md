@@ -9292,15 +9292,38 @@ handle installed at completion time can fail for a reason the submitter was
 never told about, and the ring then has two flow-control models — one for the
 completion, none for the authority it carries.
 
-**The field converged here the hard way, and that is the evidence worth
-recording.** io_uring's `IORING_OP_ACCEPT` returns a descriptor installed at
-completion time. It had to grow **direct descriptors** —
-`IORING_OP_ACCEPT_DIRECT`, placing into a slot the application pre-registered —
-precisely because completion-time installation has no backpressure and
-exhausts the descriptor table under load. That is option 1 failing in
-production and being replaced by option 2. Zircon is the same shape from the
-start: a channel read takes a caller-supplied handle array, so the space is
-committed before the message moves.
+**The io_uring evidence, corrected.** An earlier draft of this entry said
+io_uring grew "direct descriptors — `IORING_OP_ACCEPT_DIRECT`" *because*
+completion-time installation exhausted the descriptor table. A research pass
+checked it against the primary record and both halves were wrong.
+
+There is **no `IORING_OP_ACCEPT_DIRECT` opcode.** It is `IORING_OP_ACCEPT`
+with `sqe->file_index` set; `io_uring_prep_accept_direct()` is a liburing
+helper, not an ABI entry. And the merge argument was never exhaustion: Begunkov's
+5.15 cover letter, the `IORING_FILE_INDEX_ALLOC` commit message and
+`io_uring_registered_files(7)` all give **per-operation overhead and
+round-trips** — collapsing accept, register-update and close into one
+operation. None of them mentions backpressure or table limits.
+
+**The conclusion survives, on a better argument.** io_uring can install at
+completion time only because it has an escape this project has explicitly
+refused: `IORING_FEAT_NODROP` gives it an **unbounded kernel-side overflow
+backlog** for completions that will not fit. D-79 rejected exactly that in
+favour of RIO-style admission. Having refused the backlog, completion-time
+installation has nowhere to put a failure — so reservation is not a
+preference here, it is what the earlier decision already implies.
+
+Two observable symptoms in io_uring's own source support the reading.
+`io_accept_prep()` refuses multishot combined with a *specific* fixed slot,
+because one submission producing unbounded installs is the case that forces
+kernel-managed allocation. And `IORING_FILE_INDEX_ALLOC` still does not
+reserve at submission: it allocates at completion and reports `-ENFILE` in
+`cqe->res` when the range is full — a resource failure delivered at the one
+moment the submitter can no longer do anything about it.
+
+Zircon is the shape this entry chose, from the start: a channel read takes a
+caller-supplied handle array, so the space is committed before the message
+moves.
 
 Option 3's cost is two mechanisms and two round trips for one idea, and it
 does not avoid the decision — it moves it to whoever writes `open`.
