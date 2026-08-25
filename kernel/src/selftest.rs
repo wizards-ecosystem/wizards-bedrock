@@ -4313,7 +4313,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 139;
+const EXPECTED_CHECKS: usize = 141;
 
 impl Report {
     const fn new() -> Self {
@@ -4354,6 +4354,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a claimed port cannot be claimed twice",
         ports_are_exclusive(),
+    );
+    report.check(
+        "ring three has no fast-syscall door",
+        the_fast_syscall_doors_are_shut_by_this_kernel(),
+    );
+    report.check(
+        "a reclaimed space answers nothing",
+        a_reclaimed_space_answers_nothing(),
     );
     report.check(
         "a refused pair of claims strands neither",
@@ -4990,6 +4998,98 @@ fn channels_are_disjoint(geometry: FramebufferInfo) -> bool {
 /// refused — the whole block, and any single port inside it.
 fn ports_are_exclusive() -> bool {
     port::claim_block::<8>(uart::COM1).is_none() && port::claim::<u8>(uart::COM1).is_none()
+}
+
+/// `syscall` and `sysenter` are shut, **by this kernel**.
+///
+/// Observing that they are shut proves nothing: Limine leaves `EFER.SCE` clear
+/// and `IA32_SYSENTER_CS` is zero at reset, so the register reads shut on both
+/// test machines whether or not `enable_protections` ever wrote anything. The
+/// first version of this check asserted the state and stayed green with the
+/// write deleted (D-139).
+///
+/// So it is driven: open a door, confirm the reader sees it open, shut it
+/// through the kernel's own path, and confirm it closed. The middle step is
+/// what proves the reader is not simply answering `true`.
+///
+/// **What this does and does not establish.** The *shutting* is checked —
+/// break `shut_the_fast_syscall_doors` and the last conjunct goes red. Whether
+/// `enable_protections` **calls** it at boot is **not** falsifiable on either
+/// test machine, because Limine leaves `SCE` clear and `SYSENTER_CS` is zero
+/// at reset: `shut_at_boot` reads true with the call deleted. That conjunct is
+/// a statement about the machine the kernel booted on, not about the kernel,
+/// and it is kept because it is the thing a *different* firmware would break.
+/// Said plainly rather than left for the next audit to find (D-139).
+///
+/// Safe to open for those few instructions: no program can be entered in
+/// between — this runs on a kernel thread, and `enter_user` refuses while
+/// either door is open, so a failure here stops programs rather than exposing
+/// one.
+fn the_fast_syscall_doors_are_shut_by_this_kernel() -> bool {
+    let shut_at_boot = cpu::fast_syscall_doors_are_shut();
+
+    cpu::open_fast_syscall_doors_for_test();
+    let reader_sees_it = !cpu::fast_syscall_doors_are_shut();
+
+    cpu::shut_fast_syscall_doors();
+    let shut_again = cpu::fast_syscall_doors_are_shut();
+
+    shut_at_boot && reader_sees_it && shut_again
+}
+
+/// A reclaimed address space answers nothing and binds to nothing.
+///
+/// `is_reclaimed`'s own doc says "a reclaimed space answers nothing and maps
+/// nothing", and until D-139 only the *mapping* doors checked it. `reclaim`
+/// empties a space by setting `self.root = 0`, so `lookup` walked **physical
+/// frame zero** as a top-level table — any word there with bit 0 set sends the
+/// next level to an arbitrary address. `bind` read the same frame and then
+/// installed it.
+///
+/// And `reclaim` was not idempotent: a second call on a never-bound space
+/// reached `Frame::from_raw(0)` and handed frame zero to the allocator, which
+/// is plausibly the kernel's own top-level table.
+fn a_reclaimed_space_answers_nothing() -> bool {
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+
+    // Something to look up, so the `None` below is about the reclaim and not
+    // about an empty space.
+    let Some(mut page) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if !page.zero() {
+        return false;
+    }
+    let at = user::STACK + 0xB0_0000;
+    if space
+        .map_user(at, page.into(), Flags::WRITABLE.union(Flags::NO_EXECUTE))
+        .is_err()
+    {
+        return false;
+    }
+    let answered_before = space.lookup(at).is_some();
+
+    // Never bound, so this is the path the second call used to reach
+    // `Frame::from_raw(0)` on.
+    let reclaimed = space.reclaim(None).is_some();
+    let empty = space.is_reclaimed();
+
+    // **Counted, not observed.** Frame zero reads as zeros on both test
+    // machines, so an unguarded `lookup` walks it, finds nothing present, and
+    // returns the same `None` the guard returns — a check on the *answer* is
+    // green with the guard deleted. The tally lives inside each guard, so it
+    // cannot move without them (D-139).
+    let refusals = paging::reclaimed_refusals();
+
+    let silent = space.lookup(at).is_none();
+    let unbindable = matches!(space.bind(), Err(ActivateError::Reclaimed));
+    let once_only = space.reclaim(None).is_none();
+
+    let all_three_refused = paging::reclaimed_refusals() == refusals + 3;
+
+    answered_before && reclaimed && empty && silent && unbindable && once_only && all_three_refused
 }
 
 /// A refused pair of claims strands neither.

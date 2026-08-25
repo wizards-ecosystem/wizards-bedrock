@@ -14,6 +14,16 @@ use x86_cpuid::{SPEC_CTRL_MSR, Speculation};
 /// Extended feature enable register.
 const EFER: u32 = 0xC000_0080;
 
+/// `EFER` bit: enable `syscall`/`sysret`.
+///
+/// This kernel does not use them — ring 3 enters through one interrupt gate at
+/// DPL 3 (D-96) — and left set by the firmware it is a second door into ring 0
+/// that the kernel never chose. `LSTAR` would be whatever was there.
+const EFER_SYSCALL: u64 = 1 << 0;
+
+/// `IA32_SYSENTER_CS`. Zero makes `sysenter` fault, which is the shut state.
+const SYSENTER_CS: u32 = 0x174;
+
 /// `EFER` bit: honour the no-execute page bit rather than treating it as
 /// reserved.
 const EFER_NO_EXECUTE: u64 = 1 << 11;
@@ -276,7 +286,65 @@ pub fn enable_protections() -> Protections {
         unsafe { msr::write(EFER, msr::read(EFER) | EFER_NO_EXECUTE) };
     }
 
+    shut_the_fast_syscall_doors();
     Protections::enabled()
+}
+
+/// Close `syscall` and `sysenter`, which this kernel does not use.
+///
+/// **The IDT is not the only door into ring 0.** `vector::SYSCALL`'s doc says
+/// `0x80` is "the only gate in the table ring 3 may reach", and that is true of
+/// the *table*: `syscall` and `sysenter` are instructions, not vectors. Neither
+/// `EFER.SCE` nor `IA32_SYSENTER_CS` was ever read, cleared or asserted — the
+/// boot preserved whatever the firmware left, because the `EFER` write ORs a
+/// bit into what it read.
+///
+/// With either open, a ring-3 `syscall` transfers to ring 0 at `LSTAR` with no
+/// stack switch, at an address this kernel never chose. Limine leaves `SCE`
+/// clear and `SYSENTER_CS` is zero at reset, so nothing was reachable — which
+/// is the "a claim nothing enforces" shape D-124 and D-126 are about, and the
+/// reason this is a write rather than a comment (D-139).
+fn shut_the_fast_syscall_doors() {
+    // SAFETY: the only register named is `EFER`, and the only bit *removed*
+    // from what it already held is the one that enables an instruction this
+    // kernel never executes — no `syscall` or `sysret` appears in the tree.
+    unsafe { msr::write(EFER, msr::read(EFER) & !EFER_SYSCALL) };
+    // SAFETY: `IA32_SYSENTER_CS` selects the ring-0 code segment `sysenter`
+    // would enter through. Zero is the architectural shut state: `sysenter`
+    // with a null selector raises `#GP` rather than transferring.
+    unsafe { msr::write(SYSENTER_CS, 0) };
+}
+
+/// Open the fast-syscall doors, so a check can watch them be shut again.
+///
+/// Nothing in this kernel wants them open. It exists because the check for
+/// D-139 could not otherwise fail: Limine leaves `SCE` clear and
+/// `SYSENTER_CS` is zero at reset, so `fast_syscall_doors_are_shut` answers
+/// true whether or not the kernel ever wrote anything. Observing a state the
+/// firmware already arranged is not a check of the code that arranges it.
+///
+/// Paired with [`shut_fast_syscall_doors`] and used in one place, immediately.
+pub fn open_fast_syscall_doors_for_test() {
+    // SAFETY: sets the bit that enables an instruction this kernel never
+    // executes — no `syscall` or `sysret` appears in the tree — and the caller
+    // shuts it again in the next statement. Ring 3 cannot run in between:
+    // this is called from a kernel thread, and no program is entered until
+    // `enter_user`, which refuses while the door is open.
+    unsafe { msr::write(EFER, msr::read(EFER) | EFER_SYSCALL) };
+}
+
+/// Shut them again, for the same check.
+pub fn shut_fast_syscall_doors() {
+    shut_the_fast_syscall_doors();
+}
+
+/// Whether both fast-syscall doors are shut.
+///
+/// Read back from the registers rather than from a flag this module set, for
+/// the reason D-115 gives about `XCR0`: a Rust bool records that the write was
+/// attempted, and the question is what the CPU holds.
+pub fn fast_syscall_doors_are_shut() -> bool {
+    msr::read(EFER) & EFER_SYSCALL == 0 && msr::read(SYSENTER_CS) == 0
 }
 
 /// Whether this processor has a local advanced programmable interrupt

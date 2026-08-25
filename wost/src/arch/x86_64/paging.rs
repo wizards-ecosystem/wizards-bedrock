@@ -160,6 +160,9 @@ pub enum ActivateError {
     /// A second caller tried to switch. The kernel's address space is
     /// installed once.
     AlreadyActive,
+    /// The space's tables have gone back to the allocator, so it has no root
+    /// to install (D-139).
+    Reclaimed,
     /// The new tables do not map the code that would execute the switch.
     CodeUnmapped(u64),
     /// The new tables map the executing code without execute permission.
@@ -186,6 +189,7 @@ impl fmt::Display for ActivateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::AlreadyActive => f.write_str("an address space is already installed"),
+            Self::Reclaimed => f.write_str("the space has been reclaimed"),
             Self::CodeUnmapped(address) => {
                 write!(f, "the switch's own code at {address:#x} is unmapped")
             }
@@ -674,6 +678,15 @@ impl AddressSpace {
     /// one the CPU is using — which is the only way to ask anything about a
     /// space before it is installed.
     pub fn lookup(&self, virtual_address: u64) -> Option<(Paddr, Flags)> {
+        // A reclaimed space has no root: `reclaim` empties it by setting
+        // `self.root = 0`. Walking that reads **physical frame zero** as a
+        // top-level table, and any word there with bit 0 set sends the next
+        // level to an arbitrary fifty-two-bit address. `may_reach` has carried
+        // this guard since D-123; the two read-only doors did not (D-139).
+        if self.is_reclaimed() {
+            RECLAIMED_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
         translate_in(self.root, virtual_address)
     }
 
@@ -755,6 +768,12 @@ impl AddressSpace {
     pub fn bind(&mut self) -> Result<Binding, ActivateError> {
         if !is_active() || self.bound {
             return Err(ActivateError::AlreadyActive);
+        }
+        // As `lookup`: binding a reclaimed space would read frame zero as its
+        // top-level table, and then install it (D-139).
+        if self.is_reclaimed() {
+            RECLAIMED_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            return Err(ActivateError::Reclaimed);
         }
         if self.reach != Reach::UserHalfOnly {
             return Err(ActivateError::NotAUserSpace);
@@ -1166,6 +1185,16 @@ impl AddressSpace {
         // Whether anything still names it is a property of the *task table*,
         // which this type cannot see. So it takes the answer: `Released` is
         // minted by `task::release_address_space`, which looks (D-123).
+        // Idempotent, because it is not: a second call on a never-bound space
+        // reached `Frame::from_raw(0)` and handed **frame zero** to the
+        // allocator — safe code violating that function's stated contract, and
+        // frame zero is plausibly the kernel's own top-level table, since
+        // nothing excludes it and the allocator's first-fit hint starts there
+        // (D-139).
+        if self.is_reclaimed() {
+            RECLAIMED_REFUSALS.fetch_add(1, Ordering::Relaxed);
+            return None;
+        }
         if self.bound && released.is_none_or(|released| released.root() != self.root) {
             return None;
         }
@@ -1204,6 +1233,22 @@ impl AddressSpace {
     pub const fn is_reclaimed(&self) -> bool {
         self.root == 0
     }
+}
+
+/// Doors refused because the space had been reclaimed.
+///
+/// Counted **inside** each guard, so removing one cannot move it. Without the
+/// tally the check for D-139 could not fail: physical frame zero reads as
+/// zeros on both test machines, so an unguarded `lookup` walks it, finds no
+/// present entry, and returns the same `None` the guard returns. A check
+/// asserting the answer would have been green with the guard deleted — which
+/// is the shape D-124 exists for, and it was written into the same commit that
+/// fixed four of them.
+static RECLAIMED_REFUSALS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many doors have refused a reclaimed space.
+pub fn reclaimed_refusals() -> usize {
+    RECLAIMED_REFUSALS.load(Ordering::Acquire)
 }
 
 /// A pointer to one entry of the table at `table`.

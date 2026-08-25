@@ -29,7 +29,8 @@ use anyhow::{Context, Result};
 /// reporting (D-126), and the four constructions behind `claim_pair` and
 /// `claim_block_pair` — two `Port::new` and two `PortBlock::new`, each sound
 /// for the reason the single-port doors are, over one all-or-none reservation
-/// instead of two (D-138).
+/// instead of two (D-138) — and three MSR writes that shut `syscall` and
+/// `sysenter` and re-open one for the check that watches them shut (D-139).
 ///
 /// Phase 5 added the most unsafe of any phase so far — ring 3, the extended
 /// state, the address space that grows — which is why this is where the number
@@ -47,7 +48,7 @@ pub const BUDGET: usize = 380;
 /// is the truth — so the measurement is recorded beside it and checked, which
 /// makes drift toward the ceiling visible rather than something a reader
 /// infers from a comment that may be a phase out of date.
-pub const MEASURED: usize = 360;
+pub const MEASURED: usize = 363;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///

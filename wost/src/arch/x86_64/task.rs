@@ -791,6 +791,9 @@ pub enum UserError {
     /// No ring-0 stack is set, so a trap out of ring 3 would have nowhere to
     /// land.
     NoKernelStack,
+    /// `syscall` or `sysenter` is still enabled — a second door into ring 0
+    /// that this kernel does not use and did not choose (D-139).
+    FastSyscallOpen,
 }
 
 impl fmt::Display for UserError {
@@ -803,6 +806,7 @@ impl fmt::Display for UserError {
             Self::StackNotWritable(at) => write!(f, "{at:#x} is not writable from ring 3"),
             Self::StackMisaligned(at) => write!(f, "{at:#x} is not sixteen-byte aligned"),
             Self::NoKernelStack => f.write_str("no ring-0 stack is set for traps from ring 3"),
+            Self::FastSyscallOpen => f.write_str("syscall or sysenter is still enabled"),
         }
     }
 }
@@ -829,6 +833,14 @@ impl core::error::Error for UserError {}
 pub fn enter_user(entry: u64, stack_top: u64) -> UserError {
     if !paging::is_active() {
         return UserError::Inactive;
+    }
+    // Checked here and not only at boot: this is the last instruction before a
+    // program runs, and the claim being defended is about what *that* program
+    // can reach. `cpu::enable_protections` shuts both doors; asking again
+    // costs two MSR reads once per program, and makes the claim a property of
+    // the crossing rather than of the boot (D-139).
+    if !cpu::fast_syscall_doors_are_shut() {
+        return UserError::FastSyscallOpen;
     }
     match paging::translate(entry) {
         Some((_, flags)) if flags.contains(Flags::USER) && !flags.contains(Flags::NO_EXECUTE) => {}
