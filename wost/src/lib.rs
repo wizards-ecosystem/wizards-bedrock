@@ -6,6 +6,12 @@
 
 // `wost` is the exception the workspace default exists to make visible: the
 // deny lives in `Cargo.toml`, and this is the one place it is lifted (D-67).
+//
+// `allow` and not `expect`, deliberately, where D-131 converted every other
+// suppression in this crate. An `expect` here would assert that `wost`
+// *contains* unsafe; the rule is that `wost` is the only crate that **may**.
+// A refactor that emptied it would be the framekernel's best day and would
+// fail this build.
 #![allow(unsafe_code)]
 #![no_std]
 

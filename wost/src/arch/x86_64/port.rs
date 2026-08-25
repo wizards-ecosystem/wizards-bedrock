@@ -73,8 +73,6 @@ pub(crate) fn force_unlock(panic: &PanicToken) {
 }
 
 mod sealed {
-    #![allow(unreachable_pub)]
-
     pub trait Sealed {}
 }
 

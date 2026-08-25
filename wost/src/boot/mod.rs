@@ -671,6 +671,16 @@ pub mod __macro {
 /// The `#[allow(unsafe_code)]` attributes are what let the calling crate carry
 /// `#![deny(unsafe_code)]`; they cover `wost`-authored code that merely expands
 /// there, which is why that crate uses `deny` rather than `forbid`.
+///
+/// **`allow` and not `expect`, and the reason is a limit of the tool rather
+/// than a choice.** D-131 converted every other suppression in this crate so
+/// that one which stopped being needed would fail the build. These ten cannot
+/// be: `unfulfilled_lint_expectations` does not fire for an attribute inside a
+/// macro expansion. It was measured rather than assumed — an
+/// `#[expect(non_snake_case)]` added here, which nothing could possibly
+/// fulfil, is reported by nothing. So an `expect` here would read as checked
+/// and be exactly as unfalsifiable as the `allow` it replaced, which is worse
+/// than the `allow` (D-131).
 #[macro_export]
 macro_rules! entry {
     ($path:path) => {

@@ -6,7 +6,7 @@
 /// input stack converts other buses' codes *to* this enum; inventing a
 /// numeric usage-code scheme before a second producer exists would be
 /// speculative API.
-#[allow(missing_docs)] // the names are the documentation
+#[expect(missing_docs)] // the names are the documentation
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {

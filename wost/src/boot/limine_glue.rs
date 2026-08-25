@@ -122,7 +122,7 @@ fn take_rsdp(request: &'static RsdpRequest) -> Result<u64, HandoffError> {
 /// request types do not implement it, and a hand-written impl here would print
 /// the addresses of static requests, which is not information anyone wants and
 /// is exactly what a KASLR ledger would rather not see in a log.
-#[allow(missing_debug_implementations)]
+#[expect(missing_debug_implementations)]
 #[derive(Clone, Copy)]
 pub struct Requests {
     /// The protocol revision the kernel asked for.
