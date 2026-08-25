@@ -621,6 +621,7 @@ dependencies = [
  "handle-space",
  "noto-sans-mono-bitmap",
  "ps2-keys",
+ "ring-proto",
  "stack-layout",
  "timebase",
  "trap-cause",

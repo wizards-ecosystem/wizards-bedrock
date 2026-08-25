@@ -40,7 +40,15 @@ use crate::time::{self, NANOSECONDS_PER_MS};
 pub(crate) const STACK_SLOTS: usize = 16;
 
 /// Bytes of stack per thread.
-const STACK_BYTES: u64 = 16 * 1024;
+///
+/// Thirty-two kilobytes since D-113. Sixteen was enough until `spawn` grew:
+/// building a process moves an `AddressSpace` — eight hundred bytes of device
+/// table — through several frames, and a debug build elides none of the
+/// copies. The overflow showed up as a double fault on a *guard page*, in the
+/// debug boot D-65 added for exactly this class, which is the whole
+/// arrangement working: an unguarded stack would have written into its
+/// neighbour and been found much later, by something else (D-52, D-89).
+const STACK_BYTES: u64 = 32 * 1024;
 
 /// Bytes of unmapped gap below each stack.
 const GUARD_BYTES: u64 = 4096;

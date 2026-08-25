@@ -29,7 +29,7 @@ use x86_paging::{Flags, PAGE_SIZE};
 
 use crate::handle::{HandleError, HandleTable};
 use crate::object::{self, ObjectRef, ObjectType};
-use crate::{info, thread, warn};
+use crate::{info, queue, thread, warn};
 
 /// Where the first user program's page of code goes.
 ///
@@ -40,6 +40,13 @@ pub(crate) const CODE: u64 = 0x0000_4000_0000_0000;
 
 /// Where its stack goes, well away from the code so a run-off hits nothing.
 pub(crate) const STACK: u64 = 0x0000_3000_0000_0000;
+
+/// Where its ring's shared pages go.
+///
+/// Every program gets one at the same address in its own space, which is what
+/// having a space of its own buys: a fixed ABI address costs nothing when no
+/// two programs share a table (D-113).
+pub(crate) const RING: u64 = 0x0000_2000_0000_0000;
 
 /// How far apart two programs' pages sit *within* their own spaces.
 ///
@@ -352,6 +359,9 @@ static LAUNCHES: SpinLock<[Option<Launch>; thread::CAPACITY]> =
 /// whole power, so "one entry" is the strongest form the claim has (D-111).
 struct Bootstrap {
     table: HandleTable,
+    /// Its ring. Held here because the shared pages are the kernel's and must
+    /// outlive the mapping that shows them to the program (D-113).
+    ring: queue::Queue,
     /// The one handle. Kept so a check can ask what it names rather than
     /// inferring it from the count.
     handle: u32,
@@ -387,6 +397,13 @@ pub(crate) fn bootstrap_of(slot: usize) -> Option<(usize, ObjectType)> {
     Some((bootstrap.table.live(), kind))
 }
 
+/// What a spawned program's ring says it is, for the check that reads it.
+#[cfg(feature = "selftest")]
+pub(crate) fn ring_shape_of(slot: usize) -> Option<(u32, u32, u32)> {
+    let guard = BOOTSTRAPS.lock_leaf();
+    Some(guard.get(slot)?.as_ref()?.ring.shape_for_test())
+}
+
 /// Why a program could not be started.
 #[derive(Debug)]
 pub(crate) enum SpawnError {
@@ -402,6 +419,8 @@ pub(crate) enum SpawnError {
     NoThread(thread::SpawnError),
     /// Its bootstrap channel could not be put in its table.
     NoBootstrap(HandleError),
+    /// No memory for its ring.
+    NoRing,
 }
 
 impl fmt::Display for SpawnError {
@@ -413,6 +432,7 @@ impl fmt::Display for SpawnError {
             Self::NotBindable(error) => write!(f, "the space cannot be installed: {error}"),
             Self::NoThread(error) => write!(f, "no thread: {error}"),
             Self::NoBootstrap(error) => write!(f, "no bootstrap channel: {error}"),
+            Self::NoRing => f.write_str("no memory for a ring"),
         }
     }
 }
@@ -438,6 +458,16 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     let mut space = AddressSpace::for_user().map_err(SpawnError::NoSpace)?;
     let entry = load(&mut space, which * APART).map_err(SpawnError::Load)?;
     let stack = place_stack(&mut space, which).ok_or(SpawnError::NoStack)?;
+
+    // Its ring, at the same address every program's is — which is what having
+    // a space of its own buys. The pages stay the kernel's: `map_shared`
+    // writes no owned bit, so a program cannot free the memory a completion
+    // will be written into (D-113). Mapped before the binding, because the
+    // binding consumes the space.
+    let ring = queue::Queue::new().ok_or(SpawnError::NoRing)?;
+    ring.install(&mut space, RING)
+        .map_err(SpawnError::NoSpace)?;
+
     let root = space.root();
     let binding = space.bind().map_err(SpawnError::NotBindable)?;
 
@@ -453,7 +483,11 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
         )
         .map_err(SpawnError::NoBootstrap)?;
 
-    let mut bootstrap = Some(Bootstrap { table, handle });
+    let mut bootstrap = Some(Bootstrap {
+        table,
+        handle,
+        ring,
+    });
     let slot = thread::spawn_in_space(name, cross, binding, |slot| {
         *LAUNCHES
             .lock_leaf()

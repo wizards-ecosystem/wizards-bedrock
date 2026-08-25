@@ -507,6 +507,42 @@ impl AddressSpace {
         self.map_run(virtual_base, run.into_inner(), flags.union(Flags::USER))
     }
 
+    /// Map a run ring 3 may reach, **without** taking it.
+    ///
+    /// The frames stay the caller's: nothing here writes `OWNED`, so `unmap`
+    /// refuses this range and the space can never hand these frames to the
+    /// allocator. That is the whole difference from
+    /// [`map_user`](Self::map_user), and it is what a shared ring needs — the
+    /// kernel keeps the pages and writes them through the direct map while
+    /// ring 3 reads them through these entries (D-113).
+    ///
+    /// # The obligation this cannot enforce
+    ///
+    /// `run` must outlive the mapping. An address space has no `Drop` and a
+    /// `USegment` does, so a run freed while a space still maps it would leave
+    /// ring 3 holding memory the allocator has given away. Nothing in the type
+    /// system says so here; the one caller keeps the run for the life of the
+    /// object that owns the mapping, and that is where the property lives.
+    ///
+    /// # Errors
+    ///
+    /// As [`map_user`](Self::map_user).
+    pub fn map_shared(
+        &mut self,
+        virtual_base: u64,
+        run: &USegment,
+        flags: Flags,
+    ) -> Result<(), MapError> {
+        self.may_reach(virtual_base, run.len())?;
+        self.map_range(
+            virtual_base,
+            run.address(),
+            run.len(),
+            flags.difference(NOT_THE_CALLERS).union(Flags::USER),
+            Grain::Pages,
+        )
+    }
+
     fn map_run(&mut self, virtual_base: u64, run: Segment, flags: Flags) -> Result<(), MapError> {
         self.may_reach(virtual_base, run.len())?;
         // The owned bit is what `unmap` reads to know these frames are the
@@ -1183,6 +1219,20 @@ pub fn translate(virtual_address: u64) -> Option<(Paddr, Flags)> {
 }
 
 /// Walk `root` for `virtual_address`, returning the frame and the leaf's flags.
+/// What the tables at `root` map `virtual_address` to.
+///
+/// Reads a space the CPU is *not* on, which is the only way to ask what a
+/// program's own tables say from a kernel thread — since D-106 no program is
+/// in the running space, so [`translate`] cannot answer for one.
+///
+/// Read-only, and the walk is the same one `translate` uses, so it reports the
+/// effective permission rather than the leaf's opinion (D-103). Not gated
+/// behind a feature because `wost` has none: adding one would add a pass to
+/// the gate's configuration matrix (D-22) for a function that reads.
+pub fn translate_in_root(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags)> {
+    translate_in(root, virtual_address)
+}
+
 fn translate_in(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags)> {
     walk(root, virtual_address).map(|(physical, flags, _)| (physical, flags))
 }

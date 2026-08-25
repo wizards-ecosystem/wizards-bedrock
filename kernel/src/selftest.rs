@@ -23,7 +23,7 @@ use handle_space::Rights;
 use wost::arch::current::cpu::{self, Protections};
 use wost::arch::current::paging::{self, ActivateError, AddressSpace, BootRegion, MapError};
 use wost::arch::current::usercopy::{self, UserCopyError};
-use wost::arch::current::{apic, interrupt, pic, port, segment, xstate};
+use wost::arch::current::{apic, interrupt, pic, port, segment, task, xstate};
 use wost::boot::{self, FramebufferInfo, Rgb};
 use wost::mm;
 use wost::sync::{Once, SpinLock};
@@ -36,6 +36,7 @@ use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
 use crate::handle::{HandleError, HandleTable};
 use crate::object::{self, ObjectRef, ObjectType};
+use crate::queue;
 use crate::thread::ThreadContext;
 use crate::user;
 use crate::{dev, error, info, input, mem, thread, time};
@@ -1021,6 +1022,290 @@ fn bytes_cross_the_boundary_only_where_they_may() -> bool {
         && read_only_refused
 }
 
+/// A ring that has reported everything it can admits nothing more until
+/// userspace reaps, and then admits again.
+///
+/// Backpressure, closed end to end. Admission reserves a completion slot, a
+/// completion fills it, and only userspace moving its own head gives the room
+/// back — which is the whole reason the completion queue's head is a number
+/// the *program* writes. A kernel that reclaimed the slot itself would be
+/// reporting into entries a program had not read (D-79, D-113).
+///
+/// The head is read from the snapshot rather than the page for the same reason
+/// everything else here is: once, and never re-read.
+fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let (_, submissions, completions) = queue.shape_for_test();
+
+    // Fill the completion queue by serving as many rounds as it holds.
+    let mut posted = 0u32;
+    while posted < completions {
+        let admitted = queue.admit(submissions as usize);
+        if admitted == 0 {
+            break;
+        }
+        for slot in 0..admitted {
+            queue.post_submission_for_test(
+                slot,
+                queue::Submission {
+                    opcode: queue::Opcode::Echo,
+                    token: posted,
+                    argument: u64::from(posted),
+                },
+            );
+        }
+        queue.publish_tail_for_test(posted + admitted as u32);
+        let served = queue.serve();
+        if served != admitted {
+            return false;
+        }
+        posted += served as u32;
+    }
+
+    // Nothing has been reaped, so nothing more can be admitted: every slot is
+    // either spoken for or already holds a completion.
+    let refuses = queue.admit(1) == 0 && queue.is_consistent();
+
+    // Userspace reaps *some* of them, and the kernel gives back exactly that
+    // much. Reaping everything would be the kernel deciding a program had read
+    // entries it had not, which is the failure this bound exists for — and a
+    // check that reaped the lot could not tell the two apart.
+    let head_before = queue.completion_head();
+    let partial = posted / 2;
+    queue.publish_completion_head_for_test(partial);
+    let reaped = queue.reap_up_to(queue.completion_head());
+    let followed = head_before == 0 && reaped == partial as usize;
+
+    // Room for exactly what was reaped, and no more.
+    let resumes = queue.admit(partial as usize) == partial as usize
+        && queue.admit(1) == 0
+        && queue.is_consistent();
+
+    posted > 0 && partial > 0 && refuses && followed && resumes
+}
+
+/// A ring says what shape it is, and its pages are the process's to read and
+/// not to free.
+///
+/// The ABI's first field is a version, which is IoRing's improvement over
+/// io_uring: a ring that cannot say what shape it is cannot be extended
+/// without guessing (D-79). The pages are **kernel-allocated and kernel-kept**
+/// — `map_shared` writes no `OWNED` bit, so a program that unmapped them could
+/// not free the memory the kernel is about to write a completion into (D-113).
+fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
+    /// A user address nothing else uses.
+    const AT: u64 = user::STACK + 0x60_0000;
+
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let (version, submissions, completions) = queue.shape_for_test();
+    let announced = version == ring_proto::VERSION
+        && submissions.is_power_of_two()
+        && completions.is_power_of_two()
+        // Windows requires this of RIO, and D-79 adopted it: the slack is what
+        // keeps admission from stalling on a consumer that is merely slow.
+        && completions >= 2 * submissions;
+
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    if queue.install(&mut space, AT).is_err() {
+        return false;
+    }
+
+    // Ring 3 can reach them.
+    let reachable = space
+        .lookup(AT)
+        .is_some_and(|(_, flags)| flags.contains(Flags::USER) && flags.contains(Flags::WRITABLE));
+
+    // And cannot give them away. `unmap` reads the owned bit before minting a
+    // `Segment`, and these frames were never the space's to own.
+    let unowned = matches!(space.unmap(AT, PAGE_SIZE), Err(MapError::NotOwned(AT)));
+
+    announced && reachable && unowned
+}
+
+/// Every submission gets exactly one completion, and it is the one it asked
+/// for.
+///
+/// D-79's terminal-completion rule, driven through the shared page rather than
+/// through a function call — the page is the boundary and the call is not. An
+/// opcode the kernel does not serve is refused **with** a completion rather
+/// than ignored, which is the same rule seen from the only angle that could
+/// break it.
+fn every_submission_gets_exactly_one_completion() -> bool {
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+
+    // Three operations: one served, one served differently, one refused.
+    let asked = [
+        queue::Submission {
+            opcode: queue::Opcode::Echo,
+            token: 0x1111,
+            argument: 0xDEAD_BEEF,
+        },
+        queue::Submission {
+            opcode: queue::Opcode::Uptime,
+            token: 0x2222,
+            argument: 0,
+        },
+        queue::Submission {
+            opcode: queue::Opcode::Unknown(0xFFFF),
+            token: 0x3333,
+            argument: 0,
+        },
+    ];
+
+    if queue.admit(asked.len()) != asked.len() {
+        return false;
+    }
+    for (slot, submission) in asked.iter().enumerate() {
+        queue.post_submission_for_test(slot, *submission);
+    }
+    queue.publish_tail_for_test(asked.len() as u32);
+
+    let served = queue.serve();
+    // Exactly one each, and no more: a second call finds nothing left.
+    let once = served == asked.len() && queue.serve() == 0;
+    let accounted = queue.outstanding() == 0 && queue.is_consistent();
+
+    let echo = queue.read_completion_for_test(0);
+    let uptime = queue.read_completion_for_test(1);
+    let refused = queue.read_completion_for_test(2);
+
+    let matched = echo.token == 0x1111
+        && echo.status == queue::STATUS_OK
+        && echo.value == 0xDEAD_BEEF
+        && uptime.token == 0x2222
+        && uptime.status == queue::STATUS_OK
+        && refused.token == 0x3333
+        // Refused *with* a completion, which is the rule: an operation the
+        // kernel will not serve still reports, or a caller waits for ever.
+        && refused.status == queue::STATUS_UNKNOWN_OPCODE;
+
+    once && accounted && matched
+}
+
+/// The completion queue cannot overflow, because admission refuses first.
+///
+/// D-79's structural claim and D-112's headline invariant, on the kernel's own
+/// accounting: a submission reserves its completion slot *before* it is
+/// accepted, so work is declined rather than reported nowhere. io_uring's
+/// `CQ_NODROP` instead takes an unbounded kernel-memory liability for a
+/// program that never reaps.
+fn admission_refuses_before_the_completion_queue_can_overflow() -> bool {
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let (_, submissions, completions) = queue.shape_for_test();
+
+    // Ask for far more than either queue holds.
+    let wanted = (completions as usize) * 4;
+    let admitted = queue.admit(wanted);
+
+    // Bounded by the submission queue, which is the tighter of the two here,
+    // and never by nothing.
+    let bounded = admitted > 0 && admitted <= submissions as usize;
+    let refused = admitted < wanted;
+    let consistent = queue.is_consistent();
+
+    // And a full ring admits nothing more until something reports.
+    let full_refuses = queue.admit(1) == 0;
+
+    bounded && refused && consistent && full_refuses
+}
+
+/// A submission rewritten after the kernel has taken it does not change what
+/// the kernel does with it.
+///
+/// The copy-out-once rule (D-79). CVE-2025-39816 is literally "always use
+/// `READ_ONCE()` to read ring pointers", and a double fetch is how a validated
+/// value becomes a different value before it is used. The pages here are ones
+/// ring 3 can rewrite at any moment, so this rewrites one at the only moment
+/// that matters — after the kernel has served it — and asks whether the
+/// completion already posted moved.
+///
+/// It also asks the question the rewrite cannot: **admitting is not
+/// publishing**. Reserving room for three and writing one must serve one, or
+/// the kernel reports completions for entries that are still whatever the page
+/// happened to hold.
+fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+
+    if queue.admit(1) != 1 {
+        return false;
+    }
+    queue.post_submission_for_test(
+        0,
+        queue::Submission {
+            opcode: queue::Opcode::Echo,
+            token: 0xABCD,
+            argument: 0x0F0F_0F0F,
+        },
+    );
+    queue.publish_tail_for_test(1);
+    if queue.serve() != 1 {
+        return false;
+    }
+    let posted = queue.read_completion_for_test(0);
+
+    // Ring 3 rewrites the entry it already submitted, as a hostile program
+    // would the instant it saw the head move.
+    queue.post_submission_for_test(
+        0,
+        queue::Submission {
+            opcode: queue::Opcode::Unknown(0xDEAD),
+            token: 0xBAAD,
+            argument: 0xFFFF_FFFF,
+        },
+    );
+
+    // The completion is what it was: the kernel worked from its copy.
+    let unchanged = queue.read_completion_for_test(0) == posted
+        && posted.token == 0xABCD
+        && posted.value == 0x0F0F_0F0F;
+
+    // And a tail moved backwards or run away does not walk the kernel through
+    // slots nothing was written into.
+    queue.publish_tail_for_test(u32::MAX);
+    let runaway_bounded = queue.serve() == 0;
+
+    // The case the runaway tail cannot show, because the kernel's own ring is
+    // empty by then: **admitting is not publishing.** A program may ask for
+    // room for three and write only one, and the kernel must serve one — the
+    // reservation says where a completion *can* go, and the tail says what is
+    // actually there. Serving the difference would report completions for
+    // entries that are still whatever the page held.
+    let Some(partial) = queue::Queue::new() else {
+        return false;
+    };
+    if partial.admit(3) != 3 {
+        return false;
+    }
+    partial.post_submission_for_test(
+        0,
+        queue::Submission {
+            opcode: queue::Opcode::Echo,
+            token: 0x5150,
+            argument: 7,
+        },
+    );
+    partial.publish_tail_for_test(1);
+    let only_published = partial.serve() == 1;
+    let one_reported = partial.read_completion_for_test(0).token == 0x5150;
+    // The other two reservations are still held, because their operations
+    // were never posted.
+    let still_reserved = partial.outstanding() == 2 && partial.is_consistent();
+
+    unchanged && runaway_bounded && only_published && one_reported && still_reserved
+}
+
 /// A freshly spawned program holds exactly one handle, and it is a channel.
 ///
 /// `002`'s pillar 1, converted from a sentence into a check (D-111): *a
@@ -1046,6 +1331,17 @@ fn a_spawned_program_holds_exactly_one_handle() -> bool {
     let exactly_one = entries == 1;
     let a_channel = kind == object::ObjectType::Channel;
 
+    // And a ring, at the address every program's is, readable by it. The
+    // handle is the process's authority; the ring is its data path, and both
+    // are in place before its first instruction (D-113).
+    let has_a_ring =
+        user::ring_shape_of(spawned.slot).is_some_and(|(version, submissions, completions)| {
+            version == ring_proto::VERSION && completions >= 2 * submissions
+        });
+    let mapped = task::address_space_of(spawned.slot) != 0
+        && paging::translate_in_root(task::address_space_of(spawned.slot), user::RING)
+            .is_some_and(|(_, flags)| flags.contains(Flags::USER));
+
     // The parent's end is live and is the far side of the child's: a message
     // put in here is one the child could read, which is what makes it a
     // bootstrap rather than a decoration.
@@ -1056,7 +1352,7 @@ fn a_spawned_program_holds_exactly_one_handle() -> bool {
     let usable =
         object::Message::new(b"hello, child").is_ok_and(|message| ours.send(message).is_ok());
 
-    exactly_one && a_channel && paired && usable
+    exactly_one && a_channel && has_a_ring && mapped && paired && usable
 }
 
 /// Bytes sent down one end of a channel come out of the other, once.
@@ -3077,7 +3373,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 119;
+const EXPECTED_CHECKS: usize = 124;
 
 impl Report {
     const fn new() -> Self {
@@ -3184,6 +3480,26 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a vector register survives a switch",
         a_vector_register_survives_a_switch(),
+    );
+    report.check(
+        "a ring announces its shape and keeps its pages",
+        a_ring_announces_its_shape_and_keeps_its_pages(),
+    );
+    report.check(
+        "every submission gets exactly one completion",
+        every_submission_gets_exactly_one_completion(),
+    );
+    report.check(
+        "admission refuses before the completion queue can overflow",
+        admission_refuses_before_the_completion_queue_can_overflow(),
+    );
+    report.check(
+        "a full ring admits again only after userspace reaps",
+        a_full_ring_admits_again_only_after_userspace_reaps(),
+    );
+    report.check(
+        "a rewritten submission cannot change what was served",
+        a_rewritten_submission_cannot_change_what_was_served(),
     );
     report.check(
         "a message crosses a channel and is gone",

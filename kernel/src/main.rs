@@ -31,6 +31,8 @@ mod mem;
 mod object;
 mod panic;
 #[cfg(feature = "selftest")]
+mod queue;
+#[cfg(feature = "selftest")]
 mod selftest;
 mod theme;
 mod thread;

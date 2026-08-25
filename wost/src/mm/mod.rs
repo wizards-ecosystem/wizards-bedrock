@@ -542,6 +542,28 @@ impl USegment {
         self.0.is_empty()
     }
 
+    /// Write `bytes` at `offset` within the run.
+    ///
+    /// The kernel's side of a page ring 3 also has. Publishing into one is
+    /// what a shared ring is made of, and it is safe in the sense that
+    /// matters: these are the kernel's frames and the write goes through the
+    /// direct map, so nothing ring 3 does can make it reach elsewhere. What
+    /// ring 3 *reads* afterwards is its own business (D-113).
+    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
+        self.0.write_at(offset, bytes)
+    }
+
+    /// Read `into.len()` bytes from `offset` within the run.
+    ///
+    /// **Every byte read here is ring 3's.** `Segment::read_at` is deliberately
+    /// not reachable through this type for any other purpose; this exists
+    /// because a shared ring's whole job is to read what userspace wrote, and
+    /// the rule is that the copy is validated *after* it is taken and never
+    /// re-read (D-79, CVE-2025-39816).
+    pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
+        self.0.read_at(offset, into)
+    }
+
     /// Take the run back for the kernel, with every byte cleared.
     ///
     /// The zeroing is the conversion, not a courtesy attached to it: what
