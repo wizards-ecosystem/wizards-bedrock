@@ -150,6 +150,33 @@ impl AccessRange {
 mod tests {
     use super::*;
 
+    /// An access range reports the three numbers it was built from.
+    ///
+    /// `offset()` was asserted by nothing — the one test that looked at it
+    /// compared against a struct literal from this same module, which is a
+    /// definition restated. `{ self.end }` survived, and `wost/src/mmio.rs`
+    /// starts its write loop at `offset()` under three `// SAFETY:` comments
+    /// citing this type (D-136).
+    #[test]
+    fn an_access_range_reports_its_own_offset_length_and_end() {
+        const REGION: usize = 0x1000;
+        const OFFSET: usize = 0x40;
+        const COUNT: usize = 4;
+        const WIDTH: usize = 4;
+        const LEN: usize = COUNT * WIDTH;
+
+        let range = AccessRange::repeated(OFFSET, COUNT, WIDTH, REGION).expect("inside the region");
+
+        assert_eq!(range.offset(), OFFSET, "offset() gave something else");
+        assert_eq!(range.len(), LEN, "len() gave something else");
+        assert_eq!(range.end(), OFFSET + LEN, "end() is not offset plus len");
+        // The three are pairwise distinct here, so no accessor can stand in
+        // for another and pass.
+        assert_ne!(range.offset(), range.len());
+        assert_ne!(range.offset(), range.end());
+        assert_ne!(range.len(), range.end());
+    }
+
     #[test]
     fn an_exactly_bounded_span_is_accepted() {
         assert_eq!(

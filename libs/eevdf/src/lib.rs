@@ -255,6 +255,48 @@ mod tests {
 
     const SLICE: u64 = 30;
 
+    /// A thread that has overrun its slice has none of it left.
+    ///
+    /// Every test that looked like it covered this landed the thread
+    /// *exactly* on its deadline, where `wrapping_sub` gives zero anyway. Run
+    /// one past, and deleting the `slice_is_spent` guard survives the suite —
+    /// `deadline.wrapping_sub(vruntime)` then wraps to near `u64::MAX`, and
+    /// `kernel/src/thread.rs` arms the tickless timer with it. The thread is
+    /// never preempted again (D-136).
+    #[test]
+    fn a_thread_past_its_deadline_has_no_slice_left() {
+        const SLICE: u64 = 3_000_000;
+
+        let mut entity = Entity::new(BASE_WEIGHT);
+        entity.place(0, 0, SLICE);
+        assert!(!entity.slice_is_spent(), "a fresh slice is not spent");
+        assert_eq!(
+            entity.remaining_slice(),
+            SLICE,
+            "a fresh slice has all of itself left"
+        );
+
+        // Exactly on the deadline: the boundary the old tests reached.
+        entity.charge(SLICE);
+        assert!(entity.slice_is_spent());
+        assert_eq!(entity.remaining_slice(), 0, "spent exactly is spent");
+
+        // And **past** it, which is where the wrap lives. A tick of overrun is
+        // ordinary: a thread is charged when it is descheduled, not when its
+        // deadline passes.
+        entity.charge(SLICE / 2);
+        assert!(entity.slice_is_spent(), "still spent after overrunning");
+        assert_eq!(
+            entity.remaining_slice(),
+            0,
+            "an overrun slice reported time remaining, which arms the timer far away"
+        );
+
+        // Well past, at a spread that would wrap to most of the ring.
+        entity.charge(SLICE * 1000);
+        assert_eq!(entity.remaining_slice(), 0, "a long overrun is still zero");
+    }
+
     #[test]
     fn ordering_survives_a_wrap() {
         assert!(before(0, 1));

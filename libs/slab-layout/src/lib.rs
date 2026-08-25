@@ -197,6 +197,31 @@ mod tests {
         place(size, align).expect("valid test alignment")
     }
 
+    /// A size class reports the free list it uses, and the bytes follow it.
+    ///
+    /// `index()` was read back by no test: `{ self.index + 1 }` survived the
+    /// suite. `wost/src/mm/heap.rs` indexes `self.free[class.index()]` with
+    /// it, so the largest class would have run off the end of the array —
+    /// a panic inside the allocator (D-136).
+    #[test]
+    fn a_size_class_reports_its_own_index_and_bytes() {
+        // Every class, against the arithmetic the type documents rather than
+        // against itself: class `i` is the `i`th list and holds `MIN_CLASS <<
+        // i` bytes.
+        for index in 0..CLASSES {
+            let class = SizeClass::from_index(index).expect("a class that exists");
+            assert_eq!(class.index(), index, "class {index} reports another index");
+            assert_eq!(
+                class.bytes(),
+                MIN_CLASS << index,
+                "class {index} holds the wrong slot size"
+            );
+        }
+        // And there is no class past the last, so `index()` can never be used
+        // to reach beyond the free-list array.
+        assert!(SizeClass::from_index(CLASSES).is_none());
+    }
+
     #[test]
     fn classes_are_powers_of_two_from_sixteen_to_two_thousand_and_forty_eight() {
         let sizes: Vec<_> = (0..CLASSES)

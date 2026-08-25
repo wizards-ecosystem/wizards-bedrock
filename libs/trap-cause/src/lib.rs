@@ -314,6 +314,85 @@ mod tests {
     /// knowing their own vector made this true by construction; a decode can
     /// get it wrong, and a fault report naming the wrong exception is the kind
     /// of error that costs an afternoon.
+    /// Every vector decodes to the variant the architecture assigns it.
+    ///
+    /// **Transcribed from SDM Vol. 3A table 6-1**, not derived. The two tests
+    /// that look like they cover this — `every_vector_decodes_and_reports_its_own_number`
+    /// and `a_faults_name_is_its_vectors_name` — both route through the same
+    /// mapping in both directions, so a *consistent permutation* of `decode`
+    /// and `Fault::vector` satisfies them: swap `6 => InvalidOpcode` with
+    /// `18 => MachineCheck` in both and every test stays green.
+    ///
+    /// That is not cosmetic. `kernel/src/arch/x86_64/trap.rs` decides whether
+    /// a fault is the program's to die of by matching on the *variant*, so
+    /// under that swap a ring-3 `ud2` arrives as `MachineCheck` and panics the
+    /// machine instead of retiring the thread — an unprivileged halt, from a
+    /// permutation nothing could see (D-136).
+    ///
+    /// Only `Breakpoint` and `PageFault` were pinned to a number before this.
+    #[test]
+    fn every_fault_sits_on_the_vector_the_manual_gives_it() {
+        // SDM Vol. 3A, table 6-1. The numbers are the architecture's, so they
+        // are written out rather than referred to.
+        let pairs: [(u8, Fault); 21] = [
+            (0, Fault::DivideError),
+            (1, Fault::Debug),
+            (2, Fault::NonMaskable),
+            (3, Fault::Breakpoint),
+            (4, Fault::Overflow),
+            (5, Fault::BoundRange),
+            (6, Fault::InvalidOpcode),
+            (7, Fault::DeviceNotAvailable),
+            (8, Fault::DoubleFault),
+            (10, Fault::InvalidTaskState),
+            (11, Fault::SegmentNotPresent),
+            (12, Fault::StackSegment),
+            (13, Fault::GeneralProtection),
+            (16, Fault::X87FloatingPoint),
+            (17, Fault::AlignmentCheck),
+            (18, Fault::MachineCheck),
+            (19, Fault::SimdFloatingPoint),
+            (20, Fault::Virtualisation),
+            (21, Fault::ControlProtection),
+            (28, Fault::HypervisorInjection),
+            (29, Fault::VmmCommunication),
+        ];
+
+        for (vector, fault) in pairs {
+            // Both directions, against the literal rather than each other.
+            assert_eq!(
+                fault.vector(),
+                vector,
+                "{fault:?} does not sit on vector {vector}"
+            );
+            assert_eq!(
+                TrapCause::decode(vector, 0),
+                TrapCause::Fault(fault),
+                "vector {vector} does not decode to {fault:?}"
+            );
+        }
+
+        // The two the table above cannot spell: 14 carries an error code, and
+        // 30 is the last architectural vector.
+        let TrapCause::Fault(page_fault) = TrapCause::decode(14, 0) else {
+            panic!("vector 14 is the page fault");
+        };
+        assert_eq!(page_fault.vector(), 14);
+        assert!(matches!(page_fault, Fault::PageFault(_)));
+        assert_eq!(Fault::Security.vector(), 30);
+        assert_eq!(TrapCause::decode(30, 0), TrapCause::Fault(Fault::Security));
+
+        // And the gaps stay gaps: 9, 15, 22..=27 are reserved, and 31 is the
+        // last of them. A variant appearing on one of these would mean the
+        // table above had been renumbered around it.
+        for reserved in [9u8, 15, 22, 23, 24, 25, 26, 27, 31] {
+            assert!(
+                matches!(TrapCause::decode(reserved, 0), TrapCause::Reserved(_)),
+                "vector {reserved} is reserved and decoded as something else"
+            );
+        }
+    }
+
     #[test]
     fn every_vector_decodes_and_reports_its_own_number() {
         for vector in 0..=u8::MAX {

@@ -371,6 +371,40 @@ mod tests {
     ///
     /// Everything else here rests on this, and a silent overlap would make two
     /// different slots encode to one handle.
+    /// A decoded slot's accessors give back the fields they name.
+    ///
+    /// `generation()` was pinned; `index()` was read by nothing. Derived
+    /// equality compares fields rather than accessors, so
+    /// `fn index(self) -> u32 { self.generation }` passed every test in this
+    /// crate — and `kernel/src/handle.rs` indexes the arena with it, so every
+    /// handle would have resolved to whichever slot the generation happened to
+    /// name, with the generation check still passing (D-136).
+    #[test]
+    fn a_decoded_slot_reports_the_index_and_generation_it_holds() {
+        // Distinct, and neither zero: equal values would let one accessor
+        // stand in for the other, which is the defect being tested for.
+        const INDEX: u32 = 37;
+        const GENERATION: u32 = 1234;
+
+        let mixer = Mixer::for_table(9);
+        let handle = Slot::new(INDEX, GENERATION)
+            .expect("inside the arena")
+            .encode(mixer);
+        let decoded = Slot::decode(handle, mixer).expect("round trips");
+
+        assert_eq!(decoded.index(), INDEX, "index() gave something else");
+        assert_eq!(
+            decoded.generation(),
+            GENERATION,
+            "generation() gave something else"
+        );
+        assert_ne!(
+            decoded.index(),
+            decoded.generation(),
+            "the two accessors return the same field"
+        );
+    }
+
     #[test]
     fn the_widths_tile_the_word() {
         // Transcribed, because the three assertions below are definitions:
