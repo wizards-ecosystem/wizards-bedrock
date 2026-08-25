@@ -340,9 +340,13 @@ impl Channel {
     ///
     /// # Errors
     ///
-    /// [`ChannelError::PeerClosed`] if the other end is gone,
-    /// [`ChannelError::Full`] at [`DEPTH`](Self::DEPTH), and
-    /// [`ChannelError::OutOfMemory`].
+    /// [`ChannelError::PeerClosed`] if the other end is gone, and
+    /// [`ChannelError::Full`] at [`DEPTH`](Self::DEPTH).
+    ///
+    /// **Not `OutOfMemory`**, which this listed and cannot return: the inbox
+    /// is reserved to `DEPTH` at construction precisely so `push_back` never
+    /// reaches the allocator under a leaf guard, and the comment three lines
+    /// into the body already said so (D-145).
     pub(crate) fn send(&self, message: Message) -> Result<(), ChannelError> {
         let peer = self
             .peer
@@ -394,7 +398,13 @@ impl Channel {
                 return Some(message);
             }
             if self.is_orphaned() {
-                return None;
+                // **Drained again, not simply refused.** The take above and
+                // this test are two separate lock acquisitions with interrupts
+                // on between them, so a peer can send *and then* close in the
+                // window — and returning `None` there loses a message that is
+                // sitting in the queue, while the doc says `None` means the
+                // far end closed with nothing left to read (D-145).
+                return self.receive();
             }
             self.waiters
                 .wait_unless(context, || self.has_message() || self.is_orphaned());

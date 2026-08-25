@@ -4313,7 +4313,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 144;
+const EXPECTED_CHECKS: usize = 145;
 
 impl Report {
     const fn new() -> Self {
@@ -4354,6 +4354,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a claimed port cannot be claimed twice",
         ports_are_exclusive(),
+    );
+    report.check(
+        "a closed channel still yields what it was sent",
+        a_closed_channel_still_yields_what_it_was_sent(),
     );
     report.check(
         "a save stays inside its area",
@@ -5017,6 +5021,51 @@ fn channels_are_disjoint(geometry: FramebufferInfo) -> bool {
 /// refused — the whole block, and any single port inside it.
 fn ports_are_exclusive() -> bool {
     port::claim_block::<8>(uart::COM1).is_none() && port::claim::<u8>(uart::COM1).is_none()
+}
+
+/// A closed channel still yields what it was sent.
+///
+/// `receive_blocking`'s doc says `None` means "the far end closed with nothing
+/// left to read". It tested emptiness and orphanhood in two separate lock
+/// acquisitions with interrupts on between them, so a peer that sent *and
+/// then* closed in that window got `None` with its message sitting in the
+/// queue — a lost message, reported as a clean close (D-145).
+///
+/// **What this pins is the ordering, not the window.** Draining before
+/// refusing goes red here — test orphanhood first and the message is lost.
+/// The window itself is not reproduced and cannot be single-threaded: it needs
+/// a send to land *between* two lock acquisitions, so the fixed line is
+/// reachable only from a second thread. Removing that line alone leaves this
+/// green, because the take at the top of the loop finds the message. Stated
+/// rather than implied (D-145).
+fn a_closed_channel_still_yields_what_it_was_sent() -> bool {
+    let Some((near, far)) = object::channel() else {
+        return false;
+    };
+    let Some(channel) = near.as_channel() else {
+        return false;
+    };
+
+    // Sent, then the peer closed. Both orderings of the fix's concern end in
+    // this state: orphaned, with a message.
+    let Some(peer) = far.as_channel() else {
+        return false;
+    };
+    let Ok(message) = object::Message::new(b"last words") else {
+        return false;
+    };
+    if peer.send(message).is_err() {
+        return false;
+    }
+    drop(far);
+
+    let orphaned = channel.is_orphaned();
+    let mut context = context();
+    let yielded = channel.receive_blocking(&mut context).is_some();
+    // And now it really is empty, so the second answer is the honest `None`.
+    let then_closed = channel.receive_blocking(&mut context).is_none();
+
+    orphaned && yielded && then_closed
 }
 
 /// A save writes only inside the area the kernel sized for it.

@@ -3,8 +3,10 @@
 //! Where the line is routed the handler does the draining (D-49); where it is
 //! not, a thread of its own sleeps ten milliseconds at a time and does it in
 //! between (D-37, D-57). Either way every pending byte is pulled through the
-//! decoder and each completed event is queued for a reader, which is woken if
-//! one is waiting (D-61).
+//! decoder, and each completed event is queued for a reader **if the queue has
+//! room** — sixteen deep, and a keystroke arriving at a full one is dropped
+//! and counted rather than queued (D-145). A reader is woken if one is
+//! waiting (D-61).
 //!
 //! Nothing here draws or logs: both are the reading thread's, which is what
 //! keeps a console scroll off every other interrupt's latency path (D-63).
@@ -349,11 +351,22 @@ pub(crate) fn scancode_set() -> Option<u8> {
 /// Doubly bounded: a deadline on the clock for the honest case, and an
 /// iteration cap so a dead clock converts the wait into a red check rather
 /// than a hang. The harness kills the run at sixty seconds regardless.
+///
+/// **Triply, since D-145.** The drain inside each pass was a `while let` over
+/// `next_event`, which refreshes its own byte budget on every call — so a
+/// partially wedged controller that keeps a byte latched with its status bit
+/// set spins there for ever, with `KEYBOARD`'s guard held, under a doc
+/// claiming two bounds neither of which reached it. The drain now takes a cap
+/// of its own.
 #[cfg(feature = "selftest")]
 pub(crate) fn await_key(key: Key) -> bool {
     /// Ten seconds — generous, because injection crosses a process, a socket,
     /// and an emulated bus.
     const WAIT_MS: u64 = 10_000;
+    /// Events one pass may pull before yielding the guard. Two batches' worth,
+    /// so an honest burst is never split, and finite whatever the controller
+    /// does.
+    const DRAIN_PER_PASS: usize = 2 * BATCH;
     /// Each spin is a lock and a status read — bus transactions — so this is
     /// seconds' worth: the bound a dead clock falls back on.
     const WAIT_SPINS: u32 = 2_000_000;
@@ -381,7 +394,16 @@ pub(crate) fn await_key(key: Key) -> bool {
         let Some(keyboard) = guard.as_mut() else {
             return false;
         };
+        // Bounded like everything else that waits on hardware here. A batch
+        // is what one pass may pull; a controller with more than this to say
+        // gets the next pass, and one that never stops saying it does not get
+        // the loop (D-145).
+        let mut drained = 0;
         while let Some(event) = keyboard.next_event() {
+            drained += 1;
+            if drained > DRAIN_PER_PASS {
+                break;
+            }
             if event.key != key {
                 continue;
             }

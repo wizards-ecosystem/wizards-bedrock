@@ -297,7 +297,8 @@ impl<'a> Elf<'a> {
     ///
     /// # Errors
     ///
-    /// See [`ElfError`].
+    /// See [`ElfError`] — including [`ElfError::WrongMachine`], which this
+    /// checks and this block did not name (D-145).
     pub fn parse(bytes: &'a [u8]) -> Result<Self, ElfError> {
         let header = take(bytes, 0, HEADER_BYTES)?;
         if header.get(..4) != Some(&MAGIC) {
