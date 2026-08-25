@@ -113,6 +113,22 @@ pub fn recover(frame: &interrupt::TrapFrame) -> bool {
     interrupt::resume_at(frame, fixup)
 }
 
+/// The instruction range a user copy can fault inside.
+///
+/// Exported for one check, which spawns a ring-3 thread that jumps here. That
+/// fault must retire the program rather than be *recovered*: the recovery arm
+/// runs before the ring-3 test and until D-126 never looked at the saved `CS`,
+/// so a program could aim `RIP` at this range and have the kernel resume it at
+/// the fixup. Knowing the range is not authority — ring 3 cannot execute
+/// kernel memory, which is the point — and a check that hardcoded the address
+/// would be checking a number rather than the window.
+pub fn fault_window() -> (u64, u64) {
+    (
+        core::ptr::addr_of!(wost_copy_fault_start) as u64,
+        core::ptr::addr_of!(wost_copy_fault_end) as u64,
+    )
+}
+
 /// Why a copy across the boundary was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]

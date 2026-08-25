@@ -507,6 +507,52 @@ fn a_faulting_program_dies_alone() -> bool {
     from_user && it_was_the_ud2 && in_user_memory && retired
 }
 
+/// A program aiming `RIP` into the kernel's user-copy window is retired, not
+/// resumed.
+///
+/// The recovery arm runs **before** the ring-3 test — it has to, because the
+/// fault it exists for is taken in ring 0 with the kernel dereferencing — and
+/// until D-126 it never looked at the saved `CS`. So a ring-3 thread that
+/// jumped into `[wost_copy_fault_start, wost_copy_fault_end)` had its
+/// instruction-fetch fault "recovered": `resume_at` rewrote `RIP` to the
+/// fixup with `CS` still ring 3, it faulted again there, and only then was
+/// retired. Not an escalation and not a halt, but a program could drive the
+/// recovery counter at will, and the arm's own comment claimed a privilege
+/// nothing enforced.
+///
+/// Driven by a real ring-3 thread rather than a synthesised frame, because a
+/// synthesised one would be the kernel asserting about its own arithmetic. The
+/// address is asked of `wost` rather than written down: a hardcoded one would
+/// check a number, not the window.
+fn a_program_cannot_aim_at_the_copy_window() -> bool {
+    let recoveries_before = trap::user_copy_recoveries();
+    let faults_before = trap::last_user_fault().count;
+    let retirements_before = thread::retirements();
+
+    if user::run_into_the_copy_window().is_err() {
+        return false;
+    }
+    if !runs_until(2000, || trap::last_user_fault().count > faults_before) {
+        return false;
+    }
+
+    let fault = trap::last_user_fault();
+    let (start, end) = usercopy::fault_window();
+
+    // From ring 3, which is what makes this the case the arm must refuse.
+    let from_user = fault.code_selector & 0b11 == 3;
+    // And the thread went, rather than being resumed at the fixup.
+    let retired = runs_until(500, || thread::retirements() > retirements_before);
+    // The counter did not move: nothing was recovered.
+    let not_recovered = trap::user_copy_recoveries() == recoveries_before;
+    // And the window is a real range, so the conjunct above is about
+    // something — a `fault_window` returning an empty range would make the
+    // whole check pass with the arm deleted.
+    let real_window = start < end;
+
+    from_user && retired && not_recovered && real_window
+}
+
 /// Two programs at the same address see different memory.
 ///
 /// The isolation claim, stated the strongest way the machine allows: two
@@ -3558,6 +3604,38 @@ fn registers_survive_a_switch() -> bool {
     boot_survived && exited && CHURN_VERDICT.load(Ordering::Acquire) == 1
 }
 
+/// Nothing acquired a second lock while a leaf guard was live.
+///
+/// `lock_leaf`'s whole obligation is one sentence — **nothing is called while
+/// this guard is live** — and a second acquisition is a call. The asymmetry
+/// matters and the first version of this check got it backwards: a leaf taken
+/// *under* a token-bearing lock is the design, and is what makes D-47's
+/// `HEAP` → `FRAMES` order sound and what lets `Segment::drop` reach the
+/// allocator from wherever it dies. It is the other direction that is the
+/// violation.
+///
+/// Nothing checked it, and `pic::silence` was in breach: it held
+/// `CONTROLLERS`' leaf guard and claimed ports under it, which takes
+/// `CLAIMED`'s — establishing a `CONTROLLERS → CLAIMED` order nothing else in
+/// the kernel knew about, which is the kind that closes a cycle later (D-121,
+/// D-124).
+///
+/// Reports *where*, because a boolean here would send the next reader looking
+/// through every `lock_leaf` in the tree — which is how this one was found,
+/// and it took an instrumented boot.
+fn a_leaf_guard_is_the_last_lock() -> bool {
+    match wost::sync::taken_under_a_leaf() {
+        None => true,
+        Some(at) => {
+            match wost::sync::the_leaf_it_was_under() {
+                Some(leaf) => error!("{at} took a lock under the leaf guard at {leaf}"),
+                None => error!("a lock was taken under a leaf guard at {at}"),
+            }
+            false
+        }
+    }
+}
+
 /// A stack whose mapping is taken away stops being one the CPU can stand on.
 ///
 /// `MappedStack` is evidence dated at construction, and until D-125 that was
@@ -4034,7 +4112,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 132;
+const EXPECTED_CHECKS: usize = 134;
 
 impl Report {
     const fn new() -> Self {
@@ -4133,6 +4211,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a faulting program dies alone",
         a_faulting_program_dies_alone(),
+    );
+    report.check(
+        "a program cannot aim at the copy window",
+        a_program_cannot_aim_at_the_copy_window(),
     );
     report.check(
         "two spaces map one address to different memory",
@@ -4368,6 +4450,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         dev::console_has_back_buffer(),
     );
 
+    report.check(
+        "no lock is taken while a leaf guard is held",
+        a_leaf_guard_is_the_last_lock(),
+    );
     report.check("threads are available", thread::is_available());
     report.check(
         "an unmapped stack is no longer installed",

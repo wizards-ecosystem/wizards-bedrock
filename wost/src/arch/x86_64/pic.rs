@@ -86,16 +86,32 @@ impl core::error::Error for PicError {}
 /// Remap both controllers clear of the exception vectors and mask every line.
 ///
 /// Does nothing after the first successful call.
+///
+/// **The ports are claimed with no lock of ours held.** This used to take
+/// `CONTROLLERS`' guard first and claim inside it, and `port::claim_block`
+/// takes `CLAIMED`'s — two leaf locks nested, which is exactly what `lock_leaf`
+/// forbids, and an order `CONTROLLERS → CLAIMED` that nothing else in the
+/// kernel knew about. A lock order acquired by accident is the one that closes
+/// a cycle later (D-105, D-121).
 pub fn silence() -> Result<(), PicError> {
-    let mut controllers = CONTROLLERS.lock_leaf();
-    if controllers.is_some() {
+    if CONTROLLERS.lock_leaf().is_some() {
         return Ok(());
     }
 
-    let mut pair = Pair {
-        primary: port::claim_block(PRIMARY).ok_or(PicError::PortsUnavailable)?,
-        secondary: port::claim_block(SECONDARY).ok_or(PicError::PortsUnavailable)?,
-    };
+    // Claimed here, between the two guards rather than under either. The
+    // claims are permanent, so the only caller that can fail to get them is a
+    // second one — which is the case the recheck below answers.
+    let claims = port::claim_block(PRIMARY).zip(port::claim_block(SECONDARY));
+
+    let mut controllers = CONTROLLERS.lock_leaf();
+    if controllers.is_some() {
+        // Someone else finished between the two guards. Nothing was claimed —
+        // they hold the ports — and nothing needs undoing.
+        return Ok(());
+    }
+    let (primary, secondary) = claims.ok_or(PicError::PortsUnavailable)?;
+
+    let mut pair = Pair { primary, secondary };
     pair.remap();
     pair.mask_all();
     *controllers = Some(pair);

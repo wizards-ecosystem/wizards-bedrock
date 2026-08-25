@@ -435,10 +435,20 @@ struct Bootstrap {
     space: AddressSpace,
     /// What was mapped into them, so the same is unmapped.
     regions: [Option<(u64, u64)>; MAX_REGIONS],
-    table: HandleTable,
+    /// Its handle table, behind an `Arc` for the reason [`Bootstrap::ring`] is:
+    /// `kind_of` takes the global arena's lock, and taking it under this
+    /// table's leaf guard is what `lock_leaf` forbids (D-121, D-124).
+    table: alloc::sync::Arc<HandleTable>,
     /// Its ring. Held here because the shared pages are the kernel's and must
     /// outlive the mapping that shows them to the program (D-113).
-    ring: queue::Queue,
+    ///
+    /// Behind an `Arc` so that serving it does not need `BOOTSTRAPS`' guard.
+    /// `serve` reads user memory, performs operations and wakes threads — it
+    /// takes four other locks before it is done — and it used to do all of
+    /// that under this table's leaf guard, which is the one thing `lock_leaf`
+    /// forbids (D-121, D-124). The handle is cloned out and the guard dropped;
+    /// `Queue`'s methods all take `&self`, so nothing else changes.
+    ring: alloc::sync::Arc<queue::Queue>,
     /// The one handle. Kept so a check can ask what it names rather than
     /// inferring it from the count.
     handle: u32,
@@ -469,10 +479,14 @@ pub(crate) struct Spawned {
 /// What a spawned program's table holds, for the check that counts it.
 #[cfg(feature = "selftest")]
 pub(crate) fn bootstrap_of(slot: usize) -> Option<(usize, ObjectType)> {
-    let guard = BOOTSTRAPS.lock_leaf();
-    let bootstrap = guard.get(slot)?.as_ref()?;
-    let kind = bootstrap.table.kind_of(bootstrap.handle).ok()?;
-    Some((bootstrap.table.live(), kind))
+    // Cloned out and the guard dropped before the arena is touched.
+    let (table, handle) = {
+        let guard = BOOTSTRAPS.lock_leaf();
+        let bootstrap = guard.get(slot)?.as_ref()?;
+        (alloc::sync::Arc::clone(&bootstrap.table), bootstrap.handle)
+    };
+    let kind = table.kind_of(handle).ok()?;
+    Some((table.live(), kind))
 }
 
 /// What the **kernel** believes a spawned program's ring is.
@@ -483,8 +497,13 @@ pub(crate) fn bootstrap_of(slot: usize) -> Option<(usize, ObjectType)> {
 /// chose (D-115).
 #[cfg(feature = "selftest")]
 pub(crate) fn ring_shape_of(slot: usize) -> Option<(u32, u32, u32)> {
-    let guard = BOOTSTRAPS.lock_leaf();
-    Some(guard.get(slot)?.as_ref()?.ring.shape())
+    // Cloned out, as in `serve_ring`: `shape` takes the ring's own lock, and
+    // taking it under this table's leaf guard is what `lock_leaf` forbids.
+    let ring = {
+        let guard = BOOTSTRAPS.lock_leaf();
+        alloc::sync::Arc::clone(&guard.get(slot)?.as_ref()?.ring)
+    };
+    Some(ring.shape())
 }
 
 /// Why a program could not be started.
@@ -564,6 +583,7 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     let mut ring = queue::Queue::new().ok_or(SpawnError::NoRing)?;
     ring.install(&mut space, RING)
         .map_err(SpawnError::NoSpace)?;
+    let ring = alloc::sync::Arc::new(ring);
 
     let root = space.root();
     let binding = space.bind().map_err(SpawnError::NotBindable)?;
@@ -583,7 +603,7 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     let mut bootstrap = Some(Bootstrap {
         space,
         regions,
-        table,
+        table: alloc::sync::Arc::new(table),
         handle,
         ring,
     });
@@ -955,15 +975,23 @@ pub(crate) fn call(frame: &TrapFrame) {
 /// authority lives — a program cannot name another's, because there is no
 /// argument here that could say which.
 fn serve_ring(slot: usize) -> u64 {
-    let guard = BOOTSTRAPS.lock_leaf();
-    let Some(bootstrap) = guard.get(slot).and_then(Option::as_ref) else {
-        return ENOSYS;
+    // Cloned out and the guard dropped before a single entry is served.
+    // `serve` reads the program's memory, performs each operation and wakes
+    // whatever was waiting — four more locks — and doing that under this
+    // table's leaf guard is what `lock_leaf` forbids (D-121, D-124).
+    let ring = {
+        let guard = BOOTSTRAPS.lock_leaf();
+        let Some(bootstrap) = guard.get(slot).and_then(Option::as_ref) else {
+            return ENOSYS;
+        };
+        alloc::sync::Arc::clone(&bootstrap.ring)
     };
+
     // The program's own claim about what it has reaped, taken once and bounded
     // inside (D-113, D-115).
-    let head = bootstrap.ring.completion_head();
-    bootstrap.ring.reap_up_to(head);
-    bootstrap.ring.serve() as u64
+    let head = ring.completion_head();
+    ring.reap_up_to(head);
+    ring.serve() as u64
 }
 
 /// Cross into ring 3, and never come back on this thread.
@@ -1039,6 +1067,19 @@ const PROBE: u64 = 2;
 #[cfg(feature = "selftest")]
 pub(crate) fn run_for_bootstrap() -> Result<Spawned, SpawnError> {
     spawn("user-bootstrap", 3, BEHAVE)
+}
+
+/// A sixth, which jumps into the kernel's user-copy window from ring 3.
+///
+/// The argument *is* the address: the program jumps to anything it is given in
+/// the kernel's half (D-126). Ring 3 cannot execute kernel memory, so this is
+/// an instruction-fetch fault whose `RIP` is inside the window the recovery
+/// arm looks at — which is the state that arm accepted without ever checking
+/// who faulted.
+#[cfg(feature = "selftest")]
+pub(crate) fn run_into_the_copy_window() -> Result<Spawned, SpawnError> {
+    let (start, _) = usercopy::fault_window();
+    spawn("user-window", 5, start)
 }
 
 /// A third that faults on purpose, to show the machine survives it.

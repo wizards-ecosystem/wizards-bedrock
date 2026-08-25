@@ -24,8 +24,14 @@ pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 /// ```text
 ///   58                       pop rax                     ; the kernel's word
 ///   48 85 c0                 test rax, rax
-///   74 02                    jz  behave                  ; zero: behave
-///   0f 0b                    ud2                         ; anything else: die
+///   74 ..                    jz  behave                  ; zero: behave
+///   78 ..                    js  leap                    ; kernel half: jump to it
+///   48 83 f8 02              cmp rax, 2
+///   75 ..                    jne die                     ; anything else: die
+///   b8 ad 0b ad 0b           mov eax, 0x0bad0bad         ; two: an unserved call
+///   cd 80                    int 0x80
+///   31 c0                    xor eax, eax
+///   cd 80                    int 0x80
 /// behave:
 ///   9c                       pushfq
 ///   48 81 0c 24 00 00 04 00  or qword ptr [rsp], 0x40000 ; set AC, bit 18
@@ -48,6 +54,8 @@ pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 ///   75 ..                    jnz die
 ///   31 c0                    xor eax, eax                ; exit
 ///   cd 80                    int 0x80
+/// leap:
+///   ff e0                    jmp rax                     ; into whatever it was given
 /// die:
 ///   0f 0b                    ud2
 ///   eb fe                    jmp .
@@ -100,6 +108,13 @@ fn code() -> Vec<u8> {
     // which assembled, ran, and did something else — the exact failure the
     // patch machinery exists to prevent, made by the person who wrote it.
     let behaving = branch(&mut code, 0x74); // jz behave
+    // An argument in the kernel's half means "jump to it". The sign flag the
+    // `test` above already set is the whole selector, so this costs two bytes
+    // and needs no argument value reserved — which matters, because the
+    // argument *is* the address. It exists for one check: a ring-3 thread
+    // aiming `RIP` inside the kernel's user-copy window, which the recovery
+    // arm used to accept without ever looking at the saved `CS` (D-126).
+    let leaping = branch(&mut code, 0x78); // js leap
     code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x02]); // cmp rax, 2
     let not_probing = branch(&mut code, 0x75); // jne die
 
@@ -168,6 +183,10 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
 
     // Everything that went wrong lands here.
+    let leap = code.len();
+    patch(&mut code, leaping, leap);
+    code.extend_from_slice(&[0xFF, 0xE0]); // jmp rax
+
     let die = code.len();
     code.extend_from_slice(&[0x0F, 0x0B]); // ud2
     code.extend_from_slice(&[0xEB, 0xFE]); // jmp .
@@ -362,11 +381,15 @@ mod tests {
             &[0x58, 0x48, 0x85, 0xC0],
             "pop rax; test rax, rax"
         );
-        // Three behaviours, chosen by the argument: zero behaves, two asks for
-        // a call this kernel does not serve, anything else faults.
+        // Four behaviours, chosen by the argument: zero behaves, an address in
+        // the kernel's half is jumped to, two asks for a call this kernel does
+        // not serve, anything else faults.
         assert_eq!(code[4], 0x74, "jz behave");
-        assert_eq!(&code[6..10], &[0x48, 0x83, 0xF8, 0x02], "cmp rax, 2");
-        assert_eq!(code[10], 0x75, "jne die");
+        assert_eq!(code[6], 0x78, "js leap");
+        assert_eq!(&code[8..12], &[0x48, 0x83, 0xF8, 0x02], "cmp rax, 2");
+        assert_eq!(code[12], 0x75, "jne die");
+        // And the leap itself, which is what makes the argument an address.
+        assert!(code.windows(2).any(|pair| pair == [0xFF, 0xE0]), "jmp rax");
 
         // Setting `AC`, which the entry path must clear. Searched for rather
         // than indexed, so adding a behaviour above it moves the assertion
@@ -412,15 +435,23 @@ mod tests {
         // is wrong they all point somewhere that is not it.
         let die = code.len() - 4;
         assert_eq!(&code[die..], &[0x0F, 0x0B, 0xEB, 0xFE], "ud2; jmp .");
-        // Scanned from the start rather than from an offset: the first branch
-        // now precedes the flags block, and no immediate this program emits
-        // contains 0x75.
-        let branches: Vec<usize> = code
-            .iter()
-            .enumerate()
-            .filter(|(at, byte)| **byte == 0x75 && *at + 1 < code.len())
-            .map(|(at, _)| at)
-            .collect();
+        // Scanned from the start rather than from an offset, and **skipping
+        // each branch's displacement byte** — which the earlier version did
+        // not, and which caught it out the moment a behaviour was added above:
+        // the `jne die` at 12 had a displacement of exactly 0x75, so the scan
+        // counted one branch as two and failed on a byte that is not an
+        // opcode. Every branch here is a two-byte `Jcc rel8`, so consuming the
+        // pair is the whole of the fix (D-126).
+        let mut branches = Vec::new();
+        let mut at = 0;
+        while at + 1 < code.len() {
+            if code[at] == 0x75 {
+                branches.push(at);
+                at += 2;
+            } else {
+                at += 1;
+            }
+        }
         assert_eq!(branches.len(), 4, "four ways to fail");
         for site in branches {
             let displacement = i64::from(code[site + 1] as i8);

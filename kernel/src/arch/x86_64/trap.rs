@@ -126,7 +126,18 @@ fn on_trap(frame: &TrapFrame) {
         // **Before** the ring-3 test, because this fault is taken in ring 0 —
         // the kernel is the one dereferencing — so `is_the_programs` would say
         // no and the machine would stop.
-        TrapCause::Fault(trap_cause::Fault::PageFault(_)) if usercopy::recover(frame) => {
+        //
+        // And the ring-0 half is **checked**, not assumed. The comment above
+        // has always said "this fault is taken in ring 0" and nothing enforced
+        // it, so a ring-3 thread that set `RIP` inside the copy window got its
+        // own instruction-fetch fault recovered: `resume_at` rewrote `RIP` to
+        // the fixup with `CS` still ring 3, it faulted again there, and only
+        // then was retired. Not an escalation and not a halt — but a program
+        // could drive `USER_COPY_RECOVERIES` at will, and a claim nothing
+        // enforces is the shape D-124 found on the syscall arm (D-126).
+        TrapCause::Fault(trap_cause::Fault::PageFault(_))
+            if frame.code_selector() & 0b11 == 0 && usercopy::recover(frame) =>
+        {
             USER_COPY_RECOVERIES.fetch_add(1, Ordering::Relaxed);
         }
 

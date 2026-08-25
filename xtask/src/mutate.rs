@@ -125,8 +125,8 @@ pub const MUTATIONS: &[Mutation] = &[
     // that died is a kernel that noticed (D-120).
     Mutation {
         file: "kernel/src/arch/x86_64/trap.rs",
-        find: "if usercopy::recover(frame) =>",
-        replace: "if false && usercopy::recover(frame) =>",
+        find: "&& usercopy::recover(frame) =>",
+        replace: "&& false && usercopy::recover(frame) =>",
         breaks: "a faulting user copy resumes instead of stopping the machine",
     },
     // Its failure mode is a panic: the assert in `ThreadLock` fires, which is
@@ -141,6 +141,15 @@ pub const MUTATIONS: &[Mutation] = &[
     // The dropping road no check can observe: those frames go to the
     // allocator, and reading them again needs it to hand back the same ones.
     // This is what covers it (D-123).
+    // Its failure mode is a red check rather than a panic: a ring-3 thread
+    // aiming `RIP` into the copy window gets recovered instead of retired, and
+    // the recovery counter moves where the check requires it not to (D-126).
+    Mutation {
+        file: "kernel/src/arch/x86_64/trap.rs",
+        find: "if frame.code_selector() & 0b11 == 0 && usercopy::recover(frame) =>",
+        replace: "if usercopy::recover(frame) =>",
+        breaks: "a user copy is only recovered when the kernel was the one copying",
+    },
     Mutation {
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            if frames.zero() {",
