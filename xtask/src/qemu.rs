@@ -142,6 +142,10 @@ const SELFTEST_FAILED: i32 = 35;
 
 /// The serial verdict contract shared with `kernel/src/selftest.rs`.
 const SELFTEST_VERDICT_PREFIX: &str = "selftest: verdict ";
+/// What the kernel prints around a failing check's name, from
+/// `kernel/src/selftest.rs`'s `error!("selftest: {name} FAILED")`.
+const SELFTEST_CHECK_PREFIX: &str = "selftest: ";
+const SELFTEST_CHECK_FAILED: &str = " FAILED";
 const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// Checks the self-test kernel must report, held independently of its own
 /// tally so a deleted or skipped one turns the verdict red.
@@ -198,6 +202,28 @@ struct SelftestVerdict {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct SerialObservation {
     verdict: Option<SelftestVerdict>,
+    /// Names of the checks that reported `FAILED`, in the order printed.
+    ///
+    /// Recorded so a failure can say *which* check went red rather than only
+    /// that one did. `cargo xtask mutate` is the caller that needs it: a
+    /// mutation reported "caught" because some check failed is a weaker claim
+    /// than one caught because *its* check failed, and the two came apart in
+    /// the table — mutation 4 reddens mutation 3's check, so deleting 4's own
+    /// target would leave it printing "caught" for ever (D-134).
+    failed: Vec<String>,
+}
+
+/// The check name in a `selftest: <name> FAILED` line, if it is one.
+///
+/// The line is trimmed first, and that is not tidiness: serial output arrives
+/// with a trailing carriage return, so matching the suffix against the raw
+/// line finds nothing. The first strict sweep reported eighteen survivors on boots that
+/// had reddened exactly the right check, because of that one carriage return
+/// (D-134).
+fn parse_failed_check(line: &str) -> Option<&str> {
+    let line = line.trim_end();
+    let at = line.find(SELFTEST_CHECK_PREFIX)?;
+    line[at + SELFTEST_CHECK_PREFIX.len()..].strip_suffix(SELFTEST_CHECK_FAILED)
 }
 
 /// The keys the harness injects, in order, once the marker appears.
@@ -249,6 +275,10 @@ fn parse_verdict_count(field: Option<&str>, name: &str) -> Result<usize> {
 }
 
 fn observe_selftest_line(observation: &mut SerialObservation, line: &str) -> Result<()> {
+    if let Some(name) = parse_failed_check(line) {
+        observation.failed.push(name.to_string());
+        return Ok(());
+    }
     let Some(verdict) = parse_selftest_verdict(line) else {
         return Ok(());
     };
@@ -288,7 +318,9 @@ fn correlate_selftest(exit_code: Option<i32>, observation: SerialObservation) ->
     match (exit_code, verdict.status) {
         (Some(SELFTEST_PASSED), VerdictStatus::Pass) => Ok(()),
         (Some(SELFTEST_FAILED), VerdictStatus::Fail) => {
-            bail!(SELFTEST_FAILURE)
+            // The names go in the error, not only in the log, because a caller
+            // deciding whether the *right* thing broke cannot read the log.
+            bail!("{SELFTEST_FAILURE}: {}", observation.failed.join("; "))
         }
         (Some(SELFTEST_PASSED | SELFTEST_FAILED), _) => {
             bail!("self-test serial verdict contradicts its debug-exit status")
@@ -980,6 +1012,30 @@ mod tests {
         }
     }
 
+    /// A failing check's name is read off the line the kernel prints.
+    ///
+    /// Including the carriage return, which is the whole reason this test
+    /// exists: without the trim the parser matches nothing and every mutation
+    /// reports a survivor on a boot that went red correctly.
+    #[test]
+    fn a_failing_check_is_named_even_with_the_carriage_return() {
+        assert_eq!(
+            parse_failed_check("[error] selftest: a bound space is not reclaimed FAILED\r"),
+            Some("a bound space is not reclaimed")
+        );
+        assert_eq!(
+            parse_failed_check("[error] selftest: a thing FAILED"),
+            Some("a thing")
+        );
+        // Not failures: the verdict line, a passing check, and unrelated text.
+        assert_eq!(
+            parse_failed_check("[error] selftest: verdict v1 FAIL passed=1 failed=0 expected=1"),
+            None
+        );
+        assert_eq!(parse_failed_check("[info ] selftest: a thing"), None);
+        assert_eq!(parse_failed_check("[info ] keyboard: up"), None);
+    }
+
     #[test]
     fn versioned_verdict_is_parsed_from_a_log_record() {
         let line = format!(
@@ -1018,11 +1074,13 @@ mod tests {
     #[test]
     fn a_valid_serial_pass_must_match_debug_exit() {
         let observation = SerialObservation {
+            failed: Vec::new(),
             verdict: Some(passing_verdict()),
         };
         assert!(correlate_selftest(Some(SELFTEST_PASSED), observation).is_ok());
 
         let observation = SerialObservation {
+            failed: Vec::new(),
             verdict: Some(passing_verdict()),
         };
         let error = correlate_selftest(Some(SELFTEST_FAILED), observation).unwrap_err();
@@ -1033,6 +1091,7 @@ mod tests {
     fn zero_or_skipped_checks_cannot_pass() {
         for passed in [0, EXPECTED_SELFTEST_CHECKS - 1] {
             let observation = SerialObservation {
+                failed: Vec::new(),
                 verdict: Some(SelftestVerdict {
                     status: VerdictStatus::Pass,
                     passed,
@@ -1048,6 +1107,7 @@ mod tests {
     #[test]
     fn harness_and_kernel_must_agree_on_the_expected_count() {
         let observation = SerialObservation {
+            failed: Vec::new(),
             verdict: Some(SelftestVerdict {
                 expected: EXPECTED_SELFTEST_CHECKS - 1,
                 passed: EXPECTED_SELFTEST_CHECKS - 1,
@@ -1061,6 +1121,7 @@ mod tests {
     #[test]
     fn serial_status_must_agree_with_its_counts() {
         let observation = SerialObservation {
+            failed: Vec::new(),
             verdict: Some(SelftestVerdict {
                 status: VerdictStatus::Fail,
                 ..passing_verdict()
