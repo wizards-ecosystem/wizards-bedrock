@@ -14,6 +14,7 @@ pub mod cargo;
 pub mod cli;
 pub mod elf;
 pub mod image;
+pub mod model;
 pub mod paths;
 pub mod qemu;
 pub mod qmp;
@@ -54,6 +55,7 @@ pub fn run(task: Task) -> Result<()> {
         Task::BootCheck(profile) => tasks::boot_check(&paths, profile),
         Task::DegradedCheck(profile) => tasks::degraded_check(&paths, profile),
         Task::VerifyVendor => vendor::verify(&paths),
+        Task::ModelCheck => model::check(&paths),
         Task::Ci => tasks::ci(&paths),
         Task::Clean(scope) => tasks::clean(&paths, scope),
     }

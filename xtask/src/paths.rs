@@ -184,6 +184,11 @@ impl Paths {
     pub fn limine_checksums(&self) -> PathBuf {
         self.root.join("boot").join("limine").join("CHECKSUMS")
     }
+
+    /// The TLA+ tools' checksum listing.
+    pub fn tla_checksums(&self) -> PathBuf {
+        self.root.join("tools").join("tla").join("CHECKSUMS")
+    }
 }
 
 #[cfg(test)]

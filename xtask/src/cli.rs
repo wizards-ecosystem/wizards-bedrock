@@ -32,6 +32,7 @@ CHECK TASKS:
     boot-check        boot the shipped kernel and require it to settle
     degraded-check    boot without x2apic and require the kernel to report it
     verify-vendor     check vendored binaries against boot/limine/CHECKSUMS
+    model-check       run TLC over models/Ring.tla (needs java)
     ci                every check above, in the order that fails fastest
 
 HOUSEKEEPING:
@@ -87,6 +88,8 @@ pub enum Task {
     DegradedCheck(Profile),
     /// Check vendored binaries against their recorded digests.
     VerifyVendor,
+    /// Check the queue protocol's TLA+ model.
+    ModelCheck,
     /// Everything CI runs.
     Ci,
     /// Remove build output.
@@ -175,6 +178,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         "boot-check" => Ok(Task::BootCheck(profile)),
         "degraded-check" => Ok(Task::DegradedCheck(profile)),
         "verify-vendor" => Ok(Task::VerifyVendor),
+        "model-check" => Ok(Task::ModelCheck),
         "ci" => Ok(Task::Ci),
         "clean" => Ok(Task::Clean(if all {
             CleanScope::Everything
@@ -297,6 +301,7 @@ mod tests {
             "boot-check",
             "degraded-check",
             "verify-vendor",
+            "model-check",
             "ci",
             "clean",
         ];

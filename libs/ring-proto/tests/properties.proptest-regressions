@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f7130204491bd1466f8beed276fb8893fbd527b5c971cceeae86b8b6e717ae8b # shrinks to shift = 0, sequence = [0, 2, 1, 0, 2, 1]
+cc f7494636e68709380fe878b508cdc8c07e5daa3cf7115ad04ed68e5268c83e75 # shrinks to entries = Capacity(8), head = 0, sequence = [Produce, Produce, Produce, Produce, Produce, Produce, Consume, Produce, Produce, Produce]

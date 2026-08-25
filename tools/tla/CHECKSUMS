@@ -1,0 +1,4 @@
+# SHA-256 of every vendored binary in this directory, in sha256sum format.
+# Verified by `cargo xtask verify-vendor` and by the xtask test suite.
+# Regenerate deliberately when updating the TLA+ tools; see README.md here.
+eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a *tla2tools.jar

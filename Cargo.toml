@@ -99,6 +99,17 @@ anyhow = "1"
 fatfs = { version = "0.3", default-features = false, features = ["std", "alloc"] }
 fscommon = "0.1"
 
+# Verification, for `libs/ring-proto` only (D-84). Both are dev-dependencies of
+# one crate, so nothing they pull in reaches the kernel or the image.
+#
+# `getrandom` is pinned because proptest's default features reach it and 0.3.2+
+# needs a `windows-sys` this toolchain's `dlltool.exe` cannot link — the same
+# wall `fatfs` avoids by dropping chrono. Recorded as the toolchain tax it is
+# rather than left to be rediscovered (`010` §9).
+proptest = { version = "1", default-features = false, features = ["std"] }
+getrandom = "=0.3.1"
+shuttle = "0.9"
+
 # Members opt in with `[lints] workspace = true`. Cargo rejects mixing that with
 # sibling lint tables in the same manifest, so per-crate escalation lives in
 # source attributes instead — see `#![forbid(unsafe_code)]` in every `libs/`

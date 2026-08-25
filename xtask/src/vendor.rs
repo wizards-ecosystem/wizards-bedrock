@@ -113,13 +113,18 @@ pub fn verify_listing(listing: &Path) -> Result<usize> {
 }
 
 /// Verify everything vendored in the repository.
+///
+/// Every listing, not the first one: a directory added and not added *here* is
+/// a directory nothing checks, which is the drift `paths.rs`'s
+/// `default-members` test exists to prevent one layer up (D-105).
 pub fn verify(paths: &Paths) -> Result<()> {
-    let listing = paths.limine_checksums();
-    let count = verify_listing(&listing)?;
-    println!(
-        "[xtask] {count} vendored file(s) match {}",
-        listing.display()
-    );
+    for listing in [paths.limine_checksums(), paths.tla_checksums()] {
+        let count = verify_listing(&listing)?;
+        println!(
+            "[xtask] {count} vendored file(s) match {}",
+            listing.display()
+        );
+    }
     Ok(())
 }
 
