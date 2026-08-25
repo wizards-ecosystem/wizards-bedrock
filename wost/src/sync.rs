@@ -126,6 +126,21 @@ unsafe impl<T: Send> Sync for SpinLock<T> {}
 unsafe impl<T: Send> Send for SpinLock<T> {}
 
 impl<T> SpinLock<T> {
+    /// Reach the value without locking, given exclusive access to the lock.
+    ///
+    /// `&mut self` is the proof: no other reference exists, so no other thread
+    /// can be holding the guard, so there is nothing to wait for. The standard
+    /// library's `Mutex::get_mut` is the same argument.
+    ///
+    /// Its reason for existing here is narrower than convenience. A caller
+    /// that must pass the value to something which *allocates* cannot hold a
+    /// leaf guard across the call (D-85) — and copying the value out instead
+    /// means handing on a bare number where a type was the evidence (D-115).
+    /// This is the third option: no guard, and the type intact.
+    pub const fn get_mut(&mut self) -> &mut T {
+        self.value.get_mut()
+    }
+
     /// Create an unlocked `SpinLock`.
     pub const fn new(value: T) -> Self {
         Self {

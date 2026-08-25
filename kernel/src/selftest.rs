@@ -531,7 +531,9 @@ fn two_spaces_map_one_address_to_different_memory() -> bool {
     else {
         return false;
     };
-    let separate = first_frame == one_at && second_frame == two_at && first_frame != second_frame;
+    // `first_frame != second_frame` follows from the two equalities and the
+    // refusal above, so it is not asserted again here (D-115).
+    let separate = first_frame == one_at && second_frame == two_at;
     let both_user = first_flags.contains(Flags::USER) && second_flags.contains(Flags::USER);
 
     // The kernel's half is the same in both, which is what makes a switch
@@ -587,8 +589,12 @@ fn a_vector_register_survives_a_switch() -> bool {
     let intruded = VECTOR_INTRUDER_SAW.load(Ordering::Acquire) == THEIRS as usize;
 
     // And `XCR0` holds what boot asked for.
+    // Read back from `XCR0` through `XGETBV`, which is guarded on `CR4` and
+    // not on a Rust flag — the earlier version's `bytes() >= 576` restated
+    // `init`'s own refusal, and its zero-check read an early return rather
+    // than the register (D-115).
     let mask = xstate::extended_control();
-    let masked = mask & 0b111 == 0b111 && xstate::bytes() >= 576;
+    let masked = mask & 0b111 == 0b111 && xstate::bytes() <= 1024;
 
     kept && intruded && masked
 }
@@ -669,10 +675,8 @@ fn kernel_memory_cannot_be_published_to_ring_three() -> bool {
     // and a `reclaim` that skipped the zeroing passed a version of this check
     // that only asked whether the frame was still reachable (D-107).
     let mut recovered = [0xFFu8; 8];
-    let cleared = back.address() == address
-        && back.read_at(0, &mut recovered)
-        && recovered == [0u8; 8]
-        && recovered != secret;
+    let cleared =
+        back.address() == address && back.read_at(0, &mut recovered) && recovered == [0u8; 8];
     drop(back);
 
     // And `map_user` adds `USER` even where the caller did not.
@@ -1037,7 +1041,7 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
     };
-    let (_, submissions, completions) = queue.shape_for_test();
+    let (_, submissions, completions) = queue.shape();
 
     // Fill the completion queue by serving as many rounds as it holds.
     let mut posted = 0u32;
@@ -1083,7 +1087,37 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
         && queue.admit(1) == 0
         && queue.is_consistent();
 
-    posted > 0 && partial > 0 && refuses && followed && resumes
+    // And a program that **lies** about how far it has read gets nothing for
+    // it. The head is ring 3's number, so "reap up to here" is a claim and not
+    // an instruction: honouring it would reap completions nobody read, which
+    // is the one thing the completion queue exists to prevent. An honest head
+    // cannot show this — it is already inside the bound — so the earlier
+    // version of this check passed with the bound deleted (D-115).
+    let Some(liar) = queue::Queue::new() else {
+        return false;
+    };
+    if liar.admit(2) != 2 {
+        return false;
+    }
+    for slot in 0..2 {
+        liar.post_submission_for_test(
+            slot,
+            queue::Submission {
+                opcode: queue::Opcode::Echo,
+                token: slot as u32,
+                argument: 0,
+            },
+        );
+    }
+    liar.publish_tail_for_test(2);
+    if liar.serve() != 2 {
+        return false;
+    }
+    // Two posted; the program claims to have read four billion.
+    liar.publish_completion_head_for_test(u32::MAX);
+    let lied = liar.reap_up_to(liar.completion_head()) == 2 && liar.is_consistent();
+
+    posted > 0 && partial > 0 && refuses && followed && resumes && lied
 }
 
 /// A ring says what shape it is, and its pages are the process's to read and
@@ -1098,16 +1132,21 @@ fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
     /// A user address nothing else uses.
     const AT: u64 = user::STACK + 0x60_0000;
 
-    let Some(queue) = queue::Queue::new() else {
+    let Some(mut queue) = queue::Queue::new() else {
         return false;
     };
-    let (version, submissions, completions) = queue.shape_for_test();
-    let announced = version == ring_proto::VERSION
-        && submissions.is_power_of_two()
-        && completions.is_power_of_two()
-        // Windows requires this of RIO, and D-79 adopted it: the slack is what
-        // keeps admission from stalling on a consumer that is merely slow.
-        && completions >= 2 * submissions;
+    // The kernel's own shape. `Queue::new` returning `Some` already required
+    // both to be powers of two and the completion queue to be twice the
+    // submission one — `Capacity::new` and `Queues::new` refuse otherwise — so
+    // asserting those here would be asserting the constructor's preconditions
+    // back at it (D-115).
+    let (version, submissions, completions) = queue.shape();
+
+    // What is *not* decided is that the header page was published to match,
+    // and that is the whole of the ABI a program reads. Deleting either write
+    // in `Queue::new` turns this red.
+    let announced = queue.published_shape() == (version, submissions, completions)
+        && version == ring_proto::VERSION;
 
     let Ok(mut space) = AddressSpace::for_user() else {
         return false;
@@ -1182,6 +1221,11 @@ fn every_submission_gets_exactly_one_completion() -> bool {
         && echo.value == 0xDEAD_BEEF
         && uptime.token == 0x2222
         && uptime.status == queue::STATUS_OK
+        // The value, not only the token: replacing `now_ns()` with a zero
+        // left this green (D-115). The clock has been running since boot, so
+        // a real uptime is neither zero nor absurd.
+        && uptime.value > 0
+        && uptime.value <= crate::time::now_ns()
         && refused.token == 0x3333
         // Refused *with* a completion, which is the rule: an operation the
         // kernel will not serve still reports, or a caller waits for ever.
@@ -1201,7 +1245,7 @@ fn admission_refuses_before_the_completion_queue_can_overflow() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
     };
-    let (_, submissions, completions) = queue.shape_for_test();
+    let (_, submissions, completions) = queue.shape();
 
     // Ask for far more than either queue holds.
     let wanted = (completions as usize) * 4;
@@ -1266,15 +1310,41 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         },
     );
 
-    // The completion is what it was: the kernel worked from its copy.
-    let unchanged = queue.read_completion_for_test(0) == posted
+    // The completion is what the *copy* said, and the rewrite is visible in
+    // the page — so the check is not merely reading two disjoint places and
+    // finding them both unchanged. An earlier version asserted
+    // `read_completion(0) == posted` where `posted` had just been read from
+    // that same slot, which is `X == X` and had no line whose deletion could
+    // falsify it (D-115).
+    let rewritten = queue.read_submission_for_test(0);
+    let took_effect = rewritten.token == 0xBAAD && rewritten.opcode != queue::Opcode::Echo;
+    let unchanged = took_effect
         && posted.token == 0xABCD
-        && posted.value == 0x0F0F_0F0F;
+        && posted.status == queue::STATUS_OK
+        && posted.value == 0x0F0F_0F0F
+        // And serving again does not re-serve the rewritten entry: the slot
+        // was consumed, and the new bytes are a submission nobody made.
+        && queue.serve() == 0;
 
-    // And a tail moved backwards or run away does not walk the kernel through
-    // slots nothing was written into.
+    // A tail run away with the kernel's ring *empty* is refused — but so it
+    // would be with no bound at all, because `take` finds nothing. The case
+    // that reaches the bound is a runaway tail with room admitted behind it:
+    // three reservations and a tail claiming four billion. Without
+    // `posted > SUBMISSIONS` the kernel walks all three slots and serves
+    // whatever the page happens to hold, and no check saw that (D-115).
+    let Some(runaway) = queue::Queue::new() else {
+        return false;
+    };
+    if runaway.admit(3) != 3 {
+        return false;
+    }
+    runaway.publish_tail_for_test(u32::MAX);
+    let runaway_bounded = runaway.serve() == 0 && runaway.outstanding() == 3;
+
+    // And with the ring drained, which is the weaker case the earlier version
+    // was testing without knowing it.
     queue.publish_tail_for_test(u32::MAX);
-    let runaway_bounded = queue.serve() == 0;
+    let drained_bounded = queue.serve() == 0;
 
     // The case the runaway tail cannot show, because the kernel's own ring is
     // empty by then: **admitting is not publishing.** A program may ask for
@@ -1303,7 +1373,12 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     // were never posted.
     let still_reserved = partial.outstanding() == 2 && partial.is_consistent();
 
-    unchanged && runaway_bounded && only_published && one_reported && still_reserved
+    unchanged
+        && runaway_bounded
+        && drained_bounded
+        && only_published
+        && one_reported
+        && still_reserved
 }
 
 /// A freshly spawned program holds exactly one handle, and it is a channel.
@@ -1334,13 +1409,19 @@ fn a_spawned_program_holds_exactly_one_handle() -> bool {
     // And a ring, at the address every program's is, readable by it. The
     // handle is the process's authority; the ring is its data path, and both
     // are in place before its first instruction (D-113).
+    // The kernel's record, not the header page: the program is live in ring 3
+    // by now and that page is its to write, so `2 * submissions` on a number
+    // it chose overflows and panics the debug kernel (D-115).
     let has_a_ring =
         user::ring_shape_of(spawned.slot).is_some_and(|(version, submissions, completions)| {
-            version == ring_proto::VERSION && completions >= 2 * submissions
+            version == ring_proto::VERSION
+                && submissions > 0
+                && completions >= submissions.saturating_mul(2)
         });
-    let mapped = task::address_space_of(spawned.slot) != 0
-        && paging::translate_in_root(task::address_space_of(spawned.slot), user::RING)
-            .is_some_and(|(_, flags)| flags.contains(Flags::USER));
+    let mapped = task::address_space_of(spawned.slot).is_some_and(|root| {
+        paging::translate_in_root(root, user::RING)
+            .is_some_and(|(_, flags)| flags.contains(Flags::USER))
+    });
 
     // The parent's end is live and is the far side of the child's: a message
     // put in here is one the child could read, which is what makes it a
@@ -1390,7 +1471,7 @@ fn a_message_crosses_a_channel_and_is_gone() -> bool {
         return false;
     };
     let in_order = one.bytes() == b"one" && two.bytes() == b"two";
-    let drained = there.receive().is_none() && !there.has_message();
+    let drained = there.receive().is_none();
 
     // And the other direction works, on the same pair.
     let Ok(back) = object::Message::new(b"back") else {

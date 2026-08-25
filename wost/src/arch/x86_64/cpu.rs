@@ -202,13 +202,30 @@ impl fmt::Display for Protections {
     }
 }
 
-/// Turn on `CR4.OSXSAVE`, which is what makes `XGETBV`, `XSETBV` and the save
-/// instructions legal.
+/// Whether `CR4.OSXSAVE` is set, which is what makes `XGETBV`, `XSETBV` and
+/// the save instructions legal.
 ///
-/// Safe for the same reason [`enable_protections`] is: the bit cannot produce
-/// undefined behaviour, and a processor that does not support it faults, which
-/// is a trap the kernel reports. Called only by
-/// [`xstate::init`](super::xstate::init), which has already asked `CPUID`.
+/// Read from the register rather than from a remembered flag: the one caller
+/// is a check asking whether the write took, and a remembered flag would
+/// answer with the memory of the write (D-115).
+pub fn extended_state_is_enabled() -> bool {
+    /// `CR4.OSXSAVE`.
+    const CR4_OSXSAVE: u64 = 1 << 18;
+
+    read_cr4() & CR4_OSXSAVE != 0
+}
+
+/// Turn on `CR4.OSXSAVE`, `OSFXSR` and `OSXMMEXCPT`, and clear `CR0.EM`.
+///
+/// Safe for the same reason [`enable_protections`] is: none of these bits can
+/// produce undefined behaviour, and a processor that does not support one
+/// faults, which is a trap the kernel reports.
+///
+/// After this, SSE instructions are legal — **including at CPL 3** — so it is
+/// called only once every refusal in
+/// [`xstate::init`](super::xstate::init) has been made. A path that enabled
+/// and then refused would leave the register file shared between processes
+/// with nothing saving it (D-115).
 pub fn enable_extended_state() {
     /// `CR4.OSFXSR`: without it every SSE instruction is a `#UD`, whatever
     /// `XCR0` says. Setting `OSXSAVE` alone bought a fault, not a register.

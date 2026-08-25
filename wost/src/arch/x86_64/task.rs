@@ -521,8 +521,43 @@ pub fn bind_address_space(slot: usize, binding: Binding) -> Result<(), TaskError
     result
 }
 
-/// Which tables `slot` runs on, or zero for the kernel's.
-pub fn address_space_of(slot: usize) -> u64 {
+/// Give a fabricated slot back before anything has run on it.
+///
+/// For a caller whose own setup failed between [`fabricate`] and making the
+/// thread runnable. Without it that slot stays `Alive` here while the kernel's
+/// table marks it free, and every later spawn that picks it is refused — a
+/// permanent loss rather than a leak that ends (D-115).
+///
+/// # Errors
+///
+/// [`TaskError::OutOfRange`] past the table, [`TaskError::Current`] for the
+/// running slot — a thread cannot retire itself this way — and
+/// [`TaskError::Vacant`] for one nothing fabricated.
+pub fn retire(slot: usize) -> Result<(), TaskError> {
+    let saved = interrupt::disable();
+    let mut table = TABLE.lock_leaf();
+    let result = if slot >= table.count {
+        Err(TaskError::OutOfRange(slot))
+    } else if slot == CURRENT.load(Ordering::Acquire) {
+        Err(TaskError::Current(slot))
+    } else if table.slots[slot].state != State::Alive {
+        Err(TaskError::Vacant(slot))
+    } else {
+        table.slots[slot] = Slot::VACANT;
+        Ok(())
+    };
+    drop(table);
+    saved.restore();
+    result
+}
+
+/// Which tables `slot` runs on, or `None` for the kernel's.
+///
+/// The [`Root`] is evidence, not a number: it says these tables were installed
+/// by a [`Binding`], which means their higher half was compared against the
+/// kernel's. Handing out a bare `Paddr` let a safe caller walk any physical
+/// address it liked (D-115).
+pub fn address_space_of(slot: usize) -> Option<Root> {
     let saved = interrupt::disable();
     let root = TABLE
         .lock_leaf()
@@ -530,7 +565,24 @@ pub fn address_space_of(slot: usize) -> u64 {
         .get(slot)
         .map_or(0, |slot| slot.page_table);
     saved.restore();
-    root
+    (root != 0).then_some(Root(root))
+}
+
+/// A page-table root this kernel installed.
+///
+/// Mintable only by [`address_space_of`], so a caller cannot invent one. The
+/// walk it authorises reads through the direct map, and a root that was never
+/// a table would be an arbitrary physical read — which is what D-77 named as
+/// an authority debt on the mapping side and what this closes on the reading
+/// side (D-115).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Root(u64);
+
+impl Root {
+    /// The physical address of the top-level table.
+    pub const fn address(self) -> u64 {
+        self.0
+    }
 }
 
 /// Bytes the fabricated frame occupies below the stack top.

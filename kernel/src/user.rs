@@ -397,11 +397,16 @@ pub(crate) fn bootstrap_of(slot: usize) -> Option<(usize, ObjectType)> {
     Some((bootstrap.table.live(), kind))
 }
 
-/// What a spawned program's ring says it is, for the check that reads it.
+/// What the **kernel** believes a spawned program's ring is.
+///
+/// Not the header page, which the program can rewrite the moment it runs: a
+/// check reading that is asking ring 3 what shape its own ring is, and one
+/// arithmetic step later is a panic in the debug kernel on a number a program
+/// chose (D-115).
 #[cfg(feature = "selftest")]
 pub(crate) fn ring_shape_of(slot: usize) -> Option<(u32, u32, u32)> {
     let guard = BOOTSTRAPS.lock_leaf();
-    Some(guard.get(slot)?.as_ref()?.ring.shape_for_test())
+    Some(guard.get(slot)?.as_ref()?.ring.shape())
 }
 
 /// Why a program could not be started.
@@ -467,7 +472,7 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     // writes no owned bit, so a program cannot free the memory a completion
     // will be written into (D-113). Mapped before the binding, because the
     // binding consumes the space.
-    let ring = queue::Queue::new().ok_or(SpawnError::NoRing)?;
+    let mut ring = queue::Queue::new().ok_or(SpawnError::NoRing)?;
     ring.install(&mut space, RING)
         .map_err(SpawnError::NoSpace)?;
 

@@ -453,10 +453,18 @@ impl Segment {
 
     /// Read `into.len()` bytes from `offset` within the run.
     ///
-    /// The counterpart to [`write_at`](Self::write_at), and deliberately on
-    /// `Segment` alone: a [`USegment`] holds bytes ring 3 wrote, and reading
-    /// those into the kernel is what [`USegment::reclaim`] exists to make
-    /// impossible without clearing them first (D-107).
+    /// The counterpart to [`write_at`](Self::write_at).
+    ///
+    /// [`Shared`] forwards to it, because reading what userspace wrote is a
+    /// shared ring's whole job (D-113) — and the rule there is that the copy
+    /// is validated after it is taken and never re-read. A [`USegment`] has no
+    /// reader at all: the only way to get bytes out of one is
+    /// [`reclaim`](USegment::reclaim), which clears them first, so a frame
+    /// that held a program's stack cannot come back to the kernel still
+    /// holding it (D-107).
+    ///
+    /// The first version of this comment said the exception did not exist
+    /// (D-115).
     ///
     /// `false` if the read would run past the run, or if the direct map cannot
     /// reach it, having written nothing into `into`.
@@ -542,26 +550,17 @@ impl USegment {
         self.0.is_empty()
     }
 
-    /// Write `bytes` at `offset` within the run.
+    /// Pin this run for sharing, giving up the right to map it as owned.
     ///
-    /// The kernel's side of a page ring 3 also has. Publishing into one is
-    /// what a shared ring is made of, and it is safe in the sense that
-    /// matters: these are the kernel's frames and the write goes through the
-    /// direct map, so nothing ring 3 does can make it reach elsewhere. What
-    /// ring 3 *reads* afterwards is its own business (D-113).
-    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
-        self.0.write_at(offset, bytes)
-    }
-
-    /// Read `into.len()` bytes from `offset` within the run.
-    ///
-    /// **Every byte read here is ring 3's.** `Segment::read_at` is deliberately
-    /// not reachable through this type for any other purpose; this exists
-    /// because a shared ring's whole job is to read what userspace wrote, and
-    /// the rule is that the copy is validated *after* it is taken and never
-    /// re-read (D-79, CVE-2025-39816).
-    pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
-        self.0.read_at(offset, into)
+    /// Consuming, and [`Shared`] is not convertible back. That is the whole
+    /// mechanism: `map_shared` borrows and writes no `OWNED` bit, `map_user`
+    /// consumes and writes one — so a run passed to both would be mapped
+    /// twice, and unmapping the owned mapping would return frames the shared
+    /// mapping still reaches. Ring 3 would then be writing memory the
+    /// allocator had handed to a page table (D-115).
+    #[must_use]
+    pub fn share(self) -> Shared {
+        Shared(self.0)
     }
 
     /// Take the run back for the kernel, with every byte cleared.
@@ -572,10 +571,65 @@ impl USegment {
     /// end).
     ///
     /// `None` if the direct map cannot reach the run, in which case the frames
-    /// stay untyped and are dropped.
+    /// are **leaked rather than freed**: they still hold ring 3's bytes, and
+    /// returning those to the allocator is the disclosure this exists to
+    /// prevent.
     pub fn reclaim(self) -> Option<Segment> {
         let mut segment = self.0;
-        segment.zero().then_some(segment)
+        if segment.zero() {
+            return Some(segment);
+        }
+        // The clear failed, so these frames still hold a program's bytes. They
+        // must not go back to the allocator: leaking is the safe half, exactly
+        // as it is in `Frame`'s and `Segment`'s own `Drop` when the bookkeeping
+        // disagrees. Dropping here would have returned them unzeroed, which is
+        // the one path where this type's whole purpose lapsed silently
+        // (D-115).
+        core::mem::forget(segment);
+        None
+    }
+}
+
+/// A run pinned for sharing: mapped into an address space without being given
+/// to it, and never mappable as owned.
+///
+/// The kernel keeps these frames and writes them through the direct map while
+/// ring 3 reads them through the mapping — which is what a shared ring is
+/// (D-113). Reachable only through [`USegment::share`], and with no road back,
+/// so the aliasing that would let one run be both shared and owned is not
+/// expressible.
+#[derive(Debug)]
+pub struct Shared(Segment);
+
+impl Shared {
+    /// Where the run begins in physical memory.
+    pub const fn address(&self) -> Paddr {
+        self.0.address()
+    }
+
+    /// Bytes in the run.
+    pub const fn len(&self) -> u64 {
+        self.0.len()
+    }
+
+    /// Whether the run is empty. Never true; see [`Segment::is_empty`].
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Write `bytes` at `offset` within the run.
+    ///
+    /// The kernel's side of a page ring 3 also has.
+    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
+        self.0.write_at(offset, bytes)
+    }
+
+    /// Read `into.len()` bytes from `offset` within the run.
+    ///
+    /// **Every byte read here is ring 3's**, and the rule is that the copy is
+    /// validated after it is taken and never re-read (D-79).
+    pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
+        self.0.read_at(offset, into)
     }
 }
 

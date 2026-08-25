@@ -19,6 +19,11 @@
 //!
 //! And a mapping carries its evidence (D-87). There is no entry taking a bare
 //! physical address: [`AddressSpace::map_owned`] takes frames the caller owns,
+//! Every entry point takes evidence rather than a number — the mapping ones
+//! and, since D-115, the reading one: [`translate_in_root`] takes a
+//! [`Root`] minted by `task::address_space_of`, because a caller-chosen
+//! physical address is an arbitrary read through the direct map.
+//!
 //! [`AddressSpace::map_boot`] takes a [`BootRegion`] the memory map covers, and
 //! [`AddressSpace::map_device`] refuses anything that is not a device hole.
 
@@ -32,7 +37,8 @@ use x86_paging::{
 };
 
 use super::cpu;
-use crate::mm::{self, Paddr, Segment, USegment};
+use super::task::Root;
+use crate::mm::{self, Paddr, Segment, Shared, USegment};
 use crate::mmio::MmioRegion;
 use crate::sync::Once;
 
@@ -516,10 +522,16 @@ impl AddressSpace {
     /// kernel keeps the pages and writes them through the direct map while
     /// ring 3 reads them through these entries (D-113).
     ///
+    /// A [`Shared`] rather than a `USegment`, because the type is what stops a
+    /// run being mapped both ways: `map_user` consumes a `USegment` and writes
+    /// `OWNED`, and unmapping *that* would return frames this mapping still
+    /// reaches. [`USegment::share`] is one-way, so the aliasing is not
+    /// expressible (D-115).
+    ///
     /// # The obligation this cannot enforce
     ///
     /// `run` must outlive the mapping. An address space has no `Drop` and a
-    /// `USegment` does, so a run freed while a space still maps it would leave
+    /// `Shared` does, so a run freed while a space still maps it would leave
     /// ring 3 holding memory the allocator has given away. Nothing in the type
     /// system says so here; the one caller keeps the run for the life of the
     /// object that owns the mapping, and that is where the property lives.
@@ -530,7 +542,7 @@ impl AddressSpace {
     pub fn map_shared(
         &mut self,
         virtual_base: u64,
-        run: &USegment,
+        run: &Shared,
         flags: Flags,
     ) -> Result<(), MapError> {
         self.may_reach(virtual_base, run.len())?;
@@ -597,14 +609,17 @@ impl AddressSpace {
             Flags::WRITABLE.union(Flags::NO_EXECUTE),
         )?;
 
-        let mut guard = slot.guard_base();
-        while guard < slot.stack_base() {
-            if self.lookup(guard).is_some() {
-                return Err(MapError::Conflict(guard));
-            }
-            guard = guard
-                .checked_add(PAGE_SIZE)
-                .ok_or(MapError::Conflict(guard))?;
+        // The guard is verified *after* the stack is mapped, because a guard
+        // page is defined by what the tables say and there is nothing to look
+        // at before. So a refusal here has to walk the stack back out — the
+        // frames are owned by the space with no handle naming them, and
+        // `map_owned`'s own doc says "on failure nothing was mapped" (D-115).
+        if let Err(refusal) = self.verify_guard(slot) {
+            // Nothing to do about a failure to undo: the frames stay in the
+            // space rather than going back to the allocator, which is a leak
+            // and not a double free. Reporting it would replace the refusal.
+            drop(self.unmap(slot.stack_base(), slot.stack_len()));
+            return Err(refusal);
         }
 
         Ok(MappedStack {
@@ -1015,6 +1030,22 @@ impl AddressSpace {
     }
 }
 
+impl AddressSpace {
+    /// Nothing is mapped in the pages below `slot`'s stack.
+    fn verify_guard(&self, slot: &Slot) -> Result<(), MapError> {
+        let mut guard = slot.guard_base();
+        while guard < slot.stack_base() {
+            if self.lookup(guard).is_some() {
+                return Err(MapError::Conflict(guard));
+            }
+            guard = guard
+                .checked_add(PAGE_SIZE)
+                .ok_or(MapError::Conflict(guard))?;
+        }
+        Ok(())
+    }
+}
+
 /// A zeroed frame, leaked, to serve as a page table.
 ///
 /// Leaked deliberately: the frame belongs to the page tables for the life of
@@ -1225,12 +1256,19 @@ pub fn translate(virtual_address: u64) -> Option<(Paddr, Flags)> {
 /// program's own tables say from a kernel thread — since D-106 no program is
 /// in the running space, so [`translate`] cannot answer for one.
 ///
+/// Takes a [`Root`] rather than a `Paddr`, because a bare physical address is
+/// not evidence of anything: `direct_pointer` is arithmetic and does not
+/// establish that the map reaches what it computes, so a caller-chosen number
+/// here was a fault on an unhandled address or an arbitrary-physical-read
+/// oracle. A `Root` is mintable only by `task::address_space_of`, so it names
+/// tables this kernel installed (D-115).
+///
 /// Read-only, and the walk is the same one `translate` uses, so it reports the
 /// effective permission rather than the leaf's opinion (D-103). Not gated
 /// behind a feature because `wost` has none: adding one would add a pass to
 /// the gate's configuration matrix (D-22) for a function that reads.
-pub fn translate_in_root(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags)> {
-    translate_in(root, virtual_address)
+pub fn translate_in_root(root: Root, virtual_address: u64) -> Option<(Paddr, Flags)> {
+    translate_in(root.address(), virtual_address)
 }
 
 fn translate_in(root: Paddr, virtual_address: u64) -> Option<(Paddr, Flags)> {

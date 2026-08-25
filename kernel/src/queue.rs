@@ -21,7 +21,7 @@
 
 use ring_proto::{Capacity, Queues};
 use wost::arch::current::paging::{AddressSpace, MapError};
-use wost::mm::{self, USegment};
+use wost::mm::{self, Shared, USegment};
 use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
@@ -138,7 +138,7 @@ struct Snapshot {
 #[derive(Debug)]
 pub(crate) struct Queue {
     /// The shared pages. The kernel's, for the ring's whole life.
-    shared: SpinLock<USegment>,
+    shared: SpinLock<Shared>,
     /// The kernel's own protocol state, which userspace cannot reach.
     state: SpinLock<Queues>,
     /// Woken when a completion is posted.
@@ -156,7 +156,10 @@ impl Queue {
         if !run.zero() {
             return None;
         }
-        let mut shared: USegment = run.into();
+        // Pinned for sharing, which is one-way: these frames can never also be
+        // mapped as owned, so no unmap can return them while the program still
+        // reaches them (D-115).
+        let mut shared: Shared = USegment::from(run).share();
 
         // The header is written before the pages are ever mapped, so a
         // program never sees a ring whose shape it cannot read.
@@ -183,10 +186,16 @@ impl Queue {
     /// # Errors
     ///
     /// As [`AddressSpace::map_shared`].
-    pub(crate) fn install(&self, space: &mut AddressSpace, at: u64) -> Result<(), MapError> {
+    /// `&mut self`, so the run is reached through `get_mut` rather than
+    /// through a guard: `map_shared` allocates page-table frames, and holding
+    /// a leaf guard across an allocation is what `lock_leaf` forbids (D-85).
+    /// Copying the address out instead would hand `map_shared` a bare number
+    /// where the type is the evidence, which is the hole D-115 closed one
+    /// function away.
+    pub(crate) fn install(&mut self, space: &mut AddressSpace, at: u64) -> Result<(), MapError> {
         space.map_shared(
             at,
-            &self.shared.lock_leaf(),
+            self.shared.get_mut(),
             Flags::WRITABLE.union(Flags::NO_EXECUTE),
         )
     }
@@ -205,6 +214,15 @@ impl Queue {
         while let Some(submission) = self.take(&snapshot) {
             let completion = perform(submission);
             if !self.post(completion) {
+                // Unreachable: admission reserved this slot before the
+                // operation was accepted, which is the whole of D-79's design,
+                // and D-112's model says no reachable state loses one. If it
+                // ever is reached the operation has been consumed with no
+                // completion — so the reservation is held for ever, the ring
+                // admits nothing more, and the program waits on something that
+                // will not come. Loud in a debug build rather than a silent
+                // wedge nobody can diagnose (D-115).
+                debug_assert!(false, "a reserved completion slot was not there");
                 break;
             }
             served += 1;
@@ -292,31 +310,48 @@ impl Queue {
         bytes[4..8].copy_from_slice(&completion.status.to_le_bytes());
         bytes[8..16].copy_from_slice(&completion.value.to_le_bytes());
 
+        // `state` before `shared`, which is the order `take` uses. The two are
+        // never held together, and taking them in opposite orders in the two
+        // functions was an inversion pre-seeded for SMP (D-70, D-115).
+        let tail = self.state.lock_leaf().completions().tail();
+
         let at = ENTRIES_AT + (SUBMISSIONS as usize * ENTRY_BYTES) + slot * ENTRY_BYTES;
         let mut shared = self.shared.lock_leaf();
         if !shared.write_at(at, &bytes) {
             return false;
         }
-
         // The entry is in the page before the tail says so: a program that
         // sees the tail move and reads the slot finds what was written, not
-        // what was there before.
-        let tail = self.state.lock_leaf().completions().tail();
+        // what was there before — and `complete` already advanced the tail, so
+        // this publishes a value taken before the write and stored after it.
         write_u32(&mut shared, header::COMPLETION_TAIL, tail);
         true
     }
 
     /// Let userspace's reaping through, so admission can proceed again.
     ///
-    /// Reads the snapshot's `completion_head` rather than the page, for the
-    /// same reason everything else here does.
-    pub(crate) fn reap_up_to(&self, snapshot_head: u32) -> usize {
+    /// `claimed_head` is whatever the program wrote, taken once by the caller
+    /// and passed in — this function reads no page. What it does with the
+    /// value is bound it: see below.
+    pub(crate) fn reap_up_to(&self, claimed_head: u32) -> usize {
         let mut state = self.state.lock_leaf();
+
+        // Bounded before it drives anything, exactly as the submission tail is
+        // (D-79's copy-out-then-*validate*). A head further ahead than there
+        // are completions posted is not a large reap, it is a lie — and
+        // honouring it reaps entries the program never read, which defeats
+        // the one claim the completion queue exists to make. The loop's own
+        // termination is not a bound: `reap` would happily drain all of them
+        // (D-115).
+        let posted = state.completions().occupied();
+        let asked = claimed_head.wrapping_sub(state.completions().head());
+        let allowed = asked.min(posted);
+
         let mut reaped = 0;
-        while state.completions().head() != snapshot_head && state.reap().is_some() {
+        while reaped < allowed && state.reap().is_some() {
             reaped += 1;
         }
-        reaped
+        reaped as usize
     }
 
     /// What userspace last said it had reaped.
@@ -367,6 +402,26 @@ impl Queue {
         write_u32(&mut self.shared.lock_leaf(), header::COMPLETION_HEAD, head);
     }
 
+    /// Read a submission back out of the shared page.
+    ///
+    /// So a check can show that a hostile rewrite *landed* — without it, a
+    /// check comparing only the completion is comparing two places the rewrite
+    /// never touched, which is true whatever the kernel does (D-115).
+    #[cfg(feature = "selftest")]
+    pub(crate) fn read_submission_for_test(&self, slot: usize) -> Submission {
+        let mut bytes = [0u8; ENTRY_BYTES];
+        let at = ENTRIES_AT + slot * ENTRY_BYTES;
+        self.shared.lock_leaf().read_at(at, &mut bytes);
+        Submission {
+            opcode: Opcode::decode(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+            token: u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+            argument: u64::from_le_bytes([
+                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                bytes[15],
+            ]),
+        }
+    }
+
     /// Read a completion back out of the shared page as a program would.
     #[cfg(feature = "selftest")]
     pub(crate) fn read_completion_for_test(&self, slot: usize) -> Completion {
@@ -383,9 +438,32 @@ impl Queue {
         }
     }
 
-    /// The header, for the check that a program can read the ring's shape.
+    /// The shape the **kernel** believes this ring has.
+    ///
+    /// From `state`, which ring 3 cannot reach. The header page carries the
+    /// same three numbers for a program to read, and a check that asked *it*
+    /// would be asking ring 3 what shape its own ring is — which a program
+    /// installed at `user::RING` can answer however it likes, including with a
+    /// `submissions` whose double overflows a `u32` and panics the debug
+    /// kernel (D-115).
     #[cfg(feature = "selftest")]
-    pub(crate) fn shape_for_test(&self) -> (u32, u32, u32) {
+    pub(crate) fn shape(&self) -> (u32, u32, u32) {
+        let state = self.state.lock_leaf();
+        (
+            ring_proto::VERSION,
+            state.submissions().capacity().entries(),
+            state.completions().capacity().entries(),
+        )
+    }
+
+    /// The header page, as a program would read it.
+    ///
+    /// Every number here is ring 3's the moment the ring is installed, so a
+    /// caller must treat it as an assertion about *publication* and never as
+    /// one about shape. The only honest use is comparing it against
+    /// [`shape`](Self::shape) on a ring no program has been given.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn published_shape(&self) -> (u32, u32, u32) {
         let shared = self.shared.lock_leaf();
         (
             read_u32(&shared, header::VERSION),
@@ -421,13 +499,13 @@ fn perform(submission: Submission) -> Completion {
 }
 
 /// Read one little-endian `u32` out of the shared pages.
-fn read_u32(shared: &USegment, at: usize) -> u32 {
+fn read_u32(shared: &Shared, at: usize) -> u32 {
     let mut bytes = [0u8; 4];
     shared.read_at(at, &mut bytes);
     u32::from_le_bytes(bytes)
 }
 
 /// Write one little-endian `u32` into the shared pages.
-fn write_u32(shared: &mut USegment, at: usize, value: u32) {
+fn write_u32(shared: &mut Shared, at: usize, value: u32) {
     shared.write_at(at, &value.to_le_bytes());
 }

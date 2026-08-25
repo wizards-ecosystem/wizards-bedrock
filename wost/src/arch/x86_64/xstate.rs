@@ -12,6 +12,10 @@
 //! monotonicity assumption. What is here is the four instructions and the two
 //! control registers.
 //!
+//! Nothing is enabled until every refusal has been made: a failure path that
+//! left SSE legal at CPL 3 with no save in the switch would be worse than
+//! never calling [`init`] at all (D-115).
+//!
 //! `XCR0` is x87, SSE and AVX and nothing else (D-82). A wider mask is a
 //! larger buffer for every thread and state this kernel has no user for; the
 //! bits that would earn their room — CET's shadow-stack pointers — arrive with
@@ -79,9 +83,14 @@ pub fn init() -> Option<Extended> {
         return None;
     }
 
-    cpu::enable_extended_state();
-
-    // `CR4.OSXSAVE` is set now, which is what makes the sub-leaves meaningful.
+    // **Every refusal happens before anything is enabled.** `CPUID.0DH`
+    // reports what the *processor* supports and needs no control bit; only
+    // the instructions do. The first version enabled first and asked
+    // afterwards, so three failure paths left `CR0.EM` clear and
+    // `CR4.OSFXSR` set — SSE legal at CPL 3 — with `FORM` at zero, which
+    // means the switch saves nothing. Two programs would then share the
+    // register file, and the machine would be strictly worse off than if
+    // this function had never been called (D-115).
     let supported = __cpuid_count(XSTATE_LEAF, 0);
     let available = u64::from(supported.eax) | (u64::from(supported.edx) << 32);
     let mask = available & xstate::PERMITTED;
@@ -90,10 +99,6 @@ pub fn init() -> Option<Extended> {
     if mask & xstate::X87 == 0 {
         return None;
     }
-
-    // SAFETY: every bit of `mask` was reported available by the leaf above,
-    // and `CR4.OSXSAVE` is set, which is `XSETBV`'s only precondition.
-    unsafe { set_extended_control(mask) };
 
     // Sub-leaf 1 reports which save forms exist.
     let forms = __cpuid_count(XSTATE_LEAF, 1);
@@ -105,12 +110,19 @@ pub fn init() -> Option<Extended> {
     }
     // The uncompacted form writes every component at its architectural offset,
     // which is never below the compacted one; `CPUID.0DH.0:EBX` is that size
-    // for the mask now in `XCR0`. Taking the larger means one ceiling serves
-    // whichever form the processor turns out to have.
+    // for the mask this is about to put in `XCR0`. Taking the larger means one
+    // ceiling serves whichever form the processor turns out to have.
     let bytes = layout.size().max(supported.ebx as usize);
     if !(xstate::HEADER_BYTES..=CEILING).contains(&bytes) {
         return None;
     }
+
+    // Nothing below can refuse, so from here the machine is committed.
+    cpu::enable_extended_state();
+    // SAFETY: every bit of `mask` was reported available by the leaf above,
+    // and `CR4.OSXSAVE` is set by the line above, which is `XSETBV`'s only
+    // precondition.
+    unsafe { set_extended_control(mask) };
 
     BYTES.store(bytes, Ordering::Release);
     FORM.store(if compacted { 2 } else { 1 }, Ordering::Release);
@@ -223,12 +235,19 @@ unsafe fn set_extended_control(mask: u64) {
 /// Put `value` in the low quadword of `xmm0`.
 ///
 /// The only thing in this kernel that touches a vector register, and it exists
-/// so a check can ask whether a switch preserved one. Safe: `xmm0` is
-/// caller-saved in the ABI and the kernel is built `+soft-float`, so no
-/// compiled code holds anything there — which is also what makes the switch's
-/// save able to sit *before* the switch (D-108).
+/// so a check can ask whether a switch preserved one.
+///
+/// **The clobber is not declared, and cannot be.** `x86_64-unknown-none` is
+/// built `-sse,+soft-float`, so `xmm0` is not a register LLVM knows how to
+/// allocate — naming it in a clobber list is rejected. What makes this sound
+/// is therefore the *target feature* and not the asm contract: no compiled
+/// code in this kernel holds anything in a vector register, which is also what
+/// lets the switch's save sit before the switch (D-108). Written down because
+/// soundness resting on a build flag should be visible where the flag is
+/// relied on (D-115).
 pub fn write_vector_probe(value: u64) {
-    // SAFETY: writes one caller-saved register and reads nothing else.
+    // SAFETY: writes one register no compiled code in this kernel holds, per
+    // the note above, and reads nothing else.
     unsafe {
         asm!(
             "movq xmm0, {value}",
@@ -257,7 +276,11 @@ pub fn read_vector_probe() -> u64 {
 /// Zero before [`init`] succeeds, which is also what a processor without
 /// `XSAVE` reports — the two are the same answer for the same reason.
 pub fn extended_control() -> u64 {
-    if !is_enabled() {
+    // Guarded on the *control register*, not on `FORM`. Reading the Rust flag
+    // here made the check that asks about `XCR0` return a constant zero on the
+    // path where it mattered — D-105's `VERW`-arming lesson, in a fresh
+    // instance found by D-115.
+    if !cpu::extended_state_is_enabled() {
         return 0;
     }
     let (low, high): (u32, u32);

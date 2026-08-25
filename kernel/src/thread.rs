@@ -605,6 +605,16 @@ fn spawn_prepared(
     if let Some(binding) = binding
         && let Err(error) = task::bind_address_space(slot, binding)
     {
+        // `wost`'s slot is `Alive` and this one would go `Free`, so a later
+        // spawn choosing it would be refused for ever — a permanent slot loss
+        // rather than a leak that ends. Retired on `wost`'s side too, which is
+        // what `exit` does and what leaves the two tables agreeing (D-115).
+        //
+        // Unreachable today: after a successful `fabricate` the slot is in
+        // range, `Alive` and not the current one, which is every way
+        // `bind_address_space` can refuse. Handled because "unreachable" is a
+        // property of today's callers and not of this function.
+        let _ = task::retire(slot);
         THREADS.lock_leaf().release(slot);
         return Err(SpawnError::Task(error));
     }
