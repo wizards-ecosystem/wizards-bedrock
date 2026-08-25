@@ -209,6 +209,7 @@ pub(crate) fn last_syscall() -> Record {
 /// because this is written from trap context.
 struct Recorder {
     count: AtomicUsize,
+    slot: AtomicUsize,
     rax: AtomicU64,
     frame_address: AtomicU64,
     vector: AtomicU64,
@@ -223,6 +224,7 @@ impl Recorder {
     const fn new() -> Self {
         Self {
             count: AtomicUsize::new(0),
+            slot: AtomicUsize::new(0),
             rax: AtomicU64::new(0),
             frame_address: AtomicU64::new(0),
             vector: AtomicU64::new(0),
@@ -237,6 +239,8 @@ impl Recorder {
     /// Record `frame`, publishing the count last so a reader that sees it sees
     /// the rest.
     fn record(&self, frame: &TrapFrame) {
+        self.slot
+            .store(wost::arch::current::task::current(), Ordering::Relaxed);
         self.rax.store(frame.rax(), Ordering::Relaxed);
         self.frame_address
             .store(interrupt::live_frame_address(), Ordering::Relaxed);
@@ -257,6 +261,7 @@ impl Recorder {
     fn read(&self) -> Record {
         Record {
             count: self.count.load(Ordering::Acquire),
+            slot: self.slot.load(Ordering::Relaxed),
             rax: self.rax.load(Ordering::Relaxed),
             frame_address: self.frame_address.load(Ordering::Relaxed),
             vector: self.vector.load(Ordering::Relaxed),
@@ -278,6 +283,13 @@ static LAST_PING: Recorder = Recorder::new();
 pub(crate) struct Record {
     /// How many of this vector have been taken since boot.
     pub(crate) count: usize,
+    /// The thread slot that took it.
+    ///
+    /// Recorded since D-117, because slots are reused now: two crossings from
+    /// two threads can land on one stack, correctly, if the first is gone by
+    /// the time the second starts. So "which stack" no longer identifies a
+    /// caller and "which slot" does.
+    pub(crate) slot: usize,
     /// The general register loaded with the interrupted stack pointer.
     pub(crate) rax: u64,
     /// Where the entry path's own frame begins on the interrupted stack.

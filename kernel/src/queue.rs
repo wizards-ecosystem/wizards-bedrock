@@ -264,8 +264,7 @@ impl Queue {
     ///
     /// The `fetch_add` that feeds it is unconditional, so the shipped kernel
     /// and the checked one run the same code; only the reading is gated.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn served(&self) -> usize {
+    pub(crate) fn served_count(&self) -> usize {
         self.served.load(Ordering::Acquire)
     }
 
@@ -454,8 +453,7 @@ impl Queue {
     /// So a check can show that a hostile rewrite *landed* — without it, a
     /// check comparing only the completion is comparing two places the rewrite
     /// never touched, which is true whatever the kernel does (D-115).
-    #[cfg(feature = "selftest")]
-    pub(crate) fn read_submission_for_test(&self, slot: usize) -> Submission {
+    pub(crate) fn read_submission(&self, slot: usize) -> Submission {
         let mut bytes = [0u8; ENTRY_BYTES];
         let at = ENTRIES_AT + slot * ENTRY_BYTES;
         self.shared.lock_leaf().read_at(at, &mut bytes);
@@ -470,8 +468,7 @@ impl Queue {
     }
 
     /// Read a completion back out of the shared page as a program would.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn read_completion_for_test(&self, slot: usize) -> Completion {
+    pub(crate) fn read_completion(&self, slot: usize) -> Completion {
         let mut bytes = [0u8; ENTRY_BYTES];
         let at = ENTRIES_AT + (SUBMISSIONS as usize * ENTRY_BYTES) + slot * ENTRY_BYTES;
         self.shared.lock_leaf().read_at(at, &mut bytes);

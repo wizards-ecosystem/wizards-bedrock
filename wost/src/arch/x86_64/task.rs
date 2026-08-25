@@ -362,6 +362,44 @@ pub fn switch_from_trap(slot: usize, frame: &TrapFrame) -> Result<(), TaskError>
     result
 }
 
+/// Leave the running thread for good, from trap context, and run `slot`.
+///
+/// [`switch_from_trap`] with the leaving slot marked **dead** rather than
+/// alive: the thread is not coming back, so its stack is free for a later
+/// [`fabricate`] and its slot for a later spawn. Without it the kernel's own
+/// table frees the slot while this one keeps it `Alive`, and every later spawn
+/// that picks that index is refused for ever (D-117).
+///
+/// The frame is still the innermost live one and the interrupted context is
+/// still on this stack — nothing unwinds it, because nothing resumes here.
+///
+/// # Errors
+///
+/// As [`switch_from_trap`].
+pub fn retire_to(slot: usize, frame: &TrapFrame) -> Result<(), TaskError> {
+    if !interrupt::in_trap() {
+        return Err(TaskError::NotInTrap);
+    }
+    if !interrupt::is_live_frame(frame) {
+        return Err(TaskError::ForeignFrame);
+    }
+    if frame.flags() & interrupt::FLAGS_INTERRUPT == 0 {
+        return Err(TaskError::Uninterruptible);
+    }
+
+    let saved = interrupt::disable();
+    let suspended = interrupt::suspend_trap();
+    let result = prepare(slot, State::Dead).map(|(save, load)| {
+        // SAFETY: as in `switch_from_trap`. The slot being left is now `Dead`,
+        // which every later switch refuses, so the state saved here is never
+        // loaded — which is what makes its stack reusable.
+        unsafe { switch(save, load) };
+    });
+    interrupt::resume_trap(suspended);
+    saved.restore();
+    result
+}
+
 /// Leave the running thread for good and run `slot`.
 ///
 /// The caller's slot is marked dead before the switch, so no later

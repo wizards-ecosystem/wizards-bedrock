@@ -345,7 +345,10 @@ fn a_waiter_rereads_its_condition_before_blocking() -> bool {
     }
 
     let came_back = runs_until(200, || REREAD_RETURNED.load(Ordering::Acquire) == 1);
-    let settled = runs_until(200, || thread::free_slots() == free_before);
+    // `>=`, because a user program retiring elsewhere frees a slot too: the
+    // property is that *this* thread's slot came back, and another coming back
+    // with it does not falsify it (D-117).
+    let settled = runs_until(200, || thread::free_slots() >= free_before);
     // Taken out rather than assigned over: assignment drops the previous
     // `Arc` *inside* the critical section, and a last reference would reach
     // the heap and the frame allocator under a leaf guard — the shape
@@ -716,13 +719,13 @@ fn kernel_memory_cannot_be_published_to_ring_three() -> bool {
 fn only_a_space_that_matches_the_kernel_can_be_installed() -> bool {
     // A space that never shared the kernel's half is refused outright: it maps
     // no kernel code, so installing it is a triple fault.
-    let Ok(bare) = AddressSpace::new() else {
+    let Ok(mut bare) = AddressSpace::new() else {
         return false;
     };
     let bare_refused = matches!(bare.bind(), Err(ActivateError::NotAUserSpace));
 
     // One that did share it binds.
-    let Ok(shared) = AddressSpace::for_user() else {
+    let Ok(mut shared) = AddressSpace::for_user() else {
         return false;
     };
     let binds = shared.bind().is_ok();
@@ -863,17 +866,26 @@ fn a_second_thread_crosses_onto_its_own_stack() -> bool {
     // At its own user addresses, not the first program's.
     let elsewhere =
         second.stack_pointer != first.stack_pointer && second.stack_pointer < usercopy::USER_END;
-    // And `RSP0` moved: the stack this crossing landed on is not the one the
-    // previous crossing landed on, and both are kernel stacks — a shared
-    // `RSP0` would give one address twice.
-    let own_landing = second.frame_address != first_landing
-        && second.frame_address >= usercopy::USER_END
-        && first_landing >= usercopy::USER_END;
-    // The gap is at least a stack apart, so two landings inside one stack
-    // frame's worth of each other do not read as separate stacks.
-    let far_apart = second.frame_address.abs_diff(first_landing) >= PAGE_SIZE;
+    // And `RSP0` followed the thread: the stack this crossing landed on is the
+    // arena slot belonging to the thread that made it.
+    //
+    // **Not "a different stack from last time".** That was the property until
+    // D-117, and it held because a retired thread's slot was never reused —
+    // so two crossings could not share a stack even if `RSP0` never moved.
+    // Slots are reused now, and two threads that never coexist *correctly*
+    // share one. What identifies a caller is its slot, which the entry path
+    // records.
+    let landed_on_its_own = thread::layout()
+        .and_then(|layout| layout.slot(second.slot.checked_sub(1)?))
+        .is_some_and(|slot| {
+            second.frame_address > slot.stack_base() && second.frame_address <= slot.stack_top()
+        });
+    // Both are kernel stacks, which a shared or stale `RSP0` pointing at user
+    // memory would not be.
+    let kernel_stacks =
+        second.frame_address >= usercopy::USER_END && first_landing >= usercopy::USER_END;
 
-    from_user && through_the_gate && elsewhere && own_landing && far_apart
+    from_user && through_the_gate && elsewhere && landed_on_its_own && kernel_stacks
 }
 
 /// The return to ring 3 clears the buffers, and the crossing happened with it
@@ -1203,9 +1215,9 @@ fn every_submission_gets_exactly_one_completion() -> bool {
     let once = served == asked.len() && queue.serve() == 0;
     let accounted = queue.outstanding() == 0 && queue.is_consistent();
 
-    let echo = queue.read_completion_for_test(0);
-    let uptime = queue.read_completion_for_test(1);
-    let refused = queue.read_completion_for_test(2);
+    let echo = queue.read_completion(0);
+    let uptime = queue.read_completion(1);
+    let refused = queue.read_completion(2);
 
     let matched = echo.token == 0x1111
         && echo.status == queue::STATUS_OK
@@ -1285,7 +1297,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     if queue.serve() != 1 {
         return false;
     }
-    let posted = queue.read_completion_for_test(0);
+    let posted = queue.read_completion(0);
 
     // Ring 3 rewrites the entry it already submitted, as a hostile program
     // would the instant it saw the head move.
@@ -1304,7 +1316,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     // `read_completion(0) == posted` where `posted` had just been read from
     // that same slot, which is `X == X` and had no line whose deletion could
     // falsify it (D-115).
-    let rewritten = queue.read_submission_for_test(0);
+    let rewritten = queue.read_submission(0);
     let took_effect = rewritten.token == 0xBAAD && rewritten.opcode != queue::Opcode::Echo;
     let unchanged = took_effect
         && posted.token == 0xABCD
@@ -1364,7 +1376,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     }
     partial.publish_tail_for_test(1);
     let only_published = partial.serve() == 1;
-    let one_reported = partial.read_completion_for_test(0).token == 0x5150;
+    let one_reported = partial.read_completion(0).token == 0x5150;
     // And nothing is held open: the one served reported, and the two unpublished
     // entries were never admitted, so no reservation outlives the round.
     let still_reserved = partial.outstanding() == 0 && partial.is_consistent();
@@ -1375,6 +1387,89 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         && only_published
         && one_reported
         && still_reserved
+}
+
+/// A program that has ended gives its memory back — its pages, its tables,
+/// and its slot.
+///
+/// Until D-117 nothing was reclaimed: a retired thread kept its slot, its
+/// stack, its address space, its handle table and its ring for the life of the
+/// boot. Three programs a boot made that bounded and uninteresting; it stops
+/// being either the moment something spawns in a loop, which is what an OS
+/// does.
+///
+/// **Counted in frames, not inferred from a slot count.** A freed slot says a
+/// thread ended, which was already true before this decision — the question is
+/// whether the *memory* came back, and the allocator is the only thing that
+/// can answer it. The measurement is taken across a spawn and its collection,
+/// so what it reports is the net cost of running a program to completion.
+fn a_dead_program_gives_its_memory_back() -> bool {
+    // Drain anything earlier checks left, so the measurement below is about
+    // this program and not about theirs.
+    while user::collect().is_some() {}
+
+    let free_before = mm::free_frames();
+    let slots_before = thread::free_slots();
+    let (pages_before, tables_before) = user::reclaimed();
+    let retirements_before = thread::retirements();
+
+    let Ok(spawned) = user::run_for_bootstrap() else {
+        return false;
+    };
+    if !runs_until(2000, || thread::retirements() > retirements_before) {
+        return false;
+    }
+
+    // Its slot came back with it: the thread is gone from both tables, which
+    // is what makes the index usable again.
+    let slot_returned = runs_until(500, || thread::free_slots() >= slots_before);
+
+    // And its memory, once something collected. The idle thread does this
+    // when the machine has nothing better to do; here the check asks
+    // directly, because waiting for idle in a busy self-test is waiting for
+    // an event that may not come.
+    let collected = user::collect().is_some();
+    let (pages_after, tables_after) = user::reclaimed();
+    let gave_back = pages_after > pages_before && tables_after > tables_before;
+
+    // The allocator agrees. Not exactly equal: the program's *stack* is the
+    // kernel's arena, which is mapped once at boot and not per thread, and
+    // the check's own bookkeeping allocates nothing but the heap may have
+    // grown. What must not happen is the count going *down* across a whole
+    // program's life, which is the leak this closes.
+    let free_after = mm::free_frames();
+    let no_worse = free_after >= free_before;
+
+    // And nothing is left waiting: one program made one zombie, and it is
+    // collected.
+    let drained = !user::has_zombies();
+
+    let _ = spawned;
+
+    // And it holds under repetition, which is the case reclamation exists for.
+    // Sixteen slots, forty programs: without reclamation this runs out after
+    // sixteen and every later spawn is refused. The frame count at the end is
+    // what says the memory came back too, and not merely the slots.
+    let free_at_start = mm::free_frames();
+    let mut ran = 0;
+    for _ in 0..40 {
+        let retirements = thread::retirements();
+        if user::run_for_bootstrap().is_err() {
+            break;
+        }
+        if !runs_until(2000, || thread::retirements() > retirements) {
+            break;
+        }
+        while user::collect().is_some() {}
+        ran += 1;
+    }
+    let repeated = ran == 40;
+    // Forty programs, each with a space, a ring, a table and three mappings:
+    // a leak of even one frame apiece would be visible here, and the whole
+    // arena is only a few hundred.
+    let steady = mm::free_frames() >= free_at_start;
+
+    slot_returned && collected && gave_back && no_worse && drained && repeated && steady
 }
 
 /// A program posts an operation, rings the doorbell, and reads its own answer.
@@ -1408,9 +1503,14 @@ fn a_program_drives_its_own_ring() -> bool {
         return false;
     }
 
-    let Some((served, submitted, completed)) = user::ring_round_trip_of(spawned.slot) else {
+    // Read from the *exit record*, not from the program: reclamation has
+    // already given its ring's pages back by now, and reading a process the
+    // kernel has collected is reading a corpse (D-117). The record is taken
+    // at the moment of death, while there is still something to read.
+    let Some(rites) = user::last_rites_of(spawned.slot) else {
         return false;
     };
+    let (served, submitted, completed) = (rites.served, rites.submitted, rites.completed);
 
     // The kernel's own tally, which ring 3 cannot write.
     let one_served = served == 1;
@@ -1443,6 +1543,7 @@ fn a_program_drives_its_own_ring() -> bool {
 /// child, which is what "no ambient authority" looks like from this side: a
 /// spawner that dropped its end could never speak to what it spawned.
 fn a_spawned_program_holds_exactly_one_handle() -> bool {
+    let retirements_before = thread::retirements();
     // Its own program rather than a shared launcher: every ring-3 check
     // counts crossings, and an extra one from here would be attributed to
     // whichever check happened to look next.
@@ -1450,6 +1551,9 @@ fn a_spawned_program_holds_exactly_one_handle() -> bool {
         return false;
     };
 
+    // Its table, while it is alive, and again from the record once it is not:
+    // the count is the claim, and a program that gained a handle *during* its
+    // life would break it just as surely as one born with two (D-111, D-117).
     let Some((entries, kind)) = user::bootstrap_of(spawned.slot) else {
         return false;
     };
@@ -1483,7 +1587,16 @@ fn a_spawned_program_holds_exactly_one_handle() -> bool {
     let usable =
         object::Message::new(b"hello, child").is_ok_and(|message| ours.send(message).is_ok());
 
-    exactly_one && a_channel && has_a_ring && mapped && paired && usable
+    // And it leaves with one, having never been given a second. Waited for
+    // rather than left running: a program retiring during a later check moves
+    // the free-slot count under it, which is a race this check would be
+    // creating for its neighbours (D-117).
+    let gone = runs_until(2000, || thread::retirements() > retirements_before);
+    let died_with_one = user::last_rites_of(spawned.slot).is_some_and(|rites| {
+        rites.handles == 1 && rites.bootstrap == Some(object::ObjectType::Channel)
+    });
+
+    exactly_one && a_channel && has_a_ring && mapped && paired && usable && gone && died_with_one
 }
 
 /// Bytes sent down one end of a channel come out of the other, once.
@@ -1794,7 +1907,7 @@ fn a_blocked_receiver_wakes_with_its_message() -> bool {
     }
 
     let woke = runs_until(500, || BLOCKED_RECEIVER.load(Ordering::Acquire) == 1);
-    let settled = runs_until(500, || thread::free_slots() == free_before);
+    let settled = runs_until(500, || thread::free_slots() >= free_before);
 
     // And the window itself: a waiter arriving when the message is *already*
     // there registers, re-reads under the same lock, and comes straight back.
@@ -1819,7 +1932,7 @@ fn a_blocked_receiver_wakes_with_its_message() -> bool {
         return false;
     }
     let rereads = runs_until(500, || WINDOW_RETURNED.load(Ordering::Acquire) == 1);
-    let window_settled = runs_until(500, || thread::free_slots() == free_before);
+    let window_settled = runs_until(500, || thread::free_slots() >= free_before);
     drop(WINDOW_CHANNEL.lock_leaf().take());
 
     // Nothing is left registered, so a later wake cannot name a thread that is
@@ -2166,7 +2279,10 @@ fn a_signal_wakes_a_thread_waiting_on_a_handle() -> bool {
 
     // Leave nothing running: a thread still exiting perturbs whatever check
     // comes next, and the alternation check is sensitive to exactly that.
-    let settled = runs_until(200, || thread::free_slots() == free_before);
+    // `>=`, because a user program retiring elsewhere frees a slot too: the
+    // property is that *this* thread's slot came back, and another coming back
+    // with it does not falsify it (D-117).
+    let settled = runs_until(200, || thread::free_slots() >= free_before);
     // As above: the previous value leaves the guard rather than being dropped
     // inside it.
     drop(WAITED_EVENT.lock_leaf().take());
@@ -3514,7 +3630,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 125;
+const EXPECTED_CHECKS: usize = 126;
 
 impl Report {
     const fn new() -> Self {
@@ -3681,6 +3797,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a second thread crosses onto its own stack",
         a_second_thread_crosses_onto_its_own_stack(),
+    );
+    report.check(
+        "a dead program gives its memory back",
+        a_dead_program_gives_its_memory_back(),
     );
     report.check(
         "a program drives its own ring",

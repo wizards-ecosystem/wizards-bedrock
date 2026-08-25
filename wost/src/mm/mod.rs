@@ -265,6 +265,21 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// Rebuild the handle for a frame this crate allocated and forgot.
+    ///
+    /// # Safety
+    ///
+    /// `address` must be a frame [`allocate`] or [`allocate_zeroed`] returned
+    /// and whose handle was forgotten, and no other `Frame` may name it.
+    /// Dropping the result frees it, so a second handle over one frame is a
+    /// double free — and one built over a frame nothing allocated corrupts the
+    /// allocator's records.
+    pub(crate) const unsafe fn from_raw(address: Paddr) -> Self {
+        Self {
+            index: (address / FRAME_SIZE) as usize,
+        }
+    }
+
     /// Where the frame begins in physical memory.
     pub const fn address(&self) -> Paddr {
         self.index as u64 * FRAME_SIZE

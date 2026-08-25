@@ -933,10 +933,15 @@ Nothing here is a surprise; each is named in the ADR that created it.
 - **`FS_BASE` is a fourth thing that must follow a thread**, found by writing
   the sysdeps (D-114). `RSP0`, `CR3` and the extended state all live in
   `task::prepare`; this belongs there with them.
-- **Nothing is reclaimed.** A retired thread keeps its slot, its stack, its
-  address space, its handle table and its ring for the life of the boot. Three
-  programs a boot makes that bounded and uninteresting; it stops being either
-  the moment something spawns in a loop.
+- ~~Nothing is reclaimed.~~ **Closed by D-117.** A retired program's resources
+  become a zombie and are collected by the idle thread — which *is* "the
+  machine has nothing better to do" — or by the next spawn, on a machine busy
+  enough never to idle. An address space now remembers its own page tables so
+  it can give them back, `bind` borrows rather than consumes so the space
+  survives the thread, and the check runs forty programs through sixteen slots
+  with the frame count steady. The program's *stack* is still the boot-time
+  arena, so sixteen remains a cap on concurrency — no longer on programs ever
+  run.
 - **A fault during a user copy is still terminal**, where a real kernel would
   recover and return an error. That needs a fixup table keyed on the faulting
   instruction pointer, and the trap dispatch D-81 built is what would consult

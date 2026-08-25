@@ -498,6 +498,15 @@ pub(crate) fn start_idle() {
 /// What the idle thread does: nothing, as cheaply as the hardware allows.
 fn idle_loop() {
     loop {
+        // Where a dead program's memory goes back. The idle thread *is* "the
+        // machine has nothing better to do", which is exactly when freeing
+        // memory should happen — and it is the one context that is neither the
+        // dying thread nor holding anything (D-117).
+        //
+        // One per pass rather than all of them, so a halt is never far away.
+        if crate::user::collect().is_some() {
+            continue;
+        }
         IDLE_HALTS.fetch_add(1, Ordering::Relaxed);
         // Nothing is armed for this thread; the halt ends on whatever the
         // rest of the machine was already waiting for.
@@ -571,6 +580,11 @@ fn spawn_prepared(
     binding: Option<Binding>,
     arrange: impl FnOnce(usize),
 ) -> Result<usize, SpawnError> {
+    // Before looking for a slot: a machine busy enough never to idle would
+    // otherwise never collect, and the thing most likely to need a slot is the
+    // thing most likely to free one (D-117).
+    while crate::user::has_zombies() && crate::user::collect().is_some() {}
+
     let slot = {
         let mut threads = THREADS.lock_leaf();
         if threads.spawnable == 0 {
@@ -789,13 +803,18 @@ fn park(context: &mut ThreadContext, leaving: State, until: Option<u64>) {
 /// thread exists, or if `wost` refuses the switch.
 pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
     let now = time::now_ns();
+    let current = task::current();
     let (next, event) = {
         let mut threads = THREADS.lock_leaf();
-        let current = task::current();
         threads.queue.charge(current, now);
         threads.queue.wake_due(now);
         threads.queue.park(current);
-        threads.queue.slots[current].state = State::Blocked;
+        // Free, not blocked. Until D-117 a retired thread's slot stayed taken
+        // for the life of the boot, which made the cap of sixteen a cap on
+        // programs *ever run* rather than on programs running. The switch
+        // below leaves this stack for good, so nothing resumes here.
+        threads.identities[current] = Identity::FREE;
+        threads.queue.slots[current] = Scheduled::FREE;
         match threads.queue.choose(current, false) {
             Some(next) => {
                 threads.queue.slots[next].state = State::Running;
@@ -810,7 +829,16 @@ pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
     match next {
         Some(next) => {
             RETIREMENTS.fetch_add(1, Ordering::AcqRel);
-            task::switch_from_trap(next, frame).is_ok()
+            // Its resources become a zombie: this thread is standing on the
+            // stack and running on the tables it would have to free, so it
+            // cannot be the one to free them (D-117). Moving one `Option`
+            // between two arrays is all that happens here.
+            crate::user::orphan(current);
+            // `retire_to`, not `switch_from_trap`: the thread is not coming
+            // back, so `wost`'s slot must go `Dead` to match the `Free` this
+            // table just wrote. Leaving it `Alive` makes the index unusable
+            // for ever, which is the two tables disagreeing (D-117).
+            task::retire_to(next, frame).is_ok()
         }
         None => false,
     }

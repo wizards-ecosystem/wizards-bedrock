@@ -14,6 +14,7 @@
 //! (D-100, D-105). Each program now runs in a table of its own (D-106).
 
 use core::fmt;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use elf64::{Elf, ElfError, SegmentKind};
 use handle_space::Rights;
@@ -29,7 +30,7 @@ use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
 use crate::handle::{HandleError, HandleTable};
-use crate::object::{self, ObjectRef};
+use crate::object::{self, ObjectRef, ObjectType};
 use crate::{info, queue, thread, warn};
 
 /// Where the first user program's page of code goes.
@@ -176,9 +177,35 @@ impl core::fmt::Display for LoadError {
 ///
 /// The pages are filled *before* they are mapped, so a segment that is
 /// executable is never writable even for the instant it is being written.
-fn load(space: &mut AddressSpace, shift: u64) -> Result<u64, LoadError> {
+fn load(
+    space: &mut AddressSpace,
+    shift: u64,
+    regions: &mut [Option<(u64, u64)>; MAX_REGIONS],
+    used: &mut usize,
+) -> Result<u64, LoadError> {
     let bytes = (*IMAGE.lock_leaf()).ok_or(LoadError::Missing)?;
-    load_image(space, bytes, shift)
+    let entry = load_image(space, bytes, shift)?;
+    // What it mapped, so the same comes back. Read from the placements rather
+    // than recomputed, so a change to how a segment is rounded cannot leave a
+    // region behind (D-117).
+    for (at, len) in last_placements() {
+        remember(regions, used, at, len);
+    }
+    Ok(entry)
+}
+
+/// Where the last successful `load_image` put things.
+///
+/// A static rather than a return value because `load_image` is also called by
+/// the checks with a doctored image, and threading an out-parameter through
+/// every one of those would be noise around the thing they test. Written only
+/// on success, and read only by `load` immediately after.
+static PLACED: SpinLock<[Option<(u64, u64)>; MAX_REGIONS]> = SpinLock::new([None; MAX_REGIONS]);
+
+/// Take what the last load placed.
+fn last_placements() -> impl Iterator<Item = (u64, u64)> {
+    let taken = core::mem::take(&mut *PLACED.lock_leaf());
+    taken.into_iter().flatten()
 }
 
 /// Fill and map one validated placement.
@@ -332,6 +359,19 @@ pub(crate) fn load_image(
     if loaded == 0 {
         return Err(LoadError::Empty);
     }
+
+    // Recorded for `load`, which is the only caller that maps into a space
+    // something will later reclaim.
+    {
+        let mut placed = PLACED.lock_leaf();
+        *placed = [None; MAX_REGIONS];
+        for (slot, placement) in placements.iter().flatten().enumerate() {
+            if let Some(room) = placed.get_mut(slot) {
+                *room = Some((placement.at, placement.pages as u64 * PAGE_SIZE));
+            }
+        }
+    }
+
     elf.entry()
         .checked_add(shift)
         .ok_or(LoadError::NotUserMemory(elf.entry()))
@@ -360,8 +400,32 @@ static LAUNCHES: SpinLock<[Option<Launch>; thread::CAPACITY]> =
 /// process receives exactly one handle at spawn — its bootstrap channel — and
 /// every later handle arrived through a channel.** The table is the process's
 /// whole power, so "one entry" is the strongest form the claim has (D-111).
+/// Note that `len` bytes at `at` are this program's to have unmapped.
+///
+/// Silently drops the note past [`MAX_REGIONS`], which costs the frames rather
+/// than the correctness — and cannot happen for an image the loader accepted,
+/// since it places at most eight segments and this holds the stack beside them.
+fn remember(regions: &mut [Option<(u64, u64)>; MAX_REGIONS], used: &mut usize, at: u64, len: u64) {
+    if let Some(slot) = regions.get_mut(*used) {
+        *slot = Some((at, len));
+        *used += 1;
+    }
+}
+
+/// The most user regions one program maps.
+///
+/// Its segments, its stack and its ring. Bounded because reclaiming means
+/// unmapping exactly what was mapped, and a list that could grow is a list
+/// that needs the allocator on a path that must not fail (D-117).
+const MAX_REGIONS: usize = 8;
+
 #[allow(dead_code)]
 struct Bootstrap {
+    /// Its tables, kept so they can be given back. `bind` borrows rather than
+    /// consumes for exactly this reason (D-117).
+    space: AddressSpace,
+    /// What was mapped into them, so the same is unmapped.
+    regions: [Option<(u64, u64)>; MAX_REGIONS],
     table: HandleTable,
     /// Its ring. Held here because the shared pages are the kernel's and must
     /// outlive the mapping that shows them to the program (D-113).
@@ -395,29 +459,11 @@ pub(crate) struct Spawned {
 
 /// What a spawned program's table holds, for the check that counts it.
 #[cfg(feature = "selftest")]
-pub(crate) fn bootstrap_of(slot: usize) -> Option<(usize, crate::object::ObjectType)> {
+pub(crate) fn bootstrap_of(slot: usize) -> Option<(usize, ObjectType)> {
     let guard = BOOTSTRAPS.lock_leaf();
     let bootstrap = guard.get(slot)?.as_ref()?;
     let kind = bootstrap.table.kind_of(bootstrap.handle).ok()?;
     Some((bootstrap.table.live(), kind))
-}
-
-/// What a spawned program's ring served, and the round trip it made.
-///
-/// The submission is one the *program* wrote — the kernel never posts to its
-/// own ring — so a completion matching it is the whole async ABI having worked
-/// from ring 3 (D-116).
-#[cfg(feature = "selftest")]
-pub(crate) fn ring_round_trip_of(
-    slot: usize,
-) -> Option<(usize, queue::Submission, queue::Completion)> {
-    let guard = BOOTSTRAPS.lock_leaf();
-    let ring = &guard.get(slot)?.as_ref()?.ring;
-    Some((
-        ring.served(),
-        ring.read_submission_for_test(0),
-        ring.read_completion_for_test(0),
-    ))
 }
 
 /// What the **kernel** believes a spawned program's ring is.
@@ -487,14 +533,25 @@ impl fmt::Display for SpawnError {
 /// [`SpawnError`], naming which of those steps refused.
 pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spawned, SpawnError> {
     let mut space = AddressSpace::for_user().map_err(SpawnError::NoSpace)?;
-    let entry = load(&mut space, which * APART).map_err(SpawnError::Load)?;
+    // Every range mapped into it, so the same ranges come back (D-117). The
+    // loader reports its own; the stack and the ring are one each.
+    let mut regions = [None; MAX_REGIONS];
+    let mut mapped = 0;
+
+    let entry =
+        load(&mut space, which * APART, &mut regions, &mut mapped).map_err(SpawnError::Load)?;
     let stack = place_stack(&mut space, which).ok_or(SpawnError::NoStack)?;
+    remember(&mut regions, &mut mapped, stack, STACK_BYTES);
 
     // Its ring, at the same address every program's is — which is what having
     // a space of its own buys. The pages stay the kernel's: `map_shared`
     // writes no owned bit, so a program cannot free the memory a completion
-    // will be written into (D-113). Mapped before the binding, because the
-    // binding consumes the space.
+    // will be written into (D-113).
+    //
+    // Deliberately *not* remembered as a region: those frames are the ring's,
+    // not the space's, so unmapping them must not return them — `map_shared`
+    // wrote no owned bit and `unmap` would refuse anyway. They go back when
+    // the ring drops.
     let mut ring = queue::Queue::new().ok_or(SpawnError::NoRing)?;
     ring.install(&mut space, RING)
         .map_err(SpawnError::NoSpace)?;
@@ -515,6 +572,8 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
         .map_err(SpawnError::NoBootstrap)?;
 
     let mut bootstrap = Some(Bootstrap {
+        space,
+        regions,
         table,
         handle,
         ring,
@@ -541,6 +600,186 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
         slot,
         channel: ours,
     })
+}
+
+/// Give back everything a retired program held.
+///
+/// **Not called by the thread that owned it.** A retiring thread is standing
+/// on the kernel stack it is about to free and running on the tables it is
+/// about to reclaim; it cannot be the one to do this, and any design where it
+/// tries is a use-after-free wearing a comment. So a retired program's
+/// resources become a *zombie*, and something else collects (D-117).
+///
+/// The order is forced and each step is why the next is possible:
+///
+/// 1. **The mappings**, so the frames go back before the tables that reach
+///    them do. `unmap` returns them because `map_user` wrote the owned bit;
+///    the ring's pages are not among these, because `map_shared` did not.
+/// 2. **The handle table**, whose `Drop` releases every object it names — the
+///    bootstrap channel among them, so the parent's end learns its peer is
+///    gone.
+/// 3. **The ring**, whose `Shared` frees the pages the kernel kept.
+/// 4. **The tables**, last, because everything above reached memory through
+///    them.
+///
+/// Returns what went back, for the check that asks whether it did.
+fn reclaim(bootstrap: Bootstrap) -> Reclaimed {
+    let Bootstrap {
+        mut space,
+        regions,
+        table,
+        handle: _,
+        ring,
+    } = bootstrap;
+
+    let mut unmapped = 0;
+    for (at, len) in regions.into_iter().flatten() {
+        // The flush token is dropped here, which is what makes the mapping
+        // gone for the CPU as well as for the tables (D-88). Nothing to do
+        // about a refusal: the frames stay in the space and go with its
+        // tables, which is a leak and not a double free.
+        if let Ok(returned) = space.unmap(at, len) {
+            unmapped += returned.pages() as usize;
+            drop(returned);
+        }
+    }
+
+    // Before the tables: dropping an object can reach the frame allocator, and
+    // doing that after the space is gone would be fine — doing it *first* is
+    // simply the order that has nothing subtle in it.
+    drop(table);
+    drop(ring);
+
+    // Refused if these are the tables the CPU is walking, which is the one way
+    // this could be catastrophic rather than wrong.
+    let (tables, lost) = space.reclaim().unwrap_or((0, 0));
+
+    Reclaimed {
+        pages: unmapped,
+        tables,
+        lost,
+    }
+}
+
+/// What one reclaim gave back.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Reclaimed {
+    /// Frames the program's own mappings held.
+    pub(crate) pages: usize,
+    /// Frames its page tables were built from.
+    pub(crate) tables: usize,
+    /// Table frames it had too many of to remember, and did not get back.
+    pub(crate) lost: usize,
+}
+
+/// Programs whose threads are gone and whose resources are not.
+static ZOMBIES: SpinLock<[Option<Bootstrap>; thread::CAPACITY]> =
+    SpinLock::new([const { None }; thread::CAPACITY]);
+
+/// What every reclaim so far gave back.
+static RECLAIMED_PAGES: AtomicUsize = AtomicUsize::new(0);
+static RECLAIMED_TABLES: AtomicUsize = AtomicUsize::new(0);
+
+/// What a program held when it died.
+///
+/// Taken at `orphan` and kept after the resources are gone, because "what did
+/// that program do" is a question worth answering once it cannot be asked of
+/// the program itself. It is also the only way a check can observe a process
+/// that reclamation has since collected — before D-117 a retired program's
+/// bootstrap simply stayed, and every check that read one was reading a
+/// corpse the kernel had not got round to burying (D-117).
+/// Read only by the checks in the shipped kernel — the record is kept for
+/// every program either way, because a boot that wants to know what a program
+/// did should not have to be rebuilt to find out (D-117).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LastRites {
+    /// Handles in its table at the end.
+    pub(crate) handles: usize,
+    /// What its one bootstrap handle named.
+    pub(crate) bootstrap: Option<ObjectType>,
+    /// Completions its ring posted.
+    pub(crate) served: usize,
+    /// The first submission it wrote, and the completion that answered it.
+    pub(crate) submitted: queue::Submission,
+    pub(crate) completed: queue::Completion,
+}
+
+/// One per slot, overwritten by the next program to use it.
+static RITES: SpinLock<[Option<LastRites>; thread::CAPACITY]> =
+    SpinLock::new([const { None }; thread::CAPACITY]);
+
+/// What the program that last held `slot` left behind.
+#[cfg(feature = "selftest")]
+pub(crate) fn last_rites_of(slot: usize) -> Option<LastRites> {
+    RITES.lock_leaf().get(slot).copied().flatten()
+}
+
+/// Mark `slot`'s program dead, without freeing anything.
+///
+/// Called from trap context on the retiring thread itself, so it must not
+/// allocate, block, or touch the space it is running on. Moving one `Option`
+/// between two arrays does none of those.
+pub(crate) fn orphan(slot: usize) {
+    let taken = BOOTSTRAPS.lock_leaf().get_mut(slot).and_then(Option::take);
+    if let Some(bootstrap) = taken {
+        // The record first, while there is still something to read.
+        let rites = LastRites {
+            handles: bootstrap.table.live(),
+            bootstrap: bootstrap.table.kind_of(bootstrap.handle).ok(),
+            served: bootstrap.ring.served_count(),
+            submitted: bootstrap.ring.read_submission(0),
+            completed: bootstrap.ring.read_completion(0),
+        };
+        if let Some(room) = RITES.lock_leaf().get_mut(slot) {
+            *room = Some(rites);
+        }
+        if let Some(room) = ZOMBIES.lock_leaf().get_mut(slot) {
+            *room = Some(bootstrap);
+        }
+    }
+    // Cleared, so a slot reused by a later program never finds the previous
+    // one's entry point (D-117).
+    if let Some(room) = LAUNCHES.lock_leaf().get_mut(slot) {
+        *room = None;
+    }
+}
+
+/// Collect one dead program's resources, if there are any.
+///
+/// One per call rather than all of them: this runs where the machine had
+/// nothing better to do, and a loop that frees sixteen processes with
+/// interrupts on is a loop that can be preempted halfway through anyway. One
+/// at a time makes that unremarkable instead of something to reason about.
+///
+/// `None` if nothing was waiting.
+pub(crate) fn collect() -> Option<Reclaimed> {
+    // Taken out under the guard and reclaimed outside it: `reclaim` frees
+    // frames, which reaches the allocator, and this lock is a leaf (D-85).
+    let found = {
+        let mut zombies = ZOMBIES.lock_leaf();
+        zombies.iter_mut().find_map(Option::take)
+    };
+
+    let bootstrap = found?;
+    let reclaimed = reclaim(bootstrap);
+    RECLAIMED_PAGES.fetch_add(reclaimed.pages, Ordering::AcqRel);
+    RECLAIMED_TABLES.fetch_add(reclaimed.tables, Ordering::AcqRel);
+    Some(reclaimed)
+}
+
+/// Whether any program is waiting to be collected.
+pub(crate) fn has_zombies() -> bool {
+    ZOMBIES.lock_leaf().iter().any(Option::is_some)
+}
+
+/// Frames given back by every collection so far.
+#[cfg(feature = "selftest")]
+pub(crate) fn reclaimed() -> (usize, usize) {
+    (
+        RECLAIMED_PAGES.load(Ordering::Acquire),
+        RECLAIMED_TABLES.load(Ordering::Acquire),
+    )
 }
 
 /// What a program asked for, in `rax`.
