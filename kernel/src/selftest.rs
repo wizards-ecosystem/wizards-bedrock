@@ -335,7 +335,6 @@ fn a_waiter_rereads_its_condition_before_blocking() -> bool {
     };
     inner.signal();
 
-    // Safe to assign: the slot holds , so nothing is dropped under it.
     // Safe to assign: the slot is empty, so nothing is dropped under the guard.
     *REREAD_EVENT.lock_leaf() = Some(Arc::clone(&event));
     REREAD_RETURNED.store(0, Ordering::Release);
@@ -1021,6 +1020,393 @@ fn bytes_cross_the_boundary_only_where_they_may() -> bool {
         && hole_refused
         && read_only_refused
 }
+
+/// Bytes sent down one end of a channel come out of the other, once.
+///
+/// The IPC primitive (`002`), and the smallest true thing about it: a message
+/// crosses, it crosses in order, and it is gone from the sender's side. The
+/// ends are separate objects that name each other weakly, so a send appends to
+/// the *peer's* inbox and a receive takes from its own — which is what makes
+/// the pipe bidirectional without either end reading its own writes (D-110).
+fn a_message_crosses_a_channel_and_is_gone() -> bool {
+    let (near, far) = object::channel();
+    let (Some(here), Some(there)) = (near.as_channel(), far.as_channel()) else {
+        return false;
+    };
+
+    // Nothing arrives at the end that sent it.
+    let Ok(first) = object::Message::new(b"one") else {
+        return false;
+    };
+    if here.send(first).is_err() {
+        return false;
+    }
+    let sender_sees_nothing = !here.has_message() && there.has_message();
+
+    // In order, and each exactly once.
+    let Ok(second) = object::Message::new(b"two") else {
+        return false;
+    };
+    if here.send(second).is_err() {
+        return false;
+    }
+    let (Some(one), Some(two)) = (there.receive(), there.receive()) else {
+        return false;
+    };
+    let in_order = one.bytes() == b"one" && two.bytes() == b"two";
+    let drained = there.receive().is_none() && !there.has_message();
+
+    // And the other direction works, on the same pair.
+    let Ok(back) = object::Message::new(b"back") else {
+        return false;
+    };
+    let returns = there.send(back).is_ok()
+        && here
+            .receive()
+            .is_some_and(|message| message.bytes() == b"back");
+
+    // The queue is bounded, and a full one refuses rather than dropping.
+    let mut refused = false;
+    for _ in 0..=object::Channel::DEPTH {
+        let Ok(message) = object::Message::new(b"fill") else {
+            return false;
+        };
+        if here.send(message) == Err(object::ChannelError::Full) {
+            refused = true;
+            break;
+        }
+    }
+
+    sender_sees_nothing && in_order && drained && returns && refused
+}
+
+/// A channel end with nothing on the other side refuses, rather than leaking.
+///
+/// Two ends holding each other strongly is a cycle `Arc` will not collect, so
+/// the peer link is weak — and the price of that is that an orphaned end must
+/// say so. A send into nothing that reported success would be a message a
+/// caller believes was delivered (D-110).
+fn an_orphaned_channel_end_refuses() -> bool {
+    let (near, far) = object::channel();
+    let Some(here) = near.as_channel() else {
+        return false;
+    };
+    // Something already sent stays readable: closing the far end does not
+    // reach into this end's inbox.
+    let Ok(message) = object::Message::new(b"before") else {
+        return false;
+    };
+    if far
+        .as_channel()
+        .is_none_or(|there| there.send(message).is_err())
+    {
+        return false;
+    }
+
+    let before = here.is_orphaned();
+    drop(far);
+
+    let orphaned = !before && here.is_orphaned();
+    let still_readable = here
+        .receive()
+        .is_some_and(|message| message.bytes() == b"before");
+    let refuses = object::Message::new(b"after")
+        .is_ok_and(|message| here.send(message) == Err(object::ChannelError::PeerClosed));
+
+    orphaned && still_readable && refuses
+}
+
+/// A handle sent through a channel arrives with the rights both ends declared,
+/// and no more — and is gone from the sender.
+///
+/// Attenuate-on-send (D-110). The rights are declared per field with no
+/// default at either end, which is Fuchsia RFC-0028's finding applied: a
+/// default has unclear behaviour that is inconsistent across object types.
+/// Both ends declare, so neither can be surprised by the other, and the
+/// narrower of the two is what is granted.
+///
+/// The move is the other half. A handle that survived a send would make
+/// delegation into duplication, and `002`'s pillar 1 rests on it not.
+fn a_handle_crosses_with_the_rights_both_ends_declared() -> bool {
+    let mut sender = HandleTable::new(8);
+    let mut receiver = HandleTable::new(8);
+
+    let object = object::event();
+    let Ok(handle) = sender.insert(object, Rights::UNIVERSAL) else {
+        return false;
+    };
+
+    // The sender narrows to two of the four it holds.
+    let offered = Rights::WAIT.union(Rights::INSPECT);
+    let Ok((crossing, granted)) = sender.send(handle, offered) else {
+        return false;
+    };
+    let sender_narrowed = granted == offered;
+
+    // Gone from the sender: a move, not a copy.
+    let moved = sender.resolve(handle).is_err();
+
+    // The receiver narrows again, and gets the narrower of the two.
+    let Ok(arrived) = receiver.accept(crossing, granted, Rights::WAIT) else {
+        return false;
+    };
+    let Ok((_, held)) = receiver.resolve(arrived) else {
+        return false;
+    };
+    let receiver_narrowed = held == Rights::WAIT;
+
+    // Neither end can widen. The receiver asking for more than was offered is
+    // refused rather than clamped, because a clamp is a default by another
+    // name.
+    let mut widening = HandleTable::new(8);
+    let second = object::event();
+    let Ok(full) = widening.insert(second, Rights::UNIVERSAL) else {
+        return false;
+    };
+    let Ok((narrow, narrow_rights)) = widening.send(full, Rights::WAIT) else {
+        return false;
+    };
+    let receiver_cannot_widen = matches!(
+        receiver.accept(narrow, narrow_rights, Rights::UNIVERSAL),
+        Err(HandleError::Denied)
+    );
+
+    // Nor can a sender declare more than it holds.
+    let third = object::event();
+    let Ok(partial) = widening.insert(third, Rights::TRANSFER.union(Rights::WAIT)) else {
+        return false;
+    };
+    let sender_cannot_widen = matches!(
+        widening.send(partial, Rights::UNIVERSAL),
+        Err(HandleError::Denied)
+    );
+
+    sender_narrowed && moved && receiver_narrowed && receiver_cannot_widen && sender_cannot_widen
+}
+
+/// A handle whose `TRANSFER` right was stripped cannot be sent, and the
+/// refusal happens at the sender.
+///
+/// One bit, and it is what makes least privilege expressible: a holder can be
+/// given authority it may use and may not pass on. Refused at the sender
+/// because a receiver policing this would have to know what the sender held,
+/// which it cannot — the message carries an object and a set of rights, not a
+/// history (D-110).
+fn a_handle_without_transfer_is_refused_at_the_sender() -> bool {
+    let mut sender = HandleTable::new(8);
+    let object = object::event();
+
+    // Everything except the right to pass it on.
+    let held = Rights::UNIVERSAL.difference(Rights::TRANSFER);
+    let Ok(handle) = sender.insert(object, held) else {
+        return false;
+    };
+    let refused = matches!(sender.send(handle, held), Err(HandleError::Denied));
+
+    // And the refusal left it where it was: a failed send is not a close.
+    let still_there = sender.resolve(handle).is_ok();
+
+    // Stripping `TRANSFER` on the way through is how a holder is given a
+    // non-delegatable handle in the first place.
+    let mut receiver = HandleTable::new(8);
+    let second = object::event();
+    let Ok(sendable) = sender.insert(second, Rights::UNIVERSAL) else {
+        return false;
+    };
+    let Ok((crossing, granted)) = sender.send(sendable, Rights::WAIT.union(Rights::INSPECT)) else {
+        return false;
+    };
+    let Ok(arrived) = receiver.accept(crossing, granted, granted) else {
+        return false;
+    };
+    let cannot_pass_on = matches!(receiver.send(arrived, granted), Err(HandleError::Denied));
+
+    refused && still_there && cannot_pass_on
+}
+
+/// A handle sent in a message is the same object at the far end, and the
+/// receiver can use it.
+///
+/// The claim that makes a channel a delegation mechanism rather than a byte
+/// pipe: what arrives names the thing the sender named, and the rights that
+/// came with it are the rights it works under.
+fn a_handle_sent_in_a_message_names_the_same_object() -> bool {
+    let (near, far) = object::channel();
+    let (Some(here), Some(there)) = (near.as_channel(), far.as_channel()) else {
+        return false;
+    };
+
+    let mut sender = HandleTable::new(8);
+    let mut receiver = HandleTable::new(8);
+
+    // An event the receiver will be told about by handle, and which this
+    // thread keeps a reference to so it can signal it afterwards.
+    let shared = object::event();
+    let watching = Arc::clone(&shared);
+    let Ok(handle) = sender.insert(shared, Rights::UNIVERSAL) else {
+        return false;
+    };
+
+    let Ok((crossing, granted)) = sender.send(handle, Rights::WAIT.union(Rights::INSPECT)) else {
+        return false;
+    };
+    let Ok(mut message) = object::Message::new(b"take this") else {
+        return false;
+    };
+    if message.attach(crossing, granted).is_err() || here.send(message).is_err() {
+        return false;
+    }
+
+    let Some(mut arrived) = there.receive() else {
+        return false;
+    };
+    let carried = arrived.bytes() == b"take this";
+    let handles = arrived.take_handles();
+    if handles.len() != 1 {
+        return false;
+    }
+    let (object, offered) = handles.into_iter().next().expect("one handle");
+    let Ok(theirs) = receiver.accept(object, offered, offered) else {
+        return false;
+    };
+
+    // The same object: signalling through this thread's reference is visible
+    // through the receiver's handle.
+    let Ok((named, held)) = receiver.resolve(theirs) else {
+        return false;
+    };
+    let unsignalled = named.as_event().is_some_and(|event| !event.is_signalled());
+    watching.as_event().expect("an event").signal();
+    let same_object = named
+        .as_event()
+        .is_some_and(super::object::Event::is_signalled);
+
+    carried && held == offered && unsignalled && same_object
+}
+
+/// A thread blocked on an empty channel wakes with the message, and a message
+/// that lands while it is registering is not lost.
+///
+/// The wait window, on the second object to have one. `Event` learned this the
+/// hard way (D-95): the state can only be re-read once a block *returns*, and
+/// it returns only on a wake, so a check-then-register loses anything that
+/// lands in between. `receive_blocking` registers first and re-reads under the
+/// same lock, and this drives it from a spawned thread rather than from here —
+/// a predicate that sends while holding the queue's own lock is how the first
+/// version of the event check hung the machine.
+fn a_blocked_receiver_wakes_with_its_message() -> bool {
+    let (near, far) = object::channel();
+    let Some(here) = near.as_channel() else {
+        return false;
+    };
+
+    *BLOCKED_CHANNEL.lock_leaf() = Some(Arc::clone(&far));
+    BLOCKED_RECEIVER.store(0, Ordering::Release);
+    let free_before = thread::free_slots();
+    if thread::spawn("channel-receiver", block_on_a_channel).is_err() {
+        return false;
+    }
+
+    // It is off the run queue and quiet, not spinning: the slot is taken and
+    // nothing has been received.
+    let blocked = yields_until(|| {
+        thread::free_slots() < free_before && BLOCKED_RECEIVER.load(Ordering::Acquire) == 0
+    });
+
+    let Ok(message) = object::Message::new(b"wake up") else {
+        return false;
+    };
+    if here.send(message).is_err() {
+        return false;
+    }
+
+    let woke = runs_until(500, || BLOCKED_RECEIVER.load(Ordering::Acquire) == 1);
+    let settled = runs_until(500, || thread::free_slots() == free_before);
+
+    // And the window itself: a waiter arriving when the message is *already*
+    // there registers, re-reads under the same lock, and comes straight back.
+    // `receive_blocking` cannot reach that state — it takes the message first
+    // — so the wait is driven directly, which is what makes a plain `wait`
+    // here a thread that never returns rather than a check that passes.
+    let (window_near, window_far) = object::channel();
+    let Ok(already) = object::Message::new(b"already here") else {
+        return false;
+    };
+    if window_near
+        .as_channel()
+        .is_none_or(|end| end.send(already).is_err())
+    {
+        return false;
+    }
+    *WINDOW_CHANNEL.lock_leaf() = Some(Arc::clone(&window_far));
+    WINDOW_RETURNED.store(0, Ordering::Release);
+    if thread::spawn("channel-window", wait_on_a_channel_that_has_one).is_err() {
+        return false;
+    }
+    let rereads = runs_until(500, || WINDOW_RETURNED.load(Ordering::Acquire) == 1);
+    let window_settled = runs_until(500, || thread::free_slots() == free_before);
+    drop(WINDOW_CHANNEL.lock_leaf().take());
+
+    // Nothing is left registered, so a later wake cannot name a thread that is
+    // no longer waiting here.
+    let idle = far
+        .as_channel()
+        .is_some_and(|there| there.waiters_for_test().is_idle());
+    drop(BLOCKED_CHANNEL.lock_leaf().take());
+
+    blocked && woke && settled && idle && rereads && window_settled
+}
+
+/// The end the blocked receiver waits on.
+static BLOCKED_CHANNEL: SpinLock<Option<object::ObjectRef>> = SpinLock::new(None);
+
+/// One once the receiver has come back with the right message.
+static BLOCKED_RECEIVER: AtomicUsize = AtomicUsize::new(0);
+
+/// Block on the channel until something arrives, then report what it was.
+fn block_on_a_channel() {
+    let Some(end) = BLOCKED_CHANNEL.lock_leaf().clone() else {
+        return;
+    };
+    let Some(channel) = end.as_channel() else {
+        return;
+    };
+    let mut context = context();
+    if let Some(message) = channel.receive_blocking(&mut context)
+        && message.bytes() == b"wake up"
+    {
+        BLOCKED_RECEIVER.store(1, Ordering::Release);
+    }
+}
+
+/// Wait on a channel that **already** has a message, and come back.
+///
+/// The registration window, driven the way the event's is (D-95, D-110):
+/// `receive_blocking` takes the message before it ever waits, so it cannot
+/// reach the wait with the condition already true — and that is the one state
+/// where `wait_unless` and a plain `wait` differ. This calls the wait
+/// directly, so a `wait` that registered without re-reading blocks on a
+/// channel nobody will send to again and this thread never returns.
+///
+/// Run on a spawned thread so that failure is a timeout in the observer rather
+/// than a hang in the check.
+fn wait_on_a_channel_that_has_one() {
+    let Some(end) = WINDOW_CHANNEL.lock_leaf().clone() else {
+        return;
+    };
+    let Some(channel) = end.as_channel() else {
+        return;
+    };
+    let mut context = context();
+    channel.wait_for_message(&mut context);
+    WINDOW_RETURNED.store(1, Ordering::Release);
+}
+
+/// The end the window check waits on.
+static WINDOW_CHANNEL: SpinLock<Option<object::ObjectRef>> = SpinLock::new(None);
+
+/// One once the window waiter has come back.
+static WINDOW_RETURNED: AtomicUsize = AtomicUsize::new(0);
 
 /// A handle names its object, and a closed one names nothing.
 ///
@@ -2653,7 +3039,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 112;
+const EXPECTED_CHECKS: usize = 118;
 
 impl Report {
     const fn new() -> Self {
@@ -2760,6 +3146,30 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a vector register survives a switch",
         a_vector_register_survives_a_switch(),
+    );
+    report.check(
+        "a message crosses a channel and is gone",
+        a_message_crosses_a_channel_and_is_gone(),
+    );
+    report.check(
+        "an orphaned channel end refuses",
+        an_orphaned_channel_end_refuses(),
+    );
+    report.check(
+        "a handle crosses with the rights both ends declared",
+        a_handle_crosses_with_the_rights_both_ends_declared(),
+    );
+    report.check(
+        "a handle without transfer is refused at the sender",
+        a_handle_without_transfer_is_refused_at_the_sender(),
+    );
+    report.check(
+        "a handle sent in a message names the same object",
+        a_handle_sent_in_a_message_names_the_same_object(),
+    );
+    report.check(
+        "a blocked receiver wakes with its message",
+        a_blocked_receiver_wakes_with_its_message(),
     );
     report.check(
         "kernel memory cannot be published to ring three",

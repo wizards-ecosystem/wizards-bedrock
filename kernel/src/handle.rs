@@ -357,6 +357,69 @@ impl HandleTable {
         self.insert(object, granted)
     }
 
+    /// Take `handle` out of this table to be sent, with `declared` rights.
+    ///
+    /// A **move**, not a copy: the entry is gone from this table when this
+    /// returns, and if the send that follows fails the object is dropped
+    /// rather than silently staying behind. A handle that survived a send
+    /// would make delegation into duplication, which is the property `002`'s
+    /// pillar 1 rests on.
+    ///
+    /// Three refusals, and each is a separate claim (D-110):
+    ///
+    /// - **`TRANSFER` is required.** Stripping it is how a holder is given
+    ///   authority it cannot pass on, which costs one bit and is the cheapest
+    ///   confinement this model has.
+    /// - **`declared` must be a subset of what is held.** Attenuation only
+    ///   narrows; a send cannot mint authority the sender never had.
+    /// - **`declared` must mean something for this object type.** D-78's rule
+    ///   checked at the boundary where it is easiest to violate.
+    ///
+    /// Refused at the **sender**, not at the receiver. A receiver that had to
+    /// police this would need to know what the sender held, which it cannot.
+    ///
+    /// # Errors
+    ///
+    /// [`HandleError::Denied`] for any of the first two, and
+    /// [`HandleError::Meaningless`] for the third.
+    pub(crate) fn send(
+        &mut self,
+        handle: u32,
+        declared: Rights,
+    ) -> Result<(ObjectRef, Rights), HandleError> {
+        let (object, held) = self.resolve(handle)?;
+        if !held.contains(Rights::TRANSFER) {
+            return Err(HandleError::Denied);
+        }
+        let granted = held.attenuate(declared).ok_or(HandleError::Denied)?;
+        if !granted.are_meaningful_for(object.kind().per_type_rights()) {
+            return Err(HandleError::Meaningless);
+        }
+        self.close(handle)?;
+        Ok((object, granted))
+    }
+
+    /// Take a handle that arrived in a message, with `declared` rights.
+    ///
+    /// The receiving half of the same rule, and the reason both ends declare
+    /// (managarm's `PushDescriptor`/`PullDescriptor`): a receiver states what
+    /// it is willing to hold, and gets the narrower of the two. Neither end
+    /// can be surprised by the other.
+    ///
+    /// # Errors
+    ///
+    /// [`HandleError::Denied`] if `declared` asks for more than was offered,
+    /// plus whatever [`insert`](Self::insert) refuses.
+    pub(crate) fn accept(
+        &mut self,
+        object: ObjectRef,
+        offered: Rights,
+        declared: Rights,
+    ) -> Result<u32, HandleError> {
+        let granted = offered.attenuate(declared).ok_or(HandleError::Denied)?;
+        self.insert(object, granted)
+    }
+
     /// Close `handle`, dropping this table's reference to what it names.
     ///
     /// The generation advances here, so the value is dead the instant it is
