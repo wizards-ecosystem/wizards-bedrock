@@ -156,6 +156,35 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "            if false && frames.zero() {",
         breaks: "a dropped user range is cleared before its frames go back",
     },
+    // D-125's re-walk. The root comparison alone is what this was before, and
+    // it answers a question from the past: which space the CPU is walking, not
+    // whether the stack is still in it.
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        matches!(
+            translate(last),",
+        replace: "        return true;
+        #[allow(unreachable_code)]
+        matches!(
+            translate(last),",
+        breaks: "a stack that is no longer mapped is no longer installed",
+    },
+    // D-126's detector, exercised by putting a violation back. `bootstrap_of`
+    // is the smallest of the four that were fixed: holding the table's guard
+    // across `kind_of` takes the handle arena's under it.
+    Mutation {
+        file: "kernel/src/user.rs",
+        find: "    let (table, handle) = {
+        let guard = BOOTSTRAPS.lock_leaf();
+        let bootstrap = guard.get(slot)?.as_ref()?;
+        (alloc::sync::Arc::clone(&bootstrap.table), bootstrap.handle)
+    };",
+        replace: "    let guard = BOOTSTRAPS.lock_leaf();
+    let bootstrap = guard.get(slot)?.as_ref()?;
+    let table = alloc::sync::Arc::clone(&bootstrap.table);
+    let handle = bootstrap.handle;",
+        breaks: "no lock is taken while a leaf guard is held",
+    },
     Mutation {
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        if self.bound && released.is_none_or(|released| released.root() != self.root) {",
