@@ -137,6 +137,117 @@ mod tests {
     /// Spot anchors transcribed from the set 2 table, one from every region:
     /// letters, digits, punctuation, function row, modifiers, keypad, and the
     /// one code above `0x7F`.
+    /// Every single-byte set 2 make code, transcribed from the specification.
+    ///
+    /// Twenty-one of about eighty-nine codes were anchored before this, so a
+    /// swap of two unanchored keys survived the suite — `0x33`/`0x34` would
+    /// have exchanged H and G on every keyboard and no test could say so
+    /// (D-156).
+    ///
+    /// Source: Andries Brouwer, *Keyboard scancodes*, section 10, "Scan code
+    /// set 2" — the table Linux's own documentation points at. The numbers are
+    /// the specification's, so they are written out rather than derived.
+    ///
+    /// **Backslash is deliberately absent.** The source read as `0x5C` and this
+    /// table has `0x5D`; mainstream references agree with the table, and a
+    /// second primary source could not be reached to settle it. Asserting
+    /// either would be asserting a guess — and asserting the table's own value
+    /// would be the definition-restated defect this test exists to remove. One
+    /// code unanchored and said so beats sixty-nine with one invented.
+    #[test]
+    fn every_single_byte_make_code_is_the_specification_s() {
+        const SET_2: [(u8, Key); 68] = [
+            (0x1C, Key::A),
+            (0x32, Key::B),
+            (0x21, Key::C),
+            (0x23, Key::D),
+            (0x24, Key::E),
+            (0x2B, Key::F),
+            (0x34, Key::G),
+            (0x33, Key::H),
+            (0x43, Key::I),
+            (0x3B, Key::J),
+            (0x42, Key::K),
+            (0x4B, Key::L),
+            (0x3A, Key::M),
+            (0x31, Key::N),
+            (0x44, Key::O),
+            (0x4D, Key::P),
+            (0x15, Key::Q),
+            (0x2D, Key::R),
+            (0x1B, Key::S),
+            (0x2C, Key::T),
+            (0x3C, Key::U),
+            (0x2A, Key::V),
+            (0x1D, Key::W),
+            (0x22, Key::X),
+            (0x35, Key::Y),
+            (0x1A, Key::Z),
+            (0x45, Key::Digit0),
+            (0x16, Key::Digit1),
+            (0x1E, Key::Digit2),
+            (0x26, Key::Digit3),
+            (0x25, Key::Digit4),
+            (0x2E, Key::Digit5),
+            (0x36, Key::Digit6),
+            (0x3D, Key::Digit7),
+            (0x3E, Key::Digit8),
+            (0x46, Key::Digit9),
+            (0x76, Key::Escape),
+            (0x66, Key::Backspace),
+            (0x0D, Key::Tab),
+            (0x58, Key::CapsLock),
+            (0x12, Key::ShiftLeft),
+            (0x59, Key::ShiftRight),
+            (0x14, Key::CtrlLeft),
+            (0x11, Key::AltLeft),
+            (0x29, Key::Space),
+            (0x5A, Key::Enter),
+            (0x4E, Key::Minus),
+            (0x55, Key::Equal),
+            (0x54, Key::LeftBracket),
+            (0x5B, Key::RightBracket),
+            (0x4C, Key::Semicolon),
+            (0x52, Key::Apostrophe),
+            (0x0E, Key::Grave),
+            (0x41, Key::Comma),
+            (0x49, Key::Period),
+            (0x4A, Key::Slash),
+            (0x05, Key::F1),
+            (0x06, Key::F2),
+            (0x04, Key::F3),
+            (0x0C, Key::F4),
+            (0x03, Key::F5),
+            (0x0B, Key::F6),
+            (0x83, Key::F7),
+            (0x0A, Key::F8),
+            (0x01, Key::F9),
+            (0x09, Key::F10),
+            (0x78, Key::F11),
+            (0x07, Key::F12),
+        ];
+
+        for (code, key) in SET_2 {
+            assert_eq!(
+                key_for(code),
+                Some(key),
+                "make code {code:#04X} is not {key:?}"
+            );
+        }
+
+        // And the mapping is injective: two codes naming one key would mean a
+        // transcription error that the loop above cannot see.
+        for (index, (code, key)) in SET_2.iter().enumerate() {
+            for (earlier_code, earlier_key) in &SET_2[..index] {
+                assert_ne!(code, earlier_code, "{code:#04X} appears twice");
+                assert_ne!(
+                    key, earlier_key,
+                    "{key:?} is named by both {earlier_code:#04X} and {code:#04X}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn make_codes_match_the_set_two_table() {
         for (code, key) in [
