@@ -70,12 +70,10 @@ fn place_stack(space: &mut AddressSpace, which: u64) -> Option<u64> {
     if !stack.zero() {
         return None;
     }
+    // Untyped from here: the program writes this stack, so nothing the kernel
+    // later reads out of these frames may be believed (D-107).
     space
-        .map_owned(
-            at,
-            stack,
-            Flags::USER.union(Flags::WRITABLE).union(Flags::NO_EXECUTE),
-        )
+        .map_user(at, stack.into(), Flags::WRITABLE.union(Flags::NO_EXECUTE))
         .ok()?;
     Some(at)
 }
@@ -183,7 +181,7 @@ fn place(space: &mut AddressSpace, bytes: &[u8], placement: &Placement) -> Resul
         return Err(LoadError::Truncated(placement.at));
     }
     space
-        .map_owned(placement.at, run, placement.flags)
+        .map_user(placement.at, run.into(), placement.flags)
         .map_err(LoadError::NotMapped)
 }
 

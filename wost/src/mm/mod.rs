@@ -7,9 +7,11 @@
 //!
 //! Frames are reached through the direct map, whose offset [`init`] records.
 //!
-//! Absent on purpose: the untyped split (`UFrame`) D-44 adopted. It arrives
-//! with the first caller that can map a frame into a second address space,
-//! which is Phase 5.
+//! The untyped split D-44 adopted is [`USegment`]. "Untyped" here means
+//! *externally modifiable, plain bytes only* — never *donated for kernel
+//! object creation*, which is the reading seL4 gives the word and the one this
+//! kernel rejected. A run becomes untyped the moment it is mapped where ring 3
+//! can write it, and the type says so from then on (D-107).
 
 pub mod heap;
 
@@ -448,6 +450,34 @@ impl Segment {
         unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
         true
     }
+
+    /// Read `into.len()` bytes from `offset` within the run.
+    ///
+    /// The counterpart to [`write_at`](Self::write_at), and deliberately on
+    /// `Segment` alone: a [`USegment`] holds bytes ring 3 wrote, and reading
+    /// those into the kernel is what [`USegment::reclaim`] exists to make
+    /// impossible without clearing them first (D-107).
+    ///
+    /// `false` if the read would run past the run, or if the direct map cannot
+    /// reach it, having written nothing into `into`.
+    pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
+        let Some(end) = offset.checked_add(into.len()) else {
+            return false;
+        };
+        if end as u64 > self.len() {
+            return false;
+        }
+        let Some(base) = direct_pointer(self.address(), self.len()) else {
+            return false;
+        };
+        // SAFETY: the bounds check above places `offset` inside the run, which
+        // `direct_pointer` confirmed the map covers in full.
+        let source = unsafe { base.add(offset) };
+        // SAFETY: `self` owns every frame in the run — one handle per run —
+        // and `into` is the caller's, so the two cannot overlap.
+        unsafe { core::ptr::copy_nonoverlapping(source, into.as_mut_ptr(), into.len()) };
+        true
+    }
 }
 
 impl Segment {
@@ -472,6 +502,75 @@ impl Drop for Segment {
         // As for `Frame`: a refusal means the bookkeeping disagrees with the
         // handle, which a `Drop` cannot correct. Leaking is the safe half.
         let _ = FRAMES.lock_leaf().free_contiguous(self.first, self.count);
+    }
+}
+
+/// A run of frames whose bytes are ring 3's.
+///
+/// D-44's untyped split, and the whole of what "untyped" means here: the
+/// contents are outside the kernel's control, so nothing may be read out of
+/// one and believed. It is *not* seL4's meaning — a `USegment` is never
+/// retyped into a kernel object, because this kernel does not build objects
+/// out of donated memory (D-107).
+///
+/// One-way by construction. A `Segment` becomes a `USegment` when it is handed
+/// to a user mapping, and the only road back is
+/// [`reclaim`](Self::reclaim), which zeroes first: a frame that held a
+/// program's stack and is handed to the kernel still holding it is how a
+/// process reads another's memory.
+#[derive(Debug)]
+pub struct USegment(Segment);
+
+impl USegment {
+    /// Where the run begins in physical memory.
+    pub const fn address(&self) -> Paddr {
+        self.0.address()
+    }
+
+    /// Frames in the run.
+    pub const fn frames(&self) -> usize {
+        self.0.frames()
+    }
+
+    /// Bytes in the run.
+    pub const fn len(&self) -> u64 {
+        self.0.len()
+    }
+
+    /// Whether the run is empty. Never true; see [`Segment::is_empty`].
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Take the run back for the kernel, with every byte cleared.
+    ///
+    /// The zeroing is the conversion, not a courtesy attached to it: what
+    /// makes this sound is that nothing a program left behind survives into
+    /// the frame's next life (D-12's zero-on-allocate, applied at the other
+    /// end).
+    ///
+    /// `None` if the direct map cannot reach the run, in which case the frames
+    /// stay untyped and are dropped.
+    pub fn reclaim(self) -> Option<Segment> {
+        let mut segment = self.0;
+        segment.zero().then_some(segment)
+    }
+}
+
+impl From<Segment> for USegment {
+    fn from(segment: Segment) -> Self {
+        Self(segment)
+    }
+}
+
+/// The one place a `USegment` gives up its inner run without zeroing.
+///
+/// `pub(crate)` because the only sound caller is a mapping operation, which
+/// hands the frames to an address space and keeps no handle — the frames do
+/// not come back to the kernel, so there is nothing to clear yet.
+impl USegment {
+    pub(crate) fn into_inner(self) -> Segment {
+        self.0
     }
 }
 

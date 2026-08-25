@@ -32,7 +32,7 @@ use x86_paging::{
 };
 
 use super::cpu;
-use crate::mm::{self, Paddr, Segment};
+use crate::mm::{self, Paddr, Segment, USegment};
 use crate::mmio::MmioRegion;
 use crate::sync::Once;
 
@@ -475,6 +475,39 @@ impl AddressSpace {
         run: Segment,
         flags: Flags,
     ) -> Result<(), MapError> {
+        // A kernel run may not be mapped where ring 3 can write it: the frames
+        // came from the allocator with the kernel's contents in them, and this
+        // entry is what would publish them. `map_user` is the door that takes
+        // a run whose type says its bytes are already outside (D-107).
+        if flags.contains(Flags::USER) {
+            return Err(MapError::NotYours(virtual_base));
+        }
+        self.map_run(virtual_base, run, flags)
+    }
+
+    /// Map a run of frames ring 3 may reach, at `virtual_base`.
+    ///
+    /// The user half of [`map_owned`](Self::map_owned), and the difference is the type: a
+    /// [`USegment`] is a run whose bytes are already ring 3's (D-44, D-107).
+    /// Passing a `Segment` here means converting it, which is where a caller
+    /// has to notice that it is giving the contents away.
+    ///
+    /// `USER` is added whether or not the caller asked, for the same reason
+    /// `OWNED` is: the type has already decided.
+    ///
+    /// # Errors
+    ///
+    /// As [`map_owned`](Self::map_owned).
+    pub fn map_user(
+        &mut self,
+        virtual_base: u64,
+        run: USegment,
+        flags: Flags,
+    ) -> Result<(), MapError> {
+        self.map_run(virtual_base, run.into_inner(), flags.union(Flags::USER))
+    }
+
+    fn map_run(&mut self, virtual_base: u64, run: Segment, flags: Flags) -> Result<(), MapError> {
         self.may_reach(virtual_base, run.len())?;
         // The owned bit is what `unmap` reads to know these frames are the
         // allocator's to have back (D-88). It is written in the entry rather

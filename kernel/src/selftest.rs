@@ -502,7 +502,7 @@ fn two_spaces_map_one_address_to_different_memory() -> bool {
         return false;
     }
 
-    let writable = Flags::USER.union(Flags::WRITABLE).union(Flags::NO_EXECUTE);
+    let writable = Flags::WRITABLE.union(Flags::NO_EXECUTE);
     let (Some(mut one), Some(mut two)) =
         (mm::allocate_contiguous(1, 1), mm::allocate_contiguous(1, 1))
     else {
@@ -519,8 +519,8 @@ fn two_spaces_map_one_address_to_different_memory() -> bool {
     if one_at == two_at {
         return false;
     }
-    if first.map_owned(SHARED, one, writable).is_err()
-        || second.map_owned(SHARED, two, writable).is_err()
+    if first.map_user(SHARED, one.into(), writable).is_err()
+        || second.map_user(SHARED, two.into(), writable).is_err()
     {
         return false;
     }
@@ -540,6 +540,96 @@ fn two_spaces_map_one_address_to_different_memory() -> bool {
     let shared_kernel = first.lookup(text) == second.lookup(text) && first.lookup(text).is_some();
 
     separate && both_user && shared_kernel
+}
+
+/// A run of frames the kernel owns cannot be mapped where ring 3 can read it.
+///
+/// D-44's untyped split, with its first real caller (D-107). The frames come
+/// from the allocator carrying whatever the kernel last put in them, so
+/// publishing one to ring 3 is a disclosure — and the type is what says a run
+/// has already been given away. `map_owned` refuses the `USER` flag outright;
+/// `map_user` takes the run that has been converted, and adds `USER` itself so
+/// a caller cannot forget it.
+///
+/// The road back zeroes. A frame that held a program's stack and came back to
+/// the kernel still holding it is how one process reads another's memory, so
+/// `reclaim` clears before it returns a `Segment` and there is no other door.
+fn kernel_memory_cannot_be_published_to_ring_three() -> bool {
+    /// A user address nothing else uses.
+    const PROBE: u64 = user::STACK + 0x40_0000;
+
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    let Some(mut run) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if !run.zero() {
+        return false;
+    }
+
+    // The kernel's own bytes, of the kind a disclosure would hand over.
+    let secret = [0xDEu8; 8];
+    if !run.write_at(0, &secret) {
+        return false;
+    }
+
+    // `map_owned` will not publish them, whatever the caller asks for.
+    let refused = matches!(
+        space.map_owned(PROBE, run, Flags::USER.union(Flags::WRITABLE)),
+        Err(MapError::NotYours(PROBE))
+    );
+    if !refused {
+        return false;
+    }
+
+    // Converting is the caller noticing. The run went into the call above and
+    // came back to the allocator with it, so this is a fresh one.
+    let Some(mut giving) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if !giving.zero() || !giving.write_at(0, &secret) {
+        return false;
+    }
+    let untyped: mm::USegment = giving.into();
+    let address = untyped.address();
+
+    // Reclaiming clears it, so what the kernel gets back holds nothing.
+    let Some(back) = untyped.reclaim() else {
+        return false;
+    };
+    // Read back, because "the call returned" is not "the bytes are gone" —
+    // and a `reclaim` that skipped the zeroing passed a version of this check
+    // that only asked whether the frame was still reachable (D-107).
+    let mut recovered = [0xFFu8; 8];
+    let cleared = back.address() == address
+        && back.read_at(0, &mut recovered)
+        && recovered == [0u8; 8]
+        && recovered != secret;
+    drop(back);
+
+    // And `map_user` adds `USER` even where the caller did not.
+    let Some(mut given) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if !given.zero() {
+        return false;
+    }
+    if space
+        .map_user(
+            PROBE,
+            given.into(),
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+        )
+        .is_err()
+    {
+        return false;
+    }
+    let user_accessible = space
+        .lookup(PROBE)
+        .is_some_and(|(_, flags)| flags.contains(Flags::USER));
+
+    refused && cleared && user_accessible
 }
 
 /// Only a space that agrees with the kernel about the higher half is
@@ -768,7 +858,7 @@ fn the_return_to_ring_three_clears_buffers() -> bool {
 /// about the boundary build their own pages, which is also the honest
 /// arrangement: what they test is the copy, not the loader.
 ///
-/// Mapped once and remembered: a second `map_owned` at the same address is a
+/// Mapped once and remembered: a second `map_user` at the same address is a
 /// `Conflict`, and every caller wants the same two pages.
 fn boundary_probe() -> Option<(u64, u64)> {
     /// Well clear of anything a program is loaded at.
@@ -794,14 +884,14 @@ fn boundary_probe() -> Option<(u64, u64)> {
     // Read-only and executable, as a program's text is: the write refusal
     // below is about the leaf's own permission and needs a page that has it.
     mem::with_active_space(&mut context, |space| {
-        space.map_owned(CODE, code, Flags::USER)
+        space.map_user(CODE, code.into(), Flags::NONE)
     })?
     .ok()?;
     mem::with_active_space(&mut context, |space| {
-        space.map_owned(
+        space.map_user(
             STACK,
-            stack,
-            Flags::USER.union(Flags::WRITABLE).union(Flags::NO_EXECUTE),
+            stack.into(),
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
         )
     })?
     .ok()?;
@@ -2496,7 +2586,7 @@ const VERDICT_VERSION: usize = 1;
 ///
 /// Keeping this independent from the tally makes deleting, skipping, or
 /// accidentally bypassing a check turn the final verdict red.
-const EXPECTED_CHECKS: usize = 110;
+const EXPECTED_CHECKS: usize = 111;
 
 impl Report {
     const fn new() -> Self {
@@ -2599,6 +2689,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "two spaces map one address to different memory",
         two_spaces_map_one_address_to_different_memory(),
+    );
+    report.check(
+        "kernel memory cannot be published to ring three",
+        kernel_memory_cannot_be_published_to_ring_three(),
     );
     report.check(
         "only a space that matches the kernel can be installed",
