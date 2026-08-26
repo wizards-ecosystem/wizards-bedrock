@@ -37,6 +37,10 @@ pub(crate) enum ObjectType {
     Event,
     /// One end of a message pipe carrying bytes and handles.
     Channel,
+    /// A file: something with bytes in it.
+    File,
+    /// A directory: something with names in it.
+    Directory,
 }
 
 impl ObjectType {
@@ -54,8 +58,29 @@ impl ObjectType {
             // the other. They are not syscall names, which is the rule D-78
             // states and WASI's rights violated.
             Self::Channel => Rights::READ.union(Rights::WRITE),
+            // `WRITE` is defined and never granted in this phase, which is
+            // the honest shape: the right names a distinction the kernel
+            // *would* make, and there is no write path to make it (`014`).
+            // `EXECUTE` is deliberately **not** here — until the VFS can hand
+            // out an executable mapping of a file's bytes the bit checks
+            // nothing, and a right that checks nothing is a syscall name in
+            // disguise (`012` §4, D-78).
+            Self::File => Rights::READ.union(Rights::WRITE),
+            Self::Directory => Rights::TRAVERSE
+                .union(Rights::ENUMERATE)
+                .union(Rights::MODIFY),
         }
     }
+}
+
+/// Wrap a file as an object, ready for a handle table.
+pub(crate) fn file(file: crate::vfs::File) -> Option<ObjectRef> {
+    Some(Arc::new(Object::File(file)))
+}
+
+/// Wrap a directory as an object.
+pub(crate) fn directory(directory: crate::vfs::Directory) -> Option<ObjectRef> {
+    Some(Arc::new(Object::Directory(directory)))
 }
 
 /// A kernel object.
@@ -67,6 +92,16 @@ pub(crate) enum Object {
     Event(Event),
     /// See [`Channel`].
     Channel(Channel),
+    /// A file in some filesystem.
+    ///
+    /// **The thinner of `014`'s two options**: what names a backend and a node
+    /// within it, rather than an inode-like structure the VFS owns. The fatter
+    /// one is what a write path and a page cache both want, and this phase has
+    /// neither — building it now would be building for a caller that does not
+    /// exist (D-41, D-173).
+    File(crate::vfs::File),
+    /// A directory in some filesystem.
+    Directory(crate::vfs::Directory),
 }
 
 #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
@@ -76,6 +111,8 @@ impl Object {
         match self {
             Self::Event(_) => ObjectType::Event,
             Self::Channel(_) => ObjectType::Channel,
+            Self::File(_) => ObjectType::File,
+            Self::Directory(_) => ObjectType::Directory,
         }
     }
 
@@ -83,7 +120,7 @@ impl Object {
     pub(crate) const fn as_event(&self) -> Option<&Event> {
         match self {
             Self::Event(event) => Some(event),
-            Self::Channel(_) => None,
+            Self::Channel(_) | Self::File(_) | Self::Directory(_) => None,
         }
     }
 
@@ -91,7 +128,23 @@ impl Object {
     pub(crate) const fn as_channel(&self) -> Option<&Channel> {
         match self {
             Self::Channel(channel) => Some(channel),
-            Self::Event(_) => None,
+            Self::Event(_) | Self::File(_) | Self::Directory(_) => None,
+        }
+    }
+
+    /// The file inside, if that is what this is.
+    pub(crate) const fn as_file(&self) -> Option<&crate::vfs::File> {
+        match self {
+            Self::File(file) => Some(file),
+            Self::Event(_) | Self::Channel(_) | Self::Directory(_) => None,
+        }
+    }
+
+    /// The directory inside, if that is what this is.
+    pub(crate) const fn as_directory(&self) -> Option<&crate::vfs::Directory> {
+        match self {
+            Self::Directory(directory) => Some(directory),
+            Self::Event(_) | Self::Channel(_) | Self::File(_) => None,
         }
     }
 }

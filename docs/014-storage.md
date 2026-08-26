@@ -73,7 +73,7 @@ before its abstraction is anything but a guess.
 | 6 | **FAT32, read-only, short names.** `libs/fat32` over a block trait, checked against the ESP `xtask` already builds |Done |
 | 7 | **The VFS.** A directory trait — `lookup`, `enumerate`, `modify` — enum dispatch, and path resolution that cannot ascend |Done |
 | 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes |Done |
-| 9 | **The file handle.** `READ`/`WRITE` on files, `TRAVERSE`/`ENUMERATE`/`MODIFY` on directories, offsets per operation, and a `read` that is a submission | |
+| 9 | **The file handle.** `READ`/`WRITE` on files, `TRAVERSE`/`ENUMERATE`/`MODIFY` on directories, offsets per operation, and a `read` that is a submission |Done |
 | 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks — D-135), the adversarial audit, the roadmap and this file's closing section | |
 
 ---
@@ -850,3 +850,64 @@ property of the resolver — a check that only ran against FAT would be a proper
 of FAT. And a directory handle names its own backend: each name must resolve
 where it belongs *and* nowhere else, so the refusals are about the backend
 rather than about the name.
+
+---
+
+## Slice 9 — The file handle
+
+**Landed 2026-08-25.** D-173. 179 machine checks, 700 host tests, 62 mutations.
+
+A ring operation resolves a path from a directory handle, gets back a file
+handle carrying attenuated rights, and reads bytes off the controller into a
+shared page. That is the whole phase in one sentence, and every part of it was
+built by a different slice.
+
+### The last three of this file's open decisions
+
+**A `File` handle's object is the thinner one** — a backend and a node within
+it, not an inode the VFS owns. The fatter one is what a write path and a page
+cache both want, and this phase has neither.
+
+**`read` takes a provided buffer, and the buffer is part of the ring.** A third
+shared page is the data area, so it is always mapped, always the right size, and
+its bounds are two comparisons. There is no user pointer to validate, no SMAP
+window to open and no fault to recover. The cost is one copy, named rather than
+hidden: zero-copy needs memory objects, which is a later phase.
+
+**`OpenAt`'s rights are derived, never asked for.** A directory inherits its
+parent's unchanged; a file gets `READ`, because reaching a file is what naming
+it means; `WRITE` is never granted, because there is no write path and a right
+that grants nothing is a syscall name in disguise.
+
+### The entry widened, and this was the moment
+
+D-149 put the ABI slices first "because a caller freezes the interface it
+uses". This is that caller. Sixteen bytes could not hold a handle, an offset, a
+buffer and a length; the entry is thirty-two now, which is cheap today and an
+ABI break tomorrow.
+
+Four transcriptions of the layout exist — the kernel, the C header, the emitted
+ring-3 program and the test helpers — and the cross-check compares all of them,
+including the stride the program writes at. A submission written at the wrong
+stride lands its argument in the next entry's opcode.
+
+### The check that changed no output
+
+Three checks could not fail, and the third is the one worth recording.
+Removing the buffer bound from the submission path changes **nothing
+observable**: the shared page bounds the copy anyway, so the completion carries
+the same status either way. What it changes is *when* — a bound checked after
+the read is `-ENOBUFS` with the work already done.
+
+Making that visible took a counter on the driver. The controller's command
+identifier advances once per command, so "the device was not asked" is a
+number: the check submits a readable handle with a buffer running off the end
+of the data area and requires the count unchanged.
+
+### The slice's named limit
+
+**A ring-3 program still cannot reach any of this.** `spawn` gives a program
+exactly one handle — its bootstrap channel — and receiving a directory handle
+over that channel needs `sys_channel_receive`, which is OWED. Giving a program
+a second handle at spawn would break the invariant that makes pillar 1
+checkable, so it waits for the channel rather than for a convenience.

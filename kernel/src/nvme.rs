@@ -245,6 +245,18 @@ pub(crate) fn bring_up(
 }
 
 impl Controller {
+    /// Commands this controller has been given.
+    ///
+    /// The identifier counter, which advances once per command submitted. It
+    /// is what makes "the device was not asked" observable from outside the
+    /// driver — a refusal that happened *before* the read reached the
+    /// controller looks exactly like one that happened after, unless something
+    /// counts (D-173).
+    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    pub(crate) const fn commands(&self) -> u16 {
+        self.next_id
+    }
+
     /// Where the register window is readable.
     #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
     pub(crate) const fn window(&self) -> u64 {

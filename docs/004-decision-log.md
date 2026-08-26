@@ -10807,3 +10807,96 @@ arrived from: an input, a corpus, and now a directory tree.
 - What a program will eventually receive from devfs is slice 4's `Device`
   capability. Today the name resolves; the handle it becomes is Phase 7's, and
   saying so is better than building a table nothing puts anything in.
+
+## D-173 The file handle, and a buffer with no pointer in it — Status: Accepted (2026-08-25)
+
+**Context.** `014` left three decisions for this slice: what a `File` handle's
+object is, whether `read` takes a length or a provided buffer, and — implicitly
+— how a program comes to hold a file at all.
+
+D-149 put the ABI slices first "because a VFS is the first caller that waits,
+and a caller freezes the interface it uses". **This is that caller.** The
+submission entry was sixteen bytes and a read needs a handle, an offset, a
+buffer and a length; the entry is thirty-two now, and the whole reason the ABI
+slices came first is that this change is cheap today and an ABI break tomorrow.
+
+**Decision.**
+
+**A `File` handle's object is the thinner of the two.** `vfs::File` names a
+backend and a node within it — not an inode-like structure the VFS owns. The
+fatter one is what a write path and a page cache both want, and this phase has
+neither; building it now would be building for a caller that does not exist
+(D-41).
+
+**`read` takes a provided buffer, and the buffer is part of the ring.** `012`
+§8 warns that `-ENOBUFS` at completion is the same late-failure shape D-151
+refused for handles, and the usual answer is to validate a caller's pointer at
+submission. This kernel does something simpler and stronger: a third shared
+page is the data area, so the buffer is always mapped, always the right size,
+and its bounds are two comparisons. **There is no user pointer to validate, no
+SMAP window to open and no fault to recover.**
+
+The cost is a copy — device → kernel frame → data area, where a caller's own
+buffer could have been the DMA target — and it is named rather than hidden.
+Zero-copy needs the memory-object work of a later phase, and paying one copy
+for a boundary with no pointer in it is the right trade until then.
+
+**`OpenAt` is how a program comes to hold a file**, and its rights are
+**derived, never asked for**. A directory inherits its parent's directory
+rights unchanged; a file gets `READ`, because reaching a file is what naming it
+means; and `WRITE` is never granted, because there is no write path and a right
+that grants nothing is a syscall name in disguise (D-78). Monotone
+non-increasing, as `012` §4 requires a nested open to be — and a program
+wanting less can `Duplicate` with fewer.
+
+A device is refused. What a program will hold for one is slice 4's `Device`
+capability, and putting it in a table is Phase 7's (D-172).
+
+**Rationale, and three checks that could not fail.**
+
+*A read without the right to read.* The refusal table was built entirely from
+`OpenAt`, so nothing exercised `Read`'s rights check at all — deleting it left
+the boot green. A file handle held without `READ` is in the table now.
+
+*A zero-length buffer.* Refused by `data_bounds`, and the check covered it — but
+only through `OpenAt`, where a zero-length path is also refused by the path
+splitter. The two refusals are different and the check now distinguishes them.
+
+*The buffer bound checked before the read rather than after.* This is the one
+worth recording. Removing it changes **no output**: `Shared::write_at` bounds
+the copy anyway, so the completion carries the same status either way. What it
+changes is *when* — a bound checked after the read is `-ENOBUFS` with the work
+already done, which is precisely the shape this design refuses.
+
+Making it observable took a counter on the driver: the controller's command
+identifier advances once per command, so "the device was not asked" is a
+number. The check submits a readable handle with a buffer that runs off the end
+of the data area and requires the count **unchanged**. Every refusal that
+happens before the read is now visible as a device that was never told.
+
+**Consequences.**
+
+- The submission entry is thirty-two bytes. Four transcriptions of the layout
+  now exist — `queue.rs`, the C header, the emitted ring-3 program, and the
+  test helpers — and the host cross-check compares all of them, including the
+  stride the program writes at. A submission written at the wrong stride lands
+  its argument in the next entry's opcode.
+- Three rights added: `TRAVERSE`, `ENUMERATE`, `MODIFY`. `MODIFY` grants
+  nothing and is defined anyway, because leaving a gap in a rights word is how
+  a later addition renumbers the ones above it.
+- **Two rights tests were restated lists and are now derived.** One named the
+  eight rights that existed; the other named `1 << 12` as an undefined bit,
+  which `TRAVERSE` then became. Both read the source now (D-161).
+- A third test's premise was simply wrong once `ALL` grew: it asserted that
+  every right this kernel defines is meaningful for a memory object, which was
+  true only while `ALL` was the universal four plus the memory ones. A memory
+  object has no names in it.
+- `Submission::simple` and `Submission::about` exist so that eighteen call
+  sites did not each grow four zeroes. A zero handle is a *value*, and writing
+  it out invites a reader to think it matters.
+- **A ring-3 program still cannot reach any of this**, and that is the slice's
+  named limit rather than an omission: `spawn` gives a program exactly one
+  handle — its bootstrap channel (D-107) — and receiving a directory handle
+  over that channel needs `sys_channel_receive`, which is OWED. Giving a
+  program a second handle at spawn would break the invariant that makes pillar
+  1 checkable, so it waits for the channel.

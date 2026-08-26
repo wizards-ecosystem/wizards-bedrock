@@ -89,8 +89,14 @@ fn code() -> Vec<u8> {
     const RING: u64 = 0x0000_2000_0000_0000;
     /// First submission entry, from the ABI's `WIZ_RING_ENTRIES_AT`.
     const SUBMISSIONS_AT: u32 = 4096;
-    /// First completion entry: eight submissions of sixteen bytes after them.
-    const COMPLETIONS_AT: u32 = SUBMISSIONS_AT + 8 * 16;
+    /// Bytes in one submission entry, from `kernel/src/queue.rs`.
+    ///
+    /// Thirty-two since slice 9 widened it for `Read`. This program writes one
+    /// by hand, so it is the fourth transcription of the layout and the one a
+    /// host test compares against the kernel (D-173).
+    const SUBMISSION_BYTES: u32 = 32;
+    /// First completion entry: eight submissions after them.
+    const COMPLETIONS_AT: u32 = SUBMISSIONS_AT + 8 * SUBMISSION_BYTES;
     /// `header::SUBMISSION_TAIL`.
     const TAIL_AT: u8 = 20;
     /// `WIZ_OP_ECHO`.
@@ -147,8 +153,11 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&(SUBMISSIONS_AT + 4).to_le_bytes());
     code.extend_from_slice(&PROGRAM_TAG.to_le_bytes());
 
+    // The argument moved to offset 24 when the entry widened; the handle,
+    // length and offset fields between them mean nothing to an echo and are
+    // left as the kernel cleared them.
     code.extend_from_slice(&[0x48, 0xC7, 0x83]); // mov qword [rbx+disp32], imm32
-    code.extend_from_slice(&(SUBMISSIONS_AT + 8).to_le_bytes());
+    code.extend_from_slice(&(SUBMISSIONS_AT + 24).to_le_bytes());
     code.extend_from_slice(&PROGRAM_ARGUMENT.to_le_bytes());
 
     // Publish it.

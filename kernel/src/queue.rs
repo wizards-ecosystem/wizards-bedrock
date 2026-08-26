@@ -32,19 +32,54 @@ use x86_paging::{Flags, PAGE_SIZE};
 use crate::handle::HandleTable;
 use crate::wait::WaitQueue;
 
-/// Bytes of shared page: one for the header and the indices, one for the
-/// entries.
-const SHARED_BYTES: u64 = 2 * PAGE_SIZE;
+/// Bytes of shared page: the header and indices, the entries, and a data area.
+const SHARED_BYTES: u64 = 3 * PAGE_SIZE;
+
+/// Where the data area begins.
+///
+/// **A provided buffer, and the ring owns it.** `012` §8 warns that
+/// `-ENOBUFS` at completion is the same late-failure shape D-151 refused for
+/// handles, and the usual answer is to validate a caller's pointer at
+/// submission. This kernel does something simpler and stronger: the buffer is
+/// *part of the ring*, so it is always mapped, always the right size, and its
+/// bounds are arithmetic rather than a walk of the caller's page tables. There
+/// is no user pointer to check, no SMAP window to open and no fault to recover
+/// (D-173).
+///
+/// The cost is a copy: a read goes device → kernel frame → here, where a
+/// caller's own buffer could have been the DMA target. Zero-copy needs the
+/// memory-object work of a later phase, and paying one copy for a boundary
+/// with no pointer in it is the right trade until then.
+const DATA_AT: usize = 2 * PAGE_SIZE as usize;
+
+/// Bytes of data area.
+const DATA_BYTES: usize = PAGE_SIZE as usize;
 
 /// Where the header ends and the submission entries begin.
 const ENTRIES_AT: usize = PAGE_SIZE as usize;
 
-/// Bytes in one submission or completion entry.
+/// Where the completion entries begin, after every submission entry.
+const COMPLETIONS_AT: usize = ENTRIES_AT + SUBMISSIONS as usize * SUBMISSION_BYTES;
+
+/// Bytes in one submission entry.
 ///
-/// Sixteen: an opcode, a flags word, and one eight-byte argument. The opcode
-/// surface stays minimal on purpose — io_uring's exploit record is a warning
-/// about surface growth, and Google's kernelCTF disables it outright (`002`).
-const ENTRY_BYTES: usize = 16;
+/// **Thirty-two, widened in slice 9 from sixteen.** A read needs a handle, an
+/// offset, a buffer and a length, which is more than one eight-byte argument
+/// holds — and D-149 put the ABI slices first precisely so that the caller
+/// which freezes the shape arrives *after* it can be changed. This is that
+/// caller, and this is that change.
+///
+/// The opcode surface stays minimal on purpose: io_uring's exploit record is a
+/// warning about surface growth, and Google's kernelCTF disables it outright
+/// (`002`).
+const SUBMISSION_BYTES: usize = 32;
+
+/// Bytes in one completion entry.
+///
+/// Sixteen, unchanged: a token, a status and a result. A completion that
+/// needed more would be an operation answering with something other than an
+/// outcome.
+const COMPLETION_BYTES: usize = 16;
 
 /// Submission entries. Small, and a power of two.
 const SUBMISSIONS: u32 = 8;
@@ -105,6 +140,22 @@ pub(crate) enum Opcode {
     /// the antidote to the double-completion class that produced two io_uring
     /// CVEs (`012` §8).
     Cancel,
+    /// Resolve a path from a directory handle and produce a handle for what it
+    /// names.
+    ///
+    /// `handle` is the directory, `argument` points at the path and `length`
+    /// says how long it is. The completion **carries the new handle**, which is
+    /// D-151's whole point arriving at the operation that most wants it: this
+    /// is how a program comes to hold a file at all, and it holds it because
+    /// something it already held could name it.
+    OpenAt,
+    /// Read bytes of a file into the caller's own buffer.
+    ///
+    /// `handle` is the file, `offset` says where to start, `argument` is the
+    /// buffer and `length` its size. **The caller provides the buffer**, and it
+    /// is checked at submission — `012` §8 names `-ENOBUFS` at completion as
+    /// the same late-failure shape D-151 refused for handles.
+    Read,
     /// Anything else.
     Unknown(u32),
 }
@@ -117,6 +168,8 @@ impl Opcode {
             3 => Self::Duplicate,
             4 => Self::Timer,
             5 => Self::Cancel,
+            6 => Self::OpenAt,
+            7 => Self::Read,
             other => Self::Unknown(other),
         }
     }
@@ -133,8 +186,55 @@ pub(crate) struct Submission {
     pub(crate) opcode: Opcode,
     /// The caller's own tag, returned in the completion so it can match them.
     pub(crate) token: u32,
-    /// The operation's one argument.
+    /// The handle the operation is about, where it is about one.
+    pub(crate) handle: u32,
+    /// How many bytes, where that is a question.
+    pub(crate) length: u32,
+    /// Where in a file, where that is a question.
+    ///
+    /// **Per operation**, which is `012` §6 and D-152 arriving in the ABI:
+    /// there is no cursor on a handle, so every read says where it starts.
+    pub(crate) offset: u64,
+    /// The operation's remaining argument, whose meaning is the opcode's.
     pub(crate) argument: u64,
+}
+
+impl Submission {
+    /// A submission naming a handle and one argument about it.
+    ///
+    /// `Duplicate` and `Cancel`-by-handle: the handle goes in the field made
+    /// for it rather than packed into the argument, which is what the widened
+    /// entry bought (D-173).
+    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    pub(crate) const fn about(opcode: Opcode, token: u32, handle: u32, argument: u64) -> Self {
+        Self {
+            opcode,
+            token,
+            handle,
+            length: 0,
+            offset: 0,
+            argument,
+        }
+    }
+
+    /// A submission whose whole input is one argument.
+    ///
+    /// `Echo`, `Timer` and `Cancel`: the fields the widened entry added mean
+    /// nothing to them. A constructor rather than four zeroes at every call
+    /// site, because a zero handle is a *value* — writing it out invites a
+    /// reader to think it matters, and the next person to add a field would
+    /// have to touch every one of them (D-173).
+    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    pub(crate) const fn simple(opcode: Opcode, token: u32, argument: u64) -> Self {
+        Self {
+            opcode,
+            token,
+            handle: 0,
+            length: 0,
+            offset: 0,
+            argument,
+        }
+    }
 }
 
 /// What the kernel wrote back.
@@ -172,6 +272,20 @@ pub(crate) const STATUS_CANCELLED: u32 = 5;
 pub(crate) const STATUS_NOT_FOUND: u32 = 6;
 /// Nothing left to track an in-flight operation with.
 pub(crate) const STATUS_NO_ROOM: u32 = 7;
+/// The path or buffer the caller gave is not one the kernel may touch.
+///
+/// Checked at **submission**, before anything is read or written, because a
+/// buffer that turns out to be unusable at completion is the shape `012` §8
+/// warns about — and because a kernel that faults on a caller's pointer has
+/// let the caller choose where it faults.
+pub(crate) const STATUS_BAD_BUFFER: u32 = 8;
+/// The path names nothing, or names something of the wrong kind.
+pub(crate) const STATUS_NO_ENTRY: u32 = 9;
+/// The path itself is malformed — absolute, or escaping.
+///
+/// **Not a denial.** There is no root and no parent, so there is nothing that
+/// could have been denied (`012` §5, D-171).
+pub(crate) const STATUS_BAD_PATH: u32 = 10;
 
 /// The indices, copied out of the shared page in one read.
 ///
@@ -386,6 +500,8 @@ impl Queue {
                 refuse(token, STATUS_NO_ROOM)
             }
             Opcode::Cancel => self.cancel(submission),
+            Opcode::OpenAt => self.open_at(submission, table),
+            Opcode::Read => self.read(submission, table),
             Opcode::Unknown(_) => refuse(token, STATUS_UNKNOWN_OPCODE),
         })
     }
@@ -401,8 +517,8 @@ impl Queue {
     /// remembers to, but because the type's destructor does (D-163).
     fn duplicate(&self, submission: Submission, table: &Arc<HandleTable>) -> Completion {
         let token = submission.token;
-        let named = submission.argument as u32;
-        let Some(declared) = Rights::from_bits((submission.argument >> 32) as u32) else {
+        let named = submission.handle;
+        let Some(declared) = Rights::from_bits(submission.argument as u32) else {
             return refuse(token, STATUS_DENIED);
         };
 
@@ -427,6 +543,140 @@ impl Queue {
             },
             Err(_) => refuse(token, STATUS_DENIED),
         }
+    }
+
+    /// Resolve a path from a directory handle and hand back what it names.
+    ///
+    /// The operation this phase was for. Three things happen in the order that
+    /// matters: the **slot is promised first**, so a full table is reported at
+    /// submission; the path is read from the ring's own data area, so there is
+    /// no caller pointer to validate; and the rights on what comes back are
+    /// **derived from the directory's**, never asked for.
+    ///
+    /// The derivation, and it is monotone non-increasing as `012` §4 requires:
+    ///
+    /// - A directory inherits its parent's directory rights **unchanged**. A
+    ///   nested open may request the same or fewer, and this requests the same.
+    /// - A file gets `READ` when the directory had `TRAVERSE` — reaching a file
+    ///   is what naming it means — and **never `WRITE`**, because there is no
+    ///   write path and a right that grants nothing is a syscall name in
+    ///   disguise (D-78).
+    /// - A device is refused. What a program will hold for one is slice 4's
+    ///   `Device` capability, and putting it in a table is Phase 7's (D-172).
+    fn open_at(&self, submission: Submission, table: &Arc<HandleTable>) -> Completion {
+        let token = submission.token;
+
+        let mut path = [0u8; MAX_PATH];
+        let Some(len) = self.read_data(submission.argument, submission.length, &mut path) else {
+            return refuse(token, STATUS_BAD_BUFFER);
+        };
+
+        let Ok(reservation) = table.reserve_slot() else {
+            return refuse(token, STATUS_NO_HANDLE_SLOT);
+        };
+        let Ok((object, held)) = table.resolve(submission.handle) else {
+            return refuse(token, STATUS_BAD_HANDLE);
+        };
+        let Some(directory) = object.as_directory().copied() else {
+            return refuse(token, STATUS_BAD_HANDLE);
+        };
+        if !held.contains(Rights::TRAVERSE) {
+            return refuse(token, STATUS_DENIED);
+        }
+
+        let node = match crate::vfs::resolve(directory, &path[..len]) {
+            Ok(node) => node,
+            Err(crate::vfs::VfsError::Path(_)) => return refuse(token, STATUS_BAD_PATH),
+            Err(_) => return refuse(token, STATUS_NO_ENTRY),
+        };
+
+        let (produced, offered) = match node {
+            crate::vfs::Node::File(file) => (
+                crate::object::file(file),
+                Rights::UNIVERSAL.union(Rights::READ),
+            ),
+            crate::vfs::Node::Directory(directory) => (
+                crate::object::directory(directory),
+                // Its parent's, unchanged: the same rights or fewer, and this
+                // is the same.
+                held.difference(Rights::UNIVERSAL.difference(Rights::UNIVERSAL)),
+            ),
+            crate::vfs::Node::Device(_) => return refuse(token, STATUS_DENIED),
+        };
+        let Some(produced) = produced else {
+            return refuse(token, STATUS_NO_ROOM);
+        };
+
+        match table.install(reservation, produced, offered, offered) {
+            Ok(handle) => Completion {
+                token,
+                status: STATUS_OK,
+                value: u64::from(handle),
+            },
+            Err(_) => refuse(token, STATUS_DENIED),
+        }
+    }
+
+    /// Read bytes of a file into the ring's data area.
+    ///
+    /// **Offsets are per operation** (`012` §6, D-152): the submission says
+    /// where to start, and nothing anywhere holds a cursor. Two handles to one
+    /// file have no observable coupling, which in a capability system is the
+    /// difference between an interface and a covert channel.
+    fn read(&self, submission: Submission, table: &Arc<HandleTable>) -> Completion {
+        let token = submission.token;
+
+        let Ok((object, held)) = table.resolve(submission.handle) else {
+            return refuse(token, STATUS_BAD_HANDLE);
+        };
+        let Some(file) = object.as_file().copied() else {
+            return refuse(token, STATUS_BAD_HANDLE);
+        };
+        if !held.contains(Rights::READ) {
+            return refuse(token, STATUS_DENIED);
+        }
+
+        // The destination, bounded before anything is read: a length that ran
+        // past the data area would be the kernel writing outside the pages it
+        // shares, which is the one thing this arrangement exists to make
+        // arithmetic rather than a walk.
+        let Some(bounds) = data_bounds(submission.argument, submission.length) else {
+            return refuse(token, STATUS_BAD_BUFFER);
+        };
+
+        let mut scratch = [0u8; MAX_READ];
+        let wanted = (bounds.1).min(scratch.len());
+        let read = match crate::vfs::read(file, submission.offset as u32, &mut scratch[..wanted]) {
+            Ok(read) => read,
+            Err(crate::vfs::VfsError::Path(_)) => return refuse(token, STATUS_BAD_PATH),
+            Err(_) => return refuse(token, STATUS_NO_ENTRY),
+        };
+
+        if !self.write_data(bounds.0, &scratch[..read]) {
+            return refuse(token, STATUS_BAD_BUFFER);
+        }
+        Completion {
+            token,
+            status: STATUS_OK,
+            value: read as u64,
+        }
+    }
+
+    /// Copy `length` bytes out of the data area at `offset`.
+    fn read_data(&self, offset: u64, length: u32, into: &mut [u8]) -> Option<usize> {
+        let (at, len) = data_bounds(offset, length)?;
+        if len > into.len() {
+            return None;
+        }
+        self.shared
+            .lock_leaf()
+            .read_at(DATA_AT + at, &mut into[..len])
+            .then_some(len)
+    }
+
+    /// Copy `bytes` into the data area at `offset`.
+    fn write_data(&self, at: usize, bytes: &[u8]) -> bool {
+        self.shared.lock_leaf().write_at(DATA_AT + at, bytes)
     }
 
     /// Record an operation as in flight, and say when it comes due.
@@ -658,8 +908,8 @@ impl Queue {
             }
         };
 
-        let mut bytes = [0u8; ENTRY_BYTES];
-        let at = ENTRIES_AT + slot * ENTRY_BYTES;
+        let mut bytes = [0u8; SUBMISSION_BYTES];
+        let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
         // Unreachable for the same reason and with the same cost: `slot` is
         // below `SUBMISSIONS` and the entries are a page in, so the range is
         // inside the shared run by construction. This one has *consumed* the
@@ -671,11 +921,27 @@ impl Queue {
 
         // Validated after the copy, and the copy is what is used. A second
         // read here would be the double fetch the whole design refuses.
-        let opcode = Opcode::decode(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
-        let token = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-        let argument = u64::from_le_bytes([
-            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
-        ]);
+        let word = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        let wide = |at: usize| {
+            u64::from_le_bytes([
+                bytes[at],
+                bytes[at + 1],
+                bytes[at + 2],
+                bytes[at + 3],
+                bytes[at + 4],
+                bytes[at + 5],
+                bytes[at + 6],
+                bytes[at + 7],
+            ])
+        };
+        let opcode = Opcode::decode(word(0));
+        let token = word(4);
+        let handle = word(8);
+        let length = word(12);
+        let offset = wide(16);
+        let argument = wide(24);
 
         // The head userspace reads is published after the entry has been
         // copied out, so a program that watches it cannot see the kernel
@@ -686,6 +952,9 @@ impl Queue {
         Some(Submission {
             opcode,
             token,
+            handle,
+            length,
+            offset,
             argument,
         })
     }
@@ -697,7 +966,7 @@ impl Queue {
             return false;
         };
 
-        let mut bytes = [0u8; ENTRY_BYTES];
+        let mut bytes = [0u8; COMPLETION_BYTES];
         bytes[0..4].copy_from_slice(&completion.token.to_le_bytes());
         bytes[4..8].copy_from_slice(&completion.status.to_le_bytes());
         bytes[8..16].copy_from_slice(&completion.value.to_le_bytes());
@@ -707,7 +976,7 @@ impl Queue {
         // functions was an inversion pre-seeded for SMP (D-70, D-115).
         let tail = self.state.lock_leaf().completions().tail();
 
-        let at = ENTRIES_AT + (SUBMISSIONS as usize * ENTRY_BYTES) + slot * ENTRY_BYTES;
+        let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;
         let mut shared = self.shared.lock_leaf();
         if !shared.write_at(at, &bytes) {
             return false;
@@ -779,13 +1048,18 @@ impl Queue {
             Opcode::Duplicate => 3,
             Opcode::Timer => 4,
             Opcode::Cancel => 5,
+            Opcode::OpenAt => 6,
+            Opcode::Read => 7,
             Opcode::Unknown(other) => other,
         };
-        let mut bytes = [0u8; ENTRY_BYTES];
+        let mut bytes = [0u8; SUBMISSION_BYTES];
         bytes[0..4].copy_from_slice(&u32::to_le_bytes(opcode));
         bytes[4..8].copy_from_slice(&submission.token.to_le_bytes());
-        bytes[8..16].copy_from_slice(&submission.argument.to_le_bytes());
-        let at = ENTRIES_AT + slot * ENTRY_BYTES;
+        bytes[8..12].copy_from_slice(&submission.handle.to_le_bytes());
+        bytes[12..16].copy_from_slice(&submission.length.to_le_bytes());
+        bytes[16..24].copy_from_slice(&submission.offset.to_le_bytes());
+        bytes[24..32].copy_from_slice(&submission.argument.to_le_bytes());
+        let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
         let mut shared = self.shared.lock_leaf();
         shared.write_at(at, &bytes);
     }
@@ -808,23 +1082,73 @@ impl Queue {
     /// check comparing only the completion is comparing two places the rewrite
     /// never touched, which is true whatever the kernel does (D-115).
     pub(crate) fn read_submission(&self, slot: usize) -> Submission {
-        let mut bytes = [0u8; ENTRY_BYTES];
-        let at = ENTRIES_AT + slot * ENTRY_BYTES;
+        let mut bytes = [0u8; SUBMISSION_BYTES];
+        let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
         self.shared.lock_leaf().read_at(at, &mut bytes);
+        let word = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        let wide = |at: usize| {
+            u64::from_le_bytes([
+                bytes[at],
+                bytes[at + 1],
+                bytes[at + 2],
+                bytes[at + 3],
+                bytes[at + 4],
+                bytes[at + 5],
+                bytes[at + 6],
+                bytes[at + 7],
+            ])
+        };
         Submission {
-            opcode: Opcode::decode(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
-            token: u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
-            argument: u64::from_le_bytes([
-                bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
-                bytes[15],
-            ]),
+            opcode: Opcode::decode(word(0)),
+            token: word(4),
+            handle: word(8),
+            length: word(12),
+            offset: wide(16),
+            argument: wide(24),
+        }
+    }
+
+    /// Put bytes in the data area, as a program would before submitting.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn write_data_for_test(&self, at: usize, bytes: &[u8]) -> bool {
+        self.write_data(at, bytes)
+    }
+
+    /// Read the data area back, as a program would after a completion.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn read_data_for_test(&self, at: usize, into: &mut [u8]) -> bool {
+        self.shared.lock_leaf().read_at(DATA_AT + at, into)
+    }
+
+    /// A submission that names a handle, an offset, a buffer and a length.
+    ///
+    /// Test support: the four-field form is what `Read` and `OpenAt` use, and
+    /// building it here keeps the field order in one place.
+    #[cfg(feature = "selftest")]
+    pub(crate) const fn about_at(
+        opcode: Opcode,
+        token: u32,
+        handle: u32,
+        offset: u64,
+        at: u64,
+        length: u32,
+    ) -> Submission {
+        Submission {
+            opcode,
+            token,
+            handle,
+            length,
+            offset,
+            argument: at,
         }
     }
 
     /// Read a completion back out of the shared page as a program would.
     pub(crate) fn read_completion(&self, slot: usize) -> Completion {
-        let mut bytes = [0u8; ENTRY_BYTES];
-        let at = ENTRIES_AT + (SUBMISSIONS as usize * ENTRY_BYTES) + slot * ENTRY_BYTES;
+        let mut bytes = [0u8; COMPLETION_BYTES];
+        let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;
         self.shared.lock_leaf().read_at(at, &mut bytes);
         Completion {
             token: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
@@ -878,6 +1202,35 @@ impl Queue {
 /// always — is expressed by `admit` returning one on every path that is not a
 /// deferral, and by a deferral holding the reservation that guarantees a later
 /// one.
+/// The longest path an `OpenAt` may name.
+///
+/// Bounded because the buffer is on this stack, and bounded *here* rather than
+/// by the data area's size because a kernel stack is thirty-two kilobytes and
+/// a page is four.
+const MAX_PATH: usize = 256;
+
+/// The most bytes one `Read` moves.
+///
+/// The same reasoning: it is a stack buffer, and a caller asking for more gets
+/// fewer bytes rather than a refusal — which is what every short read in this
+/// kernel does and what a caller must already handle.
+const MAX_READ: usize = 512;
+
+/// Where in the data area `offset` and `length` name, if they name anything.
+///
+/// **Arithmetic, not a page walk.** The data area is part of the ring, so the
+/// whole of "is this buffer usable" is two comparisons — and there is no
+/// caller pointer, no SMAP window and no fault to recover (D-173).
+fn data_bounds(offset: u64, length: u32) -> Option<(usize, usize)> {
+    let at = usize::try_from(offset).ok()?;
+    let len = length as usize;
+    if len == 0 {
+        return None;
+    }
+    let end = at.checked_add(len)?;
+    (end <= DATA_BYTES).then_some((at, len))
+}
+
 fn refuse(token: u32, status: u32) -> Completion {
     Completion {
         token,

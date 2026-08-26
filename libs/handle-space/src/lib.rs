@@ -419,6 +419,32 @@ impl Rights {
     /// May be placed into an address space.
     pub const MAP: Self = Self(1 << 11);
 
+    /// May resolve a name inside this directory that the holder already knows.
+    ///
+    /// **Distinct from [`ENUMERATE`](Self::ENUMERATE) on purpose**, and it is
+    /// the split `012` §4 calls the valuable one: "may resolve a name I know"
+    /// and "may list the names" are different powers, and they are a real
+    /// kernel distinction by D-78's rule because the *resolver* consults one
+    /// and `readdir` consults the other.
+    ///
+    /// Capsicum folds enumeration into read. WASI Preview 1 had both by
+    /// accident of being syscall-named, which is the failure D-78 exists to
+    /// prevent — these two are separate because the kernel behaves
+    /// differently, not because there are two calls.
+    pub const TRAVERSE: Self = Self(1 << 12);
+
+    /// May list the names in this directory.
+    pub const ENUMERATE: Self = Self(1 << 13);
+
+    /// May change what names this directory holds.
+    ///
+    /// Nothing exercises it: this phase has no write path, and `014` carries
+    /// that as its largest deliberate hole. The bit is defined because
+    /// *leaving a gap* in a rights word is how a later addition renumbers the
+    /// ones above it — and D-78 requires the encoding to let an object type be
+    /// added without renumbering.
+    pub const MODIFY: Self = Self(1 << 14);
+
     /// Rights from raw bits, or `None` if any undefined bit is set.
     ///
     /// Undefined bits are refused rather than masked away. Masking would make
@@ -433,7 +459,24 @@ impl Rights {
     }
 
     /// Every right this kernel defines.
-    pub const ALL: Self = Self(0b1111 | (0b1111 << 8));
+    ///
+    /// The universal four, then the per-type ones. Written as the union of the
+    /// constants rather than as a literal, because a literal is a second copy
+    /// of the list and goes stale the moment a right is added — which is what
+    /// happened when the directory rights arrived (D-173).
+    pub const ALL: Self = Self(
+        Self::DUPLICATE.0
+            | Self::TRANSFER.0
+            | Self::WAIT.0
+            | Self::INSPECT.0
+            | Self::READ.0
+            | Self::WRITE.0
+            | Self::EXECUTE.0
+            | Self::MAP.0
+            | Self::TRAVERSE.0
+            | Self::ENUMERATE.0
+            | Self::MODIFY.0,
+    );
 
     /// The bits themselves.
     pub const fn bits(self) -> u32 {
@@ -763,49 +806,104 @@ mod tests {
 mod rights_tests {
     use super::*;
 
-    /// Universal and per-type rights occupy disjoint bits, and `ALL` is
-    /// exactly their union.
+    /// The universal four and the per-type rights do not share a bit, and
+    /// `ALL` is exactly all of them.
     ///
-    /// A right that appeared in both halves would mean the same bit answered
-    /// two questions, which is how a taxonomy starts drifting toward
-    /// Capsicum's.
+    /// The list is **read out of this file** rather than restated here. A
+    /// restated list is a second copy that goes green on the day the two
+    /// disagree, which is what happened when the directory rights arrived and
+    /// this test was still naming eight (D-161, D-173).
     #[test]
     fn the_two_halves_do_not_overlap() {
-        let universal = [
-            Rights::DUPLICATE,
-            Rights::TRANSFER,
-            Rights::WAIT,
-            Rights::INSPECT,
-        ];
-        let per_type = [Rights::READ, Rights::WRITE, Rights::EXECUTE, Rights::MAP];
+        // `pub const NAME: Self = Self(...)`, minus the ones that are unions
+        // of the others rather than rights in their own right.
+        const COMPOSITE: [&str; 4] = ["NONE", "UNIVERSAL", "ALL", "EMPTY"];
+        let named: Vec<&str> = include_str!("lib.rs")
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("pub const "))
+            .filter(|rest| rest.contains(": Self = Self("))
+            .filter_map(|rest| rest.split_once(':').map(|(name, _)| name))
+            .filter(|name| !COMPOSITE.contains(name))
+            .collect();
+        assert!(named.len() >= 11, "only {} rights were read", named.len());
+
+        let bits = |name: &str| -> u32 {
+            let line = include_str!("lib.rs")
+                .lines()
+                .find(|line| {
+                    line.trim()
+                        .starts_with(&format!("pub const {name}: Self = Self("))
+                })
+                .unwrap_or_else(|| panic!("no {name}"));
+            let inside = line
+                .trim()
+                .trim_start_matches(&format!("pub const {name}: Self = Self("))
+                .trim_end_matches(");");
+            let (shift, _) = inside
+                .split_once(" << ")
+                .unwrap_or_else(|| panic!("{name} is not a single bit: {inside}"));
+            let _ = shift;
+            let place: u32 = inside
+                .split(" << ")
+                .nth(1)
+                .expect("a shift")
+                .trim()
+                .parse()
+                .expect("a bit position");
+            1 << place
+        };
 
         let mut seen = 0u32;
-        for right in universal.iter().chain(per_type.iter()) {
-            assert_eq!(right.bits().count_ones(), 1, "a right is one bit");
-            assert_eq!(seen & right.bits(), 0, "two rights share a bit");
-            seen |= right.bits();
+        for name in &named {
+            let bit = bits(name);
+            assert_eq!(bit.count_ones(), 1, "{name} is one bit");
+            assert_eq!(seen & bit, 0, "{name} shares a bit with another right");
+            seen |= bit;
         }
-        assert_eq!(seen, Rights::ALL.bits());
+        assert_eq!(seen, Rights::ALL.bits(), "ALL is not every right");
 
-        let universal_bits = universal.iter().fold(0, |bits, r| bits | r.bits());
-        assert_eq!(universal_bits, Rights::UNIVERSAL.bits());
+        // And the two halves are disjoint, which is what lets a universal
+        // right mean the same thing for every object type.
         assert_eq!(
-            universal_bits & per_type.iter().fold(0, |b, r| b | r.bits()),
+            Rights::UNIVERSAL.bits() & (seen & !Rights::UNIVERSAL.bits()),
             0
         );
+        assert_eq!(Rights::UNIVERSAL.bits().count_ones(), 4);
     }
 
     /// An undefined bit is refused, not masked away.
     ///
     /// Masking would let a caller ask for a right this kernel does not have
     /// yet and be told yes.
+    ///
+    /// The undefined bits are found rather than named: `1 << 12` used to be
+    /// one and became `TRAVERSE`, which turned this test red — correctly, and
+    /// as a reminder that a test naming a *gap* goes stale the moment the gap
+    /// is filled (D-173).
     #[test]
     fn an_undefined_right_is_refused() {
-        assert_eq!(Rights::from_bits(1 << 31), None);
-        assert_eq!(Rights::from_bits(1 << 4), None);
-        assert_eq!(Rights::from_bits(Rights::ALL.bits() | 1 << 12), None);
-        assert_eq!(Rights::from_bits(Rights::ALL.bits()), Some(Rights::ALL));
+        let defined = Rights::ALL.bits();
+        let mut checked = 0;
+        for bit in 0..32u32 {
+            if defined & (1 << bit) != 0 {
+                continue;
+            }
+            assert_eq!(
+                Rights::from_bits(1 << bit),
+                None,
+                "bit {bit} is not a right"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "every bit is defined, so nothing was checked");
+
+        assert_eq!(Rights::from_bits(defined), Some(Rights::ALL));
         assert_eq!(Rights::from_bits(0), Some(Rights::NONE));
+        // And a word that is mostly right is still refused whole.
+        let first_undefined = (0..32u32)
+            .find(|bit| defined & (1 << bit) == 0)
+            .expect("some bit is undefined");
+        assert_eq!(Rights::from_bits(defined | (1 << first_undefined)), None);
     }
 
     /// Attenuation only ever narrows, and asking for more is refused rather
@@ -889,8 +987,29 @@ mod rights_tests {
             .union(Rights::WRITE)
             .union(Rights::EXECUTE)
             .union(Rights::MAP);
-        assert!(Rights::ALL.are_meaningful_for(memory));
+        assert!(
+            Rights::UNIVERSAL.union(memory).are_meaningful_for(memory),
+            "its own rights and the universal four"
+        );
         assert!(Rights::READ.union(Rights::WAIT).are_meaningful_for(memory));
+        // **Not `ALL`.** This used to assert that every right this kernel
+        // defines is meaningful for a memory object, which was true only while
+        // `ALL` was exactly the universal four plus the memory ones. The
+        // directory rights arrived and it became false — correctly, because a
+        // memory object has no names in it (D-173).
+        assert!(!Rights::ALL.are_meaningful_for(memory));
+        assert!(!Rights::TRAVERSE.are_meaningful_for(memory));
+
+        // And a directory, which is the mirror: names but no bytes.
+        let directory = Rights::TRAVERSE
+            .union(Rights::ENUMERATE)
+            .union(Rights::MODIFY);
+        assert!(Rights::TRAVERSE.are_meaningful_for(directory));
+        assert!(
+            !Rights::READ.are_meaningful_for(directory),
+            "a directory has no bytes"
+        );
+        assert!(!Rights::MAP.are_meaningful_for(directory));
 
         // Universal rights are always meaningful, which is what makes them
         // universal.

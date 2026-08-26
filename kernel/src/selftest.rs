@@ -1193,11 +1193,7 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
         for slot in 0..room {
             queue.post_submission_for_test(
                 slot,
-                queue::Submission {
-                    opcode: queue::Opcode::Echo,
-                    token: posted,
-                    argument: u64::from(posted),
-                },
+                queue::Submission::simple(queue::Opcode::Echo, posted, u64::from(posted)),
             );
         }
         queue.publish_tail_for_test(posted + room as u32);
@@ -1239,11 +1235,7 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
     for slot in 0..2 {
         liar.post_submission_for_test(
             slot,
-            queue::Submission {
-                opcode: queue::Opcode::Echo,
-                token: slot as u32,
-                argument: 0,
-            },
+            queue::Submission::simple(queue::Opcode::Echo, slot as u32, 0),
         );
     }
     liar.publish_tail_for_test(2);
@@ -1313,6 +1305,290 @@ fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
 #[cfg(feature = "selftest")]
 fn a_table() -> alloc::sync::Arc<crate::handle::HandleTable> {
     alloc::sync::Arc::new(crate::handle::HandleTable::new(8))
+}
+
+/// A completion carries a **file** handle, and the rights come from the
+/// directory that named it.
+///
+/// The operation this whole phase was for. A program holds a directory and
+/// nothing else; it names something inside; and what comes back is authority
+/// over that thing — reserved at submission (D-151), attenuated on arrival
+/// (D-110), and derived from what the directory held rather than asked for
+/// (D-173).
+fn a_completion_carries_a_file_handle() -> bool {
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let Some(root) = vfs::root() else {
+        return false;
+    };
+    let Some(object) = crate::object::directory(root) else {
+        return false;
+    };
+
+    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+    let held = Rights::UNIVERSAL
+        .union(Rights::TRAVERSE)
+        .union(Rights::ENUMERATE);
+    let Ok(directory) = table.insert(object, held) else {
+        return false;
+    };
+
+    if !queue.write_data_for_test(0, SMALL_NAME) {
+        return false;
+    }
+    queue.post_submission_for_test(
+        0,
+        queue::Queue::about_at(
+            queue::Opcode::OpenAt,
+            0x09E4,
+            directory,
+            0,
+            0,
+            SMALL_NAME.len() as u32,
+        ),
+    );
+    queue.publish_tail_for_test(1);
+
+    if queue.serve(&table) != 1 {
+        return false;
+    }
+    let completion = queue.read_completion(0);
+    if completion.status != queue::STATUS_OK {
+        return false;
+    }
+
+    let file = completion.value as u32;
+    let Ok((object, granted)) = table.resolve(file) else {
+        return false;
+    };
+    if object.as_file().is_none() {
+        return false;
+    }
+
+    // **Read, and never write.** There is no write path, and a right that
+    // grants nothing is a syscall name in disguise (D-78).
+    granted == Rights::UNIVERSAL.union(Rights::READ)
+        && !granted.contains(Rights::WRITE)
+        && !granted.contains(Rights::TRAVERSE)
+        && table.live() == 2
+        && table.promised() == 0
+}
+
+/// A read is a submission, and its offset is per operation.
+///
+/// `012` §6 and D-152: no seek, no tell, no cursor on anything. Two reads of
+/// one handle at different offsets answer differently, and neither moves
+/// anything — which is what makes two handles to one file have no observable
+/// coupling.
+fn a_read_is_a_submission_with_its_own_offset() -> bool {
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let Some(file) = open_the_small_file(&queue) else {
+        return false;
+    };
+    let (table, handle) = file;
+
+    // Two reads, at different offsets, into different parts of the data area.
+    for (slot, token, offset, at, length) in [
+        (1usize, 0x00A1u32, 0u64, 64u64, 16u32),
+        (2, 0x00A2, 8, 128, 16),
+    ] {
+        queue.post_submission_for_test(
+            slot,
+            queue::Queue::about_at(queue::Opcode::Read, token, handle, offset, at, length),
+        );
+    }
+    queue.publish_tail_for_test(3);
+    if queue.serve(&table) != 2 {
+        return false;
+    }
+
+    let first = queue.read_completion(1);
+    let second = queue.read_completion(2);
+    if first.status != queue::STATUS_OK || second.status != queue::STATUS_OK {
+        return false;
+    }
+    if first.value != 16 || second.value != 16 {
+        return false;
+    }
+
+    let mut head = [0u8; 16];
+    let mut later = [0u8; 16];
+    if !queue.read_data_for_test(64, &mut head) || !queue.read_data_for_test(128, &mut later) {
+        return false;
+    }
+
+    // The bytes are the file's, at the offsets asked for — and the two differ,
+    // which is what a read that ignored the offset could not manage.
+    head == SMALL_CONTENT[..16] && later == SMALL_CONTENT[8..24] && head != later
+}
+
+/// A ring operation cannot reach past the rights it was given, or past the
+/// pages it shares.
+///
+/// Four refusals, each from a different place, and every one of them at
+/// **submission**: a directory without `TRAVERSE` cannot open, a file without
+/// `READ` cannot be read, a path that escapes is malformed rather than denied,
+/// and a buffer outside the data area is refused before anything is written.
+fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let Some(root) = vfs::root() else {
+        return false;
+    };
+    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+
+    // A directory held without TRAVERSE: it can be listed and not walked.
+    let Some(object) = crate::object::directory(root) else {
+        return false;
+    };
+    let Ok(unwalkable) = table.insert(object, Rights::UNIVERSAL.union(Rights::ENUMERATE)) else {
+        return false;
+    };
+    // And one that can be walked, for the paths that are about the path.
+    let Some(object) = crate::object::directory(root) else {
+        return false;
+    };
+    let Ok(walkable) = table.insert(object, Rights::UNIVERSAL.union(Rights::TRAVERSE)) else {
+        return false;
+    };
+
+    if !queue.write_data_for_test(0, SMALL_NAME) || !queue.write_data_for_test(256, b"..") {
+        return false;
+    }
+
+    // A file held without READ, so a read of it is a refusal about the right
+    // rather than about the file.
+    let Some(root_node) = vfs::resolve(root, SMALL_NAME).ok() else {
+        return false;
+    };
+    let vfs::Node::File(file) = root_node else {
+        return false;
+    };
+    let Some(object) = crate::object::file(file) else {
+        return false;
+    };
+    let Ok(unreadable) = table.insert(object, Rights::UNIVERSAL) else {
+        return false;
+    };
+    // And the same file held *with* `READ`, so a refusal about the buffer is
+    // reached at all: a handle that is denied at the right never gets as far
+    // as the bound, and a check built only from denied handles cannot see
+    // whether the bound comes before the read (D-173).
+    let Some(object) = crate::object::file(file) else {
+        return false;
+    };
+    let Ok(readable) = table.insert(object, Rights::UNIVERSAL.union(Rights::READ)) else {
+        return false;
+    };
+
+    let asked = [
+        // No TRAVERSE.
+        (
+            0usize,
+            0xD1u32,
+            unwalkable,
+            0u64,
+            SMALL_NAME.len() as u32,
+            queue::STATUS_DENIED,
+        ),
+        // A path that would leave the directory.
+        (1, 0xD2, walkable, 256, 2, queue::STATUS_BAD_PATH),
+        // A path buffer outside the data area.
+        (2, 0xD3, walkable, 8192, 8, queue::STATUS_BAD_BUFFER),
+        // A path of no length at all.
+        (3, 0xD4, walkable, 0, 0, queue::STATUS_BAD_BUFFER),
+    ];
+    for (slot, token, handle, at, length, _) in asked {
+        queue.post_submission_for_test(
+            slot,
+            queue::Queue::about_at(queue::Opcode::OpenAt, token, handle, 0, at, length),
+        );
+    }
+    queue.publish_tail_for_test(asked.len() as u32);
+    if queue.serve(&table) != asked.len() {
+        return false;
+    }
+
+    let mut refused = true;
+    for (slot, token, _, _, _, status) in asked {
+        let completion = queue.read_completion(slot);
+        refused &= completion.token == token && completion.status == status;
+    }
+
+    // A read of a file held without `READ`, and a read into a buffer the
+    // shared pages cannot hold. **The device must not have been asked** for
+    // either: a refusal that happened after the read reached the controller
+    // looks exactly like one that happened before, unless something counts —
+    // and `-ENOBUFS` after the work is done is the shape `012` §8 warns about
+    // (D-173).
+    let before = nvme::with_controller(|controller, _| controller.commands());
+    queue.post_submission_for_test(
+        4,
+        queue::Queue::about_at(queue::Opcode::Read, 0xD5, unreadable, 0, 0, 16),
+    );
+    queue.post_submission_for_test(
+        5,
+        queue::Queue::about_at(queue::Opcode::Read, 0xD6, unreadable, 0, 4090, 16),
+    );
+    // The one that reaches the bound: readable, and a buffer that runs off the
+    // end of the shared pages. **The device must still not be asked** — a
+    // bound checked after the read is `-ENOBUFS` with the work already done.
+    queue.post_submission_for_test(
+        6,
+        queue::Queue::about_at(queue::Opcode::Read, 0xD7, readable, 0, 4090, 16),
+    );
+    queue.publish_tail_for_test(7);
+    let served = queue.serve(&table) == 3;
+    let after = nvme::with_controller(|controller, _| controller.commands());
+
+    let denied = queue.read_completion(4).status == queue::STATUS_DENIED
+        && queue.read_completion(5).status == queue::STATUS_DENIED
+        && queue.read_completion(6).status == queue::STATUS_BAD_BUFFER;
+    let untouched = before == after;
+
+    // Nothing was promised and kept: every refusal above gave its slot back.
+    refused && served && denied && untouched && table.live() == 4 && table.promised() == 0
+}
+
+/// Open the corpus's small file through the ring, and give back the table and
+/// the handle.
+///
+/// Shared by the checks above, because building a directory handle and opening
+/// through it is four operations and repeating them would make each check
+/// mostly setup.
+fn open_the_small_file(
+    queue: &queue::Queue,
+) -> Option<(alloc::sync::Arc<crate::handle::HandleTable>, u32)> {
+    let root = vfs::root()?;
+    let object = crate::object::directory(root)?;
+    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+    let held = Rights::UNIVERSAL.union(Rights::TRAVERSE);
+    let directory = table.insert(object, held).ok()?;
+
+    if !queue.write_data_for_test(0, SMALL_NAME) {
+        return None;
+    }
+    queue.post_submission_for_test(
+        0,
+        queue::Queue::about_at(
+            queue::Opcode::OpenAt,
+            1,
+            directory,
+            0,
+            0,
+            SMALL_NAME.len() as u32,
+        ),
+    );
+    queue.publish_tail_for_test(1);
+    if queue.serve(&table) != 1 {
+        return None;
+    }
+    let completion = queue.read_completion(0);
+    (completion.status == queue::STATUS_OK).then_some((table, completion.value as u32))
 }
 
 /// A second backend answers the same three operations.
@@ -2172,11 +2448,7 @@ fn work_in_flight_is_ended_before_the_ring_is_released() -> bool {
     for (slot, token) in [(0usize, 0xA1u32), (1, 0xA2)] {
         queue.post_submission_for_test(
             slot,
-            queue::Submission {
-                opcode: queue::Opcode::Timer,
-                token,
-                argument: 3_600_000_000_000,
-            },
+            queue::Submission::simple(queue::Opcode::Timer, token, 3_600_000_000_000),
         );
     }
     queue.publish_tail_for_test(2);
@@ -2357,11 +2629,7 @@ fn revoking_the_clock_sends_readers_back_to_the_call() -> bool {
         };
         queue.post_submission_for_test(
             0,
-            queue::Submission {
-                opcode: queue::Opcode::Uptime,
-                token: 0x7EA,
-                argument: 0,
-            },
+            queue::Submission::simple(queue::Opcode::Uptime, 0x7EA, 0),
         );
         queue.publish_tail_for_test(1);
         let table = a_table();
@@ -2477,11 +2745,12 @@ fn a_completion_carries_a_handle_with_narrowed_rights() -> bool {
     let declared = Rights::UNIVERSAL.union(Rights::READ);
     queue.post_submission_for_test(
         0,
-        queue::Submission {
-            opcode: queue::Opcode::Duplicate,
-            token: 0x5150,
-            argument: u64::from(source) | (u64::from(declared.bits()) << 32),
-        },
+        queue::Submission::about(
+            queue::Opcode::Duplicate,
+            0x5150,
+            source,
+            u64::from(declared.bits()),
+        ),
     );
     queue.publish_tail_for_test(1);
 
@@ -2536,11 +2805,12 @@ fn a_completion_cannot_widen_what_was_offered() -> bool {
     let asked = Rights::UNIVERSAL.union(Rights::READ).union(Rights::WRITE);
     queue.post_submission_for_test(
         0,
-        queue::Submission {
-            opcode: queue::Opcode::Duplicate,
-            token: 0x0BAD,
-            argument: u64::from(source) | (u64::from(asked.bits()) << 32),
-        },
+        queue::Submission::about(
+            queue::Opcode::Duplicate,
+            0x0BAD,
+            source,
+            u64::from(asked.bits()),
+        ),
     );
     queue.publish_tail_for_test(1);
 
@@ -2599,31 +2869,30 @@ fn a_refused_handle_operation_returns_its_promise() -> bool {
         // Refused at the lookup: a well-formed value naming nothing of ours.
         (
             0xF001u32,
-            u64::from(source ^ 0x40) | (u64::from(full.bits()) << 32),
+            source ^ 0x40,
+            u64::from(full.bits()),
             queue::STATUS_BAD_HANDLE,
         ),
         // Refused at the right: held, but not passable.
         (
             0xF002,
-            u64::from(undupable) | (u64::from(Rights::READ.bits()) << 32),
+            undupable,
+            u64::from(Rights::READ.bits()),
             queue::STATUS_DENIED,
         ),
         // Refused at the attenuation: asking for more than is held.
         (
             0xF003,
-            u64::from(undupable) | (u64::from(Rights::READ.union(Rights::WRITE).bits()) << 32),
+            undupable,
+            u64::from(Rights::READ.union(Rights::WRITE).bits()),
             queue::STATUS_DENIED,
         ),
     ];
 
-    for (slot, (token, argument, _)) in asked.iter().enumerate() {
+    for (slot, (token, handle, rights, _)) in asked.iter().enumerate() {
         queue.post_submission_for_test(
             slot,
-            queue::Submission {
-                opcode: queue::Opcode::Duplicate,
-                token: *token,
-                argument: *argument,
-            },
+            queue::Submission::about(queue::Opcode::Duplicate, *token, *handle, *rights),
         );
     }
     queue.publish_tail_for_test(asked.len() as u32);
@@ -2633,7 +2902,7 @@ fn a_refused_handle_operation_returns_its_promise() -> bool {
     }
 
     let mut refused = true;
-    for (slot, (token, _, status)) in asked.iter().enumerate() {
+    for (slot, (token, _, _, status)) in asked.iter().enumerate() {
         let completion = queue.read_completion(slot);
         refused &= completion.token == *token && completion.status == *status;
     }
@@ -2667,11 +2936,12 @@ fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
 
     queue.post_submission_for_test(
         0,
-        queue::Submission {
-            opcode: queue::Opcode::Duplicate,
-            token: 0xFEED,
-            argument: u64::from(source) | (u64::from(full.bits()) << 32),
-        },
+        queue::Submission::about(
+            queue::Opcode::Duplicate,
+            0xFEED,
+            source,
+            u64::from(full.bits()),
+        ),
     );
     queue.publish_tail_for_test(1);
 
@@ -2710,11 +2980,7 @@ fn an_operation_completes_after_its_deadline_and_only_once() -> bool {
     let submitted_at = crate::time::now_ns();
     queue.post_submission_for_test(
         0,
-        queue::Submission {
-            opcode: queue::Opcode::Timer,
-            token: 0x7117,
-            argument: DELAY_NS,
-        },
+        queue::Submission::simple(queue::Opcode::Timer, 0x7117, DELAY_NS),
     );
     queue.publish_tail_for_test(1);
 
@@ -2770,11 +3036,7 @@ fn a_cancelled_operation_and_its_cancellation_complete_separately() -> bool {
     // An hour away, so nothing but the cancellation can end it.
     queue.post_submission_for_test(
         0,
-        queue::Submission {
-            opcode: queue::Opcode::Timer,
-            token: 0xDEAD,
-            argument: 3_600_000_000_000,
-        },
+        queue::Submission::simple(queue::Opcode::Timer, 0xDEAD, 3_600_000_000_000),
     );
     queue.publish_tail_for_test(1);
     if queue.serve(&table) != 0 || queue.in_flight() != 1 {
@@ -2783,11 +3045,7 @@ fn a_cancelled_operation_and_its_cancellation_complete_separately() -> bool {
 
     queue.post_submission_for_test(
         1,
-        queue::Submission {
-            opcode: queue::Opcode::Cancel,
-            token: 0xC0DE,
-            argument: 0xDEAD,
-        },
+        queue::Submission::simple(queue::Opcode::Cancel, 0xC0DE, 0xDEAD),
     );
     queue.publish_tail_for_test(2);
     if queue.serve(&table) != 1 {
@@ -2810,11 +3068,7 @@ fn a_cancelled_operation_and_its_cancellation_complete_separately() -> bool {
     // `-EALREADY` and the right answer for a race the program cannot avoid.
     queue.post_submission_for_test(
         2,
-        queue::Submission {
-            opcode: queue::Opcode::Cancel,
-            token: 0xC0DF,
-            argument: 0xDEAD,
-        },
+        queue::Submission::simple(queue::Opcode::Cancel, 0xC0DF, 0xDEAD),
     );
     queue.publish_tail_for_test(3);
     let again =
@@ -2838,21 +3092,9 @@ fn every_submission_gets_exactly_one_completion() -> bool {
 
     // Three operations: one served, one served differently, one refused.
     let asked = [
-        queue::Submission {
-            opcode: queue::Opcode::Echo,
-            token: 0x1111,
-            argument: 0xDEAD_BEEF,
-        },
-        queue::Submission {
-            opcode: queue::Opcode::Uptime,
-            token: 0x2222,
-            argument: 0,
-        },
-        queue::Submission {
-            opcode: queue::Opcode::Unknown(0xFFFF),
-            token: 0x3333,
-            argument: 0,
-        },
+        queue::Submission::simple(queue::Opcode::Echo, 0x1111, 0xDEAD_BEEF),
+        queue::Submission::simple(queue::Opcode::Uptime, 0x2222, 0),
+        queue::Submission::simple(queue::Opcode::Unknown(0xFFFF), 0x3333, 0),
     ];
 
     for (slot, submission) in asked.iter().enumerate() {
@@ -2937,11 +3179,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
 
     queue.post_submission_for_test(
         0,
-        queue::Submission {
-            opcode: queue::Opcode::Echo,
-            token: 0xABCD,
-            argument: 0x0F0F_0F0F,
-        },
+        queue::Submission::simple(queue::Opcode::Echo, 0xABCD, 0x0F0F_0F0F),
     );
     queue.publish_tail_for_test(1);
     if queue.serve(&a_table()) != 1 {
@@ -2953,11 +3191,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     // would the instant it saw the head move.
     queue.post_submission_for_test(
         0,
-        queue::Submission {
-            opcode: queue::Opcode::Unknown(0xDEAD),
-            token: 0xBAAD,
-            argument: 0xFFFF_FFFF,
-        },
+        queue::Submission::simple(queue::Opcode::Unknown(0xDEAD), 0xBAAD, 0xFFFF_FFFF),
     );
 
     // The completion is what the *copy* said, and the rewrite is visible in
@@ -2990,11 +3224,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     for slot in 0..3 {
         runaway.post_submission_for_test(
             slot,
-            queue::Submission {
-                opcode: queue::Opcode::Echo,
-                token: 0x9999,
-                argument: 0,
-            },
+            queue::Submission::simple(queue::Opcode::Echo, 0x9999, 0),
         );
     }
     runaway.publish_tail_for_test(u32::MAX);
@@ -3017,11 +3247,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     for slot in 0..3 {
         partial.post_submission_for_test(
             slot,
-            queue::Submission {
-                opcode: queue::Opcode::Echo,
-                token: 0x5150 + slot as u32,
-                argument: 7,
-            },
+            queue::Submission::simple(queue::Opcode::Echo, 0x5150 + slot as u32, 7),
         );
     }
     partial.publish_tail_for_test(1);
@@ -5839,7 +6065,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 176;
+const EXPECTED_CHECKS: usize = 179;
 
 impl Report {
     const fn new() -> Self {
@@ -5982,6 +6208,18 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a ring announces its shape and keeps its pages",
         a_ring_announces_its_shape_and_keeps_its_pages(),
+    );
+    report.check(
+        "a completion carries a file handle",
+        a_completion_carries_a_file_handle(),
+    );
+    report.check(
+        "a read is a submission with its own offset",
+        a_read_is_a_submission_with_its_own_offset(),
+    );
+    report.check(
+        "a ring operation cannot reach past its rights or its pages",
+        a_ring_operation_cannot_reach_past_its_rights_or_its_pages(),
     );
     report.check(
         "a second backend answers the same three operations",

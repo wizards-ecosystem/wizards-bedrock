@@ -70,6 +70,15 @@ typedef uint32_t wiz_rights_t;
 #define WIZ_RIGHT_READ      ((wiz_rights_t)(1u << 8))
 #define WIZ_RIGHT_WRITE     ((wiz_rights_t)(1u << 9))
 #define WIZ_RIGHT_EXECUTE   ((wiz_rights_t)(1u << 10))
+/* May resolve a name in this directory that you already know. Distinct from
+ * enumeration on purpose: "may resolve a name I know" and "may list the names"
+ * are different powers, and the resolver consults one while readdir consults
+ * the other. */
+#define WIZ_RIGHT_TRAVERSE (1u << 12)
+#define WIZ_RIGHT_ENUMERATE (1u << 13)
+/* Defined and never granted: there is no write path in this phase. */
+#define WIZ_RIGHT_MODIFY (1u << 14)
+
 #define WIZ_RIGHT_MAP       ((wiz_rights_t)(1u << 11))
 
 /* ------------------------------------------------------------------ *
@@ -99,11 +108,45 @@ struct wiz_ring_header {
 /* Entries begin on the second page. Submissions first, then completions. */
 #define WIZ_RING_ENTRIES_AT 4096u
 
+/* The data area: a third page, and the buffer every operation that moves bytes
+ * uses. **The ring owns it**, so it is always mapped, always the right size,
+ * and its bounds are arithmetic — there is no pointer of yours for the kernel
+ * to validate, no SMAP window to open and no fault to recover.
+ *
+ * The cost is a copy: a read goes device -> kernel -> here, where your own
+ * buffer could have been the target. Zero-copy needs memory objects, which is
+ * a later phase (D-173). */
+#define WIZ_RING_DATA_AT 8192u
+#define WIZ_RING_DATA_BYTES 4096u
+
+/* Thirty-two bytes since slice 9 widened it: a read needs a handle, an offset,
+ * a buffer and a length, which is more than one argument holds. The ABI slices
+ * came first so that the caller which freezes the shape would arrive after it
+ * could still be changed, and `read` is that caller (D-149, D-173).
+ *
+ * Fields mean what the opcode says they mean, and nothing carries two things:
+ *
+ *   WIZ_OP_ECHO       argument is returned
+ *   WIZ_OP_UPTIME     nothing
+ *   WIZ_OP_DUPLICATE  handle, and argument is the rights you will hold
+ *   WIZ_OP_TIMER      argument is nanoseconds
+ *   WIZ_OP_CANCEL     argument is the token to end
+ *   WIZ_OP_OPENAT     handle is a directory; argument/length is a path in the
+ *                     data area; the completion carries the new handle
+ *   WIZ_OP_READ       handle is a file; offset says where; argument/length is
+ *                     where in the data area to put the bytes
+ */
 struct wiz_submission {
 	uint32_t opcode;
 	uint32_t token;   /* The caller's tag, returned in the completion. */
+	uint32_t handle;  /* What the operation is about, where it is about one. */
+	uint32_t length;  /* How many bytes, where that is a question. */
+	uint64_t offset;  /* Where in a file. Per operation: there is no cursor. */
 	uint64_t argument;
 };
+
+#define WIZ_SUBMISSION_BYTES 32u
+#define WIZ_COMPLETION_BYTES 16u
 
 struct wiz_completion {
 	uint32_t token;   /* The submission's tag. */
@@ -129,6 +172,18 @@ struct wiz_completion {
  * with its own completion: the target still gets exactly one, carrying
  * `WIZ_STATUS_CANCELLED` (D-164). */
 #define WIZ_OP_CANCEL    5u
+/* Resolve a path from a directory handle. `handle` is the directory,
+ * `argument` is an offset into the data area and `length` the path's bytes.
+ * The completion carries a handle for what the path named.
+ *
+ * The rights on it are **derived from the directory's**, never asked for: a
+ * directory inherits its parent's unchanged, and a file gets READ because
+ * reaching it is what naming it means. Monotone non-increasing, as a nested
+ * open must be. */
+#define WIZ_OP_OPENAT    6u
+/* Read a file into the data area. `offset` is where in the file, and it is
+ * **per operation** — there is no seek, no tell and no cursor anywhere. */
+#define WIZ_OP_READ      7u
 
 /* Completion statuses. */
 #define WIZ_STATUS_OK             0u
@@ -144,6 +199,15 @@ struct wiz_completion {
  * you cannot avoid, and io_uring reports the same case as `-EALREADY`. */
 #define WIZ_STATUS_NOT_FOUND      6u
 #define WIZ_STATUS_NO_ROOM        7u
+/* The buffer you named is not inside the data area, or has no length. Checked
+ * at submission, before anything is read: a buffer found unusable afterwards
+ * is `-ENOBUFS` with the work already done. */
+#define WIZ_STATUS_BAD_BUFFER     8u
+#define WIZ_STATUS_NO_ENTRY       9u
+/* The path is absolute, or would leave the directory. **Malformed, not
+ * denied**: there is no root and no parent, so there is nothing that could
+ * have been denied. */
+#define WIZ_STATUS_BAD_PATH       10u
 
 /* ------------------------------------------------------------------ *
  * The time page

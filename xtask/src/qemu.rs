@@ -249,7 +249,7 @@ const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// is a thing you do inside a fix and the table is a different file. This line
 /// and its twin in `kernel/src/selftest.rs` are the two you have to touch
 /// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 176;
+const EXPECTED_SELFTEST_CHECKS: usize = 179;
 
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
@@ -1634,6 +1634,8 @@ mod tests {
             ("WIZ_OP_DUPLICATE", "3", "3 => Self::Duplicate"),
             ("WIZ_OP_TIMER", "4", "4 => Self::Timer"),
             ("WIZ_OP_CANCEL", "5", "5 => Self::Cancel"),
+            ("WIZ_OP_OPENAT", "6", "6 => Self::OpenAt"),
+            ("WIZ_OP_READ", "7", "7 => Self::Read"),
         ] {
             assert!(queue.contains(arm), "the kernel does not decode `{arm}`");
             assert_eq!(
@@ -1658,6 +1660,9 @@ mod tests {
             ("WIZ_STATUS_CANCELLED", "STATUS_CANCELLED"),
             ("WIZ_STATUS_NOT_FOUND", "STATUS_NOT_FOUND"),
             ("WIZ_STATUS_NO_ROOM", "STATUS_NO_ROOM"),
+            ("WIZ_STATUS_BAD_BUFFER", "STATUS_BAD_BUFFER"),
+            ("WIZ_STATUS_NO_ENTRY", "STATUS_NO_ENTRY"),
+            ("WIZ_STATUS_BAD_PATH", "STATUS_BAD_PATH"),
         ] {
             assert_eq!(
                 defined(name).trim_end_matches('u'),
@@ -1801,6 +1806,8 @@ mod tests {
             "WIZ_OP_DUPLICATE",
             "WIZ_OP_TIMER",
             "WIZ_OP_CANCEL",
+            "WIZ_OP_OPENAT",
+            "WIZ_OP_READ",
             "WIZ_OP_SIGNAL",
             "WIZ_STATUS_OK",
             "WIZ_STATUS_UNKNOWN_OPCODE",
@@ -1810,6 +1817,16 @@ mod tests {
             "WIZ_STATUS_CANCELLED",
             "WIZ_STATUS_NOT_FOUND",
             "WIZ_STATUS_NO_ROOM",
+            "WIZ_STATUS_BAD_BUFFER",
+            "WIZ_STATUS_NO_ENTRY",
+            "WIZ_STATUS_BAD_PATH",
+            "WIZ_SUBMISSION_BYTES",
+            "WIZ_COMPLETION_BYTES",
+            "WIZ_RING_DATA_AT",
+            "WIZ_RING_DATA_BYTES",
+            "WIZ_RIGHT_TRAVERSE",
+            "WIZ_RIGHT_ENUMERATE",
+            "WIZ_RIGHT_MODIFY",
             "WIZ_TIME_ADDRESS",
             "WIZ_TIME_VERSION",
             "WIZ_TIME_CLOCK_AT",
@@ -1834,6 +1851,45 @@ mod tests {
             }
         }
 
+        // The entry sizes, which the emitted program transcribes a fourth
+        // time. A submission written at the wrong stride lands its argument in
+        // the next entry's opcode, and the kernel serves something nobody
+        // asked for (D-173).
+        for (name, konstant) in [
+            ("WIZ_SUBMISSION_BYTES", "SUBMISSION_BYTES"),
+            ("WIZ_COMPLETION_BYTES", "COMPLETION_BYTES"),
+        ] {
+            let declared = queue
+                .lines()
+                .find_map(|line| {
+                    line.trim()
+                        .strip_prefix(&format!("const {konstant}: usize = "))
+                })
+                .map(|value| value.trim_end_matches(';').to_string())
+                .unwrap_or_else(|| panic!("no {konstant} in queue.rs"));
+            assert_eq!(
+                defined(name).trim_end_matches('u'),
+                declared,
+                "{name} drifted"
+            );
+        }
+        // And the program's own copy of the stride.
+        assert!(
+            program.contains("const SUBMISSION_BYTES: u32 = 32;"),
+            "the emitted program writes entries at a different stride"
+        );
+
+        // The data area, which is where every operation that moves bytes puts
+        // them.
+        let data_at = queue
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("const DATA_AT: usize = "))
+            .map(|value| value.trim_end_matches(';').to_string())
+            .expect("no DATA_AT in queue.rs");
+        assert_eq!(data_at, "2 * PAGE_SIZE as usize");
+        assert_eq!(defined("WIZ_RING_DATA_AT").trim_end_matches('u'), "8192");
+        assert_eq!(defined("WIZ_RING_DATA_BYTES").trim_end_matches('u'), "4096");
+
         // The rights, against `libs/handle-space`.
         let rights = std::fs::read_to_string(root.join("libs/handle-space/src/lib.rs"))
             .expect("handle-space");
@@ -1845,6 +1901,9 @@ mod tests {
             ("WIZ_RIGHT_READ", "READ"),
             ("WIZ_RIGHT_WRITE", "WRITE"),
             ("WIZ_RIGHT_EXECUTE", "EXECUTE"),
+            ("WIZ_RIGHT_TRAVERSE", "TRAVERSE"),
+            ("WIZ_RIGHT_ENUMERATE", "ENUMERATE"),
+            ("WIZ_RIGHT_MODIFY", "MODIFY"),
             ("WIZ_RIGHT_MAP", "MAP"),
         ] {
             let bit = rights

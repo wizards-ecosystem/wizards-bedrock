@@ -710,6 +710,51 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a read stops at the end of the file, in memory too",
         reddens: Caught::Check("a second backend answers the same three operations"),
     },
+    // Slice 9. An open that ignores the directory's traverse right, so a
+    // handle held only to *list* a directory can walk it (D-173).
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "        if !held.contains(Rights::TRAVERSE) {
+            return refuse(token, STATUS_DENIED);
+        }",
+        replace: "        if false {
+            return refuse(token, STATUS_DENIED);
+        }",
+        breaks: "an open needs the right to traverse",
+        reddens: Caught::Check("a ring operation cannot reach past its rights or its pages"),
+    },
+    // A file handle granted WRITE, which nothing can honour: there is no write
+    // path, and a right that grants nothing is a syscall name in disguise.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "                Rights::UNIVERSAL.union(Rights::READ),
+            ),",
+        replace: "                Rights::UNIVERSAL.union(Rights::READ).union(Rights::WRITE),
+            ),",
+        breaks: "an open grants only what it can honour",
+        reddens: Caught::Check("a completion carries a file handle"),
+    },
+    // A read that ignores its offset, so every read answers from the start.
+    // Offsets are per operation and nothing holds a cursor, so this is the
+    // only thing that says where the bytes came from.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "        let read = match crate::vfs::read(file, submission.offset as u32, &mut scratch[..wanted]) {",
+        replace: "        let read = match crate::vfs::read(file, 0, &mut scratch[..wanted]) {",
+        breaks: "a read starts where it was told to",
+        reddens: Caught::Check("a read is a submission with its own offset"),
+    },
+    // The buffer bound moved after the read. **Changes no output** — the
+    // shared page bounds the copy anyway — so only the driver's command
+    // counter can tell the two kernels apart, which is why it exists (D-173).
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "    (end <= DATA_BYTES).then_some((at, len))",
+        replace: "    let _ = end;
+    Some((at, len))",
+        breaks: "a buffer is checked before the device is asked",
+        reddens: Caught::Check("a ring operation cannot reach past its rights or its pages"),
+    },
     // D-133's exemption, put back. The inner test is left in place so the
     // counter still cannot move, which is the point: the woken thread runs
     // either way, because the keyboard arm reschedules a moment later, so only
