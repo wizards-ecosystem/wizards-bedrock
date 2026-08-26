@@ -70,7 +70,7 @@ before its abstraction is anything but a guess.
 | 3 | **Death mid-operation.** In-flight operations collected with the zombie; exit is a *wait*, not a signal | Done |
 | 4 | **PCI, and a device that is claimed.** CF8/CFC enumeration recursing through bridges, a `Device` capability that supersedes bare port claims, BAR mapping uncacheable | Done |
 | 5 | **NVMe, polled.** Twelve-step init, one I/O queue pair, `IEN=0`, PRP construction in `libs/`, and the `size − 1` capacity rule proved |Done |
-| 6 | **FAT32, read-only, short names.** `libs/fat32` over a block trait, checked against the ESP `xtask` already builds | |
+| 6 | **FAT32, read-only, short names.** `libs/fat32` over a block trait, checked against the ESP `xtask` already builds |Done |
 | 7 | **The VFS.** A directory trait — `lookup`, `enumerate`, `modify` — enum dispatch, and path resolution that cannot ascend | |
 | 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes | |
 | 9 | **The file handle.** `READ`/`WRITE` on files, `TRAVERSE`/`ENUMERATE`/`MODIFY` on directories, offsets per operation, and a `read` that is a submission | |
@@ -691,3 +691,59 @@ A read still spins, bounded rather than endless. Slice 9 is where it becomes a
 submission and the spinning becomes a wait — and slice 3's `abandon` already
 says what the teardown must then do: wait for the controller, and not return
 before `is_quiet`.
+
+---
+
+## Slice 6 — FAT32, read-only, short names
+
+**Landed 2026-08-25.** D-170. 169 machine checks, 671 host tests, 52 mutations.
+
+The kernel mounts a FAT32 volume off the controller and reads files out of it.
+
+```
+fat32: mounted — 129046 clusters of 512 bytes, 2 file(s) and 1 directory(ies) in the root
+```
+
+### Two of this file's open decisions, settled
+
+**The block layer is a trait, and it belongs to the reader.** `libs/fat32`
+defines `Sectors` because that is the parameter it needs — not a speculative
+kernel-side abstraction over a device this kernel has one of. The host backs it
+with a byte slice, the kernel with the controller, and the *same reader* runs
+over both. That is what makes the oracle possible at all.
+
+**No page cache.** The reasoning `014` gave holds: whether reading the same
+sectors repeatedly is affordable is a measurement, and the measurement does not
+exist. The volume is mounted per call for the same reason.
+
+### The oracle
+
+`xtask` builds one corpus with `fatfs` and it goes two places: onto the NVMe
+namespace at sector 2048, and into a host test that reads it with **both**
+`fatfs` and `libs/fat32`. Two independent implementations, one corpus, and the
+disagreement is the failure — which beats depending on the mature one, because
+a dependency cannot disagree with itself.
+
+### Four machine breaks passed at first
+
+The end-to-end checks could not reach the twenty-eight-bit entry mask (the
+corpus's reserved bits are zero), the file-size bound (the check's buffer was
+cut to the file's length), the deleted marker (no deletions in the corpus) or
+the split first-cluster field (every cluster fits sixteen bits). All four are
+caught by host tests over synthetic entries, which is the right division — but
+two were reachable on the machine for almost nothing:
+
+- the corpus now creates a file and **deletes it**, leaving an `0xE5` slot
+  between live entries, and the check counts the survivors;
+- the read check offers **a whole sector of buffer for a file that is not one**,
+  so a reader bounded by the cluster hands back its previous occupant's data.
+
+D-165's rule again, arriving through the corpus rather than through the set-up.
+
+### Carried deliberately
+
+512-byte sectors only, refused rather than misread — that is what lets every
+buffer be a fixed array. And the corpus still has **one writer**: until a
+foreign-produced image is obtained, a shared misreading of the specification
+would pass both implementations, which is the honest limit of an oracle built
+from one tool.

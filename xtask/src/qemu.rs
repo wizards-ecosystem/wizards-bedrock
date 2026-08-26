@@ -173,13 +173,21 @@ pub const fn nvme_signature(lba: u64) -> u64 {
     0x5749_5A44_0000_0000 | lba
 }
 
+/// Where the FAT32 volume begins on the namespace, in sectors.
+///
+/// A megabyte in, which is where a partition table would put it. The reader
+/// takes a base sector rather than assuming zero for exactly this reason: a
+/// volume is rarely the first thing on a disk, and a reader that could not be
+/// given an offset is one nothing can be put in front of (D-170).
+pub const NVME_VOLUME_SECTOR: u64 = 2048;
+
 /// Bytes of the NVMe backing file.
 ///
-/// Small on purpose: the driver reads sectors and the checks read a handful of
-/// them, so what matters is that the namespace exists and reports a capacity,
-/// not how large it is. Two megabytes is 4096 sectors, which is enough for the
-/// `size - 1` arithmetic to be about something.
-const NVME_BYTES: u64 = 2 * 1024 * 1024;
+/// The first megabyte carries signed blocks the block-layer checks read, and
+/// the FAT32 corpus follows it. Two things on one namespace rather than two
+/// namespaces, because that is also what a real disk looks like.
+const NVME_BYTES: u64 =
+    NVME_VOLUME_SECTOR * NVME_BLOCK_BYTES as u64 + crate::image::corpus::VOLUME_BYTES as u64;
 
 /// A storage controller for the machine to find, and the file behind it.
 ///
@@ -197,12 +205,16 @@ fn storage(root: &Path) -> Result<Vec<String>> {
     let sized = std::fs::metadata(&backing).is_ok_and(|found| found.len() == NVME_BYTES);
     if !sized {
         // Written whole rather than sized and left sparse: the first blocks
-        // carry a signature the kernel checks, and the rest is zeros.
+        // carry a signature the block-layer checks read, and a FAT32 volume
+        // follows at `NVME_VOLUME_SECTOR`.
         let mut content = vec![0u8; NVME_BYTES as usize];
         for lba in 0..NVME_SIGNED_BLOCKS {
             let at = lba as usize * NVME_BLOCK_BYTES;
             content[at..at + 8].copy_from_slice(&nvme_signature(lba).to_le_bytes());
         }
+        let volume = crate::image::corpus::build().context("building the corpus volume")?;
+        let at = NVME_VOLUME_SECTOR as usize * NVME_BLOCK_BYTES;
+        content[at..at + volume.len()].copy_from_slice(&volume);
         std::fs::write(&backing, &content)
             .with_context(|| format!("writing {}", backing.display()))?;
     }
@@ -237,7 +249,7 @@ const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// is a thing you do inside a fix and the table is a different file. This line
 /// and its twin in `kernel/src/selftest.rs` are the two you have to touch
 /// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 165;
+const EXPECTED_SELFTEST_CHECKS: usize = 169;
 
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
@@ -1402,6 +1414,75 @@ mod tests {
             for earlier in 0..lba {
                 assert_ne!(super::nvme_signature(lba), super::nvme_signature(earlier));
             }
+        }
+    }
+
+    /// The corpus the kernel looks for is the corpus `xtask` writes.
+    ///
+    /// Three transcriptions meet here: the names and contents live in
+    /// `image/corpus.rs`, the kernel's checks name them again, and the volume's
+    /// base sector is stated in both `qemu.rs` and `kernel/src/fs.rs`. Two
+    /// copies of one table is what D-158 exists about, and a check that reads
+    /// a file the host never wrote would fail loudly — while a check that read
+    /// the *wrong* file would quietly pass on whatever happened to be there.
+    #[test]
+    fn the_corpus_the_kernel_looks_for_is_the_one_that_is_written() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let selftest =
+            std::fs::read_to_string(root.join("kernel/src/selftest.rs")).expect("selftest.rs");
+        let fs = std::fs::read_to_string(root.join("kernel/src/fs.rs")).expect("fs.rs");
+        use crate::image::corpus;
+
+        // The base sector, stated twice.
+        let kernel_base = fs
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("pub(crate) const VOLUME_SECTOR: u64 = ")
+            })
+            .map(|value| value.trim_end_matches(';').to_string())
+            .expect("no VOLUME_SECTOR in fs.rs");
+        assert_eq!(kernel_base, super::NVME_VOLUME_SECTOR.to_string());
+
+        // Every name and every content, as the kernel spells them.
+        for (constant, expected) in [
+            ("SMALL_NAME", corpus::SMALL_NAME.to_string()),
+            ("LARGE_NAME", corpus::LARGE_NAME.to_string()),
+            ("DIRECTORY_NAME", corpus::DIRECTORY_NAME.to_string()),
+            ("NESTED_NAME", corpus::NESTED_NAME.to_string()),
+        ] {
+            let declared = selftest
+                .lines()
+                .find_map(|line| {
+                    line.trim()
+                        .strip_prefix(&format!("const {constant}: &[u8] = b\""))
+                })
+                .and_then(|rest| rest.split_once('\"').map(|(value, _)| value.to_string()))
+                .unwrap_or_else(|| panic!("no {constant} in selftest.rs"));
+            assert_eq!(declared, expected, "{constant} drifted");
+        }
+
+        // The large file's size, and the function that fills it.
+        assert!(
+            selftest.contains(&format!(
+                "const LARGE_BYTES: usize = {} * 1024;",
+                corpus::LARGE_BYTES / 1024
+            )),
+            "LARGE_BYTES drifted from the corpus"
+        );
+        assert!(
+            selftest.contains("((index as u32).wrapping_mul(2_654_435_761) >> 13) as u8"),
+            "the kernel fills the large file differently from xtask"
+        );
+        // And that function really is the one `corpus` uses, rather than a
+        // literal repeated in this test.
+        for index in [0usize, 1, 511, 4096, corpus::LARGE_BYTES - 1] {
+            assert_eq!(
+                corpus::large_byte(index),
+                ((index as u32).wrapping_mul(2_654_435_761) >> 13) as u8
+            );
         }
     }
 

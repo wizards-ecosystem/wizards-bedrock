@@ -4,6 +4,7 @@
 //! artifact is a raw disk with an MBR partition table holding one FAT32 EFI
 //! system partition.
 
+pub mod corpus;
 pub mod esp;
 pub mod mbr;
 pub mod program;

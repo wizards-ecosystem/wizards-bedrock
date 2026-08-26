@@ -598,6 +598,47 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a device window is uncacheable",
         reddens: Caught::Check("the controller's registers are uncacheable"),
     },
+    // Slice 6. The cluster bias forgotten, so every file is read two clusters
+    // late — with no error anywhere, because the sectors are real and the
+    // bytes are somebody else's (D-170).
+    Mutation {
+        file: "libs/fat32/src/lib.rs",
+        find: "        let index = (cluster - FIRST_DATA_CLUSTER) as u64;",
+        replace: "        let index = cluster as u64;",
+        breaks: "a cluster number is biased by two",
+        reddens: Caught::Check("the kernel reads the file the host wrote"),
+    },
+    // A read bounded by the cluster rather than by the file, which hands back
+    // the last cluster's tail: its previous occupant's data.
+    Mutation {
+        file: "libs/fat32/src/lib.rs",
+        find: "        let wanted = into.len().min((entry.size - offset) as usize);",
+        replace: "        let wanted = into.len();",
+        breaks: "a read stops at the end of the file",
+        reddens: Caught::Check("the kernel reads the file the host wrote"),
+    },
+    // The deleted marker taken for the end of the directory, which loses every
+    // file below it. Only reachable because the corpus deletes one on purpose.
+    Mutation {
+        file: "libs/fat32/src/lib.rs",
+        find: "    if slot[0] == 0xE5 {
+        return Slot::Deleted;
+    }",
+        replace: "    if slot[0] == 0xE5 {
+        return Slot::End;
+    }",
+        breaks: "a deleted entry is not the end of a directory",
+        reddens: Caught::Check("the kernel reads the file the host wrote"),
+    },
+    // The volume mounted at sector zero, which is where a reader that could
+    // not be given an offset would look.
+    Mutation {
+        file: "kernel/src/fs.rs",
+        find: "pub(crate) const VOLUME_SECTOR: u64 = 2048;",
+        replace: "pub(crate) const VOLUME_SECTOR: u64 = 0;",
+        breaks: "the volume is where the partition puts it",
+        reddens: Caught::Check("the volume mounts and says what a fat32 volume says"),
+    },
     // D-133's exemption, put back. The inner test is left in place so the
     // counter still cannot move, which is the point: the woken thread runs
     // either way, because the keyboard arm reschedules a moment later, so only

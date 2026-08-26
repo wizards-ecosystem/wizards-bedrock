@@ -35,6 +35,7 @@ use crate::arch::current::debug_exit;
 use crate::arch::current::trap::{self, Record};
 use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
+use crate::fs;
 use crate::handle::{HandleError, HandleTable};
 use crate::nvme;
 use crate::object::{self, ObjectRef, ObjectType};
@@ -1310,6 +1311,166 @@ fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
 #[cfg(feature = "selftest")]
 fn a_table() -> alloc::sync::Arc<crate::handle::HandleTable> {
     alloc::sync::Arc::new(crate::handle::HandleTable::new(8))
+}
+
+/// The volume mounts, and says something a FAT32 volume would say.
+///
+/// Not "it mounted" — that is true of any sixteen bytes ending `0x55 0xAA`.
+/// The claims are the ones that would be false if the reader had landed on the
+/// wrong sector or read the sixteen-bit sectors-per-FAT that FAT32 leaves zero:
+/// a root cluster in the data area, a cluster count that makes it FAT32 rather
+/// than FAT16 wearing the name, and a data area past the tables.
+fn the_volume_mounts_and_says_what_a_fat32_volume_says() -> bool {
+    matches!(
+        fs::with_volume(|volume| {
+            let bpb = volume.bpb();
+            Ok(bpb.root_cluster() >= fat32::FIRST_DATA_CLUSTER
+                && bpb.clusters() >= 65_525
+                && bpb.cluster_bytes() >= fat32::SECTOR_BYTES as u32
+                && bpb.first_data_sector() > 0)
+        }),
+        Some(Ok(true))
+    )
+}
+
+/// The kernel reads the bytes the host wrote.
+///
+/// The end of the whole storage path: `xtask` builds a volume with `fatfs`,
+/// writes it onto the namespace, the controller DMAs sectors of it into a
+/// frame, and `libs/fat32` finds a file in it. The host reads the same corpus
+/// with the same reader and with `fatfs` besides (D-170), so a disagreement
+/// here is about the *machine*, not about the format.
+fn the_kernel_reads_the_file_the_host_wrote() -> bool {
+    matches!(
+        fs::with_volume(|volume| {
+            let root = volume.bpb().root_cluster();
+            let entry = volume.lookup(root, SMALL_NAME)?;
+            if entry.size as usize != SMALL_CONTENT.len() || entry.is_directory() {
+                return Ok(false);
+            }
+
+            // The root holds three live entries and one deleted slot between
+            // them. A reader that took `0xE5` for the end of the directory
+            // would find the first and lose the rest, so the count is part of
+            // the claim.
+            let mut live = 0usize;
+            volume.walk_directory(root, |_| {
+                live += 1;
+                true
+            })?;
+            if live != 3 {
+                return Ok(false);
+            }
+
+            // **A whole sector of buffer for a file that is not one.** A
+            // reader bounded by the cluster rather than by the size would hand
+            // back the last cluster's tail — its previous occupant's data — and
+            // a buffer cut to the file's length could never see it (D-170).
+            let mut read = [0u8; fat32::SECTOR_BYTES];
+            let got = volume.read_file(&entry, 0, &mut read)?;
+            Ok(got == SMALL_CONTENT.len() && &read[..got] == SMALL_CONTENT)
+        }),
+        Some(Ok(true))
+    )
+}
+
+/// A file longer than a cluster is read across its chain.
+///
+/// Reading from offset zero works whatever the chain walk does, because the
+/// first cluster is the entry's own. Only a read that has to **skip** clusters
+/// exercises it — and only a file whose bytes differ by position can tell a
+/// skip of three from a skip of four, which is why the corpus is filled with a
+/// mixed index rather than a repeated byte (D-155, D-170).
+fn a_file_longer_than_a_cluster_is_read_across_its_chain() -> bool {
+    matches!(
+        fs::with_volume(|volume| {
+            let root = volume.bpb().root_cluster();
+            let entry = volume.lookup(root, LARGE_NAME)?;
+            if entry.size as usize != LARGE_BYTES {
+                return Ok(false);
+            }
+            let cluster = volume.bpb().cluster_bytes() as usize;
+
+            for offset in [
+                0usize,
+                1,
+                fat32::SECTOR_BYTES - 1,
+                cluster - 1,
+                cluster,
+                cluster + 1,
+                cluster * 2 + 13,
+                LARGE_BYTES - 64,
+            ] {
+                let mut window = [0u8; 64];
+                let got = volume.read_file(&entry, offset as u32, &mut window)?;
+                if got != window.len() {
+                    return Ok(false);
+                }
+                for (index, byte) in window.iter().enumerate() {
+                    if *byte != large_byte(offset + index) {
+                        return Ok(false);
+                    }
+                }
+            }
+
+            // And nothing past the end, rather than the next file's bytes.
+            let mut past = [0u8; 16];
+            Ok(volume.read_file(&entry, entry.size, &mut past)? == 0)
+        }),
+        Some(Ok(true))
+    )
+}
+
+/// A path resolves through a directory, and refuses to walk through a file.
+///
+/// The walk `012` §5 will build the resolver on: component by component,
+/// holding a node per step. Refusing a component that is not a directory is
+/// what stops `HELLO.TXT/NESTED.TXT` from being answered out of whatever the
+/// file's bytes look like as directory entries.
+fn a_path_resolves_through_a_directory() -> bool {
+    matches!(
+        fs::with_volume(|volume| {
+            let nested = volume.resolve(&[DIRECTORY_NAME, NESTED_NAME])?;
+            if nested.size as usize != NESTED_CONTENT.len() {
+                return Ok(false);
+            }
+            let mut read = [0u8; 128];
+            let got = volume.read_file(&nested, 0, &mut read)?;
+            if got != NESTED_CONTENT.len() || &read[..got] != NESTED_CONTENT {
+                return Ok(false);
+            }
+
+            // A file is not a directory, whatever its bytes look like.
+            let through_a_file = volume.resolve(&[SMALL_NAME, NESTED_NAME]);
+            let missing = volume.resolve(&[b"NOPE.TXT"]);
+            Ok(through_a_file == Err(fat32::FatError::WrongKind)
+                && missing == Err(fat32::FatError::NotFound))
+        }),
+        Some(Ok(true))
+    )
+}
+
+/// What `xtask` put on the namespace.
+///
+/// Transcribed from `xtask/src/image/corpus.rs`, which writes it — two copies
+/// of one table, so a host test compares them (D-158, D-170).
+const SMALL_NAME: &[u8] = b"HELLO.TXT";
+/// See [`SMALL_NAME`].
+const SMALL_CONTENT: &[u8] = b"the wizard's os reads a disk\n";
+/// See [`SMALL_NAME`].
+const LARGE_NAME: &[u8] = b"BIG.BIN";
+/// See [`SMALL_NAME`].
+const LARGE_BYTES: usize = 40 * 1024;
+/// See [`SMALL_NAME`].
+const DIRECTORY_NAME: &[u8] = b"DATA";
+/// See [`SMALL_NAME`].
+const NESTED_NAME: &[u8] = b"NESTED.TXT";
+/// See [`SMALL_NAME`].
+const NESTED_CONTENT: &[u8] = b"one directory down\n";
+
+/// Byte `index` of [`LARGE_NAME`], as `xtask` computed it.
+const fn large_byte(index: usize) -> u8 {
+    ((index as u32).wrapping_mul(2_654_435_761) >> 13) as u8
 }
 
 /// The controller says what it is, and the driver believed it rather than
@@ -5298,7 +5459,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 165;
+const EXPECTED_CHECKS: usize = 169;
 
 impl Report {
     const fn new() -> Self {
@@ -5441,6 +5602,22 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a ring announces its shape and keeps its pages",
         a_ring_announces_its_shape_and_keeps_its_pages(),
+    );
+    report.check(
+        "the volume mounts and says what a fat32 volume says",
+        the_volume_mounts_and_says_what_a_fat32_volume_says(),
+    );
+    report.check(
+        "the kernel reads the file the host wrote",
+        the_kernel_reads_the_file_the_host_wrote(),
+    );
+    report.check(
+        "a file longer than a cluster is read across its chain",
+        a_file_longer_than_a_cluster_is_read_across_its_chain(),
+    );
+    report.check(
+        "a path resolves through a directory",
+        a_path_resolves_through_a_directory(),
     );
     report.check(
         "the controller was read rather than assumed",

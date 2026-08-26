@@ -23,6 +23,7 @@ pub const HOST_PACKAGES: &[&str] = &[
     "acpi-tables",
     "eevdf",
     "elf64",
+    "fat32",
     "frame-space",
     "handle-space",
     "mmio-range",

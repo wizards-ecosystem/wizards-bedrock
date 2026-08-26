@@ -23,6 +23,7 @@ mod dev;
 // before objects before a process to belong to, so these were built and proven
 // behind the selftest feature first — and the gate comes off with `spawn`,
 // which the syscall path now reaches unconditionally (D-116).
+mod fs;
 mod handle;
 mod input;
 mod log;
@@ -441,6 +442,42 @@ fn claim_the_controller(at: pci_config::Address) {
         Err(reason) => warn!("nvme: block 0 could not be read: {reason}"),
     }
     nvme::keep(controller, buffer);
+    mount_the_volume();
+}
+
+/// Mount the FAT32 volume on the namespace and say what is on it.
+///
+/// Declines rather than fails, like everything else here: a namespace with no
+/// volume on it is a machine with no files, and the kernel boots either way.
+fn mount_the_volume() {
+    let counted = fs::with_volume(|volume| {
+        let root = volume.bpb().root_cluster();
+        let mut files = 0usize;
+        let mut directories = 0usize;
+        volume.walk_directory(root, |entry| {
+            if entry.is_directory() {
+                directories += 1;
+            } else {
+                files += 1;
+            }
+            true
+        })?;
+        Ok((
+            volume.bpb().clusters(),
+            volume.bpb().cluster_bytes(),
+            files,
+            directories,
+        ))
+    });
+
+    match counted {
+        None => info!("fat32: no controller, so no volume"),
+        Some(Err(reason)) => warn!("fat32: the volume would not mount: {reason:?}"),
+        Some(Ok((clusters, cluster_bytes, files, directories))) => info!(
+            "fat32: mounted — {clusters} clusters of {cluster_bytes} bytes, \
+             {files} file(s) and {directories} directory(ies) in the root"
+        ),
+    }
 }
 
 /// Route the keyboard's line through the I/O APIC, so keystrokes interrupt.

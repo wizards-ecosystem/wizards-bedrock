@@ -542,7 +542,6 @@ pub(crate) fn keep(controller: Controller, buffer: Segment) {
 /// A leaf guard, and everything reachable from `f` must respect that: the
 /// driver's own path touches memory-mapped registers and direct-mapped frames
 /// and takes no lock, which is what makes this sound (D-85).
-#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) fn with_controller<T>(f: impl FnOnce(&mut Controller, &mut Segment) -> T) -> Option<T> {
     let mut held = CONTROLLER.lock_leaf();
     let (controller, buffer) = held.as_mut()?;

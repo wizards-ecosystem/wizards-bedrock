@@ -19,5 +19,6 @@ redundant_explicit_links = "deny"
 [dependencies]
 elf64 = { workspace = true }
 anyhow.workspace = true
+fat32.workspace = true
 fatfs.workspace = true
 fscommon.workspace = true
