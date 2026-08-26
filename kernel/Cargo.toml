@@ -21,6 +21,7 @@ acpi-tables.workspace = true
 eevdf.workspace = true
 elf64.workspace = true
 handle-space.workspace = true
+nvme.workspace = true
 pci-config.workspace = true
 ps2-keys.workspace = true
 stack-layout.workspace = true

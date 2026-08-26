@@ -36,6 +36,7 @@ use crate::arch::current::trap::{self, Record};
 use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
 use crate::handle::{HandleError, HandleTable};
+use crate::nvme;
 use crate::object::{self, ObjectRef, ObjectType};
 use crate::pci;
 use crate::queue;
@@ -1309,6 +1310,134 @@ fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
 #[cfg(feature = "selftest")]
 fn a_table() -> alloc::sync::Arc<crate::handle::HandleTable> {
     alloc::sync::Arc::new(crate::handle::HandleTable::new(8))
+}
+
+/// The controller says what it is, and the driver believed it rather than
+/// assuming.
+///
+/// Every field here changes what a correct driver does, and `012` §11 records
+/// that VMware's are unmeasured — so this is the check that the *reading*
+/// happened, not that the values are any particular thing. A queue larger than
+/// `CAP.MQES` allows, or a page size outside `MPSMIN..MPSMAX`, is a controller
+/// that will not become ready and a driver that waits out the timeout.
+fn the_controller_was_read_rather_than_assumed() -> bool {
+    nvme::with_controller(|controller, _| {
+        let capabilities = controller.capabilities();
+
+        capabilities.supports_nvm_command_set()
+            && capabilities.supports_page_size(PAGE_SIZE)
+            // The queue this driver built fits what the controller offered.
+            && controller.queue_entries() <= capabilities.max_queue_entries()
+            && controller.queue_entries() >= 2
+            && controller.has_io_queue()
+            // And the namespace answered `Identify` with something usable.
+            && controller.blocks > 0
+            && controller.block_bytes.is_power_of_two()
+            && controller.block_bytes >= 512
+    })
+    .unwrap_or(false)
+}
+
+/// A read returns the block that was asked for.
+///
+/// The end of the whole path: bytes written into a file on the host, carried
+/// through the controller's DMA into a frame this kernel owns, and read back.
+///
+/// **Two different blocks, and that is the point.** The namespace is written
+/// with a different signature in every block, because a disk of zeros cannot
+/// tell a read that happened from one that did not, and a disk with the same
+/// bytes everywhere cannot tell a read of block three from a read of block
+/// zero — so a driver that ignored the logical block address would pass
+/// (D-155, D-169).
+fn a_block_read_returns_the_block_that_was_asked_for() -> bool {
+    nvme::with_controller(|controller, buffer| {
+        let block = controller.block_bytes as usize;
+        for lba in [0u64, 3, 1, 7] {
+            // Cleared first, so what is found afterwards was put there by this
+            // read and not left by the last one.
+            if !buffer.fill(0) {
+                return false;
+            }
+            if controller.read_blocks(lba, 1, buffer).is_err() {
+                return false;
+            }
+
+            let mut head = [0u8; 8];
+            if !buffer.read_at(0, &mut head) {
+                return false;
+            }
+            if u64::from_le_bytes(head) != disk_signature(lba) {
+                return false;
+            }
+
+            // **And nothing past one block.** Every count in this
+            // specification is zero-based, so a driver that sent the block
+            // count unadjusted reads one block too many — and the first
+            // block's bytes are still correct, so only the bytes *after* it
+            // say so (D-169).
+            let mut beyond = [0u8; 8];
+            if !buffer.read_at(block, &mut beyond) {
+                return false;
+            }
+            if u64::from_le_bytes(beyond) != 0 {
+                return false;
+            }
+        }
+        true
+    })
+    .unwrap_or(false)
+}
+
+/// The queues wrap, and the phase tag still says which entries are new.
+///
+/// There is no completion tail to read: an entry is recognised as new by its
+/// **phase tag**, which flips every time the queue wraps (`012` §3). A driver
+/// that never flipped it works perfectly until the first wrap and then sees
+/// either every entry or none — so the check does more commands than the queue
+/// has entries, several times over, which is the only way to reach the seam.
+fn the_queues_wrap_and_the_phase_tag_still_works() -> bool {
+    nvme::with_controller(|controller, buffer| {
+        let laps = controller.queue_entries() * 3;
+        for turn in 0..laps {
+            let lba = u64::from(turn % 8);
+            if controller.read_blocks(lba, 1, buffer).is_err() {
+                return false;
+            }
+            let mut head = [0u8; 8];
+            if !buffer.read_at(0, &mut head) {
+                return false;
+            }
+            if u64::from_le_bytes(head) != disk_signature(lba) {
+                return false;
+            }
+        }
+        laps > controller.queue_entries()
+    })
+    .unwrap_or(false)
+}
+
+/// The controller's registers are mapped uncacheable.
+///
+/// `012` §2 names it: mapping a register file write-back is a silent,
+/// hard-to-debug bug — writes arrive when the cache feels like it and reads
+/// answer from a line that was filled minutes ago. An emulator forgives it and
+/// hardware does not, which is exactly the class of thing a check has to catch
+/// here rather than there.
+fn the_controllers_registers_are_uncacheable() -> bool {
+    nvme::with_controller(|controller, _| {
+        paging::translate(controller.window()).is_some_and(|(_, flags)| {
+            flags.contains(Flags::NO_CACHE) && !flags.contains(Flags::WRITE_THROUGH)
+        })
+    })
+    .unwrap_or(false)
+}
+
+/// The first eight bytes of block `lba` on the check machine's namespace.
+///
+/// Written by `xtask` when it makes the backing file, and transcribed here —
+/// which is two copies of one table, so a host test compares them (D-158).
+const fn disk_signature(lba: u64) -> u64 {
+    0x5749_5A44_0000_0000 | lba
 }
 
 /// The bus is walked, and the walk goes through the bridge.
@@ -5169,7 +5298,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 161;
+const EXPECTED_CHECKS: usize = 165;
 
 impl Report {
     const fn new() -> Self {
@@ -5312,6 +5441,22 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a ring announces its shape and keeps its pages",
         a_ring_announces_its_shape_and_keeps_its_pages(),
+    );
+    report.check(
+        "the controller was read rather than assumed",
+        the_controller_was_read_rather_than_assumed(),
+    );
+    report.check(
+        "a block read returns the block that was asked for",
+        a_block_read_returns_the_block_that_was_asked_for(),
+    );
+    report.check(
+        "the queues wrap and the phase tag still works",
+        the_queues_wrap_and_the_phase_tag_still_works(),
+    );
+    report.check(
+        "the controller's registers are uncacheable",
+        the_controllers_registers_are_uncacheable(),
     );
     report.check(
         "the bus walk descends through a bridge",

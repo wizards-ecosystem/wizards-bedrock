@@ -554,6 +554,50 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a bridge has two base address registers, not six",
         reddens: Caught::Check("a device is claimed once and a refusal strands nothing"),
     },
+    // Slice 5. The logical block address dropped, so every read answers with
+    // block zero. Invisible against a disk of identical blocks, which is why
+    // the namespace carries a different signature in each (D-169).
+    Mutation {
+        file: "kernel/src/nvme.rs",
+        find: "            .dword(10, lba as u32)
+            .dword(11, (lba >> 32) as u32)",
+        replace: "            .dword(10, 0)
+            .dword(11, 0)",
+        breaks: "a read returns the block that was asked for",
+        reddens: Caught::Check("a block read returns the block that was asked for"),
+    },
+    // The block count sent unadjusted, so one block becomes two. The first
+    // block is still exactly right; only the bytes past it say so.
+    Mutation {
+        file: "kernel/src/nvme.rs",
+        find: "            .dword(12, blocks - 1);",
+        replace: "            .dword(12, blocks);",
+        breaks: "every count in this specification is zero-based",
+        reddens: Caught::Check("a block read returns the block that was asked for"),
+    },
+    // The phase tag never flips. Works perfectly until the queue wraps, and
+    // then sees either every entry or none — so the check has to do more
+    // commands than the queue has entries to reach it at all.
+    Mutation {
+        file: "kernel/src/nvme.rs",
+        find: "                    if head == 0 {
+                        queue.phase = !queue.phase;
+                    }",
+        replace: "                    if false {
+                        queue.phase = !queue.phase;
+                    }",
+        breaks: "a completion queue wraps and stays readable",
+        reddens: Caught::Check("the queues wrap and the phase tag still works"),
+    },
+    // A register file mapped write-back, which an emulator forgives and
+    // hardware does not (`012` §2).
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        self.map_device_with(physical, len, Flags::NO_CACHE)",
+        replace: "        self.map_device_with(physical, len, Flags::empty())",
+        breaks: "a device window is uncacheable",
+        reddens: Caught::Check("the controller's registers are uncacheable"),
+    },
     // D-133's exemption, put back. The inner test is left in place so the
     // counter still cannot move, which is the point: the woken thread runs
     // either way, because the keyboard arm reschedules a moment later, so only

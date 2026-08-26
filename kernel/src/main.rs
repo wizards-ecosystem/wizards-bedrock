@@ -27,6 +27,7 @@ mod handle;
 mod input;
 mod log;
 mod mem;
+mod nvme;
 mod object;
 mod panic;
 mod pci;
@@ -407,21 +408,39 @@ fn claim_the_controller(at: pci_config::Address) {
         warn!("nvme: the command register would not take bus master");
     }
 
-    for index in 0..pci::BARS {
-        if let Some(window) = device.window(index) {
-            match window.bar {
-                pci_config::Bar::Memory { address, wide, .. } => info!(
-                    "nvme: bar{index} is {} bytes of {}-bit memory at {address:#x}",
-                    window.size,
-                    if wide { 64 } else { 32 }
-                ),
-                pci_config::Bar::Io { port } => {
-                    info!("nvme: bar{index} is {} ports at {port:#06x}", window.size);
-                }
-                pci_config::Bar::Absent => {}
-            }
-        }
+    // BAR0 is the register file. A controller whose first window is not
+    // memory is one this driver does not know how to reach, and saying so is
+    // better than mapping whatever it is.
+    let Some(window) = device.window(0) else {
+        warn!("nvme: no bar0; nothing to map");
+        return;
+    };
+    let pci_config::Bar::Memory { address, wide, .. } = window.bar else {
+        warn!("nvme: bar0 is not a memory window");
+        return;
+    };
+    info!(
+        "nvme: bar0 is {} bytes of {}-bit memory at {address:#x}",
+        window.size,
+        if wide { 64 } else { 32 }
+    );
+
+    let mut context = wost::sync::ThreadContext::require();
+    let Some(mut controller) = nvme::start(&mut context, address, window.size) else {
+        return;
+    };
+
+    // One block, to prove the whole path: queue built, command submitted,
+    // doorbell rung, phase tag recognised, completion matched by identifier.
+    let Some(buffer) = wost::mm::allocate_contiguous(1, 1) else {
+        warn!("nvme: no memory for a read buffer");
+        return;
+    };
+    match controller.read_blocks(0, 1, &buffer) {
+        Ok(()) => info!("nvme: read block 0"),
+        Err(reason) => warn!("nvme: block 0 could not be read: {reason}"),
     }
+    nvme::keep(controller, buffer);
 }
 
 /// Route the keyboard's line through the I/O APIC, so keystrokes interrupt.

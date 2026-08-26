@@ -69,7 +69,7 @@ before its abstraction is anything but a guess.
 | 2 | **The time page.** Two regions — immutable constants, and a versioned clock with a revocation gate and a syscall fallback | Done |
 | 3 | **Death mid-operation.** In-flight operations collected with the zombie; exit is a *wait*, not a signal | Done |
 | 4 | **PCI, and a device that is claimed.** CF8/CFC enumeration recursing through bridges, a `Device` capability that supersedes bare port claims, BAR mapping uncacheable | Done |
-| 5 | **NVMe, polled.** Twelve-step init, one I/O queue pair, `IEN=0`, PRP construction in `libs/`, and the `size − 1` capacity rule proved | |
+| 5 | **NVMe, polled.** Twelve-step init, one I/O queue pair, `IEN=0`, PRP construction in `libs/`, and the `size − 1` capacity rule proved |Done |
 | 6 | **FAT32, read-only, short names.** `libs/fat32` over a block trait, checked against the ESP `xtask` already builds | |
 | 7 | **The VFS.** A directory trait — `lookup`, `enumerate`, `modify` — enum dispatch, and path resolution that cannot ascend | |
 | 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes | |
@@ -642,3 +642,52 @@ The `Device` is a **kernel-side capability, not a handle**: obtainable only
 from the registry, exactly as `Port<T>` is. It becomes something a program can
 hold in slice 8, where devfs hands it out — which is the first moment there is
 anyone to hand it to (D-41).
+
+---
+
+## Slice 5 — NVMe, polled
+
+**Landed 2026-08-25.** D-169. 165 machine checks, 653 host tests, 48 mutations.
+
+The kernel reads a block off a real controller. On QEMU that is
+`1b36:0010` at `00:04.0`, claimed by slice 4's registry, its BAR0 mapped
+uncacheable, brought up through the specification's sequence, given one I/O
+queue pair with `IEN = 0`, and asked for logical block zero.
+
+```
+nvme: claimed 00:04.0 — 1b36:0010
+nvme: memory space and bus master on
+nvme: bar0 is 16384 bytes of 64-bit memory at 0xc020000000
+nvme: up — 8 entries a queue, 4096 blocks of 512 bytes, doorbells 4 apart
+nvme: read block 0
+```
+
+### The ring parallel is a trap, and the arithmetic is shared without it
+
+Four things differ from `kernel::queue`, and each is a bug if assumed away:
+there is no completion tail to read, so entries are found by their **phase
+tag**; completions are matched by **command identifier**, not by slot;
+**capacity is `size - 1`**, whose symptom is a hang; and the doorbell is
+**write-only**, so the tail is shadowed. `libs/nvme` holds the arithmetic and
+there is no shared `Ring<T>`.
+
+### Two checks that could not have failed
+
+**A disk of zeros proves nothing.** Reading block zero out of a zero-filled
+file and comparing it to zero is what a buffer nobody wrote also contains. So
+`xtask` writes a different signature into every block, and the check reads four
+of them — a driver that ignored the logical block address would answer block
+zero to everything and pass against a uniform disk.
+
+**Reading one block too many is invisible at the front.** `CDW12` carries
+`blocks - 1`, and a driver that sent the count unadjusted reads two blocks with
+the first block's bytes still exactly right. The check went green against that
+mutation. It now clears the buffer and requires the bytes **after** one block to
+still be zero: the extent of a read is only observable past its end.
+
+### What is left for later slices
+
+A read still spins, bounded rather than endless. Slice 9 is where it becomes a
+submission and the spinning becomes a wait — and slice 3's `abandon` already
+says what the teardown must then do: wait for the controller, and not return
+before `is_quiet`.

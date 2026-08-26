@@ -191,6 +191,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nvme"
+version = "0.1.0"
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -624,6 +628,7 @@ dependencies = [
  "elf64",
  "handle-space",
  "noto-sans-mono-bitmap",
+ "nvme",
  "pci-config",
  "ps2-keys",
  "ring-proto",

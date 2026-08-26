@@ -134,6 +134,7 @@ pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
             vars.display()
         )))
         .args(drive(&format!("format=raw,file={}", image.display())))
+        .args(storage(paths.root())?)
         .args(extra)
         .status()
         .with_context(|| format!("could not launch {}", emulator.display()))?;
@@ -148,6 +149,69 @@ pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
 
 fn drive(spec: &str) -> [String; 2] {
     ["-drive".to_string(), spec.to_string()]
+}
+
+/// Bytes of one logical block on the NVMe namespace.
+///
+/// QEMU's controller formats at 512 and the kernel reads what `Identify`
+/// reports rather than this; the constant is here because the *content* below
+/// is written a block at a time and has to agree with what the driver will
+/// see.
+pub const NVME_BLOCK_BYTES: usize = 512;
+
+/// Blocks given known content.
+pub const NVME_SIGNED_BLOCKS: u64 = 8;
+
+/// The first eight bytes of block `lba`.
+///
+/// **Different in every block, on purpose.** A disk of zeros cannot tell a read
+/// that happened from one that did not, and a disk with the same bytes
+/// everywhere cannot tell a read of block three from a read of block zero — so
+/// a driver that ignored the logical block address would pass. This is D-155's
+/// rule applied to a corpus rather than to an argument (D-169).
+pub const fn nvme_signature(lba: u64) -> u64 {
+    0x5749_5A44_0000_0000 | lba
+}
+
+/// Bytes of the NVMe backing file.
+///
+/// Small on purpose: the driver reads sectors and the checks read a handful of
+/// them, so what matters is that the namespace exists and reports a capacity,
+/// not how large it is. Two megabytes is 4096 sectors, which is enough for the
+/// `size - 1` arithmetic to be about something.
+const NVME_BYTES: u64 = 2 * 1024 * 1024;
+
+/// A storage controller for the machine to find, and the file behind it.
+///
+/// **virtio-blk is disqualified rather than deprioritised** (`012` §2): VMware
+/// exposes no virtio device of any kind, so under D-18 it could never close a
+/// phase, and none of the virtqueue work carries to a driver that could. NVMe
+/// is the only overlap between the two boot targets with a freely published
+/// specification.
+///
+/// The file is created here rather than by the image builder because it is a
+/// property of the *machine*, not of the disk image: nothing on it is ever
+/// booted, and the kernel writes nothing to it (D-169).
+fn storage(root: &Path) -> Result<Vec<String>> {
+    let backing = root.join("target").join("nvme.img");
+    let sized = std::fs::metadata(&backing).is_ok_and(|found| found.len() == NVME_BYTES);
+    if !sized {
+        // Written whole rather than sized and left sparse: the first blocks
+        // carry a signature the kernel checks, and the rest is zeros.
+        let mut content = vec![0u8; NVME_BYTES as usize];
+        for lba in 0..NVME_SIGNED_BLOCKS {
+            let at = lba as usize * NVME_BLOCK_BYTES;
+            content[at..at + 8].copy_from_slice(&nvme_signature(lba).to_le_bytes());
+        }
+        std::fs::write(&backing, &content)
+            .with_context(|| format!("writing {}", backing.display()))?;
+    }
+    Ok(vec![
+        "-drive".to_string(),
+        format!("if=none,id=wizardnvm,format=raw,file={}", backing.display()),
+        "-device".to_string(),
+        "nvme,serial=wizard0,drive=wizardnvm".to_string(),
+    ])
 }
 
 /// QEMU exits with `(value << 1) | 1`, so the kernel's 0x10 arrives as 33 and
@@ -173,7 +237,7 @@ const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// is a thing you do inside a fix and the table is a different file. This line
 /// and its twin in `kernel/src/selftest.rs` are the two you have to touch
 /// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 161;
+const EXPECTED_SELFTEST_CHECKS: usize = 165;
 
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
@@ -479,6 +543,7 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
             vars.display()
         )))
         .args(drive(&format!("format=raw,file={}", image.display())))
+        .args(storage(paths.root())?)
         .stdout(Stdio::piped())
         .spawn()
         .with_context(|| format!("could not launch {}", emulator.display()))?;
@@ -755,6 +820,7 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
             vars.display()
         )))
         .args(drive(&format!("format=raw,file={}", image.display())))
+        .args(storage(paths.root())?)
         .stdout(Stdio::piped())
         .spawn()
         .with_context(|| format!("could not launch {}", emulator.display()))?;
@@ -858,6 +924,7 @@ pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Resu
             vars.display()
         )))
         .args(drive(&format!("format=raw,file={}", image.display())))
+        .args(storage(paths.root())?)
         .stdout(Stdio::piped())
         .spawn()
         .with_context(|| format!("could not launch {}", emulator.display()))?;
@@ -1293,6 +1360,51 @@ mod tests {
     /// reads the ring at, a version it checks, the opcodes it submits and the
     /// statuses it decodes. A drift in any of those is a program that compiles,
     /// runs, and reads the wrong page.
+    /// The signature the namespace carries is the one the kernel looks for.
+    ///
+    /// Two transcriptions of one table again (D-158): `xtask` writes the
+    /// backing file and `selftest.rs` checks what comes back. They agree today
+    /// and nothing compared them, which is how a check that proves a disk read
+    /// happened becomes a check that proves two constants were edited
+    /// together — or, worse, silently stops proving anything when only one is
+    /// (D-169).
+    #[test]
+    fn the_namespaces_signature_is_the_one_the_kernel_looks_for() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let selftest =
+            std::fs::read_to_string(root.join("kernel/src/selftest.rs")).expect("selftest.rs");
+
+        let kernel = selftest
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("0x5749_5A44_0000_0000 | "))
+            .expect("no disk signature in selftest.rs");
+        assert_eq!(
+            kernel, "lba",
+            "the kernel's signature is not the base value ored with the block"
+        );
+
+        // And the base itself, from this file's own function rather than from
+        // a literal repeated here.
+        assert_eq!(super::nvme_signature(0), 0x5749_5A44_0000_0000);
+        for lba in [0u64, 1, 3, 7, super::NVME_SIGNED_BLOCKS - 1] {
+            assert_eq!(
+                super::nvme_signature(lba),
+                0x5749_5A44_0000_0000 | lba,
+                "block {lba}"
+            );
+        }
+        // Every signed block differs from every other, which is the property
+        // that makes a read of block three distinguishable from a read of
+        // block zero.
+        for lba in 0..super::NVME_SIGNED_BLOCKS {
+            for earlier in 0..lba {
+                assert_ne!(super::nvme_signature(lba), super::nvme_signature(earlier));
+            }
+        }
+    }
+
     /// Every sysdep's tag agrees with the README's tally.
     ///
     /// The three tags — MAPS, OWED, ABSENT — are the whole finding of D-74's
