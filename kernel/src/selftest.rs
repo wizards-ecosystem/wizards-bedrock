@@ -46,7 +46,7 @@ use crate::thread::ThreadContext;
 use crate::timepage;
 use crate::user;
 use crate::vfs;
-use crate::{dev, error, info, input, mem, thread, time};
+use crate::{dev, error, info, input, mem, thread, time, warn};
 
 /// A frame's handle releases it, and the allocator notices.
 ///
@@ -6899,10 +6899,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "an echo to the keyboard comes back",
         input::echo_roundtrips(),
     );
-    report.check(
-        "the keyboard is speaking scancode set two",
-        input::scancode_set() == Some(2),
-    );
+    // What it answered, not merely that the answer was wrong: `None` is a
+    // controller that never acknowledged the query and a number is one that
+    // disagrees, and those want different work (D-176).
+    let set = input::scancode_set();
+    if set != Some(2) {
+        warn!("keyboard: reports scancode set {set:?}, not 2");
+    }
+    report.check("the keyboard is speaking scancode set two", set == Some(2));
 
     // Set up before the marker, collected after it: the reader has to be
     // blocked before the harness presses anything, or what wakes it is a
