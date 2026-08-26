@@ -24,7 +24,22 @@ const WINDOWS_DEFAULT: &str = r"C:\Program Files\qemu";
 /// SMAP nor UMIP: the kernel would switch its security baseline on against a
 /// CPU that cannot enforce it, and the check that it did would pass vacuously.
 /// The VMware target of D-18 and the real machine both have all three.
-const MACHINE: &[&str] = &["-machine", "q35", "-cpu", "max", "-m", "512M"];
+const MACHINE: &[&str] = &[
+    "-machine",
+    "q35",
+    "-cpu",
+    "max",
+    "-m",
+    "512M",
+    // A PCI-to-PCI bridge, and the bus behind it. q35 as QEMU ships it has
+    // none, so a kernel that scanned only bus zero would pass every check
+    // while being unable to find a controller on a real machine — VMware puts
+    // functions behind `pciBridge0`-`pciBridge7`, and D-18 makes VMware the
+    // phase's definition of done. The check that enumeration *descends* needs
+    // somewhere to descend to (D-168).
+    "-device",
+    "pci-bridge,id=behind,chassis_nr=1",
+];
 
 /// Subdirectories of the QEMU installation that may hold firmware images.
 const FIRMWARE_DIRS: &[&str] = &["share", "share/qemu", "share/OVMF", "."];
@@ -158,7 +173,7 @@ const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// is a thing you do inside a fix and the table is a different file. This line
 /// and its twin in `kernel/src/selftest.rs` are the two you have to touch
 /// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 158;
+const EXPECTED_SELFTEST_CHECKS: usize = 161;
 
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.

@@ -26,6 +26,7 @@ pub const HOST_PACKAGES: &[&str] = &[
     "frame-space",
     "handle-space",
     "mmio-range",
+    "pci-config",
     "pixel",
     "port-space",
     "ps2-keys",

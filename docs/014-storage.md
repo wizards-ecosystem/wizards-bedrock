@@ -68,7 +68,7 @@ before its abstraction is anything but a guess.
 | 1 | **A completion carries a handle.** Reservation extended to handle-table slots, attenuation on arrival, and the first operation that genuinely waits | Done |
 | 2 | **The time page.** Two regions — immutable constants, and a versioned clock with a revocation gate and a syscall fallback | Done |
 | 3 | **Death mid-operation.** In-flight operations collected with the zombie; exit is a *wait*, not a signal | Done |
-| 4 | **PCI, and a device that is claimed.** CF8/CFC enumeration recursing through bridges, a `Device` capability that supersedes bare port claims, BAR mapping uncacheable | |
+| 4 | **PCI, and a device that is claimed.** CF8/CFC enumeration recursing through bridges, a `Device` capability that supersedes bare port claims, BAR mapping uncacheable | Done |
 | 5 | **NVMe, polled.** Twelve-step init, one I/O queue pair, `IEN=0`, PRP construction in `libs/`, and the `size − 1` capacity rule proved | |
 | 6 | **FAT32, read-only, short names.** `libs/fat32` over a block trait, checked against the ESP `xtask` already builds | |
 | 7 | **The VFS.** A directory trait — `lookup`, `enumerate`, `modify` — enum dispatch, and path resolution that cannot ascend | |
@@ -587,3 +587,58 @@ upgrading, because a table nothing will ever free is the other failure.
 The shape, not the code. A polled NVMe read cannot be ended by writing a
 completion: the device has the command. `abandon` will have to wait for the
 controller there. What it must not do is return before `is_quiet`.
+
+---
+
+## Slice 4 — PCI, and a device that is claimed
+
+**Landed 2026-08-25.** D-168. 161 machine checks, 638 host tests, 41 mutations.
+
+D-77 closed half an authority debt and named this half: a port claim proves
+*exclusivity* and says nothing about *entitlement*. A port range has no
+identity and cannot be asked what it is.
+
+**A driver now claims a function, and the claim carries its windows.** That
+settles the first of this file's open decisions — a device claim *contains* the
+port claim rather than authorising one — because two mechanisms with a gap
+between them is how a driver comes to hold a device capability and ports that
+have nothing to do with it.
+
+### What the machine decided rather than taste
+
+**CF8/CFC.** ECAM needs an MCFG table; QEMU's i440fx publishes none and VMware
+emulates a 440BX. The 1992 mechanism is the only one on both targets D-18 makes
+this project answer to.
+
+**The check machine had to be given a bridge.** q35 as QEMU ships it has none,
+so a kernel that scanned bus zero and stopped would find all six functions,
+report a plausible number, and pass — while being unable to find a controller
+on VMware, which puts functions behind `pciBridge0`–`pciBridge7`. The survey
+counts **buses**, not only functions: the function count says nothing about
+descent.
+
+**A bridge has two base address registers, not six.** Its bus numbers sit where
+a device's third would be, and a claim that read six would *probe* them —
+writing all ones into the register that says which bus is behind the bridge.
+The probe restores what it found, so nothing downstream need notice; the check
+asserts the claim decodes two.
+
+### Two things caught by the harness on their first run
+
+**The window sizing was wrong in the I/O case.** One function taking "pass all
+ones for a narrow register" complemented a thirty-two-bit mask in sixty-four
+bits and answered eighteen quintillion. A doctest caught it. It is two
+functions now, because a width you must remember to pass correctly is a width
+that will be passed wrongly.
+
+**`pci::init` took a lock under a leaf guard.** It held this module's guard and
+then called `port::claim_pair`, which takes the port registry's. The machine
+check went red on the first boot and named both sites. The claim happens
+outside the guard now.
+
+### Deliberately not yet
+
+The `Device` is a **kernel-side capability, not a handle**: obtainable only
+from the registry, exactly as `Port<T>` is. It becomes something a program can
+hold in slice 8, where devfs hands it out — which is the first moment there is
+anyone to hand it to (D-41).

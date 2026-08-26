@@ -4,6 +4,7 @@ pub mod apic;
 pub mod cpu;
 pub mod interrupt;
 pub mod paging;
+pub mod pci;
 pub mod percpu;
 pub mod pic;
 pub mod port;

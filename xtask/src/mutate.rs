@@ -501,6 +501,59 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a promise holds the table it is against",
         reddens: Caught::Check("a promise outlives the program that made it"),
     },
+    // Slice 4. A bus zero scan that calls itself an enumeration: every
+    // function q35 has is on bus zero, so the count stays plausible and only
+    // a check that counts *buses* can tell the two kernels apart (D-168).
+    Mutation {
+        file: "kernel/src/pci.rs",
+        find: "                if entry.class.is_bridge()
+                    && entry.header.is_bridge()",
+        replace: "                if false
+                    && entry.header.is_bridge()",
+        breaks: "enumeration descends through bridges",
+        reddens: Caught::Check("the bus walk descends through a bridge"),
+    },
+    // Two drivers for one device, which is the whole of D-77's entitlement
+    // complaint arriving as a defect rather than as an argument.
+    Mutation {
+        file: "kernel/src/pci.rs",
+        find: "        if claimed
+            .iter()
+            .flatten()
+            .any(|held| held.bits() == at.bits())
+        {",
+        replace: "        if false
+            && claimed
+                .iter()
+                .flatten()
+                .any(|held| held.bits() == at.bits())
+        {",
+        breaks: "a device is claimed once",
+        reddens: Caught::Check("a device is claimed once and a refusal strands nothing"),
+    },
+    // The ports a device decodes left free for anyone to claim, which is the
+    // arrangement D-77 said proves the wrong thing.
+    Mutation {
+        file: "kernel/src/pci.rs",
+        find: "            match wost::arch::current::port::claim_span(port, size as usize) {",
+        replace: "            match wost::arch::current::port::claim_span(port, 0) {",
+        breaks: "a device claim covers the ports it decodes",
+        reddens: Caught::Check("a claimed device's io window is not claimable bare"),
+    },
+    // A bridge's bus numbers decoded as a base address and then probed —
+    // all ones written into the register that says which bus is behind it.
+    Mutation {
+        file: "kernel/src/pci.rs",
+        find: "    let registers = if layout.is_bridge() {
+        BRIDGE_BARS
+    } else {
+        BARS
+    };",
+        replace: "    let registers = BARS;
+    let _ = layout;",
+        breaks: "a bridge has two base address registers, not six",
+        reddens: Caught::Check("a device is claimed once and a refusal strands nothing"),
+    },
     // D-133's exemption, put back. The inner test is left in place so the
     // counter still cannot move, which is the point: the woken thread runs
     // either way, because the keyboard arm reschedules a moment later, so only

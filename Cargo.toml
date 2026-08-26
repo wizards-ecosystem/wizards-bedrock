@@ -11,6 +11,7 @@ members = [
     "libs/frame-space",
     "libs/handle-space",
     "libs/mmio-range",
+    "libs/pci-config",
     "libs/pixel",
     "libs/port-space",
     "libs/ps2-keys",
@@ -38,6 +39,7 @@ default-members = [
     "libs/frame-space",
     "libs/handle-space",
     "libs/mmio-range",
+    "libs/pci-config",
     "libs/pixel",
     "libs/port-space",
     "libs/ps2-keys",
@@ -69,6 +71,7 @@ elf64 = { path = "libs/elf64" }
 frame-space = { path = "libs/frame-space" }
 handle-space = { path = "libs/handle-space" }
 mmio-range = { path = "libs/mmio-range" }
+pci-config = { path = "libs/pci-config" }
 pixel = { path = "libs/pixel" }
 port-space = { path = "libs/port-space" }
 ps2-keys = { path = "libs/ps2-keys" }

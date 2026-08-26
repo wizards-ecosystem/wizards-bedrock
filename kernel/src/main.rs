@@ -29,6 +29,7 @@ mod log;
 mod mem;
 mod object;
 mod panic;
+mod pci;
 mod queue;
 #[cfg(feature = "selftest")]
 mod selftest;
@@ -318,8 +319,109 @@ fn start_interrupts() {
         warn!("time: no page to publish the clock in; every read is a call");
     }
 
+    survey_the_bus();
+
     interrupt::enable();
     info!("cpu: accepting interrupts");
+}
+
+/// Claim configuration space and say what is on the bus.
+///
+/// Declines rather than fails: a machine whose configuration ports are already
+/// spoken for has no PCI as far as this kernel is concerned, and everything
+/// built so far works without it.
+///
+/// The walk **recurses through bridges** — QEMU's q35 puts a DMI-to-PCI bridge
+/// at `00:1e.0` and VMware places functions behind `pciBridge0`–`pciBridge7`,
+/// so a scan of bus zero can miss a controller entirely (`012` §2, D-168).
+fn survey_the_bus() {
+    if !wost::arch::current::pci::init() {
+        warn!("pci: the configuration ports are already claimed; no bus");
+        return;
+    }
+
+    let mut controller = None;
+    let mut storage = 0;
+    let surveyed = pci::enumerate(|function| {
+        if function.class.is_nvme() {
+            storage += 1;
+            if controller.is_none() {
+                controller = Some(function.at);
+            }
+        }
+    });
+
+    match surveyed {
+        Some(survey) => info!(
+            "pci: {} functions across {} bus(es), {} bridge(s), highest {:#04x}, {storage} nvme",
+            survey.functions, survey.buses, survey.bridges, survey.highest_bus
+        ),
+        None => {
+            warn!("pci: configuration space did not answer");
+            return;
+        }
+    }
+
+    let Some(at) = controller else {
+        info!("pci: no nvme controller; nothing to claim");
+        return;
+    };
+    claim_the_controller(at);
+}
+
+/// Claim the storage controller and say what it decodes.
+///
+/// The claim is what makes touching it legitimate, and it carries the windows
+/// with it (D-168). Slice 5 is what does anything with them; this is the point
+/// at which the shipped kernel and the checked one stop differing, because a
+/// claim path nothing calls in the shipped build is a claim path only the
+/// checks exercise.
+fn claim_the_controller(at: pci_config::Address) {
+    let mut device = match pci::claim(at) {
+        Ok(device) => device,
+        Err(reason) => {
+            warn!(
+                "nvme: {:02x}:{:02x}.{} could not be claimed: {reason}",
+                at.bus(),
+                at.device(),
+                at.function()
+            );
+            return;
+        }
+    };
+
+    let (vendor, model) = device.identity();
+    info!(
+        "nvme: claimed {:02x}:{:02x}.{} — {vendor:04x}:{model:04x}",
+        at.bus(),
+        at.device(),
+        at.function()
+    );
+
+    // Bus master before anything else is attempted. Without it the controller
+    // cannot DMA, queues never advance, and **there is no error anywhere to
+    // read** (`012` §2).
+    if device.enable_bus_master() {
+        info!("nvme: memory space and bus master on");
+    } else {
+        warn!("nvme: the command register would not take bus master");
+    }
+
+    for index in 0..pci::BARS {
+        if let Some(window) = device.window(index) {
+            match window.bar {
+                pci_config::Bar::Memory { address, wide, .. } => info!(
+                    "nvme: bar{index} is {} bytes of {}-bit memory at {address:#x}",
+                    window.size,
+                    if wide { 64 } else { 32 }
+                ),
+                pci_config::Bar::Io { port } => {
+                    info!("nvme: bar{index} is {} ports at {port:#06x}", window.size);
+                }
+                pci_config::Bar::Absent => {}
+            }
+        }
+    }
 }
 
 /// Route the keyboard's line through the I/O APIC, so keystrokes interrupt.

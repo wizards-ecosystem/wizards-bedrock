@@ -89,6 +89,104 @@ pub fn claim_pair<T: PortValue, U: PortValue>(
     Some((first, second))
 }
 
+/// Claim a run of ports whose length is not known until it is read.
+///
+/// [`claim_block`] wants its length as a constant, which is right for the
+/// fixed hardware this kernel already talks to — a PIT has three ports and a
+/// UART has eight, and those numbers are in the manual. A **device's** I/O
+/// window is not: it is whatever the base address register's all-ones probe
+/// says, and that is a number the machine supplies (D-168).
+///
+/// `None` if any port in the run is already claimed, if the run is empty, or
+/// if it would pass the end of I/O space.
+pub fn claim_span(base: u16, len: usize) -> Option<PortSpan> {
+    if len == 0 {
+        return None;
+    }
+    if !reserve(base, len) {
+        return None;
+    }
+    Some(PortSpan { base, len })
+}
+
+/// A claimed run of ports of a length read from the machine.
+///
+/// Carries its length so every access can be bounded by it. The alternative —
+/// a base and a caller that remembers — is the arrangement `mmio_range` exists
+/// to refuse on the memory side, and there is no reason the port side should
+/// be looser.
+#[derive(Debug)]
+pub struct PortSpan {
+    base: u16,
+    len: usize,
+}
+
+impl PortSpan {
+    /// The first port of the run.
+    pub const fn base(&self) -> u16 {
+        self.base
+    }
+
+    /// How many ports it covers.
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether it covers no ports. Never true; [`claim_span`] refuses an empty
+    /// run, and the method exists because clippy asks for it beside `len`.
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Whether `port` is inside this run.
+    pub const fn covers(&self, port: u16) -> bool {
+        let offset = port as usize;
+        let base = self.base as usize;
+        offset >= base && offset < base + self.len
+    }
+
+    /// Read from `offset` within the run.
+    ///
+    /// # Panics
+    ///
+    /// If the access would pass the end of the run, which is a driver reading
+    /// a register the device never claimed and would otherwise be answered by
+    /// whatever else lives there.
+    pub fn read<T: PortValue>(&mut self, offset: usize) -> T {
+        let at = self.port_for::<T>(offset);
+        // SAFETY: `claim_span` reserved every port in the run and no claim is
+        // ever released, and the bound above puts this access inside it.
+        unsafe { T::port_read(at) }
+    }
+
+    /// Write to `offset` within the run.
+    ///
+    /// # Panics
+    ///
+    /// As [`read`](Self::read).
+    pub fn write<T: PortValue>(&mut self, offset: usize, value: T) {
+        let at = self.port_for::<T>(offset);
+        // SAFETY: as `read`.
+        unsafe { T::port_write(at, value) }
+    }
+
+    /// The port `offset` names, or a panic naming what went past the end.
+    fn port_for<T: PortValue>(&self, offset: usize) -> u16 {
+        let end = offset
+            .checked_add(size_of::<T>())
+            .expect("a port offset that does not overflow");
+        assert!(
+            end <= self.len,
+            "port offset {offset} is outside the {}-port run at {:#06x}",
+            self.len,
+            self.base
+        );
+        self.base
+            .checked_add(offset as u16)
+            .expect("a port inside the run")
+    }
+}
+
 /// Claim exclusive access to the `N` consecutive ports starting at `base`.
 ///
 /// Returns `None` if any of them is already claimed, or if the block would run

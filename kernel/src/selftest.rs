@@ -37,6 +37,7 @@ use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
 use crate::handle::{HandleError, HandleTable};
 use crate::object::{self, ObjectRef, ObjectType};
+use crate::pci;
 use crate::queue;
 use crate::thread::ThreadContext;
 use crate::timepage;
@@ -1308,6 +1309,170 @@ fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
 #[cfg(feature = "selftest")]
 fn a_table() -> alloc::sync::Arc<crate::handle::HandleTable> {
     alloc::sync::Arc::new(crate::handle::HandleTable::new(8))
+}
+
+/// The bus is walked, and the walk goes through the bridge.
+///
+/// A kernel that scans bus zero and stops finds every function q35 has and
+/// reports a perfectly plausible number, which is why the *bus* count is what
+/// is asserted. VMware places functions behind `pciBridge0`–`pciBridge7`
+/// (`012` §2) and D-18 makes VMware the phase's definition of done, so a walk
+/// that cannot descend is a driver that cannot find its controller — and
+/// nothing about the function count would say so.
+///
+/// The check machine is given a `pci-bridge` for exactly this reason: q35 as
+/// QEMU ships it has none, so there would be nowhere to descend to and the
+/// property would be untestable rather than untested (D-168).
+fn the_bus_walk_descends_through_a_bridge() -> bool {
+    let mut on_bus_zero = 0;
+    let mut beyond = 0;
+    let Some(survey) = pci::enumerate(|function| {
+        if function.at.bus() == 0 {
+            on_bus_zero += 1;
+        } else {
+            beyond += 1;
+        }
+    }) else {
+        return false;
+    };
+
+    // More than one bus visited, and a bridge to explain why.
+    survey.buses >= 2
+        && survey.bridges >= 1
+        && survey.highest_bus >= 1
+        // And the counts agree with what the callback saw, so the survey is
+        // reporting the walk rather than a number of its own.
+        && survey.functions == on_bus_zero + beyond
+        && on_bus_zero >= 6
+}
+
+/// The same function is never claimed twice, and a refusal strands nothing.
+///
+/// D-77's device half. A port claim proves *exclusivity* and says nothing
+/// about *entitlement* — whether the claimant is the driver for the thing
+/// behind the ports. A device claim answers that by making the claim about the
+/// device, and it is permanent for the same reason a port claim is (D-138):
+/// there is no release, so there is no window in which a device is
+/// half-claimed.
+///
+/// The second half of the name is the part that would rot silently. A refusal
+/// that quietly released the holder's claim would look identical from here
+/// unless the holder is asked afterwards, so it is (D-138, D-168).
+fn a_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
+    // The bridge behind bus zero: it has no windows to disturb, and it is
+    // there on both boot targets.
+    let mut bridge = None;
+    if pci::enumerate(|function| {
+        if bridge.is_none() && function.class.is_bridge() && function.header.is_bridge() {
+            bridge = Some(function.at);
+        }
+    })
+    .is_none()
+    {
+        return false;
+    }
+    let Some(at) = bridge else {
+        return false;
+    };
+
+    let before = pci::claims();
+    let Ok(held) = pci::claim(at) else {
+        return false;
+    };
+    let recorded = pci::is_claimed(at) && pci::claims() == before + 1;
+
+    // A second driver for one device, refused.
+    let refused = matches!(pci::claim(at), Err(pci::ClaimError::Taken));
+
+    // And the holder still holds it: a refusal that released what it found
+    // would be indistinguishable from here without asking.
+    let intact = pci::is_claimed(at)
+        && pci::claims() == before + 1
+        && held.at().bits() == at.bits()
+        && held.identity().0 != 0xFFFF;
+
+    // A bridge has **two** base address registers, not six: its primary,
+    // secondary and subordinate bus numbers sit where a device's third would
+    // be. A claim that read six would decode those bus numbers as a window and
+    // then probe it — writing all ones into the register that says which bus
+    // is behind this bridge. Nothing else here would notice, because the probe
+    // restores what it found (D-168).
+    let two_registers = held.window(2).is_none()
+        && held.window(3).is_none()
+        && held.window(4).is_none()
+        && held.window(5).is_none();
+
+    recorded && refused && intact && two_registers
+}
+
+/// A device's I/O window is the device's, and a bare port claim inside it is
+/// refused.
+///
+/// The whole of D-77's entitlement complaint, made concrete. Before this a
+/// driver took ports and the registry recorded that *somebody* had them; now
+/// the claim belongs to the function that decodes them, and a caller reaching
+/// for a port inside a claimed device's window is refused because the device
+/// already has it (D-168).
+///
+/// **The check fails rather than passes when there is no such device.** A
+/// machine with no I/O window would make this vacuous, which is exactly the
+/// shape D-165 caught in slice 1 — so finding one is part of the claim.
+fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
+    let mut candidate = None;
+    if pci::enumerate(|function| {
+        if candidate.is_none() && !function.header.is_bridge() && !pci::is_claimed(function.at) {
+            candidate = Some(*function);
+        }
+    })
+    .is_none()
+    {
+        return false;
+    }
+
+    // Walk the candidates until one with an I/O window is claimed. A function
+    // may have none, and "none of them had one" is a failure here rather than
+    // a pass.
+    let mut found = None;
+    let mut seen = 0;
+    let _ = pci::enumerate(|function| {
+        if found.is_some() || function.header.is_bridge() || pci::is_claimed(function.at) {
+            return;
+        }
+        seen += 1;
+        let Ok(device) = pci::claim(function.at) else {
+            return;
+        };
+        for index in 0..pci::BARS {
+            if let Some(window) = device.window(index)
+                && let pci_config::Bar::Io { port } = window.bar
+                && window.size > 0
+            {
+                found = Some((port, window.size));
+                return;
+            }
+        }
+    });
+
+    let Some((port, size)) = found else {
+        return false;
+    };
+
+    // Every port in the window is the device's. The first and the last, so a
+    // claim that recorded only the base would be caught.
+    let last = port + (size as u16 - 1);
+    let base_refused = wost::arch::current::port::claim::<u8>(port).is_none();
+    let last_refused = wost::arch::current::port::claim::<u8>(last).is_none();
+
+    // And a port outside it is still available, so the refusal is about the
+    // window and not about everything. A claim here is permanent, so this
+    // takes one port for the life of the boot, which is the honest cost of
+    // showing that the refusals above are bounded.
+    let outside = port
+        .checked_add(size as u16)
+        .and_then(wost::arch::current::port::claim::<u8>)
+        .is_some();
+
+    seen > 0 && base_refused && last_refused && outside
 }
 
 /// A program that dies with work in flight has it ended before its ring goes.
@@ -5004,7 +5169,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 158;
+const EXPECTED_CHECKS: usize = 161;
 
 impl Report {
     const fn new() -> Self {
@@ -5147,6 +5312,18 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a ring announces its shape and keeps its pages",
         a_ring_announces_its_shape_and_keeps_its_pages(),
+    );
+    report.check(
+        "the bus walk descends through a bridge",
+        the_bus_walk_descends_through_a_bridge(),
+    );
+    report.check(
+        "a device is claimed once and a refusal strands nothing",
+        a_device_is_claimed_once_and_a_refusal_strands_nothing(),
+    );
+    report.check(
+        "a claimed device's io window is not claimable bare",
+        a_claimed_devices_io_window_is_not_claimable_bare(),
     );
     report.check(
         "work in flight is ended before the ring is released",

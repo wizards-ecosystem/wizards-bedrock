@@ -50,7 +50,7 @@ pub const BUDGET: usize = 380;
 /// is the truth — so the measurement is recorded beside it and checked, which
 /// makes drift toward the ceiling visible rather than something a reader
 /// infers from a comment that may be a phase out of date.
-pub const MEASURED: usize = 364;
+pub const MEASURED: usize = 366;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///
