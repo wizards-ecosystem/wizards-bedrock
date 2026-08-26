@@ -1061,14 +1061,26 @@ And the self-test reaches the set 1 path without a human, by making QEMU
 translate — the gate boots with the controller in the state VMware is in
 unasked, and presses a key whose identity the harness chose.
 
-**So this phase is closed on the code and open on the boot.** The count above is
-QEMU's. The VMware run that clears it has not happened: it needs a human at the
-VM for the keystroke checks, and the clock's refusal is intermittent — it
-refused on the first boot and calibrated on the three that followed, which is
-why D-176's diagnosis prints numbers rather than a verdict. This section says
-so rather than recording a boot that was not got — which is what D-77 forbade,
+**Where it stands: `passed=182 failed=5`, and all five need a human.** They are
+the two injection rounds — a keystroke cannot be injected into a headless VMware
+run the way QMP injects one into QEMU — and the three checks that read what the
+first round delivered. Every other check on that machine is green, including
+the ten storage checks that had no device, the four paging checks that had never
+run, and both keyboard checks once they stopped claiming a set the kernel no
+longer requires.
+
+**So the phase is closed on the code and open on one boot with a person at it.**
+The count in the table above is QEMU's. This section records what VMware
+actually said rather than a boot that was not got — which is what D-77 forbade,
 and what `012` §11's "VMware's values are unmeasured" already admits about the
 neighbouring number.
+
+One thing stays unexplained on purpose: the clock refused to calibrate on the
+first of these boots and calibrated on the five that followed, with no change
+to the calibration path between them. That is why D-176's diagnosis prints the
+guard and the two measured rates rather than a verdict — the next refusal will
+say which of seven it was, and until one happens there is nothing honest to
+write here.
 
 **What the four boots were worth.** Three defects and a rule apiece, none of
 them findable on QEMU, in a phase that closed green: a driver shipped to a
