@@ -40,6 +40,7 @@ mod thread;
 mod time;
 mod timepage;
 mod user;
+mod vfs;
 mod wait;
 
 use core::fmt::Write;
@@ -445,38 +446,77 @@ fn claim_the_controller(at: pci_config::Address) {
     mount_the_volume();
 }
 
-/// Mount the FAT32 volume on the namespace and say what is on it.
+/// Mount the volume and say what is on it, **through the VFS**.
 ///
-/// Declines rather than fails, like everything else here: a namespace with no
-/// volume on it is a machine with no files, and the kernel boots either way.
+/// Not through `fs::with_volume` directly, which would be the kernel reaching
+/// past its own abstraction on the one path a person watches — and an
+/// abstraction only the checks use is one the shipped kernel is not evidence
+/// about (D-171).
+///
+/// Declines rather than fails: a namespace with no volume on it is a machine
+/// with no files, and the kernel boots either way.
 fn mount_the_volume() {
-    let counted = fs::with_volume(|volume| {
-        let root = volume.bpb().root_cluster();
-        let mut files = 0usize;
-        let mut directories = 0usize;
-        volume.walk_directory(root, |entry| {
-            if entry.is_directory() {
-                directories += 1;
-            } else {
-                files += 1;
-            }
-            true
-        })?;
-        Ok((
-            volume.bpb().clusters(),
-            volume.bpb().cluster_bytes(),
-            files,
-            directories,
-        ))
-    });
+    let shape =
+        fs::with_volume(|volume| Ok((volume.bpb().clusters(), volume.bpb().cluster_bytes())));
+    match shape {
+        None => {
+            info!("fat32: no controller, so no volume");
+            return;
+        }
+        Some(Err(reason)) => {
+            warn!("fat32: the volume would not mount: {reason:?}");
+            return;
+        }
+        Some(Ok((clusters, cluster_bytes))) => {
+            info!("fat32: mounted — {clusters} clusters of {cluster_bytes} bytes");
+        }
+    }
 
-    match counted {
-        None => info!("fat32: no controller, so no volume"),
-        Some(Err(reason)) => warn!("fat32: the volume would not mount: {reason:?}"),
-        Some(Ok((clusters, cluster_bytes, files, directories))) => info!(
-            "fat32: mounted — {clusters} clusters of {cluster_bytes} bytes, \
-             {files} file(s) and {directories} directory(ies) in the root"
-        ),
+    let Some(root) = vfs::root() else {
+        return;
+    };
+
+    // Collected here and used after, because both operations reach the
+    // controller through a leaf guard and resolving inside this callback would
+    // re-enter it (D-171).
+    let mut files = 0usize;
+    let mut directories = 0usize;
+    let mut first = [0u8; 16];
+    let mut first_len = 0usize;
+    if let Err(reason) = vfs::enumerate(root, |name, is_directory| {
+        if is_directory {
+            directories += 1;
+        } else {
+            files += 1;
+            if first_len == 0 && name.len() <= first.len() {
+                first[..name.len()].copy_from_slice(name);
+                first_len = name.len();
+            }
+        }
+        true
+    }) {
+        warn!("fat32: the root would not list: {reason:?}");
+        return;
+    }
+    info!("fat32: {files} file(s) and {directories} directory(ies) in the root");
+
+    if first_len == 0 {
+        return;
+    }
+    let name = &first[..first_len];
+    match vfs::resolve(root, name) {
+        Ok(vfs::Node::File(file)) => {
+            let mut head = [0u8; 32];
+            match vfs::read(file, 0, &mut head) {
+                Ok(read) => info!(
+                    "fat32: {} — read {read} of its bytes",
+                    core::str::from_utf8(name).unwrap_or("?")
+                ),
+                Err(reason) => warn!("fat32: that file would not read: {reason:?}"),
+            }
+        }
+        Ok(vfs::Node::Directory(_)) => warn!("fat32: a listed file resolved to a directory"),
+        Err(reason) => warn!("fat32: a listed name would not resolve: {reason:?}"),
     }
 }
 

@@ -44,6 +44,7 @@ use crate::queue;
 use crate::thread::ThreadContext;
 use crate::timepage;
 use crate::user;
+use crate::vfs;
 use crate::{dev, error, info, input, mem, thread, time};
 
 /// A frame's handle releases it, and the allocator notices.
@@ -1311,6 +1312,192 @@ fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
 #[cfg(feature = "selftest")]
 fn a_table() -> alloc::sync::Arc<crate::handle::HandleTable> {
     alloc::sync::Arc::new(crate::handle::HandleTable::new(8))
+}
+
+/// A path resolves from a directory handle, and only downward.
+///
+/// The VFS's shape: `lookup` node to node, holding the backend for the walk's
+/// life rather than re-deriving a node from a name at each step — which is
+/// what closes the gap Linux needed `openat2` for.
+fn a_path_resolves_from_a_directory_handle() -> bool {
+    let Some(root) = vfs::root() else {
+        return false;
+    };
+
+    // A file at the top.
+    let Ok(vfs::Node::File(small)) = vfs::resolve(root, SMALL_NAME) else {
+        return false;
+    };
+    let vfs::File::Fat { size, .. } = small;
+    if size as usize != SMALL_CONTENT.len() {
+        return false;
+    }
+    let mut read = [0u8; fat32::SECTOR_BYTES];
+    let Ok(got) = vfs::read(small, 0, &mut read) else {
+        return false;
+    };
+    if got != SMALL_CONTENT.len() || &read[..got] != SMALL_CONTENT {
+        return false;
+    }
+
+    // A directory, then a file inside it, through one path.
+    let Ok(vfs::Node::Directory(_)) = vfs::resolve(root, DIRECTORY_NAME) else {
+        return false;
+    };
+    let mut deeper = [0u8; 32];
+    deeper[..DIRECTORY_NAME.len()].copy_from_slice(DIRECTORY_NAME);
+    deeper[DIRECTORY_NAME.len()] = b'/';
+    let tail = DIRECTORY_NAME.len() + 1;
+    deeper[tail..tail + NESTED_NAME.len()].copy_from_slice(NESTED_NAME);
+    let path = &deeper[..tail + NESTED_NAME.len()];
+
+    let Ok(vfs::Node::File(nested)) = vfs::resolve(root, path) else {
+        return false;
+    };
+    let mut inside = [0u8; 64];
+    let Ok(got) = vfs::read(nested, 0, &mut inside) else {
+        return false;
+    };
+
+    // And `.` and a cancelled `..` both name the directory they started from.
+    let here = matches!(vfs::resolve(root, b"."), Ok(vfs::Node::Directory(_)));
+    let round_trip = matches!(vfs::resolve(root, b"DATA/.."), Ok(vfs::Node::Directory(_)));
+
+    got == NESTED_CONTENT.len() && &inside[..got] == NESTED_CONTENT && here && round_trip
+}
+
+/// No path from a directory handle can name anything above it.
+///
+/// The invariant `012` §5 states and this phase's headline security property:
+/// **there is no operation that can walk upward.** `..` is resolved lexically
+/// before any node is touched, so what reaches the resolver is a list of names
+/// that only descends — and the resolver holds no parent pointer to be asked.
+///
+/// Every direction it can be attempted from, and each is a *different*
+/// refusal: an absolute path is malformed because there is no root, and an
+/// escaping `..` is malformed because there is no parent. Neither is a denial,
+/// which would suggest some other program could (D-171).
+fn no_path_can_name_anything_above_the_handle() -> bool {
+    let Some(root) = vfs::root() else {
+        return false;
+    };
+
+    let absolute: &[&[u8]] = &[b"/", b"/DATA", b"//DATA", b"/../DATA", b"/DATA/NESTED.TXT"];
+    for path in absolute {
+        if !matches!(
+            vfs::resolve(root, path),
+            Err(vfs::VfsError::Path(path_walk::PathError::Absolute))
+        ) {
+            return false;
+        }
+    }
+
+    let escaping: &[&[u8]] = &[
+        b"..",
+        b"../DATA",
+        b"DATA/../..",
+        b"DATA/../../DATA",
+        b"./..",
+        b"DATA/./../..",
+        b"DATA/../DATA/../..",
+    ];
+    for path in escaping {
+        if !matches!(
+            vfs::resolve(root, path),
+            Err(vfs::VfsError::Path(path_walk::PathError::Escapes))
+        ) {
+            return false;
+        }
+    }
+
+    // And an empty path names nothing rather than the directory itself, which
+    // is what a resolver that treated it as `.` would answer.
+    matches!(
+        vfs::resolve(root, b""),
+        Err(vfs::VfsError::Path(path_walk::PathError::Empty))
+    )
+}
+
+/// A component that is not a directory cannot be walked through.
+///
+/// Without it, `HELLO.TXT/NESTED.TXT` would be answered out of whatever the
+/// file's bytes look like as directory entries — which for a file the caller
+/// controls is a caller choosing what the resolver finds.
+fn a_file_cannot_be_walked_through() -> bool {
+    let Some(root) = vfs::root() else {
+        return false;
+    };
+
+    let mut path = [0u8; 32];
+    path[..SMALL_NAME.len()].copy_from_slice(SMALL_NAME);
+    path[SMALL_NAME.len()] = b'/';
+    let tail = SMALL_NAME.len() + 1;
+    path[tail..tail + NESTED_NAME.len()].copy_from_slice(NESTED_NAME);
+
+    let through = vfs::resolve(root, &path[..tail + NESTED_NAME.len()]);
+    let missing = vfs::resolve(root, b"NOPE.TXT");
+
+    matches!(through, Err(vfs::VfsError::NotADirectory))
+        && matches!(missing, Err(vfs::VfsError::NotFound))
+}
+
+/// Enumeration lists what is there, and it is not the same operation as
+/// traversal.
+///
+/// `012` §4 makes "may resolve a name I know" and "may list the names"
+/// separate authorities, and this is the second one working: the resolver
+/// consults one and this consults the other. Capsicum folds enumeration into
+/// read; WASI Preview 1 had both by accident of being syscall-named.
+fn enumeration_lists_what_traversal_would_find() -> bool {
+    let Some(root) = vfs::root() else {
+        return false;
+    };
+
+    let mut names = 0usize;
+    let mut directories = 0usize;
+    let mut saw_small = false;
+    let mut saw_large = false;
+    if vfs::enumerate(root, |name, is_directory| {
+        names += 1;
+        if is_directory {
+            directories += 1;
+        }
+        saw_small |= name == SMALL_NAME;
+        saw_large |= name == LARGE_NAME;
+        true
+    })
+    .is_err()
+    {
+        return false;
+    }
+
+    // Every name it listed also resolves, which is the two operations
+    // agreeing — an enumeration that returned a name traversal cannot find is
+    // a directory listing that lies.
+    //
+    // **Collected first, resolved after.** Both operations reach the
+    // controller through a leaf guard, so resolving *inside* the enumeration
+    // callback re-enters that guard and spins for ever. The first version of
+    // this check did exactly that and hung the harness, which is the rule
+    // `lock_leaf` states, arriving as a sixty-second timeout (D-171).
+    let mut listed = [[0u8; 12]; 4];
+    let mut lengths = [0usize; 4];
+    let mut count = 0usize;
+    let _ = vfs::enumerate(root, |name, _| {
+        if count < listed.len() && name.len() <= listed[count].len() {
+            listed[count][..name.len()].copy_from_slice(name);
+            lengths[count] = name.len();
+            count += 1;
+        }
+        true
+    });
+
+    let mut all_resolve = count == 3;
+    for index in 0..count {
+        all_resolve &= vfs::resolve(root, &listed[index][..lengths[index]]).is_ok();
+    }
+
+    names == 3 && directories == 1 && saw_small && saw_large && all_resolve
 }
 
 /// The volume mounts, and says something a FAT32 volume would say.
@@ -5459,7 +5646,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 169;
+const EXPECTED_CHECKS: usize = 173;
 
 impl Report {
     const fn new() -> Self {
@@ -5602,6 +5789,22 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a ring announces its shape and keeps its pages",
         a_ring_announces_its_shape_and_keeps_its_pages(),
+    );
+    report.check(
+        "a path resolves from a directory handle",
+        a_path_resolves_from_a_directory_handle(),
+    );
+    report.check(
+        "no path can name anything above the handle",
+        no_path_can_name_anything_above_the_handle(),
+    );
+    report.check(
+        "a file cannot be walked through",
+        a_file_cannot_be_walked_through(),
+    );
+    report.check(
+        "enumeration lists what traversal would find",
+        enumeration_lists_what_traversal_would_find(),
     );
     report.check(
         "the volume mounts and says what a fat32 volume says",

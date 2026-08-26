@@ -71,7 +71,7 @@ before its abstraction is anything but a guess.
 | 4 | **PCI, and a device that is claimed.** CF8/CFC enumeration recursing through bridges, a `Device` capability that supersedes bare port claims, BAR mapping uncacheable | Done |
 | 5 | **NVMe, polled.** Twelve-step init, one I/O queue pair, `IEN=0`, PRP construction in `libs/`, and the `size − 1` capacity rule proved |Done |
 | 6 | **FAT32, read-only, short names.** `libs/fat32` over a block trait, checked against the ESP `xtask` already builds |Done |
-| 7 | **The VFS.** A directory trait — `lookup`, `enumerate`, `modify` — enum dispatch, and path resolution that cannot ascend | |
+| 7 | **The VFS.** A directory trait — `lookup`, `enumerate`, `modify` — enum dispatch, and path resolution that cannot ascend |Done |
 | 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes | |
 | 9 | **The file handle.** `READ`/`WRITE` on files, `TRAVERSE`/`ENUMERATE`/`MODIFY` on directories, offsets per operation, and a `read` that is a submission | |
 | 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks — D-135), the adversarial audit, the roadmap and this file's closing section | |
@@ -747,3 +747,55 @@ buffer be a fixed array. And the corpus still has **one writer**: until a
 foreign-produced image is obtained, a shared misreading of the specification
 would pass both implementations, which is the honest limit of an oracle built
 from one tool.
+
+---
+
+## Slice 7 — The VFS
+
+**Landed 2026-08-25.** D-171. 173 machine checks, 681 host tests, 56 mutations.
+
+Three operations rather than five tables: `lookup`, `enumerate`, and `modify`
+when there is a write path. Path resolution is the only code that must be
+backend-agnostic, so it is the only thing the abstraction is about.
+
+**Enum dispatch**, monomorphic and allocation-free, exhaustively checked by the
+compiler when a fourth backend arrives. Dynamic dispatch waits for a backend
+that must be added *without editing the enum* — which means a filesystem in
+userspace, and at that point the abstraction is the protocol.
+
+### The resolver has no way up
+
+`libs/path-walk` resolves `..` lexically and refuses underflow, so what reaches
+the resolver is a list of names that only descends. There is **no parent
+pointer anywhere in `vfs.rs`** — not a private one, not an unused one. That is
+stronger than `RESOLVE_BENEATH`, which enforces a predicate on a resolver still
+*capable* of ascending; here there is no capability for a predicate to be about.
+
+Two refusals, and they are different things. An absolute path is malformed
+because **there is no root** for it to be relative to; an escaping `..` is
+malformed because there is no parent. Neither is a denial — reporting either as
+a permission failure would suggest some other program could.
+
+And nothing is clamped: an escape is refused rather than resolved to the
+starting directory, a long name refused rather than truncated, a deep path
+refused rather than cut short. Each would silently answer a different question
+than the caller asked, and on a walk that ends in an open, open a different file.
+
+### What hung the harness
+
+The enumeration check's first version resolved each listed name from *inside*
+the enumeration callback. Both operations reach the controller through a leaf
+guard, so the inner call re-entered the same lock and spun — reported as a
+sixty-second timeout, which is `lock_leaf`'s rule arriving in the only form a
+same-lock re-entry can take. The "no lock under a leaf guard" check watches for
+a *different* lock; a spin on the same one is not something a counter can see.
+
+The check collects the names and resolves them afterwards, which is also the
+shape a caller must use, and the comment says so.
+
+### Carried
+
+Offsets are per operation — no seek, no tell, no cursor on anything. One
+namespace per program and no way to compose two. Enumeration and traversal are
+separate authorities and the check requires them to agree; the rights that gate
+them arrive in slice 9.

@@ -28,6 +28,7 @@ pub const HOST_PACKAGES: &[&str] = &[
     "handle-space",
     "mmio-range",
     "nvme",
+    "path-walk",
     "pci-config",
     "pixel",
     "port-space",

@@ -639,6 +639,38 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "the volume is where the partition puts it",
         reddens: Caught::Check("the volume mounts and says what a fat32 volume says"),
     },
+    // Slice 7. `..` passed through as an ordinary name, so the resolver is
+    // asked to walk upward — which is the one thing `012` §5 says it must not
+    // be *able* to do (D-171).
+    Mutation {
+        file: "libs/path-walk/src/lib.rs",
+        find: "        if component == b\"..\" {",
+        replace: "        if false {",
+        breaks: "a resolver cannot be asked to ascend",
+        reddens: Caught::Check("no path can name anything above the handle"),
+    },
+    // Ascending past the start clamped rather than refused, which silently
+    // answers a different question than the caller asked.
+    Mutation {
+        file: "libs/path-walk/src/lib.rs",
+        find: "            depth = depth.checked_sub(1).ok_or(PathError::Escapes)?;",
+        replace: "            depth = depth.saturating_sub(1);",
+        breaks: "an escape is refused rather than clamped",
+        reddens: Caught::Check("no path can name anything above the handle"),
+    },
+    // A component that is not a directory walked through, so a file's bytes
+    // are read as directory entries — with the caller choosing the bytes.
+    Mutation {
+        file: "kernel/src/vfs.rs",
+        find: "                if !entry.is_directory() {
+                    return Err(FatError::WrongKind);
+                }",
+        replace: "                if false {
+                    return Err(FatError::WrongKind);
+                }",
+        breaks: "a file cannot be walked through",
+        reddens: Caught::Check("a file cannot be walked through"),
+    },
     // D-133's exemption, put back. The inner test is left in place so the
     // counter still cannot move, which is the point: the woken thread runs
     // either way, because the keyboard arm reschedules a moment later, so only

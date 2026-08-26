@@ -322,6 +322,22 @@ impl Entry {
         &self.name[..self.name_len]
     }
 
+    /// An entry that names contents and nothing else.
+    ///
+    /// For a caller that kept a cluster and a size rather than a whole
+    /// directory entry — a VFS node is not a copy of the entry it came from,
+    /// and carrying the name would make it one. The name is empty, which is
+    /// the only honest thing to put there.
+    pub const fn for_contents(cluster: u32, size: u32) -> Self {
+        Self {
+            name: [0u8; 12],
+            name_len: 0,
+            attributes: attribute::ARCHIVE,
+            cluster,
+            size,
+        }
+    }
+
     /// Whether this entry is a directory.
     pub const fn is_directory(&self) -> bool {
         self.attributes & attribute::DIRECTORY != 0

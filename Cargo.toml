@@ -13,6 +13,7 @@ members = [
     "libs/handle-space",
     "libs/mmio-range",
     "libs/nvme",
+    "libs/path-walk",
     "libs/pci-config",
     "libs/pixel",
     "libs/port-space",
@@ -43,6 +44,7 @@ default-members = [
     "libs/handle-space",
     "libs/mmio-range",
     "libs/nvme",
+    "libs/path-walk",
     "libs/pci-config",
     "libs/pixel",
     "libs/port-space",
@@ -77,6 +79,7 @@ frame-space = { path = "libs/frame-space" }
 handle-space = { path = "libs/handle-space" }
 mmio-range = { path = "libs/mmio-range" }
 nvme = { path = "libs/nvme" }
+path-walk = { path = "libs/path-walk" }
 pci-config = { path = "libs/pci-config" }
 pixel = { path = "libs/pixel" }
 port-space = { path = "libs/port-space" }

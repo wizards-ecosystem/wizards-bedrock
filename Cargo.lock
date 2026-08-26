@@ -211,6 +211,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
+name = "path-walk"
+version = "0.1.0"
+
+[[package]]
 name = "pci-config"
 version = "0.1.0"
 
@@ -634,6 +638,7 @@ dependencies = [
  "handle-space",
  "noto-sans-mono-bitmap",
  "nvme",
+ "path-walk",
  "pci-config",
  "ps2-keys",
  "ring-proto",
