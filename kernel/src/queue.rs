@@ -518,7 +518,15 @@ impl Queue {
     fn duplicate(&self, submission: Submission, table: &Arc<HandleTable>) -> Completion {
         let token = submission.token;
         let named = submission.handle;
-        let Some(declared) = Rights::from_bits(submission.argument as u32) else {
+        // `try_from`, not `as`. A cast would drop the high half of a word ring
+        // 3 wrote, so `0xFFFF_FFFF_0000_0003` would be read as `DUPLICATE |
+        // TRANSFER` instead of being refused — and refusing a rights word that
+        // holds bits this kernel does not define is the entire reason
+        // `from_bits` returns an `Option` (D-174).
+        let Some(declared) = u32::try_from(submission.argument)
+            .ok()
+            .and_then(Rights::from_bits)
+        else {
             return refuse(token, STATUS_DENIED);
         };
 
@@ -646,7 +654,13 @@ impl Queue {
 
         let mut scratch = [0u8; MAX_READ];
         let wanted = (bounds.1).min(scratch.len());
-        let read = match crate::vfs::read(file, submission.offset as u32, &mut scratch[..wanted]) {
+        // An offset past every file this kernel can hold reads nothing, which
+        // is what an offset past the end reads everywhere else here. A cast
+        // would instead wrap it to somewhere *inside* the file — so a program
+        // asking for byte four billion and one would be handed byte one
+        // (D-174).
+        let offset = u32::try_from(submission.offset).unwrap_or(u32::MAX);
+        let read = match crate::vfs::read(file, offset, &mut scratch[..wanted]) {
             Ok(read) => read,
             Err(crate::vfs::VfsError::Path(_)) => return refuse(token, STATUS_BAD_PATH),
             Err(_) => return refuse(token, STATUS_NO_ENTRY),
@@ -704,7 +718,13 @@ impl Queue {
     /// [`STATUS_CANCELLED`]. This function's own completion is separate and is
     /// posted by [`serve`](Self::serve), against its own reservation.
     fn cancel(&self, submission: Submission) -> Completion {
-        let target = submission.argument as u32;
+        // A token is a `u32`, so a word that does not fit is not a token and
+        // names no operation. Truncating would have `0x1_0000_DEAD` cancel
+        // `0xDEAD`, which is a program ending an operation it did not name
+        // (D-174).
+        let Ok(target) = u32::try_from(submission.argument) else {
+            return refuse(submission.token, STATUS_NOT_FOUND);
+        };
         // Taken and dropped before `post`, which takes two more leaves. A
         // guard held across it is the one thing `lock_leaf` forbids (D-121).
         let found = {

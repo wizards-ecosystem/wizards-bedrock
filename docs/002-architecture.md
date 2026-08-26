@@ -218,6 +218,12 @@ Still open:
 
 - **WizFS on-disk format specifics** (before its own phase, D-73)
 - **Compat-fork mechanics for mlibc** (before Phase 9)
+- **How a program receives its first directory handle.** Phase 6 built
+  `OpenAt` and a program cannot reach it: `spawn` gives exactly one handle —
+  the bootstrap channel (D-107) — and receiving a directory over that channel
+  needs `sys_channel_receive`, which is OWED. A second handle at spawn would
+  break the invariant that makes pillar 1 checkable, so this waits for the
+  channel rather than for a convenience (D-173).
 
 Closed since this list was written:
 

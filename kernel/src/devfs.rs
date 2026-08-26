@@ -52,10 +52,44 @@ impl Device {
 
 /// Every device, in listing order.
 ///
-/// Exhaustive by construction: the compiler checks the match in
-/// [`Device::name`], and this array is checked against it by a test that
-/// counts (D-161).
+/// The compiler checks the match in [`Device::name`], so a third variant is a
+/// build failure there — and this array would go on listing two. A test below
+/// makes its completeness a build failure as well (D-174).
 pub(crate) const DEVICES: [Device; 2] = [Device::Storage, Device::Console];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `DEVICES` is every device there is.
+    ///
+    /// The doc above claimed the compiler checked this and nothing did: the
+    /// match in [`Device::name`] is exhaustive, so a third variant is a build
+    /// failure *there* — and `DEVICES` would go on listing two. The match here
+    /// is what makes the array's completeness a build failure too, and the
+    /// length is asserted after it for the case where a variant is added to
+    /// both the enum and the match and not to the array (D-161, D-174).
+    #[test]
+    fn devices_is_every_device_there_is() {
+        for device in DEVICES {
+            let itself = match device {
+                Device::Storage => Device::Storage,
+                Device::Console => Device::Console,
+            };
+            assert_eq!(device, itself);
+        }
+        assert_eq!(DEVICES.len(), 2, "DEVICES has fallen behind the enum");
+
+        // And no two share a name, which a listing would otherwise show twice
+        // and a lookup would answer with whichever came first.
+        for (index, device) in DEVICES.iter().enumerate() {
+            for earlier in &DEVICES[..index] {
+                assert_ne!(device.name(), earlier.name());
+            }
+            assert!(!device.name().is_empty());
+        }
+    }
+}
 
 /// Find `name` among the devices.
 pub(crate) fn lookup(name: &[u8]) -> Option<Device> {

@@ -74,7 +74,7 @@ before its abstraction is anything but a guess.
 | 7 | **The VFS.** A directory trait — `lookup`, `enumerate`, `modify` — enum dispatch, and path resolution that cannot ascend |Done |
 | 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes |Done |
 | 9 | **The file handle.** `READ`/`WRITE` on files, `TRAVERSE`/`ENUMERATE`/`MODIFY` on directories, offsets per operation, and a `read` that is a submission |Done |
-| 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks — D-135), the adversarial audit, the roadmap and this file's closing section | |
+| 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks — D-135), the adversarial audit, the roadmap and this file's closing section |Done |
 
 ---
 
@@ -911,3 +911,84 @@ exactly one handle — its bootstrap channel — and receiving a directory handl
 over that channel needs `sys_channel_receive`, which is OWED. Giving a program
 a second handle at spawn would break the invariant that makes pillar 1
 checkable, so it waits for the channel rather than for a convenience.
+
+---
+
+## Slice 10 — Phase close
+
+**2026-08-25.** D-174.
+
+### What the phase is
+
+A ring operation resolves a path from a directory handle, gets back a file
+handle carrying attenuated rights, and reads bytes off a real NVMe controller
+into a page it shares with the caller. Every part of that sentence was built by
+a different slice, and the order was forced: the ABI first, because a caller
+freezes the interface it uses.
+
+| | |
+|---|---|
+| Machine checks | 180 |
+| Host tests | 683 |
+| Mutations | 65, each caught by the check it names |
+| New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
+| Decisions | D-163 … D-174 |
+
+### Every debt this file opened with
+
+| Debt | Paid |
+|---|---|
+| No completion carries a handle | Slice 1 (D-163) |
+| Nothing blocks on a completion | Slice 1 (D-164) |
+| Port claims prove exclusivity, not entitlement | Slice 4 (D-168) |
+| `sys_clock_get` OWED | Slice 2 — it stopped being a call (D-166) |
+| An in-flight operation whose program retires | Slice 3 (D-167) |
+| `xtask/src/elf.rs` transcribes ELF offsets | Paid early, in the pre-phase pass (D-158) |
+| A wait with a timeout | Slice 1 (D-164) |
+| KASLR ledger entries | Slice 2's time page; slice 4 needed none — the NVMe window is discovered, not fixed |
+
+`sys_read`, `sys_write`, `sys_seek` and `sys_close` are **not** paid, and the
+reason is one thing rather than four: a program cannot hold a file handle yet.
+That is `002`'s new open question and it needs a channel, not a syscall.
+
+### The five decisions this file left open
+
+1. **A device claim contains the port claim** rather than authorising one
+   (D-168). Two mechanisms with a gap between them is how a driver comes to
+   hold a device capability and ports that have nothing to do with it.
+2. **The block layer is a trait, and it belongs to the reader** (D-170).
+   `libs/fat32` defines it because that is the parameter it needs — and it is
+   what makes the host oracle possible.
+3. **No page cache** (D-170). The reasoning held: the measurement does not
+   exist, so neither does the cache.
+4. **A `File` handle's object is the thinner one** (D-173) — a backend and a
+   node, not an inode the VFS owns.
+5. **`read` takes a provided buffer, and the buffer is part of the ring**
+   (D-173). No user pointer to validate, no SMAP window, no fault to recover.
+
+### What the audit found
+
+One defect in three places, and a claim nothing checked (D-174). Three words a
+submission carries — a rights word, a file offset, a cancellation token — were
+reaching the kernel through `as` casts, so a program was answered about
+something other than what it asked for. And `devfs::DEVICES` documented a test
+that did not exist.
+
+The rule for next time: **every field a submission carries is a value ring 3
+chose.** `as` is not a conversion at that boundary.
+
+### Carried deliberately
+
+No write path. No page cache. No symlinks or hard links. One namespace per
+program with no way to compose two. `sys_open` stays ABSENT by design. And the
+corpus still has **one writer** — until a foreign-produced FAT32 image is
+obtained, a shared misreading of the specification would pass both
+implementations, which is the honest limit of an oracle built from one tool.
+
+### What this phase taught the next one
+
+D-155's rule — choose inputs where the answers differ — arrived from four
+directions in ten slices: an input, a corpus of disk blocks, a directory tree,
+and a rights word whose low half was valid. D-165's — a check must reach the
+code it is about — arrived three times. Both are in `005` now, and both were
+found by breaking checks rather than by reading them.

@@ -739,7 +739,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // only thing that says where the bytes came from.
     Mutation {
         file: "kernel/src/queue.rs",
-        find: "        let read = match crate::vfs::read(file, submission.offset as u32, &mut scratch[..wanted]) {",
+        find: "        let read = match crate::vfs::read(file, offset, &mut scratch[..wanted]) {",
         replace: "        let read = match crate::vfs::read(file, 0, &mut scratch[..wanted]) {",
         breaks: "a read starts where it was told to",
         reddens: Caught::Check("a read is a submission with its own offset"),
@@ -754,6 +754,39 @@ pub const MUTATIONS: &[Mutation] = &[
     Some((at, len))",
         breaks: "a buffer is checked before the device is asked",
         reddens: Caught::Check("a ring operation cannot reach past its rights or its pages"),
+    },
+    // The phase-close audit's finding, one defect in three places (D-174).
+    // A rights word read as its low half, so every undefined bit a program
+    // sets is dropped rather than refused.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "        let Some(declared) = u32::try_from(submission.argument)
+            .ok()
+            .and_then(Rights::from_bits)
+        else {",
+        replace: "        let Some(declared) = Rights::from_bits(submission.argument as u32) else {",
+        breaks: "a rights word that does not fit is refused",
+        reddens: Caught::Check("a word that does not fit is refused rather than truncated"),
+    },
+    // A file offset wrapped into the file rather than past it, so byte four
+    // billion and one is answered with byte one.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "        let offset = u32::try_from(submission.offset).unwrap_or(u32::MAX);",
+        replace: "        let offset = submission.offset as u32;",
+        breaks: "an offset that does not fit is past the end",
+        reddens: Caught::Check("a word that does not fit is refused rather than truncated"),
+    },
+    // A cancellation token truncated, so a program ends an operation it did
+    // not name.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "        let Ok(target) = u32::try_from(submission.argument) else {
+            return refuse(submission.token, STATUS_NOT_FOUND);
+        };",
+        replace: "        let target = submission.argument as u32;",
+        breaks: "a token that does not fit names no operation",
+        reddens: Caught::Check("a word that does not fit is refused rather than truncated"),
     },
     // D-133's exemption, put back. The inner test is left in place so the
     // counter still cannot move, which is the point: the woken thread runs

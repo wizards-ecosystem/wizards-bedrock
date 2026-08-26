@@ -1307,6 +1307,142 @@ fn a_table() -> alloc::sync::Arc<crate::handle::HandleTable> {
     alloc::sync::Arc::new(crate::handle::HandleTable::new(8))
 }
 
+/// A word that does not fit is refused, never truncated.
+///
+/// The phase-close audit's finding, and it is one defect in three places
+/// (D-174). Every one of these words is written by ring 3 into a page ring 3
+/// owns, and every one was reaching the kernel through an `as` cast:
+///
+/// - a **rights word** whose high half was dropped, so
+///   `0xFFFF_FFFF_0000_0003` was read as `DUPLICATE | TRANSFER` rather than
+///   refused — which is the whole reason `Rights::from_bits` returns an
+///   `Option`;
+/// - a **file offset** wrapped into the file rather than past it, so a program
+///   asking for byte four billion and one would be handed byte one;
+/// - a **cancellation token** truncated, so `0x1_0000_DEAD` would end the
+///   operation tagged `0xDEAD` — a program ending an operation it did not
+///   name.
+///
+/// None of them is a crash. All three are a program being answered about
+/// something other than what it asked for, which is the worst shape a boundary
+/// can fail in.
+fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
+    if !crate::time::is_calibrated() {
+        return false;
+    }
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let Some((held, _far)) = crate::object::channel() else {
+        return false;
+    };
+    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+    let full = Rights::UNIVERSAL.union(Rights::READ);
+    let Ok(source) = table.insert(held, full) else {
+        return false;
+    };
+
+    // A rights word whose low half is perfectly valid and whose high half is
+    // not. A cast reads it as the low half; `try_from` refuses it whole.
+    queue.post_submission_for_test(
+        0,
+        queue::Submission::about(
+            queue::Opcode::Duplicate,
+            0xC001,
+            source,
+            (0xFFFF_FFFFu64 << 32) | u64::from(full.bits()),
+        ),
+    );
+
+    // An operation to cancel, and a token that is not its token because it
+    // does not fit in one.
+    queue.post_submission_for_test(
+        1,
+        queue::Submission::simple(queue::Opcode::Timer, 0xDEAD, 3_600_000_000_000),
+    );
+    queue.publish_tail_for_test(2);
+    if queue.serve(&table) != 1 {
+        return false;
+    }
+    let widened = queue.read_completion(0);
+
+    queue.post_submission_for_test(
+        2,
+        queue::Submission::simple(queue::Opcode::Cancel, 0xC002, (1u64 << 32) | 0xDEAD),
+    );
+    queue.publish_tail_for_test(3);
+    if queue.serve(&table) != 1 {
+        return false;
+    }
+    let cancelled = queue.read_completion(1);
+
+    // A file offset past every file this kernel can hold.
+    let Some(file) = open_the_small_file_in(&queue, &table, 3) else {
+        return false;
+    };
+    queue.post_submission_for_test(
+        4,
+        queue::Queue::about_at(queue::Opcode::Read, 0xC003, file, 1u64 << 32, 512, 16),
+    );
+    queue.publish_tail_for_test(5);
+    if queue.serve(&table) != 1 {
+        return false;
+    }
+    let past = queue.read_completion(3);
+
+    let mut untouched = [0u8; 16];
+    if !queue.read_data_for_test(512, &mut untouched) {
+        return false;
+    }
+
+    widened.status == queue::STATUS_DENIED
+        // The timer is still in flight: the cancellation named no operation,
+        // which is what a token that does not fit names.
+        && cancelled.status == queue::STATUS_NOT_FOUND
+        && queue.in_flight() == 1
+        // And the read answered "nothing", rather than the file's first bytes.
+        && past.status == queue::STATUS_OK
+        && past.value == 0
+        && untouched == [0u8; 16]
+}
+
+/// Open the corpus's small file into `table`, submitting at `slot`.
+///
+/// The same four operations as [`open_the_small_file`], against a table the
+/// caller already owns.
+fn open_the_small_file_in(
+    queue: &queue::Queue,
+    table: &alloc::sync::Arc<crate::handle::HandleTable>,
+    slot: usize,
+) -> Option<u32> {
+    let root = vfs::root()?;
+    let object = crate::object::directory(root)?;
+    let directory = table
+        .insert(object, Rights::UNIVERSAL.union(Rights::TRAVERSE))
+        .ok()?;
+
+    if !queue.write_data_for_test(0, SMALL_NAME) {
+        return None;
+    }
+    queue.post_submission_for_test(
+        slot,
+        queue::Queue::about_at(
+            queue::Opcode::OpenAt,
+            0x0F11,
+            directory,
+            0,
+            0,
+            SMALL_NAME.len() as u32,
+        ),
+    );
+    queue.publish_tail_for_test(slot as u32 + 1);
+    if queue.serve(table) != 1 {
+        return None;
+    }
+    let completion = queue.read_completion(2);
+    (completion.status == queue::STATUS_OK).then_some(completion.value as u32)
+}
+
 /// A completion carries a **file** handle, and the rights come from the
 /// directory that named it.
 ///
@@ -6065,7 +6201,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 179;
+const EXPECTED_CHECKS: usize = 180;
 
 impl Report {
     const fn new() -> Self {
@@ -6208,6 +6344,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a ring announces its shape and keeps its pages",
         a_ring_announces_its_shape_and_keeps_its_pages(),
+    );
+    report.check(
+        "a word that does not fit is refused rather than truncated",
+        a_word_that_does_not_fit_is_refused_rather_than_truncated(),
     );
     report.check(
         "a completion carries a file handle",

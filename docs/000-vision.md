@@ -101,10 +101,16 @@ reference — not followed linearly). Docs are numbered in creation order.
    the slice for. The counts are in `userland/README.md`, where the gate
    checks them against the sysdeps' own tags. Slice table in
    `011-userspace.md`*
-6. VFS + storage — VFS over handles, tmpfs/devfs, and a **read-only
-   third-party format** (FAT32 or ext2) over NVMe, so the block path and the
-   buffer plumbing are honest at zero on-disk-write risk. WizFS is not here
-   (D-73)
+6. VFS + storage — **done 2026-08-25.** *The ABI half first (D-149): a
+   completion carries a handle, the clock became a page rather than a call, and
+   a dead program's work is finished rather than forgotten. Then PCI with a
+   device that is claimed rather than a port range — D-77's other half — a
+   polled NVMe driver, FAT32 read-only checked against `fatfs` as an oracle, a
+   VFS over directories whose resolver has no way up, tmpfs and devfs, and a
+   `read` that is a submission. 180 machine checks, 65 mutations, four new
+   `libs/` crates. The write path, a page cache, symlinks and namespace
+   composition are carried deliberately; WizFS is still not here (D-73). Slice
+   table in `014-storage.md`*
 7. Userland — shell, coreutils, TTY; **RustPython milestone**;
    **Wasm runtime** (interpreter-class, `wasip1`) — first sandboxed apps
 8. Network — NIC drivers, smoltcp, async socket handles, TLS (rustls)
