@@ -1015,11 +1015,58 @@ About forty checks stand on a running clock, which is most of the remaining
 failures. The warning now names the guard and prints the two rates the window
 measured, believed or not.
 
+**Then four more, and they had never run.** With the controller in place the
+same machine reported `passed=172 failed=9`, and four of the nine named
+physical `0x1000` — a page QEMU describes as memory and VMware does not. Each
+returned `false` out of its own setup, which is the value the harness also gets
+when a property is violated, so four checks that never executed were reported
+as four security properties coming apart. They cut their pages from a run the
+map offers now (D-177). All four pass on VMware, where none of them had ever
+been evaluated.
+
+**And one about the keyboard, still open.** `passed=177 failed=5`. Four of the
+five need a human at the machine to press a key and cannot run headless. The
+fifth is real, and the boot that added D-178's identity probe answered it:
+
+```
+[info ] selftest: the controller raises its line exactly when routed, and never translates
+[warn ] keyboard: reports scancode set Some(65), not 2
+[warn ] keyboard: identifies as Some((171, 65)), not (171, 131)
+```
+
+`(0xAB, 0x41)` is an MF2 keyboard **behind a translating controller** —
+`(0xAB, 0x83)` is the same keyboard when nothing rewrites it, which is what
+QEMU answers. So VMware reports its translation bit clear, passes the check
+that reads that bit, and translates anyway. The decoder is being fed set 1
+while it decodes set 2, which is precisely the symptom that started this: keys
+are accepted and nothing happens.
+
+Two checks on the same boot disagreed, and the one that could not be lied to
+was right. That is D-178's whole argument, established on the machine rather
+than reasoned about.
+
+**Set 1 is not yet decoded.** `libs/ps2-keys` is a set 2 crate by construction
+and says so in its first line. The cheap shape is a byte filter in front of the
+existing decoder — translation is a deterministic map, so its inverse restores
+the stream the tested state machine already handles — and it is not written,
+because the table it needs is a transcription and this project does not land
+tables it cannot check.
+
 **So this phase is closed on the code and open on the boot.** The count above is
-QEMU's. The VMware run that clears it has not happened, and this section says so
-rather than recording a boot that was not got — which is what D-77 forbade, and
-what `012` §11's "VMware's values are unmeasured" already admits about the
+QEMU's. The VMware run that clears it has not happened: it needs a human at the
+VM for the keystroke checks, and the clock's refusal is intermittent — it
+refused on the first boot and calibrated on the three that followed, which is
+why D-176's diagnosis prints numbers rather than a verdict. This section says
+so rather than recording a boot that was not got — which is what D-77 forbade,
+and what `012` §11's "VMware's values are unmeasured" already admits about the
 neighbouring number.
+
+**What the four boots were worth.** Three defects and a rule apiece, none of
+them findable on QEMU, in a phase that closed green: a driver shipped to a
+machine with no such device, four load-bearing paging checks that had never
+executed anywhere but one emulator, and a keyboard whose configuration byte and
+whose behaviour disagree. **A second machine does not re-run the checks; it
+discovers which of them were about the first machine.**
 
 ### Carried deliberately
 
