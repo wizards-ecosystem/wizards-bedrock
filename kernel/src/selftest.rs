@@ -6201,7 +6201,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 180;
+const EXPECTED_CHECKS: usize = 181;
 
 impl Report {
     const fn new() -> Self {
@@ -6822,6 +6822,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "both calibrated rates are believable",
         rates_are_believable(),
+    );
+    report.check(
+        "every refusal the clock can record reads back as itself",
+        time::every_refusal_reads_back_as_itself(),
     );
 
     let sweep = sweep_clock();

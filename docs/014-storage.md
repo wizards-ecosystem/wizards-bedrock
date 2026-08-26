@@ -938,8 +938,8 @@ freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 180 |
-| Mutations | 64, each caught by the check it names |
+| Machine checks | 181 |
+| Mutations | 65, each caught by the check it names |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
 | Decisions | D-163 … D-176 |
 

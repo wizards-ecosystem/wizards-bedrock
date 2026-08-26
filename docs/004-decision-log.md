@@ -11107,6 +11107,14 @@ looks like information and is not.
 - The VMX template gains three lines and a test that reads them.
 - `kernel/src/time.rs` grows a `Refusal` enum and three statics. The warning is
   longer by a clause and a pair of numbers.
+- **Seven refusals, not six.** `init` reaches `Implausible` a seventh way — five
+  windows that were each believable and never agreed within `AGREEMENT_DIVISOR`
+  — and on an emulated crystal that is the one it reaches first. It names
+  itself too.
+- A machine check sweeps every refusal and requires it to decode as the one that
+  was recorded, because a diagnosis that names the wrong guard is worse than one
+  that names none, and a discriminant drifting from its `match` arm is how that
+  happens. 181 checks; the mutation that breaks it is number 65.
 - Phase 6's VMware boot is **not** recorded as done until it is re-run against a
   machine with the controller. `014`'s close says so rather than claiming a
   boot it did not get.

@@ -215,11 +215,13 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
 
     let mut candidate: Option<Calibration> = None;
     let mut outcome = None;
+    let mut measured_windows = 0_u32;
     for _ in 0..MEASUREMENT_ATTEMPTS {
         let Some(current) = measure(&mut pit) else {
             candidate = None;
             continue;
         };
+        measured_windows += 1;
         match candidate {
             Some(previous) if previous.agrees_with(current) => {
                 outcome = Some(current);
@@ -231,6 +233,12 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
     pit.park();
 
     let Some(calibration) = outcome else {
+        // Windows that each looked fine and never agreed is a seventh way to
+        // reach this line, and the one an emulated crystal reaches first
+        // (D-176).
+        if measured_windows > 0 {
+            LAST_REFUSAL.store(Refusal::Disagreed as usize, Ordering::Relaxed);
+        }
         return Err(TimeError::Implausible);
     };
     // Both conversions exist for any rate inside the believable ranges; the
@@ -300,6 +308,8 @@ pub(crate) enum Refusal {
     Overshot = 4,
     /// A rate outside what any real part reports.
     NotBelievable = 5,
+    /// Every window was believable and no two of them agreed.
+    Disagreed = 6,
 }
 
 impl core::fmt::Display for Refusal {
@@ -313,6 +323,7 @@ impl core::fmt::Display for Refusal {
             Self::CounterWentBack => f.write_str("a counter read backwards across the window"),
             Self::Overshot => f.write_str("the window overshot its bound"),
             Self::NotBelievable => f.write_str("a measured rate is outside belief"),
+            Self::Disagreed => f.write_str("believable windows that never agreed with each other"),
         }
     }
 }
@@ -326,9 +337,42 @@ impl Refusal {
             3 => Self::CounterWentBack,
             4 => Self::Overshot,
             5 => Self::NotBelievable,
+            6 => Self::Disagreed,
             _ => Self::None,
         }
     }
+}
+
+#[cfg(feature = "selftest")]
+impl Refusal {
+    /// Every refusal, so a check can sweep them without a list of its own.
+    ///
+    /// D-161: the list a test sweeps can itself fall behind.
+    pub(crate) const ALL: [Self; 7] = [
+        Self::None,
+        Self::CrystalStepped,
+        Self::NeverClosed,
+        Self::CounterWentBack,
+        Self::Overshot,
+        Self::NotBelievable,
+        Self::Disagreed,
+    ];
+}
+
+/// Every refusal reads back as the one that was recorded.
+///
+/// A diagnosis that names the wrong guard is worse than one that names none,
+/// and the way it comes to name the wrong guard is a discriminant and a `match`
+/// arm drifting apart — which nothing else here would notice (D-176).
+#[cfg(feature = "selftest")]
+pub(crate) fn every_refusal_reads_back_as_itself() -> bool {
+    let held = LAST_REFUSAL.load(Ordering::Relaxed);
+    let faithful = Refusal::ALL.iter().all(|&refusal| {
+        LAST_REFUSAL.store(refusal as usize, Ordering::Relaxed);
+        Refusal::last() == refusal
+    });
+    LAST_REFUSAL.store(held, Ordering::Relaxed);
+    faithful
 }
 
 /// The last reason a window was refused, for the warning that follows.

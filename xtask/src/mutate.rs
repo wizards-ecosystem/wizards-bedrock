@@ -801,6 +801,15 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a wake from a handler arms the timer for what it woke",
         reddens: Caught::Check("a wake from a handler arms the timer for what it woke"),
     },
+    // A discriminant and its `match` arm drifting apart, which is how a
+    // diagnosis comes to name the wrong guard (D-176).
+    Mutation {
+        file: "kernel/src/time.rs",
+        find: "            6 => Self::Disagreed,",
+        replace: "            6 => Self::NotBelievable,",
+        breaks: "the clock's refusal decodes to the one that was recorded",
+        reddens: Caught::Check("every refusal the clock can record reads back as itself"),
+    },
 ];
 
 /// Apply each mutation, boot, and require something to go red.
