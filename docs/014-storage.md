@@ -408,7 +408,7 @@ here, because a citation to an entry that does not exist is what
 
 ## Slice 1 — A completion carries a handle
 
-**Landed 2026-08-25.** D-163, D-164, D-165. 151 machine checks, 606 host tests,
+**Landed 2026-08-25.** D-163, D-164, D-165. 151 machine checks, 610 host tests,
 33 mutations.
 
 Three opcodes, and each exists to pay one of the debts `011` closed with:
@@ -485,7 +485,7 @@ the program is told, which is D-151's whole argument for reserving at all.
 
 ## Slice 2 — The time page
 
-**Landed 2026-08-25.** D-166. 156 machine checks, 620 host tests, 37 mutations.
+**Landed 2026-08-25.** D-166. 156 machine checks, 619 host tests, 37 mutations.
 
 `sys_clock_get` was OWED over `libs/timebase` (D-114) — the mechanism complete
 and the door missing. It is answered by not being a door. One page, read-only
@@ -592,7 +592,7 @@ controller there. What it must not do is return before `is_quiet`.
 
 ## Slice 4 — PCI, and a device that is claimed
 
-**Landed 2026-08-25.** D-168. 161 machine checks, 638 host tests, 41 mutations.
+**Landed 2026-08-25.** D-168. 161 machine checks, 637 host tests, 45 mutations.
 
 D-77 closed half an authority debt and named this half: a port claim proves
 *exclusivity* and says nothing about *entitlement*. A port range has no
@@ -647,7 +647,7 @@ anyone to hand it to (D-41).
 
 ## Slice 5 — NVMe, polled
 
-**Landed 2026-08-25.** D-169. 165 machine checks, 653 host tests, 48 mutations.
+**Landed 2026-08-25.** D-169. 165 machine checks, 654 host tests, 48 mutations.
 
 The kernel reads a block off a real controller. On QEMU that is
 `1b36:0010` at `00:04.0`, claimed by slice 4's registry, its BAR0 mapped
@@ -706,7 +706,7 @@ before `is_quiet`.
 
 ## Slice 6 — FAT32, read-only, short names
 
-**Landed 2026-08-25.** D-170. 169 machine checks, 671 host tests, 52 mutations.
+**Landed 2026-08-25.** D-170. 169 machine checks, 670 host tests, 52 mutations.
 
 The kernel mounts a FAT32 volume off the controller and reads files out of it.
 
@@ -762,7 +762,7 @@ from one tool.
 
 ## Slice 7 — The VFS
 
-**Landed 2026-08-25.** D-171. 173 machine checks, 681 host tests, 56 mutations.
+**Landed 2026-08-25.** D-171. 173 machine checks, 680 host tests, 56 mutations.
 
 Three operations rather than five tables: `lookup`, `enumerate`, and `modify`
 when there is a write path. Path resolution is the only code that must be
@@ -865,7 +865,7 @@ rather than about the name.
 
 ## Slice 9 — The file handle
 
-**Landed 2026-08-25.** D-173. 179 machine checks, 700 host tests, 62 mutations.
+**Landed 2026-08-25.** D-173. 179 machine checks, 680 host tests, 62 mutations.
 
 A ring operation resolves a path from a directory handle, gets back a file
 handle carrying attenuated rights, and reads bytes off the controller into a
@@ -939,10 +939,16 @@ freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 180 |
-| Host tests | 683 |
-| Mutations | 65, each caught by the check it names |
+| Mutations | 64, each caught by the check it names |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | D-163 … D-174 |
+| Decisions | D-163 … D-175 |
+
+The first two are **checked against the source at every commit**
+(`xtask/src/prose.rs`), because a number restated in prose is a number that can
+disagree with itself — which the per-slice lines above did, in seven places, and
+which is why they now say what the gate said rather than what was expected of
+it (D-175). The host-test count is deliberately absent: it changes with every
+`libs/` crate and nothing would be learned from pinning it here.
 
 ### Every debt this file opened with
 

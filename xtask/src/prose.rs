@@ -128,6 +128,68 @@ mod tests {
             .collect()
     }
 
+    /// The phase's closing table says what the source says.
+    ///
+    /// `014`'s per-slice lines are history — what the gate reported the day
+    /// that slice landed — and seven of them were wrong, written from
+    /// expectation before the gate had run. History cannot be checked against
+    /// the present, but the **closing table** is a claim about the tree as it
+    /// stands, and that can be (D-175).
+    ///
+    /// The same mechanism as the README's boot count, and the same reason
+    /// `002` gives for keeping the sysdep tally out of its prose: a number
+    /// restated in a second place is a number that can disagree with itself,
+    /// and the one that is never read is the one that goes stale.
+    #[test]
+    fn the_phase_close_says_what_the_source_says() {
+        let root = root();
+        let storage =
+            std::fs::read_to_string(root.join("docs/014-storage.md")).expect("014-storage.md");
+        let selftest =
+            std::fs::read_to_string(root.join("kernel/src/selftest.rs")).expect("selftest.rs");
+
+        // `| Machine checks | 180 |`
+        let claimed_checks = table_number(&storage, "Machine checks");
+        let expected = selftest
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("const EXPECTED_CHECKS: usize = "))
+            .and_then(|value| value.trim_end_matches(';').parse::<usize>().ok())
+            .expect("no EXPECTED_CHECKS in selftest.rs");
+        assert_eq!(
+            claimed_checks, expected,
+            "`014`'s closing table says {claimed_checks} machine checks and the kernel expects \
+             {expected}"
+        );
+
+        // `| Mutations | 64, each caught ... |`
+        let claimed_mutations = table_number(&storage, "Mutations");
+        assert_eq!(
+            claimed_mutations,
+            crate::mutate::MUTATIONS.len(),
+            "`014`'s closing table says {claimed_mutations} mutations and there are {}",
+            crate::mutate::MUTATIONS.len()
+        );
+    }
+
+    /// The first number in the table row whose left cell is `label`.
+    fn table_number(document: &str, label: &str) -> usize {
+        let row = document
+            .lines()
+            .find(|line| line.trim_start().starts_with(&format!("| {label} |")))
+            .unwrap_or_else(|| panic!("no `{label}` row in the closing table"));
+        row.split('|')
+            .nth(2)
+            .and_then(|cell| {
+                let digits: String = cell
+                    .trim()
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect();
+                digits.parse().ok()
+            })
+            .unwrap_or_else(|| panic!("the `{label}` row states no number: {row}"))
+    }
+
     /// Every crate the documents name either exists or is declared absent.
     #[test]
     fn every_crate_the_documents_name_exists_or_is_declared_absent() {
