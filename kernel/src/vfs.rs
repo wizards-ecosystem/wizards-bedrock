@@ -52,6 +52,16 @@ pub(crate) enum Directory {
         /// Where its entries begin.
         cluster: u32,
     },
+    /// A directory in the filesystem made of memory.
+    Tmp {
+        /// Its index in the arena.
+        index: usize,
+    },
+    /// The directory of devices.
+    ///
+    /// One directory, not a tree: there is nothing to nest, and a devfs with
+    /// subdirectories would be a namespace nobody asked for (D-172).
+    Dev,
 }
 
 /// A file, whichever backend it belongs to.
@@ -64,6 +74,13 @@ pub(crate) enum File {
         /// Bytes in it.
         size: u32,
     },
+    /// A file in memory: where its bytes are in the arena, and how many.
+    Tmp {
+        /// Where its bytes begin.
+        at: usize,
+        /// How many there are.
+        len: usize,
+    },
 }
 
 /// What a name resolved to.
@@ -73,6 +90,17 @@ pub(crate) enum Node {
     Directory(Directory),
     /// Something with bytes in it.
     File(File),
+    /// A device.
+    ///
+    /// **Not a file**, and the distinction is enforced rather than described:
+    /// [`read`] takes a [`File`], so there is no way to pass one of these to
+    /// it. Forcing a device to implement `read_at` is the "everything is a
+    /// file" conflation, and WASI's own README rejects it on exactly these
+    /// grounds (`012` §7, D-172).
+    ///
+    /// What a program will eventually receive here is slice 4's `Device`
+    /// capability. Today the name resolves; the handle it becomes is Phase 7's.
+    Device(crate::devfs::Device),
 }
 
 /// Why a path did not resolve.
@@ -121,6 +149,18 @@ pub(crate) fn root() -> Option<Directory> {
         .map(|cluster| Directory::Fat { cluster })
 }
 
+/// The root of the filesystem made of memory.
+pub(crate) const fn tmp_root() -> Directory {
+    Directory::Tmp {
+        index: crate::tmpfs::ROOT,
+    }
+}
+
+/// The directory of devices.
+pub(crate) const fn dev_root() -> Directory {
+    Directory::Dev
+}
+
 /// Resolve `path` from `at`.
 ///
 /// **The whole walk happens inside one mount**, node to node, holding the
@@ -146,6 +186,53 @@ pub(crate) fn resolve(at: Directory, path: &[u8]) -> Result<Node, VfsError> {
 
     match at {
         Directory::Fat { cluster } => resolve_in_fat(cluster, &components[..depth]),
+        Directory::Tmp { index } => resolve_in_tmp(index, &components[..depth]),
+        Directory::Dev => resolve_in_dev(&components[..depth]),
+    }
+}
+
+/// Walk `components` from a directory in memory.
+fn resolve_in_tmp(from: usize, components: &[&[u8]]) -> Result<Node, VfsError> {
+    let mut directory = from;
+
+    for (index, name) in components.iter().enumerate() {
+        let found = crate::tmpfs::lookup(directory, name).ok_or(VfsError::NotFound)?;
+        let is_last = index + 1 == components.len();
+
+        match found {
+            crate::tmpfs::Found::Directory(next) => {
+                if is_last {
+                    return Ok(Node::Directory(Directory::Tmp { index: next }));
+                }
+                directory = next;
+            }
+            crate::tmpfs::Found::File { at, len } => {
+                if !is_last {
+                    // The same rule as every other backend's, and the same
+                    // reason: a file walked *through* would be answered out of
+                    // whatever its bytes look like.
+                    return Err(VfsError::NotADirectory);
+                }
+                return Ok(Node::File(File::Tmp { at, len }));
+            }
+        }
+    }
+
+    Err(VfsError::NotFound)
+}
+
+/// Resolve a name among the devices.
+///
+/// **One component and no more.** A devfs is a directory of names, not a tree,
+/// so `storage/anything` is a file walked through — refused for the same reason
+/// everywhere else refuses it (D-172).
+fn resolve_in_dev(components: &[&[u8]]) -> Result<Node, VfsError> {
+    let (first, rest) = components.split_first().ok_or(VfsError::NotFound)?;
+    let device = crate::devfs::lookup(first).ok_or(VfsError::NotFound)?;
+    if rest.is_empty() {
+        Ok(Node::Device(device))
+    } else {
+        Err(VfsError::NotADirectory)
     }
 }
 
@@ -211,6 +298,7 @@ pub(crate) fn read(file: File, offset: u32, into: &mut [u8]) -> Result<usize, Vf
         })
         .ok_or(VfsError::NoVolume)?
         .map_err(VfsError::from),
+        File::Tmp { at, len } => Ok(crate::tmpfs::read(at, len, offset as usize, into)),
     }
 }
 
@@ -236,5 +324,13 @@ pub(crate) fn enumerate(
         })
         .ok_or(VfsError::NoVolume)?
         .map_err(VfsError::from),
+        Directory::Tmp { index } => {
+            crate::tmpfs::walk(index, found);
+            Ok(())
+        }
+        Directory::Dev => {
+            crate::devfs::walk(found);
+            Ok(())
+        }
     }
 }

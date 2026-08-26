@@ -72,7 +72,7 @@ before its abstraction is anything but a guess.
 | 5 | **NVMe, polled.** Twelve-step init, one I/O queue pair, `IEN=0`, PRP construction in `libs/`, and the `size − 1` capacity rule proved |Done |
 | 6 | **FAT32, read-only, short names.** `libs/fat32` over a block trait, checked against the ESP `xtask` already builds |Done |
 | 7 | **The VFS.** A directory trait — `lookup`, `enumerate`, `modify` — enum dispatch, and path resolution that cannot ascend |Done |
-| 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes | |
+| 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes |Done |
 | 9 | **The file handle.** `READ`/`WRITE` on files, `TRAVERSE`/`ENUMERATE`/`MODIFY` on directories, offsets per operation, and a `read` that is a submission | |
 | 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks — D-135), the adversarial audit, the roadmap and this file's closing section | |
 
@@ -799,3 +799,54 @@ Offsets are per operation — no seek, no tell, no cursor on anything. One
 namespace per program and no way to compose two. Enumeration and traversal are
 separate authorities and the check requires them to agree; the rights that gate
 them arrive in slice 9.
+
+---
+
+## Slice 8 — tmpfs and devfs
+
+**Landed 2026-08-25.** D-172. 176 machine checks, 680 host tests, 59 mutations.
+
+```
+fat32: 2 file(s) and 1 directory(ies) in the root
+tmpfs: 1 file(s) and 1 directory(ies) at the root
+devfs: storage is a block device
+devfs: console is a character device
+```
+
+Two more backends, chosen to be unlike the first in different directions.
+
+**tmpfs** has no clusters, no chains and no device; its directories are a flat
+table with parent indices. If the three operations fit both it and FAT32, they
+are about directories rather than about FAT — which is the whole claim this
+slice exists to make.
+
+**devfs** is unlike both in the way that matters most. `Node` gains a third
+variant and `vfs::read` takes a `File`, so **there is no way to pass a device to
+it** — not a refusal at run time, an absence at compile time. That is the
+difference between a design that says devices are not files and one that
+enforces it.
+
+### What the enum did
+
+Adding a `Node` variant was a compile error in every match that handles one,
+which is exactly what slice 7's enum-dispatch decision was for: a fourth backend
+is a build failure rather than a number that means nothing.
+
+### The corpus caught a check again
+
+A tmpfs lookup that **ignored the parent** passed, because every name in the
+first tree was unique — a lookup that searched the whole arena found the right
+entry anyway, and deleting the containment check left the boot green. The tree
+now holds `MOTD` twice, once at the root and once inside `NOTES` with different
+content, and the check reads both.
+
+D-155's rule for the third time this phase, and the third different place it has
+arrived from: an input, a corpus, and now a directory tree.
+
+### Checked across backends, not within one
+
+The no-ascent invariant is exercised on **every** backend, because it is a
+property of the resolver — a check that only ran against FAT would be a property
+of FAT. And a directory handle names its own backend: each name must resolve
+where it belongs *and* nowhere else, so the refusals are about the backend
+rather than about the name.

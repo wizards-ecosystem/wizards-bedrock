@@ -19,6 +19,7 @@ mod arch;
 mod banner;
 mod console;
 mod dev;
+mod devfs;
 // Ungated at the Phase 5 close. The order the charter forced was handles
 // before objects before a process to belong to, so these were built and proven
 // behind the selftest feature first — and the gate comes off with `spawn`,
@@ -39,6 +40,7 @@ mod theme;
 mod thread;
 mod time;
 mod timepage;
+mod tmpfs;
 mod user;
 mod vfs;
 mod wait;
@@ -365,11 +367,15 @@ fn survey_the_bus() {
         }
     }
 
-    let Some(at) = controller else {
-        info!("pci: no nvme controller; nothing to claim");
-        return;
-    };
-    claim_the_controller(at);
+    match controller {
+        Some(at) => claim_the_controller(at),
+        None => info!("pci: no nvme controller; nothing to claim"),
+    }
+
+    // Neither of these needs a disk, so both are surveyed whatever the bus
+    // held — which is also what makes them the backends that prove the VFS's
+    // abstraction is about directories rather than about FAT (D-172).
+    survey_the_filesystems();
 }
 
 /// Claim the storage controller and say what it decodes.
@@ -516,7 +522,48 @@ fn mount_the_volume() {
             }
         }
         Ok(vfs::Node::Directory(_)) => warn!("fat32: a listed file resolved to a directory"),
+        // A FAT volume has no devices in it, and the compiler is what says so
+        // here: adding a node kind is an error in every match rather than a
+        // number that means nothing (D-171).
+        Ok(vfs::Node::Device(_)) => warn!("fat32: a listed file resolved to a device"),
         Err(reason) => warn!("fat32: a listed name would not resolve: {reason:?}"),
+    }
+}
+
+/// Say what the other two backends hold.
+///
+/// `014` asks for more than one backend before the VFS's abstraction is worth
+/// believing, and this is the shipped kernel exercising all three through the
+/// same three operations (D-172).
+fn survey_the_filesystems() {
+    tmpfs::init();
+
+    let mut files = 0usize;
+    let mut directories = 0usize;
+    let _ = vfs::enumerate(vfs::tmp_root(), |_, is_directory| {
+        if is_directory {
+            directories += 1;
+        } else {
+            files += 1;
+        }
+        true
+    });
+    info!("tmpfs: {files} file(s) and {directories} directory(ies) at the root");
+
+    // And the point devfs exists to make: a name here yields a **device**, not
+    // bytes. `vfs::read` takes a file, so there is no way to ask one of these
+    // for its contents — an absence at compile time rather than a refusal at
+    // run time (`012` §7).
+    for device in devfs::DEVICES {
+        match vfs::resolve(vfs::dev_root(), device.name()) {
+            Ok(vfs::Node::Device(found)) => info!(
+                "devfs: {} is {}",
+                core::str::from_utf8(found.name()).unwrap_or("?"),
+                found.describes()
+            ),
+            Ok(_) => warn!("devfs: a device resolved to something with bytes in it"),
+            Err(reason) => warn!("devfs: a device would not resolve: {reason:?}"),
+        }
     }
 }
 

@@ -671,6 +671,45 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a file cannot be walked through",
         reddens: Caught::Check("a file cannot be walked through"),
     },
+    // Slice 8. A tmpfs lookup that ignores the parent, so every directory
+    // holds every file. Invisible in a tree whose names are unique, which is
+    // why this one holds `MOTD` twice (D-172).
+    Mutation {
+        file: "kernel/src/tmpfs.rs",
+        find: "        if index == ROOT || entry.parent != directory {
+            continue;
+        }
+        if &entry.name[..entry.name_len] != name {",
+        replace: "        if index == ROOT {
+            continue;
+        }
+        if &entry.name[..entry.name_len] != name {",
+        breaks: "a directory holds only its own entries",
+        reddens: Caught::Check("a second backend answers the same three operations"),
+    },
+    // A path walked *through* a device, which has nothing inside it — the
+    // "everything is a file" conflation arriving as a defect.
+    Mutation {
+        file: "kernel/src/vfs.rs",
+        find: "    if rest.is_empty() {
+        Ok(Node::Device(device))
+    } else {
+        Err(VfsError::NotADirectory)
+    }",
+        replace: "    let _ = rest;
+    Ok(Node::Device(device))",
+        breaks: "a device is not a directory",
+        reddens: Caught::Check("a device is not a file"),
+    },
+    // A tmpfs read bounded by the arena rather than by the file, which hands
+    // back the next file's bytes.
+    Mutation {
+        file: "kernel/src/tmpfs.rs",
+        find: "    let wanted = into.len().min(len - offset);",
+        replace: "    let wanted = into.len();",
+        breaks: "a read stops at the end of the file, in memory too",
+        reddens: Caught::Check("a second backend answers the same three operations"),
+    },
     // D-133's exemption, put back. The inner test is left in place so the
     // counter still cannot move, which is the point: the woken thread runs
     // either way, because the keyboard arm reschedules a moment later, so only

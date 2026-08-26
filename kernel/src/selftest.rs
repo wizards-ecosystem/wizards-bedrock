@@ -35,6 +35,7 @@ use crate::arch::current::debug_exit;
 use crate::arch::current::trap::{self, Record};
 use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
+use crate::devfs;
 use crate::fs;
 use crate::handle::{HandleError, HandleTable};
 use crate::nvme;
@@ -1314,6 +1315,193 @@ fn a_table() -> alloc::sync::Arc<crate::handle::HandleTable> {
     alloc::sync::Arc::new(crate::handle::HandleTable::new(8))
 }
 
+/// A second backend answers the same three operations.
+///
+/// `014` is explicit that the VFS needs more than one backend before its
+/// abstraction is anything but a guess: a directory trait with one
+/// implementation is a description of that implementation. tmpfs is
+/// deliberately unlike FAT32 in the ways that matter — no clusters, no chains,
+/// no device — so if `lookup`, `enumerate` and `read` fit both, they are about
+/// directories (D-172).
+fn a_second_backend_answers_the_same_three_operations() -> bool {
+    let root = vfs::tmp_root();
+
+    // Resolve and read a file at the top.
+    let Ok(vfs::Node::File(motd)) = vfs::resolve(root, b"MOTD") else {
+        return false;
+    };
+    let mut read = [0u8; 64];
+    let Ok(got) = vfs::read(motd, 0, &mut read) else {
+        return false;
+    };
+    if got == 0 || &read[..got] != b"the wizard's os, from memory\n" {
+        return false;
+    }
+
+    // A read from the middle starts where it was told, and stops at the end
+    // rather than at the arena's.
+    let mut window = [0u8; 8];
+    let Ok(partial) = vfs::read(motd, 4, &mut window) else {
+        return false;
+    };
+    if partial != window.len() || window[..] != read[4..12] {
+        return false;
+    }
+    if vfs::read(motd, got as u32, &mut window) != Ok(0) {
+        return false;
+    }
+
+    // Resolve through a directory, which is the walk rather than a lookup.
+    let Ok(vfs::Node::File(nested)) = vfs::resolve(root, b"NOTES/ONE.TXT") else {
+        return false;
+    };
+    let Ok(inside) = vfs::read(nested, 0, &mut read) else {
+        return false;
+    };
+    if &read[..inside] != b"a file in a directory\n" {
+        return false;
+    }
+
+    // **A name that exists in two directories resolves to the right one.** A
+    // lookup that ignored the parent would be correct about every path in a
+    // tree whose names are unique, so this tree's are not (D-172).
+    let Ok(vfs::Node::File(shadowed)) = vfs::resolve(root, b"NOTES/MOTD") else {
+        return false;
+    };
+    let Ok(shadow) = vfs::read(shadowed, 0, &mut read) else {
+        return false;
+    };
+    if &read[..shadow] != b"a different motd\n" {
+        return false;
+    }
+
+    // And enumeration agrees with what resolves.
+    let mut names = 0usize;
+    let mut directories = 0usize;
+    if vfs::enumerate(root, |_, is_directory| {
+        names += 1;
+        if is_directory {
+            directories += 1;
+        }
+        true
+    })
+    .is_err()
+    {
+        return false;
+    }
+
+    // A file walked through is refused here too, which is the rule being the
+    // VFS's rather than FAT's.
+    let through = vfs::resolve(root, b"MOTD/ONE.TXT");
+    names == 2 && directories == 1 && matches!(through, Err(vfs::VfsError::NotADirectory))
+}
+
+/// A device is not a file, and nothing can ask it for bytes.
+///
+/// `012` §7 is emphatic: a devfs entry has no bytes, it is a name that yields a
+/// handle of another type, and forcing it to implement `read_at` is the
+/// "everything is a file" conflation WASI's own README rejects.
+///
+/// **The enforcement is an absence, not a refusal.** `vfs::read` takes a
+/// `File`, and a `Node::Device` is not one — so there is no call to make and no
+/// error to return. What this check can assert is the runtime half: the name
+/// resolves to a device, the listing calls it neither file nor directory, and
+/// a device cannot be walked through (D-172).
+fn a_device_is_not_a_file() -> bool {
+    let root = vfs::dev_root();
+
+    let Ok(vfs::Node::Device(storage)) = vfs::resolve(root, b"storage") else {
+        return false;
+    };
+    if storage.name() != b"storage" {
+        return false;
+    }
+    // Not a file and not a directory: the *node* is a third thing, which is
+    // what makes the distinction structural rather than a flag.
+    if matches!(vfs::resolve(root, b"console"), Ok(vfs::Node::File(_))) {
+        return false;
+    }
+    let Ok(vfs::Node::Device(console)) = vfs::resolve(root, b"console") else {
+        return false;
+    };
+    if console == storage {
+        return false;
+    }
+
+    // Every device is listed, and none of them claims to be a directory.
+    let mut listed = 0usize;
+    let mut any_directory = false;
+    if vfs::enumerate(root, |_, is_directory| {
+        listed += 1;
+        any_directory |= is_directory;
+        true
+    })
+    .is_err()
+    {
+        return false;
+    }
+
+    // A device has nothing inside it, so a path through one is refused for the
+    // same reason a path through a file is.
+    let through = vfs::resolve(root, b"storage/anything");
+    let missing = vfs::resolve(root, b"nothing");
+
+    listed == devfs::DEVICES.len()
+        && !any_directory
+        && matches!(through, Err(vfs::VfsError::NotADirectory))
+        && matches!(missing, Err(vfs::VfsError::NotFound))
+}
+
+/// No backend lets a path escape, and no handle sees another backend's names.
+///
+/// The resolver's invariant is about the *resolver*, not about FAT — so it is
+/// checked on every backend there is. And a directory handle names its own
+/// backend: a tmpfs handle cannot resolve a name that exists only on the
+/// volume, which is what "one namespace per program" means from the inside
+/// (D-171, D-172).
+fn no_backend_lets_a_path_escape_or_cross() -> bool {
+    let escaping: &[&[u8]] = &[b"..", b"../MOTD", b"NOTES/../..", b"./.."];
+    let absolute: &[&[u8]] = &[b"/", b"/MOTD"];
+
+    for root in [vfs::tmp_root(), vfs::dev_root()] {
+        for path in escaping {
+            if !matches!(
+                vfs::resolve(root, path),
+                Err(vfs::VfsError::Path(path_walk::PathError::Escapes))
+            ) {
+                return false;
+            }
+        }
+        for path in absolute {
+            if !matches!(
+                vfs::resolve(root, path),
+                Err(vfs::VfsError::Path(path_walk::PathError::Absolute))
+            ) {
+                return false;
+            }
+        }
+    }
+
+    // Names that exist on one backend and not another. Each of these resolves
+    // from its own root and from nowhere else.
+    let crossings: &[(vfs::Directory, &[u8])] = &[
+        (vfs::tmp_root(), SMALL_NAME),
+        (vfs::tmp_root(), b"storage"),
+        (vfs::dev_root(), b"MOTD"),
+        (vfs::dev_root(), SMALL_NAME),
+    ];
+    for (root, name) in crossings {
+        if !matches!(vfs::resolve(*root, name), Err(vfs::VfsError::NotFound)) {
+            return false;
+        }
+    }
+
+    // And each name does resolve where it belongs, so the refusals above are
+    // about the backend rather than about the name.
+    vfs::resolve(vfs::tmp_root(), b"MOTD").is_ok()
+        && vfs::resolve(vfs::dev_root(), b"storage").is_ok()
+}
+
 /// A path resolves from a directory handle, and only downward.
 ///
 /// The VFS's shape: `lookup` node to node, holding the backend for the walk's
@@ -1328,7 +1516,12 @@ fn a_path_resolves_from_a_directory_handle() -> bool {
     let Ok(vfs::Node::File(small)) = vfs::resolve(root, SMALL_NAME) else {
         return false;
     };
-    let vfs::File::Fat { size, .. } = small;
+    // The variant matters: a FAT file is what a FAT root resolves to, and a
+    // second backend arriving made this a match rather than a binding — which
+    // is the enum dispatch being exhaustive (D-172).
+    let vfs::File::Fat { size, .. } = small else {
+        return false;
+    };
     if size as usize != SMALL_CONTENT.len() {
         return false;
     }
@@ -5646,7 +5839,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 173;
+const EXPECTED_CHECKS: usize = 176;
 
 impl Report {
     const fn new() -> Self {
@@ -5789,6 +5982,15 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a ring announces its shape and keeps its pages",
         a_ring_announces_its_shape_and_keeps_its_pages(),
+    );
+    report.check(
+        "a second backend answers the same three operations",
+        a_second_backend_answers_the_same_three_operations(),
+    );
+    report.check("a device is not a file", a_device_is_not_a_file());
+    report.check(
+        "no backend lets a path escape or cross",
+        no_backend_lets_a_path_escape_or_cross(),
     );
     report.check(
         "a path resolves from a directory handle",
