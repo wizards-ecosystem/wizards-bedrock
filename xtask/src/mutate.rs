@@ -810,6 +810,15 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "the clock's refusal decodes to the one that was recorded",
         reddens: Caught::Check("every refusal the clock can record reads back as itself"),
     },
+    // A run offered from a region that is described but is not memory, which
+    // is the hole the four probes fell into on VMware (D-177).
+    Mutation {
+        file: "wost/src/boot/mod.rs",
+        find: "            .filter(|region| region.kind.is_direct_mapped())",
+        replace: "            .filter(|region| !region.kind.is_direct_mapped())",
+        breaks: "a probed run is memory, not merely described",
+        reddens: Caught::Check("the map offers a run to probe"),
+    },
 ];
 
 /// Apply each mutation, boot, and require something to go red.

@@ -5019,6 +5019,28 @@ fn unmapping_refuses_what_it_does_not_own() -> bool {
 
 /// A mapping cannot be silently re-pointed; an identical rewrite is the one
 /// rewrite allowed, because the direct map's outward rounding produces it.
+/// One page of described memory, the `index`-th of a run the map offers.
+///
+/// The four checks below each named `0x1000` and got away with it on QEMU. On
+/// VMware that page is not memory, so `describe` answered `None`, every one of
+/// them returned `false` from its setup, and four checks that never ran looked
+/// exactly like four properties that failed (D-177).
+fn probe_page(index: u64) -> Option<BootRegion> {
+    let base = mm::first_memory_run(PROBE_PAGES * PAGE_SIZE)?;
+    BootRegion::describe(base.checked_add(index * PAGE_SIZE)?, PAGE_SIZE)
+}
+
+/// How many pages [`probe_page`] hands out, and the run it asks for.
+const PROBE_PAGES: u64 = 2;
+
+/// The map offers the run the probes below are cut from.
+///
+/// Named separately so that a machine which cannot supply one says so once,
+/// rather than reddening every check that wanted a page from it (D-177).
+fn the_map_offers_a_run_to_probe() -> bool {
+    probe_page(0).is_some() && probe_page(PROBE_PAGES - 1).is_some()
+}
+
 fn a_differing_remap_is_refused() -> bool {
     /// Canonical, and far from anything a fresh space would map.
     const PROBE: u64 = 0xffff_8800_0000_0000;
@@ -5026,11 +5048,9 @@ fn a_differing_remap_is_refused() -> bool {
     let Ok(mut space) = AddressSpace::new() else {
         return false;
     };
-    let (Some(here), Some(again_here), Some(elsewhere)) = (
-        BootRegion::describe(PAGE_SIZE, PAGE_SIZE),
-        BootRegion::describe(PAGE_SIZE, PAGE_SIZE),
-        BootRegion::describe(2 * PAGE_SIZE, PAGE_SIZE),
-    ) else {
+    let (Some(here), Some(again_here), Some(elsewhere)) =
+        (probe_page(0), probe_page(0), probe_page(1))
+    else {
         return false;
     };
     let first = space.map_boot(PROBE, here, Flags::NO_EXECUTE);
@@ -5053,7 +5073,7 @@ fn a_boot_mapping_cannot_claim_ownership() -> bool {
     let Ok(mut space) = AddressSpace::new() else {
         return false;
     };
-    let Some(region) = BootRegion::describe(PAGE_SIZE, PAGE_SIZE) else {
+    let Some(region) = probe_page(0) else {
         return false;
     };
     if space
@@ -5086,7 +5106,7 @@ fn a_user_space_cannot_reach_the_kernel_half() -> bool {
     let Ok(mut user) = AddressSpace::for_user() else {
         return false;
     };
-    let Some(region) = BootRegion::describe(PAGE_SIZE, PAGE_SIZE) else {
+    let Some(region) = probe_page(0) else {
         return false;
     };
     let unmapped = user.unmap(KERNEL, PAGE_SIZE);
@@ -5126,10 +5146,7 @@ fn a_user_mapping_cannot_widen_a_supervisor_table() -> bool {
     let Ok(mut space) = AddressSpace::new() else {
         return false;
     };
-    let (Some(first), Some(second)) = (
-        BootRegion::describe(PAGE_SIZE, PAGE_SIZE),
-        BootRegion::describe(2 * PAGE_SIZE, PAGE_SIZE),
-    ) else {
+    let (Some(first), Some(second)) = (probe_page(0), probe_page(1)) else {
         return false;
     };
     if space
@@ -6201,7 +6218,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 181;
+const EXPECTED_CHECKS: usize = 182;
 
 impl Report {
     const fn new() -> Self {
@@ -6649,6 +6666,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "unmapping refuses what it does not own",
         unmapping_refuses_what_it_does_not_own(),
+    );
+    report.check(
+        "the map offers a run to probe",
+        the_map_offers_a_run_to_probe(),
     );
     report.check(
         "a boot mapping cannot claim ownership",

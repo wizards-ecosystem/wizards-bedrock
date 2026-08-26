@@ -287,5 +287,8 @@ mod tests {
         // run any checks discovered (D-176).
         assert!(vmx.contains(r#"nvme0.present = "TRUE""#));
         assert!(vmx.contains(r#"nvme0:0.fileName = "wizard-nvm.vmdk""#));
+        // A PCIe-only controller in a machine with no root ports is refused
+        // before the guest gets a chance to look for it (D-176).
+        assert!(vmx.contains(r#"pciBridge4.virtualDev = "pcieRootPort""#));
     }
 }

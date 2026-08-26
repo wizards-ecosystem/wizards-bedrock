@@ -233,6 +233,16 @@ pub fn map_covers_memory(start: Paddr, end: Paddr) -> bool {
         .is_some_and(|map| map.covers_memory(start, end))
 }
 
+/// Where the boot map covers `len` bytes with memory, or `None` before it is up.
+///
+/// See [`crate::boot::MemoryMap::first_memory_run`] for why a caller asks
+/// rather than names an address (D-177).
+pub fn first_memory_run(len: u64) -> Option<Paddr> {
+    MAP.lock_leaf()
+        .as_ref()
+        .and_then(|map| map.first_memory_run(len))
+}
+
 /// The direct map [`init`] recorded, or `None` before it has run.
 ///
 /// Handed back so callers that already hold a physical address can name the

@@ -9,6 +9,24 @@ numvcpus = "2"
 sata0.present = "TRUE"
 sata0:0.present = "TRUE"
 sata0:0.fileName = "{{VMDK_NAME}}"
+# PCIe root ports. `other-64` gets a bare PCI topology, and VMware's NVMe
+# controller is PCIe-only — with no ports declared there is not one slot to put
+# it in. These are also what `012` §11 predicted the enumeration would have to
+# walk, so the driver's bridge recursion is now reached rather than argued
+# (D-176).
+pciBridge0.present = "TRUE"
+pciBridge4.present = "TRUE"
+pciBridge4.virtualDev = "pcieRootPort"
+pciBridge4.functions = "8"
+pciBridge5.present = "TRUE"
+pciBridge5.virtualDev = "pcieRootPort"
+pciBridge5.functions = "8"
+pciBridge6.present = "TRUE"
+pciBridge6.virtualDev = "pcieRootPort"
+pciBridge6.functions = "8"
+pciBridge7.present = "TRUE"
+pciBridge7.virtualDev = "pcieRootPort"
+pciBridge7.functions = "8"
 # The storage controller Phase 6 drives. `012` §2 chose NVMe because it is the
 # one controller with a published specification that this project's two boot
 # targets share — and a VM without one tests half of that, which is what the

@@ -14,6 +14,7 @@ use pixel::FramebufferLayout;
 pub use pixel::{FramebufferLayoutError, PixelFormat, PixelFormatError, Rgb};
 
 use crate::mmio::MmioRegion;
+use x86_paging::PAGE_SIZE;
 
 /// Bytes in one framebuffer word — the only access width the region supports.
 const WORD: usize = size_of::<u32>();
@@ -437,6 +438,24 @@ impl MemoryMap {
     /// alias of registers rather than a view of RAM (D-105).
     pub fn covers_memory(&self, start: u64, end: u64) -> bool {
         self.covered_by(start, end, |kind| kind.is_direct_mapped())
+    }
+
+    /// Where the map covers `len` bytes with memory, page-aligned and never
+    /// physical zero.
+    ///
+    /// A caller that needs *a* described range should ask the map for one
+    /// rather than name an address that happens to be memory on the machine
+    /// the caller was written on. Four checks named `0x1000`, and on a machine
+    /// whose firmware describes that page differently they did not fail —
+    /// they never ran, and the harness cannot tell those apart (D-177).
+    pub fn first_memory_run(&self, len: u64) -> Option<u64> {
+        self.regions()
+            .filter(|region| region.kind.is_direct_mapped())
+            .find_map(|region| {
+                let end = region.base.checked_add(region.len)?;
+                let base = region.base.max(PAGE_SIZE).next_multiple_of(PAGE_SIZE);
+                (end.checked_sub(base)? >= len).then_some(base)
+            })
     }
 
     fn covered_by(&self, start: u64, end: u64, allowed: impl Fn(MemoryKind) -> bool) -> bool {

@@ -938,10 +938,10 @@ freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 181 |
-| Mutations | 65, each caught by the check it names |
+| Machine checks | 182 |
+| Mutations | 66, each caught by the check it names |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | D-163 … D-176 |
+| Decisions | D-163 … D-177 |
 
 The first two are **checked against the source at every commit**
 (`xtask/src/prose.rs`), because a number restated in prose is a number that can
