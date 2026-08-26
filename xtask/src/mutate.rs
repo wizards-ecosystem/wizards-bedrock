@@ -826,7 +826,7 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x83);",
         replace: "const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);",
         breaks: "the keyboard's identity is the untranslated one",
-        reddens: Caught::Check("the keyboard identifies as one the decoder reads raw"),
+        reddens: Caught::Check("the keyboard identifies as one the decoder knows"),
     },
     // Set 1's code for the key the translated round presses. Green with this
     // applied until the round stopped pressing the same key as the first one

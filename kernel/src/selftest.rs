@@ -6899,25 +6899,33 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "an echo to the keyboard comes back",
         input::echo_roundtrips(),
     );
-    // What it answered, not merely that the answer was wrong: `None` is a
-    // controller that never acknowledged the query and a number is one that
-    // disagrees, and those want different work (D-176).
-    let set = input::scancode_set();
-    if set != Some(2) {
-        warn!("keyboard: reports scancode set {set:?}, not 2");
-    }
-    report.check("the keyboard is speaking scancode set two", set == Some(2));
-
-    // The set query is a claim about the keyboard; this is a claim about the
-    // path the bytes take to reach the decoder, and only the second one is
-    // what the decoder depends on (D-178).
+    // The identity first, because it decides what the set query is worth. What
+    // it answered rather than merely that it disagreed: `None` is a controller
+    // that never acknowledged, and a number is one that answers differently
+    // (D-176).
     let identity = input::identity();
-    if identity != Some(UNTRANSLATED_MF2) {
-        warn!("keyboard: identifies as {identity:?}, not {UNTRANSLATED_MF2:?}");
+    let translated = identity == Some(TRANSLATED_MF2);
+    if !translated && identity != Some(UNTRANSLATED_MF2) {
+        warn!("keyboard: identifies as {identity:?}, which names no known keyboard");
     }
     report.check(
-        "the keyboard identifies as one the decoder reads raw",
-        identity == Some(UNTRANSLATED_MF2),
+        "the keyboard identifies as one the decoder knows",
+        translated || identity == Some(UNTRANSLATED_MF2),
+    );
+
+    // **The set query is only readable when nothing rewrites it.** Behind a
+    // translating controller this reply is translated like every other, so
+    // asserting it would be asserting a fact about the controller's rewriting
+    // rather than about the keyboard — VMware answers `0x41` here. What is a
+    // claim on every machine is that the numbering arriving and the numbering
+    // the decoder reads are the same one (D-178, D-179).
+    let set = input::scancode_set();
+    if !translated && set != Some(2) {
+        warn!("keyboard: reports scancode set {set:?}, not 2");
+    }
+    report.check(
+        "the keyboard's numbering and the decoder's are the same",
+        input::decoder_reads_what_arrives() && (translated || set == Some(2)),
     );
 
     // Set up before the marker, collected after it: the reader has to be
