@@ -594,7 +594,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        self.map_device_with(physical, len, Flags::NO_CACHE)",
-        replace: "        self.map_device_with(physical, len, Flags::empty())",
+        replace: "        self.map_device_with(physical, len, Flags::NONE)",
         breaks: "a device window is uncacheable",
         reddens: Caught::Check("the controller's registers are uncacheable"),
     },
@@ -812,6 +812,7 @@ pub const MUTATIONS: &[Mutation] = &[
 /// this exists.
 pub fn run(paths: &Paths) -> Result<()> {
     let mut survivors = Vec::new();
+    let mut inconclusive = Vec::new();
 
     for (index, mutation) in MUTATIONS.iter().enumerate() {
         let path = paths.root().join(mutation.file);
@@ -843,24 +844,48 @@ pub fn run(paths: &Paths) -> Result<()> {
                 // A build failure is not a survivor: the mutation did not run,
                 // so it proved nothing either way, and reporting it as caught
                 // would be the same lie this task exists to find.
+                //
+                // **Kept apart from the survivors**, because the two want
+                // different work. A survivor is a property nothing checks; a
+                // mutation that will not build is a *defect in the mutation*,
+                // and reading one as the other sends the reader looking for a
+                // missing check that is not missing. The summary used to call
+                // both "survived" and did exactly that (D-175).
                 println!("[xtask]   inconclusive: {error}");
-                survivors.push(mutation);
+                inconclusive.push((mutation, error));
             }
         }
     }
 
-    if survivors.is_empty() {
+    if survivors.is_empty() && inconclusive.is_empty() {
         println!("[xtask] every mutation was caught by the check it names");
         return Ok(());
     }
     for survivor in &survivors {
         println!("[xtask] survived: {} ({})", survivor.breaks, survivor.file);
     }
-    bail!(
-        "{} of {} mutations survived; each is a property nothing checks",
-        survivors.len(),
-        MUTATIONS.len()
-    );
+    for (mutation, error) in &inconclusive {
+        println!(
+            "[xtask] did not build: {} ({}) — {error}",
+            mutation.breaks, mutation.file
+        );
+    }
+
+    match (survivors.len(), inconclusive.len()) {
+        (0, count) => bail!(
+            "{count} of {} mutations would not build; each is a defect in the mutation, \
+             not a missing check",
+            MUTATIONS.len()
+        ),
+        (count, 0) => bail!(
+            "{count} of {} mutations survived; each is a property nothing checks",
+            MUTATIONS.len()
+        ),
+        (survived, unbuilt) => bail!(
+            "{survived} of {} mutations survived and {unbuilt} would not build",
+            MUTATIONS.len()
+        ),
+    }
 }
 
 /// The mutated text, or an error naming why the pattern is no longer usable.

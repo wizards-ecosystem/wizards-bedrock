@@ -685,6 +685,16 @@ the first block's bytes still exactly right. The check went green against that
 mutation. It now clears the buffer and requires the bytes **after** one block to
 still be zero: the extent of a read is only observable past its end.
 
+### One break that was recorded red and was not
+
+*A register file the cache may answer for* was reported red when this slice
+landed, and it was a **build failure**: the break wrote `Flags::empty()`, which
+does not exist, and a boot that does not build produces no pass line — which the
+script read as a failing check. The phase close's mutation sweep found it
+(D-175). The property is verified now, measured at the page-table entry: the
+device window is `0x…0073` normally and `0x…0063` with the mutation, and bit 4
+is exactly `PCD`.
+
 ### What is left for later slices
 
 A read still spins, bounded rather than endless. Slice 9 is where it becomes a

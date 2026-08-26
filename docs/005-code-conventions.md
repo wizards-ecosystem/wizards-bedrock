@@ -318,6 +318,13 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   nearest integer to the ratio" is testable against both neighbours without
   ever mentioning the `+ denominator / 2` that achieves it.
 
+- **A break is only red if the thing that went red is a check.** Absence of a
+  pass is not a failure: a build error, a harness crash, a timeout and a red
+  check all produce no verdict, and only one of them is evidence. A break
+  script that greps for the absence of success is measuring the wrong thing —
+  and a break that cannot run produces the *appearance* of having verified
+  something, which is what does the damage (D-175).
+
 - **A check must reach the code it is about.** Set-up chosen to make a failure
   easy to trigger can make it impossible to *reach*: a full table refuses
   early, a closed channel refuses early, an unmapped page faults early. If the
