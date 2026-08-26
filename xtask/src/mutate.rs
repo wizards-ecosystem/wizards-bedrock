@@ -819,6 +819,15 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a probed run is memory, not merely described",
         reddens: Caught::Check("the map offers a run to probe"),
     },
+    // The identity read as a translating controller would rewrite it, which is
+    // the state the check exists to catch (D-178).
+    Mutation {
+        file: "kernel/src/selftest.rs",
+        find: "const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x83);",
+        replace: "const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);",
+        breaks: "the keyboard's identity is the untranslated one",
+        reddens: Caught::Check("the keyboard identifies as one the decoder reads raw"),
+    },
 ];
 
 /// Apply each mutation, boot, and require something to go red.

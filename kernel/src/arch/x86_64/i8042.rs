@@ -54,6 +54,10 @@ mod device {
     #[cfg(feature = "selftest")]
     pub(super) const ECHO: u8 = 0xEE;
     pub(super) const SET_SCANCODE_SET: u8 = 0xF0;
+    /// Asked for only by the self-test, to tell a translating controller from
+    /// one that merely reports oddly.
+    #[cfg(feature = "selftest")]
+    pub(super) const IDENTIFY: u8 = 0xF2;
     pub(super) const ENABLE_SCANNING: u8 = 0xF4;
     pub(super) const RESET: u8 = 0xFF;
 }
@@ -243,6 +247,26 @@ impl Controller {
             return None;
         }
         self.read_reply(RESPONSE_ATTEMPTS)
+    }
+
+    /// The two bytes the keyboard identifies itself with.
+    ///
+    /// The discriminator this kernel could not otherwise reach without a
+    /// human at the machine: an MF2 keyboard answers `0xAB 0x83`, and the
+    /// same keyboard behind a translating controller answers `0xAB 0x41`,
+    /// because translation rewrites the reply as it rewrites everything else.
+    /// So the pair says whether the bytes the decoder is about to read are the
+    /// set it decodes — a question the configuration byte answers only if the
+    /// controller reports it honestly (D-178).
+    #[cfg(feature = "selftest")]
+    pub(crate) fn identity(&mut self) -> Option<(u8, u8)> {
+        let _ = self.flush();
+        if !self.device_command(device::IDENTIFY) {
+            return None;
+        }
+        let first = self.read_reply(RESPONSE_ATTEMPTS)?;
+        let second = self.read_reply(RESPONSE_ATTEMPTS)?;
+        Some((first, second))
     }
 
     /// Reset the keyboard and wait for its basic assurance test.

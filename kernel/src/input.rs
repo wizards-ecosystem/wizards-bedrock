@@ -345,6 +345,18 @@ pub(crate) fn scancode_set() -> Option<u8> {
         .and_then(|keyboard| keyboard.controller.scancode_set())
 }
 
+/// The two bytes the keyboard identifies itself with.
+///
+/// See [`crate::arch::current::i8042::Controller::identity`]: the pair tells a
+/// translating controller from an honest one (D-178).
+#[cfg(feature = "selftest")]
+pub(crate) fn identity() -> Option<(u8, u8)> {
+    let mut guard = KEYBOARD.lock_leaf();
+    guard
+        .as_mut()
+        .and_then(|keyboard| keyboard.controller.identity())
+}
+
 /// Wait for `key` to arrive through the whole path — controller, decoder —
 /// pressed and then released, in that order.
 ///

@@ -6218,7 +6218,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 182;
+const EXPECTED_CHECKS: usize = 183;
 
 impl Report {
     const fn new() -> Self {
@@ -6907,6 +6907,18 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         warn!("keyboard: reports scancode set {set:?}, not 2");
     }
     report.check("the keyboard is speaking scancode set two", set == Some(2));
+
+    // The set query is a claim about the keyboard; this is a claim about the
+    // path the bytes take to reach the decoder, and only the second one is
+    // what the decoder depends on (D-178).
+    let identity = input::identity();
+    if identity != Some(UNTRANSLATED_MF2) {
+        warn!("keyboard: identifies as {identity:?}, not {UNTRANSLATED_MF2:?}");
+    }
+    report.check(
+        "the keyboard identifies as one the decoder reads raw",
+        identity == Some(UNTRANSLATED_MF2),
+    );
 
     // Set up before the marker, collected after it: the reader has to be
     // blocked before the harness presses anything, or what wakes it is a
@@ -7648,6 +7660,13 @@ fn sleeping_hands_the_cpu_over() -> bool {
 /// translation shim must be off, read back live from the hardware — the
 /// self-test's own reset of this byte is the quirk the driver rewrites it
 /// after, and this is the check that would catch the rewrite going missing.
+/// An MF2 keyboard's identity, as it reads when nothing rewrites it.
+///
+/// Behind a translating controller the same keyboard answers `(0xAB, 0x41)`,
+/// because translation rewrites this reply exactly as it rewrites the
+/// scancodes the decoder is about to read (D-178).
+const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x83);
+
 fn keyboard_config_matches_its_routing() -> bool {
     const FIRST_IRQ: u8 = 1 << 0;
     const SECOND_IRQ: u8 = 1 << 1;
