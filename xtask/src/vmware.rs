@@ -14,6 +14,11 @@ const VMX_TEMPLATE: &str = include_str!("../templates/wizard-os.vmx.in");
 
 const FLAT_NAME: &str = "wizard-os-flat.img";
 const VMDK_NAME: &str = "wizard-os.vmdk";
+
+/// The NVMe namespace's descriptor, and the flat file behind it.
+const NVME_VMDK_NAME: &str = "wizard-nvm.vmdk";
+/// See [`NVME_VMDK_NAME`].
+const NVME_FLAT_NAME: &str = "wizard-nvm-flat.img";
 const VMX_NAME: &str = "wizard-os.vmx";
 const SERIAL_LOG: &str = "serial.log";
 const DISPLAY_NAME: &str = "The Wizard's OS";
@@ -104,11 +109,38 @@ pub fn generate(paths: &Paths, image: &Path) -> Result<()> {
     )?;
     write(&vm_dir.join(VMDK_NAME), &vmdk)?;
 
+    // The namespace Phase 6 reads, built by the same function QEMU's runner
+    // uses so both machines see the same bytes (D-176).
+    let namespace = crate::qemu::nvme_image(paths.root())?;
+    let nvme_flat = vm_dir.join(NVME_FLAT_NAME);
+    std::fs::copy(&namespace, &nvme_flat)
+        .with_context(|| format!("copying {} to {}", namespace.display(), nvme_flat.display()))?;
+    let nvme_bytes = std::fs::metadata(&nvme_flat)
+        .with_context(|| format!("measuring {}", nvme_flat.display()))?
+        .len();
+    let nvme_sectors = nvme_bytes / paths::SECTOR_SIZE;
+    let nvme_geometry = crate::vmware::geometry(nvme_sectors);
+    let nvme_vmdk = render(
+        VMDK_TEMPLATE,
+        &[
+            ("SECTORS", nvme_sectors.to_string()),
+            ("FLAT_NAME", NVME_FLAT_NAME.to_string()),
+            ("CYLINDERS", nvme_geometry.cylinders.to_string()),
+            ("HEADS", nvme_geometry.heads.to_string()),
+            (
+                "SECTORS_PER_TRACK",
+                nvme_geometry.sectors_per_track.to_string(),
+            ),
+        ],
+    )?;
+    write(&vm_dir.join(NVME_VMDK_NAME), &nvme_vmdk)?;
+
     let vmx = render(
         VMX_TEMPLATE,
         &[
             ("DISPLAY_NAME", DISPLAY_NAME.to_string()),
             ("VMDK_NAME", VMDK_NAME.to_string()),
+            ("NVME_VMDK_NAME", NVME_VMDK_NAME.to_string()),
             ("SERIAL_LOG", SERIAL_LOG.to_string()),
         ],
     )?;
@@ -241,6 +273,7 @@ mod tests {
             &[
                 ("DISPLAY_NAME", DISPLAY_NAME.to_string()),
                 ("VMDK_NAME", VMDK_NAME.to_string()),
+                ("NVME_VMDK_NAME", NVME_VMDK_NAME.to_string()),
                 ("SERIAL_LOG", SERIAL_LOG.to_string()),
             ],
         )
@@ -249,5 +282,10 @@ mod tests {
         assert!(vmx.contains(r#"firmware = "efi""#));
         assert!(vmx.contains(r#"serial0.fileName = "serial.log""#));
         assert!(vmx.contains(r#"sata0:0.fileName = "wizard-os.vmdk""#));
+        // The storage controller Phase 6 drives. A VM without one runs the
+        // checks and fails ten of them, which is what the first VMware boot to
+        // run any checks discovered (D-176).
+        assert!(vmx.contains(r#"nvme0.present = "TRUE""#));
+        assert!(vmx.contains(r#"nvme0:0.fileName = "wizard-nvm.vmdk""#));
     }
 }

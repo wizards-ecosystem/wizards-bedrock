@@ -926,7 +926,7 @@ checkable, so it waits for the channel rather than for a convenience.
 
 ## Slice 10 — Phase close
 
-**2026-08-25.** D-174.
+**2026-08-25.** D-174, D-176.
 
 ### What the phase is
 
@@ -941,7 +941,7 @@ freezes the interface it uses.
 | Machine checks | 180 |
 | Mutations | 64, each caught by the check it names |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | D-163 … D-175 |
+| Decisions | D-163 … D-176 |
 
 The first two are **checked against the source at every commit**
 (`xtask/src/prose.rs`), because a number restated in prose is a number that can
@@ -992,6 +992,34 @@ that did not exist.
 
 The rule for next time: **every field a submission carries is a value ring 3
 chose.** `as` is not a conversion at that boundary.
+
+### The VMware boot, which is not yet done
+
+D-18 makes a VMware boot the definition of done, and D-135 said this would be
+the first phase close whose VMware boot runs the checks rather than only
+reaching a prompt. It ran them, and it came back `verdict v1 FAIL passed=117
+failed=63`.
+
+Both causes are recorded in D-176 and both are fixed in the tree; neither was a
+defect in what the phase built.
+
+**The VM had no NVMe controller.** The VMX template has declared a SATA boot
+disk since Phase 2, and nothing added the controller `012` §2 chose the driver
+for. Ten slices were developed against a machine that could satisfy them and
+shipped to one that could not. `cargo xtask vmware` now builds a second VMDK
+over the same namespace image QEMU is given, and a host test reads the template
+for the controller so this cannot revert quietly.
+
+**The clock refused to calibrate and did not say which of six guards refused.**
+About forty checks stand on a running clock, which is most of the remaining
+failures. The warning now names the guard and prints the two rates the window
+measured, believed or not.
+
+**So this phase is closed on the code and open on the boot.** The count above is
+QEMU's. The VMware run that clears it has not happened, and this section says so
+rather than recording a boot that was not got — which is what D-77 forbade, and
+what `012` §11's "VMware's values are unmeasured" already admits about the
+neighbouring number.
 
 ### Carried deliberately
 

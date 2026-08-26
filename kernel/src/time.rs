@@ -120,7 +120,19 @@ impl fmt::Display for TimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::PitUnavailable => f.write_str("the interval timer's ports are already claimed"),
-            Self::Implausible => f.write_str("no believable rate from any measurement"),
+            Self::Implausible => {
+                // **Which guard, and what it saw.** "No believable rate" is
+                // true of six different failures and points at the one they
+                // are least often — a rate out of range — so a reader takes
+                // the wrong turn. The numbers come with it because "which
+                // number was wrong" is the rest of the diagnosis (D-176).
+                let (tsc, apic) = last_measurement();
+                write!(
+                    f,
+                    "no believable rate from any measurement: {} (last window: tsc {tsc} hz, apic {apic} hz)",
+                    Refusal::last()
+                )
+            }
         }
     }
 }
@@ -257,6 +269,86 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
 /// bound, or a rate outside belief — and the caller decides how patient to
 /// be.
 fn measure(pit: &mut Pit) -> Option<Calibration> {
+    match measured(pit) {
+        Ok(calibration) => Some(calibration),
+        Err(why) => {
+            LAST_REFUSAL.store(why as usize, Ordering::Relaxed);
+            None
+        }
+    }
+}
+
+/// Why a window was not trustworthy.
+///
+/// `measure` had six ways to return `None` and said which nowhere. On a machine
+/// whose author can attach a debugger that is a debugger's job; on one they
+/// cannot — which is every machine D-18 makes this project answer to — it is
+/// the difference between an answer and another boot (D-176).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// Nothing has been measured yet.
+    None = 0,
+    /// The crystal's count went backwards, or jumped further than one poll
+    /// should.
+    CrystalStepped = 1,
+    /// The window did not close inside the poll bound: a crystal that is not
+    /// counting looks exactly like this.
+    NeverClosed = 2,
+    /// A counter read backwards across the window.
+    CounterWentBack = 3,
+    /// The window overshot its bound between the loop and the closing reads.
+    Overshot = 4,
+    /// A rate outside what any real part reports.
+    NotBelievable = 5,
+}
+
+impl core::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::None => f.write_str("nothing was measured"),
+            Self::CrystalStepped => f.write_str("the crystal stepped backwards or too far"),
+            Self::NeverClosed => {
+                f.write_str("the window never closed; the crystal may not be counting")
+            }
+            Self::CounterWentBack => f.write_str("a counter read backwards across the window"),
+            Self::Overshot => f.write_str("the window overshot its bound"),
+            Self::NotBelievable => f.write_str("a measured rate is outside belief"),
+        }
+    }
+}
+
+impl Refusal {
+    /// What the last refusal was.
+    pub(crate) fn last() -> Self {
+        match LAST_REFUSAL.load(Ordering::Relaxed) {
+            1 => Self::CrystalStepped,
+            2 => Self::NeverClosed,
+            3 => Self::CounterWentBack,
+            4 => Self::Overshot,
+            5 => Self::NotBelievable,
+            _ => Self::None,
+        }
+    }
+}
+
+/// The last reason a window was refused, for the warning that follows.
+static LAST_REFUSAL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// The numbers the last refused window saw, for a machine that will not say.
+static LAST_APIC_HZ: AtomicU64 = AtomicU64::new(0);
+/// See [`LAST_APIC_HZ`].
+static LAST_TSC_HZ: AtomicU64 = AtomicU64::new(0);
+
+/// What the last refused window measured, whether or not it was believed.
+pub(crate) fn last_measurement() -> (u64, u64) {
+    (
+        LAST_TSC_HZ.load(Ordering::Relaxed),
+        LAST_APIC_HZ.load(Ordering::Relaxed),
+    )
+}
+
+/// One window, saying why rather than only whether.
+fn measured(pit: &mut Pit) -> Result<Calibration, Refusal> {
     // Free-running from the top under a still-masked entry: 32 bits at even
     // 5 GHz is 0.86 s to zero, forty times the window.
     apic::arm_timer(u32::MAX);
@@ -271,7 +363,7 @@ fn measure(pit: &mut Pit) -> Option<Calibration> {
     loop {
         let elapsed = elapsed_ticks(pit_start, pit.count());
         if elapsed < previous || elapsed - previous > MAX_STEP {
-            return None;
+            return Err(Refusal::CrystalStepped);
         }
         previous = elapsed;
         if elapsed >= WINDOW_TICKS {
@@ -279,7 +371,7 @@ fn measure(pit: &mut Pit) -> Option<Calibration> {
         }
         polls += 1;
         if polls >= MAX_POLLS {
-            return None;
+            return Err(Refusal::NeverClosed);
         }
         core::hint::spin_loop();
     }
@@ -290,21 +382,32 @@ fn measure(pit: &mut Pit) -> Option<Calibration> {
 
     // The APIC counts down and the timestamp counter counts up, which is the
     // only difference between the two measurements.
-    let apic_counted = u64::from(apic_start.checked_sub(apic_end)?);
-    let tsc_counted = tsc_end.checked_sub(tsc_start)?;
+    let apic_counted = u64::from(
+        apic_start
+            .checked_sub(apic_end)
+            .ok_or(Refusal::CounterWentBack)?,
+    );
+    let tsc_counted = tsc_end
+        .checked_sub(tsc_start)
+        .ok_or(Refusal::CounterWentBack)?;
     let pit_ticks = elapsed_ticks(pit_start, pit_end);
     // The closing reads sit outside the step guard, so they get the same
     // bound by range: a fold between loop exit and here lands outside it.
     if !(WINDOW_TICKS..=WINDOW_TICKS + MAX_STEP).contains(&pit_ticks) {
-        return None;
+        return Err(Refusal::Overshot);
     }
 
     let apic_hz = calibrate::measured_hz(apic_counted, pit_ticks);
     let tsc_hz = calibrate::measured_hz(tsc_counted, pit_ticks);
+    // Recorded whether or not they are believed, because "which number was
+    // wrong" is the whole of the diagnosis and a refusal that keeps it to
+    // itself costs another boot to learn.
+    LAST_APIC_HZ.store(apic_hz, Ordering::Relaxed);
+    LAST_TSC_HZ.store(tsc_hz, Ordering::Relaxed);
     if !BELIEVABLE_APIC_HZ.contains(&apic_hz) || !BELIEVABLE_TSC_HZ.contains(&tsc_hz) {
-        return None;
+        return Err(Refusal::NotBelievable);
     }
-    Some(Calibration {
+    Ok(Calibration {
         tsc_hz,
         apic_hz,
         invariant: cpu::has_invariant_tsc(),

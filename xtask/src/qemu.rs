@@ -200,7 +200,16 @@ const NVME_BYTES: u64 =
 /// The file is created here rather than by the image builder because it is a
 /// property of the *machine*, not of the disk image: nothing on it is ever
 /// booted, and the kernel writes nothing to it (D-169).
-fn storage(root: &Path) -> Result<Vec<String>> {
+/// Build the namespace's contents, and say where they are.
+///
+/// **Both runners use this.** `012` §2's whole argument for NVMe is that it is
+/// the one controller with a published specification that spans QEMU *and*
+/// VMware, and a controller given only to QEMU tests half of that (D-176).
+///
+/// # Errors
+///
+/// If the file cannot be written, or the corpus cannot be built.
+pub fn nvme_image(root: &Path) -> Result<std::path::PathBuf> {
     let backing = root.join("target").join("nvme.img");
     let sized = std::fs::metadata(&backing).is_ok_and(|found| found.len() == NVME_BYTES);
     if !sized {
@@ -218,6 +227,12 @@ fn storage(root: &Path) -> Result<Vec<String>> {
         std::fs::write(&backing, &content)
             .with_context(|| format!("writing {}", backing.display()))?;
     }
+    Ok(backing)
+}
+
+/// A storage controller for QEMU to find, and the file behind it.
+fn storage(root: &Path) -> Result<Vec<String>> {
+    let backing = nvme_image(root)?;
     Ok(vec![
         "-drive".to_string(),
         format!("if=none,id=wizardnvm,format=raw,file={}", backing.display()),

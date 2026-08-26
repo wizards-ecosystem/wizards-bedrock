@@ -9,6 +9,13 @@ numvcpus = "2"
 sata0.present = "TRUE"
 sata0:0.present = "TRUE"
 sata0:0.fileName = "{{VMDK_NAME}}"
+# The storage controller Phase 6 drives. `012` §2 chose NVMe because it is the
+# one controller with a published specification that this project's two boot
+# targets share — and a VM without one tests half of that, which is what the
+# first VMware boot to run the checks discovered (D-176).
+nvme0.present = "TRUE"
+nvme0:0.present = "TRUE"
+nvme0:0.fileName = "{{NVME_VMDK_NAME}}"
 serial0.present = "TRUE"
 serial0.fileType = "file"
 serial0.fileName = "{{SERIAL_LOG}}"
