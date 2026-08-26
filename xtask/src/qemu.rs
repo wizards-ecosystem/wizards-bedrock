@@ -6,7 +6,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -264,11 +264,19 @@ const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// is a thing you do inside a fix and the table is a different file. This line
 /// and its twin in `kernel/src/selftest.rs` are the two you have to touch
 /// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 183;
+const EXPECTED_SELFTEST_CHECKS: usize = 187;
 
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
 const READY_MARKER: &str = "selftest: awaiting injected keystroke";
+
+/// Line the self-test prints before its second wait, with the controller made
+/// to translate. Kept in step with `kernel/src/selftest.rs`.
+///
+/// Two rounds because the two scancode sets are two code paths, and the second
+/// one had never been exercised on any machine the harness could inject into
+/// (D-179).
+const TRANSLATED_MARKER: &str = "selftest: awaiting translated keystroke";
 
 /// Line the shipped kernel prints once it has finished booting and is doing
 /// the one thing it does. Kept in step with `kernel/src/main.rs`.
@@ -339,6 +347,17 @@ fn parse_failed_check(line: &str) -> Option<&str> {
 /// typed nothing at all, and Enter had no visible effect because the console
 /// drew no cursor. Both are checked on the machine now (D-51).
 const INJECTED_QCODES: &[&str] = &["a", "backspace", "ret"];
+
+/// The second round's keystroke, pressed once the controller is translating.
+///
+/// **`b`, and never `a`.** One key, because the round is about the numbering
+/// the bytes arrive in rather than the editing path the first round covers —
+/// but it has to be a key the first round did not press, or an `a` still
+/// sitting in the queue satisfies the wait and the set 1 tables are never
+/// consulted. Which is what happened: the first version of this round pressed
+/// `a` twice and stayed green with the set 1 code for `a` deliberately
+/// broken (D-155, D-179).
+const TRANSLATED_QCODES: &[&str] = &["b"];
 
 fn parse_selftest_verdict(line: &str) -> Option<Result<SelftestVerdict>> {
     let start = line.find(SELFTEST_VERDICT_PREFIX)?;
@@ -576,16 +595,16 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
         .with_context(|| format!("could not launch {}", emulator.display()))?;
 
     let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
-    let marker_seen = Arc::new(AtomicBool::new(false));
+    let markers_seen = Arc::new(AtomicUsize::new(0));
     let panicked = Arc::new(AtomicBool::new(false));
     let serial_failed = Arc::new(AtomicBool::new(false));
     let forwarder = forward_serial(
         stdout,
-        Arc::clone(&marker_seen),
+        Arc::clone(&markers_seen),
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
     );
-    inject_on_marker(listener, marker_seen);
+    inject_on_marker(listener, markers_seen);
 
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -630,7 +649,7 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
 /// remainder at end-of-stream is forwarded too.
 fn forward_serial(
     stdout: ChildStdout,
-    marker_seen: Arc<AtomicBool>,
+    markers_seen: Arc<AtomicUsize>,
     panicked: Arc<AtomicBool>,
     serial_failed: Arc<AtomicBool>,
 ) -> JoinHandle<Result<SerialObservation>> {
@@ -659,8 +678,8 @@ fn forward_serial(
                 println!("{text}");
             }
             let _ = std::io::stdout().flush();
-            if text.contains(READY_MARKER) {
-                marker_seen.store(true, Ordering::Release);
+            if text.contains(READY_MARKER) || text.contains(TRANSLATED_MARKER) {
+                markers_seen.fetch_add(1, Ordering::Release);
             }
             if text.contains(PANIC_MARKER) {
                 panicked.store(true, Ordering::Release);
@@ -691,18 +710,22 @@ fn finish_selftest_serial(
 /// joined: if QEMU dies without connecting, the accept loop below would spin
 /// until process exit reaps it, and every exit path already has the verdict
 /// by then.
-fn inject_on_marker(listener: TcpListener, marker_seen: Arc<AtomicBool>) {
+fn inject_on_marker(listener: TcpListener, markers_seen: Arc<AtomicUsize>) {
     std::thread::spawn(move || {
         let outcome = accept(&listener).and_then(|mut qmp| {
-            while !marker_seen.load(Ordering::Acquire) {
-                std::thread::sleep(POLL_INTERVAL);
+            for (round, keys) in [(1, INJECTED_QCODES), (2, TRANSLATED_QCODES)] {
+                while markers_seen.load(Ordering::Acquire) < round {
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+                keys.iter().try_for_each(|qcode| qmp.inject_key(qcode))?;
             }
-            INJECTED_QCODES
-                .iter()
-                .try_for_each(|qcode| qmp.inject_key(qcode))
+            Ok(())
         });
         match outcome {
-            Ok(()) => println!("[xtask] qmp: {} keystrokes injected", INJECTED_QCODES.len()),
+            Ok(()) => println!(
+                "[xtask] qmp: {} keystrokes injected across two rounds",
+                INJECTED_QCODES.len() + TRANSLATED_QCODES.len()
+            ),
             Err(reason) => {
                 println!("[xtask] qmp: {reason:#}; the keystroke check will report it");
             }
@@ -1364,6 +1387,13 @@ mod tests {
         assert!(
             selftest.contains(READY_MARKER),
             "the kernel does not print {READY_MARKER:?}"
+        );
+        // Both markers, or the second injection round waits for a line that
+        // never comes and the translated keystroke is red for the harness's
+        // reason rather than the kernel's (D-179).
+        assert!(
+            selftest.contains(TRANSLATED_MARKER),
+            "the kernel does not print {TRANSLATED_MARKER:?}"
         );
         assert!(
             main.contains(SETTLED_MARKER),

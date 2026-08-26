@@ -34,6 +34,7 @@
 mod decode;
 mod event;
 mod key;
+mod set1;
 mod shift;
 mod table;
 pub mod us;

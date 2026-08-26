@@ -828,6 +828,28 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "the keyboard's identity is the untranslated one",
         reddens: Caught::Check("the keyboard identifies as one the decoder reads raw"),
     },
+    // Set 1's code for the key the translated round presses. Green with this
+    // applied until the round stopped pressing the same key as the first one
+    // (D-155, D-179).
+    Mutation {
+        file: "libs/ps2-keys/src/set1.rs",
+        find: "        0x30 => Key::B,",
+        replace: "        0x30 => Key::Pause,",
+        breaks: "set 1's numbering is the specification's",
+        reddens: Caught::Check("a translated keystroke decodes to the same key"),
+    },
+    // The decoder left behind when the controller's numbering changes under
+    // it. Taking the decoder from the *bit* instead of the identity was the
+    // first draft of this mutation and could not be caught: on QEMU the bit
+    // and the identity agree, so only a machine that lies about one would tell
+    // the two apart, and no gate boot does (D-175, D-179).
+    Mutation {
+        file: "kernel/src/input.rs",
+        find: "    keyboard.decoder = decoder_for(&mut keyboard.controller);",
+        replace: "    let _ = &mut keyboard.controller;",
+        breaks: "the decoder is re-derived when translation changes",
+        reddens: Caught::Check("a translated keystroke decodes to the same key"),
+    },
 ];
 
 /// Apply each mutation, boot, and require something to go red.

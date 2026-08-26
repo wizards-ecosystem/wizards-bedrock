@@ -54,9 +54,8 @@ mod device {
     #[cfg(feature = "selftest")]
     pub(super) const ECHO: u8 = 0xEE;
     pub(super) const SET_SCANCODE_SET: u8 = 0xF0;
-    /// Asked for only by the self-test, to tell a translating controller from
-    /// one that merely reports oddly.
-    #[cfg(feature = "selftest")]
+    /// Which the driver reads at bring-up to learn whether its bytes will be
+    /// translated, and the self-test reads again to check the answer.
     pub(super) const IDENTIFY: u8 = 0xF2;
     pub(super) const ENABLE_SCANNING: u8 = 0xF4;
     pub(super) const RESET: u8 = 0xFF;
@@ -76,6 +75,13 @@ mod reply {
 
 /// The set this kernel decodes, as the argument to the selection command.
 const SCANCODE_SET_2: u8 = 0x02;
+
+/// An MF2 keyboard's identity as it reads behind a translating controller.
+///
+/// `(0xAB, 0x83)` is the same keyboard when nothing rewrites the reply. VMware
+/// answers this while reporting its translation bit clear, which is why the
+/// bit is not what the driver asks (D-178).
+pub(crate) const TRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);
 
 /// Selection argument that reads the current set back instead of setting one.
 #[cfg(feature = "selftest")]
@@ -133,6 +139,13 @@ impl core::error::Error for I8042Error {}
 pub(crate) struct Controller {
     data: Port<u8>,
     control: Port<u8>,
+    /// Whether the bytes this delivers are set 1 rather than set 2.
+    ///
+    /// Read from the keyboard's identity at bring-up, not from the
+    /// configuration byte: a controller that translates while reporting the
+    /// bit clear is a real machine, and the identity is the reply it cannot
+    /// answer falsely (D-178, D-179).
+    translated: bool,
 }
 
 impl Controller {
@@ -151,7 +164,11 @@ impl Controller {
         // could never be built again on that boot (D-138).
         let (data, control) =
             port::claim_pair(DATA, CONTROL).ok_or(I8042Error::PortsUnavailable)?;
-        let mut controller = Self { data, control };
+        let mut controller = Self {
+            data,
+            control,
+            translated: false,
+        };
 
         if controller.control.read() == ABSENT_STATUS {
             return Err(I8042Error::NotPresent);
@@ -180,6 +197,10 @@ impl Controller {
             return Err(I8042Error::KeyboardMissing);
         }
         let _ = controller.select_set_2();
+        // Asked before scanning starts, because it is a command and its reply
+        // would otherwise interleave with key data. A controller that will not
+        // answer is taken at the configuration byte's word (D-179).
+        controller.translated = controller.identity() == Some(TRANSLATED_MF2);
         if !controller.device_command(device::ENABLE_SCANNING) {
             return Err(I8042Error::CommandRefused);
         }
@@ -249,6 +270,13 @@ impl Controller {
         self.read_reply(RESPONSE_ATTEMPTS)
     }
 
+    /// Whether the bytes this controller delivers are set 1.
+    ///
+    /// See the field: the identity is the arbiter, not the configuration byte.
+    pub(crate) const fn is_translated(&self) -> bool {
+        self.translated
+    }
+
     /// The two bytes the keyboard identifies itself with.
     ///
     /// The discriminator this kernel could not otherwise reach without a
@@ -258,7 +286,6 @@ impl Controller {
     /// So the pair says whether the bytes the decoder is about to read are the
     /// set it decodes — a question the configuration byte answers only if the
     /// controller reports it honestly (D-178).
-    #[cfg(feature = "selftest")]
     pub(crate) fn identity(&mut self) -> Option<(u8, u8)> {
         let _ = self.flush();
         if !self.device_command(device::IDENTIFY) {
@@ -267,6 +294,27 @@ impl Controller {
         let first = self.read_reply(RESPONSE_ATTEMPTS)?;
         let second = self.read_reply(RESPONSE_ATTEMPTS)?;
         Some((first, second))
+    }
+
+    /// Turn the controller's translation on or off, and report what stuck.
+    ///
+    /// The self-test's only way to reach the set 1 path on a machine where the
+    /// expected key is known: QEMU honours this bit, so turning it on
+    /// reproduces what VMware does unasked, with an injected keystroke whose
+    /// identity the harness chose (D-179).
+    #[cfg(feature = "selftest")]
+    pub(crate) fn set_translation(&mut self, on: bool) -> bool {
+        let _ = self.flush();
+        let Some(current) = self.read_config() else {
+            return false;
+        };
+        let wanted = if on {
+            current | config::TRANSLATE
+        } else {
+            current & !config::TRANSLATE
+        };
+        self.write_config(wanted);
+        self.read_config() == Some(wanted)
     }
 
     /// Reset the keyboard and wait for its basic assurance test.

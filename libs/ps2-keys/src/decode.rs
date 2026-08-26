@@ -10,7 +10,7 @@
 
 use crate::event::{KeyEvent, KeyState};
 use crate::key::Key;
-use crate::table;
+use crate::{set1, table};
 
 /// Bytes the protocol reserves; they never begin a key sequence.
 ///
@@ -62,6 +62,29 @@ const FAKE_SHIFTS: [u8; 2] = [0x12, 0x59];
 /// one key with no break code.
 const PAUSE_SEQUENCE: [u8; 8] = [0xE1, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77];
 
+/// Set 1 encodes a release in the high bit rather than a prefix, so its whole
+/// upper half is break codes and the key is the seven bits below.
+const SET_1_BREAK: u8 = 0x80;
+
+/// The same key, six bytes instead of eight.
+const SET_1_PAUSE_SEQUENCE: [u8; 6] = [0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5];
+
+/// Set 1's fake shifts: `E0 2A`/`E0 36` and their releases.
+const SET_1_FAKE_SHIFTS: [u8; 4] = [0x2A, 0xAA, 0x36, 0xB6];
+
+/// Which numbering the bytes arriving are in.
+///
+/// A controller that translates delivers set 1 whatever the keyboard was told
+/// to speak, and says so only in its identity reply — so the driver picks, and
+/// this is what it picks between (D-179).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Set {
+    /// What the keyboard sends when nothing rewrites it.
+    Two,
+    /// What a translating controller delivers.
+    One,
+}
+
 /// Where the machine stands between bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -77,16 +100,52 @@ enum State {
     Pause(u8),
 }
 
-/// The scancode set 2 decoder.
+/// The scancode decoder, over either set.
 #[derive(Debug)]
 pub struct Decoder {
     state: State,
+    set: Set,
 }
 
 impl Decoder {
-    /// A decoder with nothing in flight.
+    /// A decoder with nothing in flight, reading set 2.
     pub const fn new() -> Self {
-        Self { state: State::Idle }
+        Self {
+            state: State::Idle,
+            set: Set::Two,
+        }
+    }
+
+    /// A decoder reading the set 1 a translating controller delivers.
+    ///
+    /// Not a mode of the same machine: set 1 puts the release in the high bit
+    /// where set 2 uses an `F0` prefix, spells Pause in six bytes rather than
+    /// eight, and numbers every key differently. The layout above it and the
+    /// events below are shared, which is the whole of what the two have in
+    /// common (D-179).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ps2_keys::{Decoder, Key, KeyState};
+    ///
+    /// // `1E` is A pressed in set 1; the same code with the high bit set is
+    /// // A released.
+    /// let mut decoder = Decoder::translated();
+    /// assert_eq!(decoder.feed(0x1E).map(|event| event.key), Some(Key::A));
+    /// let release = decoder.feed(0x9E).expect("the high bit is the break");
+    /// assert_eq!((release.key, release.state), (Key::A, KeyState::Released));
+    /// ```
+    pub const fn translated() -> Self {
+        Self {
+            state: State::Idle,
+            set: Set::One,
+        }
+    }
+
+    /// Whether this decoder reads the set a translating controller delivers.
+    pub const fn reads_translated(&self) -> bool {
+        matches!(self.set, Set::One)
     }
 
     /// Feed one byte; an event comes out when one is complete.
@@ -96,12 +155,68 @@ impl Decoder {
     /// still decodes. Protocol replies are transparent wherever they arrive:
     /// they produce no event and leave an in-flight key sequence intact.
     pub fn feed(&mut self, byte: u8) -> Option<KeyEvent> {
-        if protocol::is_reply(byte) {
+        // **`0xAA` is not a reply in set 1.** It is `0x2A | 0x80`, the release
+        // of the left shift, and swallowing it would leave shift held down for
+        // ever after the first capital letter. The self-test result it collides
+        // with is read by the reset path directly, before scanning is enabled,
+        // so it never reaches a decoder (D-179).
+        let reply = match self.set {
+            Set::Two => protocol::is_reply(byte),
+            Set::One => protocol::is_reply(byte) && byte != protocol::SELF_TEST_PASSED,
+        };
+        if reply {
             return None;
         }
-        let (state, event) = self.transition(byte);
+        let (state, event) = match self.set {
+            Set::Two => self.transition(byte),
+            Set::One => self.transition_set_1(byte),
+        };
         self.state = state;
         event
+    }
+
+    /// One byte of set 1, which encodes its releases in the high bit.
+    fn transition_set_1(&self, byte: u8) -> (State, Option<KeyEvent>) {
+        let code = byte & !SET_1_BREAK;
+        let broke = byte & SET_1_BREAK != 0;
+        let settle = |key: Option<Key>| if broke { released(key) } else { pressed(key) };
+
+        match self.state {
+            State::Idle => match byte {
+                protocol::EXTENDED => (State::Extended, None),
+                protocol::PAUSE => (State::Pause(1), None),
+                _ => (State::Idle, settle(set1::key_for(code))),
+            },
+            State::Extended => {
+                if SET_1_FAKE_SHIFTS.contains(&byte) {
+                    (State::Idle, None)
+                } else {
+                    (State::Idle, settle(set1::extended_key_for(code)))
+                }
+            }
+            State::Pause(matched) => {
+                if byte != SET_1_PAUSE_SEQUENCE[usize::from(matched)] {
+                    return (State::Idle, None);
+                }
+                let matched = matched + 1;
+                if usize::from(matched) == SET_1_PAUSE_SEQUENCE.len() {
+                    (
+                        State::Idle,
+                        Some(KeyEvent {
+                            key: Key::Pause,
+                            state: KeyState::Pressed,
+                        }),
+                    )
+                } else {
+                    (State::Pause(matched), None)
+                }
+            }
+            // Set 1 has no break prefix, so these two cannot be reached from
+            // `transition_set_1` — a decoder never enters them. Resetting is
+            // the same answer the machine gives any byte that fits no
+            // sequence.
+            State::Break | State::ExtendedBreak => (State::Idle, None),
+        }
     }
 
     fn transition(&self, byte: u8) -> (State, Option<KeyEvent>) {
@@ -179,6 +294,100 @@ mod tests {
 
     fn event(key: Key, state: KeyState) -> Option<KeyEvent> {
         Some(KeyEvent { key, state })
+    }
+
+    /// Set 1's release is the high bit, and it is not a prefix.
+    #[test]
+    fn set_1_puts_the_release_in_the_high_bit() {
+        let mut decoder = Decoder::translated();
+        assert_eq!(decoder.feed(0x1E), event(Key::A, KeyState::Pressed));
+        assert_eq!(decoder.feed(0x9E), event(Key::A, KeyState::Released));
+    }
+
+    /// The extended table, both directions, through the same high bit.
+    #[test]
+    fn set_1_extended_codes_decode_either_way() {
+        let mut decoder = Decoder::translated();
+        assert_eq!(
+            decode(&mut decoder, &[0xE0, 0x4B]),
+            event(Key::ArrowLeft, KeyState::Pressed)
+        );
+        assert_eq!(
+            decode(&mut decoder, &[0xE0, 0xCB]),
+            event(Key::ArrowLeft, KeyState::Released)
+        );
+    }
+
+    /// PrintScreen arrives wrapped in shifts nothing pressed, as in set 2.
+    #[test]
+    fn set_1_discards_the_fake_shifts_around_print_screen() {
+        let mut decoder = Decoder::translated();
+        assert_eq!(
+            decode(&mut decoder, &[0xE0, 0x2A, 0xE0, 0x37]),
+            event(Key::PrintScreen, KeyState::Pressed)
+        );
+    }
+
+    /// Six bytes rather than eight, and still no release.
+    #[test]
+    fn set_1_pause_is_six_bytes() {
+        let mut decoder = Decoder::translated();
+        assert_eq!(
+            decode(&mut decoder, &SET_1_PAUSE_SEQUENCE),
+            event(Key::Pause, KeyState::Pressed)
+        );
+    }
+
+    /// **The collision, decided.**
+    ///
+    /// `0xAA` is the self-test result *and* `0x2A | 0x80`, the left shift's
+    /// release. Swallowing it as a reply would leave shift held down for ever
+    /// after the first capital letter — so in set 1 it is a key, and the
+    /// self-test result is read by the reset path before scanning is enabled
+    /// where no decoder can see it (D-179).
+    #[test]
+    fn set_1_reads_aa_as_a_shift_release_not_a_self_test_result() {
+        let mut decoder = Decoder::translated();
+        assert_eq!(decoder.feed(0x2A), event(Key::ShiftLeft, KeyState::Pressed));
+        assert_eq!(
+            decoder.feed(0xAA),
+            event(Key::ShiftLeft, KeyState::Released)
+        );
+
+        // And set 2, where `0xAA` is unambiguous, still swallows it.
+        let mut set_two = Decoder::new();
+        assert_eq!(set_two.feed(protocol::SELF_TEST_PASSED), None);
+    }
+
+    /// The replies that are not ambiguous stay transparent in set 1 too.
+    #[test]
+    fn set_1_still_swallows_the_unambiguous_replies() {
+        let mut decoder = Decoder::translated();
+        for reply in [protocol::ACK, protocol::ECHO, protocol::RESEND] {
+            assert_eq!(decoder.feed(reply), None, "{reply:#04x} is not a key");
+        }
+        // And a key still decodes after them.
+        assert_eq!(decoder.feed(0x1E), event(Key::A, KeyState::Pressed));
+    }
+
+    /// A shift held across a letter types a capital, through the set 1 path.
+    ///
+    /// The end-to-end shape the driver runs: decoder to shift state to layout.
+    /// It is the sequence that would have typed nothing on VMware (D-179).
+    #[test]
+    fn set_1_types_a_capital_through_the_whole_path() {
+        let mut decoder = Decoder::translated();
+        let mut shift = crate::shift::Shift::new();
+        let mut typed = None;
+        for byte in [0x2A, 0x1E, 0x9E, 0xAA] {
+            if let Some(key) = decoder.feed(byte) {
+                shift.observe(key);
+                if key.state == KeyState::Pressed {
+                    typed = typed.or(crate::us::char_for(key.key, shift));
+                }
+            }
+        }
+        assert_eq!(typed, Some('A'));
     }
 
     #[test]

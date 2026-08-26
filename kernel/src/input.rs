@@ -78,12 +78,22 @@ const BATCH: usize = 8;
 pub(crate) fn init() {
     match Controller::new() {
         Ok(controller) => {
+            // The decoder follows the controller rather than the other way
+            // round: what arrives is set 1 wherever translation is on, and the
+            // line says which so a machine that surprises us says so (D-179).
+            let translated = controller.is_translated();
+            let decoder = if translated {
+                Decoder::translated()
+            } else {
+                Decoder::new()
+            };
             *KEYBOARD.lock_leaf() = Some(Keyboard {
                 controller,
-                decoder: Decoder::new(),
+                decoder,
                 shift: Shift::new(),
             });
-            info!("keyboard: up, scancode set 2");
+            let set = if translated { 1 } else { 2 };
+            info!("keyboard: up, reading scancode set {set}");
         }
         Err(reason) => warn!("keyboard: {reason}; running without input"),
     }
@@ -343,6 +353,52 @@ pub(crate) fn scancode_set() -> Option<u8> {
     guard
         .as_mut()
         .and_then(|keyboard| keyboard.controller.scancode_set())
+}
+
+/// The decoder for whatever `controller` is actually delivering.
+#[cfg(feature = "selftest")]
+fn decoder_for(controller: &mut Controller) -> Decoder {
+    if controller.identity() == Some(crate::arch::current::i8042::TRANSLATED_MF2) {
+        Decoder::translated()
+    } else {
+        Decoder::new()
+    }
+}
+
+/// Turn the controller's translation on or off, and swap the decoder with it.
+///
+/// The pair moves together or the driver decodes the wrong set — which is the
+/// bug this whole path exists for, so the self-test cannot be trusted to do
+/// the two steps in the right order by hand (D-179).
+#[cfg(feature = "selftest")]
+pub(crate) fn set_translation(on: bool) -> bool {
+    let mut guard = KEYBOARD.lock_leaf();
+    let Some(keyboard) = guard.as_mut() else {
+        return false;
+    };
+    let stuck = keyboard.controller.set_translation(on);
+    // The decoder follows the *identity*, never the bit that was written: a
+    // controller reporting the bit clear while translating is the machine this
+    // whole path exists for, and writing the bit does not make it honest
+    // (D-178, D-179).
+    keyboard.decoder = decoder_for(&mut keyboard.controller);
+    stuck
+}
+
+/// Whether the decoder in place reads the set the identity says arrives.
+///
+/// The rule as a check: on a controller that answers `0xF2` truthfully and its
+/// configuration byte falsely, only one of the two can be followed, and this
+/// is the assertion that it is the right one.
+#[cfg(feature = "selftest")]
+pub(crate) fn decoder_reads_what_arrives() -> bool {
+    let mut guard = KEYBOARD.lock_leaf();
+    let Some(keyboard) = guard.as_mut() else {
+        return false;
+    };
+    let translated =
+        keyboard.controller.identity() == Some(crate::arch::current::i8042::TRANSLATED_MF2);
+    keyboard.decoder.reads_translated() == translated
 }
 
 /// The two bytes the keyboard identifies itself with.

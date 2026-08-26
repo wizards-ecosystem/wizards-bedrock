@@ -938,10 +938,10 @@ freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 183 |
-| Mutations | 67, each caught by the check it names |
+| Machine checks | 187 |
+| Mutations | 69, each caught by the check it names |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | D-163 … D-178 |
+| Decisions | D-163 … D-179 |
 
 The first two are **checked against the source at every commit**
 (`xtask/src/prose.rs`), because a number restated in prose is a number that can
@@ -1045,12 +1045,21 @@ Two checks on the same boot disagreed, and the one that could not be lied to
 was right. That is D-178's whole argument, established on the machine rather
 than reasoned about.
 
-**Set 1 is not yet decoded.** `libs/ps2-keys` is a set 2 crate by construction
-and says so in its first line. The cheap shape is a byte filter in front of the
-existing decoder — translation is a deterministic map, so its inverse restores
-the stream the tested state machine already handles — and it is not written,
-because the table it needs is a transcription and this project does not land
-tables it cannot check.
+**Set 1 is decoded now** (D-179). Not by untranslating — set 1 spells Pause in
+six bytes where set 2 uses eight, so a byte filter would need the state machine
+it exists to avoid — but by a second table and a second machine, sharing the
+key identities, the shift state and the layout, which is all the two sets have
+in common.
+
+The second transcription pays for itself as a **check on the first**: the two
+sets are different numbers for the same hundred-odd keys, so
+`both_sets_name_the_same_keys` fails if either drops a key, shadows an arm, or
+files one in the wrong half. D-156 resolved a single backslash against two
+sources by hand; the other hundred are now covered by construction.
+
+And the self-test reaches the set 1 path without a human, by making QEMU
+translate — the gate boots with the controller in the state VMware is in
+unasked, and presses a key whose identity the harness chose.
 
 **So this phase is closed on the code and open on the boot.** The count above is
 QEMU's. The VMware run that clears it has not happened: it needs a human at the

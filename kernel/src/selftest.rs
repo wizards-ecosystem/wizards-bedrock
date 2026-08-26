@@ -6218,7 +6218,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 183;
+const EXPECTED_CHECKS: usize = 187;
 
 impl Report {
     const fn new() -> Self {
@@ -6976,6 +6976,41 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         the_editing_keys_move_the_cursor(),
     );
 
+    // **The set 1 path, on a controller made to behave like VMware's.** QEMU
+    // honours the translation bit, so turning it on produces the exact stream
+    // that machine delivers unasked — and here the injected key's identity is
+    // the harness's choice rather than a guess, which is the only way to check
+    // a translated keystroke without a human at the machine (D-179).
+    report.check(
+        "the controller accepts translation being turned on",
+        input::set_translation(true),
+    );
+    report.check(
+        "a translating controller rewrites the identity too",
+        input::identity() == Some(TRANSLATED_MF2),
+    );
+    // Kept in step with TRANSLATED_MARKER in `xtask/src/qemu.rs`, and subject
+    // to the same rule as the first: nothing may talk to the keyboard between
+    // the marker and the wait.
+    info!("selftest: awaiting translated keystroke");
+    // `B`, not `A`: the first round pressed `A`, and a wait that a stale event
+    // can satisfy is a wait that never reads the table it is about. This check
+    // was green with set 1's code for `A` deliberately wrong until the key
+    // changed (D-155, D-165).
+    report.check(
+        "a translated keystroke decodes to the same key",
+        input::await_key(ps2_keys::Key::B),
+    );
+    // Turned back off, and the decoder re-derived from what the machine
+    // actually does rather than from what was written — which on a machine
+    // that translates regardless leaves the translated decoder in place, and
+    // is the whole of D-178's rule as a check.
+    let restored = input::set_translation(false);
+    report.check(
+        "the decoder reads the set that arrives, not the bit that was written",
+        restored && input::decoder_reads_what_arrives(),
+    );
+
     // Last of the timed checks, because it scrolls the console to the bottom
     // eight times and every check above wants its own output legible.
     report.check(
@@ -7666,6 +7701,9 @@ fn sleeping_hands_the_cpu_over() -> bool {
 /// because translation rewrites this reply exactly as it rewrites the
 /// scancodes the decoder is about to read (D-178).
 const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x83);
+
+/// The same keyboard, behind a controller that translates.
+const TRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);
 
 fn keyboard_config_matches_its_routing() -> bool {
     const FIRST_IRQ: u8 = 1 << 0;
