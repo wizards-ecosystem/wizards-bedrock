@@ -199,6 +199,10 @@ completions and bootstrap protocols; it does not decide whether Wizzy's first
 execution engine is bytecode or AOT. Phase 7 product implementation is stopped
 until `015-wizzy-userland.md`'s compiler-readiness gate opens.
 
+D-184's `016-pre-wizzy-foundation.md` is the finite register of kernel,
+qualification and handoff work allowed while that gate is closed. It does not
+pull the product interfaces below into the pre-gate foundation.
+
 Narrow audited runtime/ABI glue that Wizzy cannot yet express, host build and
 test tooling, third-party libraries and ports, POSIX compatibility code and
 foreign-format runtimes are implementation substrate or compatibility, not

@@ -951,20 +951,22 @@ rather than for a convenience.
 ### What the phase is
 
 A ring operation resolves a path from a directory handle, gets back a file
-handle carrying derived, non-escalating authority, and reads bytes off a real
-NVMe controller into a page it shares with the caller. Every part of that
+handle carrying derived, non-escalating authority, and reads bytes through the
+NVMe device interface into a page it shares with the caller. QEMU and VMware
+exercise virtual controllers; real hardware remains Phase 12. Every part of that
 sentence was built by a different slice, and the order was forced: the ABI
 first, because a caller freezes the interface it uses.
 
 | | |
 |---|---|
 | Machine checks | 189 |
-| Mutations | 77, each caught by the check it names |
+| Mutations | 77 registered; 64 in the last recorded full sweep, with 13 later entries broken individually |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
 | Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181 and D-182 |
 
-The first two are **checked against the source at every commit**
-(`xtask/src/prose.rs`), because a number restated in prose is a number that can
+The two counts are **checked against the source at every commit**
+(`xtask/src/prose.rs`), but that proves registration rather than a current full
+sweep. D-184's register carries the 77-entry run. A number restated in prose can
 disagree with itself — which the per-slice lines above did, in seven places, and
 which is why they now say what the gate said rather than what was expected of
 it (D-175). The host-test count is deliberately absent: it changes with every

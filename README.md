@@ -11,6 +11,10 @@ Wizzy once its compiler-readiness gate opens. Phase 7 product userland stops at
 that gate; boundary probes, ABI/platform preparation, and a narrow audited
 runtime shim may make it ready. Host tooling, third-party libraries and ports,
 and compatibility runtimes keep their appropriate languages.
+The finite work still permitted before that gate is the D-184
+[pre-Wizzy foundation register](docs/016-pre-wizzy-foundation.md); it separates
+confirmed kernel defects and missing qualification evidence from trigger-only
+and post-gate product work.
 Multi-year project; destination: a full userspace with our own compositor,
 a ported Python, and NetSurf rendering the document web (D-75).
 See [docs/002-architecture.md](docs/002-architecture.md).

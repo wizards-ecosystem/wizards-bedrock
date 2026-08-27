@@ -16,6 +16,11 @@ correctness, a language-neutral prerequisite with a concrete future Wizzy
 caller, integration specification/scaffolding for the compiler artifact, or
 work in `wizards-ink` that advances the gate.
 
+D-184 makes [docs/016-pre-wizzy-foundation.md](docs/016-pre-wizzy-foundation.md)
+the sole finite OS-side backlog while that gate is closed. Every new item needs
+the defect, invariant, proof gap, handoff consumer or trigger the register
+requires; `TRIGGER` and post-gate rows are stopped work, not invitations.
+
 **Read [docs/005-code-conventions.md](docs/005-code-conventions.md) before
 writing code.** It is the authority on crate boundaries, naming, error
 handling, testing, and the comment policy. Three things from it that are easy

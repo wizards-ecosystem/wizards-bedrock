@@ -235,13 +235,14 @@ mod tests {
     /// Current-facing plans cannot quietly turn D-183 back into an experiment.
     #[test]
     fn wizzy_is_the_first_party_target_and_its_compiler_gate_is_closed() {
-        const CURRENT_PLANS: [&str; 6] = [
+        const CURRENT_PLANS: [&str; 7] = [
             "AGENTS.md",
             "README.md",
             "docs/000-vision.md",
             "docs/002-architecture.md",
             "docs/013-application-platform.md",
             "docs/015-wizzy-userland.md",
+            "docs/016-pre-wizzy-foundation.md",
         ];
         const RETIRED_WORDING: [&str; 5] = [
             "provisionally Wizzy",
@@ -283,6 +284,89 @@ mod tests {
                     "{path} restores D-180's retired `{retired}` language-selection wording"
                 );
             }
+        }
+    }
+
+    /// Closed-gate work is a finite register, not an unbounded polish label.
+    #[test]
+    fn the_pre_wizzy_register_is_finite_and_evidence_bound() {
+        const STATES: [&str; 8] = [
+            "REQUIRED",
+            "READY",
+            "VERIFY",
+            "DECIDE",
+            "WIZZY",
+            "TRIGGER",
+            "DONE",
+            "SUPERSEDED",
+        ];
+        const PRIORITIES: [&str; 5] = ["P0", "P1", "P2", "GATE", "WHEN-TRIGGERED"];
+
+        let root = root();
+        let register = std::fs::read_to_string(root.join("docs/016-pre-wizzy-foundation.md"))
+            .expect("016-pre-wizzy-foundation.md");
+        let (_, body) = register
+            .split_once("<!-- PRE-WIZZY-REGISTER:START -->")
+            .expect("pre-Wizzy register start marker");
+        let (body, _) = body
+            .split_once("<!-- PRE-WIZZY-REGISTER:END -->")
+            .expect("pre-Wizzy register end marker");
+        let mut ids = BTreeSet::new();
+        let mut rows = 0usize;
+
+        for line in body.lines().filter(|line| {
+            let line = line.trim_start();
+            line.starts_with("| PW-") || line.starts_with("| WZ-")
+        }) {
+            let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+            assert_eq!(cells.len(), 6, "register row has the wrong shape: {line}");
+            assert!(ids.insert(cells[0]), "duplicate register ID `{}`", cells[0]);
+            assert!(STATES.contains(&cells[1]), "unknown state in {line}");
+            assert!(PRIORITIES.contains(&cells[2]), "unknown priority in {line}");
+            assert!(
+                cells[3].len() > 35,
+                "{} has no substantive reason",
+                cells[0]
+            );
+            assert!(
+                cells[4].len() > 25,
+                "{} has no finite deliverable",
+                cells[0]
+            );
+            assert!(cells[5].len() > 35, "{} has no close evidence", cells[0]);
+            rows += 1;
+        }
+
+        assert!(rows >= 40, "the register scan found only {rows} rows");
+        for required in ["PW-001", "PW-100", "PW-200", "PW-300", "WZ-001"] {
+            assert!(
+                ids.contains(required),
+                "the register lost anchor {required}"
+            );
+        }
+        assert!(
+            register.contains("D-184"),
+            "the register does not name its decision"
+        );
+
+        for path in [
+            "AGENTS.md",
+            "README.md",
+            "docs/000-vision.md",
+            "docs/002-architecture.md",
+            "docs/013-application-platform.md",
+            "docs/015-wizzy-userland.md",
+        ] {
+            let document =
+                std::fs::read_to_string(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+            assert!(
+                document.contains("D-184"),
+                "{path} does not point at the finite register"
+            );
+            assert!(
+                document.contains("016-pre-wizzy-foundation.md"),
+                "{path} does not point at the finite register document"
+            );
         }
     }
 

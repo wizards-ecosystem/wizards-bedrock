@@ -11,6 +11,11 @@ emit an AOT ELF. That uncertainty does not reopen the source-language choice.
 Nor does it justify building a permanent Rust `init`, shell or tool set while
 the compiler catches up.
 
+D-184 makes `016-pre-wizzy-foundation.md` the finite handoff for everything the
+OS repository may still do before this gate opens. It records the kernel
+correctness and qualification work, the compiler-repository work, and the
+trigger-only/post-gate boundary; it does not change the language choice here.
+
 The language implementation is
 [`limbwizard/wizards-ink`](https://github.com/limbwizard/wizards-ink). Its
 tracked `docs/os-userland.md`, `docs/design/authority.md`, and `ROADMAP.md` are
@@ -199,11 +204,11 @@ checkout.
 
 ## Entry gates
 
-Phase 6 is code-complete but not closed under D-18. The interactive keyboard
-checks recorded in `014-storage.md` still require a person at the machine.
-That human run and its dated result come before Phase 7 implementation. Writing
-this design while the run is open is harmless; claiming the next phase has
-started is not.
+Phase 6's planned slices are complete but the phase is not closed under D-18
+or D-184. The current interactive VMware run, full mutation sweep and audited
+kernel-foundation rows are recorded in `016-pre-wizzy-foundation.md`. Those
+results come before Phase 7 implementation. Writing this design while they are
+open is harmless; claiming the next phase has started is not.
 
 D-183 adds the second entry gate: the compiler-readiness table above must read
 **OPEN** under a decision that records the evidence. Closing Phase 6 does not

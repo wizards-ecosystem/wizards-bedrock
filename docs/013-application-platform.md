@@ -44,6 +44,10 @@ them is Wizzy. Until `015-wizzy-userland.md`'s compiler-readiness gate opens,
 new platform work must name a concrete future Wizzy caller rather than grow a
 parallel Rust userland.
 
+D-184 and `016-pre-wizzy-foundation.md` hold the finite closed-gate work
+register. A `TRIGGER` or post-gate row there remains stopped even when this
+historical charter describes the eventual platform need.
+
 ## What earlier phases left owing
 
 | Debt | Where recorded | What 6.5 does |
