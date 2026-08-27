@@ -1,14 +1,16 @@
 # 013 — The application platform (Phase 6, slices 1–3)
 
-What a program is allowed to ask for, decided before the first thing that
-waits is written.
+What a program is allowed to ask for, decided before the first deferred ring
+operation was written.
 
 Phase 5 fixed two interfaces this project will live with longer than any other
 — the handle table and the queue ABI — and said so at the time: both are the
 kind that get frozen by their first caller. The caller Phase 5 gave them echoes
-a word back. Phase 6 gives them the first caller that **waits**, and the first
-whose whole purpose is to hand back **authority**. Those are different callers,
-and the interface they freeze is not the interface two opcodes froze.
+a word back. Phase 6 eventually supplied three distinct pressures: Timer was
+the first deferred operation and proved ring wait; Duplicate first proved a
+completion could carry authority, with OpenAt as the motivating namespace
+caller; Read was the first storage/data caller. The interface they froze is
+not the interface the then-two-opcode ring had frozen.
 
 This file exists so that the freezing is a decision rather than a side effect.
 It is a charter per D-19, written before its code, and it is deliberately
@@ -17,10 +19,11 @@ that costs a paragraph now and a migration later.
 
 **It is not a phase of its own, and no longer claims to be.** It was drafted
 as "Phase 6.5", to run after the filesystem. That ordering was rejected
-(D-149): a VFS is the first subsystem this kernel has with genuinely blocking
-operations, so building it first and extending the ABI afterwards leaves
-`read()` with a synchronous door and a ring door for ever. These become
-**Phase 6's first three slices**, and the filesystem is built on them.
+(D-149): storage is the first external-I/O subsystem that eventually needs
+blocking service, so building it first and extending the ABI afterwards would
+leave `read()` with two doors. Timer proved the deferred/wait contract before
+the polled storage implementation arrived; the filesystem then became its
+first storage consumer. These became **Phase 6's first three slices**.
 
 Nothing here is a subsystem and no boot closes it. What closes it is that the
 VFS slices open against an interface nobody has to re-cut.
@@ -42,7 +45,7 @@ format; Linux's vDSO `clock_gettime`.
 | No completion carries a handle, so the ring cannot be the delegation path the channels are | `011` close | Pays it, in the phase whose first operation produces one |
 | The program's stack is the boot-time arena, so sixteen is a cap on concurrency | D-117; `011` close | **Not here.** Named so nobody mistakes it: it is Phase 7's, and a shell reaches it immediately |
 | `xtask/src/elf.rs` transcribes the ELF header rather than using `libs/elf64` | D-105; `011` close | **Not here**, but the note reservation below is the second caller that makes the duplication cost something |
-| A program receives exactly one handle at spawn and must negotiate the rest | D-111 | Reserves the mechanism that would let a spawner grant before the first instruction; does not build it |
+| A program receives exactly one handle at spawn and must negotiate the rest | D-111 | Reserves metadata that lets a spawner decide and enqueue bootstrap grants before the first instruction; does not build delivery |
 
 ## The principle
 
@@ -61,10 +64,10 @@ io_uring is the prior art and also the warning. Its model is right and the
 industry moved to it; its *implementation* accumulated enough exploitable bugs
 that Google disabled it by default in Android and ChromeOS in 2023. The
 difference is opcode sprawl, kernel worker threads, and revalidation of shared
-memory — three things a two-opcode ring with no worker threads does not have,
-and the last of which Phase 5 already refuses by construction (`queue.rs`: the
-copy is what is used, and a second read would be the double fetch the design
-refuses).
+memory — three things the then-two-opcode ring did not have. The current ring
+has seven opcodes and still no worker pool; Phase 5 already refused the last by
+construction (`queue.rs`: the copy is what is used, and a second read would be
+the double fetch the design refuses).
 
 ## Three constraints on Phase 6
 
@@ -73,19 +76,21 @@ cheaper to state now than to discover once the VFS has callers.
 
 ### C-1 — No blocking-only door
 
-Every operation that can wait has a ring form. Operations that cannot wait —
-the clock, `exit`, `tcb_set` — may stay direct, and forcing them through a ring
-would be overhead for nothing.
+Every operation that can wait has a ring form. Operations that cannot wait may
+stay direct. At adoption the examples were the clock, `exit` and `tcb_set`;
+D-166 later made the clock a page load, while Exit and TcbSet remain direct.
 
-File reads are the first genuinely blocking operations this OS will have, which
-is why the rule lands in Phase 6 rather than Phase 5. The rule is easy to hold
-when there is one blocking operation and hard when there are five.
+Storage supplied the first external-device operation that must eventually
+defer rather than poll inside `RingEnter`, which is why the rule landed before
+its VFS. Timer became the actual first deferred operation and proved the wait
+contract. The current polled Read has the right ring shape but has not yet paid
+the asynchronous device-service half.
 
 ### C-2 — A completion may carry a handle
 
 Recorded as a debt at Phase 5's close; Phase 6 is where it stops being
-theoretical, because `open` is the first operation whose entire purpose is to
-produce authority.
+theoretical. Duplicate was the first implementation and proof; OpenAt is the
+namespace operation whose useful result is newly derived authority.
 
 Without it there are two delegation mechanisms with different powers: channels
 can move a handle and the ring cannot, so every authority-producing operation
@@ -102,12 +107,14 @@ the ordinary case rather than an extension.
 Every name resolves from a directory handle the program was given. No global
 root appears, in Phase 6 or later.
 
-This is already the design — pillar 1, and `userland/README.md` records the
-finding that `sys_open` is ABSENT because there is no namespace to name a path
-in. The constraint is written here because a VFS is exactly where a root grows
-out of convenience, and because the alternative is settled elsewhere: Capsicum
-reached openat-only in 2010, and WASI's preopened directories and Fuchsia's
-per-process namespaces arrived at the same answer independently.
+This is already the design — pillar 1. Native OpenAt now exists, so D-181
+records `sys_open` as PARTIAL rather than absent: ring 3 still cannot receive
+the first delegated directory, and a POSIX root and current directory may be
+constructed only from directory handles the process was delegated. The constraint is written
+here because a VFS is exactly where an ambient root grows out of convenience,
+and because the alternative is settled elsewhere: Capsicum reached openat-only
+in 2010, and WASI's preopened directories and Fuchsia's per-process namespaces
+arrived at the same answer independently.
 
 The cost is known and already measured rather than estimated: a libc built on
 this cannot serve `open("/etc/foo")` to a process nobody gave a root to. That
@@ -117,10 +124,11 @@ is the point rather than a defect.
 
 ### W-1 — Completions carry handles
 
-C-2, implemented. The rights question is the interesting half: a handle
-arriving through a completion must attenuate the way a handle arriving through
-a channel does (D-110), or the ring becomes the widening path around the
-discipline the channels enforce.
+C-2, implemented. The rights question is the interesting half. Same-object
+Duplicate must attenuate the way channel transfer does (D-110). A cross-type
+producer may instead derive only a type-specific right authorised by its source
+operation while preserving no universal right the source lacked; OpenAt's
+`TRAVERSE`-to-`READ` rule is the worked case (D-173, D-181).
 
 ### W-2 — Time is read, not asked for
 
@@ -134,17 +142,18 @@ syscall path, kernel-enforced, which is a hardening result worth wanting later
 even if not now.
 
 It also settles a question that is otherwise settled by accident. A clock
-reachable by any program without a handle is **ambient authority**, and this
-system otherwise has none. WASI treats wall-clock and monotonic time as
-separate capabilities; Zircon treats monotonic time as ambient. Both are
-defensible. What is not defensible is arriving at one of them because a door
-was easier to write than a page.
+reachable by any program without a handle is an **ambient facility**. It grants
+no external-object authority, but it does affect determinism. WASI treats
+wall-clock and monotonic time as separate capabilities; Zircon treats
+monotonic time as ambient. Both are defensible. What is not defensible is
+arriving at one of them because a door was easier to write than a page.
 
 ### W-3 — What happens to operations in flight
 
-An exit with outstanding operations is currently unspecified, and it touches
-reclamation directly (D-117): a completion that lands for a slot already
-collected is the shape of the bug.
+This was unspecified when these application constraints were written, and it
+touches reclamation directly (D-117). D-153 and D-167 now require retirement to
+finish each in-flight operation with a terminal completion while the zombie
+still owns the ring, quiet the queue, and only then reclaim it.
 
 io_uring needed `IORING_OP_ASYNC_CANCEL` and retrofitting it was painful. The
 decision here is narrower than a general cancel opcode — what a *retiring*
@@ -157,9 +166,12 @@ segment that is not `PT_LOAD`. So a vendor note namespace costs no code: name
 it, define how a note is laid out, and nothing else claims the space.
 
 What it would eventually carry is what a program *requires* — so a spawner can
-grant before the first instruction rather than after a handshake over the
-bootstrap channel (D-111). Authority granted before a program runs can be
-inspected; authority negotiated afterwards cannot.
+decide and enqueue a grant message before the first instruction rather than
+discovering requirements through a handshake. The program is still born with
+one endpoint and receives each bootstrap grant through that channel; later
+local derivation remains handle-authorized (D-111, D-151). Routing decided
+before a program runs can be inspected; authority negotiated
+from unstated requirements afterwards cannot.
 
 **The placement is a real fork and this phase does not close it.** Every modern
 system that does this put the declaration in the *package* rather than the
@@ -202,14 +214,15 @@ consequence.
 - **C-1**: a program with more operations outstanding than it has threads
   completes all of them. One kernel thread, several outstanding — which is the
   property the constraint exists for, stated so it can go red.
-- **C-2 / W-1**: a handle arriving by completion holds *fewer* rights than the
-  sender's when the send attenuates, checked the way D-110 checks the channel
-  path. Same invariant, second door.
-- **W-2**: the time page is read by a program that makes no syscall, and it
-  advances. And it is not writable — a mutation that maps it writable must go
-  red.
-- **W-3**: a program retires with an operation outstanding and the completion
-  lands nowhere, with the frame count steady across the collection D-117 built.
+- **C-2 / W-1**: Duplicate cannot exceed the rights offered, checked the way
+  D-110 checks channel transfer. OpenAt separately proves that cross-type
+  `READ` derivation never restores a universal right the directory lacked.
+- **W-2**: the page is mapped user-readable and nonwritable, and the
+  kernel-side reader advances and agrees with the kernel clock. Compiled ring-3
+  reader evidence remains Phase 7 work under D-181.
+- **W-3**: a program retires with operations outstanding; each receives its
+  terminal completion before ring reclamation, and the frame count stays steady
+  across the collection D-117 built.
 
 Per D-28 every one of these is broken once and watched to fail, and per
 `AGENTS.md` each gets a mutation so it cannot quietly stop being able to.
@@ -219,9 +232,9 @@ Per D-28 every one of these is broken once and watched to fail, and per
 - **The ambient-authority question is settled only for time.** Randomness is
   the same question and this phase does not answer it, because nothing needs
   randomness before Phase 8.
-- **No general cancel.** W-3 covers a retiring program only. A running program
-  that wants to withdraw an operation it posted is Phase 7's problem, and
-  giving it an opcode now would be an opcode with no caller.
+- ~~**No general cancel.**~~ Closed by D-164 in Phase 6: a running program may
+  submit `Opcode::Cancel` against an in-flight token, with a separate terminal
+  completion for both the cancel and its target.
 - **The note namespace is reserved and empty.** Nothing reads it, nothing
   writes it, and the placement fork is open. That is the intended state.
 - **Zircon's vDSO enforcement is not adopted.** W-2 maps a page; it does not

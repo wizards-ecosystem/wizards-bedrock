@@ -1,9 +1,10 @@
 //! The handle table: one global arena, and who owns which slot.
 //!
-//! A process's power is exactly its handle table (`002` pillar 1), so this is
-//! where authority is kept. D-78 settled the shape and `libs/handle-space` owns
-//! the arithmetic; what is here is the arena, the lock, and the ownership
-//! comparison that turns a decoded slot into a permission.
+//! A process's external-object authority is exactly its handle table (`002`
+//! pillar 1), so this is where handle-carried authority is kept. D-78 settled
+//! the shape and `libs/handle-space` owns the arithmetic; what is here is the
+//! arena, the lock, and the ownership comparison that turns a decoded slot
+//! into a permission.
 //!
 //! **One arena, not one array per table.** Zircon has no per-process handle
 //! array, and two independent lines of reasoning arrive at copying that: the
@@ -54,8 +55,10 @@ pub(crate) enum HandleError {
     Meaningless,
     /// This table has as many handles as its quota allows.
     QuotaExhausted,
-    /// The arena is full.
+    /// Committing this table's quota would exceed the arena's maximum.
     ArenaFull,
+    /// The arena could not allocate backing for this table's quota.
+    OutOfMemory,
 }
 
 impl core::fmt::Display for HandleError {
@@ -68,6 +71,7 @@ impl core::fmt::Display for HandleError {
             Self::Meaningless => "right means nothing for this object type",
             Self::QuotaExhausted => "handle quota exhausted",
             Self::ArenaFull => "the handle arena is full",
+            Self::OutOfMemory => "no memory for the handle arena",
         })
     }
 }
@@ -100,6 +104,8 @@ struct Arena {
     /// Where the next search starts. Deliberately not "lowest free": the
     /// encoding forbids a dense promise and so does this (D-70 rule 7).
     hint: usize,
+    /// Sum of every live table's quota, never greater than `slots.capacity()`.
+    committed: usize,
 }
 
 impl Arena {
@@ -107,11 +113,11 @@ impl Arena {
         Self {
             slots: Vec::new(),
             hint: 0,
+            committed: 0,
         }
     }
 
-    /// Take a free slot **and fill it**, growing the arena if every existing
-    /// one is busy.
+    /// Take a free slot **and fill it** without allocating.
     ///
     /// One call, under one guard, and that is the whole of the fix. `take`
     /// used to find a slot and return its index without marking it, and
@@ -123,17 +129,19 @@ impl Arena {
     /// and then `THREADS`, which is the lock-under-a-leaf class D-121, D-126
     /// and D-128 exist for (D-141).
     ///
-    /// The room must already have been reserved: growing allocates, and
-    /// allocating under this guard is the `ARENA → HEAP` order D-128 removed.
-    fn claim(&mut self, entry: Entry) -> Option<(usize, u32)> {
-        let index = self.find_free()?;
+    /// The room was committed when the table was constructed: growing here
+    /// would allocate in trap context and under the `ARENA` leaf (D-182).
+    fn claim(&mut self, entry: Entry) -> Result<(usize, u32), Entry> {
+        let Some(index) = self.find_free() else {
+            return Err(entry);
+        };
         let slot = &mut self.slots[index];
         let generation = slot.generation;
         slot.entry = Some(entry);
-        Some((index, generation))
+        Ok((index, generation))
     }
 
-    /// A free slot's index, growing the arena if every existing one is busy.
+    /// A free slot's index, extending only into already allocated capacity.
     fn find_free(&mut self) -> Option<usize> {
         let count = self.slots.len();
         for step in 0..count {
@@ -144,9 +152,9 @@ impl Arena {
             }
         }
         if count >= SLOTS as usize || count == self.slots.capacity() {
-            // Growing means allocating, and allocating under this guard would
-            // nest `ARENA → HEAP → FRAMES` — the order D-85 deleted (D-95).
-            // The caller reserves outside the lock and comes back.
+            // Reaching this after a quota charge violates the commitment
+            // invariant; the entry is returned so it can drop outside the
+            // leaf rather than making the invariant failure a lock inversion.
             return None;
         }
         self.slots.push(ArenaSlot {
@@ -159,60 +167,86 @@ impl Arena {
 
 static ARENA: SpinLock<Arena> = SpinLock::new(Arena::new());
 
-/// Make sure the arena has room for one more slot, allocating outside its lock.
+/// Commit backing for a table's entire quota before the table is reachable.
 ///
-/// The whole reason this is a separate step: `Vec` growth calls the allocator,
-/// which takes `HEAP` and possibly `FRAMES`, and doing that under `ARENA`'s
-/// guard would rebuild the very lock order D-85 deleted. Reserving first costs
-/// a second acquisition and keeps every one of them a leaf (D-95).
+/// Ring operations run in trap context, where the allocator correctly refuses
+/// re-entry. Charging the whole quota here makes every later insertion
+/// allocation-free: arena capacity is at least the sum of live table quotas,
+/// which is at least the live handles and promised slots (D-182).
 ///
-/// **Growing is two allocator operations, not one**, and only the first was
-/// moved out. The handover used to be `arena.slots = grown`, and that
-/// assignment drops the vector it replaces — which after `append` still owns
-/// its buffer, so the free was a `HEAP` acquisition under this guard. Latent
-/// rather than harmless: the first growth hands back a vector with no
-/// allocation behind it, so nothing was reached until a boot held sixteen
-/// handles at once and none did (D-128).
+/// Construction can race construction. A candidate buffer is allocated with
+/// no lock held, then the required commitment is re-read. Whichever buffer is
+/// not retained is freed only after the leaf guard has gone.
 ///
 /// # Errors
 ///
-/// [`HandleError::ArenaFull`] when every slot the arena may ever hold exists
-/// and is taken.
-fn reserve_a_slot() -> Result<(), HandleError> {
+/// [`HandleError::ArenaFull`] if the combined quotas exceed the arena, and
+/// [`HandleError::OutOfMemory`] if backing cannot be allocated.
+fn commit_quota(quota: usize) -> Result<(), HandleError> {
     loop {
         let wanted = {
-            let arena = ARENA.lock_leaf();
-            if arena.slots.iter().any(|slot| slot.entry.is_none())
-                || arena.slots.len() < arena.slots.capacity()
-            {
-                return Ok(());
-            }
-            if arena.slots.len() >= SLOTS as usize {
+            let mut arena = ARENA.lock_leaf();
+            let Some(required) = arena.committed.checked_add(quota) else {
+                return Err(HandleError::ArenaFull);
+            };
+            if required > SLOTS as usize {
                 return Err(HandleError::ArenaFull);
             }
-            arena.slots.capacity().max(8) * 2
+            if arena.slots.capacity() >= required {
+                arena.committed = required;
+                return Ok(());
+            }
+            required
         };
 
-        // Allocated with no lock held, then handed over. Another caller may
-        // have grown it meanwhile, which the loop re-checks rather than
-        // assuming.
-        let room: Vec<ArenaSlot> = Vec::with_capacity(wanted);
+        let mut room = Vec::new();
+        if room.try_reserve_exact(wanted).is_err() {
+            // Another constructor may have installed enough backing while
+            // this allocation was attempted. Recheck before reporting an
+            // exhaustion the machine has already resolved.
+            let mut arena = ARENA.lock_leaf();
+            let Some(required) = arena.committed.checked_add(quota) else {
+                return Err(HandleError::ArenaFull);
+            };
+            if required > SLOTS as usize {
+                return Err(HandleError::ArenaFull);
+            }
+            if arena.slots.capacity() >= required {
+                arena.committed = required;
+                return Ok(());
+            }
+            return Err(HandleError::OutOfMemory);
+        }
+
         let mut arena = ARENA.lock_leaf();
-        // Whichever vector this call is left holding: the arena's old buffer
-        // where the handover happened, and the unused room where another
-        // caller got there first. Named so it can be freed below rather than
-        // where it stops being wanted.
-        let discarded = if arena.slots.capacity() < wanted {
-            let mut grown = room;
-            grown.append(&mut arena.slots);
-            core::mem::replace(&mut arena.slots, grown)
-        } else {
-            room
+        let Some(required) = arena.committed.checked_add(quota) else {
+            drop(arena);
+            drop(room);
+            return Err(HandleError::ArenaFull);
         };
-        // The guard first, then the free. The other order is the one this
-        // function exists to prevent.
+        if required > SLOTS as usize {
+            drop(arena);
+            drop(room);
+            return Err(HandleError::ArenaFull);
+        }
+        if arena.slots.capacity() >= required {
+            arena.committed = required;
+            drop(arena);
+            drop(room);
+            return Ok(());
+        }
+        if room.capacity() < required {
+            drop(arena);
+            drop(room);
+            continue;
+        }
+
+        room.append(&mut arena.slots);
+        let discarded = core::mem::replace(&mut arena.slots, room);
+        arena.committed = required;
         drop(arena);
         drop(discarded);
+        return Ok(());
     }
 }
 
@@ -257,14 +291,20 @@ impl HandleTable {
     /// distinct-per-table constant is what the property needs. It removes the
     /// accidental case — a value that leaked from one table naming something
     /// in another — which is what it is for.
-    pub(crate) fn new(quota: usize) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`HandleError::ArenaFull`] if live table quotas leave no room, and
+    /// [`HandleError::OutOfMemory`] if the quota cannot be backed.
+    pub(crate) fn new(quota: usize) -> Result<Self, HandleError> {
+        commit_quota(quota)?;
         let id = TableId(NEXT_TABLE.fetch_add(1, Ordering::Relaxed));
-        Self {
+        Ok(Self {
             id,
             mixer: Mixer::for_table(id.0),
             quota,
             counts: AtomicU64::new(Quota::EMPTY),
-        }
+        })
     }
 
     /// How many handles this table holds.
@@ -327,24 +367,20 @@ impl HandleTable {
 
     /// Put `object` in this table with `rights`, and return its handle.
     ///
-    /// # Errors
-    ///
     /// Rights that mean nothing for this kind of object are refused rather
     /// than granted and ignored — D-78's rule, enforced (D-95).
     ///
     /// # Errors
     ///
     /// [`HandleError::Meaningless`] for a right this object type makes no
-    /// distinction about, [`HandleError::QuotaExhausted`] if the table is
-    /// full, and [`HandleError::ArenaFull`] if the machine is.
+    /// distinction about, [`HandleError::QuotaExhausted`] if the table is full,
+    /// and [`HandleError::ArenaFull`] only if the backing invariant is broken.
     pub(crate) fn insert(&self, object: ObjectRef, rights: Rights) -> Result<u32, HandleError> {
         if !rights.are_meaningful_for(object.kind().per_type_rights()) {
             return Err(HandleError::Meaningless);
         }
-        // The room is taken before the arena work rather than after it: a
-        // table that claimed an arena slot and only then found itself full
-        // would have to put it back, and the path that puts it back is the one
-        // nothing exercises.
+        // The charge comes first, so the commitment invariant guarantees the
+        // arena claim that follows and an invariant refusal can put it back.
         if !self.step(|bits| Quota::take(bits, self.quota)) {
             return Err(HandleError::QuotaExhausted);
         }
@@ -363,21 +399,24 @@ impl HandleTable {
     /// [`insert`](Self::insert) has taken the room outright, and
     /// [`install`](Self::install) holds a promise.
     fn fill(&self, object: ObjectRef, rights: Rights) -> Result<u32, HandleError> {
-        // Reserved before the guard, never under it: `Vec` growth calls the
-        // allocator, and this lock is a leaf (D-85, D-95). The reservation is
-        // not a hold, so another table can consume the room in the window
-        // between dropping that guard and taking this one — retried rather
-        // than reported as a full machine, which is what it used to say
-        // (D-105).
-        let (index, generation) = loop {
-            reserve_a_slot()?;
-            let entry = Entry {
-                owner: self.id,
-                object: ObjectRef::clone(&object),
-                rights,
-            };
-            if let Some(found) = ARENA.lock_leaf().claim(entry) {
-                break found;
+        let entry = Entry {
+            owner: self.id,
+            object,
+            rights,
+        };
+        let claimed = {
+            let mut arena = ARENA.lock_leaf();
+            arena.claim(entry)
+        };
+        debug_assert!(
+            claimed.is_ok(),
+            "a charged handle had no committed arena slot"
+        );
+        let (index, generation) = match claimed {
+            Ok(found) => found,
+            Err(entry) => {
+                drop(entry);
+                return Err(HandleError::ArenaFull);
             }
         };
 
@@ -387,10 +426,12 @@ impl HandleTable {
             // the slot back — an earlier version called `close(0)`, which can
             // only ever return `Malformed`, so the slot it claimed to free
             // stayed occupied for ever (D-95).
-            let mut arena = ARENA.lock_leaf();
-            if let Some(slot) = arena.slots.get_mut(index) {
-                slot.entry = None;
-            }
+            let released = ARENA
+                .lock_leaf()
+                .slots
+                .get_mut(index)
+                .and_then(|slot| slot.entry.take());
+            drop(released);
             return Err(HandleError::ArenaFull);
         };
         Ok(named.encode(self.mixer))
@@ -408,10 +449,10 @@ impl HandleTable {
     /// # Errors
     ///
     /// [`HandleError::Denied`] if `declared` asks for more than was offered,
-    /// [`HandleError::Meaningless`] for a right the object makes no
-    /// distinction about, and [`HandleError::ArenaFull`] if the machine is. On
-    /// every one of them the promise goes back, because the reservation is
-    /// taken by value and its destructor runs.
+    /// [`HandleError::Meaningless`] for a right the object makes no distinction
+    /// about, and [`HandleError::ArenaFull`] only if the backing invariant is
+    /// broken. On every refusal the promise goes back, because the reservation
+    /// is taken by value and its destructor runs.
     pub(crate) fn install(
         &self,
         reservation: SlotReservation,
@@ -455,7 +496,7 @@ impl HandleTable {
         if entry.owner != self.id {
             return Err(HandleError::NotYours);
         }
-        Ok((Arc::clone(&entry.object), entry.rights))
+        Ok((entry.object.clone(), entry.rights))
     }
 
     /// Resolve, and require `wanted` as well.
@@ -489,9 +530,9 @@ impl HandleTable {
     }
 }
 
-/// The delegation half, reached by the checks and by no shipped caller: a
-/// program closes, duplicates or sends a handle through synchronous calls that
-/// are on D-114's owed list (D-116).
+/// The delegation methods do not have one reachability state: Duplicate is a
+/// shipped ring opcode, while user close and channel transfer still have no
+/// ring-3 operations (D-181).
 #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 impl HandleTable {
     /// Copy `handle` into a second handle carrying `wanted` or fewer rights.
@@ -652,6 +693,12 @@ impl Drop for SlotReservation {
 
 #[cfg(feature = "selftest")]
 impl HandleTable {
+    /// Arena commitment and capacity, for the backing invariant check.
+    pub(crate) fn arena_backing_for_test() -> (usize, usize) {
+        let arena = ARENA.lock_leaf();
+        (arena.committed, arena.slots.capacity())
+    }
+
     /// The slot `handle` names here, whether or not it is live.
     pub(crate) fn slot_of(&self, handle: u32) -> Option<Slot> {
         Slot::decode(handle, self.mixer)
@@ -675,31 +722,44 @@ impl Drop for HandleTable {
     /// its authority is its handles, so releasing them releases everything it
     /// could reach.
     fn drop(&mut self) {
-        // Sized before the guard is taken, because `Vec` growth calls the
-        // allocator and this lock is a leaf (D-95). `live` is exactly how many
-        // entries will come out, so nothing grows under the lock.
-        let mut released: Vec<ObjectRef> = Vec::with_capacity(self.live());
-        {
-            let mut arena = ARENA.lock_leaf();
-            for slot in &mut arena.slots {
-                if released.len() == released.capacity() {
-                    break;
-                }
-                if slot
-                    .entry
-                    .as_ref()
-                    .is_some_and(|entry| entry.owner == self.id)
-                {
-                    slot.generation = handle_space::next_generation(slot.generation);
-                    if let Some(entry) = slot.entry.take() {
-                        released.push(entry.object);
+        // One at a time avoids a temporary allocation, and each object's
+        // destructor runs after the arena leaf has gone (D-182).
+        let mut next: usize = 0;
+        while next < SLOTS as usize {
+            let released = {
+                let mut arena = ARENA.lock_leaf();
+                let mut released = None;
+                for (index, slot) in arena.slots.iter_mut().enumerate().skip(next) {
+                    next = index + 1;
+                    if slot
+                        .entry
+                        .as_ref()
+                        .is_some_and(|entry| entry.owner == self.id)
+                    {
+                        slot.generation = handle_space::next_generation(slot.generation);
+                        released = slot.entry.take().map(|entry| entry.object);
+                        break;
                     }
                 }
+                released
+            };
+            if let Some(object) = released {
+                drop(object);
+            } else {
+                break;
+            }
+        }
+
+        {
+            let mut arena = ARENA.lock_leaf();
+            debug_assert!(
+                arena.committed >= self.quota,
+                "a table released quota the arena had not committed"
+            );
+            if arena.committed >= self.quota {
+                arena.committed -= self.quota;
             }
         }
         self.counts.store(Quota::EMPTY, Ordering::Release);
-        // Released with the guard gone: dropping the last reference to an
-        // object can reach the frame allocator.
-        drop(released);
     }
 }

@@ -228,13 +228,14 @@ from the start.
 **false, even of Zircon** ◆, which also passes handles via `zx_process_start()`.
 Fuchsia's own documentation says so in as many words.
 
-The replacement is better than the claim, because it is checkable:
+The load-bearing replacement is better than the claim, because it is checkable:
 
-> A process receives exactly one handle at spawn — the bootstrap channel — and
-> every subsequent handle arrived through a channel.
+> A process receives exactly one handle at spawn — the bootstrap channel.
 
 A selftest can assert that a freshly spawned process's table holds exactly one
-entry. That converts a doc sentence into a D-28 check.
+entry. That converts a doc sentence into a D-28 check. D-151 and D-163 later
+add the other authorized provenance: a handle-producing ring operation derives
+authority from a handle already held.
 
 ### Rights: small, and the rule matters more than the number
 
@@ -473,10 +474,11 @@ lists.** Starnix's answer is a 96 KB signals implementation. And Pike's own
 estimate of the tax: *"90–95% of the work in Plan 9 was directly or indirectly
 to honor externally imposed standards."*
 
-**The mlibc budget, measured** ◆: 296 sysdep tags; **16 mandatory**, which the
-porting book says is *"enough for running a basic statically-linked hello world
-program"*; and real ports implement **147 (ironclad), 163 (astral), 202
-(managarm), 280 (linux)**. Every one of them implements `Fork`, `Sigaction`,
+**The mlibc budget, measured at D-74's unrecorded snapshot** ◆: 296 sysdep
+tags; **16 mandatory**, which the porting book says is *"enough for running a
+basic statically-linked hello world program"*; and real ports implement **147
+(ironclad), 163 (astral), 202 (managarm), 280 (linux)**. Every one of them
+implements `Fork`, `Sigaction`,
 `Ioctl`, `Termios`, `Poll` and `Waitpid`. Adopting mlibc also means adopting
 `abis/linux` — the userspace-visible ABI becomes Linux's, pinned to a moving
 upstream, and mlibc's own documentation says to pin a release rather than track
@@ -583,12 +585,13 @@ is "a fact rather than a projection" is right. Everything else is against us:
   host application** — VS Code, Zed, Grafbase, MSBuild — not an application
   distribution format. **No component-capable runtime is an interpreter.**
 
-The steelman is real and worth keeping: WASI's capability model maps onto our
-handles with no impedance mismatch (a WASI descriptor *is* a handle grant), and
-components survive an AArch64 or RISC-V port. **But both of those are delivered
-by core Wasm plus `wasip1`**, which is a fraction of the work and where all the
-actual software is. The Component Model buys cross-language typed *composition*
-— an ecosystem feature that pays off when there are components to compose.
+The steelman is real and worth keeping: WASI's authority model aligns with
+handle grants, and components survive an AArch64 or RISC-V port. D-181 adds the
+missing cost: a descriptor adapter still owns numbering, preopens and cursor
+state. **Both benefits are delivered by core Wasm plus `wasip1`**, which is a
+fraction of the work and where all the actual software is. The Component Model
+buys cross-language typed *composition* — an ecosystem feature that pays off
+when there are components to compose.
 
 **Restate D-09**: core Wasm + `wasip1` on wasmi, first-class. The Component
 Model becomes a watch item with a named re-evaluation trigger — *it reaches

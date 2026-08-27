@@ -7,8 +7,9 @@
 //! **Polled is what makes this affordable** (`012` §2). `Create I/O Completion
 //! Queue` with `IEN = 0` disables interrupts for that queue, which removes
 //! "this kernel has no interrupt sharing" from the critical path entirely. The
-//! cost is that a read spins; slice 9 is where that becomes a submission and
-//! the spinning becomes a wait.
+//! cost is that a read spins. Slice 9 gave Read a submission shape but still
+//! polls here while `RingEnter` serves it; a deferred device state machine and
+//! interrupt path remain future work (D-169, D-181).
 //!
 //! **Three things decide whether this works at all, and none is optional.**
 //! Bus master must be on or the controller cannot DMA and *there is no error

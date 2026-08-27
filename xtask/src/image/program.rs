@@ -1,9 +1,8 @@
 //! The user program that ships in the image.
 //!
-//! About a hundred bytes of machine code inside a minimal ELF64, assembled here
-//! rather
-//! than compiled. That is a deliberate stopping point: a real userland needs a
-//! second crate, a second link address and a fourth pass in the gate's
+//! A few hundred bytes of machine code inside a minimal ELF64, assembled here
+//! rather than compiled. That is a deliberate stopping point: a real userland
+//! needs a second crate, a second link address and a fourth pass in the gate's
 //! configuration matrix (D-22), and none of that tests the *loader*. What the
 //! loader needs is a genuine ELF on a real initrd, and this is the smallest
 //! thing that is one (D-100).
@@ -18,40 +17,42 @@ use elf64::{HEADER_BYTES, PROGRAM_HEADER_BYTES};
 /// Where the program is linked, and where the kernel maps it.
 pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 
-/// The program: read one word of argument, then either fault deliberately or
-/// drive its own ring and exit.
+/// The program: validate its entry block, then choose one of five behaviours.
 ///
 /// ```text
-///   58                       pop rax                     ; the kernel's word
+///   59                       pop rcx                     ; entry ABI version
+///   48 83 f9 01              cmp rcx, 1
+///   75 ..                    jne die
+///   58                       pop rax                     ; launch argument
+///   5e                       pop rsi                     ; bootstrap handle
 ///   48 85 c0                 test rax, rax
-///   74 ..                    jz  behave                  ; zero: behave
 ///   78 ..                    js  leap                    ; kernel half: jump to it
 ///   48 83 f8 02              cmp rax, 2
-///   75 ..                    jne die                     ; anything else: die
+///   75 ..                    jne ring-kind
 ///   b8 ad 0b ad 0b           mov eax, 0x0bad0bad         ; two: an unserved call
 ///   cd 80                    int 0x80
 ///   31 c0                    xor eax, eax
 ///   cd 80                    int 0x80
-/// behave:
+/// ring-kind:
+///   ...                      zero selects Echo; three selects Duplicate
+/// ring:
 ///   9c                       pushfq
 ///   48 81 0c 24 00 00 04 00  or qword ptr [rsp], 0x40000 ; set AC, bit 18
 ///   9d                       popfq
 ///   48 bb ..                 mov rbx, RING               ; its own ring
-///   c7 83 00 10 00 00 ..     mov dword [rbx+0x1000], 1   ; opcode: echo
 ///   c7 83 04 10 00 00 ..     mov dword [rbx+0x1004], tag
-///   48 c7 83 08 10 00 00 ..  mov qword [rbx+0x1008], arg
+///   ...                      write Echo(argument), or
+///                            Duplicate(bootstrap handle, READ)
 ///   c7 43 14 01 00 00 00     mov dword [rbx+20], 1       ; submission tail
 ///   b8 01 00 00 00           mov eax, 1                  ; ring enter
 ///   cd 80                    int 0x80
 ///   48 83 f8 01              cmp rax, 1                  ; exactly one served
 ///   75 ..                    jne die
-///   48 8b 8b 88 10 00 00     mov rcx, [rbx+0x1088]       ; completion value
-///   48 c7 c2 ..              mov rdx, arg
-///   48 39 d1                 cmp rcx, rdx                ; it echoed back
-///   75 ..                    jne die
-///   8b 8b 84 10 00 00        mov ecx, [rbx+0x1084]       ; completion status
+///   8b 8b 04 11 00 00        mov ecx, [rbx+0x1104]       ; completion status
 ///   85 c9                    test ecx, ecx
 ///   75 ..                    jnz die
+///   48 8b 8b 08 11 00 00     mov rcx, [rbx+0x1108]       ; completion value
+///   ...                      require the echo, or a new nonzero handle
 ///   31 c0                    xor eax, eax                ; exit
 ///   cd 80                    int 0x80
 /// leap:
@@ -61,16 +62,17 @@ pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 ///   eb fe                    jmp .
 /// ```
 ///
-/// Two behaviours from one image, chosen by a word the kernel writes onto the
-/// program's stack with `copy_to_user` — which is how a program will get its
-/// arguments, and means the boundary API is exercised on the way in as well as
-/// out (D-102).
+/// Five behaviours from one image, chosen by the versioned entry block the
+/// kernel writes with `copy_to_user`: Echo, Duplicate, a jump into the kernel
+/// half, an unserved call, and a deliberate fault. Duplicate is the first to
+/// consume the numeric bootstrap handle and proves that a trap-served
+/// authority result reaches its prepaid arena slot without allocating
+/// (D-102, D-182).
 ///
-/// The `ud2` is the point of the second behaviour: a fault a program causes
-/// must kill the program, not the machine. The `AC` is the point of the first:
+/// The `ud2` is the point of the fault route: a fault a program causes must
+/// kill the program, not the machine. The `AC` is the point of the ring route:
 /// interrupt delivery does not clear it, so a program that sets it hands the
-/// kernel a trap with SMAP already off unless the entry path clears it
-/// (D-101).
+/// kernel a trap with SMAP already off unless the entry path clears it (D-101).
 ///
 /// **The ring work is the point of everything after that** (D-116). Until it
 /// existed the program crossed once and was retired, so the whole async ABI —
@@ -92,8 +94,8 @@ fn code() -> Vec<u8> {
     /// Bytes in one submission entry, from `kernel/src/queue.rs`.
     ///
     /// Thirty-two since slice 9 widened it for `Read`. This program writes one
-    /// by hand, so it is the fourth transcription of the layout and the one a
-    /// host test compares against the kernel (D-173).
+    /// by hand, so its actual displacement operands are compared with the
+    /// kernel's field map by a host test (D-173, D-181).
     const SUBMISSION_BYTES: u32 = 32;
     /// First completion entry: eight submissions after them.
     const COMPLETIONS_AT: u32 = SUBMISSIONS_AT + 8 * SUBMISSION_BYTES;
@@ -101,28 +103,30 @@ fn code() -> Vec<u8> {
     const TAIL_AT: u8 = 20;
     /// `WIZ_OP_ECHO`.
     const ECHO: u32 = 1;
+    /// `WIZ_OP_DUPLICATE`.
+    const DUPLICATE: u32 = 3;
     /// The call numbers, from `enum wiz_call`.
     const RING_ENTER: u32 = 1;
 
     let mut code = Vec::new();
 
-    // The argument word, and the three behaviours it chooses.
+    // The versioned entry block, and the five behaviours it chooses.
+    code.extend_from_slice(&[0x59]); // pop rcx
+    code.extend_from_slice(&[0x48, 0x83, 0xF9, 0x01]); // cmp rcx, 1
+    let wrong_version = branch(&mut code, 0x75); // jne die
     code.extend_from_slice(&[0x58]); // pop rax
+    code.extend_from_slice(&[0x5E]); // pop rsi
     code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
-    // Patched from the label like every other branch. Hand-computing this one
-    // put it two bytes past `behave` and into the middle of the probe's exit,
-    // which assembled, ran, and did something else — the exact failure the
-    // patch machinery exists to prevent, made by the person who wrote it.
-    let behaving = branch(&mut code, 0x74); // jz behave
-    // An argument in the kernel's half means "jump to it". The sign flag the
-    // `test` above already set is the whole selector, so this costs two bytes
-    // and needs no argument value reserved — which matters, because the
-    // argument *is* the address. It exists for one check: a ring-3 thread
-    // aiming `RIP` inside the kernel's user-copy window, which the recovery
-    // arm used to accept without ever looking at the saved `CS` (D-126).
     let leaping = branch(&mut code, 0x78); // js leap
+    let dispatching = branch(&mut code, 0xEB); // jmp dispatch
+    let leap = code.len();
+    patch(&mut code, leaping, leap);
+    code.extend_from_slice(&[0xFF, 0xE0]); // jmp rax
+
+    let dispatch = code.len();
+    patch(&mut code, dispatching, dispatch);
     code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x02]); // cmp rax, 2
-    let not_probing = branch(&mut code, 0x75); // jne die
+    let not_probing = branch(&mut code, 0x75); // jne ring kind
 
     // Argument two: ask for a call this kernel does not serve, and then exit
     // normally. Logging that refusal from trap context halted the machine
@@ -132,10 +136,32 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
     code.extend_from_slice(&[0x31, 0xC0]); // xor eax, eax
     code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
+    code.extend_from_slice(&[0x0F, 0x0B, 0xEB, 0xFE]); // ud2; jmp .
+
+    let choose_ring_kind = code.len();
+    patch(&mut code, not_probing, choose_ring_kind);
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    let not_echoing = branch(&mut code, 0x75); // jne duplicate selector
+    code.extend_from_slice(&[0x31, 0xFF]); // xor edi, edi
+    let echoing = branch(&mut code, 0xEB); // jmp ring
+
+    let choose_duplicate = code.len();
+    patch(&mut code, not_echoing, choose_duplicate);
+    code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x03]); // cmp rax, 3
+    let unknown_behaviour = branch(&mut code, 0x75); // jne die
+    code.extend_from_slice(&[0xBF]); // mov edi, 1
+    code.extend_from_slice(&1u32.to_le_bytes());
+    let duplicating = branch(&mut code, 0xEB); // jmp ring
+
+    let early_die = code.len();
+    patch(&mut code, wrong_version, early_die);
+    patch(&mut code, unknown_behaviour, early_die);
+    code.extend_from_slice(&[0x0F, 0x0B, 0xEB, 0xFE]); // ud2; jmp .
 
     // Set `AC`, which the entry path must clear.
-    let behave = code.len();
-    patch(&mut code, behaving, behave);
+    let ring = code.len();
+    patch(&mut code, echoing, ring);
+    patch(&mut code, duplicating, ring);
     code.extend_from_slice(&[0x9C]); // pushfq
     code.extend_from_slice(&[0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00]);
     code.extend_from_slice(&[0x9D]); // popfq
@@ -144,23 +170,39 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&[0x48, 0xBB]);
     code.extend_from_slice(&RING.to_le_bytes());
 
-    // One submission: echo, tagged, with an argument to get back.
-    code.extend_from_slice(&[0xC7, 0x83]); // mov dword [rbx+disp32], imm32
-    code.extend_from_slice(&SUBMISSIONS_AT.to_le_bytes());
-    code.extend_from_slice(&ECHO.to_le_bytes());
-
+    // Both submissions use the same nonzero token.
     code.extend_from_slice(&[0xC7, 0x83]);
     code.extend_from_slice(&(SUBMISSIONS_AT + 4).to_le_bytes());
     code.extend_from_slice(&PROGRAM_TAG.to_le_bytes());
 
-    // The argument moved to offset 24 when the entry widened; the handle,
-    // length and offset fields between them mean nothing to an echo and are
-    // left as the kernel cleared them.
+    code.extend_from_slice(&[0x85, 0xFF]); // test edi, edi
+    let duplicate_submission = branch(&mut code, 0x75); // jnz duplicate
+
+    // Echo one word back.
+    code.extend_from_slice(&[0xC7, 0x83]);
+    code.extend_from_slice(&SUBMISSIONS_AT.to_le_bytes());
+    code.extend_from_slice(&ECHO.to_le_bytes());
     code.extend_from_slice(&[0x48, 0xC7, 0x83]); // mov qword [rbx+disp32], imm32
     code.extend_from_slice(&(SUBMISSIONS_AT + 24).to_le_bytes());
     code.extend_from_slice(&PROGRAM_ARGUMENT.to_le_bytes());
+    let submission_ready = branch(&mut code, 0xEB); // jmp publish
+
+    // Duplicate the bootstrap channel with only READ. Its handle comes from
+    // the entry block rather than from a build-time constant.
+    let duplicate = code.len();
+    patch(&mut code, duplicate_submission, duplicate);
+    code.extend_from_slice(&[0xC7, 0x83]);
+    code.extend_from_slice(&SUBMISSIONS_AT.to_le_bytes());
+    code.extend_from_slice(&DUPLICATE.to_le_bytes());
+    code.extend_from_slice(&[0x89, 0xB3]); // mov dword [rbx+disp32], esi
+    code.extend_from_slice(&(SUBMISSIONS_AT + 8).to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xC7, 0x83]);
+    code.extend_from_slice(&(SUBMISSIONS_AT + 24).to_le_bytes());
+    code.extend_from_slice(&DUPLICATE_RIGHTS.to_le_bytes());
 
     // Publish it.
+    let publish = code.len();
+    patch(&mut code, submission_ready, publish);
     code.extend_from_slice(&[0xC7, 0x43, TAIL_AT]); // mov dword [rbx+20], imm32
     code.extend_from_slice(&1u32.to_le_bytes());
 
@@ -173,34 +215,42 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x01]); // cmp rax, 1
     let served = branch(&mut code, 0x75); // jne die
 
-    // The value came back, or die.
-    code.extend_from_slice(&[0x48, 0x8B, 0x8B]); // mov rcx, [rbx+disp32]
-    code.extend_from_slice(&(COMPLETIONS_AT + 8).to_le_bytes());
-    code.extend_from_slice(&[0x48, 0xC7, 0xC2]); // mov rdx, imm32
-    code.extend_from_slice(&PROGRAM_ARGUMENT.to_le_bytes());
-    code.extend_from_slice(&[0x48, 0x39, 0xD1]); // cmp rcx, rdx
-    let echoed = branch(&mut code, 0x75); // jne die
-
     // With a clean status, or die.
     code.extend_from_slice(&[0x8B, 0x8B]); // mov ecx, [rbx+disp32]
     code.extend_from_slice(&(COMPLETIONS_AT + 4).to_le_bytes());
     code.extend_from_slice(&[0x85, 0xC9]); // test ecx, ecx
     let clean = branch(&mut code, 0x75); // jnz die
 
+    // The value came back and is the kind this behaviour promised.
+    code.extend_from_slice(&[0x48, 0x8B, 0x8B]); // mov rcx, [rbx+disp32]
+    code.extend_from_slice(&(COMPLETIONS_AT + 8).to_le_bytes());
+    code.extend_from_slice(&[0x85, 0xFF]); // test edi, edi
+    let duplicate_answer = branch(&mut code, 0x75); // jnz duplicate answer
+    code.extend_from_slice(&[0x48, 0xC7, 0xC2]); // mov rdx, imm32
+    code.extend_from_slice(&PROGRAM_ARGUMENT.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0x39, 0xD1]); // cmp rcx, rdx
+    let echoed = branch(&mut code, 0x75); // jne die
+    let answered = branch(&mut code, 0xEB); // jmp exit
+
+    let duplicate_value = code.len();
+    patch(&mut code, duplicate_answer, duplicate_value);
+    code.extend_from_slice(&[0x48, 0x85, 0xC9]); // test rcx, rcx
+    let empty_handle = branch(&mut code, 0x74); // jz die
+    code.extend_from_slice(&[0x39, 0xF1]); // cmp ecx, esi
+    let repeated_handle = branch(&mut code, 0x74); // je die
+
     // Exit.
+    let exit = code.len();
+    patch(&mut code, answered, exit);
     code.extend_from_slice(&[0x31, 0xC0]); // xor eax, eax
     code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
 
     // Everything that went wrong lands here.
-    let leap = code.len();
-    patch(&mut code, leaping, leap);
-    code.extend_from_slice(&[0xFF, 0xE0]); // jmp rax
-
     let die = code.len();
     code.extend_from_slice(&[0x0F, 0x0B]); // ud2
     code.extend_from_slice(&[0xEB, 0xFE]); // jmp .
 
-    for site in [not_probing, served, echoed, clean] {
+    for site in [served, clean, echoed, empty_handle, repeated_handle] {
         patch(&mut code, site, die);
     }
     code
@@ -211,6 +261,9 @@ const PROGRAM_TAG: u32 = 0x0000_1234;
 
 /// The word it asks the kernel to echo.
 const PROGRAM_ARGUMENT: u32 = 0x00C0_FFEE;
+
+/// Rights the ring-3 Duplicate asks to retain: Channel READ and nothing else.
+const DUPLICATE_RIGHTS: u32 = 1 << 8;
 
 /// A call number this kernel does not serve.
 ///
@@ -235,7 +288,8 @@ fn patch(code: &mut [u8], site: usize, target: usize) {
     let from = site + 1;
     let distance = i64::try_from(target).expect("a small program")
         - i64::try_from(from).expect("a small program");
-    let displacement = i8::try_from(distance).expect("a jump inside one byte");
+    let displacement = i8::try_from(distance)
+        .unwrap_or_else(|_| panic!("jump from {from} to {target} does not fit in one byte"));
     code[site] = displacement as u8;
 }
 
@@ -383,20 +437,27 @@ mod tests {
     fn the_emitted_program_is_the_listing() {
         let code = code();
 
-        // The first four are what the kernel reads back across the boundary,
-        // and `user::PROGRAM` transcribes them independently.
+        // The entry version is consumed before the argument and handle.
         assert_eq!(
-            &code[..4],
-            &[0x58, 0x48, 0x85, 0xC0],
-            "pop rax; test rax, rax"
+            &code[..12],
+            &[
+                0x59, 0x48, 0x83, 0xF9, 0x01, 0x75, code[6], 0x58, 0x5E, 0x48, 0x85, 0xC0,
+            ],
+            "pop rcx; cmp rcx, 1; jne die; pop rax; pop rsi; test rax, rax"
         );
-        // Four behaviours, chosen by the argument: zero behaves, an address in
-        // the kernel's half is jumped to, two asks for a call this kernel does
-        // not serve, anything else faults.
-        assert_eq!(code[4], 0x74, "jz behave");
-        assert_eq!(code[6], 0x78, "js leap");
-        assert_eq!(&code[8..12], &[0x48, 0x83, 0xF8, 0x02], "cmp rax, 2");
-        assert_eq!(code[12], 0x75, "jne die");
+        // Five behaviours: Echo, Duplicate, an unserved call, a deliberate
+        // fault, and a jump to a supplied kernel-half address.
+        assert_eq!(code[12], 0x78, "js leap");
+        assert!(
+            code.windows(4)
+                .any(|bytes| bytes == [0x48, 0x83, 0xF8, 0x02]),
+            "cmp rax, 2"
+        );
+        assert!(
+            code.windows(4)
+                .any(|bytes| bytes == [0x48, 0x83, 0xF8, 0x03]),
+            "cmp rax, 3"
+        );
         // And the leap itself, which is what makes the argument an address.
         assert!(code.windows(2).any(|pair| pair == [0xFF, 0xE0]), "jmp rax");
 
@@ -415,6 +476,47 @@ mod tests {
             u64::from_le_bytes(code[ring + 2..ring + 10].try_into().expect("eight bytes")),
             0x0000_2000_0000_0000,
             "the program looks for its ring where the kernel maps it"
+        );
+        assert!(
+            code.windows(10)
+                .any(|bytes| bytes == [0xC7, 0x83, 0x00, 0x10, 0, 0, 1, 0, 0, 0]),
+            "mov dword [rbx+0x1000], 1"
+        );
+        assert!(
+            code.windows(10)
+                .any(|bytes| bytes == [0xC7, 0x83, 0x00, 0x10, 0, 0, 3, 0, 0, 0]),
+            "mov dword [rbx+0x1000], 3"
+        );
+        assert!(
+            code.windows(10)
+                .any(|bytes| { bytes == [0xC7, 0x83, 0x04, 0x10, 0, 0, 0x34, 0x12, 0, 0] }),
+            "mov dword [rbx+0x1004], tag"
+        );
+        assert!(
+            code.windows(11).any(|bytes| {
+                bytes == [0x48, 0xC7, 0x83, 0x18, 0x10, 0, 0, 0xEE, 0xFF, 0xC0, 0]
+            }),
+            "mov qword [rbx+0x1018], argument"
+        );
+        assert!(
+            code.windows(6)
+                .any(|bytes| bytes == [0x89, 0xB3, 0x08, 0x10, 0, 0]),
+            "mov dword [rbx+0x1008], esi"
+        );
+        assert!(
+            code.windows(11)
+                .any(|bytes| { bytes == [0x48, 0xC7, 0x83, 0x18, 0x10, 0, 0, 0, 1, 0, 0] }),
+            "mov qword [rbx+0x1018], READ"
+        );
+        assert!(
+            code.windows(7)
+                .any(|bytes| bytes == [0x48, 0x8B, 0x8B, 0x08, 0x11, 0, 0]),
+            "mov rcx, [rbx+0x1108]"
+        );
+        assert!(
+            code.windows(6)
+                .any(|bytes| bytes == [0x8B, 0x8B, 0x04, 0x11, 0, 0]),
+            "mov ecx, [rbx+0x1104]"
         );
 
         // Four `int 0x80`s: the unserved probe and its exit, then the doorbell
@@ -439,43 +541,13 @@ mod tests {
         );
         assert_eq!(&code[calls[3] - 2..calls[3]], &[0x31, 0xC0], "xor eax, eax");
 
-        // Every branch lands on the `ud2`, and none in the middle of an
-        // instruction: the displacements are patched from one label, so if any
-        // is wrong they all point somewhere that is not it.
+        // Every terminal validation branch lands on the final `ud2`.
         let die = code.len() - 4;
         assert_eq!(&code[die..], &[0x0F, 0x0B, 0xEB, 0xFE], "ud2; jmp .");
-        // Scanned from the start rather than from an offset, and **skipping
-        // each branch's displacement byte** — which the earlier version did
-        // not, and which caught it out the moment a behaviour was added above:
-        // the `jne die` at 12 had a displacement of exactly 0x75, so the scan
-        // counted one branch as two and failed on a byte that is not an
-        // opcode. Every branch here is a two-byte `Jcc rel8`, so consuming the
-        // pair is the whole of the fix (D-126).
-        let mut branches = Vec::new();
-        let mut at = 0;
-        while at + 1 < code.len() {
-            if code[at] == 0x75 {
-                branches.push(at);
-                at += 2;
-            } else {
-                at += 1;
-            }
-        }
-        assert_eq!(branches.len(), 4, "four ways to fail");
-        for site in branches {
-            let displacement = i64::from(code[site + 1] as i8);
-            let target = site as i64 + 2 + displacement;
-            assert_eq!(target, die as i64, "a branch at {site} misses the ud2");
-        }
-
-        // And the one branch that is not a way to fail lands on the flags
-        // block. Hand-computing it put it two bytes past, in the middle of an
-        // instruction, where it assembled and ran and did something else.
-        let behaving = i64::from(code[5] as i8);
-        assert_eq!(
-            4 + 2 + behaving,
-            flags as i64,
-            "the jz misses the start of the behaving path"
-        );
+        let failures = (0..code.len() - 1)
+            .filter(|site| matches!(code[*site], 0x74 | 0x75))
+            .filter(|site| *site as i64 + 2 + i64::from(code[*site + 1] as i8) == die as i64)
+            .count();
+        assert_eq!(failures, 5, "five terminal validations reach the final ud2");
     }
 }

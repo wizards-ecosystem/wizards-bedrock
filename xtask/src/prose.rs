@@ -137,9 +137,9 @@ mod tests {
     /// stands, and that can be (D-175).
     ///
     /// The same mechanism as the README's boot count, and the same reason
-    /// `002` gives for keeping the sysdep tally out of its prose: a number
-    /// restated in a second place is a number that can disagree with itself,
-    /// and the one that is never read is the one that goes stale.
+    /// `002` gives for pointing at the exact sysdep register rather than
+    /// restating it: a claim copied to a second place can disagree with itself,
+    /// and the copy that is never read is the one that goes stale.
     #[test]
     fn the_phase_close_says_what_the_source_says() {
         let root = root();

@@ -1,22 +1,23 @@
-// mlibc sysdeps for The Wizard's OS: the sixteen mandatory tags.
+// mlibc sysdeps for The Wizard's OS: the sixteen functions inspected by D-114.
 //
-// D-74 asked for this "immediately after the ABI stabilises, not to run
-// software, but to find out whether a POSIX libc can sit on this ABI while the
-// ABI is still cheap to change". This file is the finding-out. It is **not
-// compiled** — see `userland/README.md` for the toolchain wall and what it
-// cost — so every line here is a claim about the ABI rather than a tested
-// one, and each is marked with which of the three it is:
+// D-74 asked for this immediately after the ABI stabilised, while changing it
+// was still cheap. This file is not a compiled port, and D-114 recorded no
+// mlibc revision, so it is a pressure-test transcription rather than current
+// upstream source.
 //
-//   MAPS      — the native ABI already has the shape POSIX wants.
-//   OWED      — the mechanism exists in the kernel and has no ring-3 door.
-//   ABSENT    — the native ABI has nothing of the kind, deliberately.
+// D-181 records two independent states for every function; D-182 narrows the
+// trap-sensitive teardown rows:
 //
-// The counts are in the README, and the ones marked ABSENT are the ones worth
-// arguing about, because each is a place where POSIX assumes something a
-// capability system does not have.
+//   BODY       WIRED, COMPOSED, PARTIAL, or STUB.
+//   REMAINDER  WORKS, COMPAT, DOOR, PARTIAL, or MISSING.
+//
+// BODY describes this file. REMAINDER describes the platform work left. The
+// exact register and definitions are in `userland/README.md`.
 
 #include <mlibc/all-sysdeps.hpp>
 #include <mlibc/debug.hpp>
+#include <stdint.h>
+#include <time.h>
 
 #include "wizard_abi.h"
 
@@ -24,27 +25,10 @@ namespace mlibc {
 
 namespace {
 
-// The one gate ring 3 has (D-96). Written out rather than wrapped, because a
-// libc's syscall stub is the one place where the register discipline is the
-// whole interface.
-inline long call0(long number) {
-	long result;
-	asm volatile("int $0x80" : "=a"(result) : "a"(number) : "memory");
-	return result;
-}
-
+// The one gate ring 3 has (D-96).
 inline long call1(long number, long a) {
 	long result;
 	asm volatile("int $0x80" : "=a"(result) : "a"(number), "D"(a) : "memory");
-	return result;
-}
-
-inline long call3(long number, long a, long b, long c) {
-	long result;
-	asm volatile("int $0x80"
-	             : "=a"(result)
-	             : "a"(number), "D"(a), "S"(b), "d"(c)
-	             : "memory");
 	return result;
 }
 
@@ -53,69 +37,67 @@ inline int as_errno(long result) {
 	return result < 0 ? static_cast<int>(-result) : 0;
 }
 
-// The ring, at the address the kernel maps it (D-113). A libc gets it for
-// free: it is in the address space before the first instruction runs, so
-// there is no "open the ring" call to fail.
-inline volatile wiz_ring_header *ring() {
-	return reinterpret_cast<volatile wiz_ring_header *>(WIZ_RING_ADDRESS);
+inline uint64_t read_counter() {
+	uint32_t low;
+	uint32_t high;
+	asm volatile("lfence\n\trdtsc\n\tlfence"
+	             : "=a"(low), "=d"(high)
+	             :
+	             : "memory");
+	return (static_cast<uint64_t>(high) << 32) | low;
+}
+
+// The eventual implementation must share the ring client and correlate its
+// token without consuming an unrelated out-of-order completion.
+inline int monotonic_fallback(time_t *secs, long *nanos) {
+	(void)secs;
+	(void)nanos;
+	return WIZ_ENOSYS;
 }
 
 } // namespace
 
-// --- The three that need nothing but the gate, and one that has no door ---
+// --- Process and clock -------------------------------------------------
 
-// sys_libc_log. MAPS **in shape only**, which is how the README counts it and
-// how this comment did not. The kernel's console is not a file and a libc does
-// not need it to be: this is diagnostics, and a ring opcode taking a pointer
-// and a length is the whole of what it wants.
+// sys_libc_log. BODY=STUB; REMAINDER=PARTIAL.
 void sys_libc_log(const char *message) {
-	// The body is a no-op and says so. It used to claim it submitted
-	// something the kernel refused with STATUS_UNKNOWN_OPCODE — it does not
-	// submit anything, so a libc built today gets silence rather than the
-	// visible failure that comment promised (D-124).
-	//
-	// OWED: WIZ_OP_LOG. Deliberately not faked with a refused submission:
-	// an opcode number invented here would be one the kernel has never
-	// heard of, and the first real one would have to avoid it.
+	// Console and terminal pieces exist, but no native write operation joins
+	// them. Inventing an opcode here would reserve ABI by comment.
 	(void)message;
 }
 
-// sys_libc_panic. MAPS. A libc that has lost its invariants exits; there is no
-// "abort into the kernel" and there does not need to be, because a ring-3
-// fault already retires the thread and nothing else (D-102).
+// sys_libc_panic. BODY=COMPOSED; REMAINDER=PARTIAL.
 [[noreturn]] void sys_libc_panic() {
 	sys_libc_log("mlibc: panic\n");
 	sys_exit(127);
 	__builtin_unreachable();
 }
 
-// sys_exit. MAPS, and is the only one of the sixteen that is implemented on
-// the kernel side today. A ring-3 thread that calls in is retired from the far
-// side of the boundary (D-96); the status is accepted and currently discarded,
-// which is a gap a parent waiting on a child would notice and nothing else
-// does yet.
+// sys_exit. BODY=WIRED; REMAINDER=PARTIAL.
 [[noreturn]] void sys_exit(int status) {
+	// Only this thread retires, and the status is discarded. Process-wide
+	// lifecycle and an observer do not exist yet.
 	call1(WIZ_CALL_EXIT, status);
 	__builtin_unreachable();
 }
 
-// sys_clock_get. MAPS, and it stopped being a call to get there. The kernel
-// publishes the clock in a page every process has read-only at
-// `WIZ_TIME_ADDRESS`, so this is a load and a multiply-add — no gate crossing
-// at all (D-152, D-166). `mode` is the gate: a kernel that does not trust its
-// counter sets it to zero, and then the ring's uptime opcode is the fallback,
-// which is why that opcode is not decoration.
-//
-// Note what POSIX wants that the kernel does not have: a *wall clock*. Uptime
-// is monotonic; `CLOCK_REALTIME` needs an epoch, and this kernel has never
-// been told what time it is.
+// sys_clock_get. BODY=PARTIAL; REMAINDER=PARTIAL.
 int sys_clock_get(int clock, time_t *secs, long *nanos) {
-	auto *c = reinterpret_cast<volatile wiz_time_clock *>(
+	if(clock != CLOCK_MONOTONIC)
+		return WIZ_EINVAL;
+
+	auto *constants = reinterpret_cast<volatile const wiz_time_constants *>(
+	    WIZ_TIME_ADDRESS);
+	if(constants->version != WIZ_TIME_VERSION
+	    || constants->page_bytes
+	           < WIZ_TIME_CLOCK_AT + sizeof(wiz_time_clock)
+	    || !constants->counter_hz)
+		return monotonic_fallback(secs, nanos);
+
+	auto *c = reinterpret_cast<volatile const wiz_time_clock *>(
 	    WIZ_TIME_ADDRESS + WIZ_TIME_CLOCK_AT);
 
-	// The seqlock. Bounded rather than looped for ever: a page whose writer
-	// never finishes is a broken kernel, and spinning on it forgives exactly
-	// the failure worth reporting.
+	// A writer stuck odd is a broken page, not permission to spin forever.
 	for(int attempt = 0; attempt < 64; attempt++) {
 		uint32_t before = c->seq;
 		if(before & 1u)
@@ -128,46 +110,48 @@ int sys_clock_get(int clock, time_t *secs, long *nanos) {
 		uint64_t last = c->last_ticks;
 		uint64_t multiplier = c->multiplier;
 		uint32_t shift = c->shift;
+		uint64_t stamp =
+		    mode == WIZ_TIME_MODE_COUNTER ? read_counter() : 0;
 
 		__atomic_thread_fence(__ATOMIC_ACQUIRE);
-		if(c->seq != before)
+		uint32_t after = c->seq;
+		if(before != after || (after & 1u))
 			continue;
 
-		if(mode != WIZ_TIME_MODE_COUNTER)
-			break;  // Revoked: fall back to asking.
+		if(mode != WIZ_TIME_MODE_COUNTER || !multiplier || shift > 63
+		    || fraction >= (uint64_t{1} << shift))
+			return monotonic_fallback(secs, nanos);
 
-		uint64_t ticks = __builtin_ia32_rdtsc() - last;
-		uint64_t ns = base + ((fraction + ticks * multiplier) >> shift);
+		uint64_t ticks = stamp - last;
+		unsigned __int128 advanced =
+		    static_cast<unsigned __int128>(fraction)
+		    + static_cast<unsigned __int128>(ticks) * multiplier;
+		unsigned __int128 whole = advanced >> shift;
+
+		uint64_t ns;
+		if(whole > UINT64_MAX) {
+			ns = UINT64_MAX;
+		} else {
+			uint64_t delta = static_cast<uint64_t>(whole);
+			ns = base > UINT64_MAX - delta ? UINT64_MAX : base + delta;
+		}
 		*secs = static_cast<time_t>(ns / 1000000000ull);
 		*nanos = static_cast<long>(ns % 1000000000ull);
 		return 0;
 	}
 
-	// The fallback, which D-152 requires to stay reachable. Not built yet:
-	// submitting `WIZ_OP_UPTIME` needs the ring, and the ring belongs to the
-	// caller rather than to a sysdep. OWED, and named so it is a refusal the
-	// caller can see rather than a silent wrong answer.
-	(void)clock;
-	return ENOSYS;
+	return monotonic_fallback(secs, nanos);
 }
 
-// --- The file-descriptor five: four OWED, and `open` ---------------------
+// --- File descriptors -------------------------------------------------
 
-// A POSIX fd is a handle (pillar 1), and the translation is exact for the
-// operations below: a descriptor number *is* a handle value, and the rights
-// on it are what `open` asked for. What POSIX adds that handles do not have is
-// the *table's* semantics — dup2 to a chosen number, and inheritance across
-// exec. Neither is among the sixteen mandatory tags; both are in the README's
-// "cluster that stays unimplementable", which is where this comment used to
-// say "further down" and point at nothing.
+// A native handle is not by itself a POSIX descriptor. The compatibility
+// layer must provide chosen descriptor numbers, shared cursors and inheritance.
 
-// sys_read. OWED, over the ring rather than as a synchronous call.
+// sys_read. BODY=STUB; REMAINDER=COMPAT.
 int sys_read(int fd, void *buffer, size_t size, ssize_t *bytes_read) {
-	// OWED: WIZ_CALL_RING_ENTER with a read opcode. Written as a ring
-	// submission and not as a synchronous call on purpose: `002` pillar 2
-	// makes the data path asynchronous, and a blocking read is a submission
-	// plus a wait. That is also what makes it interruptible by a signal,
-	// because a signal *is* a completion (D-80).
+	// Native Read takes an explicit offset. POSIX read advances shared open-file
+	// state, so the ring operation alone is not this function.
 	(void)fd;
 	(void)buffer;
 	(void)size;
@@ -175,9 +159,9 @@ int sys_read(int fd, void *buffer, size_t size, ssize_t *bytes_read) {
 	return WIZ_ENOSYS;
 }
 
-// sys_write. OWED, as sys_read.
+// sys_write. BODY=STUB; REMAINDER=MISSING.
 int sys_write(int fd, const void *buffer, size_t size, ssize_t *bytes_written) {
-	// OWED, as sys_read.
+	// No VFS or ring write operation exists.
 	(void)fd;
 	(void)buffer;
 	(void)size;
@@ -185,12 +169,10 @@ int sys_write(int fd, const void *buffer, size_t size, ssize_t *bytes_written) {
 	return WIZ_ENOSYS;
 }
 
-// sys_seek. OWED, and the state it moves belongs to the object.
+// sys_seek. BODY=STUB; REMAINDER=COMPAT.
 int sys_seek(int fd, off_t offset, int whence, off_t *new_offset) {
-	// OWED. A seek is state the *file object* holds, not the handle: two
-	// handles to one file share a position in POSIX, which is a distinction
-	// the kernel will have to make about the object and therefore a
-	// legitimate per-type right (D-78's rule).
+	// The native file protocol is cursorless. The POSIX adapter must own and
+	// share the cursor that both this function and sys_read use.
 	(void)fd;
 	(void)offset;
 	(void)whence;
@@ -198,27 +180,18 @@ int sys_seek(int fd, off_t offset, int whence, off_t *new_offset) {
 	return WIZ_ENOSYS;
 }
 
-// sys_close. OWED: the kernel side exists and has no ring-3 door.
+// sys_close. BODY=STUB; REMAINDER=PARTIAL.
 int sys_close(int fd) {
-	// OWED: WIZ_CALL_HANDLE_CLOSE. The kernel side exists — closing advances
-	// the slot's generation so the value is dead the instant it is closed
-	// (D-78) — and there is no ring-3 door to it.
-	return as_errno(call1(WIZ_CALL_HANDLE_CLOSE, fd));
+	// HandleTable::close exists, but dropping the last reference can deallocate.
+	// A user close therefore needs a trap-safe deferred/reclamation route.
+	(void)fd;
+	return WIZ_ENOSYS;
 }
 
-// sys_open. ABSENT: it needs a namespace this OS deliberately has not got.
+// sys_open. BODY=STUB; REMAINDER=PARTIAL.
 int sys_open(const char *path, int flags, mode_t mode, int *fd) {
-	// ABSENT — the only one of the sixteen, and the README has always said
-	// so while this line said OWED. The distinction is the whole point of
-	// the taxonomy: OWED means the kernel has the mechanism and no door,
-	// and there is no mechanism here to have a door onto. What it needs is
-	// a *namespace*. There is no global filesystem to name a path in, by
-	// design (pillar 1), so `open` must resolve through a directory handle
-	// the process was given — which is `openat` with no `AT_FDCWD`, and is
-	// what WASI's `path_open` settled on for the same reason.
-	//
-	// A libc can be built this way. What it cannot do is `open("/etc/foo")`
-	// from a process nobody gave a root directory to, and that is the point.
+	// Read-only OpenAt covers existing paths. Compatibility supplies root, cwd
+	// and descriptors, and rejects create, truncate and write modes as EROFS.
 	(void)path;
 	(void)flags;
 	(void)mode;
@@ -226,19 +199,14 @@ int sys_open(const char *path, int flags, mode_t mode, int *fd) {
 	return WIZ_ENOSYS;
 }
 
-// --- OWED: memory ------------------------------------------------------
+// --- Memory -----------------------------------------------------------
 
-// sys_vm_map. OWED, over D-107's map_user, with W^X non-negotiable.
+// sys_vm_map. BODY=STUB; REMAINDER=PARTIAL.
 int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd,
                off_t offset, void **window) {
-	// OWED: WIZ_CALL_VM_MAP. The kernel side is D-107's `map_user`, and the
-	// type discipline maps onto POSIX cleanly — a `MAP_ANONYMOUS` mapping is
-	// a fresh `USegment`, and a file mapping is one the file object owns.
-	//
-	// W^X is **not** negotiable (D-12, D-100): `PROT_WRITE | PROT_EXEC` is
-	// refused rather than granted, and a JIT will have to map twice. That is
-	// a real incompatibility with some ported software and it is the right
-	// one to have.
+	// Loader mapping primitives exist, but a user mapping operation cannot be
+	// exposed until allocation and trap-context rules are settled. W^X remains
+	// non-negotiable (D-12, D-100).
 	(void)hint;
 	(void)size;
 	(void)prot;
@@ -249,58 +217,53 @@ int sys_vm_map(void *hint, size_t size, int prot, int flags, int fd,
 	return WIZ_ENOSYS;
 }
 
-// sys_vm_unmap. OWED, over unmap and its flush token (D-88).
+// sys_vm_unmap. BODY=STUB; REMAINDER=PARTIAL.
 int sys_vm_unmap(void *window, size_t size) {
-	// OWED: WIZ_CALL_VM_UNMAP. `AddressSpace::unmap` exists and returns a
-	// flush token (D-88), which is the shape a shootdown will need.
+	// AddressSpace::unmap exists, but its flush and reclamation obligations need
+	// a trap-safe user execution route (D-88, D-182).
 	(void)window;
 	(void)size;
 	return WIZ_ENOSYS;
 }
 
-// sys_anon_allocate. OWED, and is sys_vm_map with the anonymous flag.
+// sys_anon_allocate. BODY=STUB; REMAINDER=PARTIAL.
 int sys_anon_allocate(size_t size, void **window) {
-	return sys_vm_map(nullptr, size, 3 /* read|write */, 0x20 /* anonymous */,
-	                  -1, 0, window);
+	(void)size;
+	(void)window;
+	return WIZ_ENOSYS;
 }
 
-// sys_anon_free. OWED, and is sys_vm_unmap.
+// sys_anon_free. BODY=STUB; REMAINDER=PARTIAL.
 int sys_anon_free(void *window, size_t size) {
-	return sys_vm_unmap(window, size);
+	// This inherits sys_vm_unmap's unresolved execution contract.
+	(void)window;
+	(void)size;
+	return WIZ_ENOSYS;
 }
 
-// --- OWED: threads and futexes -----------------------------------------
+// --- Threads and futexes ---------------------------------------------
 
-// sys_futex_wait. OWED, over the wait queue that already closes the window.
+// sys_futex_wait. BODY=STUB; REMAINDER=MISSING.
 int sys_futex_wait(int *pointer, int expected, const struct timespec *time) {
-	// OWED: WIZ_CALL_FUTEX_WAIT. `kernel/src/wait.rs` already has the hard
-	// half — `wait_unless` registers before it re-reads, which is what makes
-	// a futex free of lost wakeups (D-95), and is the same window a futex
-	// gets wrong first.
+	// WaitQueue closes an internal lost-wakeup window; it is not an operation
+	// keyed by a validated userspace atomic or its lifetime.
 	(void)pointer;
 	(void)expected;
 	(void)time;
 	return WIZ_ENOSYS;
 }
 
-// sys_futex_wake. OWED, over WaitQueue::wake_all.
+// sys_futex_wake. BODY=STUB; REMAINDER=MISSING.
 int sys_futex_wake(int *pointer) {
-	// OWED: WIZ_CALL_FUTEX_WAKE, over `WaitQueue::wake_all`.
+	// No userspace-address-keyed wake operation exists.
 	(void)pointer;
 	return WIZ_ENOSYS;
 }
 
-// sys_tcb_set. MAPS, since D-118 — and this sysdep is why.
+// sys_tcb_set. BODY=WIRED; REMAINDER=WORKS.
 int sys_tcb_set(void *pointer) {
-	// Writing it found that
-	// `FS_BASE` is a *fourth* thing that must follow a thread, after the
-	// privilege stack (D-99), the tables (D-106) and the extended state
-	// (D-108). Nothing native has thread-local storage, so nothing native
-	// would have asked.
-	//
-	// The kernel range-checks the base against WIZ_USER_END rather than
-	// against canonicality alone: a program asking to point `fs:` at kernel
-	// memory has no reason it could be given.
+	// The kernel range-checks the base against WIZ_USER_END and saves it with
+	// the other state that follows a thread (D-118).
 	return as_errno(call1(WIZ_CALL_TCB_SET, reinterpret_cast<long>(pointer)));
 }
 

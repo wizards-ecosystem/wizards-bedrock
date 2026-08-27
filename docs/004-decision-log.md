@@ -142,7 +142,7 @@ target do not change.
 
 ---
 
-## D-06 Native ABI: capability handles + async submission/completion queues — Status: Verified (handle model)
+## D-06 Native ABI: capability handles + async submission/completion queues — Status: Verified (handle model) (amended by D-181)
 
 **Context.** Isaac directed the project to be "forward thinking, state of
 the art, lightweight end to end, ahead of our time, matching theoretical
@@ -155,16 +155,23 @@ POSIX as a translation layer; (c) sync now, async ABI v2 later.
 object is reached through a process-local handle carrying rights bits;
 the data-path ABI is shared-memory submission/completion rings; a small
 synchronous syscall set covers setup, handle operations, mapping, and
-waits. A per-process **policy layer** governs handle-less calls (object
-creation, ring setup).
+waits. Any handle-less operation that creates external authority was reserved
+for a per-process **policy layer**.
+
+D-181 narrows that early routing sketch: the current synchronous domain is
+Exit, RingEnter, RingWait and ThreadBase. Duplicate is ring traffic, channels
+are planned there, and mapping waits for a safe allocation/execution contract
+rather than inheriting a speculative call number. No current handle-less call
+creates external object authority, so no policy object is implemented for the
+enumerated ring, time and control facilities.
 
 **Rationale, amended 2026-08-23 by `010` §2.** The original entry contrasted
 batching and cache locality with trap avoidance. FlexSC does not support that
 contrast: batching reduces both direct mode-switch cost and indirect cache
 cost. The larger result is structural asynchrony; eliminating the trap is a
 smaller additional gain and can cost a dedicated core. Zircon's handle-centric
-authorization remains verified as Fuchsia's deployed design; the policy escape
-hatch mirrors Zircon Job policy (verified caveat). Capsicum independently
+authorization remains verified as Fuchsia's deployed design; the proposed
+policy escape hatch mirrors Zircon Job policy (verified caveat). Capsicum independently
 converged on capabilities + no global namespaces (unverified tier).
 
 **Ring-ABI rules adopted from io_uring's security record** (Google
@@ -175,28 +182,33 @@ validation of everything read from shared memory.
 
 **Consequences.** More design work before first userspace (handle table,
 rights taxonomy, queue layout — each gets a doc). POSIX becomes a
-userspace translation library rather than the kernel's shape. WASI
-integration (D-09) becomes nearly free.
+userspace translation library rather than the kernel's shape. WASI's authority
+model aligns, but D-181 records the real descriptor-adapter cost: numbering,
+preopens and cursor state.
 
 ---
 
-## D-07 Process model: spawn-only, no native fork — Status: Accepted
+## D-07 Process model: spawn-only, no native fork — Status: Accepted (amended by D-111)
 
-**Context.** Follows from D-06; `fork()` duplicates ambient authority and
-is unsound with threads.
+**Context.** Follows from D-06; `fork()` implicitly duplicates the whole
+authority and address-space state, and its snapshot semantics compose badly
+with multiple threads.
 
 **Options.** Classic fork/exec; spawn-only with compat-fork emulation.
 
-**Decision.** Native process creation is
-`spawn(image, initial_handle_set, args)`; the parent explicitly grants
-the child its starting capabilities. No native fork. The kernel provides
-an address-space-clone primitive gated as a compat capability, used only
-by the POSIX layer for ports that genuinely need fork.
+**Decision.** Native process creation is spawn-only; D-111 narrows its birth
+authority to exactly one bootstrap channel endpoint. Bootstrap grants arrive
+through it; later authority may also be derived by a handle-authorized ring
+operation (D-151, D-163). No native fork. A gated address-space clone remains
+Phase 9 compatibility work rather than a primitive the current kernel provides.
 
-**Rationale.** "A fork() in the road" (HotOS'19) crystallized the
-consensus; Fuchsia shipped it; Capsicum's capability mode *forced* the
-same conclusion independently (pdfork). Fork is incompatible with
-"a process's power is exactly its handle table."
+**Rationale.** "A fork() in the road" (HotOS'19) crystallized the case and
+Fuchsia shipped a spawn-oriented process model. Native fork would add an
+implicit wholesale inheritance path beside the explicit grants this kernel is
+built to audit, plus a second way to reproduce thread and address-space state.
+Capsicum supports namespace confinement and handle-like process descriptors,
+but is not spawn-only evidence: capability mode is inherited across both
+`fork` and `pdfork`.
 
 **Consequences.** mlibc's fork-dependent ports get the slower emulated
 path; native software uses spawn and is better for it.
@@ -231,10 +243,11 @@ backed):
 - scrub/repair machinery designed in from the start; no parity RAID ever
   (write hole)
 
-**Risk management.** The on-disk format lives in `libs/wizfs-format`, a
-no_std crate that also compiles on the host — unit-tested and fuzzed on
-Windows against the same code the kernel mounts. WizFS must carry POSIX
-semantics (permissions, symlinks, timestamps) or the D-10 ports suffer.
+**Risk management.** Phase 13 will put the on-disk format in a
+`libs/wizfs-format` no-std crate that also compiles on the host, so the same
+code the kernel mounts can be unit-tested and fuzzed on Windows. WizFS must
+carry POSIX semantics (permissions, symlinks, timestamps) or the D-10 ports
+suffer.
 
 **Consequences.** Highest-risk subsystem in the project (custom FS eats
 data when wrong); mitigations above are non-negotiable discipline.
@@ -262,9 +275,11 @@ by us directly over native handles; wasmtime's host implementation is
 tokio/std-coupled and unusable in-kernel, but its cap-std/WasiCtx
 pattern is the architectural shape to follow.
 
-**Rationale.** A WASI descriptor is literally a capability grant — the
-component model *is* our handle model in portable form. Sandboxed,
-portable apps without porting a whole toolchain.
+**Rationale.** The authority carried by a WASI descriptor is a capability
+grant, which aligns with the handle model. D-181 later records why the
+descriptor is not literally a native handle: numbering, preopens and cursor
+state belong to an adapter. Sandboxed, portable apps still avoid porting a
+whole toolchain.
 
 **Consequences.** The syscall/handle layer must be designed so the WASI
 host is a pure userspace/kernel-service consumer of it (no special
@@ -272,15 +287,16 @@ kernel hooks); wasmi has no built-in WASI so the host is our code.
 
 ---
 
-## D-10 POSIX as a translation layer only; mlibc is the ports gateway — Status: Accepted
+## D-10 POSIX as a translation layer only; mlibc is the ports gateway — Status: Accepted (amended by D-181)
 
 **Context.** CPython and NetSurf (D-05) require POSIX; the native ABI
 (D-06) is not POSIX.
 
-**Decision.** POSIX lives entirely in userspace: mlibc's sysdeps
-implemented over the native ABI (fds map to handles; blocking calls wrap
-queue submissions + waits; fork via the gated compat clone). Native
-software never links it.
+**Decision.** POSIX lives entirely in userspace. Phase 9's mlibc sysdeps make
+descriptors compatibility objects over native handles: they add numbering,
+shared cursors, inheritance and root/cwd policy while blocking calls wrap ring
+submission and wait. A gated compat clone remains Phase 9 work, not a current
+kernel primitive. Native software never links this layer (D-181).
 
 **Rationale.** mlibc exists precisely for hobby-OS ports (Managarm
 lineage); this preserves both the modern core and the porting trophies.
@@ -3014,7 +3030,7 @@ previously stated what would change its mind.
 
 ---
 
-## D-72 WASI: `wasip1` is the target, and the Component Model is a watch item — Status: Provisional (2026-08-23), amends D-09
+## D-72 WASI: `wasip1` is the target, and the Component Model is a watch item — Status: Provisional (2026-08-23) (amended by D-181), amends D-09
 
 **Context.** D-09 made WASI 0.3 components a first-class app format with
 **wasmi** as the runtime. WASI 0.3.0 did ship, on 2026-06-11. Everything else
@@ -3044,12 +3060,14 @@ WASI host bindings written directly over native handles. The Component Model
 becomes a watch item with a named trigger: **it reaches Phase 4, or an
 interpreter ships support.**
 
-**Rationale.** Both reasons D-09 exists survive intact and are delivered by
-`wasip1`: WASI's capability model maps onto our handles with no impedance
-mismatch — a descriptor *is* a handle grant — and a component compiled for this
-OS survives an architecture port. What the Component Model adds beyond that is
-cross-language typed *composition*, which is an ecosystem feature, and the
-ecosystem is ten components.
+**Rationale.** Both reasons D-09 exists survive and are delivered by `wasip1`:
+WASI's authority model maps onto handle grants, and a component compiled for
+this OS survives an architecture port. D-181 narrows the first claim: a WASI
+descriptor is an adapter object over a handle, with descriptor numbering,
+preopens and cursor state that the cursorless native Read does not carry. The
+authority model aligns; the descriptor contract is not impedance-free. What
+the Component Model adds is cross-language typed *composition*, an ecosystem
+feature, and the ecosystem is ten components.
 
 `008` §4.5 asked for the "wasmi 1.0" pin to be softened and it was never
 actioned; this supersedes that. Runtime selection happens when Phase 7 starts.
@@ -3569,7 +3587,7 @@ CVE clustering).
 
 ---
 
-## D-80 A signal is a completion entry — Status: Accepted (2026-08-24)
+## D-80 A signal shares the completion plane — Status: Accepted (2026-08-24) (amended by D-181)
 
 **Context.** D-74 named this the question hardest to answer late, and the
 reason mlibc moved forward to Phase 5. `002` does not mention signals at all.
@@ -3579,6 +3597,12 @@ The native ABI would never raise it; a POSIX libc raises it immediately.
 wait is interruptible because a wakeup is indistinguishable from a completion.
 There is no in-kernel signal frame, no kernel signal mask, and no
 restart-after-interrupt semantics in the kernel.
+
+**Narrowed by D-181.** This decides the event plane, not a version-1 wire
+record. The current completion has no kind or opcode and every token belongs to
+a submission, so no unsolicited signal entry exists yet. Phase 9 must version
+that record and prove dispatch, correlation and interruptible waits without
+adding a second plane.
 
 **Rationale.** It is the same argument that unified ports and completion queues
 in D-79: a second delivery mechanism means two event planes and a join problem,
@@ -3595,15 +3619,13 @@ contradicts D-79's one-terminal-completion rule).
 
 **Consequences.**
 
-- mlibc's `Sigaction` becomes a userspace dispatch loop over CQ entries.
+- mlibc's future `Sigaction` requires a userspace dispatch loop over CQ entries.
 - The POSIX behaviours that assume a kernel-delivered signal interrupting an
   arbitrary instruction — `EINTR` on a blocking call, signal-safe reentrancy,
-  a `SIGSEGV` handler that resumes — are either emulated in the libc or
-  unimplementable. That is the same cluster Plan 9's APE could not implement
-  and Fuchsia excluded from POSIX Lite. **Slice 10's job is to find out which
-  half each falls in, and to record the count** rather than discover it in
-  Phase 9.
-- `002`'s open-questions list loses its third entry.
+  a `SIGSEGV` handler that resumes — require explicit emulation or remain
+  unsupported. Plan 9's APE and Fuchsia POSIX Lite are evidence of the cost,
+  not an impossibility proof.
+- `002`'s event-plane question closes; the concrete record remains open.
 
 ---
 
@@ -5241,8 +5263,9 @@ recorded into atomics and read by whoever wants it, which is what
 that is not a boundary); retire on *every* fault including double faults
 (rejected: a double fault means the fault path itself failed, and continuing is
 a claim the kernel cannot support); deliver the fault to the program as a signal
-(rejected for now — signals are completion entries by D-80, and there is no
-queue yet; the thread that would receive one does not survive this phase).
+(rejected for now — D-80 reserves the completion plane for them, but there is
+no signal record or queue yet and the receiving thread does not survive this
+phase).
 
 **Consequences.**
 
@@ -5784,10 +5807,11 @@ possible; nothing yet does it.
 
 ## D-110 Channels carry bytes and handles, and both ends declare the rights — Status: Accepted (2026-08-24)
 
-**Context.** `002` names `Channel` as the IPC primitive and pillar 1 rests on
-it: *a process receives exactly one handle at spawn — its bootstrap channel —
-and every later handle arrived through a channel.* Slice 6 built the handle
-table and the object header; nothing could move a handle between tables.
+**Context.** `002` named `Channel` as the IPC primitive and, at this decision,
+pillar 1 said a process received one bootstrap handle and every later handle
+through a channel. Slice 6 built the handle table and the object header;
+nothing could move a handle between tables. D-151 later amended the provenance
+clause when completions became a handle-producing path.
 
 **Decision — the object.** Two ends, made together by `object::channel()`, each
 holding a **weak** reference to the other. A send appends to the *peer's*
@@ -5850,14 +5874,14 @@ per-message allocation is charged to no quota (D-44). And a channel end has no
 blocked on the other side is only noticed at the next wake; the check that
 would catch it is the one owed with reclamation.
 
-## D-111 A program receives exactly one handle at birth, and it is a channel — Status: Accepted (2026-08-24)
+## D-111 A program receives exactly one handle at birth, and it is a channel — Status: Accepted (2026-08-24) (provenance amended by D-151; implemented by D-163), amends D-07
 
 **Context.** `002`'s pillar 1 was amended once already, because its original
 wording — "channels are the sole delegation mechanism" — was false even of
 Zircon, which also passes handles through `zx_process_start`. The replacement
-was chosen to be checkable: *a process receives exactly one handle at spawn —
-its bootstrap channel — and every later handle arrived through a channel.*
-Until D-110 there were no channels to give one.
+joined a load-bearing birth count to a channel-only provenance claim. The
+birth count remains; D-151 and D-163 later made handle-authorized completions
+a second provenance path. Until D-110 there were no channels to give one.
 
 **Decision.** `user::spawn` builds a channel pair before the thread exists,
 puts the child's end in a fresh `HandleTable` as its only entry, and returns
@@ -5879,8 +5903,9 @@ looks harmless, and it quietly turns a capability system into an ambient one.
 and adding an event alongside the channel turns it red.
 
 Quota is 64 handles per process (D-78), which is the answer to kernel-memory
-exhaustion at the handle layer. Nothing yet gives a program a second handle, so
-the number is room rather than a measurement.
+exhaustion at the handle layer. At this decision nothing gave a program a
+second handle; D-151's completion reservation and D-163's shared table made
+that room usable.
 
 **Consequences.** `spawn` returns a `Spawned` — the thread slot and the
 parent's channel end — rather than a bare slot. The check spawns its own
@@ -5890,8 +5915,9 @@ looked next; that cost two red checks before it was noticed, and the fix is
 that a check which spawns owns its program. 119 checks.
 
 `002`'s Zircon correction was already made when the pillar was reworded; what
-this decision adds is the code that makes the sentence true of *this* kernel
-rather than a claim about someone else's.
+this decision adds is the code that makes the birth count true of *this*
+kernel. The current provenance rule is channel receipt or derivation through
+a handle-authorized ring operation, never ambient minting (D-151, D-163).
 
 Left owed: the program cannot yet *use* its bootstrap channel — that needs a
 syscall surface, which is slice 9's ring. Nothing reclaims a bootstrap when a
@@ -6046,7 +6072,7 @@ page, which is the boundary that matters, and a program crossing it is what
 slice 10's libc arrives to make ordinary. Nothing blocks on a ring yet, so the
 wait queue is built and unused. And no completion carries a handle.
 
-## D-114 The POSIX layer is written and not compiled, and the finding is what it was for — Status: Accepted (2026-08-24), amends D-74
+## D-114 The POSIX layer is written and not compiled, and the finding is what it was for — Status: Accepted (2026-08-24) (amended by D-181), amends D-74
 
 **Context.** D-74 asked for an mlibc sysdep "immediately after the ABI
 stabilises, not to run real software, but to find out whether a POSIX libc can
@@ -6057,79 +6083,80 @@ attempt, author the sysdeps and the ABI surface, **record the wall with its
 cost**, and close without a compiled libc — an ADR amending D-74, not a silent
 omission.
 
-**The wall, measured rather than estimated.** This machine has no C compiler of
-any kind. LLVM 19.1.7's Windows release is 845 MB compressed and about 3 GB
-extracted, and — the objection that actually decides it — it is the **MSVC**
-build. LLVM ships no mingw-based Windows release, so a vendored clang would
-depend on an MSVC installation this machine does not have and the project has
-no way to pin, which is the opposite of the property vendoring exists to buy
-(D-16). mlibc additionally needs meson and ninja, neither present, and a target
-triple that does not exist and would mean patching its build files.
+**The wall, measured rather than estimated on 2026-08-24.** At that measurement
+this machine had no C compiler. LLVM 19.1.7's Windows release was 845 MB
+compressed and about 3 GB extracted, and — the objection that actually decided
+it — it was the **MSVC** build. LLVM shipped no mingw-based Windows release, so
+a vendored clang would have depended on an unpinned MSVC installation. mlibc
+additionally needed meson and ninja, neither then present, and a target triple
+that did not exist. D-181 records the later tool recheck; newly appeared local
+executables still do not constitute a pinned source/toolchain/target closure.
 
 **Decision.** Take the fallback, and make it a deliverable rather than a
-shrug. `userland/abi/wizard_abi.h` states the native ABI as a C header;
-`userland/sysdeps/wizard/generic.cpp` implements mlibc's sixteen mandatory tags
-against it, each marked with which of three things it is. The counts are the
-finding: **3 MAPS, 12 OWED, 1 ABSENT** — since revised to **4 MAPS, 11 OWED,
-1 ABSENT** by D-118, which paid `sys_tcb_set`. The current counts are in
-`userland/README.md` and are checked against the sysdeps' own tags at every
-commit (D-124); the numbers in this paragraph are the finding as it stood on
-the day, and are left as they were.
+shrug. At this decision, `userland/abi/wizard_abi.h` transcribed the native ABI
+for C and `userland/sysdeps/wizard/generic.cpp` wrote the sixteen functions
+believed mandatory at an unrecorded mlibc snapshot, each marked with one of
+three labels. The counts were the finding: **3 MAPS, 12 OWED, 1 ABSENT** — then
+revised to **4 MAPS, 11 OWED, 1 ABSENT** by D-118, which paid `sys_tcb_set`.
+D-124 checked those counts against the sysdeps' labels. They remain here as the
+dated result; D-181 retires the one-axis premise and replaces the current view
+with an exact two-axis register.
 
-The OWED all have a kernel-side mechanism and no ring-3 door, which is a
-much better position than it sounds: `sys_close` over the handle table's close,
-the reads and writes over the ring, the memory calls over `map_user` and
-`unmap`, and the futexes over `WaitQueue::wait_unless` — which already solves
-the lost-wakeup window a futex gets wrong first (D-95).
+The contemporaneous claim was that the OWED all had a kernel-side mechanism
+and no ring-3 door: `sys_close` over the handle table's close, reads and writes
+over the ring, memory calls over `map_user` and `unmap`, and futexes over
+`WaitQueue::wait_unless`. D-181 found the premise false: write was absent,
+read and seek need compatibility cursor state, and an internal wait queue is
+not a userspace-address-keyed futex.
 
-The one ABSENT is `sys_open`, and it is absent for the reason the design
-intends: there is no namespace to name a path in. A libc can be built where
-`open` resolves through a directory handle the process was given, which is
-`openat` with no `AT_FDCWD` and is what WASI's `path_open` settled on. What such
-a libc cannot do is `open("/etc/foo")` from a process nobody gave a root
-directory to.
+The one ABSENT was `sys_open`, for the intended lack of an ambient namespace.
+Phase 6 subsequently built read-only OpenAt. D-181 records useful substrate but
+not a complete route: no ring-3 bootstrap/channel operation can deliver the
+first directory yet, and the POSIX adapter must still supply root/cwd/descriptor
+policy while refusing mutating modes. A process nobody gave a root directory
+still cannot open `/etc/foo`, which remains the point.
 
 **Four things the exercise surfaced that the native ABI would never have
 raised**, which is precisely the value D-74 predicted:
 
-1. **`FS_BASE` is a fourth thing that must follow a thread.** `sys_tcb_set`
-   writes it and the kernel does not save it across a switch. `RSP0` (D-99),
-   `CR3` (D-106) and the extended state (D-108) all live in `task::prepare`;
-   this belongs there with them, and nothing native has thread-local storage so
-   nothing native would have asked.
+1. **`FS_BASE` is a fourth thing that must follow a thread.** At this decision,
+   `sys_tcb_set` exposed that the kernel did not save it across a switch.
+   D-118 closed the finding: it now lives in `task::prepare` beside `RSP0`
+   (D-99), `CR3` (D-106) and the extended state (D-108).
 2. **There is no wall clock.** Uptime is monotonic and is all there is; this
    kernel has never been told what time it is. `time()` and `stat` timestamps
    need an epoch.
-3. **A seek is state the object holds, not the handle.** Two POSIX descriptors
-   to one file share a position — a distinction the kernel will have to make
-   about a file object, and by D-78's rule therefore a legitimate per-type
-   right.
+3. **The contemporaneous finding put seek state on the file object.** D-181
+   corrects that ownership: the native protocol is deliberately cursorless;
+   the POSIX adapter owns an open-file-description cursor shared by duplicated
+   descriptors. It is compatibility state, not a native right.
 4. **W^X is a real incompatibility and the right one.** `PROT_WRITE|PROT_EXEC`
    is refused (D-12, D-100), so a JIT maps twice. Named so a port that fails on
    it fails for a stated reason.
 
-**The two questions D-74 said were cheaper now, answered.** A signal is a
-completion entry (D-80), so `sigaction` runs in userspace off the libc's own
-ring loop — and the consequence writing this made concrete is a constraint on
-the *whole* libc, not on signals: **every blocking entry point must be a ring
-submission plus a wait**, because a thread blocked in a synchronous call cannot
-be interrupted at all. Userland is static-only for now; nothing in the ABI
-forecloses a dynamic linker, since the file-backed half of `sys_vm_map` is
-OWED rather than ABSENT.
+**The two questions D-74 said were cheaper now, narrowed by D-181.** D-80
+requires signals to share the completion plane, but version 1 has no
+unsolicited-event discriminator; the old colliding signal opcode did not make
+`sigaction` exist. A future representation still requires blocking libc work
+to use an interruptible ring wait. Userland is static-only for now. A dynamic
+linker remains possible, but user mapping and file-backed execution are
+PARTIAL platform work rather than a pre-numbered owed call.
 
-**Consequences.** The header is the ABI written a second time, for a consumer
-that cannot read Rust — which is the duplication that made `x86-tables` and
-`trap-cause` disagree about vector 28. So it gets the same answer: a host test
-compares the ring address, the version, both opcodes, both statuses and the
-gate vector against the kernel's own sources, and drift from either side turns
-it red. Both directions were broken and checked.
+**Consequences, amended by D-124 and D-181.** The header is a second
+transcription for a C consumer, not the ABI's authority. The current host check
+removes comments from both languages, inventories every header definition,
+compares the complete call/opcode domains and active wire definitions with
+kernel source, and derives the entry and time structures' offsets, widths and
+sizes. The sysdep check independently discovers all active definitions and
+checks each BODY claim against its body.
+The original small comparison was broken in both directions; D-181's stronger
+checks were broken in the additional ways recorded there.
 
-**What is owed, with its routes.** A compiled hello-world. Building LLVM from
-source against the mingw toolchain already present is hours and a large
-artefact; cross-compiling elsewhere and vendoring the result breaks the
-one-machine property D-16 is about; waiting for a mingw-based LLVM release
-costs nothing but is not a plan. The sysdeps and the analysis are the part that
-answers D-74's question; the compile is the part that confirms it.
+**What is owed, with its route.** A compiled hello-world. Phase 9 must pin the
+mlibc revision, the compiler/Python/Meson/Ninja closure and the Wizard target,
+then build the transcription it actually adopts. The sysdeps and analysis are
+the early pressure test D-74 asked for; only that reproducible build confirms a
+port.
 
 ## D-115 The Phase 5 closing audit — Status: Accepted (2026-08-24)
 
@@ -6260,7 +6287,7 @@ consume a submission without posting its completion, now loud in debug; and the
 two `lock_leaf` closure holes D-105 recorded — ~~still open~~, **closed by
 D-121**.
 
-## D-116 A program drives its own ring, and the shipped kernel runs one — Status: Accepted (2026-08-24)
+## D-116 A program drives its own ring, and the shipped kernel runs one — Status: Accepted (2026-08-24) (amended by D-181)
 
 **Context.** Phase 5 closed with the async ABI complete on the kernel's side
 and unreachable from ring 3. The gate at DPL 3 retired its caller
@@ -6340,12 +6367,11 @@ The check-count cross-check D-105 added earned its place immediately: bumping
 `EXPECTED_CHECKS` without `EXPECTED_SELFTEST_CHECKS` turned `cargo test` red in
 a second, where before it would have cost a sixty-second boot to find.
 
-Left owed: the ring carries no handle, so it is not yet the delegation path
-channels are; nothing blocks on a completion, so the wait queue is still built
-and unused; and the OWED sysdeps of D-114 are still owed (eleven, after D-118
-paid `sys_tcb_set`) — this decision
-adds the two calls a program needed to prove the ABI works, not the ones a libc
-needs to be one.
+At the time, the ring carried no handle, nothing blocked on a completion, and
+the eleven entries OWED under D-114's former taxonomy remained so after D-118
+paid `sys_tcb_set`. D-181 retires that taxonomy; this decision's live result is
+that it added the two calls the emitted program needed to prove the ABI worked,
+not a complete libc surface.
 
 ## D-117 A dead program's memory comes back, collected by whoever has nothing better to do — Status: Accepted (2026-08-24)
 
@@ -6440,7 +6466,7 @@ reclaims a space with more than thirty-two of its own tables. And a zombie
 waits for a collector, so a machine that neither idles nor spawns holds them —
 bounded by the slot count, which is the honest version of "eventually".
 
-## D-118 Thread-local storage is the fourth thing that follows a thread — Status: Accepted (2026-08-24)
+## D-118 Thread-local storage is the fourth thing that follows a thread — Status: Accepted (2026-08-24) (amended by D-181)
 
 **Context.** D-114 wrote mlibc's sixteen mandatory sysdeps against the native
 ABI and named four things the exercise surfaced that nothing native would have
@@ -6475,7 +6501,8 @@ the machine walks, which five-level paging changes.
 header's numbering moved with it — the owed calls renumbered rather than
 leaving a gap, because a gap is a number somebody eventually fills wrongly.
 `sys_tcb_set` moves from OWED to MAPS: four map now, eleven are owed, one stays
-absent.
+absent. These are D-114's historical labels; D-181 now records
+`sys_tcb_set` as BODY=WIRED, REMAINDER=WORKS.
 
 127 checks. `thread_local_storage_follows_the_thread` sets a base, has a second
 thread set its own, and requires each to keep what it set — which is only true
@@ -9011,7 +9038,9 @@ person who makes it wrong is adding a test, which is the behaviour the number
 exists to encourage. An approximation that stays true is worth more than a
 precision that does not — **except** where the number is load-bearing, where
 the answer is not prose at all but a check, which is what
-`EXPECTED_CHECKS`, `MEASURED` and the sysdep tally already are.
+`EXPECTED_CHECKS`, `MEASURED` and, at the time, D-124's sysdep tally already
+were. D-181 later retired that tally because its categories were false; the
+exact per-name register is now the authority.
 
 **Consequences.**
 
@@ -9178,17 +9207,20 @@ exercised where `pitch == width * bytes_per_pixel`, so a padded framebuffer
 would map short. Each is a real hole in a real check and each needs a table of
 values from outside the crate, which is a session's work rather than an hour's.
 
-## D-149 The ABI is extended before the filesystem is written — Status: Accepted (2026-08-25)
+## D-149 The ABI is extended before the filesystem is written — Status: Accepted (2026-08-25) (amended by D-181)
 
 **Context.** `000`'s roadmap makes Phase 6 "VFS + storage": a VFS over handles,
 tmpfs and devfs, and a read-only third-party format over NVMe. `013` was
 drafted as a separate "Phase 6.5" to follow it, holding three constraints on
 what a program may ask for.
 
-The ordering is the decision, and it is not cosmetic. **A VFS is the first
-subsystem this kernel has with genuinely blocking operations.** Everything
-before it either cannot wait — the clock, `exit`, `tcb_set` — or waits on
-something the kernel already owns. `read()` waits on a device.
+The ordering is the decision, and it is not cosmetic. Storage is the first
+external-I/O subsystem whose eventual implementation must defer while a device
+works. D-164's Timer became the first operation that actually remains in
+flight; the present Read has ring wire shape but polls the device synchronously
+inside `RingEnter`. Read is instead the first storage/data caller that needs a
+handle, offset, buffer and length together, and therefore freezes the entry
+layout it uses.
 
 **Options.**
 
@@ -9207,8 +9239,9 @@ native from its first `read`.
 the kernel has two doors to the same operation for ever. That is not a
 hypothetical: it is what `011` records Phase 5 avoiding by freezing the handle
 table and the queue ABI *before* writing their callers, on the argument that
-both get frozen by their first caller. The queue's first caller echoed a word
-back. Its second waits on a disk, and it is the second that fixes the shape.
+both get frozen by their first caller. Echo was the first queue caller, Timer
+was the first deferred one, and Read was the first data caller that forced the
+submission from sixteen to thirty-two bytes.
 
 The cost is a slower start — three slices before anything is stored — and it is
 the same cost D-19 charges for every charter.
@@ -9220,13 +9253,15 @@ the same cost D-19 charges for every charter.
   that true rather than apologetic.
 - Phase 6's charter is written after `012-research-notes-4`, and covers both
   halves.
-- Phase 7 opens against an ABI that has already met something that waits.
+- Phase 7 opens against an ABI whose Timer has already exercised genuine
+  deferral and whose Read has exercised the storage wire shape. Read's device
+  service is still polled inline; a deferred device state machine remains work.
 
 **Left owed.** Nothing here says what the VFS *is* — the handle-per-file shape,
 tmpfs, devfs, and whether the third-party format is FAT32 or ext2 are the
 research pass's questions and the charter's answers.
 
-## D-150 No blocking-only door, as a project rule — Status: Accepted (2026-08-25)
+## D-150 No blocking-only door, as a project rule — Status: Accepted (2026-08-25) (amended by D-166 and D-181)
 
 **Context.** `013`'s first constraint: every operation that can wait gets a ring
 form. The question left open was whether that binds Phase 6 or the project.
@@ -9239,8 +9274,10 @@ operation that only *looks* blocking.
 no operation is reachable only by a call that blocks.**
 
 The carve-out that makes it liveable already exists and is not an exception:
-**a door that cannot wait may stay direct.** `exit`, `tcb_set` and the clock
-are all such doors today. The rule is about waiting, not about syscalls.
+**a door that cannot wait may stay direct.** At D-150's adoption, `exit`,
+`tcb_set` and the clock were the examples. Exit and TcbSet remain direct;
+D-166 later removed the clock door in favour of a page load. The rule is about
+waiting, not about syscalls.
 
 **Rationale.** The reason to make it a project rule is the reason it would be
 re-argued: the first person to want a synchronous `stat` will have a good
@@ -9257,9 +9294,12 @@ will be whoever is in a hurry.
 
 **Consequences.**
 
-- Phase 6's `read`, `write` and `open` are submissions. A blocking read is a
-  submission plus a wait, which is also what makes it interruptible by a
-  signal, since a signal is a completion (D-80).
+- At D-150's adoption, Phase 6 planned `read`, `write` and `open` as
+  submissions. The delivered result is narrower: OpenAt and Read are ring
+  operations, Write was not built, and current Read polls the device while
+  `RingEnter` serves it. Timer proves the submission-plus-wait form; applying
+  that form to device progress remains future work. D-181 also leaves signals
+  without a version-1 representation.
 - The rule is checkable at review time and not by machine: nothing can tell a
   door that *cannot* wait from one that merely does not yet.
 
@@ -9268,12 +9308,12 @@ and this project has declined whole-program analysis before for good reasons
 (D-147). The honest position is that this is a rule a reviewer applies, and
 the entry exists so the reviewer knows to.
 
-## D-151 A completion may carry a handle, and the receiver reserves its slot — Status: Accepted (2026-08-25)
+## D-151 A completion may carry a handle, and the receiver reserves its slot — Status: Accepted (2026-08-25) (amended by D-181), amends D-111's provenance clause
 
 **Context.** `011` closed Phase 5 owing this: *"no completion carries a handle,
 so the ring cannot be the delegation path the channels are."* Phase 6 makes it
-concrete, because `open` is the first operation whose whole purpose is
-producing authority.
+concrete. Duplicate became the first implementation and proof; OpenAt was the
+motivating namespace caller whose useful result is newly derived authority.
 
 The question is who accounts for the handle-table slot.
 
@@ -9340,10 +9380,11 @@ does not avoid the decision — it moves it to whoever writes `open`.
   can come back, and admission checks the handle quota then, not later.
 - Refusal is backpressure and reads like it: the program is told at submit,
   which is the moment it can do something about it.
-- The rights on a handle arriving by completion **attenuate the way D-110 makes
-  the channel path attenuate**. Otherwise the ring becomes the widening path
-  around that discipline, which is the one thing that would make it worse than
-  the channels it is joining.
+- For same-object Duplicate, completion-carried rights attenuate the way D-110
+  requires. A cross-type producer may derive only a type-specific right
+  authorised by its source operation and preserve only universal rights already
+  held; OpenAt's `TRAVERSE`-to-`READ` rule is D-173's worked case, repaired by
+  D-181.
 - Quota accounting moves earlier and has to be released if the operation is
   cancelled or its program retires (D-153).
 
@@ -9351,7 +9392,7 @@ does not avoid the decision — it moves it to whoever writes `open`.
 refused operation, a cancelled one, a retired program's. That is three paths
 and the third is D-153's, so this entry does not close it.
 
-## D-152 Time is read from a page, and the page is global — Status: Accepted (2026-08-25)
+## D-152 Time is read from a page, and the page is global — Status: Accepted (2026-08-25) (amended by D-181)
 
 **Context.** Phase 4 made the counter the clock (D-57). Reading it from ring 3
 currently means a trap. Every OS that cares eventually publishes a read-only
@@ -9388,8 +9429,9 @@ is giving up a page and not a principle.
 
 **Consequences.**
 
-- `sys_clock_get` stops being OWED and becomes a load. `libs/timebase` already
-  has the arithmetic and it moves to ring 3 unchanged.
+- Under D-114's former taxonomy, `sys_clock_get` stopped being OWED and became
+  a load. D-181 records the checked reader and unfinished fallback/realtime
+  work as BODY=PARTIAL, REMAINDER=PARTIAL.
 - The page is one more thing mapped into every program, and one more thing in
   the address-space layout — an entry in D-46's KASLR ledger.
 - A wall clock is still absent. This publishes the monotonic counter;
@@ -10089,7 +10131,7 @@ holds neither — which is what a quota check would otherwise be racing.
   can *reach* must not count what it has been promised, and the two are
   separately readable for exactly that reason.
 
-## D-164 A wait that is a wait — Status: Accepted (2026-08-25)
+## D-164 A wait that is a wait — Status: Accepted (2026-08-25) (amended by D-181)
 
 **Context.** `014` opens by saying this is "the phase that gives the kernel
 something to wait for", and D-149 puts the ABI first precisely so the waiting
@@ -10141,7 +10183,9 @@ one.
 **Rationale.** The completion is posted by the kernel *after* the deadline, on
 the waiting thread's behalf, so a woken program finds the entry already in its
 queue. That is what makes it a wait rather than a poll dressed up, and it is
-the shape slice 5's polled NVMe read reuses without changing the ABI.
+the shape storage was intended to reuse without changing the ABI. D-169 and
+D-181 record the delivered limit: Read has the ring entry but still polls NVMe
+inline while `RingEnter` serves it.
 
 `Queue`'s `WaitQueue` is still not what a ring-3 waiter uses, and this entry
 says so rather than leaving it looking like an oversight: `WaitQueue::wait`
@@ -10169,9 +10213,10 @@ is a race the program cannot avoid.
 - The pending table holds one entry per submission slot, which is not
   arbitrary: an in-flight operation occupies a submission's worth of admission
   until it completes, so a larger table could never be filled.
-- `Pending` is a timer and nothing more. D-41 forbids the abstraction with one
-  implementation; the second kind arrives with the block device in slice 5, and
-  that is when it becomes worth generalising.
+- `Pending` is a timer and nothing more. The original expectation was that a
+  block-device operation would become its second kind; it did not. D-41 still
+  forbids generalising the table before deferred device service actually
+  supplies that caller.
 
 ## D-165 A check that could not fail, found by breaking it — Status: Accepted (2026-08-25)
 
@@ -10234,7 +10279,7 @@ The general form, and it is the third thing this rule has cost:
 - Nothing in the kernel changed. The destructor was correct; the check could
   not show it.
 
-## D-166 The time is a page, not a call — Status: Accepted (2026-08-25)
+## D-166 The time is a page, not a call — Status: Accepted (2026-08-25) (amended by D-181)
 
 **Context.** D-152 settled the shape of a published clock and D-149 put it in
 this phase, before a filesystem exists to want it, because a call that becomes
@@ -10255,14 +10300,15 @@ though on x86 the store-store one is a compiler barrier and no instruction —
 because an aarch64 port should not have to rediscover that it is not free
 everywhere.
 
-**This clock does not need a periodic update, and that is not a shortcut.**
-Linux rewrites its published clock every tick because its clocksource may be an
-HPET, or a TSC that stops in idle, and because NTP adjusts the multiplier
-continuously. This kernel refuses to calibrate at all unless the counter is
-invariant, so the conversion is fixed and the origin never moves: a reader
-computes `convert(rdtsc - origin)`, which is *exactly* what `time::now_ns`
-computes. The seqlock is still here and still correct, because the page is
-republished on the two transitions that do exist — calibration, and revocation.
+**D-181 corrects the claimed reason this clock has no periodic update.** Linux
+rewrites a published clock for adjustable or idle-stopping sources and for NTP.
+D-57 deliberately does *not* veto calibration when CPUID omits invariant TSC:
+two believable, agreeing measurement windows are accepted and the missing bit
+is warned about. The conversion and origin remain fixed for the supported
+uptime, so the page and `time::now_ns` compute the same value, but on a machine
+whose rate later changes both clocks are only as steady as that counter. The
+mode permits revocation; suspend, NTP adjustment and an instability detector
+remain absent.
 
 **The base is split, and the obvious form is wrong.** `base_ns << shift`
 overflows a `u64` after about eight seconds of uptime at a 1 GHz counter's
@@ -10272,7 +10318,7 @@ is stored is whole nanoseconds beside a carried *fraction* of one, always below
 clock updated at a kilohertz that dropped it would fall a microsecond behind
 every second.
 
-**The revocation gate is why the syscall stays.** `mode` is the reader's
+**The revocation gate is why the Uptime fallback stays.** `mode` is the reader's
 permission to use the page at all, and D-152 requires the fallback to be always
 reachable — so the ring's `Uptime` opcode is not decoration either, and the
 check that revokes the clock asks the ring for the time on the way past.
@@ -10308,16 +10354,18 @@ A second CPU would give a better one.
   first chose a step of 3,192,000 ticks at 3.192 GHz, which is exactly a
   millisecond, so the conversion had no fraction to lose and dropping the carry
   left it green — D-155's rule, hit again by the person who wrote it down.
-- Six machine checks, six breaks, all red. The page-and-call check is a
+- Six machine checks, six breaks, all red. The page-and-kernel-clock check is a
   **sandwich rather than a tolerance**: the page's reading is taken between two
   calls and must lie between them, so a multiplier or shift off by one fails
   immediately and no slack hides it.
 - `sys_clock_get` moves from OWED to MAPS and is now a load. The sysdep tally
-  is 5/10/1 where it was 4/11/1.
+  is 5/10/1 where it was 4/11/1. This is the historical one-axis transition;
+  D-181 records the checked monotonic reader and missing fallback/realtime
+  semantics as PARTIAL/PARTIAL.
 - `WIZ_CALL_CLOCK_GET` is **deleted** from the ABI, and `WIZ_CALL_RING_WAIT`
-  takes 3. The owed calls renumber, which costs nothing because none is
-  implemented and would cost an ABI break later — the same reasoning D-118 used
-  the last time they moved.
+  takes 3. At this decision the speculative owed calls renumbered, which cost
+  nothing because none was implemented. D-181 later deleted those unimplemented
+  call numbers instead of preserving a fictitious future ABI.
 - The C header gains the time page's address, version, modes, offsets and
   layout, and the cross-check compares **every one of them** against
   `timepage.rs`, including each field offset. A `mode` read from the wrong
@@ -10488,11 +10536,11 @@ both sites. The claim happens outside the guard now.
 - Three machine checks, five breaks, all red.
 - **The `Device` is a kernel-side capability, not yet a handle.** It is
   obtainable only from the registry, exactly as `Port<T>` is, which is the same
-  discipline one level up. It becomes something a program can hold in slice 8,
-  where devfs is what hands it out — and that is the first moment there is
-  anyone to hand it to (D-41).
+  discipline one level up. Slice 8 makes it resolvable internally through devfs
+  but does not create a handle; the first user-visible Device handle remains
+  Phase 7 work (D-41, D-172).
 
-## D-169 An NVMe controller, polled, and a disk with something on it — Status: Accepted (2026-08-25)
+## D-169 An NVMe controller, polled, and a disk with something on it — Status: Accepted (2026-08-25) (amended by D-181)
 
 **Context.** `012` §2 disqualified virtio-blk rather than deprioritising it:
 VMware exposes no virtio device of any kind, so under D-18 it could never close
@@ -10506,8 +10554,10 @@ specification.
 **Polled is what makes it affordable.** `Create I/O Completion Queue` with
 `IEN = 0` disables interrupts for that queue, which removes "this kernel has no
 interrupt sharing" from the critical path entirely. The cost is that a read
-spins, and slice 9 is where that becomes a submission and the spinning becomes
-a wait.
+spins. Slice 9 gave Read a submission/completion shape but did not make device
+service deferred: `Queue::read` still reaches the VFS and polls NVMe inline
+while `RingEnter` serves the queue. Only Timer currently exercises in-flight
+completion.
 
 **`CAP` is read, never assumed.** The queue size, the doorbell stride, the
 timeout and the page-size range all come from it, and every one changes what a
@@ -10564,9 +10614,11 @@ exists.
   and the kernel writes nothing to it.
 - The signature is written by `xtask` and looked for by `selftest.rs`, which is
   two transcriptions of one table — so a host test compares them (D-158).
-- **A read still spins.** `POLL_ATTEMPTS` bounds it, because a controller that
-  does not answer is a controller to report, and on a machine without bus
-  master enabled a hang is the only symptom there is.
+- **A read still spins in the serving thread.** `POLL_ATTEMPTS` bounds it,
+  because a controller that does not answer is a controller to report, and on a
+  machine without bus master enabled a hang is the only symptom there is. A
+  deferred device state machine, interrupt path and teardown coupling remain
+  future work.
 
 ## D-170 FAT32, an oracle, and a block layer that is one trait — Status: Accepted (2026-08-25)
 
@@ -10672,10 +10724,11 @@ property rather than a design preference.
 
 **Decision.**
 
-**The abstraction is over directories** — `lookup`, `enumerate`, and `modify`
-when there is a write path. Three operations rather than five tables, because
-path resolution is the only code that must be backend-agnostic. That is 9P's
-walk/read/remove.
+**The abstraction is over directories.** The delivered surface resolves,
+reads and enumerates. Mutation remains reserved for the future write path
+rather than appearing as an inert method. This compact surface replaces five
+Linux-style operation tables because path resolution is the code that must be
+backend-agnostic.
 
 **Enum dispatch while every backend is in-kernel.** Monomorphic,
 allocation-free, and exhaustively checked by the compiler when a fourth
@@ -10755,9 +10808,10 @@ with one implementation is a description of that implementation, and slice 7's
 three operations had only FAT32 to be about.
 
 `012` §7 is equally blunt about the second thing: **devfs does not go through a
-byte interface.** A devfs entry has no bytes; it is a name that yields a handle
-*of another type*. Forcing it to implement `read_at` is the "everything is a
-file" conflation, and WASI's own README rejects it on exactly these grounds.
+byte interface.** A devfs entry has no bytes; it is a name that resolves to a
+device object *of another type*. Forcing it to implement `read_at` is the
+"everything is a file" conflation, and WASI's own README rejects it on exactly
+these grounds.
 
 **Decision.** Two more backends, chosen to be unlike the first in different
 directions.
@@ -10814,17 +10868,18 @@ arrived from: an input, a corpus, and now a directory tree.
   capability. Today the name resolves; the handle it becomes is Phase 7's, and
   saying so is better than building a table nothing puts anything in.
 
-## D-173 The file handle, and a buffer with no pointer in it — Status: Accepted (2026-08-25)
+## D-173 The file handle, and a buffer with no pointer in it — Status: Accepted (2026-08-25) (amended by D-181)
 
 **Context.** `014` left three decisions for this slice: what a `File` handle's
 object is, whether `read` takes a length or a provided buffer, and — implicitly
 — how a program comes to hold a file at all.
 
-D-149 put the ABI slices first "because a VFS is the first caller that waits,
-and a caller freezes the interface it uses". **This is that caller.** The
-submission entry was sixteen bytes and a read needs a handle, an offset, a
-buffer and a length; the entry is thirty-two now, and the whole reason the ABI
-slices came first is that this change is cheap today and an ABI break tomorrow.
+D-149 put the ABI slices first because a caller freezes the interface it uses.
+Read is the first storage/data caller: it needs a handle, an offset, a buffer
+and a length. The submission entry was sixteen bytes and is thirty-two now,
+which is cheap today and an ABI break tomorrow. Timer, not Read, is the first
+operation that genuinely waits; current Read polls NVMe inline while its ring
+entry is served.
 
 **Decision.**
 
@@ -10848,12 +10903,14 @@ Zero-copy needs the memory-object work of a later phase, and paying one copy
 for a boundary with no pointer in it is the right trade until then.
 
 **`OpenAt` is how a program comes to hold a file**, and its rights are
-**derived, never asked for**. A directory inherits its parent's directory
-rights unchanged; a file gets `READ`, because reaching a file is what naming it
-means; and `WRITE` is never granted, because there is no write path and a right
-that grants nothing is a syscall name in disguise (D-78). Monotone
-non-increasing, as `012` §4 requires a nested open to be — and a program
-wanting less can `Duplicate` with fewer.
+**derived, never asked for**. Opening a directory preserves the same-type
+rights unchanged. Opening a file preserves only universal rights already held
+and derives `READ` from `TRAVERSE`, because traversal authorized reaching the
+named bytes. That cross-type derivation is not a subset relation between the
+two raw bitsets; the non-escalation rule is that it never recreates a universal
+right or admits a type-specific power with no authorizing operation. `WRITE`
+is not granted because there is no write path, and a program wanting fewer
+rights can `Duplicate` with fewer.
 
 A device is refused. What a program will hold for one is slice 4's `Device`
 capability, and putting it in a table is Phase 7's (D-172).
@@ -10882,14 +10939,18 @@ happens before the read is now visible as a device that was never told.
 
 **Consequences.**
 
-- The submission entry is thirty-two bytes. Four transcriptions of the layout
-  now exist — `queue.rs`, the C header, the emitted ring-3 program, and the
-  test helpers — and the host cross-check compares all of them, including the
-  stride the program writes at. A submission written at the wrong stride lands
-  its argument in the next entry's opcode.
-- Three rights added: `TRAVERSE`, `ENUMERATE`, `MODIFY`. `MODIFY` grants
-  nothing and is defined anyway, because leaving a gap in a rights word is how
-  a later addition renumbers the ones above it.
+- At this decision four transcriptions of the entry layout existed: the kernel
+  parser/serializer, C header, emitted ring-3 program and test helpers. The host
+  check compared only total sizes and stride, not fields; D-181 found the gap.
+  The repair uses one kernel offset map for parser, serializer and helpers,
+  derives C offsets, widths and sizes, and checks the emitted ELF's actual
+  operands plus entry base and count. A persistent mutation changing submission
+  `argument` from offset 24 to 8 must make the program-ring check red.
+- Three raw rights were added: `TRAVERSE`, `ENUMERATE`, `MODIFY`. The current
+  masks admit `READ` for File and `TRAVERSE | ENUMERATE` for Directory. `WRITE`
+  remains meaningful for Channel but no File admits it; no Directory admits
+  `MODIFY`, and no type admits `EXECUTE` or `MAP`. Leaving those raw bits in
+  place avoids renumbering later without pretending an unenforced power exists.
 - **Two rights tests were restated lists and are now derived.** One named the
   eight rights that existed; the other named `1 << 12` as an undefined bit,
   which `TRAVERSE` then became. Both read the source now (D-161).
@@ -10902,10 +10963,12 @@ happens before the read is now visible as a device that was never told.
   it out invites a reader to think it matters.
 - **A ring-3 program still cannot reach any of this**, and that is the slice's
   named limit rather than an omission: `spawn` gives a program exactly one
-  handle — its bootstrap channel (D-107) — and receiving a directory handle
-  over that channel needs `sys_channel_receive`, which is OWED. Giving a
-  program a second handle at spawn would break the invariant that makes pillar
-  1 checkable, so it waits for the channel.
+  handle — its bootstrap channel (D-111) — and receiving a directory handle
+  over that channel needs `sys_channel_receive`, which was called OWED under
+  D-114's former vocabulary. D-181 states the live fact directly: there is no
+  ring-3 receive operation. Giving a program a second handle at spawn would
+  break the invariant that makes pillar 1 checkable, so it waits for the
+  channel.
 
 ## D-174 The Phase 6 audit: one defect in three places, and a claim nothing checked — Status: Accepted (2026-08-25)
 
@@ -11365,10 +11428,11 @@ repository's remote when recorded, so slice 1 must replace it with a reachable
 pin before deciding the route. The fit is not proof. Its tracked design says
 runtime capability values and a Wasm backend are future v0.3 work,
 native code generation is v0.4+ work, there is no `wzi build`, and the VM is
-not a `no_std` userland runtime. The OS also lacks ring-3 channel and handle
-close operations, VM mapping, terminal output, directory enumeration,
-spawn-from-image and child status. Its `wost`-only unsafe rule also has no place
-yet for a user runtime's platform instructions and volatile ring access.
+not a `no_std` userland runtime. The OS also lacks ring-3/native operations or
+contracts for channel send/receive, handle close, user-controlled mapping,
+terminal I/O, directory enumeration, spawn-from-image and child status. Its
+`wost`-only unsafe rule also has no place yet for a user runtime's platform
+instructions and volatile ring access.
 Choosing static AOT ELF as the next slice would make the highest-cost route a
 premise instead of a result.
 
@@ -11381,9 +11445,10 @@ language-neutral platform contract; (e) put a Wizzy interpreter in the kernel.
 **Decision.** (d), provisionally. D-116's emitted ring-3 program is already the
 first direct native caller and drives its own ring. The compiled Rust program
 in the early slices is the first delegation-capable boundary probe: it proves
-a real build, layout and delegated I/O without choosing the language of
-`init`, the shell or the tools. Wizzy is the provisional choice for that first
-system-language/runtime proof.
+a real build, the wire layout and Duplicate's completion-carried handle
+delegation without choosing the language of `init`, the shell or the tools.
+Terminal and directory I/O delegation arrive only in later slices. Wizzy is
+the provisional choice for that first system-language/runtime proof.
 
 "Native" means that a program uses handles, completion rings,
 directory-relative names and bootstrap protocols directly. It does **not**
@@ -11453,3 +11518,288 @@ Phase 7 mutating tools use explicitly volatile tmpfs.
 If the promotion gate fails, the language-neutral platform work stays and the
 Wizzy selection is revisited without weakening W^X, ambient-authority rules or
 the POSIX boundary.
+
+## D-181 The POSIX register separates source truth from platform work — Status: Accepted (2026-08-26), amends D-06, D-10, D-72, D-80, D-114, D-116, D-118, D-149, D-150, D-151, D-152, D-164, D-166, D-169 and D-173
+
+**Context.** The D-180 audit followed Phase 5's mlibc pressure test back to its
+evidence and found that the checked 5/10/1 tally was precise arithmetic over
+false categories. `sys_libc_log` was counted as MAPS while its body was a
+silent no-op. `sys_read` had a shipped explicit-offset ring operation, while
+`sys_write` had no operation at all; calling both OWED hid the difference.
+`sys_seek` needs POSIX open-file-description cursor state the native protocol
+deliberately omits. `WaitQueue::wait_unless` closes an internal wakeup window,
+but is not a futex keyed by a validated userspace atomic and its lifetime.
+Phase 6 built native OpenAt, so calling the entire `sys_open` mechanism ABSENT
+confused the rejection of an ambient root with the absence of relative lookup.
+
+The implementation transcription disagreed with its labels too.
+`sys_clock_get` ignored the requested clock ID and returned monotonic uptime
+as realtime, sampled a bare `rdtsc` after the sequence snapshot, and performed
+the fixed-point multiply in `u64`. At a 3 GHz counter that multiply can wrap
+in a few seconds. `sys_close` invoked proposed call 4 even though the kernel
+decodes only 0–3. The header numbered eight such unimplemented calls, assigned
+`WIZ_OP_SIGNAL = 3` on top of Duplicate, and described signals as opcodes even
+though a completion has no opcode field or unsolicited-event discriminator.
+
+D-114 also recorded no mlibc source revision. Its C++ has never been compiled.
+The local toolchain measurement changed by 2026-08-26—WinLibs GCC/G++ 16.1,
+Ninja 1.13.2 and Python 3.14.3 through `py` appeared (`python` and `python3`
+remain non-working Store aliases). Meson, pinned mlibc source, Wizard target
+integration and a repository-owned toolchain are still absent. A
+current-looking function signature is therefore not current upstream evidence,
+and executables found on one workstation are not a D-16 build.
+
+**Decision.** Preserve D-114's counts as a dated pressure-test result and
+retire its one-dimensional taxonomy for present-tense claims. Every one of the
+sixteen inspected functions now has two separate fields in
+`userland/README.md`.
+
+The **BODY** axis describes only active code in the uncompiled transcription:
+WIRED invokes a call the kernel decodes; COMPOSED obtains its required
+behavior from another entry; PARTIAL has a valid success path for a strict
+subset; STUB has none. The **REMAINDER** axis describes platform work: WORKS
+has no known missing platform semantic; COMPAT needs POSIX-only state or
+policy over existing native operations; DOOR has a matching internal
+operation but no user entry; PARTIAL has useful substrate or a semantic
+subset; MISSING lacks the kernel operation itself.
+
+The exact per-name register is canonical rather than another prose count.
+Notable consequences of applying it are that Read and Seek share COMPAT
+because both need the same cursor; Exit is WIRED/PARTIAL because the kernel
+retires only the calling thread and discards its status; Panic is
+COMPOSED/PARTIAL because composing that Exit cannot supply process-wide death
+or observation; and the futex entries are STUB/MISSING rather than promises
+that WaitQueue is nearly a futex. Open is STUB/PARTIAL: OpenAt exists, but the
+first directory still has no ring-3 delivery path in addition to its adapter
+policy.
+
+**Repair the consumer, not only its labels.** The time reader now accepts only
+`CLOCK_MONOTONIC`, validates the constants version, page extent and counter
+rate, reads a doubly fenced TSC inside the seqlock window, validates the
+conversion, uses a 128-bit intermediate and saturates rather than wraps. Page
+revocation, an incompatible layout and an unstable snapshot route to one
+explicit ENOSYS fallback. That fallback remains incomplete until a shared
+ring client can submit Uptime with a unique token and reap its matching
+out-of-order completion without stealing another caller's; the register
+therefore stays PARTIAL/PARTIAL. Realtime remains absent until the system has
+an epoch.
+
+The surrounding page contract also claimed calibration required CPUID's
+invariant-TSC bit. D-57's live policy does the opposite deliberately: two
+believable, agreeing windows admit the clock and a missing invariant promise
+produces a warning. The page and kernel clock share that fixed conversion, so
+they agree even when the hardware guarantee is absent; neither becomes more
+stable than the underlying counter. Suspend, NTP adjustment and automatic
+revocation remain future work.
+
+The C header now assigns numbers only to the four calls `Call::decode`
+accepts. Proposed close, duplicate, channel, mapping and futex call numbers are
+deleted; Duplicate already belongs to the ring, channels are planned as ring
+traffic, mapping's execution contract is unresolved, and the futex substrate
+does not exist. The colliding signal define is deleted. D-80's one-event-plane
+constraint remains, but a signal representation waits for a versioned record
+and its first caller. Unused errno defines are removed, the Duplicate comment
+uses the actual separate handle and rights fields, and the header distinguishes
+handle-authorized objects from its enumerated ambient ring/time facilities.
+`WRITE`, `MODIFY`, `EXECUTE` and `MAP` remain transcribed raw rights, with the
+explicit fact that no current File admits `WRITE`, no current Directory admits
+`MODIFY`, and no current object type admits `EXECUTE` or `MAP`.
+
+The same audit found two authority defects behind the prose. OpenAt gave every
+file `UNIVERSAL | READ`, recreating universal rights even when the directory
+was held with `TRAVERSE` alone; it now intersects the parent's universal rights
+before deriving file `READ`, with a ring check beginning from no universal
+rights. The File and Directory object masks also admitted `WRITE` and `MODIFY`
+although neither operation exists. Those masks are now `READ` and
+`TRAVERSE | ENUMERATE`, and the meaningless-right refusal check covers File
+`WRITE`/`EXECUTE`/`MAP` plus Directory `MODIFY`. Persistent mutations restore
+each defect.
+OpenAt also copied the submitted path before reserving its result slot, while
+Duplicate's slot-first comment hid rights validation ahead of its reservation.
+Both contradicted D-151's common admission order. Reservation now comes first;
+the full-table check pairs exhausted quota with a valid Duplicate, malformed
+Duplicate rights and a malformed OpenAt path, so either validation moving ahead
+of the promise changes the observable refusal. Two persistent mutations require
+that check to go red.
+
+This also narrows D-10 and D-72. A POSIX or WASI descriptor can carry authority
+that aligns with a native handle without being that handle. Its userspace
+adapter still owns descriptor numbering, preopens, cursor and inheritance
+state, and root/cwd policy. Those are COMPAT semantics; their cost does not
+justify putting a cursor or a descriptor table into the native ABI.
+
+**Alternatives.** Broaden OWED to include “some related primitive exists” was
+rejected because it would continue to equate Read with no Write and WaitQueue
+with a futex. An implementation-only classification was rejected because a
+correct stub can still expose valuable platform design work. A platform-only
+classification was the original mistake: it let a no-op body inherit a claim
+from prose. Keeping exact per-function prose without a machine check was
+rejected by D-124's rule.
+
+**Consequences.** The host check masks both C++ comment forms, permits only
+include directives, discovers active definitions rather than listing their
+names, refuses duplicate bodies, requires the historical domain of sixteen,
+and compares one source marker per definition with the README register. It
+checks BODY evidence with exact compact bodies for the WIRED calls, composed
+panic path and one-path stubs. The clock checks pin named source shapes:
+validation gates, snapshot order, output stores and return forms. They are not
+a general C++ reachability or dataflow proof, and runtime evidence still waits
+for the port to compile.
+
+REMAINDER is platform judgment, not something a C++ body can prove; named
+kernel witnesses guard the disputed distinctions between explicit-offset Read,
+internal Close, missing Write/futexes, composed Panic and thread-only Exit.
+D-182 adds the trap-time reclamation witness that narrows Close from DOOR to
+PARTIAL, alongside VM unmap and anonymous free.
+
+The ABI check removes comments from both the C header and the Rust sources,
+compares the complete C call and opcode domains with the kernel decoders,
+checks the errno values the C++ consumes, and derives C submission, completion
+and time layouts — offsets, widths and total sizes — before comparing them with
+the kernel's access maps. It also inspects the emitted ELF's actual operands for
+opcode, token, argument, status and value, plus entry base and count. Another
+speculative member, commented-out decoder arm, reordered field or stale program
+operand cannot hide after the known members. Aggregate counts are derived facts
+and are not restated as authority.
+
+The first check was broken four ways and red each time (D-28): Exit actively
+rang the wrong call; Read and Close exchanged remainder labels in both C++ and
+README; the clock's 128-bit intermediate narrowed to `u64`; and proposed call
+4 returned to the C enum. The two-file label swap had gone red only because
+the test contained a third copy of the whole register, violating D-157. That
+result was rejected rather than counted: the copied map was removed, named
+platform witnesses were added, and the same swap then went red for the
+Read/Close evidence it actually contradicted.
+
+The repaired checks were broken thirteen further ways and red: a duplicate
+active definition, a body hidden behind `#if 0`, the Exit call hidden in a
+block comment, a stub with an extra success return, EINVAL renumbered, the C
+clock's first two fields exchanged, a non-literal decoder arm, and the TSC
+halves recombined backwards; then a spaced macro directive, a dead conditional
+that called Exit, a block-commented errno definition, a block-commented kernel
+decoder arm, and a 64-bit C `shift` over the kernel's 32-bit field. These are
+host repository-claim checks, not QEMU verdicts, so they do not add a machine
+mutation to `cargo xtask mutate`.
+
+The authority and layout repair added seven more observed host reds: the
+kernel submission `argument` offset moved from 24 to 8; an eighth opcode entered
+the decoder; the OpenAt witness was hidden in a block comment; the clock's
+seconds store was commented out; rights intersection became union; and Panic
+and Open were each relabelled with the broader remainder their platform witness
+contradicts. Six target breaks were then booted and red: OpenAt restored every
+universal right, File admitted inert `WRITE`, Directory admitted inert
+`MODIFY`, the kernel parsed `argument` at offset 8, and OpenAt read a malformed
+path before reserving against a full table; finally Duplicate validated malformed
+rights before making the same reservation. The six target defects have
+persistent mutations; the then-current register held 188 machine checks and 75
+mutations.
+
+No kernel ABI was added and no libc was claimed compiled. Phase 7 slice 2 now
+starts from an honest pressure-test transcription; Phase 9 still owns the
+pinned mlibc port, POSIX state and signal representation.
+
+## D-182 A trap-served handle is paid for before the trap — Status: Accepted (2026-08-26), amends D-78, D-128, D-141, D-151, D-171, D-180 and D-181
+
+**Context.** D-181 made Duplicate and OpenAt reserve a table slot before
+validating the rest of their submissions, but that promise covered only the
+table's count. Installing the result still called `reserve_a_slot`, which grew
+the global arena's `Vec` when its existing buffer was full. The heap correctly
+refuses allocation in trap context: an interrupt can arrive while the heap is
+refilling itself, so re-entering it would corrupt or deadlock the allocator.
+
+That made a successful ring operation an unprivileged machine panic. The
+shipped bootstrap channel carries `DUPLICATE`; enough valid Duplicate
+submissions reached `HandleTable::fill` from the `int 0x80` handler and crossed
+the arena's next capacity boundary. The self-tests missed it because their
+queue submissions called `Queue::serve` from kernel-thread context, while the
+one emitted ring-3 program submitted only Echo. OpenAt held a second instance
+of the same class: wrapping D-171's copyable `File` and `Directory` values in a
+fresh `Arc` allocated after the trap had begun.
+
+**Decision.** A handle table is not made reachable until the global arena has
+capacity for its entire quota. Construction is fallible and commits that quota
+outside trap context. The arena records the sum of every live table's quota;
+its `Vec` capacity is always at least that sum. A charged insertion therefore
+finds either an existing free slot or unused capacity and never grows the
+buffer. Dropping a table releases the commitment after removing its entries,
+but retained capacity is harmless and avoids a shrink/allocation cycle.
+
+The invariant is stronger than pre-growing by a convenient number:
+
+> `arena capacity >= sum(live table quotas) >= live handles + promised slots`.
+
+It covers every interleaving, not only the capacity seen by a caller before it
+drops the arena lock. Construction may race another construction, so a buffer
+is allocated with no lock held, the current required commitment is rechecked,
+and a winning buffer is exchanged under the leaf lock. Both the replaced and
+losing buffers are freed only after that guard is gone. A failed candidate
+allocation also rechecks under the leaf before reporting exhaustion: a
+concurrent constructor may already have installed enough backing.
+
+`ObjectRef` now represents stateful Event and Channel objects with `Arc`, while
+it carries VFS `File` and `Directory` identities inline. D-171 deliberately
+made both filesystem identities copy values with no cursor or per-open mutable
+state; allocating a refcount solely to copy one into a handle bought no
+lifetime property. OpenAt can consequently resolve, wrap and install either
+node kind without touching the heap.
+
+The concrete ring-3 proof needs the authority it exercises. A program's entry
+block therefore contains three words: version 1, its launch argument, and the
+numeric identity of its sole bootstrap handle. Version comes first so a program
+can refuse a shape it does not understand before interpreting either payload
+word, paying D-180's versioning requirement with the first new caller. The
+handle remains unforgeable authority only because the table validates it;
+hiding its number did not strengthen that property and made the bootstrap
+channel unusable. A new emitted-program behaviour validates the version, reads
+the handle, submits Duplicate through its own ring, validates the completion
+and exits. This is the first caller of the versioned entry block rather than a
+speculative process-start structure.
+
+D-182 also narrows three rows in D-181's POSIX register. An internal method is
+not merely a missing door when invoking it can reclaim memory in trap context:
+Close can release the last object reference, while VM unmap and anonymous free
+carry flush and reclamation obligations. All three are STUB/PARTIAL until a
+deferred or otherwise trap-safe user execution contract exists.
+
+**Alternatives.** Growing on demand before taking `ARENA` was the old design.
+It kept the lock order sound but could not make a trap allocator-safe. Returning
+`ArenaFull` at the capacity boundary was rejected because admission had already
+promised the result and free machine-wide handle capacity still existed.
+Preallocating all 262,144 arena slots at boot would remove the trap edge by
+charging every machine for the maximum; quota commitment pays only for the
+tables that exist. Deferring Duplicate and OpenAt to a worker was rejected for
+this slice: both operations are bounded and allocation-free once their result
+storage is backed, so a scheduler handoff would add latency and state without
+removing any remaining blocking work.
+
+**Consequences.** Table construction can now report arena exhaustion or an
+allocation failure, and `user::spawn` preserves that reason. `fill` contains no
+reserve/grow loop. Table teardown releases objects one at a time outside the
+arena guard rather than allocating a temporary vector in order to drop them.
+
+The C transcription names the entry version, all three field offsets and its
+24-byte extent. The host ABI check compares those values with the kernel's
+writer and inspects the emitted program's actual entry loads, so moving a word
+or accepting the wrong version cannot leave two agreeing private
+transcriptions.
+
+The former growth check is replaced by one that chooses a quota larger than
+the arena's uncommitted spare capacity, observes the commitment and capacity
+grow at construction, fills the table without either changing, and observes
+the commitment return on drop. The emitted-program check reaches Duplicate in
+an actual ring-3 trap and requires the process to retire with two handles and a
+successful authority-bearing completion. OpenAt's attenuated-directory check
+covers both the File and Directory result branches. Each new branch was broken
+once before acceptance. The quota-undercharge mutation replaces D-128's
+obsolete arena-growth mutation; two new mutations change the ring-3 request
+away from Duplicate and restore universal rights on a directory result. The
+ring-3 mutation targets the rebuilt kernel launch route rather than the
+already-running image builder; the mutation driver now refuses any entry aimed
+at its own `xtask/` source. The register holds 189 machine checks and 77
+mutations.
+
+D-163's promise-lifetime mutation also preserves the allocation-free trap arm
+while giving a kernel-thread reservation the wrong table. Constructing the
+wrong table unconditionally would now panic on the earlier ring-3 Duplicate
+check and hide the named lifetime failure, so it would test D-182 twice and
+D-163 not at all.

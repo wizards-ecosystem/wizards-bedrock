@@ -2,7 +2,7 @@
 //!
 //! The third backend, and the one that exists to make a point `012` §7 is
 //! emphatic about: **a devfs entry has no bytes.** It is a name that yields a
-//! handle *of another type*. Forcing it to implement `read_at` is the
+//! device object *of another type*. Forcing it to implement `read_at` is the
 //! "everything is a file" conflation, and WASI's own README rejects it on
 //! exactly these grounds.
 //!

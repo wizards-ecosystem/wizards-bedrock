@@ -94,10 +94,13 @@ Sources: [Theseus OSDI'20 PDF](https://www.usenix.org/system/files/osdi20-boos.p
   memory** (solves kernel-memory DoS elegantly); revocation is
   long-running and needs "incremental consistency" (abortable
   sub-operations). Claimed ~720-cycle IPC. [whitepaper](https://sel4.systems/About/seL4-whitepaper.pdf)
-- Capsicum (~60 rights, per-logical-method): capability mode = **denying
-  all global namespaces**, which *forced* fork/exec removal (`pdfork` →
-  process descriptors) — independent convergent evidence for our
-  spawn-only, handle-based process model. Pitfall: directory capabilities
+- Capsicum (later counted as 81 rights in `010` §3, per-logical-method):
+  capability mode = **denying all global namespaces**, with process
+  descriptors as handle-like references. Subsequent correction: capability
+  mode is inherited across `fork` and `pdfork`; `pdfork` creates a child and
+  returns a descriptor for it. Capsicum therefore supports confinement and
+  process references, not the spawn-only conclusion this first pass claimed.
+  Pitfall: directory capabilities
   must forbid absolute paths and `..` (colluding-sandbox race). Fast-path
   direct syscalls on capabilities cost only a few % vs pure message
   passing — supports monolithic + handles over microkernel IPC.
@@ -191,7 +194,7 @@ claims above should be re-verified when convenient.
 5. [Theseus — OSDI'20](https://www.usenix.org/system/files/osdi20-boos.pdf) — language isolation limits
 6. [FlexSC — OSDI'10](https://www.usenix.org/legacy/event/osdi10/tech/full_papers/Soares.pdf) — why async ABIs win
 7. [seL4 whitepaper](https://sel4.systems/About/seL4-whitepaper.pdf) — untyped retype + revocation
-8. [Capsicum](https://research.google.com/pubs/archive/36736.pdf) — rights taxonomy + no-fork convergence
+8. [Capsicum](https://research.google.com/pubs/archive/36736.pdf) — rights taxonomy, capability mode and process descriptors
 9. [WASI 0.3 announcement](https://bytecodealliance.org/articles/WASI-0.3) — completion-based component async
 10. [Rodeh: BTRFS CoW B-trees](https://dl.acm.org/doi/10.1145/2501620.2501623) — CoW tree mechanics
 11. [BetrFS clones (CAW)](https://par.nsf.gov/biblio/10298724-copy-abundant-write-nimble-file-system-clones) — write-optimized clone design

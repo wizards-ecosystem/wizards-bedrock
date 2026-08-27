@@ -95,11 +95,12 @@ reference — not followed linearly). Docs are numbered in creation order.
    `wost` against a budget of 380 — both have moved since, and
    `xtask/src/unsafety.rs` holds the current one because a number in prose
    cannot be checked. The mlibc sysdep is written and analysed rather than
-   compiled: the toolchain wall is measured in D-114, and the finding — a few
-   tags map, most need a ring-3 door to a mechanism the kernel already has,
-   and one needs a namespace this design does not have — is what D-74 asked
-   the slice for. The counts are in `userland/README.md`, where the gate
-   checks them against the sysdeps' own tags. Slice table in
+   compiled: the toolchain wall is measured in D-114. D-181 found that its
+   three-bin summary conflated C++ body state with remaining platform work and
+   replaced it with an exact two-axis row for each inspected function. The
+   register is in `userland/README.md`; the gate discovers active definitions,
+   checks BODY evidence in comment-free code and selected disputed REMAINDER
+   labels against kernel witnesses. Slice table in
    `011-userspace.md`*
 6. VFS + storage — **code-complete 2026-08-25; the D-18 close still awaits
    one human VMware round.** *The ABI half first (D-149): a

@@ -1,11 +1,11 @@
 # 011 — Userspace (Phase 5)
 
 The phase that gives the kernel someone to serve. Ring 3, a handle table that
-*is* a process's power, `spawn` in place of `fork`, ELF images loaded from an
-initrd, channels that carry authority, and the submission/completion rings the
-native ABI is made of — closing with a stub mlibc sysdep whose only job is to
-find out whether a POSIX libc can sit on this ABI while the ABI is still cheap
-to change (D-74).
+is a process's external-object authority, `spawn` in place of `fork`, ELF
+images loaded from an initrd, channels that carry authority, and the
+submission/completion rings the native ABI is made of — closing with a stub
+mlibc sysdep whose only job is to find out whether a POSIX libc can sit on this
+ABI while the ABI is still cheap to change (D-74).
 
 Phase 4 left a kernel that can run more than one thing but has nobody to run
 it for: every thread is the kernel's own, every pointer is trusted, and the
@@ -251,19 +251,19 @@ hook, even if nothing consumes it until much later.
 The question D-74 called the hardest to answer late, and `002` did not mention
 signals at all.
 
-**A signal is a completion-queue entry.** The blocking wait is interruptible
-because a wakeup is indistinguishable from a completion — the same mechanism,
-not a second event plane, which is the same argument that unified ports and
-completion queues above. There is no in-kernel signal frame, no signal mask in
-the kernel, and no restart-after-interrupt semantics to get wrong.
+**A signal must share the completion plane.** The target blocking wait is
+interruptible through that same mechanism rather than a second event plane,
+which is the argument that unified ports and completions above. There is no
+in-kernel signal frame, kernel signal mask or restart-after-interrupt semantic.
+D-181 later made the boundary explicit: version 1 has no unsolicited-event
+record, so no signal wire format or interruptible libc dispatch exists yet.
 
-What this costs, recorded now so slice 10 is not surprised: mlibc's `Sigaction`
-becomes a userspace dispatch loop over CQ entries, and the POSIX behaviours
-that assume a kernel-delivered signal interrupting an arbitrary instruction —
-`EINTR` on a blocking call, signal-safe reentrancy, `SIGSEGV` handlers that
-resume — are either emulated in the libc or unimplementable. That is the same
-cluster Plan 9's APE could not implement and Fuchsia excluded from POSIX Lite;
-slice 10's job is to find out which half this falls in, and to record the count.
+What this costs, recorded now so Phase 9 is not surprised: mlibc's `Sigaction`
+needs a userspace dispatch loop over CQ entries. POSIX behaviours that assume
+a kernel-delivered signal interrupting an arbitrary instruction — `EINTR` on
+a blocking call, signal-safe reentrancy, resumable `SIGSEGV` handlers — need
+explicit libc/runtime support or remain unsupported. Plan 9's APE and Fuchsia
+POSIX Lite show the cost; Phase 9 decides which behavior is worth emulating.
 
 ## The lock order
 
@@ -369,15 +369,15 @@ two processes cannot see each other's memory; a handle sent through a channel
 arrives with exactly the declared rights and is gone from the sender; and every
 ring operation posts exactly one terminal completion, cancelled ones included.
 
-That spawn check is the one worth naming twice. `002` pillar 1 claimed channels
-were the sole delegation mechanism, which is false even of Zircon — it also
-passes handles through `zx_process_start`. The replacement is better than the
-claim because it is checkable:
+That spawn check is the one worth naming twice. `002` pillar 1 had claimed
+channels were the sole delegation mechanism, which is false even of Zircon.
+Slice 7 replaced it with the load-bearing part that remains checkable:
 
-> A process receives exactly one handle at spawn — its bootstrap channel — and
-> every subsequent handle arrived through a channel.
+> A process receives exactly one handle at spawn — its bootstrap channel.
 
-Slice 7 fixes `002` and lands the check in the same commit.
+Slice 7 fixed `002` and landed the check in the same commit. D-151 later made
+handle-producing completions an authorized second provenance path without
+changing what a process holds at birth.
 
 ## Known holes, carried deliberately
 
@@ -843,7 +843,7 @@ says where it went.
 |---|---|
 | Boot and double-fault stacks unguarded | **Paid.** D-89 guards the double-fault stack; D-92 moves the boot thread onto a guarded one, since the bootloader's could not be guarded where it sat |
 | The address space cannot grow after boot | **Paid.** D-86: `activate` borrows rather than consumes, and mapping is reachable on a live space |
-| Memory objects, moved out of Phase 3 | **Paid in the part that had a caller.** Owned frames, `map_user`, `map_shared` and the untyped split are here; a first-class `MemoryObject` in the handle table is not, and belongs with the VFS that will hand them out |
+| Memory objects, moved out of Phase 3 | **Paid in the part that had a caller.** Owned frames, `map_user`, `map_shared` and the untyped split are here; a first-class `MemoryObject` is still absent and waits for the later zero-copy/runtime caller that can determine its shape |
 | `map` accepts any physical address without evidence | **Paid.** D-87: every mapping entry takes evidence — an owned run, a `BootRegion`, or a `USegment` — and D-105 closed the two doors that let the evidence be forged |
 | The untyped split, absent on purpose | **Paid.** D-107, with the caller it was waiting for |
 | Port claims prove exclusivity, not entitlement | **Not this phase, as planned.** Phase 6, with PCI discovery |
@@ -932,8 +932,9 @@ Nothing here is a surprise; each is named in the ADR that created it.
   enters it has not shipped userspace. 125 checks.
 - ~~**`FS_BASE` is a fourth thing that must follow a thread**, found by
   writing the sysdeps (D-114).~~ **Closed by D-118.** It lives in
-  `task::prepare` with `RSP0`, `CR3` and the extended state, and
-  `sys_tcb_set` is one of the four sysdeps that MAPS because of it. The
+  `task::prepare` with `RSP0`, `CR3` and the extended state. Under
+  D-114's former vocabulary that made it one of four MAPS entries; D-181's
+  exact register calls its body WIRED and its platform remainder WORKS. The
   kernel range-checks the base against `USER_END`: a program asking to point
   `fs:` at kernel memory has no reason it could be given.
 - ~~Nothing is reclaimed.~~ **Closed by D-117.** A retired program's resources
@@ -952,8 +953,7 @@ Nothing here is a surprise; each is named in the ADR that created it.
   beyond the hole: dereferencing an arbitrary *user* address is now memory-safe,
   so `copy_from_user_unwalked` exists and is what Linux's `copy_from_user`
   has always been.
-- **`xtask/src/elf.rs` still carries its own transcription** of the ELF header
-  offsets rather than using `libs/elf64` — the duplication that crate exists to
-  prevent. D-105 recorded it; it is still true.
-- **No completion carries a handle**, so the ring cannot yet be the delegation
-  path the channels are.
+- ~~`xtask/src/elf.rs` carries its own transcription of the ELF header
+  offsets.~~ **Closed by D-158**, which moved the builder to `libs/elf64`.
+- ~~No completion carries a handle.~~ **Closed by D-163** for same-object
+  Duplicate; D-173 later added OpenAt's cross-type derivation.

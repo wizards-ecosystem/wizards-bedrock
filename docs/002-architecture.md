@@ -8,31 +8,36 @@ for evidence and citations behind the choices marked ★.
 
 ## Design pillars
 
-1. **No ambient authority.** ★ Every kernel object (process, thread, memory
-   object, channel, file, socket, framebuffer surface) is reached through a
+1. **No ambient object authority.** ★ Every external kernel object (process,
+   thread, memory object, channel, file, socket, framebuffer surface) is
+   reached through a
    **handle** carrying **rights bits** (read, write, map, duplicate,
-   transfer, …). A process's power is exactly its handle table. There are
-   no global namespaces reachable without a handle. Handle-less syscalls
-   (object creation, ring setup) are governed by an explicit per-process
-   **policy layer** — the escape hatch Zircon implements as Job policy;
-   verified as the deployed Fuchsia design. Handles are process-local
-   integers; rights attenuation on duplicate, replace **and send**.
+   transfer, …). A process's external-object authority is exactly its handle
+   table. There are no global object namespaces reachable without a handle. No
+   current handle-less call creates external object authority. Any future call
+   that does must be governed by an explicit per-process **policy layer**; none
+   is implemented for today's enumerated ring/time/control facilities. Handles
+   are process-local integers. Duplicate and channel transfer attenuate rights;
+   handle-producing operations such as OpenAt derive authority from a handle
+   already held.
 
    Delegation is stated as an invariant a check can hold us to, rather than
    as a claim about mechanisms: **a process receives exactly one handle at
-   spawn — its bootstrap channel — and every later handle arrived through a
-   channel.** (The earlier wording, "channels are the sole delegation
-   mechanism", was false even of Zircon, which also passes handles through
-   `zx_process_start`. See `010` §3.)
-   *Anchors: Zircon handles (verified), seL4 capabilities, capsicum
-   (whose capability mode independently forced fork removal — convergent
-   evidence for pillar 3).*
+   spawn — its bootstrap channel. Later authority either arrives through a
+   channel or is derived by a handle-authorized ring operation.** Nothing can
+   mint ambient object authority. D-151 amended the original channel-only
+   provenance once completions could carry handles.
+   *Anchors: Zircon handles (verified), seL4 capabilities, and Capsicum's
+   namespace confinement and per-object rights. Capsicum is not evidence for
+   spawn-only: capability mode survives `fork` and `pdfork`.*
 
 2. **Async-first I/O.** ★ The native data-path ABI is **submission /
    completion queues** shared with the kernel (io_uring lineage): userspace
    posts operations tagged with handles; the kernel completes them out of
-   order; a small set of synchronous syscalls covers setup, handle ops,
-   memory mapping, and blocking waits (doorbell/`enter`). The large win comes
+   order. The current synchronous control plane has four calls: retire the
+   caller, enter or wait on its ring, and set its thread base. Duplicate is a
+   ring operation; channel traffic is planned there too; user mapping still
+   has no chosen execution contract (D-181). The large win comes
    from making the caller structurally asynchronous; batching improves both
    direct trap cost and indirect cache cost. Avoiding the trap entirely is a
    smaller additional gain and can cost a dedicated core (`010` §2).
@@ -45,12 +50,14 @@ for evidence and citations behind the choices marked ★.
    ports (typed packets unifying all event sources — our completion
    path's model).*
 
-3. **Spawn, not fork.** Native process creation is
-   `spawn(image, initial_handles, args)` — the parent explicitly grants the
-   child its starting capability set. No native `fork()`
-   (*"A fork() in the road"*, HotOS '19; Fuchsia). The POSIX layer emulates
-   fork for ports that cannot live without it (kernel provides an
-   address-space-clone primitive gated as a compat capability).
+3. **Spawn, not fork.** Native process creation targets
+   `spawn(executable_handle) -> (process_handle, bootstrap_channel)`: the held
+   executable authority authorizes the launch and both returned capabilities,
+   while the kernel starts the child with exactly one channel endpoint.
+   Arguments and grants are bootstrap messages (D-111, D-151, D-180). No
+   native `fork()` (*"A fork() in the road"*, HotOS '19; Fuchsia). The POSIX
+   layer emulates fork for ports that cannot live without it once Phase 9
+   builds a gated compatibility clone; no such kernel primitive exists yet.
 
 4. **Lightweight everywhere.** Tickless kernel (no idle timer ticks),
    EEVDF-inspired virtual-deadline scheduler, small static binaries,
@@ -83,7 +90,7 @@ for evidence and citations behind the choices marked ★.
    `catch_unwind` is diagnostics only. Hardware isolation remains the
    boundary for all user code; language safety is a kernel-internal tool.
 
-## Kernel object model (initial set)
+## Target kernel object model
 
 | Object | Purpose |
 |---|---|
@@ -95,7 +102,11 @@ for evidence and citations behind the choices marked ★.
 | `File` / `Dir` | VFS objects (WizFS behind them) |
 | `Socket` | network endpoints (smoltcp behind them) |
 
-Monolithic-modular still holds: these are in-kernel objects; the capability
+This is a target model, not an implementation inventory. The current
+handle-object tags are Event, Channel, File and Directory; the ring is an
+enumerated ambient facility. Process, Thread, MemoryObject, EventPair, Socket
+and a handle-bound Queue wait for their callers and decisions. Monolithic-
+modular still holds: these belong in the kernel when implemented; capability
 discipline applies at the ABI boundary, not via userspace servers.
 
 ## Security baseline
@@ -153,16 +164,18 @@ Research-driven design rules ★ (bcachefs/btrfs/BetrFS evidence,
   collection, and backpointers first; RAID-Z itself does not have the classic
   write hole (D-73). Scrub/repair machinery remains part of the design
 
-Format lives in `libs/wizfs-format` (no_std, host-testable + fuzzable).
+The format will live in `libs/wizfs-format` (no_std, host-testable + fuzzable)
+when Phase 13 starts it; that crate is intentionally absent today.
 
 ## App formats
 
 - **ELF64** native binaries. Rust is the bootstrap implementation language;
   a Wizzy bytecode runner or later AOT image may also be ELF. Ported C reaches
   the native ABI through mlibc rather than defining it.
-- **Core WebAssembly + `wasip1`** as a first-class citizen: WASI's capability
-  model maps 1:1 onto our handles (a WASI descriptor *is* a handle grant), and
-  a module compiled for this OS survives an architecture port. Both of those
+- **Core WebAssembly + `wasip1`** as a first-class citizen: WASI's authority
+  model aligns with handle grants, while a WASI descriptor adapter owns
+  numbering, preopens and cursor state over the cursorless native operations
+  (D-181). A module compiled for this OS survives an architecture port. Both
   reasons are delivered by `wasip1`. Runtime: a wasmi-class `no_std`
   interpreter in user mode, pinned when Phase 7 starts rather than named here;
   WASI host bindings implemented by us directly over native handles
@@ -191,10 +204,11 @@ substituting for D-180's proof.
 
 ### POSIX translation layer (the ports gateway)
 
-mlibc sysdeps implemented over the native ABI in a userspace library:
-POSIX fds map to handles, blocking calls wrap queue submissions + waits,
-fork uses the gated compat clone. CPython, links, and NetSurf run on this;
-native software never touches it.
+Phase 9's target is mlibc sysdeps over the native ABI in a userspace library:
+POSIX descriptors own compatibility state over handles, blocking calls wrap
+queue submissions and waits, and a future fork shim uses a gated compat clone.
+That is the gateway intended to run CPython, links and NetSurf; none runs here
+yet, and native software will not touch the layer.
 
 **It was shaped early; its first real port waits for its compatibility phase**
 (D-74, D-114, D-180). The stub-heavy sysdep was written as soon as Phase 5
@@ -204,23 +218,23 @@ Phase 5 slice 10 did that work against a toolchain wall recorded rather than
 worked around: the sysdeps are analysed, not compiled, and
 `userland/README.md` states what that cost.
 
-**The surface, measured, so it is not costed at zero.** mlibc defines 296
-sysdep tags. Sixteen are mandatory, and its own porting book says those are
-"enough for running a basic statically-linked hello world program"; real ports
-implement 147 to 202. Every shipping port implements `Fork`, `Sigaction`,
-`Ioctl`, `Termios`, `Poll` and `Waitpid`. Adopting mlibc also means adopting
-`abis/linux`, so the *userspace-visible* ABI becomes Linux's — pinned to a
-release tag, never `master`.
+**The surface was measured, so it is not costed at zero.** At D-74's
+unrecorded upstream snapshot, mlibc exposed 296 sysdep tags, called sixteen
+mandatory and described those as enough for a basic static hello world; the
+real ports inspected implemented 147 to 202. D-181 forbids treating those
+unversioned figures as a current API. A real Phase 9 port pins a release before
+adopting its `abis/linux` userspace-visible ABI.
 
 Two things this layer must answer that the native ABI would otherwise never
-raise, and both were cheaper to answer before Phase 5 froze the queue:
-**how a signal interrupts a blocking queue wait** — answered by D-80, a signal
-is a completion entry — and whether userland is static-only or gets a dynamic
-linker (CPython needs `dlopen` and `-export-dynamic`), which is still open and
-belongs to Phase 9. The cluster POSIX assumes and a capability system does not
-— uid/gid, umask, controlling tty, hard links, signal masks — is the same
-cluster Plan 9's APE could not implement and Fuchsia excluded from POSIX Lite.
-`010` §5 has the evidence and the numbers.
+raise, and both were cheaper to expose before Phase 5 froze the queue. D-80
+settled that signals share the completion plane and do not push kernel frames;
+the versioned event record, dispatch/correlation and interruptible libc wait
+remain Phase 9 work (D-181). Whether userland is static-only or gets a dynamic
+linker is also open there (CPython needs `dlopen` and `-export-dynamic`). POSIX
+uid/gid, umask, controlling-TTY, hard-link and signal-mask conventions require
+explicit compatibility state, routing or policy rather than ambient native
+defaults. Plan 9's APE and Fuchsia POSIX Lite show their cost, not a proof that
+they cannot be represented. `010` §5 has the evidence and numbers.
 
 ## Graphics direction
 
@@ -236,24 +250,25 @@ Still open:
 - **Compat-fork mechanics for mlibc** (before Phase 9)
 - **How a program receives its first directory handle.** Phase 6 built
   `OpenAt` and a program cannot reach it: `spawn` gives exactly one handle —
-  the bootstrap channel (D-107) — and receiving a directory over that channel
-  needs `sys_channel_receive`, which is OWED. A second handle at spawn would
-  break the invariant that makes pillar 1 checkable, so this waits for the
-  channel rather than for a convenience (D-173).
+  the bootstrap channel (D-111) — and no ring-3 channel-receive operation
+  exists yet. A second handle at spawn would break the invariant that makes
+  pillar 1 checkable, so this waits for the channel rather than for a
+  convenience (D-173).
 
 Closed since this list was written:
 
-- *Whether a POSIX libc can sit on this ABI* — asked and answered by D-114
-  rather than deferred. Some of mlibc's sixteen mandatory tags map onto the
-  native ABI as it stands, most need a ring-3 door to a mechanism the kernel
-  already has, and one needs a namespace this design does not have.
+- *Whether a POSIX libc can sit on this ABI* — pressure-tested by D-114 rather
+  than deferred. D-181 corrected the result: one label could not say both what
+  the uncompiled C++ body does and what platform work remains. The exact
+  per-function BODY/REMAINDER register is in `userland/README.md`. At every
+  commit the BODY claims are checked against discovered, comment-free source;
+  REMAINDER remains reviewed platform judgment with targeted evidence checks.
 
-  **The counts are in `userland/README.md` and deliberately not repeated
-  here.** They were, and they went stale the moment D-118 paid `sys_tcb_set`:
-  this paragraph said "three map, twelve need a door" for a day after it was
-  four and eleven. A number restated in a second place is a number that can
-  disagree with itself, and the README's is checked against the sysdeps' own
-  tags at every commit while a sentence here could not be (D-94, D-124).
+  The retired one-axis count is not repeated here. This paragraph once said
+  "three map, twelve need a door" for a day after D-118 had made its own
+  arithmetic four and eleven; D-181 then showed that the categories themselves
+  were false for log, write, seek and futex. A checked row is stronger than a
+  duplicated tally (D-94, D-124).
 
   `userland/README.md` also has the four things writing the sysdeps surfaced
   that the native ABI would never have raised.
@@ -266,9 +281,10 @@ Closed since this list was written:
   `011`'s queue section: one terminal completion per operation, kernel-owned
   buffers, reservation-based backpressure, copy-out-then-validate, and ports
   unified into the completion queue.
-- *How a signal interrupts a blocking queue wait* — answered by **D-80**: a
-  signal is a completion entry, so a wakeup is indistinguishable from a
-  completion and there is no second event plane.
+- *Which plane carries a signal* — answered by **D-80**: it must share the
+  completion plane, with no kernel-written signal frame. D-181 records the
+  unfinished half: version 1 has no unsolicited-event record, so dispatch,
+  correlation and interruptible libc-wait semantics remain Phase 9 work.
 - *Kernel-memory accounting, untyped-retype or not* — answered by **D-44**:
   rejected as an accounting mechanism, adopted as a type discipline.
 - *CHERI/CET/PKS hardware security pass* — closed by `008` §6, and updated by

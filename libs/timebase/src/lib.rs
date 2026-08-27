@@ -545,10 +545,9 @@ mod published_tests {
 
     /// A published reading is the reading the conversion would have given.
     ///
-    /// The two must not drift, because one is what the kernel writes into the
-    /// page and the other is what `now_ns` answers a syscall with — and D-152
-    /// requires the syscall fallback to stay reachable, which means it has to
-    /// stay *right*.
+    /// The two must not drift, because the published page and the kernel clock
+    /// use the same conversion. Ring Uptime is the revocation fallback, so its
+    /// answer and the page's answer must remain the same clock (D-166, D-181).
     ///
     /// Exactly equal when the fraction starts at zero: both are
     /// `(ticks * mult) >> shift` and the base is added outside the shift.

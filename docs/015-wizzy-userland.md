@@ -42,7 +42,8 @@ native ABI. "Native userland" therefore does not force "native codegen first."
 
 The kernel must not acquire a Wizzy parser, evaluator, scheduler, allocator
 policy, or type checker. It loads images, maps memory, moves messages and
-handles, and reports process outcomes. Language semantics stay in userland.
+handles, and will eventually report process outcomes. Language semantics stay
+in userland.
 
 ## Evidence at the decision point
 
@@ -203,7 +204,7 @@ missing contract.
 |---|---|---|
 | 0 | **Close Phase 6.** Complete the interactive VMware keyboard rounds | Dated VMware verdict with every current check exercised |
 | 1 | **Measure the runner.** Add the minimal user target/link scaffold needed for honest target measurements; extract the smallest bytecode execution closure, reject retained compiler state, inventory capability/byte-buffer blockers, and compare exact image/private/heap numbers with direct Rust and the missing AOT work; cost Wasm and record its sibling fork | A delivery-route ADR with raw numbers and a four-process pass/fail result |
-| 2 | **The Rust boundary probe.** Decide and audit the user-runtime `unsafe` boundary, add a compiled Rust boundary program, and repair the Phase 5 C transcription before choosing a shared platform-ABI source; keep the emitted loader probe | Host ABI/layout and linked-ELF checks; the emitted and compiled programs each boot in their own image matrix because image selection does not exist yet |
+| 2 | **The Rust boundary probe.** Decide and audit the user-runtime `unsafe` boundary, add a compiled Rust boundary program, and carry D-181's repaired C pressure test into a chosen shared platform-ABI source; keep the emitted loader probe | Host ABI/layout and linked-ELF checks; the emitted and compiled programs each boot in their own image matrix because image selection does not exist yet |
 | 3 | **Bootstrap channels and cleanup.** Add asynchronous send/receive and handle-close operations plus a versioned bootstrap codec in a host-testable `libs/` crate | A child's handle table starts with exactly one entry; it receives bytes plus attenuated handles, closes them, and stale generations and last-reference cleanup are observed |
 | 4 | **The first delegated output.** Give the child terminal and directory capabilities through bootstrap; do not add ambient handles | The Rust boundary probe receives authority, writes visible output, opens one file relative to its directory, closes both delegated handles and exits |
 | 5 | **Runtime memory.** Choose a non-blocking/non-allocating trap contract or a deferred mapping path, then add only the map/unmap, allocation and stack-growth mechanisms the measured execution route calls | The chosen path never allocates or blocks in forbidden trap context; W^X survives growth, failure is reported, and repeated launch/exit holds frame counts steady |
@@ -218,14 +219,16 @@ missing contract.
 
 ### Entry and bootstrap
 
-The entry contract must say how a program learns the numeric identity of its
-sole bootstrap handle and which ABI version it is speaking. The precise claim
-is that the handle table contains exactly one entry at launch. A scalar naming
+D-182 pays the entry contract with its first caller. At the first instruction,
+`rsp` names three words: entry version 1, the launch argument, and the numeric
+identity of the sole bootstrap handle. A program refuses an unknown version
+before interpreting the following words. The precise authority claim remains
+that the handle table contains exactly one entry at launch; a scalar naming
 that entry is not a second grant. The fixed ring, time page, and handleless
-echo, uptime and timer operations are ambient non-handle facilities and are
-enumerated rather than called absent. Arguments, terminal and directory
-handles, service endpoints, and future configuration arrive in the versioned
-bootstrap message; they are not extra ambient entry-state fields.
+ring/control operations are ambient non-handle facilities and are enumerated
+rather than called absent. Terminal and directory handles, service endpoints,
+and future configuration arrive in the versioned bootstrap message; they are
+not extra ambient entry-state fields.
 
 The global monotonic time page is deliberately **not** a bootstrap capability.
 D-152 made it one read-only page mapped into every process. Wizzy may describe
@@ -292,39 +295,40 @@ threads on completion waits and uses the existing cancellation operation only
 when a real outstanding request supplies the caller. A different route records
 its own equally explicit runtime boundary rather than inheriting these details.
 
-The Phase 5 header sketches VM mapping as a synchronous call, but the current
-trap handler may neither allocate nor block. Page-table growth, anonymous
-frames and virtual-address selection can require both. Slice 5 therefore
-chooses and proves an execution model—pre-reservation, deferred ring/service
-work, or an explicitly re-audited trap invariant—rather than exposing
-`map_user` and calling the operation complete.
+The Phase 5 header had sketched VM mapping as a synchronous call; D-181 removed
+that speculative number. Ordinary trap-context work may neither allocate nor
+enter `ThreadContext` or blocking-lock paths. D-164's audited
+`sleep_from_trap` scheduler yield is the existing narrow exception; it switches
+through the saved frame rather than blocking an ordinary kernel context.
+Page-table growth, anonymous frames and virtual-address selection can require
+more. Slice 5 therefore chooses and proves an execution model—pre-reservation,
+deferred ring/service work, or an explicitly re-audited trap invariant—rather
+than exposing `map_user` and calling the operation complete.
+
+The same constraint applies to teardown. Closing the last handle reference can
+deallocate, and unmap/free carry flush and reclamation obligations. D-182
+therefore records those sysdeps as PARTIAL rather than treating an existing
+internal method as a user door that only needs a number.
 
 ### The ABI transcription is not yet the source
 
 `userland/abi/wizard_abi.h` is a valuable Phase 5 pressure-test transcription,
-not a frozen shared ABI. It contains known contradictions that slice 2 must
-repair before a compiled consumer blesses them:
-
-- `WIZ_OP_SIGNAL` reuses Duplicate's opcode even though an unsolicited
-  completion has no opcode field;
-- one Duplicate comment packs the handle into `argument`, while the shipped
-  queue reads the separate `handle` field;
-- the header defines `EXECUTE`, while a File deliberately rejects that right;
-- "everything" is said to require a handle although Echo, Uptime, Timer and
-  the time page do not; and
-- synchronous channel and VM call numbers describe operations this plan puts
-  on a deferred data path; and
-- the time example uses an overflowing 64-bit multiply-add, while the sysdep
-  ignores its clock ID, reads an unfenced counter, omits page-version checks and
-  has no implemented Uptime fallback.
+not a frozen shared ABI. D-181 repaired the contradictions this audit found:
+it deleted the colliding signal and speculative call numbers, corrected
+Duplicate's fields and the ambient-facility claim, documented raw rights no
+current object admits, and made the partial monotonic reader validate and
+saturate a fenced 128-bit conversion. It also made the remaining gap explicit:
+the reader has no shared, token-correlating Uptime fallback, and version 1 has
+no unsolicited-event representation. D-182 then added the versioned three-word
+entry block and its first consumer.
 
 Slice 2 first chooses the canonical ABI description and how Rust, C and the
-Wizzy runtime derive or check their views. It then removes speculative numbers
-and makes every retained field agree with the shipped decoder. Its C clock
-reader must match `Timebase::resume` with a 128-bit intermediate and saturation,
-serialize the counter read, accept only the supported monotonic clock, validate
-the page, and refuse honestly until fallback exists. Copying the header into a
-runtime would preserve its bugs, not share an interface.
+Wizzy runtime derive or check their views. It must compile or replace D-181's
+source-checked clock reader without weakening its 128-bit saturation, fenced
+snapshot, monotonic-only guard, page validation or explicit fallback refusal.
+The first shared ring client then finishes that fallback with correlated
+Uptime completion handling. Copying even a repaired transcription into several
+runtimes would still duplicate the interface rather than share it.
 
 ### The second safety boundary
 

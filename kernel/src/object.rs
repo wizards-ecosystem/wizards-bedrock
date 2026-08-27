@@ -1,15 +1,16 @@
 //! The things a handle can name.
 //!
-//! `002`'s object model lists seven; this is the first, and the rest arrive
-//! with the phases that need them. Every one of them is reached only through a
-//! handle carrying rights (pillar 1), so the type here is deliberately not
-//! `pub` beyond the crate: nothing outside the handle table should be able to
-//! hold one directly.
+//! `002` sketches the eventual object model; four handle-object types exist
+//! today — events, channels, files and directories — and later phases add
+//! types only with callers. Each is exposed to a program only through a handle
+//! carrying rights (pillar 1), so the type here is deliberately not `pub`
+//! beyond the crate: nothing outside the handle table should hold one directly.
 //!
-//! **Lifetime is `Arc`.** D-78 wants `inc_not_zero` from day one so that a
-//! lookup racing a close cannot resurrect a corpse, and `Weak::upgrade` is
-//! exactly that operation with the atomics already audited. Writing a refcount
-//! by hand here would be a novel abstraction with no novelty (D-41).
+//! Stateful objects use `Arc`: D-78 wants `inc_not_zero` from day one so that
+//! a lookup racing a close cannot resurrect a corpse, and `Weak::upgrade` is
+//! exactly that operation with the atomics already audited. Copyable VFS file
+//! and directory identities live directly in an object reference; wrapping
+//! one must not turn an OpenAt completion into an allocation.
 
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
@@ -48,8 +49,8 @@ impl ObjectType {
     ///
     /// Beyond the universal four, which mean the same for everything. D-78's
     /// rule made checkable: a right must name a distinction the kernel makes
-    /// about *this* object, and an event has no pages, so none of the memory
-    /// rights apply to one (D-95).
+    /// about *this* object. An event exposes no type-specific data operation,
+    /// so only the universal rights apply to one (D-95).
     pub(crate) const fn per_type_rights(self) -> Rights {
         match self {
             Self::Event => Rights::NONE,
@@ -58,29 +59,25 @@ impl ObjectType {
             // the other. They are not syscall names, which is the rule D-78
             // states and WASI's rights violated.
             Self::Channel => Rights::READ.union(Rights::WRITE),
-            // `WRITE` is defined and never granted in this phase, which is
-            // the honest shape: the right names a distinction the kernel
-            // *would* make, and there is no write path to make it (`014`).
-            // `EXECUTE` is deliberately **not** here — until the VFS can hand
-            // out an executable mapping of a file's bytes the bit checks
-            // nothing, and a right that checks nothing is a syscall name in
-            // disguise (`012` §4, D-78).
-            Self::File => Rights::READ.union(Rights::WRITE),
-            Self::Directory => Rights::TRAVERSE
-                .union(Rights::ENUMERATE)
-                .union(Rights::MODIFY),
+            // WRITE, EXECUTE and MAP stay out until an operation consults
+            // them. Admitting an inert right would violate D-78 even if no
+            // current path happens to grant it.
+            Self::File => Rights::READ,
+            // MODIFY is likewise only a raw reserved bit while the namespace
+            // has no mutating operation.
+            Self::Directory => Rights::TRAVERSE.union(Rights::ENUMERATE),
         }
     }
 }
 
-/// Wrap a file as an object, ready for a handle table.
-pub(crate) fn file(file: crate::vfs::File) -> Option<ObjectRef> {
-    Some(Arc::new(Object::File(file)))
+/// Name a file with an object reference, ready for a handle table.
+pub(crate) const fn file(file: crate::vfs::File) -> ObjectRef {
+    ObjectRef::File(file)
 }
 
-/// Wrap a directory as an object.
-pub(crate) fn directory(directory: crate::vfs::Directory) -> Option<ObjectRef> {
-    Some(Arc::new(Object::Directory(directory)))
+/// Name a directory with an object reference.
+pub(crate) const fn directory(directory: crate::vfs::Directory) -> ObjectRef {
+    ObjectRef::Directory(directory)
 }
 
 /// A kernel object.
@@ -92,16 +89,6 @@ pub(crate) enum Object {
     Event(Event),
     /// See [`Channel`].
     Channel(Channel),
-    /// A file in some filesystem.
-    ///
-    /// **The thinner of `014`'s two options**: what names a backend and a node
-    /// within it, rather than an inode-like structure the VFS owns. The fatter
-    /// one is what a write path and a page cache both want, and this phase has
-    /// neither — building it now would be building for a caller that does not
-    /// exist (D-41, D-173).
-    File(crate::vfs::File),
-    /// A directory in some filesystem.
-    Directory(crate::vfs::Directory),
 }
 
 #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
@@ -111,8 +98,6 @@ impl Object {
         match self {
             Self::Event(_) => ObjectType::Event,
             Self::Channel(_) => ObjectType::Channel,
-            Self::File(_) => ObjectType::File,
-            Self::Directory(_) => ObjectType::Directory,
         }
     }
 
@@ -120,7 +105,7 @@ impl Object {
     pub(crate) const fn as_event(&self) -> Option<&Event> {
         match self {
             Self::Event(event) => Some(event),
-            Self::Channel(_) | Self::File(_) | Self::Directory(_) => None,
+            Self::Channel(_) => None,
         }
     }
 
@@ -128,23 +113,7 @@ impl Object {
     pub(crate) const fn as_channel(&self) -> Option<&Channel> {
         match self {
             Self::Channel(channel) => Some(channel),
-            Self::Event(_) | Self::File(_) | Self::Directory(_) => None,
-        }
-    }
-
-    /// The file inside, if that is what this is.
-    pub(crate) const fn as_file(&self) -> Option<&crate::vfs::File> {
-        match self {
-            Self::File(file) => Some(file),
-            Self::Event(_) | Self::Channel(_) | Self::Directory(_) => None,
-        }
-    }
-
-    /// The directory inside, if that is what this is.
-    pub(crate) const fn as_directory(&self) -> Option<&crate::vfs::Directory> {
-        match self {
-            Self::Directory(directory) => Some(directory),
-            Self::Event(_) | Self::Channel(_) | Self::File(_) => None,
+            Self::Event(_) => None,
         }
     }
 }
@@ -166,12 +135,9 @@ pub(crate) struct Event {
     waiters: WaitQueue,
 }
 
-/// Reached by the checks and, in the shipped kernel, by nothing yet: the
-/// synchronous calls that would let a program close a handle, duplicate one or
-/// send one are on D-114's owed list, and the ring carries no handle-bearing
-/// opcode. Allowed rather than cfg-gated so the image carries the code the
-/// checks exercise, and on the impl rather than the module so a genuinely dead
-/// item still shows (D-116).
+/// Reached by checks and not by a shipped object operation. No ring opcode
+/// creates, signals or waits on an Event yet; the implementation remains in
+/// the image so the checks exercise the code a future caller would reach.
 #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 impl Event {
     /// A new, unsignalled event.
@@ -218,13 +184,85 @@ impl Event {
     }
 }
 
-/// A reference to an object, counted.
-pub(crate) type ObjectRef = Arc<Object>;
+/// Something a handle can name.
+///
+/// Events and channels carry mutable state and therefore share a counted
+/// object. A file or directory is already a copyable VFS identity, so keeping
+/// it inline makes constructing a completion allocation-free.
+#[derive(Debug, Clone)]
+pub(crate) enum ObjectRef {
+    /// A stateful, reference-counted object.
+    Shared(Arc<Object>),
+    /// A file in some filesystem.
+    ///
+    /// **The thinner of `014`'s two options**: what names a backend and a node
+    /// within it, rather than an inode-like structure the VFS owns. The fatter
+    /// one is what a write path and a page cache both want, and this phase has
+    /// neither — building it now would be building for a caller that does not
+    /// exist (D-41, D-173).
+    File(crate::vfs::File),
+    /// A directory in some filesystem.
+    Directory(crate::vfs::Directory),
+}
+
+impl ObjectRef {
+    /// What kind of object this is.
+    pub(crate) fn kind(&self) -> ObjectType {
+        match self {
+            Self::Shared(object) => object.kind(),
+            Self::File(_) => ObjectType::File,
+            Self::Directory(_) => ObjectType::Directory,
+        }
+    }
+
+    /// The event inside, if that is what this is.
+    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    pub(crate) fn as_event(&self) -> Option<&Event> {
+        match self {
+            Self::Shared(object) => object.as_event(),
+            Self::File(_) | Self::Directory(_) => None,
+        }
+    }
+
+    /// The channel end inside, if that is what this is.
+    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    pub(crate) fn as_channel(&self) -> Option<&Channel> {
+        match self {
+            Self::Shared(object) => object.as_channel(),
+            Self::File(_) | Self::Directory(_) => None,
+        }
+    }
+
+    /// The file inside, if that is what this is.
+    pub(crate) const fn as_file(&self) -> Option<&crate::vfs::File> {
+        match self {
+            Self::File(file) => Some(file),
+            Self::Shared(_) | Self::Directory(_) => None,
+        }
+    }
+
+    /// The directory inside, if that is what this is.
+    pub(crate) const fn as_directory(&self) -> Option<&crate::vfs::Directory> {
+        match self {
+            Self::Directory(directory) => Some(directory),
+            Self::Shared(_) | Self::File(_) => None,
+        }
+    }
+
+    /// A weak reference for lifetime checks on stateful objects.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn downgrade_for_test(&self) -> Option<Weak<Object>> {
+        match self {
+            Self::Shared(object) => Some(Arc::downgrade(object)),
+            Self::File(_) | Self::Directory(_) => None,
+        }
+    }
+}
 
 /// Make a new event, ready to be put in a handle table.
 #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) fn event() -> ObjectRef {
-    Arc::new(Object::Event(Event::new()))
+    ObjectRef::Shared(Arc::new(Object::Event(Event::new())))
 }
 
 /// A message in flight: bytes, and handles with the rights they were sent with.
@@ -239,12 +277,9 @@ pub(crate) struct Message {
     handles: Vec<(ObjectRef, Rights)>,
 }
 
-/// Reached by the checks and, in the shipped kernel, by nothing yet: the
-/// synchronous calls that would let a program close a handle, duplicate one or
-/// send one are on D-114's owed list, and the ring carries no handle-bearing
-/// opcode. Allowed rather than cfg-gated so the image carries the code the
-/// checks exercise, and on the impl rather than the module so a genuinely dead
-/// item still shows (D-116).
+/// Reached by channel checks and not by ring 3. Phase 7 needs real asynchronous
+/// send and receive operations before a program can construct or consume one;
+/// the implementation remains in the image so those mechanics stay exercised.
 #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 impl Message {
     /// The most bytes one message carries.
@@ -523,12 +558,12 @@ impl Drop for Channel {
 /// that was never opened — a failure arriving arbitrarily far from its cause
 /// (D-127).
 pub(crate) fn channel() -> Option<(ObjectRef, ObjectRef)> {
-    let first: ObjectRef = Arc::new(Object::Channel(Channel::new()?));
-    let second: ObjectRef = Arc::new(Object::Channel(Channel::new()?));
+    let first = Arc::new(Object::Channel(Channel::new()?));
+    let second = Arc::new(Object::Channel(Channel::new()?));
     let (Some(one), Some(two)) = (first.as_channel(), second.as_channel()) else {
         return None;
     };
     *one.peer.lock_leaf() = Arc::downgrade(&second);
     *two.peer.lock_leaf() = Arc::downgrade(&first);
-    Some((first, second))
+    Some((ObjectRef::Shared(first), ObjectRef::Shared(second)))
 }

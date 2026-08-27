@@ -1,18 +1,20 @@
 # 014 — Storage (Phase 6)
 
-The phase that gives the kernel something to wait for.
+The phase that first gives the kernel something to keep in flight.
 
-Phase 5 built a ring and gave it a caller that echoes a word back. Nothing in
-this kernel has yet asked for something it could not have immediately: the
-clock answers, `exit` retires, the doorbell serves. A `read()` from a disk is
-the first operation whose honest answer is *not yet*, and the first whose
-whole purpose is to hand back **authority** rather than bytes.
+Phase 5 built a ring and gave it Echo. Phase 6 then separated four milestones
+that the opening draft conflated: Timer is the first operation whose honest
+answer is *not yet*; Duplicate is the first completion that carries derived
+authority; OpenAt is the first namespace operation that produces authority;
+and Read is the first storage/data caller that needs a handle, offset, buffer
+and length together. Current Read still polls NVMe inline while `RingEnter`
+serves it; it has ring wire shape, not deferred device service.
 
-Both of those reshape the ABI, which is why D-149 puts them **before** the
-filesystem rather than after it. Build `read()` synchronous and add the ring
-form later and this kernel has two doors to one operation for ever — the
-mistake Phase 5 avoided by freezing the handle table and the queue before
-writing their callers.
+Those milestones reshape the ABI, which is why D-149 puts them **before** the
+filesystem rather than after it. Build `read()` synchronous as a separate call
+and add the ring form later and this kernel has two doors to one operation for
+ever — the mistake Phase 5 avoided by freezing the handle table and the queue
+before writing their callers.
 
 So the order is: the ABI learns to carry a handle, to publish time without a
 trap, and to survive a program that dies mid-operation. Then a disk, a format,
@@ -39,10 +41,10 @@ and teardown history.
 | Debt | Where recorded | What Phase 6 does |
 |---|---|---|
 | No completion carries a handle, so the ring is not the delegation path channels are | `011` close; D-151 | **Slice 1**, with the receiver reserving the slot at submission |
-| Nothing blocks on a completion, so the wait queue is built and unused | `011` close | **Slice 1**: the first blocking read is what uses it |
+| Nothing blocks on a completion, so the wait queue is built and unused | `011` close | **Slice 1**: Timer becomes the first genuinely deferred operation |
 | Port claims prove exclusivity, not device *entitlement* — the device half of the authority debt | D-77; `011` | **Slice 4**, with PCI discovery: a driver claims a device, not a port range |
-| `sys_read`, `sys_write`, `sys_seek`, `sys_close`, `sys_open` are OWED or ABSENT | D-114; `userland/README.md` | Slices 6–9 build the VFS, `OpenAt` and `Read`; their ring-3 caller still needs channel receive in Phase 7. `sys_open` stays ABSENT by design (C-3) |
-| `sys_clock_get` is OWED over `libs/timebase` | D-114 | **Slice 2**: it stops being a call and becomes a load |
+| The five file sysdeps were OWED or ABSENT under D-114's former taxonomy | D-114; amended by D-181 | Slices 6–9 build the VFS, `OpenAt` and `Read`; D-181 separates the remaining compatibility, door and missing-substrate work |
+| `sys_clock_get` was OWED under that former taxonomy | D-114; amended by D-181 | **Slice 2**: monotonic time stops being a call and becomes a load |
 | An in-flight operation whose program retires is unspecified | D-153; `013` W-3 | **Slice 3** |
 | `xtask/src/elf.rs` still transcribes ELF header offsets rather than using `libs/elf64` | D-105; `011` close | **Slice 9**, when the image builder is touched anyway |
 | A wait with a timeout | `009` slice 4; `011` | Slice 1, where it falls out of the completion queue |
@@ -57,24 +59,25 @@ Phase 9; WizFS waits for Phase 13 (D-73).
 
 ## Order of work (proposal)
 
-The order is forced twice over. The ABI slices come first because a VFS is the
-first caller that waits, and a caller freezes the interface it uses (D-149).
+The order is forced twice over. The ABI slices come first because Timer needs
+real deferral and Read is the first storage/data caller to freeze the widened
+entry it uses (D-149).
 Within the storage half: nothing can read a format without a block device,
 nothing can enumerate without a reader, and the VFS needs at least two backends
 before its abstraction is anything but a guess.
 
 | Slice | Contents | Status |
 |---|---|---|
-| 1 | **A completion carries a handle.** Reservation extended to handle-table slots, attenuation on arrival, and the first operation that genuinely waits | Done |
-| 2 | **The time page.** Two regions — immutable constants, and a versioned clock with a revocation gate and a syscall fallback | Done |
+| 1 | **A completion carries a handle.** Result-slot reservation, same-object attenuation, and the first operation that genuinely waits; cross-type derivation arrives with OpenAt in slice 9 | Done |
+| 2 | **The time page.** Immutable constants, a versioned clock with a revocation gate, and proof that kernel Uptime survives revocation; D-181 records the still-incomplete shared userspace fallback | Done |
 | 3 | **Death mid-operation.** In-flight operations collected with the zombie; exit is a *wait*, not a signal | Done |
 | 4 | **PCI, and a device that is claimed.** CF8/CFC enumeration recursing through bridges, a `Device` capability that supersedes bare port claims, BAR mapping uncacheable | Done |
-| 5 | **NVMe, polled.** Twelve-step init, one I/O queue pair, `IEN=0`, PRP construction in `libs/`, and the `size − 1` capacity rule proved |Done |
-| 6 | **FAT32, read-only, short names.** `libs/fat32` over a block trait, checked against the ESP `xtask` already builds |Done |
-| 7 | **The VFS.** A directory trait — `lookup`, `enumerate`, `modify` — enum dispatch, and path resolution that cannot ascend |Done |
-| 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes |Done |
-| 9 | **The file handle.** `READ`/`WRITE` on files, `TRAVERSE`/`ENUMERATE`/`MODIFY` on directories, offsets per operation, and a `read` that is a submission |Done |
-| 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks — D-135), the adversarial audit, the roadmap and this file's closing section | Code complete; five interactive VMware checks open |
+| 5 | **NVMe, polled.** Twelve-step init, one I/O queue pair, `IEN=0`, PRP construction in `libs/`, and the `size − 1` capacity rule proved | Done |
+| 6 | **FAT32, read-only, short names.** `libs/fat32` over a block trait, checked against the ESP `xtask` already builds | Done |
+| 7 | **The VFS.** A directory abstraction over resolve, read and enumerate (`modify` is reserved for a future write path), enum dispatch, and path resolution that cannot ascend | Done |
+| 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes | Done |
+| 9 | **The file handle.** File `READ`, directory `TRAVERSE`/`ENUMERATE`, offsets per operation, and a `Read` submission whose current service still polls inline | Done |
+| 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks — D-135), the adversarial audit, the roadmap and this file's closing section | Code complete; the post-audit image still awaits the human VMware close |
 
 ---
 
@@ -96,10 +99,10 @@ Three properties follow, and each is a check:
   a cancelled one, and a retired program's are three paths and the third is
   slice 3's. `012` §10 records `IORING_FILE_INDEX_ALLOC` reporting `-ENFILE` at
   completion as the symptom of getting this wrong.
-- **Rights attenuate on arrival**, the way D-110 makes the channel path
-  attenuate. Otherwise the ring becomes the widening path around that
-  discipline, which is the one thing that would make it worse than the
-  channels it is joining.
+- **Same-object rights attenuate on arrival**, the way D-110 makes channel
+  transfer attenuate. A cross-type producer may derive only a type-specific
+  right authorised by the source operation and preserves no universal right
+  the source lacked; OpenAt's `TRAVERSE`-to-`READ` rule is the worked case.
 - **Exactly one terminal completion still holds.** Cancellation is itself an
   operation with its own reservation and its own completion, and never
   substitutes for the target's — `012` §8, and the antidote to the double-completion
@@ -111,10 +114,11 @@ An **immutable constants region** — tick rate, page size, ABI version — with
 seqlock and no version counter, because there is nothing to tear. Zircon's
 model, and it removes the most error-prone reads from the protocol entirely.
 
-A **versioned clock region** — Linux's seqlock protocol verbatim, including
-*both* memory barriers, `nsec` stored pre-shifted so a reader does one
-multiply-add and no division, a `clock_mode` **revocation gate**, and a syscall
-fallback that is always reachable.
+A **versioned clock region** — Linux's seqlock protocol with both barriers,
+whole `base_ns` plus a fractional carry, a 128-bit multiply/shift in the
+reader, and a `clock_mode` **revocation gate**. A kernel check proves ring
+Uptime still answers after revocation. The shared userspace client that can
+correlate its fallback completion remains Phase 7 work (D-181).
 
 **One question this phase must answer before writing the writer.** `012` §9:
 Linux tolerates a naive reader spin only because its timekeeping update runs
@@ -229,9 +233,10 @@ global namespace with a mount tree and a shared lookup cache, neither of which
 this kernel has. Importing the shape without the requirements is how a VFS
 becomes premature.
 
-**The abstraction is over directories**, because path resolution is the only
-code that must be backend-agnostic: `lookup(name)`, `enumerate(cookie)`,
-`modify`. That is 9P's walk/read/remove.
+**The abstraction is over directories**, because path resolution is the code
+that must be backend-agnostic. The delivered surface resolves, reads and
+enumerates through enum dispatch; mutation waits for a write path. It is not a
+trait pretending a backend can be added without editing the dispatcher.
 
 **Enum dispatch while all three backends are in-kernel** — monomorphic,
 allocation-free, exhaustively checked when a fourth arrives. Promote to dynamic
@@ -240,19 +245,21 @@ means *when a filesystem lives in userspace*, and at that point the abstraction
 is the protocol and the trait is irrelevant.
 
 **devfs does not go through a byte interface.** A devfs entry has no bytes; it
-is a name that yields a handle of another type. Forcing it to implement
-`read_at` is the "everything is a file" conflation, and WASI's own README
-rejects it on exactly these grounds. `lookup` on devfs returns a device handle.
+resolves internally as `Node::Device`. Forcing it to implement `read_at` is the
+"everything is a file" conflation, and WASI's own README rejects it on exactly
+these grounds. OpenAt currently refuses that node; a user-visible `Device`
+handle remains Phase 7 work.
 
 ### Rights, and the one split worth stealing (`012` §4)
 
 The four universal rights are already, bit for bit, Zircon's basic rights. Per
 type:
 
-- **File:** `READ`, `WRITE`. `EXECUTE` is *reserved and not defined* — until the
-  VFS can hand out an executable mapping of file bytes, the bit checks nothing
-  and is a syscall name in disguise.
-- **Directory:** `TRAVERSE`, `ENUMERATE`, `MODIFY`.
+- **File:** `READ`. `WRITE` remains meaningful for Channel but no current File
+  admits it. Raw `EXECUTE` and `MAP` are defined by `handle-space`, but no
+  current object admits either.
+- **Directory:** `TRAVERSE`, `ENUMERATE`. Raw `MODIFY` is reserved but no
+  current Directory admits it while the namespace has no mutating operation.
 
 `TRAVERSE` versus `ENUMERATE` is the valuable one: "may resolve a name I know"
 versus "may list the names", and a real kernel distinction by D-78's rule
@@ -265,9 +272,13 @@ taking two directory handles, and Capsicum's man page notes that
 `CAP_LINKAT_SOURCE` "allows linking files with broader rights" — folding the
 two into one bit is an **authority-laundering vector**.
 
-**One set, monotone non-increasing.** A nested open may request the same rights
-or fewer, never more. WASI Preview 1's base/inheriting pair forced its libc to
-compute two masks per open and was deleted.
+**One set, with same-type authority monotone non-increasing.** OpenAt does not
+accept a requested mask. A directory preserves its parent's rights unchanged;
+a file preserves only universal rights already held and derives `READ` from
+`TRAVERSE`. That cross-type derivation is not a bitset subset, but it cannot
+recreate a universal right or grant an unauthorised file operation. WASI
+Preview 1's base/inheriting pair forced its libc to compute two masks per open
+and was deleted.
 
 ### Path resolution that cannot ascend (`012` §5)
 
@@ -307,7 +318,7 @@ are variable-length and the set mutates. `read_dir` returns an opaque `u64`
 cookie and takes it back, so the cursor lives in the caller's memory and the
 kernel keeps **zero** position state on any handle.
 
-### How few threads a blocking read needs (`012` §8)
+### How few threads eventual deferred reads need (`012` §8)
 
 io_uring's history is a march *away* from its worker pool, and its bounded pool
 alone would be `4 × nr_cpus`. This kernel has sixteen thread slots total.
@@ -348,8 +359,8 @@ Specific checks this phase owes, named now so they are not invented later:
 - **A path that tries to ascend**, from every direction: absolute, `..` past
   the root, `..` in the middle that would escape, and a rename underneath a
   walk.
-- **A handle arriving by completion with rights it was not offered**, which must
-  be refused at the attenuation.
+- **A same-object Duplicate with rights it was not offered**, which must be
+  refused, plus an OpenAt derivation that must not restore universal rights.
 - **A program that dies with an operation outstanding**, and every resource
   back afterwards — frames, handles, reservations and the worker slot.
 - **The seqlock's writer is not preemptible**, established rather than assumed.
@@ -372,9 +383,11 @@ Specific checks this phase owes, named now so they are not invented later:
   Fuchsia's namespace construction are both out of scope; a program gets the
   directory handles it was given.
 - **The corpus has one writer**, until a foreign image is obtained.
-- **`sys_open` stays ABSENT** in the sysdep taxonomy. It becomes `openat` from
-  a directory handle, which is what C-3 means and what `userland/README.md`
-  already records.
+- **POSIX `sys_open` remains partial platform and compatibility work.** Native
+  OpenAt resolves existing paths from a directory handle, but ring 3 cannot yet
+  receive the first one. The adapter then supplies root/cwd/descriptor state
+  and returns EROFS for creation, truncation and write modes rather than
+  inventing a write path (C-3, D-181).
 
 ---
 
@@ -473,7 +486,8 @@ the program is told, which is D-151's whole argument for reserving at all.
 ### What this slice deliberately did not do
 
 - **`Pending` is a timer and nothing else.** D-41 forbids the abstraction with
-  one implementation; the second kind arrives with the block device in slice 5.
+  one implementation. The expected block-device kind did not arrive: current
+  Read still polls inline, so deferred device service remains future work.
 - **No worker thread.** `012` §8 is emphatic, and a state machine driven from
   the waiting thread needs none. Sixteen thread slots is the reason and the
   measurement will be taken in slice 5.
@@ -487,10 +501,11 @@ the program is told, which is D-151's whole argument for reserving at all.
 
 **Landed 2026-08-25.** D-166. 156 machine checks, 619 host tests, 37 mutations.
 
-`sys_clock_get` was OWED over `libs/timebase` (D-114) — the mechanism complete
-and the door missing. It is answered by not being a door. One page, read-only
-in every program at `0x0000_1000_0000_0000`, with the constants in one region
-and the clock in another.
+Under D-114's former taxonomy, `sys_clock_get` was OWED over
+`libs/timebase`—the mechanism complete and the door missing. Slice 2 answered
+the monotonic path by not making it a door. One page is read-only in every
+program at `0x0000_1000_0000_0000`, with constants in one region and the clock
+in another; D-181 separately records the C reader and fallback as partial.
 
 ### What the research asked for, and what turned out to be wrong
 
@@ -501,12 +516,13 @@ one, which is what Linux does and for the same reason. The fraction is not a
 detail: a clock updated at a kilohertz that dropped it falls a microsecond
 behind every second.
 
-**This clock needs no periodic update at all**, and that is not a shortcut.
-`time::init` refuses to calibrate unless the counter is invariant, so the
-conversion is fixed and the origin never moves; a reader computes
-`convert(rdtsc - origin)`, which is *exactly* what `now_ns` computes. The
-seqlock is still here and still correct, because the page is republished on the
-two transitions that exist — calibration and revocation.
+**This clock makes no periodic adjustment, and that limit is explicit.**
+`time::init` accepts two believable, agreeing measurement windows; the
+invariant-TSC bit is reported and warned on, not a veto. The conversion and
+origin then remain fixed for the supported uptime, and a reader computes
+`convert(rdtsc - origin)`, exactly what `now_ns` computes. A counter whose rate
+changes later makes the clock drift; the mode permits revocation, but suspend,
+NTP adjustment and an instability detector do not exist yet (D-57, D-181).
 
 ### Three things that were wrong first
 
@@ -528,19 +544,20 @@ observer that exists.
 
 ### The check that has no tolerance
 
-*The time page and the call tell the same time* is a **sandwich**: the page's
-reading is taken between two calls to `now_ns` and must lie between them. Not a
+*The time page and the kernel clock tell the same time* is a **sandwich**: the page's
+reading is taken between two `now_ns` reads and must lie between them. Not a
 bound, not a tolerance — a multiplier or shift off by one fails at once, and
 there is no slack for it to hide in.
 
 ### What moved in the ABI
 
 `WIZ_CALL_CLOCK_GET` is **deleted**, and its absence is the point.
-`WIZ_CALL_RING_WAIT` takes 3 and the owed calls renumber, which costs nothing
-while none is implemented and would cost an ABI break later. The C header gains
-the page's address, version, modes and every field offset, and the cross-check
-compares all of them against `timepage.rs` — a `mode` read from the wrong place
-is a clock that reads as usable when it is not.
+`WIZ_CALL_RING_WAIT` takes 3. At this slice the speculative owed calls
+renumbered, which cost nothing while none was implemented; D-181 later deleted
+those unimplemented numbers. The C header gains the page's address, version,
+modes and every field offset, and the cross-check compares all of them against
+`timepage.rs` — a `mode` read from the wrong place is a clock that reads as
+usable when it is not.
 
 ---
 
@@ -639,9 +656,9 @@ outside the guard now.
 ### Deliberately not yet
 
 The `Device` is a **kernel-side capability, not a handle**: obtainable only
-from the registry, exactly as `Port<T>` is. It becomes something a program can
-hold in slice 8, where devfs hands it out — which is the first moment there is
-anyone to hand it to (D-41).
+from the registry, exactly as `Port<T>` is. Slice 8 makes it resolvable
+internally through devfs but does not create a handle; the first user-visible
+Device handle remains Phase 7 work (D-41, D-172).
 
 ---
 
@@ -697,10 +714,10 @@ is exactly `PCD`.
 
 ### What is left for later slices
 
-A read still spins, bounded rather than endless. Slice 9 is where it becomes a
-submission and the spinning becomes a wait — and slice 3's `abandon` already
-says what the teardown must then do: wait for the controller, and not return
-before `is_quiet`.
+A read still spins, bounded rather than endless. Slice 9 gives it a submission
+shape but still polls the controller inline while `RingEnter` serves the queue.
+A future deferred device state machine and interrupt path must couple that work
+to slice 3's teardown rule: do not return before the controller is quiet.
 
 ---
 
@@ -764,9 +781,9 @@ from one tool.
 
 **Landed 2026-08-25.** D-171. 173 machine checks, 680 host tests, 56 mutations.
 
-Three operations rather than five tables: `lookup`, `enumerate`, and `modify`
-when there is a write path. Path resolution is the only code that must be
-backend-agnostic, so it is the only thing the abstraction is about.
+A compact surface rather than five tables: resolve, read and enumerate today,
+with mutation reserved until there is a write path. Path resolution is the code
+that must be backend-agnostic, so it is what the abstraction is about.
 
 **Enum dispatch**, monomorphic and allocation-free, exhaustively checked by the
 compiler when a fourth backend arrives. Dynamic dispatch waits for a backend
@@ -868,9 +885,9 @@ rather than about the name.
 **Landed 2026-08-25.** D-173. 179 machine checks, 680 host tests, 62 mutations.
 
 A ring operation resolves a path from a directory handle, gets back a file
-handle carrying attenuated rights, and reads bytes off the controller into a
-shared page. That is the whole phase in one sentence, and every part of it was
-built by a different slice.
+handle carrying derived, non-escalating authority, and reads bytes off the
+controller into a shared page. That is the whole phase in one sentence, and
+every part of it was built by a different slice.
 
 ### The last three of this file's open decisions
 
@@ -884,22 +901,25 @@ its bounds are two comparisons. There is no user pointer to validate, no SMAP
 window to open and no fault to recover. The cost is one copy, named rather than
 hidden: zero-copy needs memory objects, which is a later phase.
 
-**`OpenAt`'s rights are derived, never asked for.** A directory inherits its
-parent's unchanged; a file gets `READ`, because reaching a file is what naming
-it means; `WRITE` is never granted, because there is no write path and a right
-that grants nothing is a syscall name in disguise.
+**`OpenAt`'s rights are derived, never asked for.** A directory preserves its
+parent's same-type rights. A file preserves only universal rights already held
+and derives `READ` from `TRAVERSE`; it does not recreate a universal right.
+`WRITE` is never granted, because there is no write path and a right that grants
+nothing is a syscall name in disguise.
 
 ### The entry widened, and this was the moment
 
-D-149 put the ABI slices first "because a caller freezes the interface it
-uses". This is that caller. Sixteen bytes could not hold a handle, an offset, a
-buffer and a length; the entry is thirty-two now, which is cheap today and an
-ABI break tomorrow.
+D-149 put the ABI slices first because a caller freezes the interface it uses.
+Read is the first storage/data caller. Sixteen bytes could not hold a handle,
+an offset, a buffer and a length; the entry is thirty-two now, which is cheap
+today and an ABI break tomorrow. Timer, not Read, is the first deferred caller.
 
-Four transcriptions of the layout exist — the kernel, the C header, the emitted
-ring-3 program and the test helpers — and the cross-check compares all of them,
-including the stride the program writes at. A submission written at the wrong
-stride lands its argument in the next entry's opcode.
+At slice close four transcriptions existed — kernel parser/serializer, C
+header, emitted ring-3 program and test helpers — while the host check compared
+only sizes and stride. D-181 repaired the gap: one kernel offset map now feeds
+parser, serializer and helpers; the check derives C offsets, widths and sizes,
+then checks actual emitted-ELF operands plus entry base and count. A persistent
+`argument`-offset mutation must make the program-ring check red.
 
 ### The check that changed no output
 
@@ -917,10 +937,10 @@ of the data area and requires the count unchanged.
 ### The slice's named limit
 
 **A ring-3 program still cannot reach any of this.** `spawn` gives a program
-exactly one handle — its bootstrap channel — and receiving a directory handle
-over that channel needs `sys_channel_receive`, which is OWED. Giving a program
-a second handle at spawn would break the invariant that makes pillar 1
-checkable, so it waits for the channel rather than for a convenience.
+exactly one handle — its bootstrap channel — and there is no ring-3
+channel-receive operation yet. Giving a program a second handle at spawn would
+break the invariant that makes pillar 1 checkable, so it waits for the channel
+rather than for a convenience.
 
 ---
 
@@ -931,17 +951,17 @@ checkable, so it waits for the channel rather than for a convenience.
 ### What the phase is
 
 A ring operation resolves a path from a directory handle, gets back a file
-handle carrying attenuated rights, and reads bytes off a real NVMe controller
-into a page it shares with the caller. Every part of that sentence was built by
-a different slice, and the order was forced: the ABI first, because a caller
-freezes the interface it uses.
+handle carrying derived, non-escalating authority, and reads bytes off a real
+NVMe controller into a page it shares with the caller. Every part of that
+sentence was built by a different slice, and the order was forced: the ABI
+first, because a caller freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 187 |
-| Mutations | 69, each caught by the check it names |
+| Machine checks | 189 |
+| Mutations | 77, each caught by the check it names |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | D-163 … D-179 |
+| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181 and D-182 |
 
 The first two are **checked against the source at every commit**
 (`xtask/src/prose.rs`), because a number restated in prose is a number that can
@@ -957,18 +977,22 @@ it (D-175). The host-test count is deliberately absent: it changes with every
 | No completion carries a handle | Slice 1 (D-163) |
 | Nothing blocks on a completion | Slice 1 (D-164) |
 | Port claims prove exclusivity, not entitlement | Slice 4 (D-168) |
-| `sys_clock_get` OWED | Slice 2 — it stopped being a call (D-166) |
+| `sys_clock_get` OWED under D-114's former taxonomy | Slice 2 — monotonic time stopped being a call (D-166); D-181 records the reader and fallback as PARTIAL |
 | An in-flight operation whose program retires | Slice 3 (D-167) |
 | `xtask/src/elf.rs` transcribes ELF offsets | Paid early, in the pre-phase pass (D-158) |
 | A wait with a timeout | Slice 1 (D-164) |
 | KASLR ledger entries | Slice 2's time page; slice 4 needed none — the NVMe window is discovered, not fixed |
 
-The four file sysdeps are still unpaid for four distinguishable reasons.
-`sys_read` has `OpenAt` and `Read` but ring 3 cannot receive its first directory
-handle; that needs a channel. `sys_write` has no write path. `sys_seek` needs
-the compatibility layer's shared file-object cursor, which the native ABI
-deliberately omits. `sys_close` reaches a kernel mechanism with no ring-3 door.
-Collapsing those into "no file handle" hid three pieces of later work.
+The five file sysdeps remain incomplete for distinguishable reasons.
+`sys_read` has a native explicit-offset Read, but needs a reachable file
+handle and the compatibility layer's shared cursor. `sys_write` has no write
+path. `sys_seek` changes that same POSIX cursor, which the native ABI
+deliberately omits. `sys_close` has an internal kernel mechanism, but releasing
+the last object reference can deallocate; it still needs a deferred or otherwise
+trap-safe user route. `sys_open` layers root/cwd/descriptor policy and explicit
+EROFS refusals over read-only OpenAt, but also lacks the ring-3 route that
+delivers its first directory. D-181's exact register, narrowed by D-182, keeps
+those routes separate.
 
 ### The five decisions this file left open
 
@@ -1064,13 +1088,15 @@ And the self-test reaches the set 1 path without a human, by making QEMU
 translate — the gate boots with the controller in the state VMware is in
 unasked, and presses a key whose identity the harness chose.
 
-**Where it stands: `passed=182 failed=5`, and all five need a human.** They are
-the two injection rounds — a keystroke cannot be injected into a headless VMware
-run the way QMP injects one into QEMU — and the three checks that read what the
-first round delivered. Every other check on that machine is green, including
-the ten storage checks that had no device, the four paging checks that had never
-run, and both keyboard checks once they stopped claiming a set the kernel no
-longer requires.
+**The 2026-08-25 image stood at `passed=182 failed=5`, and all five needed a
+human.** They were the two injection rounds — a keystroke cannot be injected
+into a headless VMware run the way QMP injects one into QEMU — and the three
+checks that read what the first round delivered. Every other check in that
+image was green, including the ten storage checks that had no device, the four
+paging checks that had never run, and both keyboard checks once they stopped
+claiming a set the kernel no longer requires. D-181 and D-182 post-date that
+measurement, so the current 189-check image still needs the same human round;
+the old total is evidence about that dated image, not a current verdict.
 
 **So the phase is closed on the code and open on one boot with a person at it.**
 The count in the table above is QEMU's. This section records what VMware
@@ -1095,10 +1121,12 @@ discovers which of them were about the first machine.**
 ### Carried deliberately
 
 No write path. No page cache. No symlinks or hard links. One namespace per
-program with no way to compose two. `sys_open` stays ABSENT by design. And the
-corpus still has **one writer** — until a foreign-produced FAT32 image is
-obtained, a shared misreading of the specification would pass both
-implementations, which is the honest limit of an oracle built from one tool.
+program with no way to compose two. POSIX `sys_open` still needs a ring-3 route
+for its first delegated directory, compatibility root/cwd/descriptor policy and
+explicit EROFS handling for mutating modes. And the corpus still has **one
+writer** — until a foreign-produced FAT32 image is obtained, a shared
+misreading of the specification would pass both implementations, which is the
+honest limit of an oracle built from one tool.
 
 ### What this phase taught the next one
 

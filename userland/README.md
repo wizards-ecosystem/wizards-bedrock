@@ -4,60 +4,89 @@ D-74 asked for an mlibc sysdep **immediately after the ABI stabilises**, and
 was explicit about why: *"not to run real software, but to find out whether a
 POSIX libc can sit on this ABI while the ABI is still cheap to change."*
 
-This directory is that answer. It holds `abi/wizard_abi.h` — the native ABI as
-a C header — and `sysdeps/wizard/generic.cpp`, mlibc's sixteen mandatory tags
-written against it.
+This directory is that pressure test. It holds `abi/wizard_abi.h`, a C
+transcription of the native ABI, and `sysdeps/wizard/generic.cpp`, the
+sixteen functions inspected for D-114.
 
-**Nothing here is compiled.** The wall is recorded below with its cost, which
-is what D-74's fallback asked for rather than a silent omission (D-114).
+**Nothing here is compiled, and no mlibc source revision was recorded.** These
+files are neither a current upstream port nor build evidence. They preserve
+the consumer questions D-74 wanted answered; Phase 9 must pin the API it
+actually builds before treating a signature here as authoritative (D-181).
 
 ## The wall
 
-Slice 10's plan was to vendor a portable clang and lld, checksum-pinned under
-D-25, and build mlibc against them. Measured rather than estimated:
+Slice 10 planned to vendor a portable clang and lld under D-25 and build mlibc
+against them. D-114 recorded this dated measurement:
 
 | | |
 |---|---|
-| C compiler on this machine | none — no `clang`, `gcc`, `cc`, or `cl` |
+| C compiler on this machine | none — no `clang`, `gcc`, `cc`, or `cl` at that measurement |
 | LLVM 19.1.7 Windows release | **845 MB** compressed, ~3 GB extracted |
 | ...and it is the **MSVC** build | needs MSVC headers and libs, so not self-contained (D-16) |
-| mlibc's build system | meson + ninja, neither present, both Python-ecosystem installs |
+| mlibc's build system | meson + ninja, neither present at that measurement |
 | mlibc target triple | none exists for this OS; adding one patches its meson files |
 
-The self-contained rule (D-16) is what decides it. LLVM ships no mingw-based
-Windows release, so the vendored clang would depend on an MSVC installation
-this machine does not have and the project has no way to pin — which is the
-opposite of the property vendoring exists to buy. The download is the smaller
-objection.
+That environment changed. A 2026-08-26 recheck found unpinned WinLibs
+GCC/G++ 16.1, Ninja 1.13.2, and Python 3.14.3 through the working `py`
+launcher (`python` and `python3` are non-working Store aliases). Meson, pinned
+mlibc source, Wizard target integration, and a repository-owned toolchain are
+still absent. Tool appearance does not turn the historical fallback into a
+reproducible build. The wall now is the unpinned
+source/toolchain/build-system/target closure, not the false timeless claim that
+this workstation has no compiler or Python runtime.
 
 ## What was learned anyway, which is the point
 
-The tags divide three ways. The counts are the finding.
+D-181 retired the three-bin tally because it mixed two different questions
+and was false in both directions: a body could be a no-op while its *shape*
+was called mapped, and an internal wait queue was called an owed futex even
+though the userspace-keyed mechanism did not exist.
 
-| | Count | |
-|---|---|---|
-| **MAPS** | 5 | the native ABI already has the shape POSIX wants |
-| **OWED** | 10 | the kernel has the mechanism and no ring-3 door |
-| **ABSENT** | 1 | the native ABI has nothing of the kind, deliberately |
+D-182 then tightened the platform axis: an internal operation is not merely a
+missing door when calling it can allocate, deallocate or reclaim from forbidden
+trap context. That distinction moves close, unmap and anonymous free to
+PARTIAL until they have a safe execution route.
 
-**MAPS (4):** `sys_libc_panic`, `sys_exit`, `sys_tcb_set`, and the *shape* of
-`sys_libc_log`. Two work end to end today: `sys_exit` retires a ring-3 thread
-from the far side of the boundary (D-96), and `sys_tcb_set` points `fs:` at
-thread-local storage that then follows the thread across a switch (D-118).
+The **BODY** column describes only the uncompiled C++:
 
-**OWED (11):** every one has a kernel-side mechanism and no door. `sys_close`
-over the handle table's close (D-78). `sys_read`/`sys_write` over the ring
-(D-113). `sys_vm_map`/`sys_vm_unmap` over `map_user` and `unmap` (D-107,
-D-88). `sys_futex_wait`/`sys_futex_wake` over `WaitQueue::wait_unless`, which
-already solves the lost-wakeup window a futex gets wrong first (D-95).
-`sys_clock_get` over `libs/timebase`.
+- **WIRED** invokes a call the kernel currently decodes.
+- **COMPOSED** obtains its required behavior from another entry.
+- **PARTIAL** has a real success path for a strict subset and refuses the rest.
+- **STUB** has no success path.
 
-**ABSENT (1):** `sys_open` needs a *namespace*, and there is no global
-filesystem to name a path in — by design (pillar 1). A libc can be built where
-`open` resolves through a directory handle the process was given, which is
-`openat` with no `AT_FDCWD` and is what WASI's `path_open` settled on for the
-same reason. What such a libc cannot do is `open("/etc/foo")` from a process
-nobody gave a root directory to, and that is the point rather than a defect.
+The **REMAINDER** column describes platform work, not whether this C++ has ever
+run:
+
+- **WORKS** means no known platform semantic is missing for that function.
+- **COMPAT** needs POSIX-only state or policy over existing native operations.
+- **DOOR** has a matching internal kernel operation but no chosen user entry.
+- **PARTIAL** has useful substrate or a semantic subset, but not the contract.
+- **MISSING** lacks the required kernel operation rather than merely an adapter.
+
+| Sysdep | BODY | REMAINDER | Exact reason |
+|---|---|---|---|
+| `sys_libc_log` | STUB | PARTIAL | It is a silent no-op; console and terminal pieces have no write operation joining them |
+| `sys_libc_panic` | COMPOSED | PARTIAL | It terminates through thread-only `sys_exit`; process-wide death and observation remain absent, while diagnostic output is not required to stop |
+| `sys_exit` | WIRED | PARTIAL | Call 0 retires only the current thread and discards its status; process lifecycle and an observer do not exist |
+| `sys_clock_get` | PARTIAL | PARTIAL | The checked page supplies monotonic time; realtime and the correlated Uptime fallback do not exist |
+| `sys_read` | STUB | COMPAT | Native Read takes an explicit offset; POSIX read needs shared cursor state |
+| `sys_write` | STUB | MISSING | There is no VFS or ring write path |
+| `sys_seek` | STUB | COMPAT | The native protocol is deliberately cursorless |
+| `sys_close` | STUB | PARTIAL | `HandleTable::close` exists, but releasing the last object reference can deallocate; a trap-safe deferred/reclamation route is still missing |
+| `sys_open` | STUB | PARTIAL | Read-only OpenAt exists, but no ring-3 bootstrap/channel path can deliver the first directory; compatibility must also supply root/cwd/descriptors and reject mutating modes |
+| `sys_vm_map` | STUB | PARTIAL | Loader primitives exist; allocation and the non-blocking trap/deferred execution contract do not |
+| `sys_vm_unmap` | STUB | PARTIAL | Address-space unmap exists, but a user operation must couple its flush and reclamation obligations to a trap-safe execution route |
+| `sys_anon_allocate` | STUB | PARTIAL | It depends on the unresolved mapping/allocation contract |
+| `sys_anon_free` | STUB | PARTIAL | It inherits unmap's unresolved flush, reclamation and trap-execution contract |
+| `sys_futex_wait` | STUB | MISSING | An internal wait queue is not a futex keyed by validated userspace memory |
+| `sys_futex_wake` | STUB | MISSING | No userspace-address-keyed wake operation exists |
+| `sys_tcb_set` | WIRED | WORKS | Call 2 validates, installs, saves and restores `FS_BASE` |
+
+The host check discovers the sixteen active definitions, checks each BODY's
+evidence in comment-free code, and requires the README row and source marker to agree.
+REMAINDER is reviewed platform judgment; targeted kernel-source witnesses guard
+the disputed Read/Close/Write/futex/panic/exit distinctions. Aggregate counts are
+deliberately not a second source of truth.
 
 ### Four things the sysdeps surfaced that the native ABI would never have raised
 
@@ -69,18 +98,19 @@ only a POSIX consumer would have looked there.
    D-118**, and it is the clearest return this exercise paid: `RSP0` (D-99),
    `CR3` (D-106) and the extended state (D-108) all lived in `task::prepare`
    and this did not, because nothing native has thread-local storage and so
-   nothing native had asked. `sys_tcb_set` maps now, and the kernel range-checks
-   the base — a `wrmsr` of a non-canonical value is a fault in kernel context,
-   which would be a program crashing the handler rather than itself.
+   nothing native had asked. `sys_tcb_set` is now WIRED with no remaining
+   platform gap, and the kernel range-checks the base — a `wrmsr` of a
+   non-canonical value is a fault in kernel context, which would be a program
+   crashing the handler rather than itself.
 
 2. **There is no wall clock.** `sys_clock_get` wants `CLOCK_REALTIME` and this
    kernel has never been told what time it is. Uptime is monotonic and is all
    there is. A libc can run on that; `stat` timestamps and `time()` cannot.
 
-3. **A seek is state the *object* holds, not the handle.** Two POSIX
-   descriptors to one file share a position. That is a distinction the kernel
-   will have to make about a file object, which by D-78's rule makes it a
-   legitimate per-type right — and it is a distinction nothing native needed.
+3. **A seek and read share an open-file-description cursor.** Native Read
+   deliberately takes an offset per operation. The POSIX adapter must therefore
+   construct and share cursor state across duplicated descriptors; calling
+   Read implemented did not make either sysdep a thin adapter.
 
 4. **W^X is a real incompatibility and the right one to have.**
    `PROT_WRITE | PROT_EXEC` is refused rather than granted (D-12, D-100), so a
@@ -89,30 +119,32 @@ only a POSIX consumer would have looked there.
 
 ### The two questions D-74 said were cheaper to answer now
 
-**How a signal interrupts a blocking queue wait.** A signal is a completion
-entry (D-80). There is no second event plane and no in-kernel signal frame:
-`sigaction` runs entirely in userspace off a completion, dispatched by the
-libc's own ring loop. The consequence, which writing the sysdeps made concrete:
-**every blocking libc entry point must be a ring submission plus a wait**, not
-a synchronous call — because a thread blocked in a synchronous call cannot be
-interrupted at all. That is why `sys_read` above is written as a submission and
-not as a syscall, and it is a constraint on the whole libc rather than on
-signals.
+**How a signal interrupts a blocking queue wait.** D-80 requires signals to
+share the completion plane and rejects in-kernel signal frames. The v1 record
+cannot express that yet: a completion has no kind or opcode, and every token
+belongs to a submitted operation. The old C header assigned
+`WIZ_OP_SIGNAL = 3`, colliding with Duplicate while placing an opcode in a
+record that has none. D-181 deletes that fiction. Phase 9 must version a real
+unsolicited-event representation and keep every blocking libc entry point on
+an interruptible ring wait; the one-plane constraint survives, but no wire
+format is claimed before its caller.
 
 **Static-only, or a dynamic linker.** Static-only for now. CPython needs
 `dlopen` and `-export-dynamic`, which is Phase 9's problem; the answer is
 cheaper now because a dynamic linker needs `mmap` with `PROT_EXEC` on a file
-mapping, and the file-backed half of `sys_vm_map` is on the OWED list rather
-than the ABSENT one. Nothing in the ABI forecloses it.
+mapping. The loader has mapping substrate, but no user mapping/allocation
+contract or file-backed door; the register says PARTIAL. Nothing in the ABI
+forecloses a later static-to-dynamic transition.
 
-### The cluster that stays unimplementable
+### The cluster that stays outside the native ABI
 
-uid/gid, umask, controlling tty, hard links, and signal masks. This is the same
-cluster Plan 9's APE could not implement and Fuchsia excluded from POSIX Lite,
-and it is unimplementable here for the same reason: each names an *ambient*
-authority, and a process's power is exactly its handle table. None of them is
-among the sixteen mandatory tags, which is itself informative — mlibc's own
-minimum does not require them.
+uid/gid, umask, controlling tty, hard links, and signal masks are unsupported
+POSIX mutable-global or ambient conventions. They need explicit compatibility
+state, capability routing or policy rather than native defaults. Plan 9's APE
+and Fuchsia POSIX Lite are evidence of that cost, not an impossibility proof:
+`linkat` can be rooted in directory handles, a TTY can be delegated, and masks
+and umask can be adapter state. None is among the sixteen functions D-114
+inspected, which bounds what this pressure test says about them.
 
 Two more belong here and were named in the sysdeps without being recorded
 anywhere, which is how a forward reference becomes a dead one:
@@ -122,23 +154,23 @@ anywhere, which is how a forward reference becomes a dead one:
   promise precisely so that two allocations in either order produce the same
   two handles, which is what makes allocation commutative and the table
   scalable. A caller that may name the result has re-introduced the ordering
-  the rule deletes. `dup` maps; `dup2` does not.
+  the rule deletes. Native duplication exists; chosen-number duplication does
+  not.
 - **Inheritance across `exec`.** A spawned process receives exactly one handle
-  — its bootstrap channel — and everything else arrives through a channel
-  (D-111). Inheriting a table by default is the opposite rule, and it is the
-  one that makes POSIX's `CLOEXEC` necessary: a flag that exists to undo a
-  default nobody wanted. There is nothing to undo here.
+  — its bootstrap channel. It inherits no table: bootstrap grants arrive
+  through that channel, and later local authority can only be derived through
+  an already-held handle (D-111, D-151, D-163). Inheriting a table by default
+  is the opposite rule, and it is the one that makes POSIX's `CLOEXEC`
+  necessary: a flag that exists to undo a default nobody wanted. There is
+  nothing to undo here.
 
-## What is owed
+## What remains before this is a port
 
-A compiled hello-world, which needs a self-contained C toolchain this platform
-does not currently offer. The realistic routes, in order of cost:
-
-1. Build LLVM from source against the mingw toolchain already present. Hours,
-   and a large vendored artefact afterwards.
-2. Cross-compile from a machine that has a C toolchain, and vendor the
-   *result*. Breaks the "one machine, self-contained" property D-16 is about.
-3. Wait for a mingw-based LLVM Windows release, and check periodically.
-
-The sysdeps and this analysis are the part that answers D-74's question. The
-compile is the part that confirms it, and it is deferred with its cost named.
+Phase 9 must pin an mlibc revision, derive the exact sysdep surface that revision
+actually requires, and reconcile it with this historical sixteen-function
+register. It must also pin or vendor the compiler plus Python/Meson/Ninja
+closure, add the Wizard target and linker integration, implement the resulting
+register, and compile a static hello-world. Only that build can replace
+source-shape checks with runtime evidence. D-114's uncompiled exercise answered
+the early design question; it did not pre-authorize ABI numbers or prove a
+libc.

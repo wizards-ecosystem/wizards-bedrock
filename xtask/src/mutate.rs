@@ -347,27 +347,23 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a blocked receiver learns its peer is gone",
         reddens: Caught::Check("a blocked receiver learns its peer is gone"),
     },
-    // The arena's move, made to lose what it was moving. Aimed at D-128's own
-    // check rather than at the lock order it also fixed: the leaf-nesting
-    // property already has a mutation, and one defect per property is what
-    // makes a survivor mean something.
-    //
-    // Nothing is lost on the first growth, because the arena is empty then.
-    // The second is the one that drops live handles on the floor, and reaching
-    // a second growth is the whole reason that check holds forty at once.
+    // D-182 replaced D-128's on-demand growth with a whole-table commitment,
+    // so its mutation replaces the old growth mutation too. Charging one slot
+    // too few leaves the final insertion with no prepaid room: exactly the
+    // boundary that would otherwise allocate or panic in trap context.
     Mutation {
         file: "kernel/src/handle.rs",
-        find: "            grown.append(&mut arena.slots);",
-        replace: "            grown.clear();",
-        breaks: "the handle arena grows more than once",
-        reddens: Caught::Check("the handle arena grows more than once"),
+        find: "        commit_quota(quota)?;",
+        replace: "        commit_quota(quota.saturating_sub(1))?;",
+        breaks: "a table's final quota slot is backed before any trap can use it",
+        reddens: Caught::Check("the handle arena backs a table's whole quota"),
     },
     // Slice 1's four properties, one defect each (D-119).
     //
-    // The ring became a delegation path in Phase 6, and a delegation path that
-    // does not narrow is a widening path. This is the whole of it: `install`
-    // hands out what was offered instead of the narrower of offered and
-    // declared.
+    // Duplicate made the ring a same-object delegation path in Phase 6, and
+    // that path must narrow exactly as channel transfer does. This is the whole
+    // of it: `install` hands out what was offered instead of the narrower of
+    // offered and declared. Cross-type OpenAt derivation has its own rule.
     Mutation {
         file: "kernel/src/handle.rs",
         find: "        let granted = offered.attenuate(declared).ok_or(HandleError::Denied)?;
@@ -383,6 +379,35 @@ pub const MUTATIONS: &[Mutation] = &[
         let handle = self.fill(object, granted)?;",
         breaks: "rights attenuate on arrival",
         reddens: Caught::Check("a completion carries a handle with narrowed rights"),
+    },
+    // A reserved file right admitted before any file operation consults it.
+    // An inert admitted right is a syscall name in disguise (D-78).
+    Mutation {
+        file: "kernel/src/object.rs",
+        find: "            Self::File => Rights::READ,",
+        replace: "            Self::File => Rights::READ.union(Rights::WRITE),",
+        breaks: "a file refuses a right no operation consults",
+        reddens: Caught::Check("a meaningless right is refused"),
+    },
+    // The same failure on the namespace side: MODIFY exists in the raw word,
+    // but no operation currently makes it meaningful for a directory.
+    Mutation {
+        file: "kernel/src/object.rs",
+        find: "            Self::Directory => Rights::TRAVERSE.union(Rights::ENUMERATE),",
+        replace: "            Self::Directory => Rights::TRAVERSE
+                .union(Rights::ENUMERATE)
+                .union(Rights::MODIFY),",
+        breaks: "a directory refuses a right no operation consults",
+        reddens: Caught::Check("a meaningless right is refused"),
+    },
+    // The kernel reads Echo's argument from the old handle field while the
+    // independent ring-3 emitter keeps writing the widened offset.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "    pub(super) const ARGUMENT: usize = 24;",
+        replace: "    pub(super) const ARGUMENT: usize = 8;",
+        breaks: "the emitted program and kernel use one submission layout",
+        reddens: Caught::Check("a program drives its own ring"),
     },
     // The destructor that returns an unspent promise, removed. Not a crash:
     // a table that quietly shrinks by one every time a program asks for
@@ -435,8 +460,8 @@ pub const MUTATIONS: &[Mutation] = &[
         file: "kernel/src/timepage.rs",
         find: "    write_u32(page, CLOCK_AT + clock::SHIFT, conversion.shift());",
         replace: "    write_u32(page, CLOCK_AT + clock::SHIFT, conversion.shift() - 1);",
-        breaks: "the page and the call tell the same time",
-        reddens: Caught::Check("the time page and the call tell the same time"),
+        breaks: "the page and the kernel clock tell the same time",
+        reddens: Caught::Check("the time page and the kernel clock tell the same time"),
     },
     // The window left open: the counter goes odd and never comes back, so
     // every correct reader spins for ever and gives up.
@@ -445,7 +470,7 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "    write_u32(page, CLOCK_AT + clock::SEQ, Seq::end(Seq::begin(seq)));",
         replace: "    write_u32(page, CLOCK_AT + clock::SEQ, Seq::begin(seq));",
         breaks: "a published clock closes its update window",
-        reddens: Caught::Check("the time page and the call tell the same time"),
+        reddens: Caught::Check("the time page and the kernel clock tell the same time"),
     },
     // The revocation gate ignored. A kernel that has stopped trusting its
     // counter goes on telling every program the counter is good, which is the
@@ -455,7 +480,7 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "    write_u32(page, CLOCK_AT + clock::MODE, mode);",
         replace: "    write_u32(page, CLOCK_AT + clock::MODE, MODE_COUNTER);",
         breaks: "a revoked clock reads as revoked",
-        reddens: Caught::Check("revoking the clock sends readers back to the call"),
+        reddens: Caught::Check("revoking the clock sends readers to ring Uptime"),
     },
     // The time page mapped writable, which is a program able to tell every
     // other program a lie about the time.
@@ -485,9 +510,10 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a dead program's work is finished, not forgotten",
         reddens: Caught::Check("work in flight is ended before the ring is released"),
     },
-    // The promise given a table of its own, so the one it was made against
-    // dies under it. This is the use-after-free D-163's `Arc` exists to
-    // prevent, and it reddens four checks at once.
+    // A promise made outside trap context is given a table of its own, so the
+    // one it was made against dies under it. The trap arm remains allocation-
+    // free; otherwise D-182's earlier panic would hide the use-after-free
+    // D-163's `Arc` exists to prevent.
     Mutation {
         file: "kernel/src/handle.rs",
         find: "        Ok(SlotReservation {
@@ -495,7 +521,11 @@ pub const MUTATIONS: &[Mutation] = &[
             spent: false,
         })",
         replace: "        Ok(SlotReservation {
-            table: Arc::new(HandleTable::new(self.quota)),
+            table: if wost::arch::current::interrupt::in_trap() {
+                Arc::clone(self)
+            } else {
+                Arc::new(HandleTable::new(self.quota).expect(\"mutation table\"))
+            },
             spent: false,
         })",
         breaks: "a promise holds the table it is against",
@@ -727,12 +757,76 @@ pub const MUTATIONS: &[Mutation] = &[
     // path, and a right that grants nothing is a syscall name in disguise.
     Mutation {
         file: "kernel/src/queue.rs",
-        find: "                Rights::UNIVERSAL.union(Rights::READ),
+        find: "                held.intersection(Rights::UNIVERSAL).union(Rights::READ),
             ),",
-        replace: "                Rights::UNIVERSAL.union(Rights::READ).union(Rights::WRITE),
+        replace: "                held.intersection(Rights::UNIVERSAL).union(Rights::READ).union(Rights::WRITE),
             ),",
         breaks: "an open grants only what it can honour",
         reddens: Caught::Check("a completion carries a file handle"),
+    },
+    // A file opened through an attenuated directory regains the universal
+    // rights its parent gave up. TRAVERSE authorizes READ, not re-delegation.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "                held.intersection(Rights::UNIVERSAL).union(Rights::READ),
+            ),",
+        replace: "                Rights::UNIVERSAL.union(Rights::READ),
+            ),",
+        breaks: "an open never restores a universal right",
+        reddens: Caught::Check("opening a node does not restore universal rights"),
+    },
+    // The same widening defect on the other result branch. A directory is a
+    // copy value now, but copying its identity must not copy rights its parent
+    // did not hold.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "            crate::vfs::Node::Directory(directory) => (crate::object::directory(directory), held),",
+        replace: "            crate::vfs::Node::Directory(directory) => (
+                crate::object::directory(directory),
+                Rights::UNIVERSAL.union(held),
+            ),",
+        breaks: "an opened directory never restores a universal right",
+        reddens: Caught::Check("opening a node does not restore universal rights"),
+    },
+    // A malformed OpenAt path is inspected before its result slot is promised.
+    // With a full table the operation must report quota first, just as
+    // Duplicate does; otherwise handle-producing opcodes have different
+    // admission contracts.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "        let Ok(reservation) = table.reserve_slot() else {
+            return refuse(token, STATUS_NO_HANDLE_SLOT);
+        };
+        let mut path = [0u8; MAX_PATH];
+        let Some(len) = self.read_data(submission.argument, submission.length, &mut path) else {
+            return refuse(token, STATUS_BAD_BUFFER);
+        };",
+        replace: "        let mut path = [0u8; MAX_PATH];
+        let Some(len) = self.read_data(submission.argument, submission.length, &mut path) else {
+            return refuse(token, STATUS_BAD_BUFFER);
+        };
+        let Ok(reservation) = table.reserve_slot() else {
+            return refuse(token, STATUS_NO_HANDLE_SLOT);
+        };",
+        breaks: "every handle-producing operation reserves its result before other admission work",
+        reddens: Caught::Check("a full table refuses a handle operation at submission"),
+    },
+    // Duplicate's rights validation pulled ahead of the result promise. A
+    // full table must report quota even when the submitted rights are
+    // malformed, or Duplicate and OpenAt expose different admission orders.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "        let named = submission.handle;",
+        replace: "        let named = submission.handle;
+        if u32::try_from(submission.argument)
+            .ok()
+            .and_then(Rights::from_bits)
+            .is_none()
+        {
+            return refuse(token, STATUS_DENIED);
+        }",
+        breaks: "Duplicate reserves its result before validating requested rights",
+        reddens: Caught::Check("a full table refuses a handle operation at submission"),
     },
     // A read that ignores its offset, so every read answers from the start.
     // Offsets are per operation and nothing holds a cursor, so this is the
@@ -819,6 +913,18 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a probed run is memory, not merely described",
         reddens: Caught::Check("the map offers a run to probe"),
     },
+    // Launch the shipped ring-3 program on its Echo route. The image and all
+    // completion validation remain intact; only the machine check's handle
+    // count proves that this launch really exercised Duplicate through the
+    // trap. The target is kernel source because the running mutation driver
+    // cannot rebuild itself before `program::build` writes the image.
+    Mutation {
+        file: "kernel/src/user.rs",
+        find: "    spawn(\"user-duplicate\", 6, DUPLICATE)",
+        replace: "    spawn(\"user-duplicate\", 6, BEHAVE)",
+        breaks: "the shipped program uses its bootstrap authority through Duplicate",
+        reddens: Caught::Check("a program duplicates its bootstrap handle"),
+    },
     // The identity read as a translating controller would rewrite it, which is
     // the state the check exists to catch (D-178).
     Mutation {
@@ -864,6 +970,7 @@ pub fn run(paths: &Paths) -> Result<()> {
     let mut inconclusive = Vec::new();
 
     for (index, mutation) in MUTATIONS.iter().enumerate() {
+        ensure_target_is_rebuilt(mutation)?;
         let path = paths.root().join(mutation.file);
         let original = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
@@ -935,6 +1042,18 @@ pub fn run(paths: &Paths) -> Result<()> {
             MUTATIONS.len()
         ),
     }
+}
+
+/// Refuse source the already-running mutation driver would consume itself.
+fn ensure_target_is_rebuilt(mutation: &Mutation) -> Result<()> {
+    if mutation.file.starts_with("xtask/") {
+        bail!(
+            "{}: `{}` belongs to the running mutation driver and would not be rebuilt",
+            mutation.file,
+            mutation.breaks
+        );
+    }
+    Ok(())
 }
 
 /// The mutated text, or an error naming why the pattern is no longer usable.
@@ -1057,6 +1176,20 @@ mod tests {
             // own pattern is a boot that proves nothing.
             assert_ne!(mutation.find, mutation.replace, "{}", mutation.breaks);
         }
+    }
+
+    /// Mutating the driver cannot change the binary already building images.
+    #[test]
+    fn a_mutation_cannot_target_the_running_driver() {
+        for mutation in MUTATIONS {
+            ensure_target_is_rebuilt(mutation).unwrap_or_else(|error| panic!("{error}"));
+        }
+
+        let mut impossible = MUTATIONS[0];
+        impossible.file = "xtask/src/image/program.rs";
+        let error =
+            ensure_target_is_rebuilt(&impossible).expect_err("the driver is already running");
+        assert!(error.to_string().contains("would not be rebuilt"));
     }
 
     /// Every check a mutation names is a check that exists.

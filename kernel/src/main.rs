@@ -317,11 +317,11 @@ fn start_interrupts() {
             if mode == timepage::MODE_COUNTER {
                 "readable without a call"
             } else {
-                "revoked; readers must ask"
+                "revoked; readers must ask ring Uptime"
             }
         );
     } else {
-        warn!("time: no page to publish the clock in; every read is a call");
+        warn!("time: no page to publish the clock in; every query is ring Uptime");
     }
 
     survey_the_bus();

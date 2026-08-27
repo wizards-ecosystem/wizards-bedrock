@@ -1,10 +1,10 @@
 //! How a handle value is made, and what it is evidence of.
 //!
-//! A process's power is exactly its handle table (`002` pillar 1), so the
-//! value a process holds is the most security-sensitive integer in this
-//! kernel. D-78 settled its shape; this crate is the arithmetic, beside
-//! `port_space` and `frame_space`, where `cargo test` can reach it. The arena
-//! and the lock are the kernel's.
+//! A process's external-object authority is exactly its handle table (`002`
+//! pillar 1), so the value a process holds is the most security-sensitive
+//! integer in this kernel. D-78 settled its shape; this crate is the arithmetic,
+//! beside `port_space` and `frame_space`, where `cargo test` can reach it. The
+//! arena and the lock are the kernel's.
 //!
 //! Three properties, each with a reason that is not obvious:
 //!
@@ -362,11 +362,10 @@ impl Quota {
 /// > that object — never to a syscall name.
 ///
 /// That is the rule WASI's rights broke, and deleting them in Preview 2 was
-/// the cost. It is also why the memory rights below are exactly the page
-/// permissions: the kernel really does treat a readable mapping differently
-/// from a writable one, and `MAP` is separate because being allowed to *place*
-/// a page in an address space is a different power from being allowed to read
-/// what is already there.
+/// the cost. `READ` and `WRITE` describe object data; the concrete operation is
+/// type-specific, such as file bytes or channel receive/send. `EXECUTE` and
+/// `MAP` reserve the distinct future powers to execute bytes and place them in
+/// an address space.
 ///
 /// The evidence for keeping the number small is one-directional. seL4 has 4,
 /// Zircon 25, CloudABI 31, Capsicum about 81 — and Capsicum's outgrew a machine
@@ -403,10 +402,10 @@ impl Rights {
     /// keeps a right's meaning from depending on what it is attached to.
     pub const UNIVERSAL: Self = Self(0b1111);
 
-    /// The memory behind it may be read.
+    /// May read or receive this object's data.
     pub const READ: Self = Self(1 << 8);
 
-    /// The memory behind it may be written.
+    /// May write or send this object's data.
     pub const WRITE: Self = Self(1 << 9);
 
     /// The memory behind it may be executed.
@@ -486,6 +485,11 @@ impl Rights {
     /// Both sets together.
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
+    }
+
+    /// Only the rights present in both sets.
+    pub const fn intersection(self, other: Self) -> Self {
+        Self(self.0 & other.0)
     }
 
     /// This set without `other`.
@@ -919,6 +923,11 @@ mod rights_tests {
         assert_eq!(held.attenuate(Rights::READ), Some(Rights::READ));
         assert_eq!(held.attenuate(Rights::NONE), Some(Rights::NONE));
         assert_eq!(held.attenuate(held), Some(held));
+        assert_eq!(
+            held.intersection(Rights::UNIVERSAL),
+            Rights::TRANSFER,
+            "intersection restored or discarded a held universal right"
+        );
 
         assert_eq!(held.attenuate(Rights::EXECUTE), None, "gained a right");
         assert_eq!(

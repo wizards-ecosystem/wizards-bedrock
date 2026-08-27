@@ -68,12 +68,12 @@ const USER_STACK_BYTES: u64 = PAGE_SIZE;
 /// The program's first four bytes, for the check that reads them back across
 /// the boundary.
 ///
-/// `pop rax` and the `test` that follows it — the program reading the argument
-/// the kernel left on its stack (D-102). Written by `xtask` into the image
-/// (D-100) rather than by the kernel, so this is a statement about the initrd
-/// and not a copy of something the kernel placed.
+/// `pop rcx` and the start of its version comparison — the program reading and
+/// validating the entry ABI before either payload word (D-102, D-182). Written
+/// by `xtask` into the image (D-100) rather than by the kernel, so this is a
+/// statement about the initrd and not a copy of something the kernel placed.
 #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
-pub(crate) const PROGRAM: [u8; 4] = [0x58, 0x48, 0x85, 0xC0];
+pub(crate) const PROGRAM: [u8; 4] = [0x59, 0x48, 0x83, 0xF9];
 
 /// Map the program and its stack, and report where to enter.
 ///
@@ -389,9 +389,29 @@ struct Launch {
     entry: u64,
     stack: u64,
     argument: u64,
+    bootstrap_handle: u32,
     which: u64,
     root: Paddr,
 }
+
+/// Version of the words placed at a program's initial stack pointer.
+pub(crate) const ENTRY_VERSION: u64 = 1;
+
+/// Bytes in the versioned entry block.
+pub(crate) const ENTRY_BYTES: usize = 24;
+
+/// Byte offsets in the versioned entry block.
+mod entry {
+    /// The entry ABI version.
+    pub(super) const VERSION: usize = 0;
+    /// The launcher's operation-specific argument.
+    pub(super) const ARGUMENT: usize = 8;
+    /// The numeric identity of the sole bootstrap handle.
+    pub(super) const BOOTSTRAP_HANDLE: usize = 16;
+}
+
+/// Stack tail occupied so the initial pointer remains sixteen-byte aligned.
+const ENTRY_STACK_BYTES: u64 = (ENTRY_BYTES as u64 + 15) & !15;
 
 /// One per thread slot. A leaf: nothing is called while it is held.
 static LAUNCHES: SpinLock<[Option<Launch>; thread::CAPACITY]> =
@@ -400,9 +420,9 @@ static LAUNCHES: SpinLock<[Option<Launch>; thread::CAPACITY]> =
 /// What a program is given at birth, and the whole of it.
 ///
 /// `002`'s pillar 1, stated as an invariant a check can hold us to: **a
-/// process receives exactly one handle at spawn — its bootstrap channel — and
-/// every later handle arrived through a channel.** The table is the process's
-/// whole power, so "one entry" is the strongest form the claim has (D-111).
+/// process receives exactly one handle at spawn — its bootstrap channel.**
+/// Later authority arrives through a channel or is derived by a
+/// handle-authorized ring operation (D-111, D-151).
 /// Note that `len` bytes at `at` are this program's to have unmapped.
 ///
 /// Silently drops the note past [`MAX_REGIONS`], which costs the frames rather
@@ -448,8 +468,8 @@ struct Bootstrap {
     /// forbids (D-121, D-124). The handle is cloned out and the guard dropped;
     /// `Queue`'s methods all take `&self`, so nothing else changes.
     ring: alloc::sync::Arc<queue::Queue>,
-    /// The one handle. Kept so a check can ask what it names rather than
-    /// inferring it from the count.
+    /// The birth handle. Kept so a check can ask what the bootstrap entry
+    /// names even after the table grows.
     handle: u32,
 }
 
@@ -460,13 +480,13 @@ static BOOTSTRAPS: SpinLock<[Option<Bootstrap>; thread::CAPACITY]> =
 /// Handles a process may hold at once.
 ///
 /// A quota, and the answer to kernel-memory exhaustion at the handle layer
-/// (D-78). Small because nothing yet gives a program a second handle.
+/// (D-78). Small enough to bound kernel memory and large enough for delegation.
 const HANDLE_QUOTA: usize = 64;
 
 /// What the parent keeps of a spawned program.
 ///
-/// The far end of its bootstrap channel: the only way to reach it, which is
-/// what "no ambient authority" means from the other side.
+/// The far end of its bootstrap channel: the parent's only handle-authorized
+/// route to it.
 #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) struct Spawned {
     /// The thread slot it runs in.
@@ -554,8 +574,8 @@ impl fmt::Display for SpawnError {
 ///
 /// A failure partway leaves no thread naming anything, but it does leak: an
 /// `AddressSpace` has no `Drop`, because its table frames are leaked on
-/// purpose, and the frames a half-load mapped go with them. Bounded — this is
-/// called six times a boot — and it is the same debt `undo` pays down inside
+/// purpose, and the frames a half-load mapped go with them. Bounded by the
+/// fixed self-test program set, and it is the same debt `undo` pays down inside
 /// one load. D-44's accounting is where it is settled.
 ///
 /// # Errors
@@ -595,11 +615,11 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     let root = space.root();
     let binding = space.bind().map_err(SpawnError::NotBindable)?;
 
-    // Its whole power, made before the thread exists so the table is never
-    // observable holding anything else. The child's end can be used and sent
-    // on; the parent keeps the other (D-111).
+    // Its initial object authority, made before the thread exists so the table
+    // is never observable holding anything else. The child's end can be used
+    // and sent on; the parent keeps the other (D-111).
     let (theirs, ours) = object::channel().ok_or(SpawnError::NoChannel)?;
-    let table = HandleTable::new(HANDLE_QUOTA);
+    let table = HandleTable::new(HANDLE_QUOTA).map_err(SpawnError::NoBootstrap)?;
     let handle = table
         .insert(
             theirs,
@@ -622,6 +642,7 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
             entry,
             stack,
             argument,
+            bootstrap_handle: handle,
             which,
             root,
         });
@@ -851,12 +872,12 @@ pub(crate) fn reclaimed() -> (usize, usize) {
 
 /// What a program asked for, in `rax`.
 ///
-/// The synchronous plane (`002` pillar 2): setup, handle operations, memory
-/// and blocking waits. The *data* path is the ring, and the one call here that
-/// touches it does so by asking the kernel to serve what the program has
-/// already posted — the trap is a doorbell, not a transfer (D-116).
+/// The synchronous plane (`002` pillar 2): retirement, ring service and wait,
+/// and thread-local setup. The *data* path is still the ring: Enter and Wait
+/// serve work already posted there rather than transferring data in the trap
+/// (D-116, D-164).
 ///
-/// Two, and the surface stays small on purpose. io_uring's exploit record is
+/// Four, and the surface stays small on purpose. io_uring's exploit record is
 /// a warning about surface growth, and every call added here is one a hostile
 /// program can reach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -873,10 +894,10 @@ enum Call {
     RingWait,
     /// Point this thread's local storage at `rdi`.
     ///
-    /// mlibc's `sys_tcb_set`, and the reason it is here rather than on the
-    /// owed list: writing the sysdeps found that `FS_BASE` is a fourth thing
-    /// that must follow a thread, and a call that sets it is worth nothing
-    /// until it does (D-114, D-118).
+    /// mlibc's `sys_tcb_set`. Its body is WIRED and the platform route WORKS:
+    /// writing the sysdeps found that `FS_BASE` is a fourth thing that must
+    /// follow a thread, and a call that sets it is worth nothing until it does
+    /// (D-114, D-118, D-181).
     ThreadBase,
     /// Anything else.
     Unknown(u64),
@@ -951,10 +972,11 @@ const EINVAL: u64 = (-22i64) as u64;
 
 /// Serve one call from ring 3.
 ///
-/// Runs in trap context, so nothing here may allocate, block, or take a lock a
-/// handler cannot (D-55, D-63). `Queue::serve` is written to that rule: it
-/// takes two leaf locks in a fixed order and calls nothing while either is
-/// held.
+/// Runs in trap context, so ordinary work here may not allocate, enter a
+/// `ThreadContext` blocking path, or take a lock a handler cannot (D-55, D-63).
+/// D-164's `sleep_from_trap` is the narrow audited exception: it yields through
+/// the saved trap frame. `Queue::serve` takes two leaf locks in a fixed order
+/// and calls nothing while either is held.
 ///
 /// **Only `Exit` does not return.** Until D-116 the gate retired its caller
 /// unconditionally, which made the boundary provable and the ABI unusable —
@@ -1069,8 +1091,9 @@ fn authority_of(
 ///
 /// The completion is posted by the kernel after the deadline, not by the
 /// program asking again: a woken program finds the entry already in its queue.
-/// That is what makes this a wait rather than a poll, and it is the shape the
-/// block device will reuse in slice 5 (D-164).
+/// That is what makes this a wait rather than a poll. It was the shape intended
+/// for block-device progress; current Read still polls inline, so deferred
+/// device service remains work (D-164, D-169, D-181).
 fn wait_ring(slot: usize, frame: &TrapFrame) -> u64 {
     let Some((ring, _)) = authority_of(slot) else {
         return ENOSYS;
@@ -1118,14 +1141,21 @@ fn cross() {
         return;
     }
 
-    // One word of argument, on the program's own stack, written across the
-    // boundary with the checked copy (D-97) — which is how a program will get
-    // everything it is ever given. Sixteen bytes down so the pointer handed to
-    // `iretq` is aligned as the ABI wants; the program's first instruction
-    // pops it.
-    let top = launch.stack + USER_STACK_BYTES - 16;
-    if usercopy::copy_to_user(top, &launch.argument.to_le_bytes()).is_err() {
-        warn!("user {which}: could not write its argument");
+    // A version, the launch argument and the bootstrap handle, written across
+    // the boundary with the checked copy (D-97, D-182). The handle's numeric
+    // value is not authority by itself; the table validation is. Thirty-two
+    // bytes are left at the stack tail so the initial pointer stays aligned.
+    let top = launch.stack + USER_STACK_BYTES - ENTRY_STACK_BYTES;
+    if usercopy::copy_to_user(top + entry::VERSION as u64, &ENTRY_VERSION.to_le_bytes()).is_err()
+        || usercopy::copy_to_user(top + entry::ARGUMENT as u64, &launch.argument.to_le_bytes())
+            .is_err()
+        || usercopy::copy_to_user(
+            top + entry::BOOTSTRAP_HANDLE as u64,
+            &u64::from(launch.bootstrap_handle).to_le_bytes(),
+        )
+        .is_err()
+    {
+        warn!("user {which}: could not write its entry block");
         return;
     }
 
@@ -1166,6 +1196,12 @@ pub(crate) fn run_for_bootstrap() -> Result<Spawned, SpawnError> {
     spawn("user-bootstrap", 3, BEHAVE)
 }
 
+/// A seventh, which duplicates its bootstrap channel through its own ring.
+#[cfg(feature = "selftest")]
+pub(crate) fn run_duplicating() -> Result<Spawned, SpawnError> {
+    spawn("user-duplicate", 6, DUPLICATE)
+}
+
 /// A sixth, which jumps into the kernel's user-copy window from ring 3.
 ///
 /// The argument *is* the address: the program jumps to anything it is given in
@@ -1190,3 +1226,7 @@ const BEHAVE: u64 = 0;
 
 /// The argument that makes it execute `ud2` instead.
 const FAULT: u64 = 1;
+
+/// The argument that makes it submit Duplicate for its bootstrap handle.
+#[cfg(feature = "selftest")]
+const DUPLICATE: u64 = 3;

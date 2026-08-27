@@ -1,7 +1,9 @@
 # 012 — Deep Research IV: Storage, and the ABI that has to precede it
 
-Produced 2026-08-25, at the close of the Phase 0–5 audit and before Phase 6
-writes the first subsystem in this kernel that **waits**.
+Produced 2026-08-25, at the close of the Phase 0–5 audit and before Phase 6,
+when storage was expected to become the first subsystem in this kernel that
+**waits**. The delivered correction is D-149/D-164: Timer proved deferral
+first, while Read retained synchronous device service inside `RingEnter`.
 
 Where `010` was verification-first — "is what we already decided true" — this
 pass is **decision-first**. Phase 6 has to choose an on-disk format, a block
@@ -369,6 +371,13 @@ reason to have per-type rights at all.
   `WRITE_BYTES`; neither has an append right. An append-only handle is a real
   distinction if Phase 6 has such a caller and a syscall name if it does not.
 
+**Delivered correction (D-173, D-181).** OpenAt does not accept a requested
+mask. Same-type directory rights are preserved; a file preserves universal
+rights already held and derives `READ` from `TRAVERSE`. Current File admits
+only `READ` and Directory only `TRAVERSE | ENUMERATE`. `WRITE` remains live for
+Channel, while File `WRITE`, Directory `MODIFY`, and all `EXECUTE`/`MAP` uses
+wait for operations that can enforce them.
+
 ---
 
 ## 5. Path resolution without a root
@@ -513,6 +522,12 @@ resolution is the only code that must be backend-agnostic, and it needs exactly
 three operations: `lookup(name)`, `enumerate(cookie)`, and `modify` gated on
 `MODIFY`. That matches 9P's walk/read/remove.
 
+**Delivered correction (D-171, D-181).** The current enum-dispatched surface
+resolves, reads and enumerates. No inert `modify` method or admitted `MODIFY`
+right was kept before a namespace mutation path exists. devfs lookup yields an
+internal `Node::Device`; OpenAt refuses it until Phase 7 defines the
+user-visible Device handle route.
+
 **Do not force devfs through a byte interface.** A devfs entry has no bytes; it
 is a name that yields a handle of some *other* type. Making it implement
 `read_at`/`write_at` to satisfy a trait is the "everything is a file"
@@ -561,6 +576,11 @@ sixteen-slot budget.
    way it reserves completion space. Do not build a growable pool.
 5. **Copy the submission entry at punt time.** The ring entry may be
    overwritten before the worker runs. This bit them and is easy to miss.
+
+**Delivered limit (D-169, D-181).** Timer implements the deferred state-machine
+shape. Read is a ring operation but still polls NVMe inline while `RingEnter`
+serves it; the block-device state machine, interrupt path and teardown coupling
+recommended above remain future work.
 
 **Cancellation, and what it means for "exactly one terminal completion".** ◆
 `io_uring_cancelation(7)` is explicit that cancellation *"is inherently racy"*
@@ -647,6 +667,11 @@ TSC was recalibrated".
   pre-shifted, and a syscall fallback that is always reachable.
 
 D-152 chose a global page; this is what goes in it.
+
+**Subsequent correction (D-166, D-181).** The shipped page stores whole
+`base_ns` plus a fractional carry because literal pre-shifting overflows;
+revocation falls back through ring Uptime, and the C consumer's correlated
+fallback remains incomplete.
 
 ---
 

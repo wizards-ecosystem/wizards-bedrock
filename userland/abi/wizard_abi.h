@@ -1,4 +1,4 @@
-/* The Wizard's OS native ABI, as a C header.
+/* The Wizard's OS native ABI, transcribed for a C consumer.
  *
  * Written for slice 10 (D-74, D-114): a POSIX libc is the first consumer of
  * this ABI that is not the kernel's own checks, and the point of writing it
@@ -10,19 +10,22 @@
  *   - The **data path** is the ring. Operations are posted to a shared page,
  *     the kernel completes them out of order, and every one reports exactly
  *     once (D-79, D-113).
- *   - A small set of **synchronous calls** covers setup, handle operations,
- *     memory mapping and blocking waits. They go through the one gate ring 3
- *     has, which is an interrupt gate at DPL 3 (D-96).
+ *   - Four **synchronous calls** cover exit, the ring doorbell and wait, and
+ *     thread-local-storage setup. They go through the one gate ring 3 has,
+ *     which is an interrupt gate at DPL 3 (D-96).
  *
- * Everything here is reached through a handle carrying rights (pillar 1).
- * There are no global namespaces: a process's power is exactly its handle
- * table, and it starts with one entry — its bootstrap channel (D-111).
+ * Object authority is reached through a handle carrying rights (pillar 1).
+ * Handleless ring/control operations, the ring mapping and the time page are
+ * enumerated ambient facilities rather than objects. There is no global
+ * filesystem namespace.
  *
- * **What the kernel implements today is a subset**, and the header says which
- * so that a sysdep can be written against the whole shape and fail loudly on
- * the parts that are not there yet. That is deliberate: a header that only
- * described what exists would not have surfaced the questions this slice was
- * written to ask.
+ * At its first instruction a program's stack points at a three-word,
+ * versioned entry block. Version 1 carries its launch argument and the numeric
+ * identity of its sole bootstrap handle (D-182).
+ *
+ * Only wire values the kernel currently decodes are numbered here. D-181
+ * removed proposed call and signal numbers: pressure-testing a future shape
+ * is useful, but a comment cannot reserve ABI.
  */
 
 #ifndef WIZARD_ABI_H
@@ -68,18 +71,42 @@ typedef uint32_t wiz_rights_t;
 #define WIZ_RIGHT_WAIT      ((wiz_rights_t)(1u << 2))
 #define WIZ_RIGHT_INSPECT   ((wiz_rights_t)(1u << 3))
 #define WIZ_RIGHT_READ      ((wiz_rights_t)(1u << 8))
+/* Admitted for Channel, not File: no current file write operation exists. */
 #define WIZ_RIGHT_WRITE     ((wiz_rights_t)(1u << 9))
+/* Raw rights defined by handle-space. No current object type admits either;
+ * executable authority and user mapping remain undecided platform work. */
 #define WIZ_RIGHT_EXECUTE   ((wiz_rights_t)(1u << 10))
+#define WIZ_RIGHT_MAP       ((wiz_rights_t)(1u << 11))
 /* May resolve a name in this directory that you already know. Distinct from
  * enumeration on purpose: "may resolve a name I know" and "may list the names"
  * are different powers, and the resolver consults one while readdir consults
  * the other. */
-#define WIZ_RIGHT_TRAVERSE (1u << 12)
-#define WIZ_RIGHT_ENUMERATE (1u << 13)
-/* Defined and never granted: there is no write path in this phase. */
-#define WIZ_RIGHT_MODIFY (1u << 14)
+#define WIZ_RIGHT_TRAVERSE ((wiz_rights_t)(1u << 12))
+#define WIZ_RIGHT_ENUMERATE ((wiz_rights_t)(1u << 13))
+/* Raw reserved right. No current Directory admits it because no namespace-
+ * mutating operation exists. */
+#define WIZ_RIGHT_MODIFY ((wiz_rights_t)(1u << 14))
 
-#define WIZ_RIGHT_MAP       ((wiz_rights_t)(1u << 11))
+/* ------------------------------------------------------------------ *
+ * Program entry
+ * ------------------------------------------------------------------ */
+
+/* `rsp` points here at the first instruction, and each word is little-endian.
+ * Version comes first so a consumer can refuse an entry shape it does not
+ * understand before assigning meaning to either following word. A numeric
+ * handle is not a second grant: authority still comes from the one live entry
+ * in this process's table. */
+struct wiz_entry_block {
+	uint64_t version;
+	uint64_t argument;
+	uint64_t bootstrap_handle; /* Must fit `wiz_handle_t`. */
+};
+
+#define WIZ_ENTRY_VERSION             1u
+#define WIZ_ENTRY_VERSION_AT          0u
+#define WIZ_ENTRY_ARGUMENT_AT         8u
+#define WIZ_ENTRY_BOOTSTRAP_HANDLE_AT 16u
+#define WIZ_ENTRY_BYTES               24u
 
 /* ------------------------------------------------------------------ *
  * The ring
@@ -159,11 +186,10 @@ struct wiz_completion {
  * outright (`002`). */
 #define WIZ_OP_ECHO      1u
 #define WIZ_OP_UPTIME    2u
-/* Duplicate a handle, narrowing its rights. The argument packs the handle in
- * its low half and the rights you are willing to hold in its high half; the
- * completion's value is the new handle. Rights are the *narrower* of what you
- * hold and what you asked for, and asking for more is refused rather than
- * quietly reduced (D-151, D-163). */
+/* Duplicate a handle, narrowing its rights. `handle` names the source and
+ * `argument` is the rights word requested. The completion's value is the new
+ * handle. Asking for more than the source holds is refused rather than quietly
+ * reduced (D-151, D-163). */
 #define WIZ_OP_DUPLICATE 3u
 /* Complete once `argument` nanoseconds have passed. Admitted now, completed
  * later; `WIZ_CALL_RING_WAIT` is how you wait for it without spinning. */
@@ -176,10 +202,10 @@ struct wiz_completion {
  * `argument` is an offset into the data area and `length` the path's bytes.
  * The completion carries a handle for what the path named.
  *
- * The rights on it are **derived from the directory's**, never asked for: a
- * directory inherits its parent's unchanged, and a file gets READ because
- * reaching it is what naming it means. Monotone non-increasing, as a nested
- * open must be. */
+ * The rights on it are **derived from the directory's**, never asked for. A
+ * directory preserves its parent's same-type rights. A file preserves only
+ * universal rights already held and derives READ from TRAVERSE; that cross-type
+ * derivation cannot recreate a universal right. */
 #define WIZ_OP_OPENAT    6u
 /* Read a file into the data area. `offset` is where in the file, and it is
  * **per operation** — there is no seek, no tell and no cursor anywhere. */
@@ -251,11 +277,14 @@ struct wiz_time_clock {
 /* `mode`: the counter is good, and the conversion below is its. */
 #define WIZ_TIME_MODE_COUNTER 1u
 
-/* The reading, once you have a stable copy of the struct above and a counter
- * value: one multiply-add and one shift, and no division.
+/* The reading, once version and page size are accepted and a stable copy of
+ * the struct above has been taken. The fenced counter read belongs inside the
+ * sequence window; the intermediate is 128-bit and the final sum saturates.
  *
- *   ticks = rdtsc() - c.last_ticks;
- *   ns    = c.base_ns + ((c.fraction + ticks * c.multiplier) >> c.shift);
+ *   ticks = fenced_rdtsc() - c.last_ticks;
+ *   wide  = (u128)c.fraction + (u128)ticks * c.multiplier;
+ *   delta = wide >> c.shift;
+ *   ns    = saturating_add(c.base_ns, delta);
  */
 
 /* ------------------------------------------------------------------ *
@@ -273,27 +302,10 @@ struct wiz_time_clock {
  * with it — the *userspace-visible* ABI becomes Linux's, and the native one is
  * unaffected (D-74). */
 enum wiz_call {
-	/* Implemented. */
 	WIZ_CALL_EXIT = 0,
 	WIZ_CALL_RING_ENTER = 1,    /* Serve what has been submitted. */
 	WIZ_CALL_TCB_SET = 2,       /* Point `fs:` at thread-local storage. */
 	WIZ_CALL_RING_WAIT = 3,     /* Wait for an operation in flight (D-164). */
-
-	/* Owed. Every one of these has a kernel-side mechanism already and no
-	 * ring-3 entry point; the sysdeps name them so that what is missing is
-	 * a refusal the caller can see and not a silent wrong answer (D-114).
-	 *
-	 * Renumbered when `WIZ_CALL_RING_WAIT` took 3, the way D-118 renumbered
-	 * them before: none is implemented, so moving them costs nothing now and
-	 * would cost an ABI break later. */
-	WIZ_CALL_HANDLE_CLOSE = 4,
-	WIZ_CALL_HANDLE_DUPLICATE = 5,
-	WIZ_CALL_CHANNEL_SEND = 6,
-	WIZ_CALL_CHANNEL_RECEIVE = 7,
-	WIZ_CALL_VM_MAP = 8,
-	WIZ_CALL_VM_UNMAP = 9,
-	WIZ_CALL_FUTEX_WAIT = 10,
-	WIZ_CALL_FUTEX_WAKE = 11,
 };
 
 /* `WIZ_CALL_CLOCK_GET` is gone, and its absence is the point: the time is a
@@ -309,27 +321,16 @@ typedef int wiz_errno_t;
 
 #define WIZ_ENOSYS 38
 #define WIZ_EINVAL 22
-#define WIZ_EBADF  9
-#define WIZ_EPERM  1
-#define WIZ_EAGAIN 11
-#define WIZ_ENOMEM 12
 
 /* ------------------------------------------------------------------ *
  * Signals
  * ------------------------------------------------------------------ */
 
-/* A signal is **a completion entry** (D-80). There is no second event plane
- * and no in-kernel signal frame: a blocking ring wait is interruptible because
- * a wakeup is indistinguishable from a completion, which is the same mechanism
- * rather than another one.
- *
- * What this costs a libc is stated here rather than discovered later:
- * `sigaction` runs entirely in userspace off a completion, so a handler is
- * dispatched by the libc's own ring loop and never by the kernel pushing a
- * frame. A program that blocks in a call which is *not* a ring wait cannot be
- * interrupted at all — which is why every blocking libc entry point below is
- * written as a ring submission plus a wait. */
-#define WIZ_OP_SIGNAL 3u  /* Owed: the opcode a signal arrives as. */
+/* D-80 requires signals to share the completion plane rather than introduce
+ * an in-kernel signal frame. Version 1 has no unsolicited-event discriminator,
+ * however: completions have no opcode and every token belongs to a submission.
+ * No signal wire value exists until that representation and its first caller
+ * are designed together (D-181). */
 
 #ifdef __cplusplus
 }

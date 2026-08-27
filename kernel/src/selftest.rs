@@ -48,6 +48,21 @@ use crate::user;
 use crate::vfs;
 use crate::{dev, error, info, input, mem, thread, time, warn};
 
+macro_rules! handle_table_or_false {
+    ($quota:expr) => {{
+        let Ok(table) = HandleTable::new($quota) else {
+            return false;
+        };
+        table
+    }};
+}
+
+macro_rules! shared_handle_table_or_false {
+    ($quota:expr) => {
+        Arc::new(handle_table_or_false!($quota))
+    };
+}
+
 /// A frame's handle releases it, and the allocator notices.
 ///
 /// Counted rather than compared by address: nothing promises the next
@@ -369,7 +384,7 @@ fn a_waiter_rereads_its_condition_before_blocking() -> bool {
     inner.signal();
 
     // Safe to assign: the slot is empty, so nothing is dropped under the guard.
-    *REREAD_EVENT.lock_leaf() = Some(Arc::clone(&event));
+    *REREAD_EVENT.lock_leaf() = Some(event.clone());
     REREAD_RETURNED.store(0, Ordering::Release);
     let free_before = thread::free_slots();
     if thread::spawn("event-rereader", wait_on_a_signalled_event).is_err() {
@@ -1197,7 +1212,7 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
             );
         }
         queue.publish_tail_for_test(posted + room as u32);
-        let served = queue.serve(&a_table());
+        let served = queue.serve(&shared_handle_table_or_false!(8));
         if served == 0 {
             break;
         }
@@ -1239,7 +1254,7 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
         );
     }
     liar.publish_tail_for_test(2);
-    if liar.serve(&a_table()) != 2 {
+    if liar.serve(&shared_handle_table_or_false!(8)) != 2 {
         return false;
     }
     // Two posted; the program claims to have read four billion.
@@ -1296,17 +1311,6 @@ fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
     announced && reachable && unowned
 }
 
-/// A table with nothing in it, for the ring checks that produce no handles.
-///
-/// `serve` needs one because a submission can now install a handle. Every
-/// check that predates that produces none, so an empty table is exactly as
-/// much authority as those operations need — which is the point of passing it
-/// rather than reaching for the caller's.
-#[cfg(feature = "selftest")]
-fn a_table() -> alloc::sync::Arc<crate::handle::HandleTable> {
-    alloc::sync::Arc::new(crate::handle::HandleTable::new(8))
-}
-
 /// A word that does not fit is refused, never truncated.
 ///
 /// The phase-close audit's finding, and it is one defect in three places
@@ -1336,7 +1340,7 @@ fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
     let Some((held, _far)) = crate::object::channel() else {
         return false;
     };
-    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+    let table = shared_handle_table_or_false!(8);
     let full = Rights::UNIVERSAL.union(Rights::READ);
     let Ok(source) = table.insert(held, full) else {
         return false;
@@ -1416,7 +1420,7 @@ fn open_the_small_file_in(
     slot: usize,
 ) -> Option<u32> {
     let root = vfs::root()?;
-    let object = crate::object::directory(root)?;
+    let object = crate::object::directory(root);
     let directory = table
         .insert(object, Rights::UNIVERSAL.union(Rights::TRAVERSE))
         .ok()?;
@@ -1448,9 +1452,9 @@ fn open_the_small_file_in(
 ///
 /// The operation this whole phase was for. A program holds a directory and
 /// nothing else; it names something inside; and what comes back is authority
-/// over that thing — reserved at submission (D-151), attenuated on arrival
-/// (D-110), and derived from what the directory held rather than asked for
-/// (D-173).
+/// over that thing — reserved at submission and carrying only the
+/// operation-authorised derivation from the directory (D-151, D-173), with no
+/// universal right restored (D-181).
 fn a_completion_carries_a_file_handle() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
@@ -1458,11 +1462,9 @@ fn a_completion_carries_a_file_handle() -> bool {
     let Some(root) = vfs::root() else {
         return false;
     };
-    let Some(object) = crate::object::directory(root) else {
-        return false;
-    };
+    let object = crate::object::directory(root);
 
-    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+    let table = shared_handle_table_or_false!(8);
     let held = Rights::UNIVERSAL
         .union(Rights::TRAVERSE)
         .union(Rights::ENUMERATE);
@@ -1508,6 +1510,73 @@ fn a_completion_carries_a_file_handle() -> bool {
         && !granted.contains(Rights::WRITE)
         && !granted.contains(Rights::TRAVERSE)
         && table.live() == 2
+        && table.promised() == 0
+}
+
+/// Opening through an attenuated directory never restores universal rights.
+///
+/// `TRAVERSE` authorizes the cross-type derivation of file `READ`; it does not
+/// authorize recreating `DUPLICATE`, `TRANSFER`, `WAIT` or `INSPECT`. The
+/// all-universal parent used by the ordinary OpenAt check cannot distinguish
+/// preservation from escalation, so this check begins without any of them and
+/// reaches both the file and directory result branches.
+fn opening_a_node_does_not_restore_universal_rights() -> bool {
+    let Some(queue) = queue::Queue::new() else {
+        return false;
+    };
+    let Some(root) = vfs::root() else {
+        return false;
+    };
+    let object = crate::object::directory(root);
+
+    let table = shared_handle_table_or_false!(8);
+    let Ok(directory) = table.insert(object, Rights::TRAVERSE) else {
+        return false;
+    };
+    const DIRECTORY_AT: u64 = 64;
+    if !queue.write_data_for_test(0, SMALL_NAME)
+        || !queue.write_data_for_test(DIRECTORY_AT as usize, DIRECTORY_NAME)
+    {
+        return false;
+    }
+    for (slot, token, at, name) in [
+        (0, 0xA771, 0, SMALL_NAME),
+        (1, 0xA772, DIRECTORY_AT, DIRECTORY_NAME),
+    ] {
+        queue.post_submission_for_test(
+            slot,
+            queue::Queue::about_at(
+                queue::Opcode::OpenAt,
+                token,
+                directory,
+                0,
+                at,
+                name.len() as u32,
+            ),
+        );
+    }
+    queue.publish_tail_for_test(2);
+    if queue.serve(&table) != 2 {
+        return false;
+    }
+
+    let file = queue.read_completion(0);
+    let subdirectory = queue.read_completion(1);
+    if file.status != queue::STATUS_OK || subdirectory.status != queue::STATUS_OK {
+        return false;
+    }
+    let Ok((file, file_rights)) = table.resolve(file.value as u32) else {
+        return false;
+    };
+    let Ok((subdirectory, directory_rights)) = table.resolve(subdirectory.value as u32) else {
+        return false;
+    };
+
+    file.as_file().is_some()
+        && file_rights == Rights::READ
+        && subdirectory.as_directory().is_some()
+        && directory_rights == Rights::TRAVERSE
+        && table.live() == 3
         && table.promised() == 0
 }
 
@@ -1575,19 +1644,15 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
     let Some(root) = vfs::root() else {
         return false;
     };
-    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+    let table = shared_handle_table_or_false!(8);
 
     // A directory held without TRAVERSE: it can be listed and not walked.
-    let Some(object) = crate::object::directory(root) else {
-        return false;
-    };
+    let object = crate::object::directory(root);
     let Ok(unwalkable) = table.insert(object, Rights::UNIVERSAL.union(Rights::ENUMERATE)) else {
         return false;
     };
     // And one that can be walked, for the paths that are about the path.
-    let Some(object) = crate::object::directory(root) else {
-        return false;
-    };
+    let object = crate::object::directory(root);
     let Ok(walkable) = table.insert(object, Rights::UNIVERSAL.union(Rights::TRAVERSE)) else {
         return false;
     };
@@ -1604,9 +1669,7 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
     let vfs::Node::File(file) = root_node else {
         return false;
     };
-    let Some(object) = crate::object::file(file) else {
-        return false;
-    };
+    let object = crate::object::file(file);
     let Ok(unreadable) = table.insert(object, Rights::UNIVERSAL) else {
         return false;
     };
@@ -1614,9 +1677,7 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
     // reached at all: a handle that is denied at the right never gets as far
     // as the bound, and a check built only from denied handles cannot see
     // whether the bound comes before the read (D-173).
-    let Some(object) = crate::object::file(file) else {
-        return false;
-    };
+    let object = crate::object::file(file);
     let Ok(readable) = table.insert(object, Rights::UNIVERSAL.union(Rights::READ)) else {
         return false;
     };
@@ -1700,8 +1761,8 @@ fn open_the_small_file(
     queue: &queue::Queue,
 ) -> Option<(alloc::sync::Arc<crate::handle::HandleTable>, u32)> {
     let root = vfs::root()?;
-    let object = crate::object::directory(root)?;
-    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+    let object = crate::object::directory(root);
+    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8).ok()?);
     let held = Rights::UNIVERSAL.union(Rights::TRAVERSE);
     let directory = table.insert(object, held).ok()?;
 
@@ -2578,7 +2639,7 @@ fn work_in_flight_is_ended_before_the_ring_is_released() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
     };
-    let table = a_table();
+    let table = shared_handle_table_or_false!(8);
 
     // Two operations, an hour out, so nothing but the teardown can end them.
     for (slot, token) in [(0usize, 0xA1u32), (1, 0xA2)] {
@@ -2642,7 +2703,7 @@ fn a_promise_outlives_the_program_that_made_it() -> bool {
         return false;
     };
 
-    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(4));
+    let table = shared_handle_table_or_false!(4);
     let watching = alloc::sync::Arc::downgrade(&table);
 
     let full = Rights::UNIVERSAL.union(Rights::READ);
@@ -2698,14 +2759,14 @@ fn the_time_page_states_the_clock_the_kernel_measured() -> bool {
         && counter_hz > 0
 }
 
-/// The page and the call tell the same time.
+/// The page and the kernel clock tell the same time.
 ///
 /// The whole claim of D-152: `sys_clock_get` stops being a call and becomes a
 /// load, and the two answers have to be *the same answer* rather than two
 /// plausible ones. So this is a sandwich rather than a tolerance — the page's
-/// reading is taken between two calls and must lie between them. No slack, and
-/// a multiplier or shift off by one breaks it immediately.
-fn the_time_page_and_the_call_tell_the_same_time() -> bool {
+/// reading is taken between two kernel reads and must lie between them. No
+/// slack, and a multiplier or shift off by one breaks it immediately.
+fn the_time_page_and_the_kernel_clock_tell_the_same_time() -> bool {
     let Some(reading) = timepage::read() else {
         return false;
     };
@@ -2727,16 +2788,16 @@ fn the_time_page_and_the_call_tell_the_same_time() -> bool {
     agrees && moved && reading.conversion.is_calibrated()
 }
 
-/// Revoking the clock sends readers back to the call.
+/// Revoking the clock sends readers to the Uptime operation.
 ///
 /// The gate D-152 asks for, exercised rather than described. Three things have
 /// to hold at once: the revocation is visible, the sequence counter moved by
-/// exactly two so no reader can be left mid-update, and **the syscall still
+/// exactly two so no reader can be left mid-update, and **ring Uptime still
 /// answers** — a fallback that is not reachable is not a fallback.
 ///
 /// The clock is put back afterwards. Nothing else reads the page, so the
 /// window is the kernel's own.
-fn revoking_the_clock_sends_readers_back_to_the_call() -> bool {
+fn revoking_the_clock_sends_readers_to_uptime() -> bool {
     let Some(before) = timepage::read() else {
         return false;
     };
@@ -2768,7 +2829,7 @@ fn revoking_the_clock_sends_readers_back_to_the_call() -> bool {
             queue::Submission::simple(queue::Opcode::Uptime, 0x7EA, 0),
         );
         queue.publish_tail_for_test(1);
-        let table = a_table();
+        let table = shared_handle_table_or_false!(8);
         let served = queue.serve(&table) == 1;
         let completion = queue.read_completion(0);
         served
@@ -2870,7 +2931,7 @@ fn a_completion_carries_a_handle_with_narrowed_rights() -> bool {
     let Some((held, _far)) = crate::object::channel() else {
         return false;
     };
-    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+    let table = shared_handle_table_or_false!(8);
 
     let offered = Rights::UNIVERSAL.union(Rights::READ).union(Rights::WRITE);
     let Ok(source) = table.insert(held, offered) else {
@@ -2930,7 +2991,7 @@ fn a_completion_cannot_widen_what_was_offered() -> bool {
     let Some((held, _far)) = crate::object::channel() else {
         return false;
     };
-    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+    let table = shared_handle_table_or_false!(8);
 
     // Held without WRITE, so asking for it is asking to widen.
     let offered = Rights::UNIVERSAL.union(Rights::READ);
@@ -2990,7 +3051,7 @@ fn a_refused_handle_operation_returns_its_promise() -> bool {
 
     // Room to spare: a refusal must be reached *after* a promise is taken, and
     // a full table refuses before there is one.
-    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(8));
+    let table = shared_handle_table_or_false!(8);
     let full = Rights::UNIVERSAL.union(Rights::READ);
     let Ok(source) = table.insert(duplicable, full) else {
         return false;
@@ -3064,7 +3125,7 @@ fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
     };
 
     // Room for exactly one, which the source takes.
-    let table = alloc::sync::Arc::new(crate::handle::HandleTable::new(1));
+    let table = shared_handle_table_or_false!(1);
     let full = Rights::UNIVERSAL.union(Rights::READ);
     let Ok(source) = table.insert(held, full) else {
         return false;
@@ -3079,16 +3140,40 @@ fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
             u64::from(full.bits()),
         ),
     );
-    queue.publish_tail_for_test(1);
+    // Neither malformed rights nor a malformed path may be inspected first.
+    // Otherwise the result-producing operations expose more than one
+    // quota-ordering contract despite D-151 reserving one.
+    queue.post_submission_for_test(
+        1,
+        queue::Submission::about(
+            queue::Opcode::Duplicate,
+            0xFEE1,
+            source,
+            0xFFFF_FFFF_0000_0000,
+        ),
+    );
+    queue.post_submission_for_test(
+        2,
+        queue::Queue::about_at(queue::Opcode::OpenAt, 0xFEE2, source, 0, u64::MAX, 1),
+    );
+    queue.publish_tail_for_test(3);
 
-    if queue.serve(&table) != 1 {
+    if queue.serve(&table) != 3 {
         return false;
     }
-    let completion = queue.read_completion(0);
+    let duplicate = queue.read_completion(0);
+    let malformed_duplicate = queue.read_completion(1);
+    let open = queue.read_completion(2);
 
-    completion.token == 0xFEED
-        && completion.status == queue::STATUS_NO_HANDLE_SLOT
-        && completion.value == 0
+    duplicate.token == 0xFEED
+        && duplicate.status == queue::STATUS_NO_HANDLE_SLOT
+        && duplicate.value == 0
+        && malformed_duplicate.token == 0xFEE1
+        && malformed_duplicate.status == queue::STATUS_NO_HANDLE_SLOT
+        && malformed_duplicate.value == 0
+        && open.token == 0xFEE2
+        && open.status == queue::STATUS_NO_HANDLE_SLOT
+        && open.value == 0
         && table.live() == 1
         && table.promised() == 0
 }
@@ -3110,7 +3195,7 @@ fn an_operation_completes_after_its_deadline_and_only_once() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
     };
-    let table = a_table();
+    let table = shared_handle_table_or_false!(8);
 
     const DELAY_NS: u64 = 2_000_000;
     let submitted_at = crate::time::now_ns();
@@ -3167,7 +3252,7 @@ fn a_cancelled_operation_and_its_cancellation_complete_separately() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
     };
-    let table = a_table();
+    let table = shared_handle_table_or_false!(8);
 
     // An hour away, so nothing but the cancellation can end it.
     queue.post_submission_for_test(
@@ -3238,9 +3323,9 @@ fn every_submission_gets_exactly_one_completion() -> bool {
     }
     queue.publish_tail_for_test(asked.len() as u32);
 
-    let served = queue.serve(&a_table());
+    let served = queue.serve(&shared_handle_table_or_false!(8));
     // Exactly one each, and no more: a second call finds nothing left.
-    let once = served == asked.len() && queue.serve(&a_table()) == 0;
+    let once = served == asked.len() && queue.serve(&shared_handle_table_or_false!(8)) == 0;
     let accounted = queue.outstanding() == 0 && queue.is_consistent();
 
     let echo = queue.read_completion(0);
@@ -3318,7 +3403,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         queue::Submission::simple(queue::Opcode::Echo, 0xABCD, 0x0F0F_0F0F),
     );
     queue.publish_tail_for_test(1);
-    if queue.serve(&a_table()) != 1 {
+    if queue.serve(&shared_handle_table_or_false!(8)) != 1 {
         return false;
     }
     let posted = queue.read_completion(0);
@@ -3344,7 +3429,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         && posted.value == 0x0F0F_0F0F
         // And serving again does not re-serve the rewritten entry: the slot
         // was consumed, and the new bytes are a submission nobody made.
-        && queue.serve(&a_table()) == 0;
+        && queue.serve(&shared_handle_table_or_false!(8)) == 0;
 
     // A tail run away with the kernel's ring *empty* is refused — but so it
     // would be with no bound at all, because `take` finds nothing. The case
@@ -3364,12 +3449,13 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         );
     }
     runaway.publish_tail_for_test(u32::MAX);
-    let runaway_bounded = runaway.serve(&a_table()) == 0 && runaway.outstanding() == 0;
+    let runaway_bounded =
+        runaway.serve(&shared_handle_table_or_false!(8)) == 0 && runaway.outstanding() == 0;
 
     // And with the ring drained, which is the weaker case the earlier version
     // was testing without knowing it.
     queue.publish_tail_for_test(u32::MAX);
-    let drained_bounded = queue.serve(&a_table()) == 0;
+    let drained_bounded = queue.serve(&shared_handle_table_or_false!(8)) == 0;
 
     // The case the runaway tail cannot show: **writing is not publishing.**
     // A program may write
@@ -3387,7 +3473,7 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         );
     }
     partial.publish_tail_for_test(1);
-    let only_published = partial.serve(&a_table()) == 1;
+    let only_published = partial.serve(&shared_handle_table_or_false!(8)) == 1;
     let one_reported = partial.read_completion(0).token == 0x5150;
     // And nothing is held open: the one served reported, and the two unpublished
     // entries were never admitted, so no reservation outlives the round.
@@ -3802,17 +3888,65 @@ fn a_program_drives_its_own_ring() -> bool {
     one_served && asked && answered && exited
 }
 
+/// A program duplicates its bootstrap handle through a real ring-3 trap.
+///
+/// This is the allocation edge D-182 closes. Kernel-thread queue checks cannot
+/// prove it: the heap permits allocation there, while the same growth from the
+/// `int 0x80` handler is an unprivileged panic. The emitted program consumes
+/// the numeric bootstrap handle from its versioned entry block, asks for a
+/// READ-only duplicate, validates the authority-bearing completion and exits.
+fn a_program_duplicates_its_bootstrap_handle() -> bool {
+    let faults_before = trap::last_user_fault().count;
+    let retirements_before = thread::retirements();
+
+    let Ok(spawned) = user::run_duplicating() else {
+        return false;
+    };
+    if !runs_until(2000, || thread::retirements() > retirements_before) {
+        return false;
+    }
+
+    let Some(rites) = user::last_rites_of(spawned.slot) else {
+        return false;
+    };
+    let submitted = rites.submitted;
+    let completed = rites.completed;
+
+    // It began with one handle, so the nonzero handle ring 3 supplied can only
+    // be the bootstrap entry. The requested rights are exactly READ.
+    let asked = submitted.opcode == queue::Opcode::Duplicate
+        && submitted.token != 0
+        && submitted.handle != 0
+        && submitted.argument == u64::from(Rights::READ.bits());
+
+    // The completion carries a distinct, representable handle, and the exit
+    // record proves both entries were installed before teardown reclaimed them.
+    let new_handle = u32::try_from(completed.value).ok();
+    let answered = completed.token == submitted.token
+        && completed.status == queue::STATUS_OK
+        && new_handle.is_some_and(|handle| handle != 0 && handle != submitted.handle);
+    let retained = rites.served == 1
+        && rites.handles == 2
+        && rites.bootstrap == Some(object::ObjectType::Channel);
+
+    // Every emitted-program disagreement executes `ud2`, so a clean exit is
+    // independent evidence that ring 3 accepted the same result.
+    let exited = trap::last_user_fault().count == faults_before;
+
+    asked && answered && retained && exited
+}
+
 /// A freshly spawned program holds exactly one handle, and it is a channel.
 ///
 /// `002`'s pillar 1, converted from a sentence into a check (D-111): *a
-/// process receives exactly one handle at spawn — its bootstrap channel — and
-/// every later handle arrived through a channel.* The table is the process's
-/// whole power, so counting it is the strongest form the claim has, and the
-/// count is the half that a second grant would break silently.
+/// process receives exactly one handle at spawn — its bootstrap channel.* The
+/// table is the process's complete external-object authority at birth, so
+/// counting it then is the strongest form the claim has. D-151 later made ring
+/// completions a second, authorized delegation path; it did not weaken this
+/// birth count.
 ///
 /// The parent's evidence is the other end. It is the only way to reach the
-/// child, which is what "no ambient authority" looks like from this side: a
-/// spawner that dropped its end could never speak to what it spawned.
+/// child: a spawner that dropped its end could never send it a grant.
 fn a_spawned_program_holds_exactly_one_handle() -> bool {
     let retirements_before = thread::retirements();
     // Its own program rather than a shared launcher: every ring-3 check
@@ -3981,8 +4115,8 @@ fn an_orphaned_channel_end_refuses() -> bool {
 /// The move is the other half. A handle that survived a send would make
 /// delegation into duplication, and `002`'s pillar 1 rests on it not.
 fn a_handle_crosses_with_the_rights_both_ends_declared() -> bool {
-    let sender = HandleTable::new(8);
-    let receiver = HandleTable::new(8);
+    let sender = handle_table_or_false!(8);
+    let receiver = handle_table_or_false!(8);
 
     let object = object::event();
     let Ok(handle) = sender.insert(object, Rights::UNIVERSAL) else {
@@ -4011,7 +4145,7 @@ fn a_handle_crosses_with_the_rights_both_ends_declared() -> bool {
     // Neither end can widen. The receiver asking for more than was offered is
     // refused rather than clamped, because a clamp is a default by another
     // name.
-    let widening = HandleTable::new(8);
+    let widening = handle_table_or_false!(8);
     let second = object::event();
     let Ok(full) = widening.insert(second, Rights::UNIVERSAL) else {
         return false;
@@ -4046,7 +4180,7 @@ fn a_handle_crosses_with_the_rights_both_ends_declared() -> bool {
 /// which it cannot — the message carries an object and a set of rights, not a
 /// history (D-110).
 fn a_handle_without_transfer_is_refused_at_the_sender() -> bool {
-    let sender = HandleTable::new(8);
+    let sender = handle_table_or_false!(8);
     let object = object::event();
 
     // Everything except the right to pass it on.
@@ -4061,7 +4195,7 @@ fn a_handle_without_transfer_is_refused_at_the_sender() -> bool {
 
     // Stripping `TRANSFER` on the way through is how a holder is given a
     // non-delegatable handle in the first place.
-    let receiver = HandleTable::new(8);
+    let receiver = handle_table_or_false!(8);
     let second = object::event();
     let Ok(sendable) = sender.insert(second, Rights::UNIVERSAL) else {
         return false;
@@ -4091,13 +4225,13 @@ fn a_handle_sent_in_a_message_names_the_same_object() -> bool {
         return false;
     };
 
-    let sender = HandleTable::new(8);
-    let receiver = HandleTable::new(8);
+    let sender = handle_table_or_false!(8);
+    let receiver = handle_table_or_false!(8);
 
     // An event the receiver will be told about by handle, and which this
     // thread keeps a reference to so it can signal it afterwards.
     let shared = object::event();
-    let watching = Arc::clone(&shared);
+    let watching = shared.clone();
     let Ok(handle) = sender.insert(shared, Rights::UNIVERSAL) else {
         return false;
     };
@@ -4157,7 +4291,7 @@ fn a_blocked_receiver_wakes_with_its_message() -> bool {
         return false;
     };
 
-    *BLOCKED_CHANNEL.lock_leaf() = Some(Arc::clone(&far));
+    *BLOCKED_CHANNEL.lock_leaf() = Some(far.clone());
     BLOCKED_RECEIVER.store(0, Ordering::Release);
     let free_before = thread::free_slots();
     if thread::spawn("channel-receiver", block_on_a_channel).is_err() {
@@ -4197,7 +4331,7 @@ fn a_blocked_receiver_wakes_with_its_message() -> bool {
     {
         return false;
     }
-    *WINDOW_CHANNEL.lock_leaf() = Some(Arc::clone(&window_far));
+    *WINDOW_CHANNEL.lock_leaf() = Some(window_far.clone());
     WINDOW_RETURNED.store(0, Ordering::Release);
     if thread::spawn("channel-window", wait_on_a_channel_that_has_one).is_err() {
         return false;
@@ -4289,7 +4423,7 @@ fn a_blocked_receiver_learns_its_peer_is_gone() -> bool {
         return false;
     };
 
-    *ORPHANED_CHANNEL.lock_leaf() = Some(Arc::clone(&far));
+    *ORPHANED_CHANNEL.lock_leaf() = Some(far.clone());
     ORPHANED_RECEIVER.store(0, Ordering::Release);
     let free_before = thread::free_slots();
     if thread::spawn("channel-orphan", block_until_orphaned).is_err() {
@@ -4347,7 +4481,7 @@ fn block_until_orphaned() {
 /// what turns that use-after-free into a decode failure rather than a silent
 /// reference to someone else's object.
 fn a_closed_handle_names_nothing() -> bool {
-    let table = HandleTable::new(8);
+    let table = handle_table_or_false!(8);
     let Ok(handle) = table.insert(object::event(), Rights::UNIVERSAL) else {
         return false;
     };
@@ -4385,7 +4519,7 @@ fn a_closed_handle_names_nothing() -> bool {
 /// permission, and granting it would make the rights word mean less every time
 /// an object type was added.
 fn a_meaningless_right_is_refused() -> bool {
-    let table = HandleTable::new(4);
+    let table = handle_table_or_false!(4);
 
     let refused = table.insert(object::event(), Rights::READ) == Err(HandleError::Meaningless);
     let also_refused = table.insert(object::event(), Rights::ALL) == Err(HandleError::Meaningless);
@@ -4395,7 +4529,26 @@ fn a_meaningless_right_is_refused() -> bool {
     let allowed = table.insert(object::event(), Rights::UNIVERSAL).is_ok();
     let nothing_is_allowed = table.insert(object::event(), Rights::NONE).is_ok();
 
-    refused && also_refused && allowed && nothing_is_allowed && table.live() == 2
+    let Some(root) = vfs::root() else {
+        return false;
+    };
+    let Ok(vfs::Node::File(file)) = vfs::resolve(root, SMALL_NAME) else {
+        return false;
+    };
+    let file_refuses = [Rights::WRITE, Rights::EXECUTE, Rights::MAP]
+        .into_iter()
+        .all(|right| table.insert(object::file(file), right) == Err(HandleError::Meaningless));
+    let directory = object::directory(root);
+    let directory_refuses =
+        table.insert(directory, Rights::MODIFY) == Err(HandleError::Meaningless);
+
+    refused
+        && also_refused
+        && allowed
+        && nothing_is_allowed
+        && file_refuses
+        && directory_refuses
+        && table.live() == 2
 }
 
 /// A handle from one table is not a handle in another.
@@ -4405,8 +4558,8 @@ fn a_meaningless_right_is_refused() -> bool {
 /// refused as theirs, and a value from another table usually does not decode
 /// at all, because the mixers differ.
 fn a_handle_does_not_cross_tables() -> bool {
-    let mine = HandleTable::new(4);
-    let theirs = HandleTable::new(4);
+    let mine = handle_table_or_false!(4);
+    let theirs = handle_table_or_false!(4);
     let Ok(handle) = mine.insert(object::event(), Rights::UNIVERSAL) else {
         return false;
     };
@@ -4441,7 +4594,7 @@ fn a_handle_does_not_cross_tables() -> bool {
 
 /// Rights are checked, and duplication only ever narrows them.
 fn rights_are_checked_and_only_narrow() -> bool {
-    let table = HandleTable::new(8);
+    let table = handle_table_or_false!(8);
     // `WAIT` rather than `READ`: an event has no pages, so a memory right on
     // one is a category error rather than a narrower permission (D-95). This
     // fixture used to grant `READ` on an event and check it was honoured,
@@ -4477,7 +4630,7 @@ fn rights_are_checked_and_only_narrow() -> bool {
 /// permanent.
 fn a_table_cannot_exceed_its_quota() -> bool {
     const QUOTA: usize = 3;
-    let table = HandleTable::new(QUOTA);
+    let table = handle_table_or_false!(QUOTA);
     let mut held = Vec::new();
     for _ in 0..QUOTA {
         match table.insert(object::event(), Rights::UNIVERSAL) {
@@ -4501,44 +4654,47 @@ fn a_table_cannot_exceed_its_quota() -> bool {
     refused && full && room_again
 }
 
-/// The arena grows twice over, and every handle survives both moves.
+/// A table's whole quota is backed before any handle is installed.
 ///
-/// Sixteen live handles is the number no boot had ever reached, and it is
-/// where `reserve_a_slot` stops being exercised only in its easy case. The
-/// first growth hands back a `Vec` with no allocation behind it; the second
-/// hands back a real one, and freeing that is an acquisition of `HEAP` —
-/// taken, until now, with `ARENA`'s leaf guard still live. The order D-85
-/// deleted, rebuilt inside the one function whose doc says it exists to
-/// prevent it.
-///
-/// So the assertions below are half of this check. The other half is
-/// [`a_leaf_guard_is_the_last_lock`], which sees the violation only on a boot
-/// that walks the path — and no boot did. D-126 records that limit; this is
-/// the boot that removes it for this one path (D-128).
-fn the_handle_arena_grows_more_than_once() -> bool {
-    /// Two reallocations past an empty arena, whose capacity runs 16, 32, 64.
-    const HELD: usize = 40;
-
-    let table = HandleTable::new(HELD);
-    let mut handles = Vec::new();
-    for _ in 0..HELD {
-        match table.insert(object::event(), Rights::UNIVERSAL) {
-            Ok(handle) => handles.push(handle),
-            Err(_) => return false,
-        }
+/// The quota is one larger than the arena's current uncommitted capacity, so
+/// construction must grow the backing. Filling the table then cannot move the
+/// capacity at all: those inserts are the operations that may later run from a
+/// trap, where allocating is forbidden. Dropping returns the commitment while
+/// retaining the harmless backing (D-182).
+fn the_handle_arena_backs_a_tables_whole_quota() -> bool {
+    let (committed_before, capacity_before) = HandleTable::arena_backing_for_test();
+    let Some(spare) = capacity_before.checked_sub(committed_before) else {
+        return false;
+    };
+    let Some(quota) = spare.checked_add(1) else {
+        return false;
+    };
+    if quota > (handle_space::SLOTS as usize).saturating_sub(committed_before) {
+        return false;
     }
 
-    // Every one still names its own object across both moves. A handle is an
-    // index into the arena, so relocating the arena is exactly the operation
-    // that could invalidate one.
-    let all_resolve = handles.iter().all(|handle| table.kind_of(*handle).is_ok());
-    let live = table.live() == HELD;
-    // And no two name one slot, which a move that lost entries would produce.
-    let distinct = handles
-        .iter()
-        .all(|handle| handles.iter().filter(|other| *other == handle).count() == 1);
+    let Ok(table) = HandleTable::new(quota) else {
+        return false;
+    };
+    let (committed, capacity) = HandleTable::arena_backing_for_test();
+    let backed = committed == committed_before + quota
+        && capacity > capacity_before
+        && capacity >= committed;
 
-    all_resolve && live && distinct
+    for _ in 0..quota {
+        if table.insert(object::event(), Rights::UNIVERSAL).is_err() {
+            return false;
+        }
+    }
+    let (filled_commitment, filled_capacity) = HandleTable::arena_backing_for_test();
+    let filled_without_growth =
+        table.live() == quota && filled_commitment == committed && filled_capacity == capacity;
+
+    drop(table);
+    let (committed_after, capacity_after) = HandleTable::arena_backing_for_test();
+    let returned = committed_after == committed_before && capacity_after == filled_capacity;
+
+    backed && filled_without_growth && returned
 }
 
 /// An object outlives every handle to it, and no longer.
@@ -4547,9 +4703,11 @@ fn the_handle_arena_grows_more_than_once() -> bool {
 /// really a check that the table holds a reference rather than a pointer: two
 /// handles keep one object alive, and it dies when the second goes.
 fn an_object_lives_exactly_as_long_as_its_handles() -> bool {
-    let table = HandleTable::new(8);
+    let table = handle_table_or_false!(8);
     let object = object::event();
-    let watcher = Arc::downgrade(&object);
+    let Some(watcher) = object.downgrade_for_test() else {
+        return false;
+    };
     let Ok(first) = table.insert(object, Rights::UNIVERSAL) else {
         return false;
     };
@@ -4577,9 +4735,11 @@ fn an_object_lives_exactly_as_long_as_its_handles() -> bool {
 /// reach.
 fn a_dead_table_releases_its_objects() -> bool {
     let object = object::event();
-    let watcher = Arc::downgrade(&object);
+    let Some(watcher) = object.downgrade_for_test() else {
+        return false;
+    };
     {
-        let table = HandleTable::new(4);
+        let table = handle_table_or_false!(4);
         if table.insert(object, Rights::UNIVERSAL).is_err() {
             return false;
         }
@@ -4621,7 +4781,7 @@ fn wait_on_the_event() {
 /// safe: a signal landing between the two sets a state the loop re-reads,
 /// rather than delivering a wakeup that can be missed.
 fn a_signal_wakes_a_thread_waiting_on_a_handle() -> bool {
-    let table = HandleTable::new(4);
+    let table = handle_table_or_false!(4);
     let Ok(handle) = table.insert(object::event(), Rights::WAIT.union(Rights::INSPECT)) else {
         return false;
     };
@@ -4635,7 +4795,7 @@ fn a_signal_wakes_a_thread_waiting_on_a_handle() -> bool {
         return false;
     }
 
-    *WAITED_EVENT.lock_leaf() = Some(Arc::clone(&object));
+    *WAITED_EVENT.lock_leaf() = Some(object.clone());
     EVENT_WAITER.store(0, Ordering::Release);
     let free_before = thread::free_slots();
     let blocks_before = thread::blocks();
@@ -6218,7 +6378,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 187;
+const EXPECTED_CHECKS: usize = 189;
 
 impl Report {
     const fn new() -> Self {
@@ -6371,6 +6531,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_completion_carries_a_file_handle(),
     );
     report.check(
+        "opening a node does not restore universal rights",
+        opening_a_node_does_not_restore_universal_rights(),
+    );
+    report.check(
         "a read is a submission with its own offset",
         a_read_is_a_submission_with_its_own_offset(),
     );
@@ -6460,12 +6624,12 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         the_time_page_states_the_clock_the_kernel_measured(),
     );
     report.check(
-        "the time page and the call tell the same time",
-        the_time_page_and_the_call_tell_the_same_time(),
+        "the time page and the kernel clock tell the same time",
+        the_time_page_and_the_kernel_clock_tell_the_same_time(),
     );
     report.check(
-        "revoking the clock sends readers back to the call",
-        revoking_the_clock_sends_readers_back_to_the_call(),
+        "revoking the clock sends readers to ring Uptime",
+        revoking_the_clock_sends_readers_to_uptime(),
     );
     report.check(
         "the clock's update window is never preemptible",
@@ -6580,6 +6744,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_program_drives_its_own_ring(),
     );
     report.check(
+        "a program duplicates its bootstrap handle",
+        a_program_duplicates_its_bootstrap_handle(),
+    );
+    report.check(
         "an unserved call is refused without stopping the machine",
         an_unserved_call_is_refused_without_stopping_the_machine(),
     );
@@ -6628,8 +6796,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_table_cannot_exceed_its_quota(),
     );
     report.check(
-        "the handle arena grows more than once",
-        the_handle_arena_grows_more_than_once(),
+        "the handle arena backs a table's whole quota",
+        the_handle_arena_backs_a_tables_whole_quota(),
     );
     report.check(
         "an object lives exactly as long as its handles",
@@ -7225,7 +7393,7 @@ fn filling_the_arena_never_repeats_a_slot() -> bool {
     /// Enough to wrap the hint past the end and force a grow or two.
     const HANDLES: usize = 24;
 
-    let table = HandleTable::new(HANDLES);
+    let table = handle_table_or_false!(HANDLES);
     let mut handles = [0u32; HANDLES];
 
     for slot in &mut handles {

@@ -2,31 +2,33 @@
 //!
 //! D-152 settled the shape and D-149 puts it in this phase, before a
 //! filesystem exists to want it, because a call that becomes a load later is
-//! two doors to one operation for ever. `sys_clock_get` was OWED over
-//! `libs/timebase` (D-114); it is answered here by not being a call.
+//! two doors to one operation for ever. Under D-114's former taxonomy
+//! `sys_clock_get` was OWED over `libs/timebase`; D-166 made the monotonic
+//! success path a load, while D-181 records the reader and fallback as PARTIAL.
 //!
 //! **Two regions, and the split is the point.** The constants — version, page
-//! size, counter rate — have no sequence counter and no version, because there
-//! is nothing to tear: they are written once, before the page is mapped
+//! size, counter rate — have no sequence counter, because there is nothing to
+//! tear: they are written once, before the page is mapped
 //! anywhere, and never again. Zircon's arrangement, and it removes the most
 //! error-prone reads from the protocol entirely. The clock region carries
 //! Linux's seqlock, both barriers included.
 //!
-//! **This clock does not need a periodic update, and that is not a shortcut.**
-//! Linux rewrites its published clock at every tick because its clocksource may
-//! be an HPET, or a TSC that stops in idle, and because NTP adjusts the
-//! multiplier continuously. This kernel refuses to calibrate at all unless the
-//! counter is invariant (`time::init`), so the conversion is fixed and the
-//! origin never moves: a reader computes `now = convert(rdtsc - origin)`, which
-//! is *exactly* what [`time::now_ns`](crate::time::now_ns) computes. The
-//! seqlock is still here and still correct, because the page is republished on
-//! the two transitions that do exist — calibration, and revocation.
+//! **This clock is fixed after calibration, and the limit is explicit.** Linux
+//! rewrites its published clock for adjustable or idle-stopping sources and
+//! for NTP. This kernel instead accepts two believable, agreeing measurement
+//! windows; the invariant-TSC bit is reported and warned on, not a veto
+//! (`time::init`). The conversion and origin then stay fixed for the supported
+//! uptime, so a reader computes exactly what
+//! [`time::now_ns`](crate::time::now_ns) computes. A machine whose counter rate
+//! later changes gets only that counter's steadiness; the mode permits
+//! revocation, but no suspend or NTP updater exists yet (D-57, D-181).
 //!
-//! **The revocation gate is why the syscall stays.** `mode` is the reader's
-//! permission to use the page at all. A kernel that learns its counter is not
-//! to be trusted sets it to zero, and every reader falls back to asking. D-152
-//! requires that fallback to be always reachable, which means the ring's
-//! `Uptime` opcode is not decoration.
+//! **The revocation gate is why the Uptime fallback stays.** `mode` is the
+//! reader's permission to use the page at all. A kernel that learns its counter
+//! is not to be trusted sets it to zero, and every reader must stop using the
+//! page. Ring Uptime keeps the kernel route available. The current C
+//! pressure-test reader explicitly returns ENOSYS until a shared,
+//! token-correlating ring client exists (D-181).
 
 use core::sync::atomic::{AtomicUsize, Ordering, fence};
 
@@ -92,7 +94,8 @@ mod clock {
     pub(super) const SHIFT: usize = 40;
 }
 
-/// The one page. `None` until the clock is measured.
+/// The one page. `None` until the global ABI page is built at boot; present
+/// even when the clock is uncalibrated or revoked.
 ///
 /// Global rather than per-process (D-152): every program reads the same clock,
 /// and a page each would be a page each to keep in step.

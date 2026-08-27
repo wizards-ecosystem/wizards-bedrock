@@ -236,9 +236,10 @@ have no gaps; `xtask/src/prose.rs` requires every `libs/` crate the documents
 name to exist or be declared absent with a reason, and the README's count of
 `ci`'s boots to match what `ci` runs; `xtask/src/unsafety.rs` pins `wost`'s
 unsafe line count rather than only capping it; `xtask/src/qemu.rs` compares the
-C header against the kernel's own constants and the sysdep tags against the
-counts in `userland/README.md`. Prose that cannot be checked should not state a
-number — point at the place that can (D-124).
+C header against the kernel's own constants, discovers every active sysdep,
+checks its BODY evidence, and checks its two-axis source marker against the exact
+register in `userland/README.md`. Prose that cannot be
+checked should not state a number — point at the place that can (D-124).
 
 If a check fits none of the three, that is usually a sign the logic should be
 split so that the interesting half fits the first row. `libs/pixel` exists because the
