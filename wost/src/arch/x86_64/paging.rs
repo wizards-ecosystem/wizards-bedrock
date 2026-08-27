@@ -27,6 +27,7 @@
 //! [`AddressSpace::map_boot`] takes a [`BootRegion`] the memory map covers, and
 //! [`AddressSpace::map_device`] refuses anything that is not a device hole.
 
+use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -38,7 +39,7 @@ use x86_paging::{
 
 use super::cpu;
 use super::task::{Released, Root};
-use crate::mm::{self, Paddr, Segment, Shared, USegment};
+use crate::mm::{self, Paddr, Segment, Shared, SharedKeepalive, USegment};
 use crate::mmio::MmioRegion;
 use crate::sync::Once;
 
@@ -247,6 +248,8 @@ pub struct AddressSpace {
     reach: Reach,
     /// Whether a thread already runs on these tables.
     bound: bool,
+    /// Allocations reached by non-owning user mappings in this space.
+    shared: Vec<SharedKeepalive>,
 }
 
 /// How much of an address space its owner may map.
@@ -324,6 +327,7 @@ impl AddressSpace {
             tables_lost: 0,
             bound: false,
             reach: Reach::Everywhere,
+            shared: Vec::new(),
         })
     }
 
@@ -355,6 +359,10 @@ impl AddressSpace {
         let range = MappingRange::new(virtual_base, physical_base, len)?;
         let flags = flags.union(Flags::PRESENT);
 
+        if self.preflight(&range, flags, grain)? == MappingState::Identical {
+            return Ok(());
+        }
+
         let mut offset = 0;
         while offset < range.len() {
             let (virtual_address, physical, level) = Self::step(&range, offset, grain);
@@ -370,6 +378,65 @@ impl AddressSpace {
             offset += level.span();
         }
         Ok(())
+    }
+
+    /// Establish that every target is absent or every target is identical.
+    fn preflight(
+        &self,
+        range: &MappingRange,
+        flags: Flags,
+        grain: Grain,
+    ) -> Result<MappingState, MapError> {
+        let mut transaction = None;
+        let mut offset = 0;
+        while offset < range.len() {
+            let (virtual_address, physical, level) = Self::step(range, offset, grain);
+            let state = self.mapping_state(virtual_address, physical, flags, level)?;
+            match transaction {
+                None => transaction = Some(state),
+                Some(found) if found == state => {}
+                Some(_) => return Err(MapError::Conflict(virtual_address)),
+            }
+            offset += level.span();
+        }
+        transaction.ok_or(MapError::Misaligned(range.virtual_base()))
+    }
+
+    /// The state of one target before a transaction writes anything.
+    fn mapping_state(
+        &self,
+        virtual_address: u64,
+        physical: Paddr,
+        flags: Flags,
+        target: Level,
+    ) -> Result<MappingState, MapError> {
+        let wanted = Entry::page(target, physical, flags)?;
+        let mut table = self.root;
+        for level in Level::WALK {
+            let slot = entry_pointer(table, level.index(virtual_address))?;
+            // SAFETY: `entry_pointer` confirmed the slot lies in a reachable
+            // table owned by this space; this preflight only reads it.
+            let current = unsafe { slot.read_volatile() };
+            if level == target {
+                return if !current.is_present() {
+                    Ok(MappingState::Absent)
+                } else if current == wanted {
+                    Ok(MappingState::Identical)
+                } else {
+                    Err(MapError::Conflict(virtual_address))
+                };
+            }
+            if !current.is_present() {
+                return Ok(MappingState::Absent);
+            }
+            if current.is_huge()
+                || flags.contains(Flags::USER) && !current.flags().contains(Flags::USER)
+            {
+                return Err(MapError::Conflict(virtual_address));
+            }
+            table = current.address();
+        }
+        Err(MapError::Conflict(virtual_address))
     }
 
     /// Whether this space may be told to change `len` bytes at `at`.
@@ -418,13 +485,9 @@ impl AddressSpace {
 
     /// Clear the first `written` bytes of `range`, undoing a partial mapping.
     ///
-    /// One narrow case is *not* undone cleanly: `set` permits an idempotent
-    /// rewrite of an entry that already held exactly this mapping, so a range
-    /// overlapping an identical pre-existing one walks through it, and clearing
-    /// that entry here removes something the call did not create. Only the
-    /// direct map's outward rounding can produce identical overlaps, and a
-    /// failure there aborts the whole space — but the day something recovers
-    /// from a `map_range` error, this is the case to fix (D-95).
+    /// [`preflight`](Self::preflight) established that every entry in a
+    /// transaction which can reach this path was absent before it began, so
+    /// each entry below belongs to this call rather than an older mapping.
     ///
     /// Tables allocated on the way are **not** freed. They are zeroed frames
     /// with no entries pointing anywhere, so the next mapping through them is
@@ -572,13 +635,8 @@ impl AddressSpace {
     /// reaches. [`USegment::share`] is one-way, so the aliasing is not
     /// expressible (D-115).
     ///
-    /// # The obligation this cannot enforce
-    ///
-    /// `run` must outlive the mapping. An address space has no `Drop` and a
-    /// `Shared` does, so a run freed while a space still maps it would leave
-    /// ring 3 holding memory the allocator has given away. Nothing in the type
-    /// system says so here; the one caller keeps the run for the life of the
-    /// object that owns the mapping, and that is where the property lives.
+    /// The space retains a non-accessing ownership reference, so dropping the
+    /// caller's [`Shared`] cannot recycle frames these entries still reach.
     ///
     /// # Errors
     ///
@@ -590,13 +648,18 @@ impl AddressSpace {
         flags: Flags,
     ) -> Result<(), MapError> {
         self.may_reach(virtual_base, run.len())?;
+        self.shared
+            .try_reserve(1)
+            .map_err(|_| MapError::OutOfMemory)?;
         self.map_range(
             virtual_base,
             run.address(),
             run.len(),
             flags.difference(NOT_THE_CALLERS).union(Flags::USER),
             Grain::Pages,
-        )
+        )?;
+        self.shared.push(run.keepalive());
+        Ok(())
     }
 
     fn map_run(&mut self, virtual_base: u64, run: Segment, flags: Flags) -> Result<(), MapError> {
@@ -1221,6 +1284,7 @@ impl AddressSpace {
         let root = self.root;
         self.root = 0;
         self.tables_used = 0;
+        self.shared.clear();
         let _ = root;
 
         Some((returned + 1, self.tables_lost))
@@ -1232,6 +1296,18 @@ impl AddressSpace {
     /// value rather than consumed so a refused reclaim can give it back.
     pub const fn is_reclaimed(&self) -> bool {
         self.root == 0
+    }
+}
+
+impl Drop for AddressSpace {
+    fn drop(&mut self) {
+        if !self.is_reclaimed()
+            && (self.bound || cpu::page_table_base() == self.root)
+            && !self.shared.is_empty()
+        {
+            let keepalives = core::mem::take(&mut self.shared);
+            core::mem::forget(keepalives);
+        }
     }
 }
 
@@ -1803,6 +1879,15 @@ enum Grain {
     Largest,
     /// Four kilobytes throughout.
     Pages,
+}
+
+/// Whether every leaf named by one mapping existed before it began.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MappingState {
+    /// Every target was absent, so rollback owns every leaf it wrote.
+    Absent,
+    /// Every target already contained the exact requested mapping.
+    Identical,
 }
 
 /// A space that may be installed on a context switch.

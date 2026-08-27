@@ -959,14 +959,14 @@ first, because a caller freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 189 |
-| Mutations | 77 registered; 64 in the last recorded full sweep, with 13 later entries broken individually |
+| Machine checks | 191 |
+| Mutations | 79 registered; 64 in the last recorded full sweep, with 15 later entries broken individually |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
 | Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181 and D-182 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but that proves registration rather than a current full
-sweep. D-184's register carries the 77-entry run. A number restated in prose can
+sweep. D-184's register carries the 79-entry run. A number restated in prose can
 disagree with itself — which the per-slice lines above did, in seven places, and
 which is why they now say what the gate said rather than what was expected of
 it (D-175). The host-test count is deliberately absent: it changes with every

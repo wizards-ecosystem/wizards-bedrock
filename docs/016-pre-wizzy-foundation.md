@@ -17,10 +17,10 @@ admission reasons.
 ## What completion means
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
-are **not closed**. The current image has 189 QEMU machine checks. The current
-mutation registry has 77 entries, but the last recorded complete sweep covered
-64; the thirteen later mutations were broken individually. The current
-189-check image has not completed its human VMware round. The compiler gate in
+are **not closed**. The current image has 191 QEMU machine checks. The current
+mutation registry has 79 entries, but the last recorded complete sweep covered
+64; the fifteen later mutations were broken individually. The current
+191-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
 The kernel is ready for the first real Wizzy integration only when:
@@ -64,9 +64,9 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 77 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 77 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
+| PW-001 | REQUIRED | P0 | The register contains 79 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 79 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
-| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 189-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=189 failed=0` transcript, including SMEP/SMAP/UMIP, compacted XSAVE, x2APIC, storage and input evidence |
+| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 191-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=191 failed=0` transcript, including SMEP/SMAP/UMIP, compacted XSAVE, x2APIC, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
 | PW-005 | REQUIRED | P1 | The ordinary gate must describe the same commit as the exceptional evidence | Run `cargo xtask ci` after every register-closing change and once after the evidence-only close | Release/debug self-tests, shipped liveness and degraded boot all pass on the recorded commit |
 | PW-006 | REQUIRED | P1 | D-181 and D-182 were post-audit corrections, and this audit found deeper safe/device boundaries | Re-attack hostile inputs, cleanup paths, safe `wost` callers and release-only invariant failures after the P0/P1 fixes | Phase-close ADR links the audit, every break-test, full evidence manifest and remaining trigger-only rows; no historical evidence is invented |
@@ -75,8 +75,8 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-100 | READY | P0 | Safe public `AddressSpace::map_shared` admits that `Shared` may die while the mapping survives, leaving a user alias to recycled frames | Make the mapping own a keepalive/lifetime token or otherwise make the bad ordering unspellable by safe code | Drop the original owner, force frame reuse, and prove the old mapping cannot observe or modify the new owner; mutation removes the lifetime tie |
-| PW-101 | READY | P0 | `map_range` rollback can clear an identical mapping that existed before the failed call | Preflight the whole range or track which entries this transaction actually created | Identical overlap followed by an injected later failure preserves the old entry and frame accounting; mutation restores blind clearing |
+| PW-100 | DONE | P0 | Safe public `AddressSpace::map_shared` admitted that `Shared` could die while the mapping survived, leaving a user alias to recycled frames | D-185 makes the space retain a non-accessing allocation keepalive until proven reclaim | 2026-08-27 QEMU `a shared mapping keeps its frame` held the frame after the owner dropped and released it only after the mapping became unreachable; dropping the keepalive reddened that exact check |
+| PW-101 | DONE | P0 | `map_range` rollback could clear an identical mapping that existed before the failed call | D-185 preflights each transaction as wholly absent or wholly identical and refuses a mixed range before mutation | 2026-08-27 QEMU `a refused remap preserves every older entry` retained the identical prefix and conflicting leaf; ignoring the preflight reddened that exact check |
 | PW-102 | READY | P0 | `mem::with_active_space` gives safe kernel code unrestricted `&mut AddressSpace` over `Reach::Everywhere`, including reclaim/unmap doors for live kernel tables | Replace it with narrow operations/tokens whose types cannot reclaim or unmap the running kernel | Compile/source proof removes the broad door; machine checks cover every retained mapping operation and a mutation reopens the forbidden operation |
 | PW-103 | READY | P1 | Every failure after `AddressSpace::for_user` in `user::spawn` can abandon tables, mapped image/stack pages, shared mappings and later objects | Make never-run process construction transactional and fail-atomic | Inject failure at every construction edge; frames, tables, handles, arena commitments, channels, rings and thread slots return to baseline |
 | PW-104 | READY | P1 | A space records only 32 owned table frames and intentionally loses later ones; reclaim refusal/loss is weakly observable | Remove the fixed tracking loss or use an ownership structure that reclaims every table; make every refused cleanup visible | Build/reclaim a space beyond the old ceiling and require zero lost frames; repeated launch/exit and injected refusal keep all resource tallies steady |
@@ -207,10 +207,11 @@ Neither is implementation debt, and neither may be upgraded retroactively.
 The static audit deliberately did not promote these observations into P0
 claims: NVMe polling is bounded (the defect is DMA lifetime after its timeout);
 the final ring-3 crossing already refuses a non-present, non-user or
-non-executable ELF entry (PW-109 is earlier/cleaner refusal); and today's two
-`map_shared` callers happen to keep the backing alive (PW-100 is the unsafe
-*safe API*, not a demonstrated current exploit). NX is present on the current
-QEMU/VMware targets; PW-301 is the unrecorded unsupported-hardware policy.
+non-executable ELF entry (PW-109 is earlier/cleaner refusal); and the two
+`map_shared` callers happened to keep their backing alive, so PW-100 was an
+unsafe *safe API* rather than a demonstrated exploit before D-185 closed it.
+NX is present on the current QEMU/VMware targets; PW-301 is the unrecorded
+unsupported-hardware policy.
 
 PW-514 includes these exact stale-current-facing corrections still to make:
 
@@ -231,8 +232,8 @@ PW-514 includes these exact stale-current-facing corrections still to make:
 
 ## Recommended execution order
 
-1. Close PW-100, PW-101, PW-200, PW-201, PW-202 and PW-300 before trusting a
-   polished-kernel claim.
+1. Close PW-200, PW-201, PW-202 and PW-300 before trusting a polished-kernel
+   claim; PW-100 and PW-101 were closed first by D-185.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

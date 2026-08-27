@@ -71,6 +71,20 @@ pub enum Caught {
 /// cosmetic edit that would fail a build instead. A mutation that cannot
 /// compile tests nothing.
 pub const MUTATIONS: &[Mutation] = &[
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        if self.preflight(&range, flags, grain)? == MappingState::Identical {\n            return Ok(());\n        }",
+        replace: "        let _ = self.preflight(&range, flags, grain);",
+        breaks: "mapping rollback clears only leaves this transaction created",
+        reddens: Caught::Check("a refused remap preserves every older entry"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        self.shared.push(run.keepalive());",
+        replace: "        drop(run.keepalive());",
+        breaks: "a shared mapping retains ownership of every frame it reaches",
+        reddens: Caught::Check("a shared mapping keeps its frame"),
+    },
     // The strip in `map_boot`, not the one in `map_run`. The first version of
     // this mutation targeted `map_run`, which adds `OWNED` back on the next
     // line — so stripping the caller's changed nothing and the mutation

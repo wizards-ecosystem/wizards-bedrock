@@ -5080,6 +5080,89 @@ fn a_refused_mapping_leaves_no_trace() -> bool {
     rejected && no_trace && returned && blocker_intact
 }
 
+/// A refused remap cannot erase an identical entry it found on arrival.
+///
+/// The PW-101 defect was a mixed transaction: `set` accepted an identical
+/// first leaf, a later conflict refused the range, and blind rollback cleared
+/// the older first leaf. Both older leaves are read back because checking only
+/// the conflict would pass while the collateral deletion remained.
+fn a_refused_remap_preserves_every_older_entry() -> bool {
+    const BASE: u64 = 0x0000_3400_0000_0000;
+    let Some(physical) = mm::first_memory_run(PAGE_SIZE * 3) else {
+        return false;
+    };
+    let Some(first) = BootRegion::describe(physical, PAGE_SIZE) else {
+        return false;
+    };
+    let Some(blocker) = BootRegion::describe(physical + 2 * PAGE_SIZE, PAGE_SIZE) else {
+        return false;
+    };
+    let Some(requested) = BootRegion::describe(physical, 2 * PAGE_SIZE) else {
+        return false;
+    };
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+
+    let flags = Flags::NO_EXECUTE;
+    if space.map_boot(BASE, first, flags).is_err()
+        || space.map_boot(BASE + PAGE_SIZE, blocker, flags).is_err()
+    {
+        return false;
+    }
+
+    let refused = matches!(
+        space.map_boot(BASE, requested, flags),
+        Err(MapError::Conflict(address)) if address == BASE + PAGE_SIZE
+    );
+    let expected = flags.union(Flags::PRESENT);
+    let first_intact = space.lookup(BASE) == Some((physical, expected));
+    let blocker_intact =
+        space.lookup(BASE + PAGE_SIZE) == Some((physical + 2 * PAGE_SIZE, expected));
+    let reclaimed = space.reclaim(None).is_some();
+
+    refused && first_intact && blocker_intact && reclaimed
+}
+
+/// A shared leaf retains its frame until the leaf itself is unreachable.
+///
+/// The allocator tally is the reuse proof: a frame which is not free cannot be
+/// issued to a new owner. The original `Shared` is dropped while the mapping
+/// remains, then reclaim makes the tables unreachable before returning both
+/// their frames and the shared frame.
+fn a_shared_mapping_keeps_its_frame() -> bool {
+    const PROBE: u64 = 0x0000_3500_0000_0000;
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    let Some(run) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    let physical = run.address();
+    let mut shared = mm::USegment::from(run).share();
+    if !shared.write_at(0, &[0xC7]) {
+        return false;
+    }
+    let flags = Flags::NO_EXECUTE;
+    if space.map_shared(PROBE, &shared, flags).is_err() {
+        return false;
+    }
+    let held = mm::free_frames();
+
+    drop(shared);
+    let withheld = mm::free_frames() == held;
+    let expected = flags.union(Flags::PRESENT).union(Flags::USER);
+    let mapping_intact = space.lookup(PROBE) == Some((physical, expected));
+
+    let Some((tables, lost)) = space.reclaim(None) else {
+        return false;
+    };
+    let mapping_gone = space.lookup(PROBE).is_none();
+    let released = lost == 0 && mm::free_frames() == held + tables + 1;
+
+    withheld && mapping_intact && mapping_gone && released
+}
+
 /// An unmapped range gives its frames back, and not before the invalidation.
 ///
 /// The debt D-86 named and left open: while nothing unmapped, a frame put into
@@ -6378,7 +6461,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 189;
+const EXPECTED_CHECKS: usize = 191;
 
 impl Report {
     const fn new() -> Self {
@@ -6826,6 +6909,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a refused mapping leaves no trace",
         a_refused_mapping_leaves_no_trace(),
+    );
+    report.check(
+        "a refused remap preserves every older entry",
+        a_refused_remap_preserves_every_older_entry(),
+    );
+    report.check(
+        "a shared mapping keeps its frame",
+        a_shared_mapping_keeps_its_frame(),
     );
     report.check(
         "an unmapped range returns its frames",

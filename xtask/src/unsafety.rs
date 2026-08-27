@@ -32,7 +32,8 @@ use anyhow::{Context, Result};
 /// instead of two (D-138) — and three MSR writes that shut `syscall` and
 /// `sysenter` and re-open one for the check that watches them shut (D-139),
 /// and the one `save` behind the probe that proves a save fits its area
-/// (D-144).
+/// (D-144). D-185 added two read/write operations at the shared-mapping
+/// lifetime and transaction preflight boundaries.
 ///
 /// Phase 5 added the most unsafe of any phase so far — ring 3, the extended
 /// state, the address space that grows — which is why this is where the number
@@ -50,7 +51,7 @@ pub const BUDGET: usize = 380;
 /// is the truth — so the measurement is recorded beside it and checked, which
 /// makes drift toward the ceiling visible rather than something a reader
 /// infers from a comment that may be a phase out of date.
-pub const MEASURED: usize = 366;
+pub const MEASURED: usize = 368;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///

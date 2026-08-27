@@ -15,6 +15,7 @@
 
 pub mod heap;
 
+use alloc::sync::Arc;
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -594,7 +595,7 @@ impl USegment {
     /// allocator had handed to a page table (D-115).
     #[must_use]
     pub fn share(self) -> Shared {
-        Shared(self.0)
+        Shared(Arc::new(SharedAllocation(self.0)))
     }
 
     /// Take the run back for the kernel, with every byte cleared.
@@ -633,29 +634,44 @@ impl USegment {
 /// so the aliasing that would let one run be both shared and owned is not
 /// expressible.
 #[derive(Debug)]
-pub struct Shared(Segment);
+struct SharedAllocation(Segment);
+
+/// A non-accessing ownership reference retained by a shared mapping.
+#[derive(Debug)]
+pub(crate) struct SharedKeepalive {
+    _allocation: Arc<SharedAllocation>,
+}
+
+/// A pinned run with exclusive safe access and non-accessing mapping owners.
+#[derive(Debug)]
+pub struct Shared(Arc<SharedAllocation>);
 
 impl Shared {
     /// Where the run begins in physical memory.
-    pub const fn address(&self) -> Paddr {
-        self.0.address()
+    pub fn address(&self) -> Paddr {
+        self.0.0.address()
     }
 
     /// Bytes in the run.
-    pub const fn len(&self) -> u64 {
-        self.0.len()
+    pub fn len(&self) -> u64 {
+        self.0.0.len()
     }
 
     /// Whether the run is empty. Never true; see [`Segment::is_empty`].
-    pub const fn is_empty(&self) -> bool {
-        self.0.is_empty()
+    pub fn is_empty(&self) -> bool {
+        self.0.0.is_empty()
     }
 
     /// Write `bytes` at `offset` within the run.
     ///
     /// The kernel's side of a page ring 3 also has.
     pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
-        self.0.write_at(offset, bytes)
+        let allocation = Arc::as_ptr(&self.0).cast_mut();
+        // SAFETY: `Shared` is not clonable and this method requires its unique
+        // mutable borrow. The other `Arc` owners are `SharedKeepalive`s, which
+        // expose no reference to the allocation, so no Rust access aliases it.
+        let allocation = unsafe { &mut *allocation };
+        allocation.0.write_at(offset, bytes)
     }
 
     /// Read `into.len()` bytes from `offset` within the run.
@@ -663,7 +679,14 @@ impl Shared {
     /// **Every byte read here is ring 3's**, and the rule is that the copy is
     /// validated after it is taken and never re-read (D-79).
     pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
-        self.0.read_at(offset, into)
+        self.0.0.read_at(offset, into)
+    }
+
+    /// Retain the allocation without exposing its bytes.
+    pub(crate) fn keepalive(&self) -> SharedKeepalive {
+        SharedKeepalive {
+            _allocation: Arc::clone(&self.0),
+        }
     }
 }
 
