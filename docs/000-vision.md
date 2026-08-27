@@ -9,7 +9,8 @@ ourselves from primary references.
 
 A full OS with userspace that can, eventually:
 
-- run **Python** — RustPython early, a real CPython port later
+- run **Python** — RustPython as an early compatibility proof, then a real
+  CPython port; neither is the native first-party userland (D-183)
 - render the web — ported `links` (text) first, then **NetSurf** (graphical).
   NetSurf renders documents, not applications: HTML 4.01 and CSS 2.1, with
   JavaScript disabled by default and 1,539 bindings unimplemented upstream.
@@ -26,14 +27,15 @@ A full OS with userspace that can, eventually:
 
 | Area | Decision |
 |---|---|
-| Kernel language | Rust (stable channel while possible) |
+| Kernel language | Rust (stable channel while possible); it does not move to Wizzy (D-183) |
+| First-party target userland | Every feasible non-kernel component is Wizzy once the compiler-readiness gate opens; product work waits there. Narrow runtime shims, host tooling, and third-party libraries, ports and compatibility are exceptions (D-183) |
 | Architecture | x86_64 first; `arch/` modules in both `wost` and `kernel`, reached through `arch::current`, isolate arch code for future ports |
 | Boot | UEFI + Limine (vendored); own bootloader is a future side-quest |
 | Kernel shape | Monolithic, modular |
 | ABI | **Capability handles + async submission/completion queues** (native); POSIX only as an mlibc translation layer for ports — see `002-architecture.md` |
 | Process model | `spawn()` only — no native `fork()` (compat-fork gated for the POSIX layer) |
 | Filesystem | VFS first, then a read-only third-party format; WizFS = **CoW B-tree, checksummed, snapshots** in a phase of its own, late (D-73) |
-| App formats | ELF64 native + **core Wasm/`wasip1`** first-class; the Component Model is a watch item (D-72) |
+| App formats | ELF64 native + **core Wasm/`wasip1`** first-class; the Component Model is a watch item. An artifact format does not choose the first-party source language (D-72, D-183) |
 | Security | W^X, NX, SMEP/SMAP/UMIP live; **every stack guarded** — thread (D-52), double-fault (D-89) and boot (D-92); KASLR deferred to Phase 12 with its cost named (D-46) |
 | Scheduler | EEVDF-inspired virtual deadlines, tickless |
 | Theme | Wizard/magic at product level (app names, shell personality); conventional naming in code |
@@ -114,31 +116,35 @@ reference — not followed linearly). Docs are numbered in creation order.
    write path, a page cache, symlinks and namespace
    composition are carried deliberately; WizFS is still not here (D-73). Slice
    table in `014-storage.md`*
-7. Userland — **provisionally Wizzy-native** (D-180): measure the delivery
-   route, then bootstrap, runtime, `init`, TTY, shell and tmpfs-backed tools;
-   core Wasm + `wasip1` remains a first-class app format (D-72). AOT is not
-   assumed. Slice proposal and promotion gate in `015-wizzy-userland.md`
-8. Network — NIC drivers, smoltcp, async socket handles, TLS (`rustls`), and a
-   capability-native client/service—Wizzy if D-180's promotion gate passes
+7. Userland — **Wizzy-first** (D-183): measure and build only the boundary,
+   runtime and platform preparation needed to open the compiler-readiness gate
+   in `015-wizzy-userland.md`; product `init`, TTY, shell and tmpfs-backed tools
+   wait at that gate and are then written in Wizzy. Core Wasm + `wasip1`
+   remains a first-class app format (D-72). AOT is not assumed
+8. Network — Rust kernel-side NIC and async-socket work, third-party `smoltcp`
+   and `rustls`, and a Wizzy-first capability-native client/service (D-183)
 9. POSIX gateway and compatibility runtimes — mlibc grown from Phase 5's
    pressure test only for selected ports, compat-fork and cross-toolchain;
    **RustPython, links and CPython milestones** remain compatibility proofs,
-   not the native userland, with *CPython's test suite passing* still the
-   definition of done
-10. Pixels — GPU drivers, compositor (channels + shared memory objects),
-    GPU-first toolkit, terminal app
+   retain their upstream languages rather than becoming native userland, and
+   keep *CPython's test suite passing* as the definition of done (D-183)
+10. Pixels — GPU drivers; the first-party target-side compositor (channels +
+    shared memory objects), GPU-first toolkit and terminal app are Wizzy-first
+    (D-183)
 11. Document web — **NetSurf milestone** (D-75): a framebuffer frontend, and
     the integration proof that libc, windowing, networking and TLS hold
     together under a real third-party codebase
 12. Side-quests — own bootloader, SMP, USB, sound, CET shadow stacks,
     signed/measured boot, real hardware boot
 13. **WizFS** — the CoW B-tree, in a phase of its own, with crash injection
-    and a repair tool in its definition of done (D-73). Last because the
-    schedule evidence says so, not because it matters least: bcachefs took ten
-    years and ten months, and every phase above it can run on Phase 6's
-    read-only format meanwhile
+    and a repair tool in its definition of done (D-73). User-facing repair and
+    administration tools are Wizzy-first (D-183). Last because the schedule
+    evidence says so, not because it matters least: bcachefs took ten years and
+    ten months, and every phase above it can run on Phase 6's read-only format
+    meanwhile
 
 The established phase identities remain intact: network is still Phase 8,
 POSIX Phase 9, pixels Phase 10, document web Phase 11, side-quests Phase 12,
 and WizFS Phase 13. Earlier ADRs that defer by number still name the work they
-were written to name.
+were written to name. D-183 changes their first-party language and readiness
+gate, not their phase numbers.

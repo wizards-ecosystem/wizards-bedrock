@@ -5,6 +5,17 @@ code**, and every choice is recorded in `docs/004-decision-log.md` with its
 alternatives and rationale. Read the relevant doc before changing a subsystem,
 and add an ADR when you make a decision worth remembering.
 
+## Current roadmap gate
+
+D-183 fixes the language boundary: in-kernel code stays Rust, and every
+feasible first-party target-side program, service, library, tool and application
+is Wizzy. `docs/015-wizzy-userland.md` is canonical and its compiler-readiness
+gate is currently **CLOSED**. While closed, do not start Phase 7 product work or
+build a Rust fallback userland. Work is in scope only when it is kernel
+correctness, a language-neutral prerequisite with a concrete future Wizzy
+caller, integration specification/scaffolding for the compiler artifact, or
+work in `wizards-ink` that advances the gate.
+
 **Read [docs/005-code-conventions.md](docs/005-code-conventions.md) before
 writing code.** It is the authority on crate boundaries, naming, error
 handling, testing, and the comment policy. Three things from it that are easy

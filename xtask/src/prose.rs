@@ -232,6 +232,60 @@ mod tests {
         }
     }
 
+    /// Current-facing plans cannot quietly turn D-183 back into an experiment.
+    #[test]
+    fn wizzy_is_the_first_party_target_and_its_compiler_gate_is_closed() {
+        const CURRENT_PLANS: [&str; 6] = [
+            "AGENTS.md",
+            "README.md",
+            "docs/000-vision.md",
+            "docs/002-architecture.md",
+            "docs/013-application-platform.md",
+            "docs/015-wizzy-userland.md",
+        ];
+        const RETIRED_WORDING: [&str; 5] = [
+            "provisionally Wizzy",
+            "if D-180's promotion gate passes",
+            "revisits the Wizzy selection",
+            "fallback if the Wizzy gate fails",
+            "compiled Rust boundary probe",
+        ];
+
+        let root = root();
+        let policy = std::fs::read_to_string(root.join("docs/015-wizzy-userland.md"))
+            .expect("015-wizzy-userland.md");
+        let table_value = |label: &str| {
+            policy
+                .lines()
+                .find(|line| line.starts_with(&format!("| {label} |")))
+                .and_then(|line| line.split('|').nth(2))
+                .map(str::trim)
+                .unwrap_or_else(|| panic!("the Wizzy policy has no `{label}` row"))
+        };
+
+        assert_eq!(table_value("First-party target language"), "Wizzy");
+        assert_eq!(table_value("Compiler-readiness gate"), "**CLOSED**");
+        assert!(
+            policy.contains("Phase 7 product implementation is stopped"),
+            "a closed compiler gate no longer stops Phase 7 product work"
+        );
+
+        for path in CURRENT_PLANS {
+            let document =
+                std::fs::read_to_string(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+            assert!(
+                document.contains("D-183"),
+                "{path} does not point at the governing Wizzy-first decision"
+            );
+            for retired in RETIRED_WORDING {
+                assert!(
+                    !document.contains(retired),
+                    "{path} restores D-180's retired `{retired}` language-selection wording"
+                );
+            }
+        }
+    }
+
     /// The README's count of `ci`'s boots is `ci`'s count of its boots.
     ///
     /// It said three and ran four for as long as `degraded-check` has existed.

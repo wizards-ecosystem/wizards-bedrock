@@ -169,9 +169,10 @@ when Phase 13 starts it; that crate is intentionally absent today.
 
 ## App formats
 
-- **ELF64** native binaries. Rust is the bootstrap implementation language;
-  a Wizzy bytecode runner or later AOT image may also be ELF. Ported C reaches
-  the native ABI through mlibc rather than defining it.
+- **ELF64** native containers. First-party system and application source is
+  Wizzy under D-183; a narrow Rust runtime/ABI witness or a later Wizzy AOT
+  image may each be ELF. A witness is not a fallback native userland. Ported C
+  reaches the native ABI through mlibc rather than defining it.
 - **Core WebAssembly + `wasip1`** as a first-class citizen: WASI's authority
   model aligns with handle grants, while a WASI descriptor adapter owns
   numbering, preopens and cursor state over the cursorless native operations
@@ -191,16 +192,30 @@ when Phase 13 starts it; that crate is intentionally absent today.
 
 ## Wizzy-native userland and compatibility gateways
 
-Phase 7 extends D-116's emitted native caller into a compiled Rust probe that
-exercises delegation, then provisionally gives Wizzy the first
-system-language/runtime proof under D-180. "Native" means direct handles,
+D-183 fixes the implementation boundary: the kernel and its in-kernel modules
+stay Rust, while every feasible first-party target-side program, service,
+library, shell, tool and application is Wizzy. "Native" means direct handles,
 completions and bootstrap protocols; it does not decide whether Wizzy's first
-execution engine is bytecode or AOT. The evidence, dependency order and
-promotion gate are in `015-wizzy-userland.md`.
+execution engine is bytecode or AOT. Phase 7 product implementation is stopped
+until `015-wizzy-userland.md`'s compiler-readiness gate opens.
+
+Narrow audited runtime/ABI glue that Wizzy cannot yet express, host build and
+test tooling, third-party libraries and ports, POSIX compatibility code and
+foreign-format runtimes are implementation substrate or compatibility, not
+alternate native userlands. An exception narrows as the language grows. A new
+first-party Rust target component requires a decision naming the missing Wizzy
+capability and its migration boundary.
+
+D-116's emitted caller remains a loader/ABI witness. After the readiness gate,
+the first compiled boundary program is Wizzy; a Rust ELF may validate a low-
+level seam but does not grow into `init`, a shell, service or tool. The exact
+gate, evidence and dependency order are in `015-wizzy-userland.md`.
 
 POSIX remains a compatibility layer. Core Wasm + `wasip1` remains a first-class
 application format under D-72 rather than becoming the native process model or
-substituting for D-180's proof.
+substituting for the Wizzy-native path. First-party modules may be produced by
+Wizzy once its backend supports the format; foreign modules remain a deliberate
+application/compatibility case.
 
 ### POSIX translation layer (the ports gateway)
 

@@ -38,6 +38,12 @@ Anderson, Laurie and Kennaway, *Capsicum: practical capabilities for UNIX*
 RFC-0028 and the Zircon vDSO documentation; Fuchsia's component manifest
 format; Linux's vDSO `clock_gettime`.
 
+D-183 gives this language-neutral work its target consumer. The Rust kernel
+provides handles, queues and lifecycle; every feasible first-party program over
+them is Wizzy. Until `015-wizzy-userland.md`'s compiler-readiness gate opens,
+new platform work must name a concrete future Wizzy caller rather than grow a
+parallel Rust userland.
+
 ## What earlier phases left owing
 
 | Debt | Where recorded | What 6.5 does |

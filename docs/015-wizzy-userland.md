@@ -1,15 +1,15 @@
-# 015 — Wizzy as the first native system-language/runtime: feasibility and Phase 7 plan
+# 015 — Wizzy-first userland: compiler readiness and the Phase 7 plan
 
-The plan extends D-116's emitted native caller into a compiled Rust program
-that exercises delegation, then tests whether Wizzy can carry the native
-system-program runtime without pretending its compiler backend or target
-runtime already exists.
+D-183 settles the language boundary. The kernel and its in-kernel modules stay
+Rust. Every feasible first-party program, service, library, shell, tool and
+application above that boundary is written in Wizzy. POSIX remains a userspace
+adapter for ports, not a second native userland.
 
-This is a **provisional plan**, governed by D-180. The kernel stays Rust. POSIX
-stays a userspace adapter. What is provisional is whether Wizzy can carry the
-native system programs soon enough, within a runtime small and coherent enough
-for this machine. Phase 7 begins by measuring that proposition rather than by
-committing the OS to an unbuilt AOT backend.
+The execution route is still an engineering question: an early Wizzy artifact
+may run as bytecode behind a narrow audited runtime, while a later backend may
+emit an AOT ELF. That uncertainty does not reopen the source-language choice.
+Nor does it justify building a permanent Rust `init`, shell or tool set while
+the compiler catches up.
 
 The language implementation is
 [`limbwizard/wizards-ink`](https://github.com/limbwizard/wizards-ink). Its
@@ -18,10 +18,39 @@ the evidence used here, read from the clean tree at commit
 `9035c2e8f78ee64fa1db2b24c3bfc2ff7a6c5e8e`. At this decision point that commit
 was six commits ahead of the sibling's remote, so it is not yet a remotely
 fetchable provenance pin. The relevant facts are restated below, and slice 1
-must replace the local snapshot with a reachable revision before recording its
-route ADR. It is never a build dependency: an ordinary checkout of this
-repository must not silently build against whatever happens to be in
-`../wizards-ink`, and the promotion gate pins the artifact contract again.
+must replace the local snapshot with a reachable revision in its gate-opening
+evidence ADR. Slice 2 later records the delivery-route decision. The sibling is
+never an implicit build dependency: an ordinary checkout of this repository
+must not silently build against whatever happens to be in `../wizards-ink`,
+and the integration qualification pins the artifact contract again.
+
+## Current planning gate
+
+| Contract | Current value |
+|---|---|
+| First-party target language | Wizzy |
+| Compiler-readiness gate | **CLOSED** |
+
+The gate opens only after one reachable, pinned `wizards-ink` revision provides
+all of these:
+
+1. a documented non-interactive build command that compiles standalone Wizzy
+   source into a versioned artifact;
+2. an artifact that can be loaded without retaining the compiler, checked AST,
+   compiler maps or host services;
+3. a separable execution runtime that builds with `no_std + alloc` and exposes
+   a host-independent platform seam—the Wizard's OS adapter behind that seam
+   remains post-gate integration work; and
+4. two clean builds from pinned compiler/runtime revisions and locked
+   dependencies that produce byte-identical artifacts.
+
+While the state is **CLOSED**, Phase 7 product implementation is stopped. A
+Wizard's OS change may proceed only when it closes Rust-kernel or hardware
+correctness, supplies a language-neutral platform prerequisite with a concrete
+future Wizzy caller, specifies or checks the versioned repository handoff, or
+is build scaffolding needed to consume the compiler's artifact. Otherwise it
+waits or belongs in `wizards-ink`. In particular, no Rust fallback `init`,
+shell, native service or first-party tool is built in parallel.
 
 ## What "native" means
 
@@ -109,28 +138,28 @@ rights on those handles.
 
 | Route | Evidence now | Cost before the first boot | Standing |
 |---|---|---|---|
-| Bytecode in a static user-mode Rust runner | The implemented non-reference backend already agrees with the tree walker on the host | Split a small runtime from `wizc`, remove its dependency on checked AST/compiler state, define an artifact, add `no_std + alloc`, and measure the per-process footprint | **First probe, not yet the permanent format** |
-| Direct Rust binaries | The pinned OS toolchain exists; no compiled userland crate does | Define and audit the user-runtime boundary, then grow only the programs actually chosen | Baseline and fallback; the first boundary probe, not a Wizzy qualification |
-| Core Wasm + `wasip1` | The OS plans this under D-72; the pinned Wizzy snapshot instead commits its backend to the Component Model and calls the fork unresolved | A wasmi-class runtime and WASI host bindings here; a superseding or clarifying Wizzy ADR before using its output | Separate Phase 7 milestone; a non-Wizzy module may prove D-72, and WASI does not satisfy D-180 |
-| Static AOT ELF | The OS loader exists; the Wizzy backend does not | WIR lowering, code generation, relocations, TLS, runtime ABI, object emission and linking | Later optimisation, not the bootstrap |
+| Bytecode in a static user-mode Rust runner | The implemented non-reference backend already agrees with the tree walker on the host | Split a small runtime from `wizc`, remove its dependency on checked AST/compiler state, define an artifact, add `no_std + alloc`, and measure the per-process footprint | Preferred first Wizzy route after the readiness gate; Rust is runtime substrate, not application source |
+| Direct Rust binaries | The pinned OS toolchain exists; no compiled userland crate does | Define and audit the user-runtime boundary | Disposable ABI or loader witness only; not a product route or fallback userland |
+| Core Wasm + `wasip1` | The OS plans this under D-72; the pinned Wizzy snapshot instead commits its backend to the Component Model and calls the fork unresolved | A wasmi-class runtime and WASI host bindings here; a superseding or clarifying Wizzy ADR before using its output | Compatibility/application format after Wizzy's native path; a foreign module may prove the format but cannot become first-party native userland |
+| Static AOT ELF | The OS loader exists; the Wizzy backend does not | WIR lowering, code generation, relocations, TLS, runtime ABI, object emission and linking | Later Wizzy optimisation, not required by the readiness gate |
 | Interpreter or compiler in the kernel | No supporting evidence | Enlarges the trusted computing base and couples language policy to the kernel | Rejected |
 
 The repositories do not currently choose the same Wasm artifact. D-180 does
-not silently supersede Wizzy's ADR-0026. Slice 1 records and costs the fork; a
+not silently supersede Wizzy's ADR-0026. The first post-gate slice records and costs the fork; a
 Wizzy Wasm artifact waits for a decision in the language repository. Phase 7
-may still prove D-72 independently with a non-Wizzy `wasip1` module.
+may still prove D-72 independently with a foreign `wasip1` module, but only
+after the native Wizzy path is established.
 
-The route decision is made after a bounded spike. The default Wizzy hypothesis
-is a bytecode artifact inside a statically linked Rust runner ELF because it
-reuses the implementation that exists. Direct Rust is the costed baseline, not
-an omitted competitor. Slice 1 first supplies enough user-target and linker
-scaffolding to make target sizes real, then records image bytes, private
-startup pages, peak heap and retained dependencies for both routes. A bytecode
-artifact that still needs `Checked`, an AST, compiler hash maps or host services
-has failed extraction. A route that cannot run four simultaneous Wizzy
-processes—the minimum for `init`, a shell and a two-stage pipeline—has failed
-the Phase 7 density requirement. The spike records the numbers and result; it
-does not answer failure by starting Cranelift early.
+The delivery-route decision is made after the compiler-readiness gate opens.
+The default hypothesis is a bytecode artifact inside a statically linked Rust
+runner ELF because that keeps application and system-program source in Wizzy
+while reusing the execution engine that exists. A direct-Rust witness may cost
+the runtime boundary, but it is not a competing implementation of `init` or a
+tool. The first post-gate slice records image bytes, private startup pages, peak
+heap and retained dependencies. A route that cannot run four simultaneous
+Wizzy processes—the minimum for `init`, a shell and a two-stage pipeline—fails
+the density requirement and sends work back to the runtime; it does not select
+a different first-party language.
 
 ## Ownership of the seams
 
@@ -161,13 +190,14 @@ infer the other's current checkout. The normal OS gate consumes committed or
 vendored artifact bytes with pinned provenance and a checked digest. That
 proves exactly which bytes booted; it does not prove how they were produced.
 
-D-180's promotion gate is stronger. A separate integration task regenerates
-the artifact twice from pinned Wizzy source, pinned compiler/runtime revisions
-and locked dependencies, requires byte-identical output, and compares it with
-the bytes the OS image consumes. The ordinary `cargo xtask ci` remains
-self-contained and never changes meaning with a sibling checkout.
+D-180's integration qualification is stronger. A separate integration task
+regenerates the artifact twice from pinned Wizzy source, pinned
+compiler/runtime revisions and locked dependencies, requires byte-identical
+output, and compares it with the bytes the OS image consumes. The ordinary
+`cargo xtask ci` remains self-contained and never changes meaning with a sibling
+checkout.
 
-## Entry gate
+## Entry gates
 
 Phase 6 is code-complete but not closed under D-18. The interactive keyboard
 checks recorded in `014-storage.md` still require a person at the machine.
@@ -175,16 +205,22 @@ That human run and its dated result come before Phase 7 implementation. Writing
 this design while the run is open is harmless; claiming the next phase has
 started is not.
 
+D-183 adds the second entry gate: the compiler-readiness table above must read
+**OPEN** under a decision that records the evidence. Closing Phase 6 does not
+silently open Phase 7. Until both gates pass, implementation remains on the
+allowed preparatory side of the boundary stated above.
+
 ## The dependency chain
 
 ```text
-measured delivery route
-  -> minimal user target + compiled Rust boundary probe + repaired ABI description
+compiler-readiness gate
+  -> measured Wizzy delivery route + minimal target/runtime shim
+  -> Wizzy boundary probe + repaired ABI description
   -> channel operations + handle close + versioned bootstrap
   -> terminal/directory delegation + visible hello
   -> VM mapping + runtime allocation
-  -> platform seam + byte buffers + unforgeable capability values
-  -> chosen Wizzy runtime + deterministic artifact
+  -> Wizard's OS platform adapter + byte buffers + unforgeable capability values
+  -> OS-target runtime image + deterministic capability program
   -> process object + spawn-from-image + exit status
   -> Wizzy init + child
   -> channel creation + directory enumeration + TTY, shell and pipelines
@@ -196,19 +232,19 @@ earlier API.
 
 ## Phase 7 slices
 
-The table is a proposal until slice 1 records the route decision. Its order is
+The table is a proposal until slice 2 records the route decision. Its order is
 the useful part: every slice leaves a bootable system and exposes the next
 missing contract.
 
 | Slice | Deliverable | Proof |
 |---|---|---|
 | 0 | **Close Phase 6.** Complete the interactive VMware keyboard rounds | Dated VMware verdict with every current check exercised |
-| 1 | **Measure the runner.** Add the minimal user target/link scaffold needed for honest target measurements; extract the smallest bytecode execution closure, reject retained compiler state, inventory capability/byte-buffer blockers, and compare exact image/private/heap numbers with direct Rust and the missing AOT work; cost Wasm and record its sibling fork | A delivery-route ADR with raw numbers and a four-process pass/fail result |
-| 2 | **The Rust boundary probe.** Decide and audit the user-runtime `unsafe` boundary, add a compiled Rust boundary program, and carry D-181's repaired C pressure test into a chosen shared platform-ABI source; keep the emitted loader probe | Host ABI/layout and linked-ELF checks; the emitted and compiled programs each boot in their own image matrix because image selection does not exist yet |
+| 1 | **Open the compiler-readiness gate.** Do no OS product implementation while it is closed; land the compiler, standalone artifact, separable runtime and reproducibility evidence in `wizards-ink`, then pin the reachable result here | A gate ADR supplies the four pieces of evidence in the current-planning table; without it this slice has no OS code |
+| 2 | **Measure and integrate the Wizzy route.** Add only the target/link/runtime shim needed to consume the pinned artifact; reject retained compiler state, inventory capability/byte-buffer blockers, measure exact image/private/heap numbers, cost Wasm and record the sibling Component/Core-Wasm fork, decide the runtime `unsafe` boundary, and carry D-181's repaired C pressure test into a chosen shared platform-ABI source; keep the emitted loader probe | A Wizzy boundary program and the emitted probe each boot; four concurrent Wizzy runtime instances pass the measured density threshold; artifact and ABI/layout checks identify exactly what was compiled and consumed |
 | 3 | **Bootstrap channels and cleanup.** Add asynchronous send/receive and handle-close operations plus a versioned bootstrap codec in a host-testable `libs/` crate | A child's handle table starts with exactly one entry; it receives bytes plus attenuated handles, closes them, and stale generations and last-reference cleanup are observed |
-| 4 | **The first delegated output.** Give the child terminal and directory capabilities through bootstrap; do not add ambient handles | The Rust boundary probe receives authority, writes visible output, opens one file relative to its directory, closes both delegated handles and exits |
+| 4 | **The first delegated output.** Give the child terminal and directory capabilities through bootstrap; do not add ambient handles | The Wizzy boundary program receives authority, writes visible output, opens one file relative to its directory, closes both delegated handles and exits |
 | 5 | **Runtime memory.** Choose a non-blocking/non-allocating trap contract or a deferred mapping path, then add only the map/unmap, allocation and stack-growth mechanisms the measured execution route calls | The chosen path never allocates or blocks in forbidden trap context; W^X survives growth, failure is reported, and repeated launch/exit holds frame counts steady |
-| 6 | **The Wizzy platform, then `hello`.** Separate the platform seam, compact byte buffers and capability-first standard-library surface; make capability values unforgeable; produce the deterministic artifact only after those prerequisites | Host and target agree; forged bytecode/effect metadata cannot synthesize a capability or invoke a privileged builtin; the granted terminal value alone permits output |
+| 6 | **The capability platform, then `hello`.** Implement the Wizard's OS side of the existing runtime seam, compact byte buffers and a capability-first standard-library surface; make capability values unforgeable; produce the full deterministic OS-target artifact only after those prerequisites | Host and target agree; forged bytecode/effect metadata cannot synthesize a capability or invoke a privileged builtin; the granted terminal value alone permits output |
 | 7 | **Lifecycle.** Choose executable authority, then add a process object, spawn from an executable handle, exit status and child observation; retain the measured fixed capacity | A readable file alone cannot authorize kernel spawn or executable mapping; Wizzy `init` observes one successful and one failed child; an over-capacity spawn refuses without leaking |
 | 8 | **Terminal system.** Add channel-pair creation, directory enumeration, a TTY protocol, line editing, a shell and pipelines made from explicit channels | `echo`, `cat`, `ls` and logical `pwd` compose without `fork` or descriptor inheritance; a full pipeline applies bounded backpressure without spinning |
 | 9 | **Volatile mutation.** Add create/write/rename/unlink to tmpfs before exposing mutating commands | `mkdir`, `cp`, `mv` and `rm` work in tmpfs; FAT32 remains read-only and reboot discards the changes |
@@ -254,7 +290,7 @@ one-message happy path proves none of those semantics.
 The runtime owns raw ring layout and volatile access. Wizzy application code
 sees typed operations and completion tokens, not pointers, indices, or handle
 integers. Pulling sized integers into the language is justified only by a
-source-level caller; the Rust runtime needing `u32` is not one. A compact byte
+source-level caller; a low-level runtime shim needing `u32` is not one. A compact byte
 buffer is a real language/runtime question because file and channel payloads
 need one without boxing every byte.
 
@@ -289,7 +325,7 @@ stack alignment, zero-fill and image identity. Each extension is made against
 the compiled artifact and checked by reading the linked file back. Dynamic
 linking is not part of Phase 7.
 
-If slice 1 selects the bytecode route, its runner uses `no_std + alloc`; host
+If the post-gate route uses bytecode, its runner uses `no_std + alloc`; host
 compiler dependencies do not cross into the image. Its scheduler parks green
 threads on completion waits and uses the existing cancellation operation only
 when a real outstanding request supplies the caller. A different route records
@@ -412,9 +448,9 @@ host. Machine behavior belongs in `kernel/src/selftest.rs`. Claims about the
 tree belong in `xtask` tests. Every new check is first broken and observed red;
 every machine check gets a repeatable mutation whose boot names that failure.
 
-## Promotion and rejection gates
+## Integration qualification
 
-D-180 becomes Accepted only when the Phase 7 system-program proof:
+D-180's system-program route is qualified only when the Phase 7 proof:
 
 1. uses an artifact set regenerated by two clean builds from pinned source,
    compiler/runtime revisions and locked dependencies, with identical bytes
@@ -432,12 +468,15 @@ D-180 becomes Accepted only when the Phase 7 system-program proof:
 8. runs four simultaneous Wizzy processes—the `init`, shell and two pipeline
    stages used to set the route threshold—within the measured memory budget.
 
-Failure is informative. If the runtime cannot be separated without importing
-the compiler, if capability values remain unavailable, or if the measured
-footprint is not viable, the OS keeps the language-neutral bootstrap and
-lifecycle work and revisits the Wizzy selection. It does not weaken W^X, add
-new ambient handles or facilities, move an interpreter into the kernel, or
-disguise POSIX as the native API to save the experiment.
+Failure is informative, but it does not reopen the first-party language. If the
+runtime cannot remain separated from the compiler or another one of the four
+readiness conditions stops holding, the early gate closes. If capability
+values or the measured footprint fail only the later integration
+qualification, product work stops and returns to `wizards-ink`, its runtime or
+the language-neutral platform seam without misreporting compiler readiness.
+The OS keeps prerequisites already justified by a concrete Wizzy caller. It
+does not grow a Rust fallback userland, weaken W^X, add ambient authority, move
+an interpreter into the kernel, or disguise POSIX as native.
 
 ## Deliberately later
 
@@ -450,7 +489,7 @@ disguise POSIX as the native API to save the experiment.
 - graphics and the document-web integration phases.
 
 The claim is not that Wizzy is the first code to cross the boundary—D-116's
-emitted probe did that, and the compiled Rust probe deliberately reaches
-delegation first. The stronger result is that a real Wizzy runtime can carry
-native system programs across the same boundary without POSIX, WASI or new
-ambient handles; D-152's global time-page exception remains explicit.
+emitted probe already did that. The stronger result is that the first real
+first-party system program is Wizzy, carried by a runtime that reaches the same
+boundary without POSIX, WASI or new ambient handles; D-152's global time-page
+exception remains explicit.

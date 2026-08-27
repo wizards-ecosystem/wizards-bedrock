@@ -5,10 +5,12 @@ A from-scratch operating system: Rust kernel, x86_64, UEFI, booted by
 and async-first** — handles + submission/completion queues are the native
 ABI (POSIX is just a translation layer for ports), `spawn()` not `fork()`,
 CoW checksummed filesystem (WizFS), WebAssembly + `wasip1` as first-class
-apps (D-72). Phase 7 extends the emitted native probe into a compiled,
-delegation-capable Rust probe, then provisionally tests Wizzy as the first
-language/runtime for native system programs through a measured user-mode
-runtime (D-180).
+apps (D-72). D-183 fixes the language boundary: the kernel remains Rust, and
+every feasible first-party target-side non-kernel component is written in
+Wizzy once its compiler-readiness gate opens. Phase 7 product userland stops at
+that gate; boundary probes, ABI/platform preparation, and a narrow audited
+runtime shim may make it ready. Host tooling, third-party libraries and ports,
+and compatibility runtimes keep their appropriate languages.
 Multi-year project; destination: a full userspace with our own compositor,
 a ported Python, and NetSurf rendering the document web (D-75).
 See [docs/002-architecture.md](docs/002-architecture.md).
