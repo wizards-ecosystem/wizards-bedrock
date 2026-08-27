@@ -5,7 +5,10 @@ A from-scratch operating system: Rust kernel, x86_64, UEFI, booted by
 and async-first** — handles + submission/completion queues are the native
 ABI (POSIX is just a translation layer for ports), `spawn()` not `fork()`,
 CoW checksummed filesystem (WizFS), WebAssembly + `wasip1` as first-class
-apps (D-72).
+apps (D-72). Phase 7 extends the emitted native probe into a compiled,
+delegation-capable Rust probe, then provisionally tests Wizzy as the first
+language/runtime for native system programs through a measured user-mode
+runtime (D-180).
 Multi-year project; destination: a full userspace with our own compositor,
 a ported Python, and NetSurf rendering the document web (D-75).
 See [docs/002-architecture.md](docs/002-architecture.md).
@@ -116,6 +119,6 @@ libs/       shared no_std crates: pure logic, host-testable (acpi-tables, eevdf,
 xtask/      build orchestrator: pure-Rust disk imaging, QEMU/VMware runners
 boot/       limine.conf + vendored Limine UEFI binary (digest-pinned)
 docs/       design docs (design-first: docs before code)
-userspace/  (future) native userland: init, shell, coreutils
+userland/   native ABI header + the uncompiled mlibc pressure test from Phase 5
 ports/      (future) recipes for mlibc, CPython, links, NetSurf
 ```

@@ -101,22 +101,29 @@ reference — not followed linearly). Docs are numbered in creation order.
    the slice for. The counts are in `userland/README.md`, where the gate
    checks them against the sysdeps' own tags. Slice table in
    `011-userspace.md`*
-6. VFS + storage — **done 2026-08-25.** *The ABI half first (D-149): a
+6. VFS + storage — **code-complete 2026-08-25; the D-18 close still awaits
+   one human VMware round.** *The ABI half first (D-149): a
    completion carries a handle, the clock became a page rather than a call, and
    a dead program's work is finished rather than forgotten. Then PCI with a
    device that is claimed rather than a port range — D-77's other half — a
    polled NVMe driver, FAT32 read-only checked against `fatfs` as an oracle, a
    VFS over directories whose resolver has no way up, tmpfs and devfs, and a
-   `read` that is a submission. 180 machine checks, 65 mutations, four new
-   `libs/` crates. The write path, a page cache, symlinks and namespace
+   `read` that is a submission. The current check and mutation counts live in
+   `014-storage.md`'s checked closing table rather than being copied here. The
+   write path, a page cache, symlinks and namespace
    composition are carried deliberately; WizFS is still not here (D-73). Slice
    table in `014-storage.md`*
-7. Userland — shell, coreutils, TTY; **RustPython milestone**;
-   **Wasm runtime** (interpreter-class, `wasip1`) — first sandboxed apps
-8. Network — NIC drivers, smoltcp, async socket handles, TLS (rustls)
-9. POSIX gateway — mlibc grown from Phase 5's stub to a real sysdep set,
-   compat-fork, cross-toolchain; **links + CPython milestones**, with
-   *CPython's test suite passing* as the definition of done
+7. Userland — **provisionally Wizzy-native** (D-180): measure the delivery
+   route, then bootstrap, runtime, `init`, TTY, shell and tmpfs-backed tools;
+   core Wasm + `wasip1` remains a first-class app format (D-72). AOT is not
+   assumed. Slice proposal and promotion gate in `015-wizzy-userland.md`
+8. Network — NIC drivers, smoltcp, async socket handles, TLS (`rustls`), and a
+   capability-native client/service—Wizzy if D-180's promotion gate passes
+9. POSIX gateway and compatibility runtimes — mlibc grown from Phase 5's
+   pressure test only for selected ports, compat-fork and cross-toolchain;
+   **RustPython, links and CPython milestones** remain compatibility proofs,
+   not the native userland, with *CPython's test suite passing* still the
+   definition of done
 10. Pixels — GPU drivers, compositor (channels + shared memory objects),
     GPU-first toolkit, terminal app
 11. Document web — **NetSurf milestone** (D-75): a framebuffer frontend, and
@@ -130,5 +137,7 @@ reference — not followed linearly). Docs are numbered in creation order.
     years and ten months, and every phase above it can run on Phase 6's
     read-only format meanwhile
 
-Phase numbers 0–12 are unchanged, so earlier ADRs that defer to "Phase 12"
-(KASLR in D-46, SMP in D-70, CET) still mean the side-quests phase.
+The established phase identities remain intact: network is still Phase 8,
+POSIX Phase 9, pixels Phase 10, document web Phase 11, side-quests Phase 12,
+and WizFS Phase 13. Earlier ADRs that defer by number still name the work they
+were written to name.

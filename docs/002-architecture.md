@@ -157,15 +157,17 @@ Format lives in `libs/wizfs-format` (no_std, host-testable + fuzzable).
 
 ## App formats
 
-- **ELF64** native binaries (Rust userland, ported C via mlibc)
+- **ELF64** native binaries. Rust is the bootstrap implementation language;
+  a Wizzy bytecode runner or later AOT image may also be ELF. Ported C reaches
+  the native ABI through mlibc rather than defining it.
 - **Core WebAssembly + `wasip1`** as a first-class citizen: WASI's capability
   model maps 1:1 onto our handles (a WASI descriptor *is* a handle grant), and
   a module compiled for this OS survives an architecture port. Both of those
   reasons are delivered by `wasip1`. Runtime: a wasmi-class `no_std`
-  interpreter, pinned when Phase 7 starts rather than named here; WASI host
-  bindings implemented by us directly over native handles (wasmtime's host is
-  tokio/std-coupled and unusable in-kernel; its cap-std/WasiCtx pattern is the
-  shape to follow).
+  interpreter in user mode, pinned when Phase 7 starts rather than named here;
+  WASI host bindings implemented by us directly over native handles
+  (wasmtime's host is tokio/std-coupled and does not fit this target; its
+  cap-std/WasiCtx pattern is the shape to follow).
 
   **The Component Model is a watch item, not a target** (D-72). It is still a
   Phase 1 proposal, its own 1.0 roadmap schedules an ABI change and lists
@@ -174,19 +176,33 @@ Format lives in `libs/wizfs-format` (no_std, host-testable + fuzzable).
   reaches Phase 4, or when an interpreter ships support. `010` §6 has the
   evidence.
 
-## POSIX translation layer (the ports gateway)
+## Wizzy-native userland and compatibility gateways
+
+Phase 7 extends D-116's emitted native caller into a compiled Rust probe that
+exercises delegation, then provisionally gives Wizzy the first
+system-language/runtime proof under D-180. "Native" means direct handles,
+completions and bootstrap protocols; it does not decide whether Wizzy's first
+execution engine is bytecode or AOT. The evidence, dependency order and
+promotion gate are in `015-wizzy-userland.md`.
+
+POSIX remains a compatibility layer. Core Wasm + `wasip1` remains a first-class
+application format under D-72 rather than becoming the native process model or
+substituting for D-180's proof.
+
+### POSIX translation layer (the ports gateway)
 
 mlibc sysdeps implemented over the native ABI in a userspace library:
 POSIX fds map to handles, blocking calls wrap queue submissions + waits,
 fork uses the gated compat clone. CPython, links, and NetSurf run on this;
 native software never touches it.
 
-**It arrives with the ABI, not after the userland** (D-74). A stub-heavy
-sysdep is written as soon as Phase 5 can run two processes — not to run real
-software, but to find out whether a POSIX libc can sit on this ABI while the
-ABI is still cheap to change. **Written in Phase 5 slice 10** (D-114), against
-a toolchain wall recorded rather than worked around: the sysdeps are analysed,
-not compiled, and `userland/README.md` states what that cost.
+**It was shaped early; its first real port waits for its compatibility phase**
+(D-74, D-114, D-180). The stub-heavy sysdep was written as soon as Phase 5
+could run two processes—not to run real software, but to find out whether a
+POSIX libc could sit on this ABI while the ABI was still cheap to change.
+Phase 5 slice 10 did that work against a toolchain wall recorded rather than
+worked around: the sysdeps are analysed, not compiled, and
+`userland/README.md` states what that cost.
 
 **The surface, measured, so it is not costed at zero.** mlibc defines 296
 sysdep tags. Sixteen are mandatory, and its own porting book says those are

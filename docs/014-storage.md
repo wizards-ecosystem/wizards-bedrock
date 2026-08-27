@@ -41,7 +41,7 @@ and teardown history.
 | No completion carries a handle, so the ring is not the delegation path channels are | `011` close; D-151 | **Slice 1**, with the receiver reserving the slot at submission |
 | Nothing blocks on a completion, so the wait queue is built and unused | `011` close | **Slice 1**: the first blocking read is what uses it |
 | Port claims prove exclusivity, not device *entitlement* — the device half of the authority debt | D-77; `011` | **Slice 4**, with PCI discovery: a driver claims a device, not a port range |
-| `sys_read`, `sys_write`, `sys_seek`, `sys_close`, `sys_open` are OWED or ABSENT | D-114; `userland/README.md` | Slices 6–8. `sys_open` stays ABSENT by design (C-3) and becomes `openat` from a directory handle |
+| `sys_read`, `sys_write`, `sys_seek`, `sys_close`, `sys_open` are OWED or ABSENT | D-114; `userland/README.md` | Slices 6–9 build the VFS, `OpenAt` and `Read`; their ring-3 caller still needs channel receive in Phase 7. `sys_open` stays ABSENT by design (C-3) |
 | `sys_clock_get` is OWED over `libs/timebase` | D-114 | **Slice 2**: it stops being a call and becomes a load |
 | An in-flight operation whose program retires is unspecified | D-153; `013` W-3 | **Slice 3** |
 | `xtask/src/elf.rs` still transcribes ELF header offsets rather than using `libs/elf64` | D-105; `011` close | **Slice 9**, when the image builder is touched anyway |
@@ -74,7 +74,7 @@ before its abstraction is anything but a guess.
 | 7 | **The VFS.** A directory trait — `lookup`, `enumerate`, `modify` — enum dispatch, and path resolution that cannot ascend |Done |
 | 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes |Done |
 | 9 | **The file handle.** `READ`/`WRITE` on files, `TRAVERSE`/`ENUMERATE`/`MODIFY` on directories, offsets per operation, and a `read` that is a submission |Done |
-| 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks — D-135), the adversarial audit, the roadmap and this file's closing section |Done |
+| 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks — D-135), the adversarial audit, the roadmap and this file's closing section | Code complete; five interactive VMware checks open |
 
 ---
 
@@ -926,7 +926,7 @@ checkable, so it waits for the channel rather than for a convenience.
 
 ## Slice 10 — Phase close
 
-**2026-08-25.** D-174, D-176.
+**2026-08-25.** D-174–D-179.
 
 ### What the phase is
 
@@ -963,9 +963,12 @@ it (D-175). The host-test count is deliberately absent: it changes with every
 | A wait with a timeout | Slice 1 (D-164) |
 | KASLR ledger entries | Slice 2's time page; slice 4 needed none — the NVMe window is discovered, not fixed |
 
-`sys_read`, `sys_write`, `sys_seek` and `sys_close` are **not** paid, and the
-reason is one thing rather than four: a program cannot hold a file handle yet.
-That is `002`'s new open question and it needs a channel, not a syscall.
+The four file sysdeps are still unpaid for four distinguishable reasons.
+`sys_read` has `OpenAt` and `Read` but ring 3 cannot receive its first directory
+handle; that needs a channel. `sys_write` has no write path. `sys_seek` needs
+the compatibility layer's shared file-object cursor, which the native ABI
+deliberately omits. `sys_close` reaches a kernel mechanism with no ring-3 door.
+Collapsing those into "no file handle" hid three pieces of later work.
 
 ### The five decisions this file left open
 

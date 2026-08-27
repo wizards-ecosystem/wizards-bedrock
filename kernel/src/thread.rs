@@ -34,9 +34,9 @@ use crate::time::{self, NANOSECONDS_PER_MS};
 ///
 /// How many the arena holds. It was a real cap while mapping was one-way
 /// (D-45); since D-86 and D-88 a stack could be mapped at spawn and unmapped
-/// at exit, so this is now a default rather than a ceiling. Changing it is
-/// slice 7's, with the processes that give a thread table its second reason to
-/// change.
+/// at exit, so this is now a default rather than a permanent ceiling. It stays
+/// fixed until a measured caller needs more; D-180's first userland gate needs
+/// four simultaneous processes, not more than sixteen.
 pub(crate) const STACK_SLOTS: usize = 16;
 
 /// Bytes of stack per thread.
