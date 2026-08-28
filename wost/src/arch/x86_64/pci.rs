@@ -22,7 +22,7 @@
 //! else's register. On one CPU the guard's cleared interrupt flag is what
 //! closes it; on two it will be the lock itself.
 
-use pci_config::Address;
+use pci_config::{Address, ProbeAccess, ProbeError, ProbedBars, header};
 
 use crate::sync::SpinLock;
 
@@ -81,49 +81,48 @@ pub fn read(at: Address) -> Option<u32> {
     Some(data.read())
 }
 
-/// Write `value` to the dword at `at`.
+/// Write the command halfword at `at` without echoing status bits.
 ///
 /// `false` only when the ports were never claimed.
 ///
-/// Used for two things and no others: setting the command register's bus
-/// master and memory-space bits, and the all-ones probe that asks a base
-/// address register how large its window is. Both restore what they found.
-pub fn write(at: Address, value: u32) -> bool {
+/// PCI status bits share the dword and many are write-one-to-clear. Writing a
+/// previously read dword would acknowledge every pending condition it named.
+pub fn write_command(at: Address, value: u16) -> bool {
     let mut ports = PORTS.lock_leaf();
     let Some((address, data)) = ports.as_mut() else {
         return false;
     };
     address.write(at.bits());
-    data.write(value);
+    data.write(u32::from(value));
     true
 }
 
-/// Ask a base-address register how large its window is, and put it back.
+/// Probe every BAR while decode is off, then restore the function exactly.
 ///
-/// The protocol from the specification: write all ones, read the mask back,
-/// restore the original. It is here rather than in the caller because the
-/// restore is the part that must not be forgotten — a register left holding
-/// `0xFFFF_FFFF` is a device claiming a four-gigabyte window at the top of
-/// memory, and the next thing to enumerate the bus believes it.
-///
-/// Returns the original value and the mask, or `None` if the ports were never
-/// claimed. The whole sequence runs under **one** hold of the pair, so nothing
-/// can read the register while it is holding the probe value.
-pub fn probe_window(at: Address) -> Option<(u32, u32)> {
+/// `pci-config` supplies the host-tested ordering and rollback; this adapter
+/// only performs each requested cycle. The whole algorithm runs under one
+/// hold of the pair, so nobody can see a probe value or replace CF8 between a
+/// cycle's address and data instructions.
+pub fn probe_bars(at: Address, registers: usize) -> Result<ProbedBars, ProbeError<()>> {
     let mut ports = PORTS.lock_leaf();
-    let (address, data) = ports.as_mut()?;
+    let (address, data) = ports.as_mut().ok_or(ProbeError::Access(()))?;
+    let function = at.function_base();
 
-    address.write(at.bits());
-    let original = data.read();
-
-    address.write(at.bits());
-    data.write(u32::MAX);
-
-    address.write(at.bits());
-    let mask = data.read();
-
-    address.write(at.bits());
-    data.write(original);
-
-    Some((original, mask))
+    pci_config::probe_bars(registers, |access| {
+        let (offset, write) = match access {
+            ProbeAccess::ReadCommand => (header::COMMAND, None),
+            ProbeAccess::WriteCommand(value) => (header::COMMAND, Some(u32::from(value))),
+            ProbeAccess::ReadBar(index) => (header::BAR0 + index as u16 * 4, None),
+            ProbeAccess::WriteBar(index, value) => (header::BAR0 + index as u16 * 4, Some(value)),
+        };
+        let register = function.at(offset).ok_or(())?;
+        address.write(register.bits());
+        match write {
+            Some(value) => {
+                data.write(value);
+                Ok(0)
+            }
+            None => Ok(data.read()),
+        }
+    })
 }

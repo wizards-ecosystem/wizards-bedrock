@@ -2531,20 +2531,31 @@ fn a_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
         return false;
     };
 
+    let mut context = context();
     let before = pci::claims();
-    let Ok(held) = pci::claim(at) else {
+    let Some(alias) = at.at(pci_config::header::CLASS) else {
+        return false;
+    };
+    let Ok(held) = pci::claim(&mut context, alias) else {
         return false;
     };
     let recorded = pci::is_claimed(at) && pci::claims() == before + 1;
 
-    // A second driver for one device, refused.
-    let refused = matches!(pci::claim(at), Err(pci::ClaimError::Taken));
+    // A different register offset is still the same function and the same
+    // claim, so a second driver cannot enter through an alias.
+    let refused = matches!(
+        pci::claim(
+            &mut context,
+            at.at(pci_config::header::BAR0).expect("a BAR offset")
+        ),
+        Err(pci::ClaimError::Taken)
+    );
 
     // And the holder still holds it: a refusal that released what it found
     // would be indistinguishable from here without asking.
     let intact = pci::is_claimed(at)
         && pci::claims() == before + 1
-        && held.at().bits() == at.bits()
+        && held.at() == at.function_base()
         && held.identity().0 != 0xFFFF;
 
     // A bridge has **two** base address registers, not six: its primary,
@@ -2588,6 +2599,7 @@ fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
     // Walk the candidates until one with an I/O window is claimed. A function
     // may have none, and "none of them had one" is a failure here rather than
     // a pass.
+    let mut context = context();
     let mut found = None;
     let mut seen = 0;
     let _ = pci::enumerate(|function| {
@@ -2595,7 +2607,7 @@ fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
             return;
         }
         seen += 1;
-        let Ok(device) = pci::claim(function.at) else {
+        let Ok(device) = pci::claim(&mut context, function.at) else {
             return;
         };
         for index in 0..pci::BARS {

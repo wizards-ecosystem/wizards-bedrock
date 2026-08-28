@@ -386,7 +386,8 @@ fn survey_the_bus() {
 /// claim path nothing calls in the shipped build is a claim path only the
 /// checks exercise.
 fn claim_the_controller(at: pci_config::Address) {
-    let mut device = match pci::claim(at) {
+    let mut context = thread::ThreadContext::require();
+    let mut device = match pci::claim(&mut context, at) {
         Ok(device) => device,
         Err(reason) => {
             warn!(

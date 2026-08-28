@@ -109,6 +109,33 @@ pub fn claim_span(base: u16, len: usize) -> Option<PortSpan> {
     Some(PortSpan { base, len })
 }
 
+/// Claim several machine-described runs as one permanent transaction.
+///
+/// A PCI function may decode several I/O BARs. Claiming them one at a time
+/// would strand the early runs if a later one were already owned, and a
+/// permanent registry has no release with which to repair that state.
+///
+/// `None`, with no run recorded, if the request is empty, has more than `N`
+/// spans, or any span is empty, overlapping, out of range, or already owned.
+pub fn claim_spans<const N: usize>(spans: &[(u16, usize)]) -> Option<[Option<PortSpan>; N]> {
+    if spans.is_empty() || spans.len() > N {
+        return None;
+    }
+    let mut requested = [(0usize, 0usize); N];
+    for (slot, &(base, len)) in requested.iter_mut().zip(spans) {
+        *slot = (base as usize, len);
+    }
+    if !CLAIMED.lock_leaf().reserve_all(&requested[..spans.len()]) {
+        return None;
+    }
+
+    let mut claimed = [const { None }; N];
+    for (slot, &(base, len)) in claimed.iter_mut().zip(spans) {
+        *slot = Some(PortSpan { base, len });
+    }
+    Some(claimed)
+}
+
 /// A claimed run of ports of a length read from the machine.
 ///
 /// Carries its length so every access can be bounded by it. The alternative —

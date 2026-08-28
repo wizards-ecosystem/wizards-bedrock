@@ -23,20 +23,17 @@
 //! iterative over a worklist rather than recursive, because kernel stacks are
 //! thirty-two kilobytes and a malicious or broken bridge topology is a cycle.
 
-use pci_config::{Address, Bar, Class, HeaderType, command, header};
+use pci_config::{
+    Address, Bar, ClaimRegistry, Class, HeaderType, ProbeError, RegistryError, Window, command,
+    header,
+};
 use wost::arch::current::pci;
 use wost::sync::SpinLock;
 
-/// Base address registers a type 0 header has.
-pub(crate) const BARS: usize = 6;
+use crate::thread::ThreadContext;
 
-/// Base address registers a **bridge** has.
-///
-/// Two, not six. A type 1 header puts its primary, secondary and subordinate
-/// bus numbers where a device's third register would be, so a walk that read
-/// six would decode the bus numbers as a base address — and then claim, size
-/// and possibly map whatever that looked like (D-168).
-const BRIDGE_BARS: usize = 2;
+/// Base address registers a type 0 header has.
+pub(crate) const BARS: usize = pci_config::BARS;
 
 /// Functions that may be claimed at once.
 ///
@@ -190,7 +187,7 @@ fn secondary_of(entry: &Function) -> Option<u8> {
 }
 
 /// Functions already claimed. Permanent, like the port registry (D-138).
-static CLAIMED: SpinLock<[Option<Address>; MAX_CLAIMS]> = SpinLock::new([None; MAX_CLAIMS]);
+static CLAIMED: SpinLock<ClaimRegistry<MAX_CLAIMS>> = SpinLock::new(ClaimRegistry::new());
 
 /// Why a device could not be claimed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +203,8 @@ pub(crate) enum ClaimError {
     /// An I/O window the function decodes is already claimed by something that
     /// is not a device — the bare-port path D-77 said proves the wrong thing.
     WindowTaken,
+    /// A BAR consumes another header field or reports an impossible window.
+    InvalidWindow,
 }
 
 impl core::fmt::Display for ClaimError {
@@ -216,17 +215,9 @@ impl core::fmt::Display for ClaimError {
             Self::Taken => f.write_str("another driver holds it"),
             Self::NoRoom => f.write_str("no room in the device registry"),
             Self::WindowTaken => f.write_str("an i/o window it decodes is already claimed"),
+            Self::InvalidWindow => f.write_str("a base address window is malformed"),
         }
     }
-}
-
-/// One window a device decodes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Window {
-    /// What the register said.
-    pub(crate) bar: Bar,
-    /// How many bytes it covers, from the all-ones probe.
-    pub(crate) size: u64,
 }
 
 /// A claimed function, and the evidence for touching it.
@@ -282,8 +273,9 @@ impl Device {
         let Some(current) = pci::read(at) else {
             return false;
         };
-        let wanted = current | u32::from(command::MEMORY_SPACE | command::BUS_MASTER);
-        pci::write(at, wanted) && pci::read(at).is_some_and(|back| back & wanted == wanted)
+        let wanted = current as u16 | command::MEMORY_SPACE | command::BUS_MASTER;
+        pci::write_command(at, wanted)
+            && pci::read(at).is_some_and(|back| back as u16 & wanted == wanted)
     }
 }
 
@@ -298,129 +290,94 @@ impl Device {
 ///
 /// See [`ClaimError`]. Every one of them leaves the world as it was: a refused
 /// claim records nothing, and the holder of a taken device is untouched.
-pub(crate) fn claim(at: Address) -> Result<Device, ClaimError> {
+pub(crate) fn claim(context: &mut ThreadContext, at: Address) -> Result<Device, ClaimError> {
     if !pci::is_available() {
         return Err(ClaimError::NoBus);
     }
 
-    let identity = pci::read(at).ok_or(ClaimError::NoBus)?;
-    let vendor = identity as u16;
-    if pci_config::is_absent(vendor) {
-        return Err(ClaimError::Absent);
-    }
-
-    // Recorded before any window is taken, so two callers cannot both get past
-    // this and then race for the ports.
-    {
-        let mut claimed = CLAIMED.lock_leaf();
-        if claimed
-            .iter()
-            .flatten()
-            .any(|held| held.bits() == at.bits())
-        {
-            return Err(ClaimError::Taken);
-        }
-        let room = claimed
-            .iter_mut()
-            .find(|slot| slot.is_none())
-            .ok_or(ClaimError::NoRoom)?;
-        *room = Some(at);
-    }
-
-    let layout = HeaderType::from_bits(
-        (pci::read(at.at(header::HEADER_TYPE).ok_or(ClaimError::NoBus)?)
-            .ok_or(ClaimError::NoBus)?
-            >> 16) as u8,
-    );
-    // A bridge has two registers where a device has six; the rest of its
-    // header is bus numbers, and reading those as base addresses is how a
-    // walk comes to size and claim something that is not a window at all.
-    let registers = if layout.is_bridge() {
-        BRIDGE_BARS
-    } else {
-        BARS
-    };
-
-    let mut windows = [None; BARS];
-    let mut ports = [const { None }; BARS];
-    let mut index = 0;
-    while index < registers {
-        let Some(slot) = at.at(header::BAR0 + (index as u16) * 4) else {
-            break;
-        };
-        let low = pci::read(slot).ok_or(ClaimError::NoBus)?;
-        let high = match at.at(header::BAR0 + (index as u16 + 1) * 4) {
-            Some(next) => pci::read(next).unwrap_or(0),
-            None => 0,
-        };
-        let bar = Bar::decode(low, high);
-        let step = bar.slots();
-
-        if let Bar::Absent = bar {
-            index += step;
-            continue;
-        }
-
-        let (_, mask) = pci::probe_window(slot).ok_or(ClaimError::NoBus)?;
-        let size = match bar {
-            Bar::Io { .. } => pci_config::io_window_size(mask).map_or(0, u64::from),
-            Bar::Memory { wide, .. } => {
-                // The high half of a wide register is probed separately: both
-                // halves have to hold all ones at once for the mask to mean
-                // anything, and `probe_window` restores each as it goes.
-                let high = if wide {
-                    at.at(header::BAR0 + (index as u16 + 1) * 4)
-                        .and_then(pci::probe_window)
-                        .map_or(0, |(_, mask)| mask)
-                } else {
-                    0
-                };
-                pci_config::memory_window_size(mask, high, wide).unwrap_or(0)
+    let at = at.function_base();
+    let mut claimed = CLAIMED.lock(context);
+    claimed
+        .claim(at, || {
+            let identity = pci::read(at).ok_or(ClaimError::NoBus)?;
+            let vendor = identity as u16;
+            if pci_config::is_absent(vendor) {
+                return Err(ClaimError::Absent);
             }
-            Bar::Absent => 0,
-        };
-        windows[index] = Some(Window { bar, size });
 
-        // The I/O half of the claim. A run the device decodes is the device's,
-        // and the port registry is told so — which is what makes a later bare
-        // claim inside it a refusal rather than a second driver.
-        if let Bar::Io { port } = bar
-            && size > 0
-        {
-            match wost::arch::current::port::claim_span(port, size as usize) {
-                Some(span) => ports[index] = Some(span),
-                // The device is left recorded as claimed on purpose. Undoing
-                // it would mean a release, and a registry with a release has a
-                // window where a device is half-claimed — which is what D-138
-                // refused for ports and refuses here.
-                None => return Err(ClaimError::WindowTaken),
+            let layout = HeaderType::from_bits(
+                (pci::read(at.at(header::HEADER_TYPE).ok_or(ClaimError::NoBus)?)
+                    .ok_or(ClaimError::NoBus)?
+                    >> 16) as u8,
+            );
+            // A bridge has two registers where a device has six; the rest of its
+            // header is bus numbers, and reading those as base addresses is how a
+            // walk comes to size and claim something that is not a window at all.
+            let registers = if layout.is_bridge() {
+                pci_config::BRIDGE_BARS
+            } else {
+                BARS
+            };
+
+            let windows = match pci::probe_bars(at, registers) {
+                Ok(probed) => probed.into_windows(),
+                Err(ProbeError::Access(()) | ProbeError::Restore(())) => {
+                    return Err(ClaimError::NoBus);
+                }
+                Err(ProbeError::Malformed | ProbeError::InvalidWindow) => {
+                    return Err(ClaimError::InvalidWindow);
+                }
+            };
+
+            let mut requested = [(0u16, 0usize); BARS];
+            let mut port_slots = [0usize; BARS];
+            let mut port_count = 0;
+            for (index, window) in windows.iter().enumerate() {
+                if let Some(Window {
+                    bar: Bar::Io { port },
+                    size,
+                }) = window
+                {
+                    let len = usize::try_from(*size).map_err(|_| ClaimError::InvalidWindow)?;
+                    requested[port_count] = (*port, len);
+                    port_slots[port_count] = index;
+                    port_count += 1;
+                }
             }
-        }
 
-        index += step;
-    }
+            let mut ports = [const { None }; BARS];
+            if port_count > 0 {
+                let owned =
+                    wost::arch::current::port::claim_spans::<BARS>(&requested[..port_count])
+                        .ok_or(ClaimError::WindowTaken)?;
+                for (dense, span) in owned.into_iter().enumerate().take(port_count) {
+                    ports[port_slots[dense]] = span;
+                }
+            }
 
-    Ok(Device {
-        at,
-        vendor,
-        device: (identity >> 16) as u16,
-        windows,
-        ports,
-    })
+            Ok(Device {
+                at,
+                vendor,
+                device: (identity >> 16) as u16,
+                windows,
+                ports,
+            })
+        })
+        .map_err(|error| match error {
+            RegistryError::Taken => ClaimError::Taken,
+            RegistryError::NoRoom => ClaimError::NoRoom,
+            RegistryError::Prepare(error) => error,
+        })
 }
 
 /// Whether the function at `at` is claimed.
 #[cfg(feature = "selftest")]
 pub(crate) fn is_claimed(at: Address) -> bool {
-    CLAIMED
-        .lock_leaf()
-        .iter()
-        .flatten()
-        .any(|held| held.bits() == at.bits())
+    CLAIMED.lock_leaf().is_claimed(at)
 }
 
 /// How many functions are claimed.
 #[cfg(feature = "selftest")]
 pub(crate) fn claims() -> usize {
-    CLAIMED.lock_leaf().iter().flatten().count()
+    CLAIMED.lock_leaf().len()
 }

@@ -195,24 +195,34 @@ mod tests {
     /// together (D-138).
     #[test]
     fn a_refused_multi_span_reservation_takes_nothing() {
-        const FIRST: usize = 0x60;
-        const SECOND: usize = 0x64;
+        const SPANS: [(usize, usize); MAX_SPANS] = [
+            (0x100, 4),
+            (0x110, 3),
+            (0x120, 2),
+            (0x130, 5),
+            (0x140, 1),
+            (0x150, 6),
+            (0x160, 7),
+            (0x170, 8),
+        ];
 
-        let mut space = PortSpace::new();
-        // Something else already owns the second span.
-        assert!(space.reserve(SECOND, 1));
+        for (refused, &(base, len)) in SPANS.iter().enumerate() {
+            let mut space = PortSpace::new();
+            assert!(space.reserve(base + len / 2, 1));
+            assert!(
+                !space.reserve_all(&SPANS),
+                "the request must refuse conflict {refused}"
+            );
 
-        assert!(
-            !space.reserve_all(&[(FIRST, 1), (SECOND, 1)]),
-            "the pair must be refused when either half is taken"
-        );
-        // And the first is still free, which is what chaining would have lost.
-        assert!(
-            space.is_available(FIRST, 1),
-            "a refused pair stranded its first span"
-        );
-        // So a later attempt can still get it once the obstacle is theirs.
-        assert!(space.reserve(FIRST, 1));
+            for (index, &(base, len)) in SPANS.iter().enumerate() {
+                if index != refused {
+                    assert!(
+                        space.is_available(base, len),
+                        "conflict {refused} stranded span {index}"
+                    );
+                }
+            }
+        }
     }
 
     /// A granted multi-span reservation takes all of them.

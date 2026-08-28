@@ -57,6 +57,14 @@ pub const FUNCTIONS: u8 = 8;
 /// reachable through CF8/CFC at all, and a driver that needs it needs ECAM.
 pub const HEADER_BYTES: u16 = 256;
 
+/// Base address registers a type 0 header has.
+pub const BARS: usize = 6;
+
+/// Base address registers a type 1 header has.
+///
+/// The third slot in a bridge header is its bus-number register, not a BAR.
+pub const BRIDGE_BARS: usize = 2;
+
 /// Byte offsets in the configuration header.
 ///
 /// Type 0 (a device) and type 1 (a bridge) share everything up to `0x0F`, and
@@ -65,8 +73,8 @@ pub mod header {
     /// Vendor id, and device id in the high half. `0xFFFF` means nothing is
     /// there — the bus returns all ones for an absent function.
     pub const VENDOR: u16 = 0x00;
-    /// Command register. Bit 1 is memory space, bit 2 is I/O space, and **bit
-    /// 2 is bus master**.
+    /// Command register. Bit 0 is I/O space, bit 1 is memory space, and bit 2
+    /// is bus master.
     pub const COMMAND: u16 = 0x04;
     /// Revision in the low byte, then prog-if, subclass and class.
     pub const CLASS: u16 = 0x08;
@@ -80,6 +88,8 @@ pub mod header {
 
 /// Command-register bits this kernel writes.
 pub mod command {
+    /// Respond to I/O-space accesses.
+    pub const IO_SPACE: u16 = 1;
     /// Respond to memory-space accesses.
     pub const MEMORY_SPACE: u16 = 1 << 1;
     /// **Bus master.** Without it the controller cannot DMA, queues never
@@ -137,6 +147,15 @@ impl Address {
         Some(Self((self.0 & !0xFF) | offset as u32))
     }
 
+    /// The identity of this function, with no register offset attached.
+    ///
+    /// Device ownership is a bus/device/function claim. Treating two offsets
+    /// in the same header as different identities would let two drivers claim
+    /// the same function.
+    pub const fn function_base(self) -> Self {
+        Self(self.0 & !0xFF)
+    }
+
     /// Which bus this names.
     pub const fn bus(self) -> u8 {
         (self.0 >> 16) as u8
@@ -156,6 +175,88 @@ impl Address {
     pub const fn offset(self) -> u16 {
         (self.0 & 0xFF) as u16
     }
+}
+
+/// A bounded registry of permanently claimed PCI functions.
+///
+/// The fallible preparation closure runs before the registry's commit point.
+/// This makes an unchanged registry on every probe and port-claim error a
+/// property of the operation rather than statement ordering in its caller.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ClaimRegistry<const N: usize> {
+    slots: [Option<Address>; N],
+}
+
+impl<const N: usize> ClaimRegistry<N> {
+    /// Create an empty function registry.
+    pub const fn new() -> Self {
+        Self { slots: [None; N] }
+    }
+
+    /// Prepare and permanently claim one function, or change nothing.
+    ///
+    /// The address is canonicalized before duplicate lookup. `prepare` may do
+    /// all fallible configuration and resource work; the registry records the
+    /// function only after that work returns a value.
+    ///
+    /// # Errors
+    ///
+    /// [`RegistryError::Taken`] if any offset of the function is held,
+    /// [`RegistryError::NoRoom`] if the fixed registry is full, or
+    /// [`RegistryError::Prepare`] with the closure's error. Every refusal
+    /// leaves all slots unchanged.
+    pub fn claim<T, E>(
+        &mut self,
+        at: Address,
+        prepare: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, RegistryError<E>> {
+        let at = at.function_base();
+        if self.is_claimed(at) {
+            return Err(RegistryError::Taken);
+        }
+        let room = self
+            .slots
+            .iter()
+            .position(Option::is_none)
+            .ok_or(RegistryError::NoRoom)?;
+
+        let prepared = prepare().map_err(RegistryError::Prepare)?;
+        self.slots[room] = Some(at);
+        Ok(prepared)
+    }
+
+    /// Whether any register offset of `at`'s function is held.
+    pub fn is_claimed(&self, at: Address) -> bool {
+        let at = at.function_base();
+        self.slots.iter().flatten().any(|held| *held == at)
+    }
+
+    /// Functions permanently recorded so far.
+    pub fn len(&self) -> usize {
+        self.slots.iter().flatten().count()
+    }
+
+    /// Whether no function has been recorded.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl<const N: usize> Default for ClaimRegistry<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Why a function registry transaction refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistryError<E> {
+    /// Another driver already holds this function.
+    Taken,
+    /// The registry's fixed lifetime bound is exhausted.
+    NoRoom,
+    /// Fallible device/resource preparation refused.
+    Prepare(E),
 }
 
 /// What a function says it is.
@@ -389,6 +490,285 @@ pub const fn io_window_size(mask: u32) -> Option<u16> {
     Some(size as u16)
 }
 
+/// One configuration-space cycle in a BAR-probe transaction.
+///
+/// A platform adapter implements these against its configuration mechanism.
+/// Keeping the sequence here makes its ordering and rollback host-testable;
+/// the adapter only has to keep its hardware lock for the closure's lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeAccess {
+    /// Read the command register. Only its low sixteen bits are consumed.
+    ReadCommand,
+    /// Write only command bits. The status half of the dword must be zero.
+    WriteCommand(u16),
+    /// Read one BAR slot.
+    ReadBar(usize),
+    /// Write one BAR slot.
+    WriteBar(usize, u32),
+}
+
+/// One decoded and sized BAR window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Window {
+    /// What the register said.
+    pub bar: Bar,
+    /// How many bytes or ports it covers.
+    pub size: u64,
+}
+
+/// Every window discovered by one restored probe transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProbedBars {
+    windows: [Option<Window>; BARS],
+}
+
+impl ProbedBars {
+    /// The window in BAR slot `index`, if that slot decodes one.
+    pub const fn window(&self, index: usize) -> Option<Window> {
+        if index < BARS {
+            self.windows[index]
+        } else {
+            None
+        }
+    }
+
+    /// All slots, including the empty high halves of wide BARs.
+    pub const fn into_windows(self) -> [Option<Window>; BARS] {
+        self.windows
+    }
+}
+
+/// Why a BAR-probe transaction could not produce windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeError<E> {
+    /// The configuration mechanism refused an access before rollback failed.
+    Access(E),
+    /// At least one original register could not be put back.
+    Restore(E),
+    /// The header layout or a BAR's slot use is impossible.
+    Malformed,
+    /// A device returned a mask or base that cannot describe its window.
+    InvalidWindow,
+}
+
+/// Probe every BAR under one decode-off, fully restored transaction.
+///
+/// The closure is called for configuration cycles while the platform adapter
+/// holds its configuration lock. The command register is restored last, so a
+/// device cannot decode a half-restored window. A 64-bit BAR has both halves
+/// filled with ones before either half is read.
+///
+/// # Errors
+///
+/// Refuses an impossible register count, a wide BAR in the final available
+/// slot, an invalid size or alignment, or any configuration access. Once a
+/// write may have happened, every modified BAR and then the command register
+/// are restored even when the initiating access or an earlier restore failed.
+pub fn probe_bars<E>(
+    registers: usize,
+    mut access: impl FnMut(ProbeAccess) -> Result<u32, E>,
+) -> Result<ProbedBars, ProbeError<E>> {
+    if registers > BARS {
+        return Err(ProbeError::Malformed);
+    }
+
+    let command = access(ProbeAccess::ReadCommand).map_err(ProbeError::Access)? as u16;
+    let mut original = [0u32; BARS];
+    for (index, slot) in original.iter_mut().enumerate().take(registers) {
+        *slot = access(ProbeAccess::ReadBar(index)).map_err(ProbeError::Access)?;
+    }
+
+    let mut index = 0;
+    while index < registers {
+        let wide = original[index] & 0b110 == 0b100;
+        if wide && index + 1 == registers {
+            return Err(ProbeError::Malformed);
+        }
+        index += if wide { 2 } else { 1 };
+    }
+
+    let mut modified = [false; BARS];
+    let command_modified = true;
+    let decode_off = command & !(command::IO_SPACE | command::MEMORY_SPACE);
+    if let Err(error) = access(ProbeAccess::WriteCommand(decode_off)) {
+        return after_access_error(
+            error,
+            &mut access,
+            &original,
+            &modified,
+            command,
+            command_modified,
+        );
+    }
+
+    let mut masks = [0u32; BARS];
+    index = 0;
+    while index < registers {
+        let wide = original[index] & 0b110 == 0b100;
+        modified[index] = true;
+        if let Err(error) = access(ProbeAccess::WriteBar(index, u32::MAX)) {
+            return after_access_error(
+                error,
+                &mut access,
+                &original,
+                &modified,
+                command,
+                command_modified,
+            );
+        }
+        if wide {
+            modified[index + 1] = true;
+            if let Err(error) = access(ProbeAccess::WriteBar(index + 1, u32::MAX)) {
+                return after_access_error(
+                    error,
+                    &mut access,
+                    &original,
+                    &modified,
+                    command,
+                    command_modified,
+                );
+            }
+        }
+
+        masks[index] = match access(ProbeAccess::ReadBar(index)) {
+            Ok(mask) => mask,
+            Err(error) => {
+                return after_access_error(
+                    error,
+                    &mut access,
+                    &original,
+                    &modified,
+                    command,
+                    command_modified,
+                );
+            }
+        };
+        if wide {
+            masks[index + 1] = match access(ProbeAccess::ReadBar(index + 1)) {
+                Ok(mask) => mask,
+                Err(error) => {
+                    return after_access_error(
+                        error,
+                        &mut access,
+                        &original,
+                        &modified,
+                        command,
+                        command_modified,
+                    );
+                }
+            };
+        }
+        index += if wide { 2 } else { 1 };
+    }
+
+    if let Some(error) = restore(&mut access, &original, &modified, command, command_modified) {
+        return Err(ProbeError::Restore(error));
+    }
+    decode_windows(registers, &original, &masks).map(|windows| ProbedBars { windows })
+}
+
+fn after_access_error<E>(
+    error: E,
+    access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
+    original: &[u32; BARS],
+    modified: &[bool; BARS],
+    command: u16,
+    command_modified: bool,
+) -> Result<ProbedBars, ProbeError<E>> {
+    match restore(access, original, modified, command, command_modified) {
+        Some(restore) => Err(ProbeError::Restore(restore)),
+        None => Err(ProbeError::Access(error)),
+    }
+}
+
+fn restore<E>(
+    access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
+    original: &[u32; BARS],
+    modified: &[bool; BARS],
+    command: u16,
+    command_modified: bool,
+) -> Option<E> {
+    let mut failed = None;
+    for index in (0..BARS).rev() {
+        if modified[index]
+            && let Err(error) = access(ProbeAccess::WriteBar(index, original[index]))
+            && failed.is_none()
+        {
+            failed = Some(error);
+        }
+    }
+    if command_modified
+        && let Err(error) = access(ProbeAccess::WriteCommand(command))
+        && failed.is_none()
+    {
+        failed = Some(error);
+    }
+    failed
+}
+
+fn decode_windows<E>(
+    registers: usize,
+    original: &[u32; BARS],
+    masks: &[u32; BARS],
+) -> Result<[Option<Window>; BARS], ProbeError<E>> {
+    let mut windows = [None; BARS];
+    let mut index = 0;
+    while index < registers {
+        let kind = if original[index] == 0 {
+            masks[index] & 0xF
+        } else {
+            original[index]
+        };
+        let wide = kind & 0b110 == 0b100;
+        let (bar, size) = if kind & 1 != 0 {
+            let Some(size) = io_window_size(masks[index]) else {
+                index += 1;
+                continue;
+            };
+            (
+                Bar::Io {
+                    port: (original[index] & !0x3) as u16,
+                },
+                u64::from(size),
+            )
+        } else {
+            if wide && index + 1 == registers {
+                return Err(ProbeError::Malformed);
+            }
+            let high = if wide { original[index + 1] } else { 0 };
+            let mask_high = if wide { masks[index + 1] } else { 0 };
+            let Some(size) = memory_window_size(masks[index], mask_high, wide) else {
+                index += if wide { 2 } else { 1 };
+                continue;
+            };
+            let address = u64::from(original[index] & !0xF) | (u64::from(high) << 32);
+            (
+                Bar::Memory {
+                    address,
+                    wide,
+                    prefetchable: kind & 0b1000 != 0,
+                },
+                size,
+            )
+        };
+
+        let base = match bar {
+            Bar::Memory { address, .. } => address,
+            Bar::Io { port } => u64::from(port),
+            Bar::Absent => 0,
+        };
+        if !size.is_power_of_two()
+            || !base.is_multiple_of(size)
+            || matches!(bar, Bar::Io { .. }) && base + size > u64::from(u16::MAX) + 1
+        {
+            return Err(ProbeError::InvalidWindow);
+        }
+        windows[index] = Some(Window { bar, size });
+        index += if wide { 2 } else { 1 };
+    }
+    Ok(windows)
+}
+
 /// Whether a vendor word means "nothing is here".
 ///
 /// An absent function does not fail a configuration read; the bus returns all
@@ -413,6 +793,69 @@ pub const fn subordinate_bus(bits: u32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TRACE_CAPACITY: usize = 40;
+
+    #[derive(Clone)]
+    struct FakeConfig {
+        command: u16,
+        status: u16,
+        bars: [u32; BARS],
+        masks: [u32; BARS],
+        trace: [Option<ProbeAccess>; TRACE_CAPACITY],
+        calls: usize,
+        fail_at: Option<usize>,
+    }
+
+    impl FakeConfig {
+        fn device() -> Self {
+            Self {
+                command: command::IO_SPACE | command::MEMORY_SPACE | command::BUS_MASTER,
+                status: 0xA55A,
+                bars: [0x8000_0004, 1, 0x0000_C001, 0, 0, 0],
+                masks: [0xFFFF_C004, u32::MAX, 0xFFFF_FFE1, 0, 0, 0],
+                trace: [None; TRACE_CAPACITY],
+                calls: 0,
+                fail_at: None,
+            }
+        }
+
+        fn access(&mut self, event: ProbeAccess) -> Result<u32, usize> {
+            let call = self.calls;
+            self.trace[call] = Some(event);
+            self.calls += 1;
+
+            let answer = match event {
+                ProbeAccess::ReadCommand => {
+                    u32::from(self.command) | (u32::from(self.status) << 16)
+                }
+                ProbeAccess::WriteCommand(command) => {
+                    self.command = command;
+                    0
+                }
+                ProbeAccess::ReadBar(index) => {
+                    if self.bars[index] == u32::MAX {
+                        self.masks[index]
+                    } else {
+                        self.bars[index]
+                    }
+                }
+                ProbeAccess::WriteBar(index, value) => {
+                    self.bars[index] = value;
+                    0
+                }
+            };
+            if self.fail_at == Some(call) {
+                Err(call)
+            } else {
+                Ok(answer)
+            }
+        }
+
+        fn events(&self) -> &[Option<ProbeAccess>] {
+            &self.trace[..self.calls]
+        }
+    }
 
     /// An address is the bus, device, function and offset the manual gives.
     ///
@@ -452,6 +895,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Register offsets are not device identities.
+    #[test]
+    fn every_offset_of_one_function_has_one_identity() {
+        let identity = Address::new(0x12, 0x1A, 5, 0).expect("valid");
+        for offset in (0..HEADER_BYTES).step_by(4) {
+            let alias = identity.at(offset).expect("valid offset");
+            assert_eq!(alias.function_base(), identity);
+        }
+        assert_ne!(identity.at(header::CLASS), identity.at(header::BAR0));
+    }
+
+    /// Every fallible preparation edge precedes the registry commit point.
+    #[test]
+    fn every_refused_claim_preparation_leaves_the_registry_unchanged() {
+        let at = Address::new(3, 4, 5, header::CLASS).expect("valid");
+        let mut registry = ClaimRegistry::<2>::new();
+
+        for refused in 0..8 {
+            let result = registry.claim(at, || {
+                for edge in 0..8 {
+                    if edge == refused {
+                        return Err(edge);
+                    }
+                }
+                Ok(())
+            });
+            assert_eq!(result, Err(RegistryError::Prepare(refused)));
+            assert!(registry.is_empty(), "failure at edge {refused} committed");
+            assert!(!registry.is_claimed(at));
+        }
+
+        assert_eq!(registry.claim(at, || Ok::<_, ()>(0xA5)), Ok(0xA5));
+        assert_eq!(registry.len(), 1);
+        assert!(registry.is_claimed(at.at(header::BAR0).expect("valid alias")));
+        assert_eq!(
+            registry.claim(at.at(header::VENDOR).expect("valid alias"), || Ok::<_, ()>(
+                ()
+            )),
+            Err(RegistryError::Taken)
+        );
+        assert_eq!(registry.len(), 1, "duplicate refusal changed the holder");
     }
 
     /// An address that cannot be encoded is refused, not truncated.
@@ -666,6 +1152,162 @@ mod tests {
         assert_eq!(io_window_size(0x0000_0003), None);
         // And a window larger than the port space is a device misreporting.
         assert_eq!(io_window_size(0xFFFF_0000), None);
+    }
+
+    /// Decode is off throughout one wide-aware transaction and restored last.
+    #[test]
+    fn a_bar_probe_is_one_restored_decode_off_transaction() {
+        let mut fake = FakeConfig::device();
+        let original = fake.clone();
+        let probed = probe_bars(BARS, |event| fake.access(event)).expect("valid device");
+
+        assert_eq!(fake.command, original.command);
+        assert_eq!(
+            fake.status, original.status,
+            "status is never echoed into RW1C bits"
+        );
+        assert_eq!(fake.bars, original.bars);
+        assert_eq!(
+            probed.window(0),
+            Some(Window {
+                bar: Bar::Memory {
+                    address: 0x1_8000_0000,
+                    wide: true,
+                    prefetchable: false,
+                },
+                size: 0x4000,
+            })
+        );
+        assert_eq!(
+            probed.window(1),
+            None,
+            "the high half is not another window"
+        );
+        assert_eq!(
+            probed.window(2),
+            Some(Window {
+                bar: Bar::Io { port: 0xC000 },
+                size: 32,
+            })
+        );
+
+        let expected = [
+            ProbeAccess::ReadCommand,
+            ProbeAccess::ReadBar(0),
+            ProbeAccess::ReadBar(1),
+            ProbeAccess::ReadBar(2),
+            ProbeAccess::ReadBar(3),
+            ProbeAccess::ReadBar(4),
+            ProbeAccess::ReadBar(5),
+            ProbeAccess::WriteCommand(command::BUS_MASTER),
+            ProbeAccess::WriteBar(0, u32::MAX),
+            ProbeAccess::WriteBar(1, u32::MAX),
+            ProbeAccess::ReadBar(0),
+            ProbeAccess::ReadBar(1),
+            ProbeAccess::WriteBar(2, u32::MAX),
+            ProbeAccess::ReadBar(2),
+            ProbeAccess::WriteBar(3, u32::MAX),
+            ProbeAccess::ReadBar(3),
+            ProbeAccess::WriteBar(4, u32::MAX),
+            ProbeAccess::ReadBar(4),
+            ProbeAccess::WriteBar(5, u32::MAX),
+            ProbeAccess::ReadBar(5),
+            ProbeAccess::WriteBar(5, 0),
+            ProbeAccess::WriteBar(4, 0),
+            ProbeAccess::WriteBar(3, 0),
+            ProbeAccess::WriteBar(2, 0x0000_C001),
+            ProbeAccess::WriteBar(1, 1),
+            ProbeAccess::WriteBar(0, 0x8000_0004),
+            ProbeAccess::WriteCommand(
+                command::IO_SPACE | command::MEMORY_SPACE | command::BUS_MASTER,
+            ),
+        ];
+        assert_eq!(fake.events(), expected.map(Some));
+    }
+
+    /// Every access failure after the first write rolls the exact device back.
+    #[test]
+    fn every_probe_access_failure_restores_the_device() {
+        // Calls 7 through 19 are the decode-off write and probe cycles. The
+        // events after them are rollback itself and have a separate proof.
+        for fail_at in 7..20 {
+            let mut fake = FakeConfig::device();
+            let original = fake.clone();
+            fake.fail_at = Some(fail_at);
+
+            assert_eq!(
+                probe_bars(BARS, |event| fake.access(event)),
+                Err(ProbeError::Access(fail_at)),
+                "failure at cycle {fail_at}"
+            );
+            assert_eq!(fake.command, original.command, "command at cycle {fail_at}");
+            assert_eq!(fake.status, original.status, "status at cycle {fail_at}");
+            assert_eq!(fake.bars, original.bars, "BARs at cycle {fail_at}");
+            assert_eq!(
+                fake.events().last(),
+                Some(&Some(ProbeAccess::WriteCommand(original.command))),
+                "decode is restored last at cycle {fail_at}"
+            );
+        }
+    }
+
+    /// One refused restore does not prevent the remaining registers restoring.
+    #[test]
+    fn a_restore_failure_still_attempts_every_later_restore() {
+        let mut fake = FakeConfig::device();
+        let original = fake.clone();
+        fake.fail_at = Some(23);
+
+        assert_eq!(
+            probe_bars(BARS, |event| fake.access(event)),
+            Err(ProbeError::Restore(23))
+        );
+        assert_eq!(
+            fake.command, original.command,
+            "command restoration was attempted"
+        );
+        assert_eq!(fake.status, original.status);
+        assert_eq!(
+            fake.events().last(),
+            Some(&Some(ProbeAccess::WriteCommand(original.command)))
+        );
+    }
+
+    /// A wide BAR cannot consume a slot belonging to another header field.
+    #[test]
+    fn a_wide_bar_in_the_final_slot_is_refused_before_mutation() {
+        let mut fake = FakeConfig::device();
+        fake.bars[0] = 0x0000_C001;
+        fake.bars[1] = 0x0000_0004;
+        let original = fake.clone();
+
+        assert_eq!(
+            probe_bars(BRIDGE_BARS, |event| fake.access(event)),
+            Err(ProbeError::Malformed)
+        );
+        assert_eq!(fake.command, original.command);
+        assert_eq!(fake.status, original.status);
+        assert_eq!(fake.bars, original.bars);
+        assert!(fake.events().iter().flatten().all(|event| !matches!(
+            event,
+            ProbeAccess::WriteCommand(_) | ProbeAccess::WriteBar(_, _)
+        )));
+    }
+
+    /// A nonsensical mask is refused only after the hardware is restored.
+    #[test]
+    fn an_invalid_bar_mask_is_refused_after_restoration() {
+        let mut fake = FakeConfig::device();
+        fake.masks[2] = 0xFFFF_FFF5;
+        let original = fake.clone();
+
+        assert_eq!(
+            probe_bars(BARS, |event| fake.access(event)),
+            Err(ProbeError::InvalidWindow)
+        );
+        assert_eq!(fake.command, original.command);
+        assert_eq!(fake.status, original.status);
+        assert_eq!(fake.bars, original.bars);
     }
 
     /// An absent function is all ones, and that is not a vendor.

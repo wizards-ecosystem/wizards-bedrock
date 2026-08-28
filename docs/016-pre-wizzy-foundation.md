@@ -18,8 +18,8 @@ admission reasons.
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
 are **not closed**. The current image has 192 QEMU machine checks. The current
-mutation registry has 80 entries, but the last recorded complete sweep covered
-64; the sixteen later mutations were broken individually. The current
+mutation registry has 90 entries, but the last recorded complete sweep covered
+64; the twenty-six later mutations were broken individually. The current
 192-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
@@ -64,7 +64,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 80 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 80 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
+| PW-001 | REQUIRED | P0 | The register contains 90 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 90 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
 | PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 192-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=192 failed=0` transcript, including WP, SMEP/SMAP/UMIP, compacted XSAVE, x2APIC, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
@@ -91,8 +91,8 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
 | PW-200 | READY | P0 | After a doorbell, timeout/error can drop Identify buffers, queue frames or controller state while the device may still DMA | Quiesce/reset/disable and verify the controller before release, or deliberately retain/poison every uncertain DMA object | Delayed-completion fake device shows no frame can be recycled until quiescence; mutation returns directly on timeout and is caught |
-| PW-201 | READY | P0 | A 64-bit PCI BAR is probed one half at a time and decode stays enabled while all-ones values are written | One locked transaction saves command/BARs, disables decode, probes both halves together, restores on every exit and rejects malformed last-slot BARs | Fake config-space trace proves exact write/read/restore order; QEMU and VMware report the correct NVMe BAR; mutations split the probe and omit restore/decode-off |
-| PW-202 | READY | P0 | PCI claims key the full offset-bearing address, commit before fallible work, and can strand device/port ownership despite the unchanged-on-error contract | Canonicalize identity to BDF and make preflight/commit all-or-none, or record a deliberate terminal-poison policy in an ADR | Two offsets for one BDF cannot claim twice; failure at every BAR/port edge has the documented registry result and no partial live device |
+| PW-201 | VERIFY | P0 | D-187 replaced the split live probe with one decode-off, wide-aware, fully restored transaction; the current implementation still needs its required VMware observation | Run PW-003 against D-187's transaction and record the discovered NVMe BAR | 2026-08-27 host fake configuration injected every probe cycle and proved exact order/rollback; QEMU booted NVMe at the correct 64-bit BAR; split, no-restore, no-decode-off, malformed-mask and malformed-slot mutations each reddened their exact test; current VMware must confirm the BAR |
+| PW-202 | DONE | P0 | PCI claims keyed the full offset-bearing address, committed before fallible work, and could strand device/port ownership despite the unchanged-on-error contract | D-187 canonicalizes BDF identity and makes registry preparation plus all I/O windows all-or-none | 2026-08-27 two offsets could not claim one QEMU bridge twice; fake preparation failure at every edge left `ClaimRegistry` empty; every possible multi-span conflict stranded nothing; canonicalization, early-commit and partial-port mutations reddened their exact checks |
 | PW-203 | READY | P1 | `read_blocks` permits zero, exceeds the 16-bit NLB field, does not bound namespace end/overflow, and does not prove DMA length fits `Segment` | Put pure transfer validation in `libs/nvme` and accept only a validated request in the driver | Exhaustive boundary/property tests plus machine refusals; zero/overflow/short-buffer mutations cannot ring the doorbell |
 | PW-204 | READY | P1 | Namespace Identify trusts LBADS and ignores malformed/unsupported format metadata; a hostile device can shift by 32 or choose an unusable block format | Parse Identify bytes in host-testable pure code with explicit supported-format policy | Corpus/properties cover all byte values, metadata and zero namespace; invalid input is refused before queue use |
 | PW-205 | DECIDE | P1 | A ring-3 Read polls the controller while serving a trap and can hold interrupts/controller locks for a large bounded interval | Choose deferred worker/interrupt state, or a measured bounded service contract that preserves timer/input latency and teardown | Delayed I/O cannot starve timer/keyboard; completion/cancel/death remain exactly-once and buffers stay pinned under pressure |
@@ -232,8 +232,8 @@ PW-514 includes these exact stale-current-facing corrections still to make:
 
 ## Recommended execution order
 
-1. Close PW-200, PW-201, PW-202 and PW-300 before trusting a polished-kernel
-   claim; PW-100 and PW-101 were closed first by D-185.
+1. Close PW-200 and PW-201 before trusting a polished-kernel claim; PW-100,
+   PW-101, PW-202 and PW-300 are closed by D-185 through D-187.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

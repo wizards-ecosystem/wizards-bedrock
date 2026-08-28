@@ -9,7 +9,7 @@
 //! fail, because the code around it changed, is invisible from then on.
 //!
 //! This makes it a task. Each mutation below is a real defect: a bound
-//! removed, a flag not stripped, a guard inverted. Applying one and booting
+//! removed, a flag not stripped, a guard inverted. Applying one and running
 //! must turn some check **red**. A mutation that survives is a hole, and the
 //! report names it (D-119).
 //!
@@ -17,9 +17,10 @@
 //! every mutation's pattern still occurs exactly once in its file — no boot, no
 //! build, milliseconds. A pattern that has stopped matching is a mutation that
 //! silently stopped testing anything, which is precisely the failure mode this
-//! whole file exists to catch, one level up. The expensive tier — build, boot,
-//! require red, restore — is `cargo xtask mutate`, and it is not in `ci`
-//! because it is one QEMU boot per mutation.
+//! whole file exists to catch, one level up. The expensive tier — build, run,
+//! require red, restore — is `cargo xtask mutate`. Machine mutations boot;
+//! pure host logic runs the exact host test it names. It is not in `ci`
+//! because the machine entries still cost one QEMU boot apiece.
 //!
 //! **Restoring is not optional and not best-effort.** Every mutation is
 //! applied to a file that is restored from an in-memory copy of the original
@@ -28,6 +29,7 @@
 //! anything is allowed to fail.
 
 use anyhow::{Context, Result, bail};
+use std::process::Command;
 
 use crate::paths::Paths;
 use crate::{qemu, tasks};
@@ -56,6 +58,13 @@ pub struct Mutation {
 pub enum Caught {
     /// The exact `report.check("…")` name that must appear as `FAILED`.
     Check(&'static str),
+    /// An exact host test whose own FAILED verdict must name the defect.
+    HostTest {
+        /// Cargo package containing the test.
+        package: &'static str,
+        /// Fully qualified test name accepted by `--exact`.
+        name: &'static str,
+    },
     /// Nothing names it: the defect kills the machine before the verdict.
     ///
     /// Carries *why*, because a bare variant would be a hole anything could be
@@ -568,30 +577,25 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "enumeration descends through bridges",
         reddens: Caught::Check("the bus walk descends through a bridge"),
     },
-    // Two drivers for one device, which is the whole of D-77's entitlement
-    // complaint arriving as a defect rather than as an argument.
+    // Two offsets in one header treated as two device identities. Exact-offset
+    // duplicate checks cannot catch this; the claim must canonicalise first.
     Mutation {
         file: "kernel/src/pci.rs",
-        find: "        if claimed
-            .iter()
-            .flatten()
-            .any(|held| held.bits() == at.bits())
-        {",
-        replace: "        if false
-            && claimed
-                .iter()
-                .flatten()
-                .any(|held| held.bits() == at.bits())
-        {",
-        breaks: "a device is claimed once",
+        find: "    let at = at.function_base();
+    let mut claimed = CLAIMED.lock(context);",
+        replace: "    let at = at;
+    let mut claimed = CLAIMED.lock(context);",
+        breaks: "configuration offsets alias one function claim",
         reddens: Caught::Check("a device is claimed once and a refusal strands nothing"),
     },
     // The ports a device decodes left free for anyone to claim, which is the
     // arrangement D-77 said proves the wrong thing.
     Mutation {
         file: "kernel/src/pci.rs",
-        find: "            match wost::arch::current::port::claim_span(port, size as usize) {",
-        replace: "            match wost::arch::current::port::claim_span(port, 0) {",
+        find: "                let owned =
+                    wost::arch::current::port::claim_spans::<BARS>(&requested[..port_count])",
+        replace: "                let owned =
+                    wost::arch::current::port::claim_spans::<BARS>(&requested[..0])",
         breaks: "a device claim covers the ports it decodes",
         reddens: Caught::Check("a claimed device's io window is not claimable bare"),
     },
@@ -599,15 +603,159 @@ pub const MUTATIONS: &[Mutation] = &[
     // all ones written into the register that says which bus is behind it.
     Mutation {
         file: "kernel/src/pci.rs",
-        find: "    let registers = if layout.is_bridge() {
-        BRIDGE_BARS
-    } else {
-        BARS
-    };",
-        replace: "    let registers = BARS;
-    let _ = layout;",
+        find: "            let registers = if layout.is_bridge() {
+                pci_config::BRIDGE_BARS
+            } else {
+                BARS
+            };",
+        replace: "            let registers = BARS;
+            let _ = layout;",
         breaks: "a bridge has two base address registers, not six",
         reddens: Caught::Check("a device is claimed once and a refusal strands nothing"),
+    },
+    // Decode left enabled while BARs temporarily contain all ones. A fake
+    // device observes the command cycle, where real QEMU hardware may forgive
+    // it and make a boot-only mutation vacuous.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "    let decode_off = command & !(command::IO_SPACE | command::MEMORY_SPACE);",
+        replace: "    let decode_off = command;",
+        breaks: "bar probing disables both decode spaces",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_bar_probe_is_one_restored_decode_off_transaction",
+        },
+    },
+    // The high half is no longer all ones when the low mask is read.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "        if wide {
+            modified[index + 1] = true;",
+        replace: "        if false && wide {
+            modified[index + 1] = true;",
+        breaks: "both halves of a wide bar are probed together",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_bar_probe_is_one_restored_decode_off_transaction",
+        },
+    },
+    // A successful probe returns while the device still holds probe values.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "    if let Some(error) = restore(&mut access, &original, &modified, command, command_modified) {",
+        replace: "    if false
+        && let Some(error) = restore(&mut access, &original, &modified, command, command_modified)
+    {",
+        breaks: "a successful bar probe restores every register",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_bar_probe_is_one_restored_decode_off_transaction",
+        },
+    },
+    // Rollback restores BARs but forgets the command register after an access
+    // fails; exhaustive cycle injection reaches every such exit.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "    match restore(access, original, modified, command, command_modified) {",
+        replace: "    match restore(access, original, modified, command, false) {",
+        breaks: "a failed bar probe restores decode state",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::every_probe_access_failure_restores_the_device",
+        },
+    },
+    // Record each requested run before the all-or-none preflight finishes.
+    // A conflict later in the list then strands all earlier runs.
+    Mutation {
+        file: "libs/port-space/src/lib.rs",
+        find: "            room[index] = Some(span);",
+        replace: "            for port in span.clone() {
+                self.reserved[port / PORTS_PER_WORD] |= bit(port);
+            }
+            room[index] = Some(span);",
+        breaks: "a refused multi-span reservation records no earlier span",
+        reddens: Caught::HostTest {
+            package: "port-space",
+            name: "tests::a_refused_multi_span_reservation_takes_nothing",
+        },
+    },
+    // An address keeps its register offset when asked for its device identity.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "        Self(self.0 & !0xFF)",
+        replace: "        Self(self.0)",
+        breaks: "a function identity contains no register offset",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::every_offset_of_one_function_has_one_identity",
+        },
+    },
+    // A wide BAR in a bridge's last slot would consume its bus-number field.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "        let wide = original[index] & 0b110 == 0b100;
+        if wide && index + 1 == registers {
+            return Err(ProbeError::Malformed);
+        }",
+        replace: "        let wide = original[index] & 0b110 == 0b100;
+        if false && wide && index + 1 == registers {
+            return Err(ProbeError::Malformed);
+        }",
+        breaks: "a wide bar cannot consume the field after the header's last slot",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_wide_bar_in_the_final_slot_is_refused_before_mutation",
+        },
+    },
+    // A non-power-of-two mask happens to be aligned and otherwise plausible.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "        if !size.is_power_of_two()
+            || !base.is_multiple_of(size)",
+        replace: "        if false
+            || !base.is_multiple_of(size)",
+        breaks: "a bar window size is a power of two",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::an_invalid_bar_mask_is_refused_after_restoration",
+        },
+    },
+    // The first refused restore aborts rollback instead of continuing through
+    // the command register and every older BAR.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "        if modified[index]
+            && let Err(error) = access(ProbeAccess::WriteBar(index, original[index]))
+            && failed.is_none()
+        {
+            failed = Some(error);
+        }",
+        replace: "        if modified[index]
+            && let Err(error) = access(ProbeAccess::WriteBar(index, original[index]))
+            && failed.is_none()
+        {
+            failed = Some(error);
+            return failed;
+        }",
+        breaks: "bar rollback continues after a restore is refused",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_restore_failure_still_attempts_every_later_restore",
+        },
+    },
+    // Record the BDF before its fallible device/resource preparation. Any
+    // later refusal then poisons a permanent registry slot.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "        let prepared = prepare().map_err(RegistryError::Prepare)?;
+        self.slots[room] = Some(at);",
+        replace: "        self.slots[room] = Some(at);
+        let prepared = prepare().map_err(RegistryError::Prepare)?;",
+        breaks: "a refused device preparation leaves its registry unchanged",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::every_refused_claim_preparation_leaves_the_registry_unchanged",
+        },
     },
     // Slice 5. The logical block address dropped, so every read answers with
     // block zero. Invisible against a disk of identical blocks, which is why
@@ -983,7 +1131,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
 ];
 
-/// Apply each mutation, boot, and require something to go red.
+/// Apply each mutation, run its exact machine or host witness, and require red.
 ///
 /// # Errors
 ///
@@ -1009,7 +1157,7 @@ pub fn run(paths: &Paths) -> Result<()> {
         );
         std::fs::write(&path, &mutated).with_context(|| format!("writing {}", path.display()))?;
 
-        let noticed = boot_reports(paths, mutation.reddens);
+        let noticed = mutation_reports(paths, mutation.reddens);
 
         // Before anything is allowed to fail, including the check below.
         std::fs::write(&path, &original)
@@ -1115,8 +1263,8 @@ fn failed_checks(text: &str) -> impl Iterator<Item = &str> {
         .map(str::trim)
 }
 
-/// Build and boot the self-test kernel, and report whether **this** mutation's
-/// check went red.
+/// Run the named host or machine witness and report whether **this** mutation
+/// made its exact check go red.
 ///
 /// Not merely whether the boot did, which is what this asked until D-134 —
 /// and the difference is not theoretical. Mutation 4 reddens mutation 3's
@@ -1128,7 +1276,10 @@ fn failed_checks(text: &str) -> impl Iterator<Item = &str> {
 ///
 /// A refused *build* is an error rather than a red, because a mutation that
 /// does not compile has not been tested by anything.
-fn boot_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
+fn mutation_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
+    if let Caught::HostTest { package, name } = wanted {
+        return host_test_reports(paths, package, name);
+    }
     match tasks::test_boot(paths, crate::cargo::Profile::Release) {
         // The kernel booted and every check passed: the mutation survived.
         Ok(()) => Ok(false),
@@ -1165,8 +1316,32 @@ fn boot_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
                         Err(error)
                     }
                 }
+                Caught::HostTest { .. } => unreachable!("host tests return before booting"),
             }
         }
+    }
+}
+
+fn host_test_reports(paths: &Paths, package: &str, name: &str) -> Result<bool> {
+    let output = Command::new(env!("CARGO"))
+        .current_dir(paths.root())
+        .args(["test", "--package", package, name, "--", "--exact"])
+        .output()
+        .with_context(|| format!("could not spawn host mutation test {package}::{name}"))?;
+    if output.status.success() {
+        return Ok(false);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let verdict = format!("test {name} ... FAILED");
+    if stdout.contains(&verdict) || stderr.contains(&verdict) {
+        Ok(true)
+    } else {
+        bail!(
+            "host mutation did not reach `{name}`; cargo exited {}\n{stdout}{stderr}",
+            output.status
+        )
     }
 }
 
@@ -1217,7 +1392,7 @@ mod tests {
         assert!(error.to_string().contains("would not be rebuilt"));
     }
 
-    /// Every check a mutation names is a check that exists.
+    /// Every exact machine or host check a mutation names exists.
     ///
     /// The cheap half of D-134, and the one that runs at every commit. A
     /// mutation whose target check was renamed or deleted still boots, still
@@ -1234,17 +1409,33 @@ mod tests {
             .expect("reading selftest.rs");
 
         for mutation in MUTATIONS {
-            let Caught::Check(name) = mutation.reddens else {
-                continue;
-            };
-            // The literal as `report.check` is called with it. Searching for
-            // the quoted name rather than the whole call handles both the
-            // one-line and the wrapped forms rustfmt produces.
-            assert!(
-                selftest.contains(&format!("\"{name}\"")),
-                "`{}` names the check `{name}`, which `selftest.rs` does not have",
-                mutation.breaks
-            );
+            match mutation.reddens {
+                Caught::Check(name) => {
+                    // The literal as `report.check` is called with it.
+                    assert!(
+                        selftest.contains(&format!("\"{name}\"")),
+                        "`{}` names the check `{name}`, which `selftest.rs` does not have",
+                        mutation.breaks
+                    );
+                }
+                Caught::HostTest { package, name } => {
+                    assert!(
+                        crate::paths::HOST_PACKAGES.contains(&package),
+                        "`{}` names non-host package `{package}`",
+                        mutation.breaks
+                    );
+                    let function = name.rsplit("::").next().expect("a test name");
+                    let source = std::fs::read_to_string(root.join(mutation.file))
+                        .unwrap_or_else(|_| panic!("reading {}", mutation.file));
+                    assert!(
+                        source.contains(&format!("fn {function}(")),
+                        "`{}` names host test `{name}`, which `{}` does not have",
+                        mutation.breaks,
+                        mutation.file
+                    );
+                }
+                Caught::Panic(_) => {}
+            }
         }
     }
 
@@ -1267,8 +1458,8 @@ mod tests {
 
     /// No two mutations break the same property.
     ///
-    /// A duplicate is a boot spent twice on one question, and this task's cost
-    /// is one boot per entry.
+    /// A duplicate is a witness run spent twice on one question; machine
+    /// entries make that cost a complete boot.
     #[test]
     fn no_two_mutations_name_the_same_property() {
         for (index, mutation) in MUTATIONS.iter().enumerate() {
