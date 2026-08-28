@@ -10,6 +10,10 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Enables controlled machine-test seams which never reach a shipped image.
+selftest = []
+
 [dependencies]
 frame-space.workspace = true
 mmio-range.workspace = true

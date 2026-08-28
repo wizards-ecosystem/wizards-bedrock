@@ -29,7 +29,7 @@ use wost::arch::current::usercopy::{self, UserCopyError};
 use wost::arch::current::{apic, interrupt, pic, port, segment, task, xstate};
 use wost::boot::{self, FramebufferInfo, Rgb};
 use wost::mm;
-use wost::sync::{Once, SpinLock};
+use wost::sync::{Once, SpinLock, SpinLockWitness};
 use x86_paging::{Flags, LARGE_PAGE_SIZE, PAGE_SIZE};
 use x86_tables::exception;
 
@@ -6771,7 +6771,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 198;
+const EXPECTED_CHECKS: usize = 199;
 
 impl Report {
     const fn new() -> Self {
@@ -6846,6 +6846,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_claim_covers_the_width_it_drives(),
     );
     report.check("a held lock excludes another holder", lock_excludes());
+    report.check(
+        "forgotten lock ownership is distinct from contention",
+        forgotten_lock_ownership_is_distinct_from_contention(),
+    );
     report.check("a one-shot latch admits one caller", latch_admits_one());
 
     report.check(
@@ -8039,6 +8043,36 @@ fn lock_excludes() -> bool {
     let refused = lock.try_lock_leaf().is_none();
     drop(held);
     refused && lock.try_lock_leaf().is_some()
+}
+
+/// Safe Rust can leak a guard, but the controlled witness must tell that state
+/// apart from an ordinary live holder and restore the machine afterwards.
+fn forgotten_lock_ownership_is_distinct_from_contention() -> bool {
+    let lock = SpinLock::new(0u32);
+    let mut context = context();
+    let interrupts_before = interrupt::are_enabled();
+
+    let held = lock.lock(&mut context);
+    let ordinary =
+        lock.witness_for_test() == SpinLockWitness::Contended && lock.try_lock_leaf().is_none();
+
+    let recovery = held.forget_for_test();
+    let forgotten =
+        lock.witness_for_test() == SpinLockWitness::Forgotten && lock.try_lock_leaf().is_none();
+    drop(recovery);
+
+    let restored = lock.witness_for_test() == SpinLockWitness::Free
+        && interrupt::are_enabled() == interrupts_before;
+    let reacquired = lock.try_lock(&mut context);
+    let available = reacquired.is_some();
+    drop(reacquired);
+
+    ordinary
+        && forgotten
+        && restored
+        && available
+        && lock.witness_for_test() == SpinLockWitness::Free
+        && interrupt::are_enabled() == interrupts_before
 }
 
 fn latch_admits_one() -> bool {

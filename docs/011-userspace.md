@@ -294,6 +294,15 @@ runtime side: D-66's assert refuses a context switch with a guard live, and
 checks is what OSTD ships, and here the second is the one that cannot be
 side-stepped.
 
+D-194 closes the remaining `Drop` question as a bounded liveness contract,
+not a stronger type claim. Safe code can forget a guard or simply never
+return, and no closure or token can guarantee progress against either. Such a
+caller can strand this CPU and the lock's waiters but gains no memory or
+privilege authority. Every transition which would abandon that holder keeps
+D-66's runtime refusal. A self-test-only controlled `mem::forget` distinguishes
+ordinary contention from deliberate leaked ownership and then restores the
+machine; shipped code has no force-release door.
+
 **A closure taken under a leaf guard is the live hole**, and there are two:
 `mm::with_memory_map` and `dev::with_io_apic` run caller-supplied code with a
 lock held. (`mem::with_active_space` was listed here and does not belong: it
@@ -393,12 +402,6 @@ rather than a repair, so each is written down instead of patched over.
   is how this was found, not by reasoning. Closing it means a guard type that
   forbids calls, and that shape wants a phase that has more callers to test it
   against.
-- **`mem::forget` on a `SpinLockGuard` strands the interrupt flag.** Leaking is
-  safe, so a safe caller can leave interrupts off for the life of the kernel and
-  `SPINLOCKS_HELD` permanently non-zero. Not undefined behaviour, but
-  `Unmapped`'s own doc states the principle this violates — *no soundness
-  argument may rest on `Drop` running* — and the guard's interrupt invariant
-  rests on exactly that.
 - **`MappedStack` can be invalidated while it is still evidence.** `unmap` will
   clear a range `map_stack` mapped, since it carries `OWNED`, leaving a live
   token that claims a stack is there. The result is a fault rather than

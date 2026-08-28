@@ -1238,6 +1238,16 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "an unguarded boot stack cannot open the user boundary",
         reddens: Caught::Check("an unguarded boot stack closes the user boundary"),
     },
+    // Erase the state transition which makes deliberate forgotten ownership
+    // observably different from an ordinary holder. The lock still excludes,
+    // so the witness must inspect the ownership reason rather than availability.
+    Mutation {
+        file: "wost/src/sync.rs",
+        find: "        self.lock.forgotten_for_test.store(true, Ordering::Release);",
+        replace: "        self.lock.forgotten_for_test.store(false, Ordering::Release);",
+        breaks: "deliberately forgotten ownership is distinct from ordinary contention",
+        reddens: Caught::Check("forgotten lock ownership is distinct from contention"),
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.

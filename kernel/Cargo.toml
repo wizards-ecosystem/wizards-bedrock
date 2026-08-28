@@ -13,7 +13,7 @@ workspace = true
 [features]
 # Compiles the boot-time self-checks and the QEMU exit device into the kernel.
 # Enabled only by `cargo xtask test-boot`; never in a shipped image.
-selftest = []
+selftest = ["wost/selftest"]
 
 [dependencies]
 noto-sans-mono-bitmap.workspace = true
