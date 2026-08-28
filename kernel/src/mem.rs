@@ -200,9 +200,9 @@ fn guard_the_fault_stack() -> Result<u64, MapError> {
 
 /// Map the boot thread's own guarded stack.
 ///
-/// `None` rather than an error when it cannot be had: a kernel that keeps the
-/// bootloader's stack is the kernel every earlier phase shipped, so this
-/// declining is a lost guard rather than a lost boot.
+/// `None` rather than an error when it cannot be had: kernel services can
+/// still report and degrade on the bootloader's stack, but the user boundary
+/// remains closed (D-193).
 pub(crate) fn map_boot_stack() -> Option<MappedStack> {
     let mut context = ThreadContext::require();
     map_guarded_stack(&mut context, thread::boot_stack_layout()?)

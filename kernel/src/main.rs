@@ -46,6 +46,7 @@ mod vfs;
 mod wait;
 
 use core::fmt::Write;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::arch::current::uart::UartError;
 use wost::arch::current::{apic, cpu, interrupt, pic, segment, task, xstate};
@@ -123,9 +124,11 @@ fn kernel_main(boot: BootInfo) -> ! {
         module: boot.module,
     });
     match mem::map_boot_stack() {
-        Some(stack) => task::continue_on_stack(stack, boot_continue, 0),
+        Some(stack) => task::continue_on_stack(stack, boot_continue, 1),
         None => {
-            warn!("boot: staying on the bootloader's stack, which has no guard");
+            warn!(
+                "boot: staying on the bootloader's stack, which has no guard; ring 3 stays closed"
+            );
             boot_continue(0)
         }
     }
@@ -145,12 +148,30 @@ struct Handoff {
 
 static HANDOFF: SpinLock<Option<Handoff>> = SpinLock::new(None);
 
+/// Whether the boot thread reached its guarded stack before user launch.
+static BOOT_STACK_GUARDED: AtomicBool = AtomicBool::new(false);
+
+/// Whether process construction may open the ring-3 boundary.
+pub(crate) fn user_launch_is_safe() -> bool {
+    BOOT_STACK_GUARDED.load(Ordering::Acquire)
+}
+
+/// Run one check in the state left by a refused boot-stack allocation.
+#[cfg(feature = "selftest")]
+pub(crate) fn with_unguarded_boot_stack_for_test<T>(check: impl FnOnce() -> T) -> T {
+    let guarded = BOOT_STACK_GUARDED.swap(false, Ordering::AcqRel);
+    let result = check();
+    BOOT_STACK_GUARDED.store(guarded, Ordering::Release);
+    result
+}
+
 /// The rest of the boot, on a guarded stack.
 ///
 /// # Panics
 ///
 /// If the handoff is missing, which would mean this ran twice.
-extern "C" fn boot_continue(_arg: usize) -> ! {
+extern "C" fn boot_continue(guarded: usize) -> ! {
+    BOOT_STACK_GUARDED.store(guarded == 1, Ordering::Release);
     let Some(Handoff {
         serial,
         routing,

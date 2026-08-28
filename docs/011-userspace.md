@@ -649,7 +649,10 @@ was — the bootloader's stack lives inside the direct map, which is
 two-megabyte on purpose and which D-88 refuses to split — so the boot thread
 leaves it. `kernel_main` ends at the switch. The primitive is safe because its
 argument is the proof: `map_stack` maps the region and then *verifies the guard
-is absent*, and no caller could have told from the return value.
+is absent*, and no caller could have told from the return value. **D-193 closes
+the later fail-open edge:** if that mapping refuses, diagnostic kernel service
+continues but process construction returns a typed refusal before allocation
+and ring 3 remains closed.
 
 The alignment had history. The continuation is entered by `jmp`, so nothing
 pushes a return address, and the eight bytes the ABI expects come off at the

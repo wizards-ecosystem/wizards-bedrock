@@ -709,6 +709,8 @@ impl SpawnFault {
 /// Why a program could not be started.
 #[derive(Debug)]
 pub(crate) enum SpawnError {
+    /// The kernel itself is still running on an unguarded boot stack.
+    UnguardedBootStack,
     /// No address space could be built for it.
     NoSpace(MapError),
     /// The image would not load.
@@ -737,6 +739,9 @@ pub(crate) enum SpawnError {
 impl fmt::Display for SpawnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnguardedBootStack => {
+                f.write_str("the boot thread has no guarded stack; ring 3 is closed")
+            }
             Self::NoSpace(error) => write!(f, "no address space: {error}"),
             Self::Load(error) => write!(f, "{error}"),
             Self::NoStack => f.write_str("no memory for a stack"),
@@ -787,6 +792,9 @@ fn spawn_transaction(
     argument: u64,
     fault: SpawnFault,
 ) -> Result<Spawned, SpawnError> {
+    if !crate::user_launch_is_safe() {
+        return Err(SpawnError::UnguardedBootStack);
+    }
     let space = AddressSpace::for_user().map_err(SpawnError::NoSpace)?;
     let mut construction = ProcessConstruction::new(space);
     stop_after(fault, SpawnEdge::Space)?;

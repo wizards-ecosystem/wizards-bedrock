@@ -3978,6 +3978,36 @@ fn every_refused_spawn_returns_every_resource() -> bool {
     true
 }
 
+/// A boot-stack allocation refusal closes ring 3 before process construction.
+///
+/// The boot remains alive to diagnose and service the machine, but it cannot
+/// run untrusted code on the bootloader's unguarded stack. The injected state
+/// is the exact one `boot_continue(0)` records; refusal must be typed, allocate
+/// nothing and leave no crossing behind (D-193).
+fn an_unguarded_boot_stack_closes_the_user_boundary() -> bool {
+    while user::collect().is_some() {}
+    if !crate::user_launch_is_safe() {
+        return false;
+    }
+
+    let resources_before = spawn_resources();
+    let crossings_before = trap::last_syscall().count;
+    let attempt = crate::with_unguarded_boot_stack_for_test(user::run);
+    let denied = matches!(&attempt, Err(user::SpawnError::UnguardedBootStack));
+
+    if let Ok(spawned) = attempt {
+        let slot = spawned.slot;
+        drop(spawned);
+        let _ = runs_until(2000, || task::address_space_of(slot).is_none());
+        while user::collect().is_some() {}
+    }
+
+    denied
+        && crate::user_launch_is_safe()
+        && trap::last_syscall().count == crossings_before
+        && spawn_resources() == resources_before
+}
+
 /// A program that has ended gives its memory back — its pages, its tables,
 /// and its slot.
 ///
@@ -6741,7 +6771,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 197;
+const EXPECTED_CHECKS: usize = 198;
 
 impl Report {
     const fn new() -> Self {
@@ -7109,6 +7139,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "every refused spawn returns every resource",
         every_refused_spawn_returns_every_resource(),
+    );
+    report.check(
+        "an unguarded boot stack closes the user boundary",
+        an_unguarded_boot_stack_closes_the_user_boundary(),
     );
     report.check(
         "a user page comes back cleared",

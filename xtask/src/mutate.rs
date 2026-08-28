@@ -1228,6 +1228,16 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a refused terminal post retains its pending operation",
         reddens: Caught::Check("a refused settlement retains every owner"),
     },
+    // Continue process construction after the boot stack guard was refused.
+    // All later construction remains valid, so only the explicit boundary
+    // state distinguishes this from a normal launch.
+    Mutation {
+        file: "kernel/src/user.rs",
+        find: "    if !crate::user_launch_is_safe() {\n        return Err(SpawnError::UnguardedBootStack);\n    }",
+        replace: "    if false && !crate::user_launch_is_safe() {\n        return Err(SpawnError::UnguardedBootStack);\n    }",
+        breaks: "an unguarded boot stack cannot open the user boundary",
+        reddens: Caught::Check("an unguarded boot stack closes the user boundary"),
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.
