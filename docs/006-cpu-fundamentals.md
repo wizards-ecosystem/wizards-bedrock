@@ -191,14 +191,17 @@ can be enabled before paging is ours:
 
 | Bit | Where | Effect |
 |---|---|---|
+| WP | `CR0.WP` | ring 0 cannot write a page whose leaf is read-only |
 | NX | `EFER.NXE` | the no-execute page bit is honoured rather than reserved |
 | SMEP | `CR4.SMEP` | ring 0 cannot *execute* from a user page |
 | SMAP | `CR4.SMAP` | ring 0 cannot *read or write* a user page |
 | UMIP | `CR4.UMIP` | ring 3 cannot run `SGDT`/`SIDT`/`SLDT`/`SMSW`/`STR` |
 
-Each is enabled only if `CPUID` reports it (UMIP is Cannon Lake and later;
-VMware and QEMU without `+umip` will not have it), and the result is read back
-from the register rather than assumed. The kernel logs what is actually on.
+WP is architectural on x86-64 and is enabled unconditionally. Each of the
+other four is enabled only if `CPUID` reports it (UMIP is Cannon Lake and
+later; VMware and QEMU without `+umip` will not have it), and every result is
+read back from the register rather than assumed. The kernel logs what is
+actually on.
 
 Enabling SMEP and SMAP against page tables we did not build is the one real
 risk here: if Limine had mapped the kernel or the framebuffer user-accessible,
@@ -246,6 +249,9 @@ On the machine (`kernel/src/selftest.rs`, run by `cargo xtask test-boot`):
   interrupted stack pointer — the check that catches a `TrapFrame` whose fields
   have drifted out of step with the assembly
 - every protection `CPUID` reports is actually enabled
+- `CR0.WP` was driven through the kernel's enabling path and a controlled
+  supervisor write to read-only kernel data raised the exact protection fault
+  the private fixup expected
 - a one-shot latch admits exactly one caller
 
 The double-fault IST cannot be checked without deliberately destroying the

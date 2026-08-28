@@ -3,8 +3,8 @@
 //! The interrupt flag lives in [`interrupt`] instead, next to
 //! the table whose existence is the precondition for setting it.
 
-use core::arch::asm;
 use core::arch::x86_64::{__cpuid_count, __get_cpuid_max};
+use core::arch::{asm, global_asm};
 use core::fmt;
 
 use super::interrupt;
@@ -28,6 +28,9 @@ const SYSENTER_CS: u32 = 0x174;
 /// reserved.
 const EFER_NO_EXECUTE: u64 = 1 << 11;
 
+/// `CR0` bit: supervisor writes obey read-only page-table entries.
+const CR0_WRITE_PROTECT: u64 = 1 << 16;
+
 /// `CR4` bit: user mode instruction prevention.
 const CR4_UMIP: u64 = 1 << 11;
 
@@ -36,6 +39,43 @@ const CR4_SMEP: u64 = 1 << 20;
 
 /// `CR4` bit: supervisor mode access prevention.
 const CR4_SMAP: u64 = 1 << 21;
+
+global_asm!(
+    ".pushsection .rodata.wost_write_protection_probe,\"a\",@progbits",
+    ".globl wost_write_protection_target",
+    "wost_write_protection_target:",
+    "  .byte 0xa5",
+    ".popsection",
+    ".text",
+    ".globl wost_write_protection_probe",
+    "wost_write_protection_probe:",
+    "  lea rdi, [rip + wost_write_protection_target]",
+    "  mov al, [rdi]",
+    ".globl wost_write_protection_fault",
+    "wost_write_protection_fault:",
+    "  mov [rdi], al",
+    ".globl wost_write_protection_fault_end",
+    "wost_write_protection_fault_end:",
+    "  xor eax, eax",
+    "  ret",
+    ".globl wost_write_protection_fixup",
+    "wost_write_protection_fixup:",
+    "  mov eax, 1",
+    "  ret",
+);
+
+unsafe extern "C" {
+    /// Write the byte back to its own read-only location.
+    fn wost_write_protection_probe() -> u64;
+    /// The write instruction the probe expects to fault on.
+    static wost_write_protection_fault: u8;
+    /// One past the write instruction.
+    static wost_write_protection_fault_end: u8;
+    /// Where the recovered write resumes.
+    static wost_write_protection_fixup: u8;
+    /// The byte in the kernel's read-only image.
+    static wost_write_protection_target: u8;
+}
 
 /// Halt this CPU until the next interrupt.
 ///
@@ -141,6 +181,8 @@ pub fn faulting_address() -> u64 {
 /// machine that does not expose it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Protections {
+    /// Supervisor writes honour read-only page-table entries.
+    pub write_protect: bool,
     /// Supervisor mode execution prevention: ring 0 cannot execute from a page
     /// marked user-accessible.
     pub smep: bool,
@@ -170,6 +212,7 @@ impl Protections {
         };
 
         Self {
+            write_protect: true,
             smep: structured.ebx & 1 << 7 != 0,
             smap: structured.ebx & 1 << 20 != 0,
             umip: structured.ecx & 1 << 2 != 0,
@@ -182,6 +225,7 @@ impl Protections {
     pub fn enabled() -> Self {
         let cr4 = read_cr4();
         Self {
+            write_protect: write_protection_is_enabled(),
             smep: cr4 & CR4_SMEP != 0,
             smap: cr4 & CR4_SMAP != 0,
             umip: cr4 & CR4_UMIP != 0,
@@ -194,6 +238,7 @@ impl fmt::Display for Protections {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut separator = "";
         for (enabled, name) in [
+            (self.write_protect, "wp"),
             (self.smep, "smep"),
             (self.smap, "smap"),
             (self.umip, "umip"),
@@ -270,6 +315,8 @@ pub(super) fn enable_extended_state() {
 pub fn enable_protections() -> Protections {
     let supported = Protections::supported();
 
+    enable_write_protection();
+
     let mut cr4 = read_cr4();
     if supported.smep {
         cr4 |= CR4_SMEP;
@@ -290,6 +337,64 @@ pub fn enable_protections() -> Protections {
 
     shut_the_fast_syscall_doors();
     Protections::enabled()
+}
+
+/// Whether supervisor writes honour read-only page-table entries.
+///
+/// Read back from `CR0`, not remembered from the write that asked for it.
+pub fn write_protection_is_enabled() -> bool {
+    read_cr0() & CR0_WRITE_PROTECT != 0
+}
+
+/// Drive the write-protect bit off and through the kernel's enabling path.
+///
+/// Firmware commonly leaves `CR0.WP` set, so merely observing it at boot does
+/// not prove this kernel enabled it. Interrupts stay excluded across the short
+/// interval in which supervisor writes are not protected. A failed enabling
+/// path is repaired before returning, but still reports `false`.
+pub fn drive_write_protection_for_test() -> bool {
+    let disabled = interrupt::disable();
+    write_cr0(read_cr0() & !CR0_WRITE_PROTECT);
+    let was_cleared = !write_protection_is_enabled();
+    enable_write_protection();
+    let was_enabled = write_protection_is_enabled();
+    if !was_enabled {
+        write_cr0(read_cr0() | CR0_WRITE_PROTECT);
+    }
+    let result = was_cleared && was_enabled;
+    disabled.restore();
+    result
+}
+
+/// Attempt a supervisor write to a byte in the kernel's read-only image.
+///
+/// The assembly reads the byte and writes the same value back, so a broken
+/// protection leaves the image unchanged. `true` means the write faulted and
+/// the trap handler resumed at this probe's private fixup.
+pub fn write_protection_probe() -> bool {
+    // SAFETY: the assembly names one byte in this crate's own read-only image
+    // and writes back exactly the value it read. The trap path recognises only
+    // this instruction and address; without protection, no value changes.
+    unsafe { wost_write_protection_probe() != 0 }
+}
+
+/// Resume the controlled write-protection probe, if it caused this fault.
+///
+/// `false` for every other instruction or address, having changed nothing.
+pub fn recover_write_protection_probe(frame: &interrupt::TrapFrame) -> bool {
+    let at = frame.instruction_pointer();
+    let start = core::ptr::addr_of!(wost_write_protection_fault) as u64;
+    let end = core::ptr::addr_of!(wost_write_protection_fault_end) as u64;
+    let target = core::ptr::addr_of!(wost_write_protection_target) as u64;
+    if at < start || at >= end || faulting_address() != target {
+        return false;
+    }
+    let fixup = core::ptr::addr_of!(wost_write_protection_fixup) as u64;
+    interrupt::resume_at(frame, fixup)
+}
+
+fn enable_write_protection() {
+    write_cr0(read_cr0() | CR0_WRITE_PROTECT);
 }
 
 /// Close `syscall` and `sysenter`, which this kernel does not use.
@@ -479,8 +584,9 @@ fn read_cr0() -> u64 {
 }
 
 fn write_cr0(value: u64) {
-    // SAFETY: the only bits this crate changes are `MP` and `EM`, which govern
-    // whether SSE instructions fault and nothing about memory or privilege.
+    // SAFETY: the only bits this crate changes are `MP`, `EM` and `WP`. The
+    // first two govern whether SSE instructions fault; `WP` makes supervisor
+    // writes obey permissions the page tables already state.
     unsafe {
         asm!(
             "mov cr0, {value}",

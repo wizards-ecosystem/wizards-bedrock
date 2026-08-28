@@ -208,6 +208,19 @@ fn the_image_obeys_write_xor_execute() -> bool {
     })
 }
 
+/// Supervisor writes are refused by a read-only kernel leaf.
+///
+/// Firmware usually arrives with `CR0.WP` already set, so readback alone
+/// cannot prove the kernel's write is load-bearing. The driven half clears it
+/// with interrupts excluded and reaches the same enabling path boot uses.
+/// The probe then writes a byte back unchanged in `.rodata`; only the expected
+/// present-page write fault can resume at its private fixup.
+fn supervisor_writes_obey_read_only_pages() -> bool {
+    cpu::drive_write_protection_for_test()
+        && cpu::write_protection_probe()
+        && Protections::enabled().write_protect
+}
+
 /// The direct map is writable and never executable.
 ///
 /// The largest writable mapping in the kernel, and the one an attacker would
@@ -6461,7 +6474,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 191;
+const EXPECTED_CHECKS: usize = 192;
 
 impl Report {
     const fn new() -> Self {
@@ -6564,6 +6577,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the kernel image obeys write-xor-execute",
         the_image_obeys_write_xor_execute(),
+    );
+    report.check(
+        "supervisor writes obey read-only pages",
+        supervisor_writes_obey_read_only_pages(),
     );
     report.check(
         "the direct map is writable and never executable",

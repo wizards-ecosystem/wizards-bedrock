@@ -135,6 +135,15 @@ fn on_trap(frame: &TrapFrame) {
         // then was retired. Not an escalation and not a halt — but a program
         // could drive `USER_COPY_RECOVERIES` at will, and a claim nothing
         // enforces is the shape D-124 found on the syscall arm (D-126).
+        // One controlled ring-0 fault proves `CR0.WP` makes supervisor writes
+        // obey a read-only leaf. The error code must say exactly present-page
+        // write from the kernel, and the framework admits only its private
+        // instruction and target address before redirecting the live frame.
+        TrapCause::Fault(trap_cause::Fault::PageFault(fault))
+            if frame.code_selector() & 0b11 == 0
+                && fault.bits() == 0b11
+                && cpu::recover_write_protection_probe(frame) => {}
+
         TrapCause::Fault(trap_cause::Fault::PageFault(_))
             if frame.code_selector() & 0b11 == 0 && usercopy::recover(frame) =>
         {

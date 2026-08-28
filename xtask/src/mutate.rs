@@ -288,6 +288,17 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "wost/src/arch/x86_64/cpu.rs",
+        find: "fn enable_write_protection() {
+    write_cr0(read_cr0() | CR0_WRITE_PROTECT);
+}",
+        replace: "fn enable_write_protection() {
+    write_cr0(read_cr0());
+}",
+        breaks: "the kernel enables supervisor write protection itself",
+        reddens: Caught::Check("supervisor writes obey read-only pages"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/cpu.rs",
         find: "    unsafe { msr::write(EFER, msr::read(EFER) & !EFER_SYSCALL) };",
         replace: "",
         breaks: "the syscall door is shut before ring 3 runs",

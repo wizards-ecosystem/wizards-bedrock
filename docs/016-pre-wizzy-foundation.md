@@ -17,10 +17,10 @@ admission reasons.
 ## What completion means
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
-are **not closed**. The current image has 191 QEMU machine checks. The current
-mutation registry has 79 entries, but the last recorded complete sweep covered
-64; the fifteen later mutations were broken individually. The current
-191-check image has not completed its human VMware round. The compiler gate in
+are **not closed**. The current image has 192 QEMU machine checks. The current
+mutation registry has 80 entries, but the last recorded complete sweep covered
+64; the sixteen later mutations were broken individually. The current
+192-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
 The kernel is ready for the first real Wizzy integration only when:
@@ -64,9 +64,9 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 79 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 79 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
+| PW-001 | REQUIRED | P0 | The register contains 80 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 80 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
-| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 191-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=191 failed=0` transcript, including SMEP/SMAP/UMIP, compacted XSAVE, x2APIC, storage and input evidence |
+| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 192-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=192 failed=0` transcript, including WP, SMEP/SMAP/UMIP, compacted XSAVE, x2APIC, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
 | PW-005 | REQUIRED | P1 | The ordinary gate must describe the same commit as the exceptional evidence | Run `cargo xtask ci` after every register-closing change and once after the evidence-only close | Release/debug self-tests, shipped liveness and degraded boot all pass on the recorded commit |
 | PW-006 | REQUIRED | P1 | D-181 and D-182 were post-audit corrections, and this audit found deeper safe/device boundaries | Re-attack hostile inputs, cleanup paths, safe `wost` callers and release-only invariant failures after the P0/P1 fixes | Phase-close ADR links the audit, every break-test, full evidence manifest and remaining trigger-only rows; no historical evidence is invented |
@@ -106,7 +106,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-300 | READY | P0 | CR0.WP is neither enabled nor read back, so supervisor writes to read-only kernel pages depend on bootloader state | Put WP in the protection contract and enable it before relying on W^X | Readback plus a controlled supervisor write-fault witness; mutation omits the bit and the named check fails |
+| PW-300 | DONE | P0 | CR0.WP was neither enabled nor read back, so supervisor writes to read-only kernel pages depended on bootloader state | D-186 puts WP in the boot protection contract and gives its controlled fault an exact private recovery window | 2026-08-27 QEMU `supervisor writes obey read-only pages` drove WP through the kernel setter, then recovered only the expected supervisor write fault on `.rodata`; omitting the bit reddened that exact check |
 | PW-301 | DECIDE | P1 | NX is optional in code while user launch and the security baseline assume executable permissions are enforceable | State the minimum CPU contract and fail closed for ring 3 when mandatory isolation features are absent | Degraded boots distinguish supported fallback from refused user launch; QEMU/VMware evidence covers the accepted contract |
 | PW-302 | DECIDE | P1 | Failed clock calibration deliberately still launches a user process with no preemption and unusable Timer/Uptime progress | Choose a real fallback clock/preemption route or gate user launch and timer admission on calibrated service | Forced calibration failure remains responsive, admits no promise it cannot complete, and cannot give an infinite user loop the CPU forever |
 | PW-303 | DECIDE | P1 | VMware already produced one unexplained calibration refusal; suspend, rate change, instability detection and revocation are absent | Cost CPUID frequency leaves and at least one independent clocksource/validation path; define post-boot instability policy | Deterministic disagreement/failure injection selects or revokes a source without time going backward or pending timers hanging |
