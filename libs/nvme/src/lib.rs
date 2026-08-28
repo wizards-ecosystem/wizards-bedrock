@@ -53,6 +53,9 @@ pub const IOSQES: u32 = 6;
 /// `CC.IOCQES`: the base-two logarithm of [`COMPLETION_ENTRY_BYTES`].
 pub const IOCQES: u32 = 4;
 
+/// Most logical blocks one command can encode in the zero-based NLB field.
+pub const MAX_TRANSFER_BLOCKS: u32 = u16::MAX as u32 + 1;
+
 /// Whether memory named by the current command may return to its allocator.
 ///
 /// A completion restores ordinary ownership. An uncompleted command does not:
@@ -528,6 +531,89 @@ impl Completion {
     }
 }
 
+/// A read whose command extent and DMA capacity have both been validated.
+///
+/// The fields stay private so command construction cannot accidentally return
+/// to raw counts after this boundary. D-195 makes this the only value the
+/// kernel's read submission path accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadTransfer {
+    lba: u64,
+    blocks: u32,
+    bytes: u64,
+}
+
+/// Why a logical-block transfer cannot be encoded or safely received.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransferError {
+    /// An NVM read must name at least one logical block.
+    Empty,
+    /// The zero-based sixteen-bit NLB field cannot encode this count.
+    TooManyBlocks,
+    /// A zero-byte logical block describes no transferable storage.
+    BlockSize,
+    /// The logical-block extent wrapped or crossed the namespace end.
+    OutsideNamespace,
+    /// Multiplying the count by the logical-block size overflowed.
+    LengthOverflow,
+    /// The DMA allocation is shorter than the command's byte extent.
+    BufferTooSmall,
+}
+
+impl ReadTransfer {
+    /// Validate one logical-block read against its namespace and DMA owner.
+    ///
+    /// # Errors
+    ///
+    /// Names the first invalid boundary in command order: count encoding,
+    /// namespace extent, byte extent, then destination capacity.
+    pub const fn new(
+        lba: u64,
+        blocks: u32,
+        namespace_blocks: u64,
+        block_bytes: u64,
+        buffer_bytes: u64,
+    ) -> Result<Self, TransferError> {
+        if blocks == 0 {
+            return Err(TransferError::Empty);
+        }
+        if blocks > MAX_TRANSFER_BLOCKS {
+            return Err(TransferError::TooManyBlocks);
+        }
+        if block_bytes == 0 {
+            return Err(TransferError::BlockSize);
+        }
+        let Some(end) = lba.checked_add(blocks as u64) else {
+            return Err(TransferError::OutsideNamespace);
+        };
+        if end > namespace_blocks {
+            return Err(TransferError::OutsideNamespace);
+        }
+        let Some(bytes) = (blocks as u64).checked_mul(block_bytes) else {
+            return Err(TransferError::LengthOverflow);
+        };
+        if bytes > buffer_bytes {
+            return Err(TransferError::BufferTooSmall);
+        }
+        Ok(Self { lba, blocks, bytes })
+    }
+
+    /// First logical block in the transfer.
+    pub const fn lba(self) -> u64 {
+        self.lba
+    }
+
+    /// Exact byte extent the controller may access.
+    pub const fn bytes(self) -> u64 {
+        self.bytes
+    }
+
+    /// Zero-based NLB encoding for command dword 12.
+    pub const fn zero_based_blocks(self) -> u16 {
+        (self.blocks - 1) as u16
+    }
+}
+
 /// Where the data for a transfer lives, as the controller wants it told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Regions {
@@ -911,6 +997,70 @@ mod tests {
         assert!(clean.phase);
         assert_eq!(clean.status, 0);
         assert!(clean.is_success());
+    }
+
+    /// Zero has no NLB encoding and must never reach `blocks - 1`.
+    #[test]
+    fn an_empty_transfer_has_no_nlb_encoding() {
+        assert_eq!(
+            ReadTransfer::new(0, 0, 1, 512, 512),
+            Err(TransferError::Empty)
+        );
+    }
+
+    /// Exhaust every count around the sixteen-bit, zero-based NLB field.
+    #[test]
+    fn every_nonempty_nlb_count_has_one_exact_boundary() {
+        let namespace = u64::from(MAX_TRANSFER_BLOCKS) + 1;
+        for blocks in 1..=MAX_TRANSFER_BLOCKS + 1 {
+            let transfer = ReadTransfer::new(0, blocks, namespace, 1, namespace);
+            if blocks <= MAX_TRANSFER_BLOCKS {
+                let transfer = transfer.expect("the NLB field can encode this count");
+                assert_eq!(u32::from(transfer.zero_based_blocks()), blocks - 1);
+                assert_eq!(transfer.bytes(), u64::from(blocks));
+            } else {
+                assert_eq!(transfer, Err(TransferError::TooManyBlocks));
+            }
+        }
+    }
+
+    /// The namespace end is exclusive and its addition never wraps.
+    #[test]
+    fn a_transfer_never_crosses_or_wraps_its_namespace() {
+        let last = ReadTransfer::new(9, 1, 10, 512, 512).expect("the final block");
+        assert_eq!(last.lba(), 9);
+        assert_eq!(last.bytes(), 512);
+        assert_eq!(
+            ReadTransfer::new(9, 2, 10, 512, 1024),
+            Err(TransferError::OutsideNamespace)
+        );
+        assert_eq!(
+            ReadTransfer::new(u64::MAX, 1, u64::MAX, 1, 1),
+            Err(TransferError::OutsideNamespace)
+        );
+        assert_eq!(
+            ReadTransfer::new(0, 1, 0, 1, 1),
+            Err(TransferError::OutsideNamespace)
+        );
+    }
+
+    /// The byte extent must exist, multiply exactly and fit the DMA owner.
+    #[test]
+    fn transfer_bytes_must_fit_the_dma_buffer() {
+        assert_eq!(
+            ReadTransfer::new(0, 1, 1, 0, 0),
+            Err(TransferError::BlockSize)
+        );
+        assert_eq!(
+            ReadTransfer::new(0, 2, 2, u64::MAX, u64::MAX),
+            Err(TransferError::LengthOverflow)
+        );
+        assert_eq!(
+            ReadTransfer::new(0, 2, 2, 512, 1023),
+            Err(TransferError::BufferTooSmall)
+        );
+        let exact = ReadTransfer::new(0, 2, 2, 512, 1024).expect("an exact buffer");
+        assert_eq!(exact.bytes(), 1024);
     }
 
     /// A transfer inside one page needs one pointer.

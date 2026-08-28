@@ -26,7 +26,8 @@
 //! structure is not (D-169).
 
 use nvme::{
-    Capabilities, Capacity, Command, Completion, DmaState, configuration, register, status,
+    Capabilities, Capacity, Command, Completion, DmaState, ReadTransfer, TransferError,
+    configuration, register, status,
 };
 use wost::arch::current::paging::DeviceMapping;
 use wost::mm::{self, DmaSegment};
@@ -144,6 +145,12 @@ pub(crate) struct Controller {
     /// Makes the production timeout arm deterministic for its machine proof.
     #[cfg(feature = "selftest")]
     force_timeout: bool,
+    /// Stop a validated read at the last seam before command construction.
+    #[cfg(feature = "selftest")]
+    intercept_read_submission: bool,
+    /// Invalid requests which crossed validation during the current witness.
+    #[cfg(feature = "selftest")]
+    intercepted_read_submissions: u32,
     /// What `Identify` said, kept so a check can ask rather than infer.
     pub(crate) blocks: u64,
     /// Bytes in one logical block.
@@ -170,6 +177,8 @@ pub(crate) enum BringUpError {
     NotReady,
     /// A command was refused, or never answered.
     Command(u16),
+    /// A read did not fit its command, namespace or DMA owner.
+    InvalidTransfer(TransferError),
 }
 
 impl core::fmt::Display for BringUpError {
@@ -183,6 +192,7 @@ impl core::fmt::Display for BringUpError {
             Self::NoMemory => f.write_str("no memory for the queues"),
             Self::NotReady => f.write_str("the controller never became ready"),
             Self::Command(status) => write!(f, "a command was refused: status {status:#x}"),
+            Self::InvalidTransfer(reason) => write!(f, "an invalid transfer: {reason:?}"),
         }
     }
 }
@@ -253,6 +263,10 @@ pub(crate) fn bring_up(
         dma: DmaState::new(),
         #[cfg(feature = "selftest")]
         force_timeout: false,
+        #[cfg(feature = "selftest")]
+        intercept_read_submission: false,
+        #[cfg(feature = "selftest")]
+        intercepted_read_submissions: 0,
         blocks: 0,
         block_bytes: 0,
     };
@@ -369,18 +383,56 @@ impl Controller {
     ///
     /// # Errors
     ///
-    /// [`BringUpError::Command`] with the controller's status, or
-    /// [`BringUpError::NotReady`] if it never answered.
+    /// [`BringUpError::InvalidTransfer`] before submission when the command,
+    /// namespace or DMA extent does not fit; otherwise the controller's
+    /// command, memory and readiness errors.
     pub(crate) fn read_blocks(
         &mut self,
         lba: u64,
         blocks: u32,
         into: &mut DmaSegment,
     ) -> Result<(), BringUpError> {
-        let length = u64::from(blocks) * u64::from(self.block_bytes);
+        let buffer_bytes = into.len().ok_or(BringUpError::NotReady)?;
+        let request = self.validate_read(lba, blocks, buffer_bytes)?;
+        self.submit_read(request, into)
+    }
+
+    /// Bind raw caller arguments to this namespace before submission.
+    fn validate_read(
+        &self,
+        lba: u64,
+        blocks: u32,
+        buffer_bytes: u64,
+    ) -> Result<ReadTransfer, BringUpError> {
+        ReadTransfer::new(
+            lba,
+            blocks,
+            self.blocks,
+            u64::from(self.block_bytes),
+            buffer_bytes,
+        )
+        .map_err(BringUpError::InvalidTransfer)
+    }
+
+    /// Build and publish a read already proved to fit every outer bound.
+    fn submit_read(
+        &mut self,
+        request: ReadTransfer,
+        into: &mut DmaSegment,
+    ) -> Result<(), BringUpError> {
+        #[cfg(feature = "selftest")]
+        if self.intercept_read_submission {
+            self.intercepted_read_submissions += 1;
+            return Err(BringUpError::NotReady);
+        }
+
+        if self.io.is_none() {
+            return Err(BringUpError::NotReady);
+        }
         let address = into.address().ok_or(BringUpError::NotReady)?;
-        let built =
-            nvme::regions(address, length, PAGE_SIZE, None).ok_or(BringUpError::NoMemory)?;
+        let built = nvme::regions(address, request.bytes(), PAGE_SIZE, None)
+            .ok_or(BringUpError::NoMemory)?;
+        let lba = request.lba();
 
         let command = Command::new(nvme::nvm::READ, self.take_id())
             .namespace(NAMESPACE)
@@ -389,13 +441,63 @@ impl Controller {
             .dword(11, (lba >> 32) as u32)
             // **Zero-based**, like every count in this specification: one block
             // is a zero here, and an off-by-one reads a block too many.
-            .dword(12, blocks - 1);
+            .dword(12, u32::from(request.zero_based_blocks()));
 
-        let queue = self.io.is_some();
-        if !queue {
-            return Err(BringUpError::NotReady);
-        }
         self.run_on(IO_QUEUE, command, Some(into))
+    }
+
+    /// Prove malformed reads stop before the private submission seam.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn malformed_reads_stop_before_submission(&mut self, into: &mut DmaSegment) -> bool {
+        let Some(buffer_bytes) = into.len() else {
+            return false;
+        };
+        let block_bytes = u64::from(self.block_bytes);
+        if block_bytes == 0 {
+            return false;
+        }
+        let short_blocks = buffer_bytes / block_bytes + 1;
+        let Ok(short_blocks) = u32::try_from(short_blocks) else {
+            return false;
+        };
+        if short_blocks > nvme::MAX_TRANSFER_BLOCKS || u64::from(short_blocks) > self.blocks {
+            return false;
+        }
+
+        let commands_before = self.commands();
+        let intercepted_before = self.intercepted_read_submissions;
+        self.intercept_read_submission = true;
+        let refused = [
+            (
+                self.read_blocks(0, 0, into),
+                TransferError::Empty,
+            ),
+            (
+                self.read_blocks(0, nvme::MAX_TRANSFER_BLOCKS + 1, into),
+                TransferError::TooManyBlocks,
+            ),
+            (
+                self.read_blocks(u64::MAX, 1, into),
+                TransferError::OutsideNamespace,
+            ),
+            (
+                self.read_blocks(self.blocks, 1, into),
+                TransferError::OutsideNamespace,
+            ),
+            (
+                self.read_blocks(0, short_blocks, into),
+                TransferError::BufferTooSmall,
+            ),
+        ]
+        .into_iter()
+        .all(|(result, expected)| {
+            matches!(result, Err(BringUpError::InvalidTransfer(found)) if found == expected)
+        });
+        self.intercept_read_submission = false;
+
+        refused
+            && self.commands() == commands_before
+            && self.intercepted_read_submissions == intercepted_before
     }
 
     /// The next command identifier.

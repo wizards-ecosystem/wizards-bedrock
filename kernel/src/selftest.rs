@@ -2425,6 +2425,15 @@ fn the_controller_was_read_rather_than_assumed() -> bool {
     .unwrap_or(false)
 }
 
+/// Malformed command, namespace and DMA extents are refused before the seam
+/// that can construct a queue entry or ring a doorbell.
+fn invalid_nvme_reads_stop_before_submission() -> bool {
+    nvme::with_controller(|controller, buffer| {
+        controller.malformed_reads_stop_before_submission(buffer)
+    })
+    .unwrap_or(false)
+}
+
 /// A read returns the block that was asked for.
 ///
 /// The end of the whole path: bytes written into a file on the host, carried
@@ -6771,7 +6780,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 199;
+const EXPECTED_CHECKS: usize = 200;
 
 impl Report {
     const fn new() -> Self {
@@ -6991,6 +7000,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the controller was read rather than assumed",
         the_controller_was_read_rather_than_assumed(),
+    );
+    report.check(
+        "invalid nvme reads stop before submission",
+        invalid_nvme_reads_stop_before_submission(),
     );
     report.check(
         "a block read returns the block that was asked for",

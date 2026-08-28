@@ -568,6 +568,19 @@ impl DmaSegment {
         }
     }
 
+    /// Bytes in the run, unless uncertain device ownership retained it.
+    pub const fn len(&self) -> Option<u64> {
+        match &self.segment {
+            Some(segment) => Some(segment.len()),
+            None => None,
+        }
+    }
+
+    /// Whether no accessible bytes remain.
+    pub const fn is_empty(&self) -> bool {
+        matches!(self.len(), None | Some(0))
+    }
+
     /// Whether the run is unavailable because a device may still reach it.
     pub const fn is_retained(&self) -> bool {
         self.segment.is_none()

@@ -754,6 +754,64 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "tests::every_refused_claim_preparation_leaves_the_registry_unchanged",
         },
     },
+    // Admit an empty read to the zero-based NLB encoder. In release that
+    // underflows to the largest command rather than panicking.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        if blocks == 0 {\n            return Err(TransferError::Empty);\n        }",
+        replace: "        if false && blocks == 0 {\n            return Err(TransferError::Empty);\n        }",
+        breaks: "an empty transfer has no nlb encoding",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::an_empty_transfer_has_no_nlb_encoding",
+        },
+    },
+    // Admit the first count whose zero-based encoding no longer fits the
+    // command's sixteen-bit NLB field.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        if blocks > MAX_TRANSFER_BLOCKS {\n            return Err(TransferError::TooManyBlocks);\n        }",
+        replace: "        if false && blocks > MAX_TRANSFER_BLOCKS {\n            return Err(TransferError::TooManyBlocks);\n        }",
+        breaks: "the nlb field has one exact maximum block count",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::every_nonempty_nlb_count_has_one_exact_boundary",
+        },
+    },
+    // Wrap the LBA end back into the namespace instead of refusing the
+    // overflow which would make a controller reach an unrelated block.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        let Some(end) = lba.checked_add(blocks as u64) else {\n            return Err(TransferError::OutsideNamespace);\n        };",
+        replace: "        let end = lba.wrapping_add(blocks as u64);",
+        breaks: "a transfer extent cannot wrap into its namespace",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::a_transfer_never_crosses_or_wraps_its_namespace",
+        },
+    },
+    // Let the device write one byte past the allocation that proves the DMA
+    // extent. Exact-size and short buffers differ only at this comparison.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        if bytes > buffer_bytes {\n            return Err(TransferError::BufferTooSmall);\n        }",
+        replace: "        if false && bytes > buffer_bytes {\n            return Err(TransferError::BufferTooSmall);\n        }",
+        breaks: "a transfer fits wholly inside its dma allocation",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::transfer_bytes_must_fit_the_dma_buffer",
+        },
+    },
+    // Replace the controller-bound validation with one known-good request.
+    // The self-test submission interceptor catches every malformed caller at
+    // the final seam without ringing the real device's doorbell.
+    Mutation {
+        file: "kernel/src/nvme.rs",
+        find: "        let request = self.validate_read(lba, blocks, buffer_bytes)?;",
+        replace: "        let request = self\n            .validate_read(lba, blocks, buffer_bytes)\n            .or_else(|_| {\n                ReadTransfer::new(\n                    0,\n                    1,\n                    self.blocks,\n                    u64::from(self.block_bytes),\n                    u64::MAX,\n                )\n                .map_err(BringUpError::InvalidTransfer)\n            })?;",
+        breaks: "raw nvme reads cannot bypass controller-bound validation",
+        reddens: Caught::Check("invalid nvme reads stop before submission"),
+    },
     // Slice 5. The logical block address dropped, so every read answers with
     // block zero. Invisible against a disk of identical blocks, which is why
     // the namespace carries a different signature in each (D-169).
@@ -770,8 +828,8 @@ pub const MUTATIONS: &[Mutation] = &[
     // block is still exactly right; only the bytes past it say so.
     Mutation {
         file: "kernel/src/nvme.rs",
-        find: "            .dword(12, blocks - 1);",
-        replace: "            .dword(12, blocks);",
+        find: "            .dword(12, u32::from(request.zero_based_blocks()));",
+        replace: "            .dword(12, u32::from(request.zero_based_blocks()) + 1);",
         breaks: "every count in this specification is zero-based",
         reddens: Caught::Check("a block read returns the block that was asked for"),
     },
