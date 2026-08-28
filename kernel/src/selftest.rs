@@ -22,7 +22,9 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use handle_space::Rights;
 use stack_layout::StackLayout;
 use wost::arch::current::cpu::{self, Protections};
-use wost::arch::current::paging::{self, ActivateError, AddressSpace, BootRegion, MapError};
+use wost::arch::current::paging::{
+    self, ActivateError, AddressSpace, BootRegion, MapError, ReclaimError,
+};
 use wost::arch::current::usercopy::{self, UserCopyError};
 use wost::arch::current::{apic, interrupt, pic, port, segment, task, xstate};
 use wost::boot::{self, FramebufferInfo, Rgb};
@@ -3728,25 +3730,21 @@ fn a_bound_space_is_not_reclaimed() -> bool {
         return false;
     };
 
-    // Refused with no evidence, and refused with evidence for another space:
-    // the token names a root, and one minted for a different one is not an
-    // answer about this.
-    // The space comes back with the refusal, which is what lets the rest of
-    // this check happen at all — and is the reason `reclaim` reports its error
-    // that way.
-    // Refused, and the space is untouched — which is what lets the rest of
-    // this check happen at all.
-    let refused = space.reclaim(None).is_none() && !space.is_reclaimed();
+    // Refused with no evidence and left untouched, so the same value can be
+    // reclaimed once the task table supplies the evidence below.
+    let held = mm::free_frames();
+    let refused = matches!(
+        space.reclaim(None),
+        Err(ReclaimError::StillBound(found)) if found == root
+    ) && !space.is_reclaimed()
+        && mm::free_frames() == held;
 
     // And once the thread is gone, the task table says so and the space comes
     // back — so this is not simply "reclaim never works".
     let gone = runs_until(500, || task::address_space_of(slot).is_none());
     let released = task::release_address_space(root);
     let had_evidence = released.is_some();
-    let reclaimed = space
-        .reclaim(released)
-        .is_some_and(|(tables, _)| tables > 0)
-        && space.is_reclaimed();
+    let reclaimed = space.reclaim(released).is_ok_and(|tables| tables > 0) && space.is_reclaimed();
 
     refused && gone && had_evidence && reclaimed
 }
@@ -3773,6 +3771,7 @@ fn a_dead_program_gives_its_memory_back() -> bool {
     let free_before = mm::free_frames();
     let slots_before = thread::free_slots();
     let (pages_before, tables_before) = user::reclaimed();
+    let reclaim_refusals_before = user::refused_table_reclaims();
     let retirements_before = thread::retirements();
 
     let Ok(spawned) = user::run_for_bootstrap() else {
@@ -3790,7 +3789,7 @@ fn a_dead_program_gives_its_memory_back() -> bool {
     // when the machine has nothing better to do; here the check asks
     // directly, because waiting for idle in a busy self-test is waiting for
     // an event that may not come.
-    let collected = user::collect().is_some();
+    let collected = user::collect().is_some_and(|result| result.table_refusal.is_none());
     let (pages_after, tables_after) = user::reclaimed();
     let gave_back = pages_after > pages_before && tables_after > tables_before;
 
@@ -3830,8 +3829,16 @@ fn a_dead_program_gives_its_memory_back() -> bool {
     // a leak of even one frame apiece would be visible here, and the whole
     // arena is only a few hundred.
     let steady = mm::free_frames() >= free_at_start;
+    let no_refusal = user::refused_table_reclaims() == reclaim_refusals_before;
 
-    slot_returned && collected && gave_back && no_worse && drained && repeated && steady
+    slot_returned
+        && collected
+        && gave_back
+        && no_worse
+        && drained
+        && repeated
+        && steady
+        && no_refusal
 }
 
 /// A program asking for a call this kernel does not serve is refused, and the
@@ -5163,7 +5170,7 @@ fn a_refused_remap_preserves_every_older_entry() -> bool {
     let first_intact = space.lookup(BASE) == Some((physical, expected));
     let blocker_intact =
         space.lookup(BASE + PAGE_SIZE) == Some((physical + 2 * PAGE_SIZE, expected));
-    let reclaimed = space.reclaim(None).is_some();
+    let reclaimed = space.reclaim(None).is_ok();
 
     refused && first_intact && blocker_intact && reclaimed
 }
@@ -5198,13 +5205,55 @@ fn a_shared_mapping_keeps_its_frame() -> bool {
     let expected = flags.union(Flags::PRESENT).union(Flags::USER);
     let mapping_intact = space.lookup(PROBE) == Some((physical, expected));
 
-    let Some((tables, lost)) = space.reclaim(None) else {
+    let Ok(tables) = space.reclaim(None) else {
         return false;
     };
     let mapping_gone = space.lookup(PROBE).is_none();
-    let released = lost == 0 && mm::free_frames() == held + tables + 1;
+    let released = mm::free_frames() == held + tables + 1;
 
     withheld && mapping_intact && mapping_gone && released
+}
+
+/// A space larger than D-117's old ownership array returns every table frame.
+fn a_large_space_returns_every_table_frame() -> bool {
+    const BASE: u64 = 0x0000_1000_0000_0000;
+    const TABLES: u64 = 34;
+
+    let Some(physical) = mm::first_memory_run(PAGE_SIZE) else {
+        return false;
+    };
+    let build = || -> Option<AddressSpace> {
+        let mut space = AddressSpace::for_user().ok()?;
+        for index in 0..TABLES {
+            let region = BootRegion::describe(physical, PAGE_SIZE)?;
+            let at = BASE.checked_add(index.checked_mul(LARGE_PAGE_SIZE)?)?;
+            space.map_boot(at, region, Flags::NO_EXECUTE).ok()?;
+        }
+        Some(space)
+    };
+
+    // Warm each Vec size class so the frame count below measures page tables,
+    // not the heap's first backing frame for the ownership list.
+    let Some(mut warmup) = build() else {
+        return false;
+    };
+    if warmup.reclaim(None).is_err() {
+        return false;
+    }
+    drop(warmup);
+
+    let free_before = mm::free_frames();
+    let Some(mut space) = build() else {
+        return false;
+    };
+    let free_while_mapped = mm::free_frames();
+    let Ok(returned) = space.reclaim(None) else {
+        return false;
+    };
+
+    returned > 32
+        && free_before.checked_sub(free_while_mapped) == Some(returned)
+        && mm::free_frames() == free_before
 }
 
 /// An unmapped range gives its frames back, and not before the invalidation.
@@ -6463,7 +6512,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 194;
+const EXPECTED_CHECKS: usize = 195;
 
 impl Report {
     const fn new() -> Self {
@@ -6927,6 +6976,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a shared mapping keeps its frame",
         a_shared_mapping_keeps_its_frame(),
+    );
+    report.check(
+        "a large space returns every table frame",
+        a_large_space_returns_every_table_frame(),
     );
     report.check(
         "an unmapped range returns its frames",
@@ -7643,7 +7696,7 @@ fn a_reclaimed_space_answers_nothing() -> bool {
 
     // Never bound, so this is the path the second call used to reach
     // `Frame::from_raw(0)` on.
-    let reclaimed = space.reclaim(None).is_some();
+    let reclaimed = space.reclaim(None).is_ok();
     let empty = space.is_reclaimed();
 
     // **Counted, not observed.** Frame zero reads as zeros on both test
@@ -7655,7 +7708,7 @@ fn a_reclaimed_space_answers_nothing() -> bool {
 
     let silent = space.lookup(at).is_none();
     let unbindable = matches!(space.bind(), Err(ActivateError::Reclaimed));
-    let once_only = space.reclaim(None).is_none();
+    let once_only = matches!(space.reclaim(None), Err(ReclaimError::Reclaimed));
 
     let all_three_refused = paging::reclaimed_refusals() == refusals + 3;
 

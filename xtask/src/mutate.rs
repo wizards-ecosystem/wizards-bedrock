@@ -257,8 +257,10 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "wost/src/arch/x86_64/paging.rs",
-        find: "        if self.bound && released.is_none_or(|released| released.root() != self.root) {",
-        replace: "        if false && self.bound && released.is_none() {",
+        find: "        if self.bound {
+            match released {",
+        replace: "        if false && self.bound {
+            match released {",
         breaks: "a bound space is not reclaimed under its own thread",
         reddens: Caught::Check("a bound space is not reclaimed"),
     },
@@ -1172,6 +1174,15 @@ pub const MUTATIONS: &[Mutation] = &[
             package: "xtask",
             name: "unsafety::tests::the_running_space_has_no_broad_safe_borrow",
         },
+    },
+    // Forget every ownership entry after D-117's old fixed ceiling. The table
+    // frames remain live and reachable, but reclamation silently loses them.
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "for frame in self.tables.drain(..) {",
+        replace: "for frame in self.tables.drain(..).take(32) {",
+        breaks: "a large address space returns every table frame",
+        reddens: Caught::Check("a large space returns every table frame"),
     },
 ];
 

@@ -221,11 +221,46 @@ impl fmt::Display for ActivateError {
 
 impl core::error::Error for ActivateError {}
 
+/// Why an address space kept its page-table frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ReclaimError {
+    /// This space was already reclaimed.
+    Reclaimed,
+    /// A task still names this bound space and no release evidence was given.
+    StillBound(Paddr),
+    /// The release evidence names a different space.
+    WrongRelease {
+        /// Root this space owns.
+        expected: Paddr,
+        /// Root the evidence releases.
+        found: Paddr,
+    },
+    /// The CPU is currently walking this space.
+    Active(Paddr),
+}
+
+impl fmt::Display for ReclaimError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Reclaimed => f.write_str("the address space was already reclaimed"),
+            Self::StillBound(root) => write!(f, "a task still names the space at {root:#x}"),
+            Self::WrongRelease { expected, found } => write!(
+                f,
+                "release evidence names {found:#x}, not the space at {expected:#x}"
+            ),
+            Self::Active(root) => write!(f, "the CPU is walking the space at {root:#x}"),
+        }
+    }
+}
+
+impl core::error::Error for ReclaimError {}
+
 /// A four-level page table under construction.
 ///
-/// Every table in it is a frame permanently owned by the structure: they are
-/// deliberately leaked from the frame allocator rather than tracked. `unmap`
-/// clears leaf entries and leaves the tables above them (D-88), because
+/// Every table in it is a frame owned by the structure until an explicit
+/// reclaim. `unmap` clears leaf entries and leaves the tables above them
+/// (D-88), because
 /// reclaiming one means proving no sibling entry survives — and a table freed
 /// underneath a live `CR3` is the one bug this design must not permit.
 #[derive(Debug)]
@@ -240,10 +275,7 @@ pub struct AddressSpace {
     /// Not the shared kernel entries `for_user` copies — those are the
     /// kernel's tables and belong to it. Only what `set` allocated walking
     /// down, plus the root (D-117).
-    tables: [Paddr; MAX_OWN_TABLES],
-    /// How many of `tables` are used, and how many were lost past the end.
-    tables_used: usize,
-    tables_lost: usize,
+    tables: Vec<Paddr>,
     /// Which half of the address space this one may be told to change.
     reach: Reach,
     /// Whether a thread already runs on these tables.
@@ -322,9 +354,7 @@ impl AddressSpace {
             root,
             device_next: DEVICE_WINDOW_START,
             devices: [None; MAX_DEVICE_MAPPINGS],
-            tables: [0; MAX_OWN_TABLES],
-            tables_used: 0,
-            tables_lost: 0,
+            tables: Vec::new(),
             bound: false,
             reach: Reach::Everywhere,
             shared: Vec::new(),
@@ -1142,8 +1172,7 @@ impl AddressSpace {
                 }
                 current.address()
             } else {
-                let frame = take_table()?;
-                self.remember_table(frame);
+                let frame = self.take_owned_table()?;
                 // SAFETY: as above.
                 let privilege = if flags.contains(Flags::USER) {
                     TablePrivilege::User
@@ -1193,28 +1222,15 @@ fn take_table() -> Result<Paddr, MapError> {
     Ok(address)
 }
 
-/// Table frames one space will remember well enough to give back.
-///
-/// A user space needs a root, a third-level table per 512 GiB of mapped
-/// address space, and second- and first-level tables per region — a handful
-/// for a program with a few segments, a stack and a ring. Past this the frames
-/// are still correct and are simply not returned, which is counted rather than
-/// silent (D-117).
-const MAX_OWN_TABLES: usize = 32;
-
 impl AddressSpace {
-    /// Note that `frame` is one of this space's own tables.
-    fn remember_table(&mut self, frame: Paddr) {
-        match self.tables.get_mut(self.tables_used) {
-            Some(slot) => {
-                *slot = frame;
-                self.tables_used += 1;
-            }
-            // Past the ceiling. The mapping is correct and the frame is not
-            // coming back; counting it means the leak is a number somebody can
-            // read rather than a difference nobody notices.
-            None => self.tables_lost += 1,
-        }
+    /// Take and retain one table frame, or change nothing.
+    fn take_owned_table(&mut self) -> Result<Paddr, MapError> {
+        self.tables
+            .try_reserve(1)
+            .map_err(|_| MapError::OutOfMemory)?;
+        let frame = take_table()?;
+        self.tables.push(frame);
+        Ok(frame)
     }
 
     /// Give this space's own table frames back to the allocator.
@@ -1223,7 +1239,7 @@ impl AddressSpace {
     /// unmapped first, or its frames go with the tables and are lost. The
     /// caller does that, because only it knows what it mapped.
     ///
-    /// Consuming, and it refuses a space that is **bound** or that is the one
+    /// Terminal, and it refuses a space that is **bound** or that is the one
     /// the CPU is walking. Freeing the tables under `CR3` is a triple fault at
     /// the next memory access; freeing a bound space's is the same fault
     /// deferred to whenever its thread is next scheduled, which is worse for
@@ -1233,12 +1249,10 @@ impl AddressSpace {
     /// caller means after the thread has retired and its slot has been given
     /// back.
     ///
-    /// `None` on a refusal, with the space untouched — a refusal that consumed
-    /// the thing it declined to act on would leave a caller unable to try
-    /// again and would leak the tables it was protecting. On success the space
-    /// is *emptied*: [`is_reclaimed`](Self::is_reclaimed) is true and every
-    /// operation refuses, which is what replaces consuming it (D-123).
-    pub fn reclaim(&mut self, released: Option<Released>) -> Option<(usize, usize)> {
+    /// [`ReclaimError`] on a refusal, with the space untouched. On success the
+    /// space is *emptied*: [`is_reclaimed`](Self::is_reclaimed) is true and
+    /// every operation refuses, which is what replaces consuming it (D-123).
+    pub fn reclaim(&mut self, released: Option<Released>) -> Result<usize, ReclaimError> {
         // A **bound** space has a thread that will be switched onto it —
         // `prepare` loads the root unconditionally — so freeing its tables is
         // a `CR3` pointing at re-issued frames whenever that thread is next
@@ -1256,23 +1270,31 @@ impl AddressSpace {
         // (D-139).
         if self.is_reclaimed() {
             RECLAIMED_REFUSALS.fetch_add(1, Ordering::Relaxed);
-            return None;
+            return Err(ReclaimError::Reclaimed);
         }
-        if self.bound && released.is_none_or(|released| released.root() != self.root) {
-            return None;
+        if self.bound {
+            match released {
+                None => return Err(ReclaimError::StillBound(self.root)),
+                Some(released) if released.root() != self.root => {
+                    return Err(ReclaimError::WrongRelease {
+                        expected: self.root,
+                        found: released.root(),
+                    });
+                }
+                Some(_) => {}
+            }
         }
         if cpu::page_table_base() == self.root {
-            return None;
+            return Err(ReclaimError::Active(self.root));
         }
 
-        let mut returned = 0;
-        for frame in &self.tables[..self.tables_used] {
+        let returned = self.tables.len() + 1;
+        for frame in self.tables.drain(..) {
             // SAFETY: each was allocated by `take_table` for this space and
             // forgotten there, so exactly one handle is being rebuilt for it;
-            // the space is consumed here, so nothing can name it again. The
-            // refusal above establishes that nothing is walking it.
-            drop(unsafe { mm::Frame::from_raw(*frame) });
-            returned += 1;
+            // the space is terminally emptied here. The refusal above
+            // establishes that nothing is walking it.
+            drop(unsafe { mm::Frame::from_raw(frame) });
         }
         // The root, which `new` took before there was anywhere to record it.
         // SAFETY: as above.
@@ -1283,11 +1305,10 @@ impl AddressSpace {
         // back without a thousand-byte error variant (D-123).
         let root = self.root;
         self.root = 0;
-        self.tables_used = 0;
         self.shared.clear();
         let _ = root;
 
-        Some((returned + 1, self.tables_lost))
+        Ok(returned)
     }
 
     /// Whether this space's tables have gone back to the allocator.

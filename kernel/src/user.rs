@@ -20,7 +20,7 @@ use elf64::{Elf, ElfError, SegmentKind};
 use handle_space::Rights;
 use wost::arch::current::cpu;
 use wost::arch::current::interrupt::{self, TrapFrame};
-use wost::arch::current::paging::{ActivateError, AddressSpace, MapError};
+use wost::arch::current::paging::{ActivateError, AddressSpace, MapError, ReclaimError};
 use wost::arch::current::task;
 use wost::arch::current::usercopy;
 use wost::boot::HandoffError;
@@ -734,15 +734,21 @@ fn reclaim(bootstrap: Bootstrap) -> Reclaimed {
     // if a live slot still names them — the second being the case a `CR3`
     // comparison cannot see (D-123).
     let released = task::release_address_space(space.root());
-    // `None` means something still names it. The tables stay, which is a leak
-    // and not a fault — and the alternative is a `CR3` pointing at re-issued
-    // frames the next time that thread is scheduled.
-    let (tables, lost) = space.reclaim(released).unwrap_or((0, 0));
+    // A refusal means something still names it. The tables stay, which is a
+    // leak and not a fault — and the alternative is a `CR3` pointing at
+    // re-issued frames the next time that thread is scheduled.
+    let (tables, table_refusal) = match space.reclaim(released) {
+        Ok(tables) => (tables, None),
+        Err(reason) => {
+            warn!("user: address-space cleanup refused: {reason}");
+            (0, Some(reason))
+        }
+    };
 
     Reclaimed {
         pages: unmapped,
         tables,
-        lost,
+        table_refusal,
         abandoned,
     }
 }
@@ -754,8 +760,8 @@ pub(crate) struct Reclaimed {
     pub(crate) pages: usize,
     /// Frames its page tables were built from.
     pub(crate) tables: usize,
-    /// Table frames it had too many of to remember, and did not get back.
-    pub(crate) lost: usize,
+    /// Why its table frames did not come back, if cleanup was refused.
+    pub(crate) table_refusal: Option<ReclaimError>,
     /// Operations that were still in flight and were ended.
     pub(crate) abandoned: usize,
 }
@@ -767,6 +773,7 @@ static ZOMBIES: SpinLock<[Option<Bootstrap>; thread::CAPACITY]> =
 /// What every reclaim so far gave back.
 static RECLAIMED_PAGES: AtomicUsize = AtomicUsize::new(0);
 static RECLAIMED_TABLES: AtomicUsize = AtomicUsize::new(0);
+static REFUSED_TABLE_RECLAIMS: AtomicUsize = AtomicUsize::new(0);
 
 /// What a program held when it died.
 ///
@@ -853,6 +860,9 @@ pub(crate) fn collect() -> Option<Reclaimed> {
     let reclaimed = reclaim(bootstrap);
     RECLAIMED_PAGES.fetch_add(reclaimed.pages, Ordering::AcqRel);
     RECLAIMED_TABLES.fetch_add(reclaimed.tables, Ordering::AcqRel);
+    if reclaimed.table_refusal.is_some() {
+        REFUSED_TABLE_RECLAIMS.fetch_add(1, Ordering::AcqRel);
+    }
     Some(reclaimed)
 }
 
@@ -868,6 +878,12 @@ pub(crate) fn reclaimed() -> (usize, usize) {
         RECLAIMED_PAGES.load(Ordering::Acquire),
         RECLAIMED_TABLES.load(Ordering::Acquire),
     )
+}
+
+/// Address-space table cleanups refused so far.
+#[cfg(feature = "selftest")]
+pub(crate) fn refused_table_reclaims() -> usize {
+    REFUSED_TABLE_RECLAIMS.load(Ordering::Acquire)
 }
 
 /// What a program asked for, in `rax`.
