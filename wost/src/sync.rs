@@ -512,9 +512,10 @@ impl<T> ThreadLock<T> {
     /// Acquire the lock, spinning until it is free.
     ///
     /// A leaf acquisition, as [`SpinLock::lock_leaf`] is: the caller does not
-    /// block while holding it. There is no token-bearing form because nothing
-    /// wants one — the only holders are the two consoles, whose work is to
-    /// format bytes and return.
+    /// block while holding it. There is no token-bearing form because the
+    /// guard itself cannot be carried through a scheduler block. Holders may
+    /// still perform long, non-blocking work while interrupts and preemption
+    /// remain available to the machine (D-200).
     ///
     /// # Panics
     ///

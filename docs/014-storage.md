@@ -7,8 +7,9 @@ that the opening draft conflated: Timer is the first operation whose honest
 answer is *not yet*; Duplicate is the first completion that carries derived
 authority; OpenAt is the first namespace operation that produces authority;
 and Read is the first storage/data caller that needs a handle, offset, buffer
-and length together. Current Read still polls NVMe inline while `RingEnter`
-serves it; it has ring wire shape, not deferred device service.
+and length together. D-200 later moved Read service to one bounded file worker,
+so `RingEnter` now admits the operation and `RingWait` leaves through its saved
+trap frame until the worker posts the terminal completion.
 
 Those milestones reshape the ABI, which is why D-149 puts them **before** the
 filesystem rather than after it. Build `read()` synchronous as a separate call
@@ -76,7 +77,7 @@ before its abstraction is anything but a guess.
 | 6 | **FAT32, read-only, short names.** `libs/fat32` over a block trait, checked against the ESP `xtask` already builds | Done |
 | 7 | **The VFS.** A directory abstraction over resolve, read and enumerate (`modify` is reserved for a future write path), enum dispatch, and path resolution that cannot ascend | Done |
 | 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes | Done |
-| 9 | **The file handle.** File `READ`, directory `TRAVERSE`/`ENUMERATE`, offsets per operation, and a `Read` submission whose current service still polls inline | Done |
+| 9 | **The file handle.** File `READ`, directory `TRAVERSE`/`ENUMERATE`, offsets per operation, and a `Read` submission later deferred by D-200 | Done |
 | 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks — D-135), the adversarial audit, the roadmap and this file's closing section | Code complete; the post-audit image still awaits the human VMware close |
 
 ---
@@ -485,9 +486,9 @@ the program is told, which is D-151's whole argument for reserving at all.
 
 ### What this slice deliberately did not do
 
-- **`Pending` is a timer and nothing else.** D-41 forbids the abstraction with
-  one implementation. The expected block-device kind did not arrive: current
-  Read still polls inline, so deferred device service remains future work.
+- **At this slice, `Pending` was a timer and nothing else.** D-41 forbade the
+  abstraction with one implementation. D-200 later added queued and running
+  Read kinds when deferred device service arrived.
 - **No worker thread.** `012` §8 is emphatic, and a state machine driven from
   the waiting thread needs none. Sixteen thread slots is the reason and the
   measurement will be taken in slice 5.
@@ -714,10 +715,10 @@ is exactly `PCD`.
 
 ### What is left for later slices
 
-A read still spins, bounded rather than endless. Slice 9 gives it a submission
-shape but still polls the controller inline while `RingEnter` serves the queue.
-A future deferred device state machine and interrupt path must couple that work
-to slice 3's teardown rule: do not return before the controller is quiet.
+A read still spins, bounded rather than endless. Slice 9 gave it a submission
+shape; D-200 later moved the polling to a preemptible worker and coupled its
+queued/running state to slice 3's teardown rule. An interrupt-driven controller
+remains future work.
 
 ---
 
@@ -959,14 +960,14 @@ first, because a caller freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 203 |
-| Mutations | 130 registered; 64 in the last recorded full sweep, with 66 later entries broken individually |
+| Machine checks | 206 |
+| Mutations | 136 registered; 64 in the last recorded full sweep, with 72 later entries broken individually |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-199 |
+| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-200 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but that proves registration rather than a current full
-sweep. D-184's register carries the 130-entry count. A number restated in prose can
+sweep. D-184's register carries the 136-entry count. A number restated in prose can
 disagree with itself — which the per-slice lines above did, in seven places, and
 which is why they now say what the gate said rather than what was expected of
 it (D-175). The host-test count is deliberately absent: it changes with every

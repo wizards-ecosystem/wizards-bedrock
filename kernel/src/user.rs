@@ -826,9 +826,10 @@ fn spawn_transaction(
 
     let mut ring = queue::Queue::new().ok_or(SpawnError::NoRing)?;
     stop_after(fault, SpawnEdge::Ring)?;
-    ring.install(construction.space()?, RING)
+    alloc::sync::Arc::get_mut(&mut ring)
+        .ok_or(SpawnError::Incomplete)?
+        .install(construction.space()?, RING)
         .map_err(SpawnError::NoSpace)?;
-    let ring = alloc::sync::Arc::new(ring);
     stop_after(fault, SpawnEdge::RingMapping)?;
 
     let root = construction.space()?.root();
@@ -1268,9 +1269,9 @@ const EINVAL: u64 = (-22i64) as u64;
 ///
 /// Runs in trap context, so ordinary work here may not allocate, enter a
 /// `ThreadContext` blocking path, or take a lock a handler cannot (D-55, D-63).
-/// D-164's `sleep_from_trap` is the narrow audited exception: it yields through
-/// the saved trap frame. `Queue::serve` takes two leaf locks in a fixed order
-/// and calls nothing while either is held.
+/// D-200's `wait_from_trap` is the narrow audited exception: it yields through
+/// the saved trap frame. `Queue::serve` takes leaf locks only around bounded
+/// state transitions and defers file service to the worker.
 ///
 /// **Only `Exit` does not return.** Until D-116 the gate retired its caller
 /// unconditionally, which made the boundary provable and the ABI unusable —
@@ -1383,29 +1384,19 @@ fn authority_of(
 /// thread sleeps until the soonest deadline and completes what it finds when
 /// it wakes, which may be later than the deadline and never earlier.
 ///
-/// The completion is posted by the kernel after the deadline, not by the
+/// The completion is posted by the timer path or file worker, not by the
 /// program asking again: a woken program finds the entry already in its queue.
-/// That is what makes this a wait rather than a poll. It was the shape intended
-/// for block-device progress; current Read still polls inline, so deferred
-/// device service remains work (D-164, D-169, D-181).
+/// That is what makes this a wait rather than a poll (D-164, D-200).
 fn wait_ring(slot: usize, frame: &TrapFrame) -> u64 {
     let Some((ring, _)) = authority_of(slot) else {
         return ENOSYS;
     };
 
-    let due = ring.expire(crate::time::now_ns());
-    if due > 0 {
-        return due as u64;
-    }
-    let Some(deadline) = ring.earliest_deadline() else {
-        return 0;
-    };
+    ring.wait_from_trap(frame) as u64
 
     // May return having done nothing — a machine with no other thread to run,
     // or a clock that never started. Either way the answer below is the truth
     // about what is due *now*, which is what the program is owed.
-    thread::sleep_from_trap(frame, deadline);
-    ring.expire(crate::time::now_ns()) as u64
 }
 
 /// Cross into ring 3, and never come back on this thread.
@@ -1496,6 +1487,12 @@ pub(crate) fn run_duplicating() -> Result<Spawned, SpawnError> {
     spawn("user-duplicate", 6, DUPLICATE)
 }
 
+/// An eighth, which defers a timer and blocks in `RingWait` for its result.
+#[cfg(feature = "selftest")]
+pub(crate) fn run_waiting() -> Result<Spawned, SpawnError> {
+    spawn("user-wait", 7, WAIT)
+}
+
 /// A sixth, which jumps into the kernel's user-copy window from ring 3.
 ///
 /// The argument *is* the address: the program jumps to anything it is given in
@@ -1524,3 +1521,7 @@ const FAULT: u64 = 1;
 /// The argument that makes it submit Duplicate for its bootstrap handle.
 #[cfg(feature = "selftest")]
 const DUPLICATE: u64 = 3;
+
+/// The argument that makes it submit a Timer and enter `RingWait`.
+#[cfg(feature = "selftest")]
+const WAIT: u64 = 4;

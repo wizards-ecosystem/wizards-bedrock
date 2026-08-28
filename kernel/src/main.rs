@@ -196,6 +196,7 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     input::init();
     route_keyboard(routing);
     input::start_poller();
+    queue::start_worker();
 
     dev::with_console(|console| {
         for line in banner::LINES {

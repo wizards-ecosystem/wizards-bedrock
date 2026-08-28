@@ -157,10 +157,11 @@ pub fn generate(paths: &Paths, image: &Path) -> Result<()> {
     // The image carries the self-test feature (D-135), so this boot reports a
     // verdict like the gate's does. Two things a human has to do that QEMU's
     // harness does for itself: press the key, and read the result.
-    println!("[xtask] this is the self-test kernel — two things to do:");
-    println!("        1. press `a` when you see `selftest: awaiting injected keystroke`");
-    println!("           (ten seconds, then that one check goes red)");
-    println!("        2. look for `selftest: verdict` in the serial log");
+    println!("[xtask] this is the self-test kernel — four things to do:");
+    println!("        1. press `c` at `selftest: awaiting storage-delay keystroke`");
+    println!("        2. press `a`, Backspace, Enter at `selftest: awaiting injected keystroke`");
+    println!("        3. press `b` at `selftest: awaiting translated keystroke`");
+    println!("        4. look for `selftest: verdict` in the serial log");
     Ok(())
 }
 

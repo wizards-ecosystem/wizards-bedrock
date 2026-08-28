@@ -417,6 +417,9 @@ static WAKES: AtomicUsize = AtomicUsize::new(0);
 /// Threads that have actually left the run queue to wait on a queue.
 static BLOCKS: AtomicUsize = AtomicUsize::new(0);
 
+/// Trap-frame waits which actually handed the CPU to another thread.
+static TRAP_WAITS: AtomicUsize = AtomicUsize::new(0);
+
 /// Times the idle thread has reached its halt: times the machine had nothing
 /// to do.
 static IDLE_HALTS: AtomicUsize = AtomicUsize::new(0);
@@ -479,6 +482,12 @@ pub(crate) fn wakes() -> usize {
 #[cfg(feature = "selftest")]
 pub(crate) fn blocks() -> usize {
     BLOCKS.load(Ordering::Relaxed)
+}
+
+/// Ring-3 waits which switched through their saved trap frame.
+#[cfg(feature = "selftest")]
+pub(crate) fn trap_waits() -> usize {
+    TRAP_WAITS.load(Ordering::Relaxed)
 }
 
 /// How many times the idle thread has had the CPU with nothing to do on it.
@@ -944,7 +953,12 @@ pub(crate) fn unblock(slots: u32) -> usize {
         let mut threads = THREADS.lock_leaf();
         let mut woken = 0;
         for slot in 0..CAPACITY {
-            if slots & (1 << slot) == 0 || threads.queue.slots[slot].state != State::Blocked {
+            if slots & (1 << slot) == 0
+                || !matches!(
+                    threads.queue.slots[slot].state,
+                    State::Blocked | State::Sleeping
+                )
+            {
                 continue;
             }
             threads.queue.make_ready(slot);
@@ -1066,12 +1080,17 @@ pub(crate) fn reschedule(frame: &TrapFrame) {
 /// thread to run, or a clock that never started — means the caller must answer
 /// its program now rather than pretend it waited, because a wait nobody can
 /// end is a hang.
-pub(crate) fn sleep_from_trap(frame: &TrapFrame, wake_at: u64) -> bool {
-    if !time::is_calibrated() {
+/// Give the CPU up for an event, optionally bounded by a deadline, from a trap.
+///
+/// A waiter with a deadline is `Sleeping`, but an event may make it ready
+/// before the clock does. With no deadline it is `Blocked` until its wait
+/// queue names it. Both resume through the saved trap frame (D-200).
+pub(crate) fn wait_from_trap(frame: &TrapFrame, wake_at: Option<u64>) -> bool {
+    if wake_at.is_some() && !time::is_calibrated() {
         return false;
     }
     let now = time::now_ns();
-    if now >= wake_at {
+    if wake_at.is_some_and(|deadline| now >= deadline) {
         return false;
     }
 
@@ -1080,12 +1099,22 @@ pub(crate) fn sleep_from_trap(frame: &TrapFrame, wake_at: u64) -> bool {
         let mut threads = THREADS.lock_leaf();
         threads.queue.charge(current, now);
         threads.queue.wake_due(now);
-        threads.queue.slots[current].wake_at = wake_at;
+        if let Some(deadline) = wake_at {
+            threads.queue.slots[current].wake_at = deadline;
+        }
         threads.queue.park(current);
-        threads.queue.slots[current].state = State::Sleeping;
+        let leaving = if wake_at.is_some() {
+            State::Sleeping
+        } else {
+            State::Blocked
+        };
+        threads.queue.slots[current].state = leaving;
 
         match threads.queue.choose(current, false) {
             Some(next) => {
+                if leaving == State::Blocked {
+                    BLOCKS.fetch_add(1, Ordering::Relaxed);
+                }
                 threads.queue.slots[next].state = State::Running;
                 threads.queue.slots[next].started = now;
                 (Some(next), threads.queue.next_event(next, now))
@@ -1102,11 +1131,15 @@ pub(crate) fn sleep_from_trap(frame: &TrapFrame, wake_at: u64) -> bool {
         }
     };
 
-    reschedule_timer(earliest(event, Some(wake_at)));
-    match next {
+    reschedule_timer(earliest(event, wake_at));
+    let switched = match next {
         Some(next) => task::switch_from_trap(next, frame).is_ok(),
         None => false,
+    };
+    if switched {
+        TRAP_WAITS.fetch_add(1, Ordering::Relaxed);
     }
+    switched
 }
 
 /// Arm the timer for the next thing owed a decision, or stop it if nothing

@@ -577,10 +577,10 @@ sixteen-slot budget.
 5. **Copy the submission entry at punt time.** The ring entry may be
    overwritten before the worker runs. This bit them and is easy to miss.
 
-**Delivered limit (D-169, D-181).** Timer implements the deferred state-machine
-shape. Read is a ring operation but still polls NVMe inline while `RingEnter`
-serves it; the block-device state machine, interrupt path and teardown coupling
-recommended above remain future work.
+**Delivered limit (D-169, D-181; amended by D-200).** Timer first implemented
+the deferred state-machine shape. Read now enters one bounded worker queue;
+queued and running states couple cancellation and teardown to the terminal
+completion. The worker still polls an interrupt-disabled NVMe queue.
 
 **Cancellation, and what it means for "exactly one terminal completion".** ◆
 `io_uring_cancelation(7)` is explicit that cancellation *"is inherently racy"*

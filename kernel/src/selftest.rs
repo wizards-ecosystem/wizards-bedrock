@@ -1368,7 +1368,7 @@ fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
     let Ok(mut space) = AddressSpace::for_user() else {
         return false;
     };
-    if queue.install(&mut space, AT).is_err() {
+    if Arc::get_mut(&mut queue).is_none_or(|queue| queue.install(&mut space, AT).is_err()) {
         return false;
     }
 
@@ -1462,7 +1462,8 @@ fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
         queue::Queue::about_at(queue::Opcode::Read, 0xC003, file, 1u64 << 32, 512, 16),
     );
     queue.publish_tail_for_test(5);
-    if queue.serve(&table) != 1 {
+    let before_read = queue.served_count();
+    if queue.serve(&table) != 0 || !runs_until(5_000, || queue.served_count() == before_read + 1) {
         return false;
     }
     let past = queue.read_completion(3);
@@ -1488,7 +1489,7 @@ fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
 /// The same four operations as [`open_the_small_file`], against a table the
 /// caller already owns.
 fn open_the_small_file_in(
-    queue: &queue::Queue,
+    queue: &Arc<queue::Queue>,
     table: &alloc::sync::Arc<crate::handle::HandleTable>,
     slot: usize,
 ) -> Option<u32> {
@@ -1679,7 +1680,8 @@ fn a_read_is_a_submission_with_its_own_offset() -> bool {
         );
     }
     queue.publish_tail_for_test(3);
-    if queue.serve(&table) != 2 {
+    let before = queue.served_count();
+    if queue.serve(&table) != 0 || !runs_until(5_000, || queue.served_count() == before + 2) {
         return false;
     }
 
@@ -1701,6 +1703,139 @@ fn a_read_is_a_submission_with_its_own_offset() -> bool {
     // The bytes are the file's, at the offsets asked for — and the two differ,
     // which is what a read that ignored the offset could not manage.
     head == SMALL_CONTENT[..16] && later == SMALL_CONTENT[8..24] && head != later
+}
+
+/// Build direct READ authority for the corpus file without consuming a ring.
+fn small_file_authority() -> Option<(Arc<HandleTable>, u32)> {
+    let root = vfs::root()?;
+    let vfs::Node::File(file) = vfs::resolve(root, SMALL_NAME).ok()? else {
+        return None;
+    };
+    let table = Arc::new(HandleTable::new(16).ok()?);
+    let handle = table
+        .insert(
+            crate::object::file(file),
+            Rights::UNIVERSAL.union(Rights::READ),
+        )
+        .ok()?;
+    Some((table, handle))
+}
+
+/// File work has one finite admission bound and refuses before doing I/O.
+fn file_work_pressure_is_bounded_at_admission() -> bool {
+    let Some((table, handle)) = small_file_authority() else {
+        return false;
+    };
+    let Some(work) = queue::Queue::new() else {
+        return false;
+    };
+    let Some(overflow) = queue::Queue::new() else {
+        return false;
+    };
+
+    queue::pause_worker_for_test(true);
+    let runs_before = queue::worker_runs_for_test();
+    for slot in 0..8 {
+        work.post_submission_for_test(
+            slot,
+            queue::Queue::about_at(
+                queue::Opcode::Read,
+                0x8100 + slot as u32,
+                handle,
+                slot as u64,
+                0,
+                16,
+            ),
+        );
+    }
+    work.publish_tail_for_test(8);
+    let eight_wait =
+        work.serve(&table) == 0 && work.in_flight() == 8 && queue::queued_work_for_test() == 8;
+
+    overflow.post_submission_for_test(
+        0,
+        queue::Queue::about_at(queue::Opcode::Read, 0x8199, handle, 0, 0, 16),
+    );
+    overflow.publish_tail_for_test(1);
+    let ninth_refused = overflow.serve(&table) == 1
+        && overflow.read_completion(0).status == queue::STATUS_NO_ROOM
+        && overflow.in_flight() == 0;
+
+    queue::pause_worker_for_test(false);
+    let drained = runs_until(10_000, || {
+        work.is_quiet() && queue::queued_work_for_test() == 0
+    });
+    let mut exact = true;
+    for slot in 0..8 {
+        let completion = work.read_completion(slot);
+        exact &= completion.token == 0x8100 + slot as u32
+            && completion.status == queue::STATUS_OK
+            && completion.value == 16;
+    }
+
+    eight_wait
+        && ninth_refused
+        && drained
+        && exact
+        && queue::worker_runs_for_test() == runs_before + 8
+        && work.outstanding() == 0
+        && work.is_consistent()
+}
+
+/// A submitted NVMe read is preemptible and pins a retiring ring until done.
+fn a_delayed_read_preserves_interrupts_and_exact_teardown() -> bool {
+    let Some((table, handle)) = small_file_authority() else {
+        return false;
+    };
+    let Some(ring) = queue::Queue::new() else {
+        return false;
+    };
+    ring.post_submission_for_test(
+        0,
+        queue::Queue::about_at(queue::Opcode::Read, 0xD200, handle, 0, 64, 16),
+    );
+    ring.publish_tail_for_test(1);
+
+    nvme::hold_command_for_test(true);
+    let served_before = ring.served_count();
+    let deferred = ring.serve(&table) == 0 && ring.in_flight() == 1;
+    let reached_device = runs_until(2_000, nvme::command_is_held_for_test);
+    let retained = ring.abandon() == 0 && !ring.is_quiet() && Arc::strong_count(&ring) > 1;
+
+    let expiries = time::expiries();
+    let interrupts = input::interrupt_count();
+    // Kept in step with STORAGE_DELAY_MARKER in `xtask/src/qemu.rs`.
+    info!("selftest: awaiting storage-delay keystroke");
+    let progressed = runs_until(1_000, || {
+        time::expiries() > expiries && input::interrupt_count() > interrupts
+    });
+    let mut context = context();
+    let pressed = input::read_key(&mut context);
+    let released = input::read_key(&mut context);
+    let interrupt_progress = progressed
+        && pressed.event.key == ps2_keys::Key::C
+        && pressed.event.state == ps2_keys::KeyState::Pressed
+        && released.event.key == ps2_keys::Key::C
+        && released.event.state == ps2_keys::KeyState::Released;
+
+    nvme::hold_command_for_test(false);
+    let completed = runs_until(5_000, || ring.is_quiet());
+    let completion = ring.read_completion(0);
+    let mut bytes = [0u8; 16];
+    let copied = ring.read_data_for_test(64, &mut bytes);
+    let exact = ring.served_count() == served_before + 1
+        && completion.token == 0xD200
+        && completion.status == queue::STATUS_OK
+        && completion.value == 16
+        && copied
+        && bytes == SMALL_CONTENT[..16]
+        && ring.outstanding() == 0
+        && ring.abandon() == 0;
+    info!(
+        "selftest: delayed read evidence deferred={deferred} device={reached_device} retained={retained} interrupts={interrupt_progress} completed={completed} exact={exact}"
+    );
+
+    deferred && reached_device && retained && interrupt_progress && completed && exact
 }
 
 /// A ring operation cannot reach past the rights it was given, or past the
@@ -1831,7 +1966,7 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
 /// through it is four operations and repeating them would make each check
 /// mostly setup.
 fn open_the_small_file(
-    queue: &queue::Queue,
+    queue: &Arc<queue::Queue>,
 ) -> Option<(alloc::sync::Arc<crate::handle::HandleTable>, u32)> {
     let root = vfs::root()?;
     let object = crate::object::directory(root);
@@ -4292,6 +4427,32 @@ fn a_program_duplicates_its_bootstrap_handle() -> bool {
     let exited = trap::last_user_fault().count == faults_before;
 
     asked && answered && retained && exited
+}
+
+/// A program blocks in RingWait and resumes with its deferred completion.
+fn a_program_waits_through_its_trap_frame() -> bool {
+    let faults_before = trap::last_user_fault().count;
+    let retirements_before = thread::retirements();
+    let waits_before = thread::trap_waits();
+
+    let Ok(spawned) = user::run_waiting() else {
+        return false;
+    };
+    if !runs_until(2_000, || thread::retirements() > retirements_before) {
+        return false;
+    }
+    let Some(rites) = user::last_rites_of(spawned.slot) else {
+        return false;
+    };
+
+    rites.submitted.opcode == queue::Opcode::Timer
+        && rites.submitted.token != 0
+        && rites.served == 1
+        && rites.completed.token == rites.submitted.token
+        && rites.completed.status == queue::STATUS_OK
+        && rites.completed.value > 0
+        && thread::trap_waits() == waits_before + 1
+        && trap::last_user_fault().count == faults_before
 }
 
 /// A freshly spawned program holds exactly one handle, and it is a channel.
@@ -6816,7 +6977,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 203;
+const EXPECTED_CHECKS: usize = 206;
 
 impl Report {
     const fn new() -> Self {
@@ -6987,6 +7148,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a read is a submission with its own offset",
         a_read_is_a_submission_with_its_own_offset(),
+    );
+    report.check(
+        "file work pressure is bounded at admission",
+        file_work_pressure_is_bounded_at_admission(),
+    );
+    report.check(
+        "a delayed read preserves interrupts and exact teardown",
+        a_delayed_read_preserves_interrupts_and_exact_teardown(),
     );
     report.check(
         "a ring operation cannot reach past its rights or its pages",
@@ -7224,6 +7393,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a program duplicates its bootstrap handle",
         a_program_duplicates_its_bootstrap_handle(),
+    );
+    report.check(
+        "a program waits through its trap frame",
+        a_program_waits_through_its_trap_frame(),
     );
     report.check(
         "an unserved call is refused without stopping the machine",

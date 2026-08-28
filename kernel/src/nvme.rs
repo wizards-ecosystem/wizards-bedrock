@@ -7,9 +7,9 @@
 //! **Polled is what makes this affordable** (`012` §2). `Create I/O Completion
 //! Queue` with `IEN = 0` disables interrupts for that queue, which removes
 //! "this kernel has no interrupt sharing" from the critical path entirely. The
-//! cost is that a read spins. Slice 9 gave Read a submission shape but still
-//! polls here while `RingEnter` serves it; a deferred device state machine and
-//! interrupt path remain future work (D-169, D-181).
+//! cost is that a read spins. D-200 confines that polling to the one file
+//! worker, where timer and input interrupts may preempt it; `RingEnter` only
+//! admits the request. An interrupt-driven controller remains future work.
 //!
 //! **Three things decide whether this works at all, and none is optional.**
 //! Bus master must be on or the controller cannot DMA and *there is no error
@@ -27,15 +27,18 @@
 
 use nvme::{
     Capabilities, Capacity, Command, Completion, DmaState, NAMESPACE_IDENTIFY_BYTES, Namespace,
-    NamespaceError, ReadTransfer, TransferError, configuration, register, status,
+    NamespaceError, PollLimit, ReadTransfer, TransferError, configuration, register, status,
 };
 use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
 use wost::mm::{self, DmaSegment};
-use wost::sync::SpinLock;
+use wost::sync::ThreadLock;
 use x86_paging::PAGE_SIZE;
 
 use crate::thread::ThreadContext;
 use crate::{info, mem, warn};
+
+#[cfg(feature = "selftest")]
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Entries in the queues this driver builds.
 ///
@@ -54,13 +57,14 @@ const IO_QUEUE: u16 = 1;
 /// one reads the namespace it was told about and says so.
 const NAMESPACE: u32 = 1;
 
-/// How long to spin for a completion, in reads of the queue.
+/// How many completion reads boot may attempt before the clock is calibrated.
 ///
-/// Bounded rather than endless: a controller that does not answer is a
-/// controller to report, and spinning on it forgives exactly the failure worth
-/// knowing about — which on a machine without bus master enabled is the only
-/// symptom there is.
+/// Once calibrated, the command deadline is real time instead. The attempt
+/// bound keeps early bring-up finite before that service exists (D-200).
 const POLL_ATTEMPTS: u32 = 5_000_000;
+
+/// Real-time bound for one command once the monotonic clock exists.
+const COMMAND_TIMEOUT_MS: u64 = 5_000;
 
 /// One submission queue and the completion queue that answers it.
 #[derive(Debug)]
@@ -748,15 +752,25 @@ impl Controller {
             return self.fail_submitted(error, data.as_deref_mut());
         }
 
+        #[cfg(feature = "selftest")]
+        if HOLD_COMMAND.load(Ordering::Acquire) {
+            COMMAND_HELD.store(true, Ordering::Release);
+            while HOLD_COMMAND.load(Ordering::Acquire) {
+                core::hint::spin_loop();
+            }
+            COMMAND_HELD.store(false, Ordering::Release);
+        }
+
         // Poll for a completion carrying the phase this pass expects. There is
         // no tail to read; the phase tag is the whole of how a new entry is
         // recognised (`012` §3).
         #[cfg(feature = "selftest")]
-        let attempts = if self.force_timeout { 0 } else { POLL_ATTEMPTS };
-        #[cfg(not(feature = "selftest"))]
-        let attempts = POLL_ATTEMPTS;
+        if self.force_timeout {
+            return self.fail_submitted(BringUpError::NotReady, data);
+        }
 
-        for _ in 0..attempts {
+        let mut limit = PollLimit::after_ms(clock_ns(), COMMAND_TIMEOUT_MS, POLL_ATTEMPTS);
+        while limit.permit(clock_ns()) {
             let found = {
                 let Some(queue) = self.queue_mut(which) else {
                     return self.fail_submitted(BringUpError::NotReady, data.as_deref_mut());
@@ -905,12 +919,10 @@ fn wait_for_ready(
     capabilities: Capabilities,
     wanted: bool,
 ) -> Result<(), BringUpError> {
-    // The timeout is in half-seconds and this loop has no clock, so it is
-    // turned into an attempt count generously: the point of reading `CAP.TO`
-    // is that a slow controller is not called broken, and the bound is only
-    // there so a dead one is.
-    let attempts = (capabilities.timeout_ms().max(500) * 20_000).min(20_000_000);
-    for _ in 0..attempts {
+    let timeout_ms = capabilities.timeout_ms().max(500);
+    let fallback = (timeout_ms.saturating_mul(20_000)).min(20_000_000) as u32;
+    let mut limit = PollLimit::after_ms(clock_ns(), timeout_ms, fallback);
+    while limit.permit(clock_ns()) {
         let bits = read(registers, register::CSTS)?;
         if ((bits & status::READY) != 0) == wanted {
             return Ok(());
@@ -921,6 +933,11 @@ fn wait_for_ready(
         core::hint::spin_loop();
     }
     Err(BringUpError::NotReady)
+}
+
+/// Read the monotonic clock only after calibration has made it meaningful.
+fn clock_ns() -> Option<u64> {
+    crate::time::is_calibrated().then(crate::time::now_ns)
 }
 
 fn read(registers: &ReleasableDevice, offset: usize) -> Result<u32, BringUpError> {
@@ -978,26 +995,43 @@ pub(crate) fn start(
 
 /// The one controller, kept so anything that wants blocks can ask.
 ///
-/// A `static` rather than a value threaded through boot, because the driver
-/// outlives the function that built it and slice 6's reader is not written
-/// yet. It becomes a block device behind the VFS in slice 7; this is what it
-/// is until then.
-static CONTROLLER: SpinLock<Option<(Controller, DmaSegment)>> = SpinLock::new(None);
+/// A `static` rather than a value threaded through boot because the driver
+/// outlives the function that built it. Runtime reads reach it only through
+/// the file worker (D-200).
+static CONTROLLER: ThreadLock<Option<(Controller, DmaSegment)>> = ThreadLock::new(None);
+
+#[cfg(feature = "selftest")]
+static HOLD_COMMAND: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "selftest")]
+static COMMAND_HELD: AtomicBool = AtomicBool::new(false);
 
 /// Keep a controller and the buffer it reads into.
 pub(crate) fn keep(controller: Controller, buffer: DmaSegment) {
-    *CONTROLLER.lock_leaf() = Some((controller, buffer));
+    *CONTROLLER.lock() = Some((controller, buffer));
 }
 
 /// Run `f` against the controller, if there is one.
 ///
-/// A leaf guard, and everything reachable from `f` must respect that: the
-/// driver's own path touches memory-mapped registers and direct-mapped frames
-/// and takes no lock, which is what makes this sound (D-85).
+/// The thread lock may remain held while the polled command is preempted. Only
+/// the file worker performs runtime reads, and no interrupt handler or second
+/// thread contends for the controller (D-200).
 pub(crate) fn with_controller<T>(
     f: impl FnOnce(&mut Controller, &mut DmaSegment) -> T,
 ) -> Option<T> {
-    let mut held = CONTROLLER.lock_leaf();
+    let mut held = CONTROLLER.lock();
     let (controller, buffer) = held.as_mut()?;
     Some(f(controller, buffer))
+}
+
+/// Hold the next submitted command inside its preemptible polling owner.
+#[cfg(feature = "selftest")]
+pub(crate) fn hold_command_for_test(held: bool) {
+    HOLD_COMMAND.store(held, Ordering::Release);
+}
+
+/// Whether a submitted command is currently stopped by the test hook.
+#[cfg(feature = "selftest")]
+pub(crate) fn command_is_held_for_test() -> bool {
+    COMMAND_HELD.load(Ordering::Acquire)
 }

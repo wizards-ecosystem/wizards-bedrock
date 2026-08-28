@@ -15,6 +15,7 @@
 use wost::sync::SpinLock;
 
 use crate::thread::{self, CAPACITY, ThreadContext};
+use wost::arch::current::interrupt::TrapFrame;
 
 const _: () = assert!(
     CAPACITY <= u32::BITS as usize,
@@ -91,6 +92,35 @@ impl WaitQueue {
             *waiters &= !(1 << slot);
         }
         saved.restore();
+    }
+
+    /// Register and wait through a syscall frame until an event or deadline.
+    ///
+    /// `ready` has the same atomic-only contract as [`wait_unless`](Self::wait_unless).
+    pub(crate) fn wait_from_trap_until(
+        &self,
+        frame: &TrapFrame,
+        until: Option<u64>,
+        ready: impl Fn() -> bool,
+    ) -> bool {
+        let slot = thread::current_slot();
+        let saved = wost::arch::current::interrupt::disable();
+        let registered = {
+            let mut waiters = self.waiters.lock_leaf();
+            if ready() {
+                false
+            } else {
+                *waiters |= 1 << slot;
+                true
+            }
+        };
+
+        let switched = registered && thread::wait_from_trap(frame, until);
+        if registered {
+            *self.waiters.lock_leaf() &= !(1 << slot);
+        }
+        saved.restore();
+        switched
     }
 
     /// Make every thread waiting here runnable, and report how many.

@@ -468,8 +468,13 @@ pub const MUTATIONS: &[Mutation] = &[
     // *before* the deadline can tell the two kernels apart.
     Mutation {
         file: "kernel/src/queue.rs",
-        find: "self.begin_settlement(|entry| entry.deadline_ns <= now_ns)",
-        replace: "self.begin_settlement(|_| true)",
+        find: "self.begin_settlement(|entry| {
+            entry
+                .kind
+                .deadline()
+                .is_some_and(|deadline| deadline <= now_ns)
+        })",
+        replace: "self.begin_settlement(|entry| entry.kind.deadline().is_some())",
         breaks: "an operation is not due before its deadline",
         reddens: Caught::Check("an operation completes after its deadline and only once"),
     },
@@ -1284,8 +1289,8 @@ pub const MUTATIONS: &[Mutation] = &[
     // only thing that says where the bytes came from.
     Mutation {
         file: "kernel/src/queue.rs",
-        find: "        let read = match crate::vfs::read(file, offset, &mut scratch[..wanted]) {",
-        replace: "        let read = match crate::vfs::read(file, 0, &mut scratch[..wanted]) {",
+        find: "        match crate::vfs::read(request.file, request.offset, &mut scratch[..request.wanted]) {",
+        replace: "        match crate::vfs::read(request.file, 0, &mut scratch[..request.wanted]) {",
         breaks: "a read starts where it was told to",
         reddens: Caught::Check("a read is a submission with its own offset"),
     },
@@ -1504,8 +1509,8 @@ pub const MUTATIONS: &[Mutation] = &[
     // that inspects ownership before retrying can distinguish the loss.
     Mutation {
         file: "kernel/src/queue.rs",
-        find: "            pending[index] = Some(Pending {\n                settling: false,\n                ..entry\n            });\n            self.settlement_refusals.fetch_add(1, Ordering::AcqRel);",
-        replace: "            pending[index] = None;\n            self.settlement_refusals.fetch_add(1, Ordering::AcqRel);",
+        find: "            pending.slots[index] = Some(Pending {\n                settling: false,\n                ..entry\n            });\n            self.settlement_refusals.fetch_add(1, Ordering::AcqRel);",
+        replace: "            pending.slots[index] = None;\n            self.settlement_refusals.fetch_add(1, Ordering::AcqRel);",
         breaks: "a refused terminal post retains its pending operation",
         reddens: Caught::Check("a refused settlement retains every owner"),
     },
@@ -1588,6 +1593,64 @@ pub const MUTATIONS: &[Mutation] = &[
             package: "xtask",
             name: "qemu::tests::nvme_cleanup_ownership_precedes_the_enable_write",
         },
+    },
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "            Some(now) => Self::Deadline(now.saturating_add(timeout_ms.saturating_mul(1_000_000))),",
+        replace: "            Some(_) => Self::Attempts(fallback_attempts),",
+        breaks: "a calibrated nvme poll is bounded by real time rather than iteration rate",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::a_monotonic_poll_limit_expires_by_time_not_iteration_rate",
+        },
+    },
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "            Self::Attempts(remaining) if *remaining > 0 => {",
+        replace: "            Self::Attempts(remaining) if *remaining > 1 => {",
+        breaks: "a clockless nvme poll spends exactly its declared fallback attempts",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::a_clockless_poll_limit_permits_its_exact_fallback_count",
+        },
+    },
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "            Some(now) => Self::Deadline(now.saturating_add(timeout_ms.saturating_mul(1_000_000))),",
+        replace: "            Some(now) => Self::Deadline(now.wrapping_add(timeout_ms.saturating_mul(1_000_000))),",
+        breaks: "an nvme deadline saturates instead of wrapping into the past",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::a_deadline_saturates_instead_of_wrapping_into_the_past",
+        },
+    },
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "const WORK_DEPTH: usize = 8;",
+        replace: "const WORK_DEPTH: usize = 7;",
+        breaks: "file-work admission accepts its exact documented finite capacity",
+        reddens: Caught::Check("file work pressure is bounded at admission"),
+    },
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "        matches!(
+            self,
+            Self::Timer { .. }
+                | Self::Read {
+                    state: ReadState::Queued,
+                    ..
+                }
+        )",
+        replace: "        matches!(self, Self::Timer { .. } | Self::Read { .. })",
+        breaks: "a running file read remains owned through teardown until its worker settles",
+        reddens: Caught::Check("a delayed read preserves interrupts and exact teardown"),
+    },
+    Mutation {
+        file: "kernel/src/wait.rs",
+        find: "        let switched = registered && thread::wait_from_trap(frame, until);",
+        replace: "        let switched = registered && false && thread::wait_from_trap(frame, until);",
+        breaks: "RingWait hands its caller away through the live trap frame",
+        reddens: Caught::Check("a program waits through its trap frame"),
     },
 ];
 

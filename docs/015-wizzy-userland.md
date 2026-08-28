@@ -339,7 +339,7 @@ its own equally explicit runtime boundary rather than inheriting these details.
 The Phase 5 header had sketched VM mapping as a synchronous call; D-181 removed
 that speculative number. Ordinary trap-context work may neither allocate nor
 enter `ThreadContext` or blocking-lock paths. D-164's audited
-`sleep_from_trap` scheduler yield is the existing narrow exception; it switches
+`wait_from_trap` scheduler yield is the existing narrow exception; it switches
 through the saved frame rather than blocking an ordinary kernel context.
 Page-table growth, anonymous frames and virtual-address selection can require
 more. Slice 5 therefore chooses and proves an execution model—pre-reservation,

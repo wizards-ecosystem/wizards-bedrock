@@ -268,7 +268,10 @@ const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// is a thing you do inside a fix and the table is a different file. This line
 /// and its twin in `kernel/src/selftest.rs` are the two you have to touch
 /// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 203;
+const EXPECTED_SELFTEST_CHECKS: usize = 206;
+
+/// The worker has submitted an NVMe command but remains preemptible.
+const STORAGE_DELAY_MARKER: &str = "selftest: awaiting storage-delay keystroke";
 
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
@@ -354,6 +357,9 @@ fn parse_failed_check(line: &str) -> Option<&str> {
 /// typed nothing at all, and Enter had no visible effect because the console
 /// drew no cursor. Both are checked on the machine now (D-51).
 const INJECTED_QCODES: &[&str] = &["a", "backspace", "ret"];
+
+/// The key used while the storage worker is held inside a command.
+const STORAGE_DELAY_QCODES: &[&str] = &["c"];
 
 /// The second round's keystroke, pressed once the controller is translating.
 ///
@@ -685,7 +691,10 @@ fn forward_serial(
                 println!("{text}");
             }
             let _ = std::io::stdout().flush();
-            if text.contains(READY_MARKER) || text.contains(TRANSLATED_MARKER) {
+            if text.contains(STORAGE_DELAY_MARKER)
+                || text.contains(READY_MARKER)
+                || text.contains(TRANSLATED_MARKER)
+            {
                 markers_seen.fetch_add(1, Ordering::Release);
             }
             if text.contains(PANIC_MARKER) {
@@ -720,7 +729,11 @@ fn finish_selftest_serial(
 fn inject_on_marker(listener: TcpListener, markers_seen: Arc<AtomicUsize>) {
     std::thread::spawn(move || {
         let outcome = accept(&listener).and_then(|mut qmp| {
-            for (round, keys) in [(1, INJECTED_QCODES), (2, TRANSLATED_QCODES)] {
+            for (round, keys) in [
+                (1, STORAGE_DELAY_QCODES),
+                (2, INJECTED_QCODES),
+                (3, TRANSLATED_QCODES),
+            ] {
                 while markers_seen.load(Ordering::Acquire) < round {
                     std::thread::sleep(POLL_INTERVAL);
                 }
@@ -730,8 +743,8 @@ fn inject_on_marker(listener: TcpListener, markers_seen: Arc<AtomicUsize>) {
         });
         match outcome {
             Ok(()) => println!(
-                "[xtask] qmp: {} keystrokes injected across two rounds",
-                INJECTED_QCODES.len() + TRANSLATED_QCODES.len()
+                "[xtask] qmp: {} keystrokes injected across three rounds",
+                STORAGE_DELAY_QCODES.len() + INJECTED_QCODES.len() + TRANSLATED_QCODES.len()
             ),
             Err(reason) => {
                 println!("[xtask] qmp: {reason:#}; the keystroke check will report it");
@@ -1416,6 +1429,10 @@ mod tests {
         assert!(
             selftest.contains(SELFTEST_VERDICT_PREFIX.trim_end()),
             "the kernel does not print {SELFTEST_VERDICT_PREFIX:?}"
+        );
+        assert!(
+            selftest.contains(STORAGE_DELAY_MARKER),
+            "the kernel does not print {STORAGE_DELAY_MARKER:?}"
         );
         assert!(
             selftest.contains(READY_MARKER),
@@ -2923,6 +2940,8 @@ mod tests {
                 5
             } else if rest.starts_with(&[0x48, 0x83, 0xF8]) {
                 4
+            } else if rest.starts_with(&[0x83, 0xFF]) {
+                3
             } else if rest.starts_with(&[0x48, 0x85, 0xC9]) {
                 operands.rcx_zero_tests += 1;
                 3
@@ -4352,16 +4371,21 @@ const LIVE: u32 = 7;
             .find_map(|(number, variant)| (variant == "RingEnter").then_some(*number))
             .and_then(|number| u32::try_from(number).ok())
             .expect("Call::RingEnter fits in an emitted imm32");
+        let ring_wait = decoded_call_arms
+            .iter()
+            .find_map(|(number, variant)| (variant == "RingWait").then_some(*number))
+            .and_then(|number| u32::try_from(number).ok())
+            .expect("Call::RingWait fits in an emitted imm32");
         assert_eq!(
             operands.eax_immediates,
-            [0x0BAD_0BAD, ring_enter],
-            "the emitted mov eax immediates are not refusal then kernel RingEnter"
+            [0x0BAD_0BAD, ring_enter, ring_wait],
+            "the emitted mov eax immediates are not refusal, RingEnter and RingWait"
         );
         let syscall_immediate =
             u8::try_from(syscall_number).expect("the syscall vector fits in imm8");
         assert_eq!(
             operands.interrupts,
-            vec![syscall_immediate; 4],
+            vec![syscall_immediate; 5],
             "an emitted int imm8 uses a vector other than the kernel syscall gate"
         );
         let completion_at = entries_at + submissions * submission_bytes;
@@ -4375,12 +4399,18 @@ const LIVE: u32 = 7;
             .find_map(|(number, variant)| (variant == "Duplicate").then_some(*number))
             .and_then(|number| u32::try_from(number).ok())
             .expect("Opcode::Duplicate fits in an emitted imm32");
+        let timer = decoded_opcode_arms
+            .iter()
+            .find_map(|(number, variant)| (variant == "Timer").then_some(*number))
+            .and_then(|number| u32::try_from(number).ok())
+            .expect("Opcode::Timer fits in an emitted imm32");
         assert_eq!(
             operands.writes32,
             [
                 (entries_at + submission_layout["TOKEN"] as u32, 0x1234),
                 (entries_at + submission_layout["OPCODE"] as u32, echo),
                 (entries_at + submission_layout["OPCODE"] as u32, duplicate,),
+                (entries_at + submission_layout["OPCODE"] as u32, timer),
             ],
             "the emitted program's submission imm32 writes differ from the kernel layout"
         );
@@ -4402,6 +4432,7 @@ const LIVE: u32 = 7;
                     entries_at + submission_layout["ARGUMENT"] as u32,
                     duplicate_rights,
                 ),
+                (entries_at + submission_layout["ARGUMENT"] as u32, 2_000_000,),
             ],
             "the emitted program's submission imm64 write differs from the kernel layout"
         );
@@ -4425,8 +4456,8 @@ const LIVE: u32 = 7;
             "the emitted program does not require a successful completion status"
         );
         assert_eq!(
-            operands.rcx_zero_tests, 1,
-            "the emitted program does not reject a zero duplicated handle"
+            operands.rcx_zero_tests, 2,
+            "the emitted program does not reject zero duplicate and Timer answers"
         );
         assert_eq!(
             operands.ecx_esi_comparisons, 1,

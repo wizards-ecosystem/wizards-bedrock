@@ -17,7 +17,7 @@ use elf64::{HEADER_BYTES, PROGRAM_HEADER_BYTES};
 /// Where the program is linked, and where the kernel maps it.
 pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 
-/// The program: validate its entry block, then choose one of five behaviours.
+/// The program: validate its entry block, then choose one of six behaviours.
 ///
 /// ```text
 ///   59                       pop rcx                     ; entry ABI version
@@ -34,7 +34,7 @@ pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 ///   31 c0                    xor eax, eax
 ///   cd 80                    int 0x80
 /// ring-kind:
-///   ...                      zero selects Echo; three selects Duplicate
+///   ...                      zero selects Echo; three Duplicate; four Timer
 /// ring:
 ///   9c                       pushfq
 ///   48 81 0c 24 00 00 04 00  or qword ptr [rsp], 0x40000 ; set AC, bit 18
@@ -62,9 +62,10 @@ pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 ///   eb fe                    jmp .
 /// ```
 ///
-/// Five behaviours from one image, chosen by the versioned entry block the
-/// kernel writes with `copy_to_user`: Echo, Duplicate, a jump into the kernel
-/// half, an unserved call, and a deliberate fault. Duplicate is the first to
+/// Six behaviours from one image, chosen by the versioned entry block the
+/// kernel writes with `copy_to_user`: Echo, Duplicate, Timer plus RingWait, a
+/// jump into the kernel half, an unserved call, and a deliberate fault.
+/// Duplicate is the first to
 /// consume the numeric bootstrap handle and proves that a trap-served
 /// authority result reaches its prepaid arena slot without allocating
 /// (D-102, D-182).
@@ -105,12 +106,15 @@ fn code() -> Vec<u8> {
     const ECHO: u32 = 1;
     /// `WIZ_OP_DUPLICATE`.
     const DUPLICATE: u32 = 3;
+    /// `WIZ_OP_TIMER`.
+    const TIMER: u32 = 4;
     /// The call numbers, from `enum wiz_call`.
     const RING_ENTER: u32 = 1;
+    const RING_WAIT: u32 = 3;
 
     let mut code = Vec::new();
 
-    // The versioned entry block, and the five behaviours it chooses.
+    // The versioned entry block, and the six behaviours it chooses.
     code.extend_from_slice(&[0x59]); // pop rcx
     code.extend_from_slice(&[0x48, 0x83, 0xF9, 0x01]); // cmp rcx, 1
     let wrong_version = branch(&mut code, 0x75); // jne die
@@ -145,13 +149,21 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&[0x31, 0xFF]); // xor edi, edi
     let echoing = branch(&mut code, 0xEB); // jmp ring
 
-    let choose_duplicate = code.len();
-    patch(&mut code, not_echoing, choose_duplicate);
+    let choose_non_echo = code.len();
+    patch(&mut code, not_echoing, choose_non_echo);
     code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x03]); // cmp rax, 3
-    let unknown_behaviour = branch(&mut code, 0x75); // jne die
+    let not_duplicating = branch(&mut code, 0x75); // jne timer selector
     code.extend_from_slice(&[0xBF]); // mov edi, 1
     code.extend_from_slice(&1u32.to_le_bytes());
     let duplicating = branch(&mut code, 0xEB); // jmp ring
+
+    let choose_timer = code.len();
+    patch(&mut code, not_duplicating, choose_timer);
+    code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x04]); // cmp rax, 4
+    let unknown_behaviour = branch(&mut code, 0x75); // jne die
+    code.extend_from_slice(&[0xBF]); // mov edi, 2
+    code.extend_from_slice(&2u32.to_le_bytes());
+    let waiting = branch(&mut code, 0xEB); // jmp ring
 
     let early_die = code.len();
     patch(&mut code, wrong_version, early_die);
@@ -162,6 +174,7 @@ fn code() -> Vec<u8> {
     let ring = code.len();
     patch(&mut code, echoing, ring);
     patch(&mut code, duplicating, ring);
+    patch(&mut code, waiting, ring);
     code.extend_from_slice(&[0x9C]); // pushfq
     code.extend_from_slice(&[0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00]);
     code.extend_from_slice(&[0x9D]); // popfq
@@ -176,7 +189,7 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&PROGRAM_TAG.to_le_bytes());
 
     code.extend_from_slice(&[0x85, 0xFF]); // test edi, edi
-    let duplicate_submission = branch(&mut code, 0x75); // jnz duplicate
+    let non_echo_submission = branch(&mut code, 0x75); // jnz non-echo
 
     // Echo one word back.
     code.extend_from_slice(&[0xC7, 0x83]);
@@ -185,12 +198,15 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&[0x48, 0xC7, 0x83]); // mov qword [rbx+disp32], imm32
     code.extend_from_slice(&(SUBMISSIONS_AT + 24).to_le_bytes());
     code.extend_from_slice(&PROGRAM_ARGUMENT.to_le_bytes());
-    let submission_ready = branch(&mut code, 0xEB); // jmp publish
+    let echo_ready = branch(&mut code, 0xEB); // jmp publish
+
+    let choose_submission = code.len();
+    patch(&mut code, non_echo_submission, choose_submission);
+    code.extend_from_slice(&[0x83, 0xFF, 0x01]); // cmp edi, 1
+    let timer_submission = branch(&mut code, 0x75); // jne timer
 
     // Duplicate the bootstrap channel with only READ. Its handle comes from
     // the entry block rather than from a build-time constant.
-    let duplicate = code.len();
-    patch(&mut code, duplicate_submission, duplicate);
     code.extend_from_slice(&[0xC7, 0x83]);
     code.extend_from_slice(&SUBMISSIONS_AT.to_le_bytes());
     code.extend_from_slice(&DUPLICATE.to_le_bytes());
@@ -199,10 +215,23 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&[0x48, 0xC7, 0x83]);
     code.extend_from_slice(&(SUBMISSIONS_AT + 24).to_le_bytes());
     code.extend_from_slice(&DUPLICATE_RIGHTS.to_le_bytes());
+    let duplicate_ready = branch(&mut code, 0xEB); // jmp publish
+
+    // A short timer has to leave RingEnter unfinished and wake through
+    // RingWait. Its terminal value is the nonzero monotonic deadline.
+    let timer = code.len();
+    patch(&mut code, timer_submission, timer);
+    code.extend_from_slice(&[0xC7, 0x83]);
+    code.extend_from_slice(&SUBMISSIONS_AT.to_le_bytes());
+    code.extend_from_slice(&TIMER.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xC7, 0x83]);
+    code.extend_from_slice(&(SUBMISSIONS_AT + 24).to_le_bytes());
+    code.extend_from_slice(&2_000_000u32.to_le_bytes());
 
     // Publish it.
     let publish = code.len();
-    patch(&mut code, submission_ready, publish);
+    patch(&mut code, echo_ready, publish);
+    patch(&mut code, duplicate_ready, publish);
     code.extend_from_slice(&[0xC7, 0x43, TAIL_AT]); // mov dword [rbx+20], imm32
     code.extend_from_slice(&1u32.to_le_bytes());
 
@@ -211,7 +240,18 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&RING_ENTER.to_le_bytes());
     code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
 
+    // Timer admission completes nothing; RingWait must block and report it.
+    code.extend_from_slice(&[0x83, 0xFF, 0x02]); // cmp edi, 2
+    let immediate = branch(&mut code, 0x75); // jne immediate answer
+    code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
+    let completed_early = branch(&mut code, 0x75); // jne die
+    code.extend_from_slice(&[0xB8]); // mov eax, imm32
+    code.extend_from_slice(&RING_WAIT.to_le_bytes());
+    code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
+
     // Exactly one served, or die.
+    let expect_one = code.len();
+    patch(&mut code, immediate, expect_one);
     code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x01]); // cmp rax, 1
     let served = branch(&mut code, 0x75); // jne die
 
@@ -225,23 +265,32 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&[0x48, 0x8B, 0x8B]); // mov rcx, [rbx+disp32]
     code.extend_from_slice(&(COMPLETIONS_AT + 8).to_le_bytes());
     code.extend_from_slice(&[0x85, 0xFF]); // test edi, edi
-    let duplicate_answer = branch(&mut code, 0x75); // jnz duplicate answer
+    let non_echo_answer = branch(&mut code, 0x75); // jnz non-echo answer
     code.extend_from_slice(&[0x48, 0xC7, 0xC2]); // mov rdx, imm32
     code.extend_from_slice(&PROGRAM_ARGUMENT.to_le_bytes());
     code.extend_from_slice(&[0x48, 0x39, 0xD1]); // cmp rcx, rdx
     let echoed = branch(&mut code, 0x75); // jne die
     let answered = branch(&mut code, 0xEB); // jmp exit
 
-    let duplicate_value = code.len();
-    patch(&mut code, duplicate_answer, duplicate_value);
+    let choose_answer = code.len();
+    patch(&mut code, non_echo_answer, choose_answer);
+    code.extend_from_slice(&[0x83, 0xFF, 0x02]); // cmp edi, 2
+    let timer_answer = branch(&mut code, 0x74); // je timer answer
     code.extend_from_slice(&[0x48, 0x85, 0xC9]); // test rcx, rcx
     let empty_handle = branch(&mut code, 0x74); // jz die
     code.extend_from_slice(&[0x39, 0xF1]); // cmp ecx, esi
     let repeated_handle = branch(&mut code, 0x74); // je die
+    let duplicated = branch(&mut code, 0xEB); // jmp exit
+
+    let timer_value = code.len();
+    patch(&mut code, timer_answer, timer_value);
+    code.extend_from_slice(&[0x48, 0x85, 0xC9]); // test rcx, rcx
+    let empty_deadline = branch(&mut code, 0x74); // jz die
 
     // Exit.
     let exit = code.len();
     patch(&mut code, answered, exit);
+    patch(&mut code, duplicated, exit);
     code.extend_from_slice(&[0x31, 0xC0]); // xor eax, eax
     code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
 
@@ -250,7 +299,15 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&[0x0F, 0x0B]); // ud2
     code.extend_from_slice(&[0xEB, 0xFE]); // jmp .
 
-    for site in [served, clean, echoed, empty_handle, repeated_handle] {
+    for site in [
+        completed_early,
+        served,
+        clean,
+        echoed,
+        empty_handle,
+        repeated_handle,
+        empty_deadline,
+    ] {
         patch(&mut code, site, die);
     }
     code
@@ -445,8 +502,8 @@ mod tests {
             ],
             "pop rcx; cmp rcx, 1; jne die; pop rax; pop rsi; test rax, rax"
         );
-        // Five behaviours: Echo, Duplicate, an unserved call, a deliberate
-        // fault, and a jump to a supplied kernel-half address.
+        // Six behaviours: Echo, Duplicate, Timer+Wait, an unserved call, a
+        // deliberate fault, and a jump to a supplied kernel-half address.
         assert_eq!(code[12], 0x78, "js leap");
         assert!(
             code.windows(4)
@@ -457,6 +514,11 @@ mod tests {
             code.windows(4)
                 .any(|bytes| bytes == [0x48, 0x83, 0xF8, 0x03]),
             "cmp rax, 3"
+        );
+        assert!(
+            code.windows(4)
+                .any(|bytes| bytes == [0x48, 0x83, 0xF8, 0x04]),
+            "cmp rax, 4"
         );
         // And the leap itself, which is what makes the argument an address.
         assert!(code.windows(2).any(|pair| pair == [0xFF, 0xE0]), "jmp rax");
@@ -486,6 +548,11 @@ mod tests {
             code.windows(10)
                 .any(|bytes| bytes == [0xC7, 0x83, 0x00, 0x10, 0, 0, 3, 0, 0, 0]),
             "mov dword [rbx+0x1000], 3"
+        );
+        assert!(
+            code.windows(10)
+                .any(|bytes| bytes == [0xC7, 0x83, 0x00, 0x10, 0, 0, 4, 0, 0, 0]),
+            "mov dword [rbx+0x1000], 4"
         );
         assert!(
             code.windows(10)
@@ -519,15 +586,15 @@ mod tests {
             "mov ecx, [rbx+0x1104]"
         );
 
-        // Four `int 0x80`s: the unserved probe and its exit, then the doorbell
-        // and its exit.
+        // Five `int 0x80`s: the unserved probe and its exit, then RingEnter,
+        // the timer-only RingWait, and the common exit.
         let calls: Vec<usize> = code
             .windows(2)
             .enumerate()
             .filter(|(_, pair)| *pair == [0xCD, 0x80])
             .map(|(at, _)| at)
             .collect();
-        assert_eq!(calls.len(), 4, "two calls and two exits");
+        assert_eq!(calls.len(), 5, "three calls and two exits");
         assert_eq!(
             &code[calls[0] - 5..calls[0]],
             &[0xB8, 0xAD, 0x0B, 0xAD, 0x0B],
@@ -539,7 +606,12 @@ mod tests {
             &[0xB8, 1, 0, 0, 0],
             "mov eax, 1"
         );
-        assert_eq!(&code[calls[3] - 2..calls[3]], &[0x31, 0xC0], "xor eax, eax");
+        assert_eq!(
+            &code[calls[3] - 5..calls[3]],
+            &[0xB8, 3, 0, 0, 0],
+            "mov eax, 3"
+        );
+        assert_eq!(&code[calls[4] - 2..calls[4]], &[0x31, 0xC0], "xor eax, eax");
 
         // Every terminal validation branch lands on the final `ud2`.
         let die = code.len() - 4;
@@ -548,6 +620,9 @@ mod tests {
             .filter(|site| matches!(code[*site], 0x74 | 0x75))
             .filter(|site| *site as i64 + 2 + i64::from(code[*site + 1] as i8) == die as i64)
             .count();
-        assert_eq!(failures, 5, "five terminal validations reach the final ud2");
+        assert_eq!(
+            failures, 7,
+            "seven terminal validations reach the final ud2"
+        );
     }
 }
