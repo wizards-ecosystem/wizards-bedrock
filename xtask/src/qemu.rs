@@ -884,7 +884,7 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
         Arc::clone(&settled),
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
-        None,
+        Vec::new(),
     );
 
     // Reach the idle loop, prove a fresh device interrupt wakes it, then keep
@@ -940,16 +940,26 @@ const DEGRADED_CPU: [&str; 2] = ["-cpu", "qemu64,-x2apic"];
 /// only a diagnosis.
 const NO_X2APIC_MARKER: &str = "no x2apic mode";
 
-/// Boot on a machine the kernel cannot fully use, and require it to say so.
+/// The forced configuration-port refusal in the degraded image.
+const NO_PCI_MARKER: &str = "pci: the configuration ports are already claimed; no bus";
+
+/// The hardware-free namespace witness targeted by the PW-207 mutation.
+pub const DEGRADED_FILESYSTEM_MARKER: &str = "tmpfs:";
+
+/// Both device names must resolve through devfs without a bus.
+const DEGRADED_STORAGE_MARKER: &str = "devfs: storage is";
+const DEGRADED_CONSOLE_MARKER: &str = "devfs: console is";
+
+/// Boot with two independent platform prerequisites absent and require both.
 ///
 /// The negative half of D-32 and D-33: every other boot in the gate runs on
-/// `-cpu max`, where every feature is present, so nothing exercises what the
-/// kernel does when one is missing. A precondition that is only ever met is
-/// indistinguishable from one that is never checked (D-90).
+/// `-cpu max` with live PCI configuration, so nothing exercises what the
+/// kernel does when either is missing. A precondition that is only ever met is
+/// indistinguishable from one that is never checked (D-90, D-198).
 ///
-/// The bar is deliberately not "it works": it is that the kernel *reports* the
-/// missing feature and still reaches its steady state, rather than
-/// triple-faulting on a register that is not there.
+/// The bar is deliberately not "it works": the kernel reports both refusals,
+/// exercises the namespaces which need neither facility, and still reaches
+/// its steady state rather than triple-faulting on a missing register.
 pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
     let qemu_dir = locate()?;
     let code = firmware(&qemu_dir, CODE_FIRMWARE)?;
@@ -959,7 +969,7 @@ pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Resu
         .with_context(|| format!("copying {} to {}", vars_template.display(), vars.display()))?;
 
     let emulator = qemu_dir.join(exe_name("qemu-system-x86_64"));
-    println!("[xtask] booting a kernel with no x2apic");
+    println!("[xtask] booting a kernel with no PCI configuration or x2apic");
 
     let mut child = Command::new(&emulator)
         .args(MACHINE)
@@ -983,13 +993,22 @@ pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Resu
     let settled = Arc::new(AtomicBool::new(false));
     let panicked = Arc::new(AtomicBool::new(false));
     let serial_failed = Arc::new(AtomicBool::new(false));
-    let refused = Arc::new(AtomicBool::new(false));
+    let required: Vec<_> = [
+        NO_X2APIC_MARKER,
+        NO_PCI_MARKER,
+        DEGRADED_FILESYSTEM_MARKER,
+        DEGRADED_STORAGE_MARKER,
+        DEGRADED_CONSOLE_MARKER,
+    ]
+    .into_iter()
+    .map(|marker| (marker, Arc::new(AtomicBool::new(false))))
+    .collect();
     let forwarder = watch_serial(
         stdout,
         Arc::clone(&settled),
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
-        Some((NO_X2APIC_MARKER, Arc::clone(&refused))),
+        required.clone(),
     );
 
     let outcome = watch(
@@ -1006,12 +1025,12 @@ pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Resu
 
     serial_outcome?;
     outcome?;
-    if !refused.load(Ordering::Acquire) {
-        bail!(
-            "the kernel settled without reporting {NO_X2APIC_MARKER:?}: the x2apic precondition is not being checked"
-        );
+    for (marker, seen) in required {
+        if !seen.load(Ordering::Acquire) {
+            bail!("the degraded kernel settled without reporting {marker:?}");
+        }
     }
-    println!("[xtask] degraded kernel reports the missing x2apic and settles");
+    println!("[xtask] degraded kernel refuses PCI and x2apic, surveys tmpfs/devfs, and settles");
     Ok(())
 }
 
@@ -1048,13 +1067,13 @@ fn watch(
     }
 }
 
-/// Forward every serial line, flagging the two the boot check cares about.
+/// Forward every serial line, flagging the markers the boot check requires.
 fn watch_serial(
     stdout: ChildStdout,
     settled: Arc<AtomicBool>,
     panicked: Arc<AtomicBool>,
     serial_failed: Arc<AtomicBool>,
-    extra: Option<(&'static str, Arc<AtomicBool>)>,
+    required: Vec<(&'static str, Arc<AtomicBool>)>,
 ) -> JoinHandle<Result<()>> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
@@ -1081,10 +1100,10 @@ fn watch_serial(
             if text.contains(SETTLED_MARKER) {
                 settled.store(true, Ordering::Release);
             }
-            if let Some((marker, seen)) = extra.as_ref()
-                && text.contains(marker)
-            {
-                seen.store(true, Ordering::Release);
+            for (marker, seen) in &required {
+                if text.contains(marker) {
+                    seen.store(true, Ordering::Release);
+                }
             }
             if text.contains(PANIC_MARKER) {
                 panicked.store(true, Ordering::Release);
@@ -1360,6 +1379,7 @@ mod tests {
             .join("src");
         let selftest = std::fs::read_to_string(root.join("selftest.rs")).expect("selftest.rs");
         let main = std::fs::read_to_string(root.join("main.rs")).expect("main.rs");
+        let devfs = std::fs::read_to_string(root.join("devfs.rs")).expect("devfs.rs");
         let panic = std::fs::read_to_string(root.join("panic.rs")).expect("panic.rs");
 
         let constant = |source: &str, name: &str| -> String {
@@ -1398,6 +1418,20 @@ mod tests {
         assert!(
             main.contains(SETTLED_MARKER),
             "the kernel does not print {SETTLED_MARKER:?}"
+        );
+        assert!(
+            main.contains(NO_PCI_MARKER),
+            "the kernel does not print {NO_PCI_MARKER:?}"
+        );
+        assert!(
+            main.contains(DEGRADED_FILESYSTEM_MARKER),
+            "the kernel does not print {DEGRADED_FILESYSTEM_MARKER:?}"
+        );
+        assert!(
+            main.contains("devfs: {} is {}")
+                && devfs.contains("storage")
+                && devfs.contains("console"),
+            "the devfs degraded markers no longer compose from the kernel sources"
         );
         assert!(
             panic.contains(PANIC_MARKER),

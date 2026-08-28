@@ -119,9 +119,9 @@ pub fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
     qemu::run_boot_check(paths, &image, BOOT_SETTLE)
 }
 
-/// Boot on a machine missing x2APIC, and require the kernel to say so.
+/// Boot without PCI configuration or x2APIC and require both refusals.
 pub fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
-    let image = image::build(paths, profile, &[])?;
+    let image = image::build(paths, profile, &[paths::REFUSE_PCI_FEATURE])?;
     qemu::run_degraded_check(paths, &image, BOOT_SETTLE)
 }
 
@@ -142,7 +142,8 @@ pub fn ci(paths: &Paths) -> Result<()> {
     // The only step that runs the image the disk gets.
     boot_check(paths, Profile::Release)?;
     // And the only one that runs it on a machine it cannot fully use: every
-    // other boot has every feature, so nothing else exercises a refusal (D-90).
+    // other boot has every feature, so nothing else exercises these refusals
+    // (D-90, D-198).
     degraded_check(paths, Profile::Release)?;
     println!("[xtask] ci passed");
     Ok(())
@@ -165,11 +166,11 @@ pub fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
 /// One pass of a cargo subcommand: which packages, for which target, with
 /// which features.
 ///
-/// There are three, not two. The host packages are one; the kernel packages
-/// are *two*, because a cargo feature is a different crate graph and a lint
-/// that fires in one configuration need not fire in the other. Linting only
-/// the self-test build is how `dead_code` on a constant used solely by
-/// `selftest` reached a release image unreported (D-22).
+/// There are four, not two. The host packages are one; the kernel packages
+/// are three, because a cargo feature is a different crate graph and a lint
+/// that fires in one configuration need not fire in another. Linting only the
+/// self-test build is how `dead_code` on a constant used solely by `selftest`
+/// reached a release image unreported (D-22).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Pass {
     packages: &'static [&'static str],
@@ -207,6 +208,11 @@ const PASSES: &[Pass] = &[
         packages: paths::KERNEL_PACKAGES,
         target: Some(paths::KERNEL_TARGET),
         features: Some(paths::SELFTEST_FEATURE_SPEC),
+    },
+    Pass {
+        packages: paths::KERNEL_PACKAGES,
+        target: Some(paths::KERNEL_TARGET),
+        features: Some(paths::REFUSE_PCI_FEATURE_SPEC),
     },
 ];
 
@@ -346,14 +352,21 @@ mod tests {
     /// the self-test feature on, so the configuration that ships was never
     /// linted at all, and two `dead_code` warnings rode a release image out.
     #[test]
-    fn the_gate_covers_the_kernel_with_and_without_the_self_test_feature() {
+    fn the_gate_covers_every_kernel_feature_graph_it_boots() {
         let kernel: Vec<Option<&str>> = PASSES
             .iter()
             .filter(|pass| pass.packages == paths::KERNEL_PACKAGES)
             .map(|pass| pass.features)
             .collect();
 
-        assert_eq!(kernel, [None, Some(paths::SELFTEST_FEATURE_SPEC)]);
+        assert_eq!(
+            kernel,
+            [
+                None,
+                Some(paths::SELFTEST_FEATURE_SPEC),
+                Some(paths::REFUSE_PCI_FEATURE_SPEC)
+            ]
+        );
     }
 
     #[test]

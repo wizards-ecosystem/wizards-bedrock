@@ -30,7 +30,7 @@ CHECK TASKS:
     test              run the host test suite
     test-boot         boot a self-test kernel in QEMU and require its verdict
     boot-check        boot the shipped kernel and require it to settle
-    degraded-check    boot without x2apic and require the kernel to report it
+    degraded-check    boot without PCI/x2apic and require both refusals
     verify-vendor     check vendored binaries against their CHECKSUMS files
     ci                every check above, in the order that fails fastest
 
@@ -90,7 +90,7 @@ pub enum Task {
     TestBoot(Profile),
     /// Boot the shipped kernel and require it to settle without panicking.
     BootCheck(Profile),
-    /// Boot on a machine with no x2APIC and require the kernel to report it.
+    /// Boot without PCI configuration or x2APIC and require both refusals.
     DegradedCheck(Profile),
     /// Check vendored binaries against their recorded digests.
     VerifyVendor,

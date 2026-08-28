@@ -85,6 +85,12 @@ pub const SELFTEST_FEATURE: &str = "selftest";
 /// below asserts it against the two constants it is made of.
 pub const SELFTEST_FEATURE_SPEC: &str = "wizard-kernel/selftest";
 
+/// Cargo feature which makes the production PCI configuration claim refuse.
+pub const REFUSE_PCI_FEATURE: &str = "refuse-pci";
+
+/// Workspace-scoped spelling of [`REFUSE_PCI_FEATURE`].
+pub const REFUSE_PCI_FEATURE_SPEC: &str = "wizard-kernel/refuse-pci";
+
 /// Name the kernel takes on the EFI system partition. Must match the `path:`
 /// line in `boot/limine.conf`.
 pub const KERNEL_ON_ESP: &str = "wizard-kernel.elf";
@@ -250,10 +256,14 @@ default-members = [
     /// The spec is two other constants glued together; nothing but this notices
     /// if one of them moves.
     #[test]
-    fn the_feature_spec_names_the_kernel_package_and_its_feature() {
+    fn feature_specs_name_the_kernel_package_and_their_features() {
         assert_eq!(
             SELFTEST_FEATURE_SPEC,
             format!("{KERNEL_PACKAGE}/{SELFTEST_FEATURE}")
+        );
+        assert_eq!(
+            REFUSE_PCI_FEATURE_SPEC,
+            format!("{KERNEL_PACKAGE}/{REFUSE_PCI_FEATURE}")
         );
     }
 

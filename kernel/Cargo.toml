@@ -14,6 +14,9 @@ workspace = true
 # Compiles the boot-time self-checks and the QEMU exit device into the kernel.
 # Enabled only by `cargo xtask test-boot`; never in a shipped image.
 selftest = ["wost/selftest"]
+# Makes the production PCI claim refuse for the degraded boot witness.
+# Enabled only by `cargo xtask degraded-check`; never in a shipped image.
+refuse-pci = []
 
 [dependencies]
 noto-sans-mono-bitmap.workspace = true

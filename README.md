@@ -58,7 +58,7 @@ override that.
 cargo xtask ci       # the gate: fmt --check, clippy, doc, tests, vendor digests,
                      #   then four boots — test-boot (release), test-boot
                      #   (debug, overflow checks on), boot-check (D-65), and
-                     #   degraded-check (no x2apic, D-90)
+                     #   degraded-check (no PCI/x2apic, D-90/D-198)
 ```
 
 `ci` is the only gate — there is no hosted CI (D-26). `cargo xtask help` lists
@@ -67,8 +67,9 @@ accepts to appear in that help text — but **nothing checks this file against
 either**, and an earlier version of this paragraph claimed otherwise. `clean`
 and `verify-vendor` are named nowhere below.
 `boot-check` boots the shipped kernel and requires it to settle at its prompt;
-`degraded-check` boots it on a processor with no x2APIC and requires it to
-report that and settle rather than triple-fault.
+`degraded-check` boots it with PCI configuration forced unavailable and on a
+processor with no x2APIC. It requires both refusals, the hardware-free tmpfs and
+devfs surveys, and a steady state rather than a triple fault.
 
 Three tasks are deliberately **not** in `ci`, each because it needs a tool this
 project cannot vendor into a Rust build: `model-check` (TLC, needs Java),

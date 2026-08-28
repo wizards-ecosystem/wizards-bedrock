@@ -65,6 +65,8 @@ pub enum Caught {
         /// Fully qualified test name accepted by `--exact`.
         name: &'static str,
     },
+    /// A shipped degraded boot must emit one exact serial marker.
+    BootMarker(&'static str),
     /// Nothing names it: the defect kills the machine before the verdict.
     ///
     /// Carries *why*, because a bare variant would be a hole anything could be
@@ -1468,6 +1470,13 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "deliberately forgotten ownership is distinct from ordinary contention",
         reddens: Caught::Check("forgotten lock ownership is distinct from contention"),
     },
+    Mutation {
+        file: "kernel/src/main.rs",
+        find: "    survey_the_bus();\n    survey_the_filesystems();\n    start_interrupts();",
+        replace: "    survey_the_bus();\n    if wost::arch::current::pci::is_available() {\n        survey_the_filesystems();\n    }\n    start_interrupts();",
+        breaks: "hardware-free namespaces do not depend on PCI availability",
+        reddens: Caught::BootMarker(qemu::DEGRADED_FILESYSTEM_MARKER),
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.
@@ -1619,6 +1628,19 @@ fn mutation_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
     if let Caught::HostTest { package, name } = wanted {
         return host_test_reports(paths, package, name);
     }
+    if let Caught::BootMarker(marker) = wanted {
+        return match tasks::degraded_check(paths, crate::cargo::Profile::Release) {
+            Ok(()) => Ok(false),
+            Err(error) => {
+                let expected = format!("without reporting {marker:?}");
+                if format!("{error:#}").contains(&expected) {
+                    Ok(true)
+                } else {
+                    Err(error)
+                }
+            }
+        };
+    }
     match tasks::test_boot(paths, crate::cargo::Profile::Release) {
         // The kernel booted and every check passed: the mutation survived.
         Ok(()) => Ok(false),
@@ -1655,7 +1677,9 @@ fn mutation_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
                         Err(error)
                     }
                 }
-                Caught::HostTest { .. } => unreachable!("host tests return before booting"),
+                Caught::HostTest { .. } | Caught::BootMarker(_) => {
+                    unreachable!("other witnesses return before self-test booting")
+                }
             }
         }
     }
@@ -1792,6 +1816,15 @@ mod tests {
                         "`{}` names host test `{name}`, which package `{}` does not have",
                         mutation.breaks,
                         package.display()
+                    );
+                }
+                Caught::BootMarker(marker) => {
+                    let qemu = std::fs::read_to_string(root.join("xtask/src/qemu.rs"))
+                        .expect("reading qemu.rs");
+                    assert!(
+                        qemu.contains(marker),
+                        "`{}` names boot marker `{marker}`, which qemu.rs does not have",
+                        mutation.breaks
                     );
                 }
                 Caught::Panic(_) => {}

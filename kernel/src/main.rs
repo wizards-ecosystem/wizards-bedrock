@@ -186,6 +186,10 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     // back (D-48).
     dev::attach_back_buffer();
 
+    #[cfg(feature = "refuse-pci")]
+    refuse_pci_for_degraded_boot();
+    survey_the_bus();
+    survey_the_filesystems();
     start_interrupts();
     input::init();
     route_keyboard(routing);
@@ -345,10 +349,13 @@ fn start_interrupts() {
         warn!("time: no page to publish the clock in; every query is ring Uptime");
     }
 
-    survey_the_bus();
-
     interrupt::enable();
     info!("cpu: accepting interrupts");
+}
+
+#[cfg(feature = "refuse-pci")]
+fn refuse_pci_for_degraded_boot() {
+    let _ = wost::arch::current::port::claim::<u32>(0x0cf8);
 }
 
 /// Claim configuration space and say what is on the bus.
@@ -392,11 +399,6 @@ fn survey_the_bus() {
         Some(at) => claim_the_controller(at),
         None => info!("pci: no nvme controller; nothing to claim"),
     }
-
-    // Neither of these needs a disk, so both are surveyed whatever the bus
-    // held — which is also what makes them the backends that prove the VFS's
-    // abstraction is about directories rather than about FAT (D-172).
-    survey_the_filesystems();
 }
 
 /// Claim the storage controller and say what it decodes.
@@ -584,7 +586,8 @@ fn mount_the_volume() {
 ///
 /// `014` asks for more than one backend before the VFS's abstraction is worth
 /// believing, and this is the shipped kernel exercising all three through the
-/// same three operations (D-172).
+/// same three operations. It is an unconditional sibling of bus discovery,
+/// because neither backend needs a device (D-172, D-198).
 fn survey_the_filesystems() {
     tmpfs::init();
 
