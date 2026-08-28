@@ -26,8 +26,8 @@
 //! structure is not (D-169).
 
 use nvme::{
-    Capabilities, Capacity, Command, Completion, DmaState, ReadTransfer, TransferError,
-    configuration, register, status,
+    Capabilities, Capacity, Command, Completion, DmaState, NAMESPACE_IDENTIFY_BYTES, Namespace,
+    NamespaceError, ReadTransfer, TransferError, configuration, register, status,
 };
 use wost::arch::current::paging::DeviceMapping;
 use wost::mm::{self, DmaSegment};
@@ -151,6 +151,12 @@ pub(crate) struct Controller {
     /// Invalid requests which crossed validation during the current witness.
     #[cfg(feature = "selftest")]
     intercepted_read_submissions: u32,
+    /// Stop I/O queue creation before allocation or device publication.
+    #[cfg(feature = "selftest")]
+    intercept_io_queue_creation: bool,
+    /// Queue creations which crossed namespace validation during the witness.
+    #[cfg(feature = "selftest")]
+    intercepted_io_queue_creations: u32,
     /// What `Identify` said, kept so a check can ask rather than infer.
     pub(crate) blocks: u64,
     /// Bytes in one logical block.
@@ -179,6 +185,8 @@ pub(crate) enum BringUpError {
     Command(u16),
     /// A read did not fit its command, namespace or DMA owner.
     InvalidTransfer(TransferError),
+    /// Identify Namespace data did not fit the supported storage contract.
+    InvalidNamespace(NamespaceError),
 }
 
 impl core::fmt::Display for BringUpError {
@@ -192,7 +200,8 @@ impl core::fmt::Display for BringUpError {
             Self::NoMemory => f.write_str("no memory for the queues"),
             Self::NotReady => f.write_str("the controller never became ready"),
             Self::Command(status) => write!(f, "a command was refused: status {status:#x}"),
-            Self::InvalidTransfer(reason) => write!(f, "an invalid transfer: {reason:?}"),
+            Self::InvalidTransfer(reason) => write!(f, "an invalid transfer: {reason}"),
+            Self::InvalidNamespace(reason) => write!(f, "an invalid namespace: {reason}"),
         }
     }
 }
@@ -267,12 +276,15 @@ pub(crate) fn bring_up(
         intercept_read_submission: false,
         #[cfg(feature = "selftest")]
         intercepted_read_submissions: 0,
+        #[cfg(feature = "selftest")]
+        intercept_io_queue_creation: false,
+        #[cfg(feature = "selftest")]
+        intercepted_io_queue_creations: 0,
         blocks: 0,
         block_bytes: 0,
     };
 
-    controller.identify_namespace()?;
-    controller.create_io_queues(capacity)?;
+    controller.identify_namespace(capacity)?;
     Ok(controller)
 }
 
@@ -312,7 +324,7 @@ impl Controller {
     }
 
     /// Ask the namespace how large it is and how large its blocks are.
-    fn identify_namespace(&mut self) -> Result<(), BringUpError> {
+    fn identify_namespace(&mut self, capacity: Capacity) -> Result<(), BringUpError> {
         let mut buffer =
             DmaSegment::from(mm::allocate_contiguous(1, 1).ok_or(BringUpError::NoMemory)?);
         if !buffer.zero() {
@@ -327,28 +339,34 @@ impl Controller {
             .dword(10, 0);
         self.run_admin(command, Some(&mut buffer))?;
 
-        // `NSZE` at 0, and the formatted LBA size index at 26, which selects
-        // one of the sixteen `LBAF` entries beginning at 128. Each is four
-        // bytes with the block size as a base-two logarithm in its third.
-        let mut head = [0u8; 32];
-        if !buffer.read_at(0, &mut head) {
+        let mut identify = [0u8; NAMESPACE_IDENTIFY_BYTES];
+        if !buffer.read_at(0, &mut identify) {
             return Err(BringUpError::NoMemory);
         }
-        self.blocks = u64::from_le_bytes([
-            head[0], head[1], head[2], head[3], head[4], head[5], head[6], head[7],
-        ]);
+        self.configure_namespace(&identify, capacity)
+    }
 
-        let format = usize::from(head[26] & 0x0F);
-        let mut lbaf = [0u8; 4];
-        if !buffer.read_at(128 + format * 4, &mut lbaf) {
-            return Err(BringUpError::NoMemory);
-        }
-        self.block_bytes = 1u32 << lbaf[2];
+    /// Validate and commit namespace geometry before I/O queues can exist.
+    fn configure_namespace(
+        &mut self,
+        identify: &[u8; NAMESPACE_IDENTIFY_BYTES],
+        capacity: Capacity,
+    ) -> Result<(), BringUpError> {
+        let namespace = Namespace::parse(identify).map_err(BringUpError::InvalidNamespace)?;
+        self.create_io_queues(capacity)?;
+        self.blocks = namespace.blocks();
+        self.block_bytes = namespace.block_bytes();
         Ok(())
     }
 
     /// Build the one I/O queue pair, with its interrupts disabled.
     fn create_io_queues(&mut self, capacity: Capacity) -> Result<(), BringUpError> {
+        #[cfg(feature = "selftest")]
+        if self.intercept_io_queue_creation {
+            self.intercepted_io_queue_creations += 1;
+            return Err(BringUpError::NotReady);
+        }
+
         let pair = QueuePair::new(IO_QUEUE, capacity).ok_or(BringUpError::NoMemory)?;
         let completion_address = pair.completion.address().ok_or(BringUpError::NoMemory)?;
         let submission_address = pair.submission.address().ok_or(BringUpError::NoMemory)?;
@@ -444,6 +462,100 @@ impl Controller {
             .dword(12, u32::from(request.zero_based_blocks()));
 
         self.run_on(IO_QUEUE, command, Some(into))
+    }
+
+    /// Prove malformed Identify data cannot reach I/O queue creation.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn malformed_namespace_stops_before_io_queues(&mut self) -> bool {
+        const SIZE: usize = 0;
+        const FORMAT_COUNT: usize = 25;
+        const FORMATTED: usize = 26;
+        const PROTECTION: usize = 29;
+        const FIRST_FORMAT: usize = 128;
+        const METADATA: usize = FIRST_FORMAT;
+        const BLOCK_SHIFT: usize = FIRST_FORMAT + 2;
+        const FORMAT_CONTROL: usize = FIRST_FORMAT + 3;
+
+        let capacity = self.admin.capacity;
+        let blocks_before = self.blocks;
+        let block_bytes_before = self.block_bytes;
+        let commands_before = self.commands();
+        let queue_before = self.has_io_queue();
+        let intercepted_before = self.intercepted_io_queue_creations;
+
+        let mut valid = [0u8; NAMESPACE_IDENTIFY_BYTES];
+        valid[SIZE] = 1;
+        valid[BLOCK_SHIFT] = nvme::SUPPORTED_BLOCK_BYTES.trailing_zeros() as u8;
+
+        self.intercept_io_queue_creation = true;
+
+        let mut empty = valid;
+        empty[SIZE] = 0;
+        let empty = self.configure_namespace(&empty, capacity);
+
+        let mut formats = valid;
+        formats[FORMAT_COUNT] = 16;
+        let formats = self.configure_namespace(&formats, capacity);
+
+        let mut outside = valid;
+        outside[FORMATTED] = 1;
+        let outside = self.configure_namespace(&outside, capacity);
+
+        let mut reserved_selector = valid;
+        reserved_selector[FORMATTED] = 0x80;
+        let reserved_selector = self.configure_namespace(&reserved_selector, capacity);
+
+        let mut reserved_format = valid;
+        reserved_format[FORMAT_CONTROL] = 4;
+        let reserved_format = self.configure_namespace(&reserved_format, capacity);
+
+        let mut metadata = valid;
+        metadata[METADATA] = 1;
+        let metadata = self.configure_namespace(&metadata, capacity);
+
+        let mut protection = valid;
+        protection[PROTECTION] = 1;
+        let protection = self.configure_namespace(&protection, capacity);
+
+        let mut block_size = valid;
+        block_size[BLOCK_SHIFT] = 32;
+        let block_size = self.configure_namespace(&block_size, capacity);
+
+        self.intercept_io_queue_creation = false;
+
+        let refused = [
+            (empty, NamespaceError::Empty),
+            (formats, NamespaceError::TooManyFormats(17)),
+            (
+                outside,
+                NamespaceError::FormatOutsideList {
+                    selected: 1,
+                    formats: 1,
+                },
+            ),
+            (
+                reserved_selector,
+                NamespaceError::ReservedFormatBits(0x80),
+            ),
+            (
+                reserved_format,
+                NamespaceError::ReservedLbaFormatBits(4),
+            ),
+            (metadata, NamespaceError::Metadata(1)),
+            (protection, NamespaceError::Protection(1)),
+            (block_size, NamespaceError::BlockSize(32)),
+        ]
+        .into_iter()
+        .all(|(result, expected)| {
+            matches!(result, Err(BringUpError::InvalidNamespace(found)) if found == expected)
+        });
+
+        refused
+            && self.blocks == blocks_before
+            && self.block_bytes == block_bytes_before
+            && self.commands() == commands_before
+            && self.has_io_queue() == queue_before
+            && self.intercepted_io_queue_creations == intercepted_before
     }
 
     /// Prove malformed reads stop before the private submission seam.

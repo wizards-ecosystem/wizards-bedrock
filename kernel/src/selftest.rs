@@ -2425,6 +2425,12 @@ fn the_controller_was_read_rather_than_assumed() -> bool {
     .unwrap_or(false)
 }
 
+/// Malformed namespace geometry cannot reach the I/O queue creation seam.
+fn invalid_nvme_namespace_stops_before_io_queues() -> bool {
+    nvme::with_controller(|controller, _| controller.malformed_namespace_stops_before_io_queues())
+        .unwrap_or(false)
+}
+
 /// Malformed command, namespace and DMA extents are refused before the seam
 /// that can construct a queue entry or ring a doorbell.
 fn invalid_nvme_reads_stop_before_submission() -> bool {
@@ -6780,7 +6786,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 200;
+const EXPECTED_CHECKS: usize = 201;
 
 impl Report {
     const fn new() -> Self {
@@ -7000,6 +7006,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the controller was read rather than assumed",
         the_controller_was_read_rather_than_assumed(),
+    );
+    report.check(
+        "invalid nvme namespace stops before io queues",
+        invalid_nvme_namespace_stops_before_io_queues(),
     );
     report.check(
         "invalid nvme reads stop before submission",

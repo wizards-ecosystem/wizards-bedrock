@@ -812,6 +812,123 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "raw nvme reads cannot bypass controller-bound validation",
         reddens: Caught::Check("invalid nvme reads stop before submission"),
     },
+    // Treat a zeroed Identify response as a usable namespace. There is no LBA
+    // zero when NSZE is zero, however plausible the remaining format looks.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        if blocks == 0 {\n            return Err(NamespaceError::Empty);\n        }",
+        replace: "        if false && blocks == 0 {\n            return Err(NamespaceError::Empty);\n        }",
+        breaks: "a namespace has at least one logical block",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::a_namespace_has_at_least_one_logical_block",
+        },
+    },
+    // Accept the extended format table even though this host never enabled
+    // LBAFEE and copied only the sixteen-entry prefix it negotiated.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        if last_format >= MAX_LBA_FORMATS {\n            return Err(NamespaceError::TooManyFormats(u16::from(last_format) + 1));\n        }",
+        replace: "        if false && last_format >= MAX_LBA_FORMATS {\n            return Err(NamespaceError::TooManyFormats(u16::from(last_format) + 1));\n        }",
+        breaks: "only negotiated lba formats are accepted",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::every_format_selector_stays_inside_the_negotiated_table",
+        },
+    },
+    // Ignore FLBAS's reserved bit, making a malformed selector indistinguishable
+    // from a format this host knows how to interpret.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        if formatted & 0x80 != 0 {\n            return Err(NamespaceError::ReservedFormatBits(formatted));\n        }",
+        replace: "        if false && formatted & 0x80 != 0 {\n            return Err(NamespaceError::ReservedFormatBits(formatted));\n        }",
+        breaks: "reserved formatted lba selector bits are refused",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::every_format_selector_stays_inside_the_negotiated_table",
+        },
+    },
+    // Select a packed table entry beyond zero-based NLBAF. Its bytes are not a
+    // supported format even when the fixed Identify buffer happens to hold it.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        if selected > last_format {\n            return Err(NamespaceError::FormatOutsideList {\n                selected,\n                formats: last_format + 1,\n            });\n        }",
+        replace: "        if false && selected > last_format {\n            return Err(NamespaceError::FormatOutsideList {\n                selected,\n                formats: last_format + 1,\n            });\n        }",
+        breaks: "the formatted lba index is inside the reported table",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::every_format_selector_stays_inside_the_negotiated_table",
+        },
+    },
+    // Interpret reserved LBAF control bits as relative-performance bits. The
+    // low two are descriptive; every higher bit is an unknown layout contract.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        if control & 0xfc != 0 {\n            return Err(NamespaceError::ReservedLbaFormatBits(control));\n        }",
+        replace: "        if false && control & 0xfc != 0 {\n            return Err(NamespaceError::ReservedLbaFormatBits(control));\n        }",
+        breaks: "every lba format control bit has an explicit policy",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::every_lba_format_control_value_has_one_explicit_policy",
+        },
+    },
+    // Drop per-LBA metadata from the transfer length and pointer contract.
+    // Even one byte makes the controller's data shape differ from the host's.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        if metadata != 0 {\n            return Err(NamespaceError::Metadata(metadata));\n        }",
+        replace: "        if false && metadata != 0 {\n            return Err(NamespaceError::Metadata(metadata));\n        }",
+        breaks: "selected lba metadata is never silently discarded",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::every_metadata_and_protection_setting_is_explicit",
+        },
+    },
+    // Confuse support capabilities with active metadata settings. A device may
+    // advertise both transfer forms while the selected LBAF uses no metadata.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        if metadata != 0 {\n            return Err(NamespaceError::Metadata(metadata));\n        }",
+        replace: "        if metadata != 0 || identify[27] != 0 || identify[28] != 0 {\n            return Err(NamespaceError::Metadata(metadata));\n        }",
+        breaks: "metadata capabilities do not enable metadata settings",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::every_metadata_and_protection_setting_is_explicit",
+        },
+    },
+    // Read protected blocks without providing or checking their protection
+    // information, turning integrity errors into ordinary data.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        if protection != 0 {\n            return Err(NamespaceError::Protection(protection));\n        }",
+        replace: "        if false && protection != 0 {\n            return Err(NamespaceError::Protection(protection));\n        }",
+        breaks: "enabled protection information is never silently discarded",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::every_metadata_and_protection_setting_is_explicit",
+        },
+    },
+    // Admit every exponent at or above 512 bytes, restoring the old trust in a
+    // byte which may be 32 and which the only storage caller cannot consume.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        if block_shift != SUPPORTED_BLOCK_SHIFT {\n            return Err(NamespaceError::BlockSize(block_shift));\n        }",
+        replace: "        if block_shift < SUPPORTED_BLOCK_SHIFT {\n            return Err(NamespaceError::BlockSize(block_shift));\n        }",
+        breaks: "every lbads byte has one explicit supported policy",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::every_lbads_value_has_one_explicit_policy",
+        },
+    },
+    // Replace refused device data with a known-good synthetic namespace. The
+    // self-test queue interceptor catches the bypass before allocation or MMIO.
+    Mutation {
+        file: "kernel/src/nvme.rs",
+        find: "        let namespace = Namespace::parse(identify).map_err(BringUpError::InvalidNamespace)?;",
+        replace: "        let namespace = Namespace::parse(identify)\n            .or_else(|_| {\n                let mut accepted = [0u8; NAMESPACE_IDENTIFY_BYTES];\n                accepted[0] = 1;\n                accepted[128 + 2] = 9;\n                Namespace::parse(&accepted)\n            })\n            .map_err(BringUpError::InvalidNamespace)?;",
+        breaks: "invalid namespace data cannot bypass io queue admission",
+        reddens: Caught::Check("invalid nvme namespace stops before io queues"),
+    },
     // Slice 5. The logical block address dropped, so every read answers with
     // block zero. Invisible against a disk of identical blocks, which is why
     // the namespace carries a different signature in each (D-169).

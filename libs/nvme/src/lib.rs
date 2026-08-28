@@ -56,6 +56,26 @@ pub const IOCQES: u32 = 4;
 /// Most logical blocks one command can encode in the zero-based NLB field.
 pub const MAX_TRANSFER_BLOCKS: u32 = u16::MAX as u32 + 1;
 
+/// Logical-block size the current storage caller can consume.
+pub const SUPPORTED_BLOCK_BYTES: u32 = 512;
+
+const NAMESPACE_SIZE_BYTES: usize = 8;
+const FORMAT_COUNT_OFFSET: usize = 25;
+const FORMATTED_OFFSET: usize = 26;
+#[cfg(test)]
+const METADATA_CAPABILITIES_OFFSET: usize = 27;
+#[cfg(test)]
+const PROTECTION_CAPABILITIES_OFFSET: usize = 28;
+const PROTECTION_SETTINGS_OFFSET: usize = 29;
+const LBA_FORMATS_OFFSET: usize = 128;
+const LBA_FORMAT_BYTES: usize = 4;
+const MAX_LBA_FORMATS: u8 = 16;
+const SUPPORTED_BLOCK_SHIFT: u8 = 9;
+
+/// Identify Namespace prefix through all sixteen negotiated LBA formats.
+pub const NAMESPACE_IDENTIFY_BYTES: usize =
+    LBA_FORMATS_OFFSET + MAX_LBA_FORMATS as usize * LBA_FORMAT_BYTES;
+
 /// Whether memory named by the current command may return to its allocator.
 ///
 /// A completion restores ordinary ownership. An uncompleted command does not:
@@ -531,6 +551,138 @@ impl Completion {
     }
 }
 
+/// Namespace geometry proved to match the current storage contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Namespace {
+    blocks: u64,
+}
+
+/// Why Identify Namespace data cannot describe a supported namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NamespaceError {
+    /// The namespace contains no addressable logical blocks.
+    Empty,
+    /// More formats were reported than this host negotiated.
+    TooManyFormats(u16),
+    /// The formatted index is beyond the reported table.
+    FormatOutsideList {
+        /// Index named by `FLBAS`.
+        selected: u8,
+        /// Formats reported by zero-based `NLBAF`.
+        formats: u8,
+    },
+    /// A reserved bit was set in `FLBAS`.
+    ReservedFormatBits(u8),
+    /// A reserved bit was set in the selected `LBAF` entry.
+    ReservedLbaFormatBits(u8),
+    /// The selected format carries metadata this driver cannot transfer.
+    Metadata(u16),
+    /// The namespace enables protection information this driver cannot transfer.
+    Protection(u8),
+    /// The selected logical-block exponent is not the supported 512 bytes.
+    BlockSize(u8),
+}
+
+impl core::fmt::Display for NamespaceError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("the namespace has no logical blocks"),
+            Self::TooManyFormats(formats) => {
+                write!(f, "the namespace reports {formats} lba formats")
+            }
+            Self::FormatOutsideList { selected, formats } => write!(
+                f,
+                "lba format {selected} is outside the {formats} reported formats"
+            ),
+            Self::ReservedFormatBits(bits) => {
+                write!(f, "formatted lba size has reserved bits {bits:#04x}")
+            }
+            Self::ReservedLbaFormatBits(bits) => {
+                write!(f, "the selected lba format has reserved bits {bits:#04x}")
+            }
+            Self::Metadata(bytes) => {
+                write!(f, "the selected lba format has {bytes} metadata bytes")
+            }
+            Self::Protection(bits) => {
+                write!(f, "the namespace enables protection settings {bits:#04x}")
+            }
+            Self::BlockSize(shift) => {
+                write!(f, "the selected lba data size exponent is {shift}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for NamespaceError {}
+
+impl Namespace {
+    /// Parse the Identify Namespace prefix this driver negotiated.
+    ///
+    /// The high `FLBAS` index bits are ignored because this host does not
+    /// enable the 64-format extension. Metadata capability fields are likewise
+    /// not settings; the selected format and `DPS` decide the transfer shape.
+    ///
+    /// # Errors
+    ///
+    /// [`NamespaceError`] names an empty, malformed or unsupported format.
+    pub fn parse(identify: &[u8; NAMESPACE_IDENTIFY_BYTES]) -> Result<Self, NamespaceError> {
+        let mut size = [0u8; NAMESPACE_SIZE_BYTES];
+        size.copy_from_slice(&identify[..NAMESPACE_SIZE_BYTES]);
+        let blocks = u64::from_le_bytes(size);
+        if blocks == 0 {
+            return Err(NamespaceError::Empty);
+        }
+
+        let last_format = identify[FORMAT_COUNT_OFFSET];
+        if last_format >= MAX_LBA_FORMATS {
+            return Err(NamespaceError::TooManyFormats(u16::from(last_format) + 1));
+        }
+
+        let formatted = identify[FORMATTED_OFFSET];
+        if formatted & 0x80 != 0 {
+            return Err(NamespaceError::ReservedFormatBits(formatted));
+        }
+        let selected = formatted & 0x0f;
+        if selected > last_format {
+            return Err(NamespaceError::FormatOutsideList {
+                selected,
+                formats: last_format + 1,
+            });
+        }
+
+        let offset = LBA_FORMATS_OFFSET + usize::from(selected) * LBA_FORMAT_BYTES;
+        let metadata = u16::from_le_bytes([identify[offset], identify[offset + 1]]);
+        let block_shift = identify[offset + 2];
+        let control = identify[offset + 3];
+        if control & 0xfc != 0 {
+            return Err(NamespaceError::ReservedLbaFormatBits(control));
+        }
+        if metadata != 0 {
+            return Err(NamespaceError::Metadata(metadata));
+        }
+        let protection = identify[PROTECTION_SETTINGS_OFFSET];
+        if protection != 0 {
+            return Err(NamespaceError::Protection(protection));
+        }
+        if block_shift != SUPPORTED_BLOCK_SHIFT {
+            return Err(NamespaceError::BlockSize(block_shift));
+        }
+
+        Ok(Self { blocks })
+    }
+
+    /// Logical blocks in the namespace.
+    pub const fn blocks(self) -> u64 {
+        self.blocks
+    }
+
+    /// Bytes in each logical block.
+    pub const fn block_bytes(self) -> u32 {
+        SUPPORTED_BLOCK_BYTES
+    }
+}
+
 /// A read whose command extent and DMA capacity have both been validated.
 ///
 /// The fields stay private so command construction cannot accidentally return
@@ -545,6 +697,7 @@ pub struct ReadTransfer {
 
 /// Why a logical-block transfer cannot be encoded or safely received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TransferError {
     /// An NVM read must name at least one logical block.
     Empty,
@@ -559,6 +712,21 @@ pub enum TransferError {
     /// The DMA allocation is shorter than the command's byte extent.
     BufferTooSmall,
 }
+
+impl core::fmt::Display for TransferError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Empty => "the transfer contains no logical blocks",
+            Self::TooManyBlocks => "the transfer does not fit the nlb field",
+            Self::BlockSize => "the logical-block size is zero",
+            Self::OutsideNamespace => "the transfer crosses the namespace boundary",
+            Self::LengthOverflow => "the transfer byte length overflows",
+            Self::BufferTooSmall => "the dma buffer is shorter than the transfer",
+        })
+    }
+}
+
+impl core::error::Error for TransferError {}
 
 impl ReadTransfer {
     /// Validate one logical-block read against its namespace and DMA owner.
@@ -735,6 +903,17 @@ pub const fn list_entry(address: u64, length: u64, page_size: u64, index: usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn identify(blocks: u64) -> [u8; NAMESPACE_IDENTIFY_BYTES] {
+        let mut bytes = [0u8; NAMESPACE_IDENTIFY_BYTES];
+        bytes[..8].copy_from_slice(&blocks.to_le_bytes());
+        bytes[FORMAT_COUNT_OFFSET] = MAX_LBA_FORMATS - 1;
+        for format in 0..MAX_LBA_FORMATS {
+            let offset = LBA_FORMATS_OFFSET + usize::from(format) * LBA_FORMAT_BYTES;
+            bytes[offset + 2] = SUPPORTED_BLOCK_SHIFT;
+        }
+        bytes
+    }
 
     struct DelayedDevice {
         answered: bool,
@@ -997,6 +1176,139 @@ mod tests {
         assert!(clean.phase);
         assert_eq!(clean.status, 0);
         assert!(clean.is_success());
+    }
+
+    /// A zero-sized namespace has no valid LBA, while both extent ends survive.
+    #[test]
+    fn a_namespace_has_at_least_one_logical_block() {
+        assert_eq!(Namespace::parse(&identify(0)), Err(NamespaceError::Empty));
+
+        let one = Namespace::parse(&identify(1)).expect("one addressable block");
+        assert_eq!(one.blocks(), 1);
+        assert_eq!(one.block_bytes(), SUPPORTED_BLOCK_BYTES);
+
+        let largest = Namespace::parse(&identify(u64::MAX)).expect("the largest lba extent");
+        assert_eq!(largest.blocks(), u64::MAX);
+    }
+
+    /// Exhaust the reported count and every byte value of the format selector.
+    #[test]
+    fn every_format_selector_stays_inside_the_negotiated_table() {
+        for last in 0..=u8::MAX {
+            let mut bytes = identify(1);
+            bytes[FORMAT_COUNT_OFFSET] = last;
+            let parsed = Namespace::parse(&bytes);
+            if last < MAX_LBA_FORMATS {
+                assert!(parsed.is_ok(), "zero-based format count {last}");
+            } else {
+                assert_eq!(
+                    parsed,
+                    Err(NamespaceError::TooManyFormats(u16::from(last) + 1)),
+                    "zero-based format count {last}"
+                );
+            }
+        }
+
+        for last in 0..MAX_LBA_FORMATS {
+            for formatted in 0..=u8::MAX {
+                let mut bytes = identify(1);
+                bytes[FORMAT_COUNT_OFFSET] = last;
+                bytes[FORMATTED_OFFSET] = formatted;
+                let selected = formatted & 0x0f;
+                let parsed = Namespace::parse(&bytes);
+                if formatted & 0x80 != 0 {
+                    assert_eq!(
+                        parsed,
+                        Err(NamespaceError::ReservedFormatBits(formatted)),
+                        "last {last}, flbas {formatted:#04x}"
+                    );
+                } else if selected > last {
+                    assert_eq!(
+                        parsed,
+                        Err(NamespaceError::FormatOutsideList {
+                            selected,
+                            formats: last + 1,
+                        }),
+                        "last {last}, flbas {formatted:#04x}"
+                    );
+                } else {
+                    assert!(
+                        parsed.is_ok(),
+                        "the high index and metadata-placement bits are inapplicable: last {last}, flbas {formatted:#04x}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every possible exponent has one policy, and none is ever shifted first.
+    #[test]
+    fn every_lbads_value_has_one_explicit_policy() {
+        for block_shift in 0..=u8::MAX {
+            let mut bytes = identify(1);
+            bytes[LBA_FORMATS_OFFSET + 2] = block_shift;
+            let parsed = Namespace::parse(&bytes);
+            if block_shift == SUPPORTED_BLOCK_SHIFT {
+                assert_eq!(
+                    parsed.expect("the one supported exponent").block_bytes(),
+                    512
+                );
+            } else {
+                assert_eq!(parsed, Err(NamespaceError::BlockSize(block_shift)));
+            }
+        }
+    }
+
+    /// Metadata capabilities are harmless; selected metadata and protection are not.
+    #[test]
+    fn every_metadata_and_protection_setting_is_explicit() {
+        for metadata in 0..=u16::MAX {
+            let mut bytes = identify(1);
+            bytes[LBA_FORMATS_OFFSET..LBA_FORMATS_OFFSET + 2]
+                .copy_from_slice(&metadata.to_le_bytes());
+            let parsed = Namespace::parse(&bytes);
+            if metadata == 0 {
+                assert!(parsed.is_ok());
+            } else {
+                assert_eq!(parsed, Err(NamespaceError::Metadata(metadata)));
+            }
+        }
+
+        for protection in 0..=u8::MAX {
+            let mut bytes = identify(1);
+            bytes[PROTECTION_SETTINGS_OFFSET] = protection;
+            let parsed = Namespace::parse(&bytes);
+            if protection == 0 {
+                assert!(parsed.is_ok());
+            } else {
+                assert_eq!(parsed, Err(NamespaceError::Protection(protection)));
+            }
+        }
+
+        for capabilities in 0..=u8::MAX {
+            let mut bytes = identify(1);
+            bytes[METADATA_CAPABILITIES_OFFSET] = capabilities;
+            bytes[PROTECTION_CAPABILITIES_OFFSET] = capabilities;
+            assert!(
+                Namespace::parse(&bytes).is_ok(),
+                "capabilities {capabilities:#04x} do not enable a transfer setting"
+            );
+        }
+    }
+
+    /// Relative performance is descriptive; every higher LBAF bit is reserved.
+    #[test]
+    fn every_lba_format_control_value_has_one_explicit_policy() {
+        for control in 0..=u8::MAX {
+            let mut bytes = identify(1);
+            bytes[LBA_FORMATS_OFFSET + 3] = control;
+            let parsed = Namespace::parse(&bytes);
+            if control <= 3 {
+                assert!(parsed.is_ok(), "relative performance {control}");
+            } else {
+                assert_eq!(parsed, Err(NamespaceError::ReservedLbaFormatBits(control)));
+            }
+        }
     }
 
     /// Zero has no NLB encoding and must never reach `blocks - 1`.
