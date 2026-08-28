@@ -201,7 +201,9 @@ WP is architectural on x86-64 and is enabled unconditionally. Each of the
 other four is enabled only if `CPUID` reports it (UMIP is Cannon Lake and
 later; VMware and QEMU without `+umip` will not have it), and every result is
 read back from the register rather than assumed. The kernel logs what is
-actually on.
+actually on. D-201 later made active NX mandatory before ring 3 may open;
+SMEP, SMAP and UMIP remain preferred optional hardening rather than launch
+prerequisites.
 
 Enabling SMEP and SMAP against page tables we did not build is the one real
 risk here: if Limine had mapped the kernel or the framebuffer user-accessible,

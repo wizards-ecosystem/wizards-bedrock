@@ -234,6 +234,9 @@ struct wiz_completion {
  * denied**: there is no root and no parent, so there is nothing that could
  * have been denied. */
 #define WIZ_STATUS_BAD_PATH       10u
+/* The clock or other service required to make progress is absent. Refused at
+ * submission; no operation remains in flight. */
+#define WIZ_STATUS_UNAVAILABLE    11u
 
 /* ------------------------------------------------------------------ *
  * The time page

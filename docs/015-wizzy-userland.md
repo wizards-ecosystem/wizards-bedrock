@@ -215,6 +215,12 @@ D-183 adds the second entry gate: the compiler-readiness table above must read
 silently open Phase 7. Until both gates pass, implementation remains on the
 allowed preparatory side of the boundary stated above.
 
+D-201 also fixes the target-side launch precondition the eventual runtime may
+rely on: a program starts only with enforced NX and a calibrated monotonic/APIC
+clock. A target adapter still has to implement the versioned time-page reader
+and correlated Uptime fallback for post-launch revocation; PW-303 owns the
+clocksource and revocation policy rather than permitting a clockless launch.
+
 ## The dependency chain
 
 ```text

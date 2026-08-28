@@ -302,6 +302,11 @@ pub(crate) const STATUS_NO_ENTRY: u32 = 9;
 /// **Not a denial.** There is no root and no parent, so there is nothing that
 /// could have been denied (`012` §5, D-171).
 pub(crate) const STATUS_BAD_PATH: u32 = 10;
+/// The service this operation requires is not available on this boot.
+///
+/// A submission-time refusal: no pending slot is retained and no completion
+/// promise depends on a clock which never started (D-201).
+pub(crate) const STATUS_UNAVAILABLE: u32 = 11;
 
 /// The indices, copied out of the shared page in one read.
 ///
@@ -693,6 +698,9 @@ impl Queue {
             },
             Opcode::Duplicate => self.duplicate(submission, table),
             Opcode::Timer => {
+                if !crate::time::is_calibrated() {
+                    return Some(refuse(token, STATUS_UNAVAILABLE));
+                }
                 if self.defer(submission).is_some() {
                     return None;
                 }

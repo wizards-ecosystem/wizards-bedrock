@@ -4188,6 +4188,85 @@ fn an_unguarded_boot_stack_closes_the_user_boundary() -> bool {
         && spawn_resources() == resources_before
 }
 
+/// Ring three stays closed when the CPU cannot enforce non-executable pages.
+///
+/// The injected read-back refusal enters the same predicate as production and
+/// must stop before process construction changes any resource or reaches the
+/// syscall gate (D-201).
+fn no_execute_protection_closes_the_user_boundary() -> bool {
+    while user::collect().is_some() {}
+    if !Protections::enabled().nx {
+        return false;
+    }
+
+    let resources_before = spawn_resources();
+    let crossings_before = trap::last_syscall().count;
+    let attempt = user::without_no_execute_for_test(user::run);
+    let denied = matches!(&attempt, Err(user::SpawnError::NoExecuteProtection));
+
+    if let Ok(spawned) = attempt {
+        let slot = spawned.slot;
+        drop(spawned);
+        let _ = runs_until(2000, || task::address_space_of(slot).is_none());
+        while user::collect().is_some() {}
+    }
+
+    denied
+        && Protections::enabled().nx
+        && trap::last_syscall().count == crossings_before
+        && spawn_resources() == resources_before
+}
+
+/// No calibrated clock means no user launch and no deferred Timer promise.
+///
+/// Both admissions consult `time::is_calibrated`. The user refusal precedes
+/// allocation, while Timer posts one immediate typed completion and leaves no
+/// pending operation which an absent interrupt could strand (D-201).
+fn an_uncalibrated_clock_admits_no_user_or_timer() -> bool {
+    while user::collect().is_some() {}
+    if !time::is_calibrated() {
+        return false;
+    }
+    let Some(ring) = queue::Queue::new() else {
+        return false;
+    };
+    let table = shared_handle_table_or_false!(1);
+    ring.post_submission_for_test(
+        0,
+        queue::Submission::simple(queue::Opcode::Timer, 0xC10C, 1_000_000),
+    );
+    ring.publish_tail_for_test(1);
+
+    let resources_before = spawn_resources();
+    let crossings_before = trap::last_syscall().count;
+    let (attempt, served) = time::without_calibration_for_test(|| {
+        let attempt = user::run();
+        let served = ring.serve(&table);
+        (attempt, served)
+    });
+    let denied = matches!(&attempt, Err(user::SpawnError::NoClock));
+
+    if let Ok(spawned) = attempt {
+        let slot = spawned.slot;
+        drop(spawned);
+        let _ = runs_until(2000, || task::address_space_of(slot).is_none());
+        while user::collect().is_some() {}
+    }
+
+    let completion = ring.read_completion(0);
+    denied
+        && served == 1
+        && completion.token == 0xC10C
+        && completion.status == queue::STATUS_UNAVAILABLE
+        && completion.value == 0
+        && ring.in_flight() == 0
+        && ring.outstanding() == 0
+        && ring.is_consistent()
+        && time::is_calibrated()
+        && trap::last_syscall().count == crossings_before
+        && spawn_resources() == resources_before
+}
+
 /// A program that has ended gives its memory back — its pages, its tables,
 /// and its slot.
 ///
@@ -6977,7 +7056,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 206;
+const EXPECTED_CHECKS: usize = 208;
 
 impl Report {
     const fn new() -> Self {
@@ -7377,6 +7456,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "an unguarded boot stack closes the user boundary",
         an_unguarded_boot_stack_closes_the_user_boundary(),
+    );
+    report.check(
+        "no-execute protection closes the user boundary",
+        no_execute_protection_closes_the_user_boundary(),
+    );
+    report.check(
+        "an uncalibrated clock admits no user or timer",
+        an_uncalibrated_clock_admits_no_user_or_timer(),
     );
     report.check(
         "a user page comes back cleared",

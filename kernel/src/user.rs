@@ -14,6 +14,8 @@
 //! (D-100, D-105). Each program now runs in a table of its own (D-106).
 
 use core::fmt;
+#[cfg(feature = "selftest")]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use elf64::{Elf, ElfError, SegmentKind};
@@ -709,6 +711,10 @@ impl SpawnFault {
 /// Why a program could not be started.
 #[derive(Debug)]
 pub(crate) enum SpawnError {
+    /// The CPU is not enforcing non-executable mappings.
+    NoExecuteProtection,
+    /// No calibrated clock can preempt or complete a timer.
+    NoClock,
     /// The kernel itself is still running on an unguarded boot stack.
     UnguardedBootStack,
     /// No address space could be built for it.
@@ -739,6 +745,8 @@ pub(crate) enum SpawnError {
 impl fmt::Display for SpawnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NoExecuteProtection => f.write_str("no execute protection; ring 3 is closed"),
+            Self::NoClock => f.write_str("no calibrated clock; ring 3 is closed"),
             Self::UnguardedBootStack => {
                 f.write_str("the boot thread has no guarded stack; ring 3 is closed")
             }
@@ -794,6 +802,12 @@ fn spawn_transaction(
 ) -> Result<Spawned, SpawnError> {
     if !crate::user_launch_is_safe() {
         return Err(SpawnError::UnguardedBootStack);
+    }
+    if !no_execute_is_enabled() {
+        return Err(SpawnError::NoExecuteProtection);
+    }
+    if !crate::time::is_calibrated() {
+        return Err(SpawnError::NoClock);
     }
     let space = AddressSpace::for_user().map_err(SpawnError::NoSpace)?;
     let mut construction = ProcessConstruction::new(space);
@@ -890,6 +904,26 @@ fn spawn_transaction(
         slot,
         channel: ours,
     })
+}
+
+/// Whether the CPU will enforce every non-executable user mapping.
+fn no_execute_is_enabled() -> bool {
+    let enabled = cpu::Protections::enabled().nx;
+    #[cfg(feature = "selftest")]
+    let enabled = enabled && !REFUSE_NO_EXECUTE.load(Ordering::Acquire);
+    enabled
+}
+
+#[cfg(feature = "selftest")]
+static REFUSE_NO_EXECUTE: AtomicBool = AtomicBool::new(false);
+
+/// Run a check as if the protection read-back had omitted NX.
+#[cfg(feature = "selftest")]
+pub(crate) fn without_no_execute_for_test<T>(check: impl FnOnce() -> T) -> T {
+    let refused = REFUSE_NO_EXECUTE.swap(true, Ordering::AcqRel);
+    let result = check();
+    REFUSE_NO_EXECUTE.store(refused, Ordering::Release);
+    result
 }
 
 /// Stop one never-run construction after `edge`.

@@ -12,6 +12,8 @@
 //! tick it once produced is gone.
 
 use core::fmt;
+#[cfg(feature = "selftest")]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use timebase::Timebase;
@@ -494,7 +496,25 @@ pub(crate) fn uptime_ms() -> u64 {
 /// What anything that means to wait must ask first: with no clock there is no
 /// deadline and no timer, so a wait would be a hang.
 pub(crate) fn is_calibrated() -> bool {
-    Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed)).is_calibrated()
+    let calibrated =
+        Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed)).is_calibrated();
+    #[cfg(feature = "selftest")]
+    let calibrated = calibrated && !REFUSE_CALIBRATION.load(Ordering::Acquire);
+    calibrated
+}
+
+#[cfg(feature = "selftest")]
+static REFUSE_CALIBRATION: AtomicBool = AtomicBool::new(false);
+
+/// Run a check through the production uncalibrated-clock predicate.
+#[cfg(feature = "selftest")]
+pub(crate) fn without_calibration_for_test<T>(check: impl FnOnce() -> T) -> T {
+    let disabled = interrupt::disable();
+    let refused = REFUSE_CALIBRATION.swap(true, Ordering::AcqRel);
+    let result = check();
+    REFUSE_CALIBRATION.store(refused, Ordering::Release);
+    disabled.restore();
+    result
 }
 
 /// Ask for a timer interrupt at `deadline`, or as soon as the hardware can

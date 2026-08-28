@@ -268,7 +268,7 @@ const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// is a thing you do inside a fix and the table is a different file. This line
 /// and its twin in `kernel/src/selftest.rs` are the two you have to touch
 /// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 206;
+const EXPECTED_SELFTEST_CHECKS: usize = 208;
 
 /// The worker has submitted an NVMe command but remains preemptible.
 const STORAGE_DELAY_MARKER: &str = "selftest: awaiting storage-delay keystroke";
@@ -954,10 +954,10 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
 /// How long to allow for a cold start before the marker must have appeared.
 const BOOT_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// A processor with no x2APIC, and none of the protection bits `-cpu max` has.
+/// A processor with no x2APIC or optional SMEP/SMAP/UMIP hardening.
 ///
 /// The last `-cpu` wins, so this overrides [`MACHINE`]'s.
-const DEGRADED_CPU: [&str; 2] = ["-cpu", "qemu64,-x2apic"];
+const DEGRADED_CPU: [&str; 2] = ["-cpu", "qemu64,-x2apic,-smep,-smap,-umip"];
 
 /// What the kernel must say when it finds no x2APIC.
 ///
@@ -975,6 +975,12 @@ pub const DEGRADED_FILESYSTEM_MARKER: &str = "tmpfs:";
 /// Both device names must resolve through devfs without a bus.
 const DEGRADED_STORAGE_MARKER: &str = "devfs: storage is";
 const DEGRADED_CONSOLE_MARKER: &str = "devfs: console is";
+
+/// Optional hardening is absent, while mandatory WP and NX remain active.
+const DEGRADED_PROTECTIONS_MARKER: &str = "cpu: protections wp nx";
+
+/// Without a clock, the supported diagnostic boot never opens ring three.
+pub const DEGRADED_USER_MARKER: &str = "user: no program: no calibrated clock; ring 3 is closed";
 
 /// Boot with two independent platform prerequisites absent and require both.
 ///
@@ -1025,6 +1031,8 @@ pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Resu
         DEGRADED_FILESYSTEM_MARKER,
         DEGRADED_STORAGE_MARKER,
         DEGRADED_CONSOLE_MARKER,
+        DEGRADED_PROTECTIONS_MARKER,
+        DEGRADED_USER_MARKER,
     ]
     .into_iter()
     .map(|marker| (marker, Arc::new(AtomicBool::new(false))))
@@ -1056,7 +1064,9 @@ pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Resu
             bail!("the degraded kernel settled without reporting {marker:?}");
         }
     }
-    println!("[xtask] degraded kernel refuses PCI and x2apic, surveys tmpfs/devfs, and settles");
+    println!(
+        "[xtask] degraded kernel keeps optional protection fallback diagnostic-only and settles"
+    );
     Ok(())
 }
 

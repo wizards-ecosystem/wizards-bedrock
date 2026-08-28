@@ -1652,6 +1652,27 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "RingWait hands its caller away through the live trap frame",
         reddens: Caught::Check("a program waits through its trap frame"),
     },
+    Mutation {
+        file: "kernel/src/user.rs",
+        find: "    if !no_execute_is_enabled() {\n        return Err(SpawnError::NoExecuteProtection);\n    }",
+        replace: "    if false && !no_execute_is_enabled() {\n        return Err(SpawnError::NoExecuteProtection);\n    }",
+        breaks: "ring three requires enforced non-executable mappings",
+        reddens: Caught::Check("no-execute protection closes the user boundary"),
+    },
+    Mutation {
+        file: "kernel/src/user.rs",
+        find: "    if !crate::time::is_calibrated() {\n        return Err(SpawnError::NoClock);\n    }",
+        replace: "    if false && !crate::time::is_calibrated() {\n        return Err(SpawnError::NoClock);\n    }",
+        breaks: "an uncalibrated boot never launches an unpreemptible program",
+        reddens: Caught::BootMarker(qemu::DEGRADED_USER_MARKER),
+    },
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "                if !crate::time::is_calibrated() {\n                    return Some(refuse(token, STATUS_UNAVAILABLE));\n                }",
+        replace: "                if false && !crate::time::is_calibrated() {\n                    return Some(refuse(token, STATUS_UNAVAILABLE));\n                }",
+        breaks: "a clockless Timer is refused before it becomes pending",
+        reddens: Caught::Check("an uncalibrated clock admits no user or timer"),
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.
