@@ -429,34 +429,12 @@ fn claim_the_controller(at: pci_config::Address) {
         at.function()
     );
 
-    // Bus master before anything else is attempted. Without it the controller
-    // cannot DMA, queues never advance, and **there is no error anywhere to
-    // read** (`012` §2).
-    if device.enable_bus_master() {
-        info!("nvme: memory space and bus master on");
-    } else {
-        warn!("nvme: the command register would not take bus master");
-    }
-
-    // BAR0 is the register file. A controller whose first window is not
-    // memory is one this driver does not know how to reach, and saying so is
-    // better than mapping whatever it is.
-    let Some(window) = device.window(0) else {
-        warn!("nvme: no bar0; nothing to map");
+    let Some(window) = admit_controller_window(&mut device) else {
         return;
     };
-    let pci_config::Bar::Memory { address, wide, .. } = window.bar else {
-        warn!("nvme: bar0 is not a memory window");
-        return;
-    };
-    info!(
-        "nvme: bar0 is {} bytes of {}-bit memory at {address:#x}",
-        window.size,
-        if wide { 64 } else { 32 }
-    );
 
     let mut context = wost::sync::ThreadContext::require();
-    let Some(mut controller) = nvme::start(&mut context, address, window.size) else {
+    let Some(mut controller) = nvme::start(&mut context, window.address, window.size) else {
         return;
     };
 
@@ -473,6 +451,55 @@ fn claim_the_controller(at: pci_config::Address) {
     }
     nvme::keep(controller, buffer);
     mount_the_volume();
+}
+
+/// A BAR0 extent admitted only after the function can initiate DMA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ControllerWindow {
+    address: u64,
+    size: u64,
+}
+
+/// Enable the function and return the only extent NVMe may map.
+fn admit_controller_window(device: &mut pci::Device) -> Option<ControllerWindow> {
+    // Bus master before anything else is attempted. Without it the controller
+    // cannot DMA, queues never advance, and **there is no error anywhere to
+    // read** (`012` §2).
+    if let Err(reason) = device.enable_bus_master() {
+        warn!("nvme: memory space and bus master refused: {reason}");
+        return None;
+    }
+    info!("nvme: memory space and bus master on");
+
+    // BAR0 is the register file. A controller whose first window is not
+    // memory is one this driver does not know how to reach, and saying so is
+    // better than mapping whatever it is.
+    let Some(window) = device.window(0) else {
+        warn!("nvme: no bar0; nothing to map");
+        return None;
+    };
+    let pci_config::Bar::Memory { address, wide, .. } = window.bar else {
+        warn!("nvme: bar0 is not a memory window");
+        return None;
+    };
+    info!(
+        "nvme: bar0 is {} bytes of {}-bit memory at {address:#x}",
+        window.size,
+        if wide { 64 } else { 32 }
+    );
+    Some(ControllerWindow {
+        address,
+        size: window.size,
+    })
+}
+
+/// A refused command enablement yields no mappable controller extent.
+#[cfg(feature = "selftest")]
+fn refused_bus_master_stops_before_nvme_mapping() -> bool {
+    let Some(mut device) = pci::Device::refusing_bus_master() else {
+        return false;
+    };
+    admit_controller_window(&mut device).is_none() && device.enable_attempts() == 1
 }
 
 /// Mount the volume and say what is on it, **through the VFS**.

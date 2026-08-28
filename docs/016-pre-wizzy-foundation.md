@@ -17,10 +17,10 @@ admission reasons.
 ## What completion means
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
-are **not closed**. The current image has 201 QEMU machine checks. The current
-mutation registry has 117 entries, but the last recorded complete sweep covered
-64; the fifty-three later mutations were broken individually. The current
-201-check image has not completed its human VMware round. The compiler gate in
+are **not closed**. The current image has 202 QEMU machine checks. The current
+mutation registry has 121 entries, but the last recorded complete sweep covered
+64; the fifty-seven later mutations were broken individually. The current
+202-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
 The kernel is ready for the first real Wizzy integration only when:
@@ -64,9 +64,9 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 117 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 117 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
+| PW-001 | REQUIRED | P0 | The register contains 121 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 121 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
-| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 201-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=201 failed=0` transcript, including WP, SMEP/SMAP/UMIP, compacted XSAVE, x2APIC, storage and input evidence |
+| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 202-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=202 failed=0` transcript, including WP, SMEP/SMAP/UMIP, compacted XSAVE, x2APIC, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
 | PW-005 | REQUIRED | P1 | The ordinary gate must describe the same commit as the exceptional evidence | Run `cargo xtask ci` after every register-closing change and once after the evidence-only close | Release/debug self-tests, shipped liveness and degraded boot all pass on the recorded commit |
 | PW-006 | REQUIRED | P1 | D-181 and D-182 were post-audit corrections, and this audit found deeper safe/device boundaries | Re-attack hostile inputs, cleanup paths, safe `wost` callers and release-only invariant failures after the P0/P1 fixes | Phase-close ADR links the audit, every break-test, full evidence manifest and remaining trigger-only rows; no historical evidence is invented |
@@ -96,7 +96,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-203 | DONE | P1 | `read_blocks` permits zero, exceeds the 16-bit NLB field, does not bound namespace end/overflow, and does not prove DMA length fits `Segment` | D-195 makes the private submission path accept only `libs/nvme::ReadTransfer`, validated against command width, namespace and the exact `DmaSegment` length | 2026-08-27 host tests exhausted all 65,536 encodable counts and the empty, end, wrap, multiplication and short-buffer edges; release QEMU refused five malformed raw requests before command/interception counts changed, while the integration bypass reddened only `invalid nvme reads stop before submission` with 199/200 and the interceptor kept real MMIO untouched |
 | PW-204 | DONE | P1 | Namespace Identify trusted LBADS and ignored malformed/unsupported format metadata; a hostile device could shift by 32 or choose an unusable block format | D-196 makes `libs/nvme::Namespace` prove the non-empty extent, negotiated table, selected format, 512-byte size and absence of metadata/protection before I/O queue creation | 2026-08-27 host properties exhausted the NLBAF, FLBAS, LBADS, LBAF control and DPS byte domains plus every metadata size; nine defects reddened their exact host check, while the kernel bypass reddened only `invalid nvme namespace stops before io queues` with 200/201 and the interceptor prevented allocation and MMIO |
 | PW-205 | DECIDE | P1 | A ring-3 Read polls the controller while serving a trap and can hold interrupts/controller locks for a large bounded interval | Choose deferred worker/interrupt state, or a measured bounded service contract that preserves timer/input latency and teardown | Delayed I/O cannot starve timer/keyboard; completion/cancel/death remain exactly-once and buffers stay pinned under pressure |
-| PW-206 | READY | P1 | Bus-master enable failure logs but still starts NVMe | Stop before MMIO/queue/DMA work and leave the device in a known state | Mock/fault injection proves no command or mapping follows a failed enable; mutation restores log-and-continue |
+| PW-206 | DONE | P1 | Bus-master enable failure logged but still started NVMe, and a partial command write was not rolled back | D-197 makes command enablement a verified, exactly restored transaction and makes its success the only constructor of an NVMe-mappable BAR0 extent | 2026-08-27 host fakes covered already-enabled/success/refusal, every access-loss edge and unverifiable rollback; omitting bus master, readback or rollback reddened their exact checks, while restoring log-and-continue reddened only `a failed bus master enable stops before nvme mapping` with 201/202 |
 | PW-207 | READY | P1 | Early PCI failures return before tmpfs/devfs survey despite the claim that those backends exist whatever the bus held | Decouple language-neutral filesystem initialization from PCI/NVMe discovery | Forced no-PCI/no-config boot still initializes and exercises tmpfs/devfs; machine mutation restores the early return |
 | PW-208 | READY | P1 | Enumeration attempts only the first NVMe candidate, so one broken controller masks a later good one | Try candidates deterministically with complete teardown between attempts | Fake inventory and, where practical, a two-controller QEMU boot prove fallback without leaked claims/DMA state |
 | PW-209 | DECIDE | P2 | Readiness and command timeouts are iteration guesses even after a monotonic clock exists | Use monotonic deadlines where available and specify the boot-time fallback before calibration | Controlled clock/device delays hit the same documented deadlines across debug/release and different CPU speeds |
@@ -233,7 +233,7 @@ PW-514 includes these exact stale-current-facing corrections still to make:
 ## Recommended execution order
 
 1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
-   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200, PW-202, PW-203, PW-204 and PW-300 are closed by D-185 through D-196.
+   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200, PW-202, PW-203, PW-204, PW-206 and PW-300 are closed by D-185 through D-197.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

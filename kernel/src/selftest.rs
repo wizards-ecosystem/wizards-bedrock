@@ -2425,6 +2425,11 @@ fn the_controller_was_read_rather_than_assumed() -> bool {
     .unwrap_or(false)
 }
 
+/// A failed PCI command transaction cannot yield an extent for NVMe to map.
+fn a_failed_bus_master_enable_stops_before_nvme_mapping() -> bool {
+    crate::refused_bus_master_stops_before_nvme_mapping()
+}
+
 /// Malformed namespace geometry cannot reach the I/O queue creation seam.
 fn invalid_nvme_namespace_stops_before_io_queues() -> bool {
     nvme::with_controller(|controller, _| controller.malformed_namespace_stops_before_io_queues())
@@ -6786,7 +6791,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 201;
+const EXPECTED_CHECKS: usize = 202;
 
 impl Report {
     const fn new() -> Self {
@@ -7006,6 +7011,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the controller was read rather than assumed",
         the_controller_was_read_rather_than_assumed(),
+    );
+    report.check(
+        "a failed bus master enable stops before nvme mapping",
+        a_failed_bus_master_enable_stops_before_nvme_mapping(),
     );
     report.check(
         "invalid nvme namespace stops before io queues",

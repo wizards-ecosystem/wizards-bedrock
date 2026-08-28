@@ -754,6 +754,51 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "tests::every_refused_claim_preparation_leaves_the_registry_unchanged",
         },
     },
+    // Require memory decode but omit bus master from the transaction. MMIO
+    // works and every DMA queue then waits forever without an error register.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "    let required = command::MEMORY_SPACE | command::BUS_MASTER;",
+        replace: "    let required = command::MEMORY_SPACE;",
+        breaks: "bus master enable preserves and verifies every required command bit",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::bus_master_enable_is_verified_and_preserves_the_command",
+        },
+    },
+    // Treat a successful configuration cycle as proof the device accepted the
+    // command bits, skipping the readback which distinguishes the two claims.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "            Some(bits) if bits as u16 & wanted == wanted => return Ok(()),",
+        replace: "            Some(_) => return Ok(()),",
+        breaks: "a bus master command write is read back before success",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_refused_bus_master_enable_restores_the_exact_command",
+        },
+    },
+    // Return the initiating access error without restoring a command write
+    // which may already have enabled only part of the device.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "    let _ = access(CommandAccess::Write(original));\n    match access(CommandAccess::Read) {",
+        replace: "    return Err(failure);\n    #[expect(unreachable_code)]\n    match access(CommandAccess::Read) {",
+        breaks: "every failed bus master access restores or reports uncertainty",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::every_failed_bus_master_access_restores_or_reports_uncertainty",
+        },
+    },
+    // Preserve the warning but continue into BAR admission after the command
+    // transaction failed, which was the original PW-206 defect.
+    Mutation {
+        file: "kernel/src/main.rs",
+        find: "    if let Err(reason) = device.enable_bus_master() {\n        warn!(\"nvme: memory space and bus master refused: {reason}\");\n        return None;\n    }",
+        replace: "    if let Err(reason) = device.enable_bus_master() {\n        warn!(\"nvme: memory space and bus master refused: {reason}\");\n    }",
+        breaks: "failed bus master enable stops before nvme mapping",
+        reddens: Caught::Check("a failed bus master enable stops before nvme mapping"),
+    },
     // Admit an empty read to the zero-based NLB encoder. In release that
     // underflows to the largest command rather than panicking.
     Mutation {

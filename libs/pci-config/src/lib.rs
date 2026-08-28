@@ -490,6 +490,77 @@ pub const fn io_window_size(mask: u32) -> Option<u16> {
     Some(size as u16)
 }
 
+/// One command-register access in a verified enable transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandAccess {
+    /// Read the command register. Only its low sixteen bits are consumed.
+    Read,
+    /// Write only command bits, leaving the status half of the dword clear.
+    Write(u16),
+}
+
+/// Why memory decode and bus mastering could not be verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum EnableError {
+    /// A configuration access failed and any attempted change was restored.
+    Access,
+    /// The device read back without every required command bit.
+    Refused(u16),
+    /// The original command could not be read back exactly after failure.
+    Restore,
+}
+
+impl core::fmt::Display for EnableError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Access => f.write_str("configuration access failed"),
+            Self::Refused(observed) => {
+                write!(f, "the command register read back as {observed:#06x}")
+            }
+            Self::Restore => f.write_str("the original command could not be verified"),
+        }
+    }
+}
+
+impl core::error::Error for EnableError {}
+
+/// Enable memory decode and bus mastering as one verified transaction.
+///
+/// An already-enabled function needs only its first read. Once a write is
+/// attempted, any access loss or refused readback restores the exact original
+/// command and reads it again before returning the initiating error.
+///
+/// # Errors
+///
+/// [`EnableError::Access`] or [`EnableError::Refused`] only after exact
+/// rollback, and [`EnableError::Restore`] when rollback cannot be verified.
+pub fn enable_bus_master(
+    mut access: impl FnMut(CommandAccess) -> Option<u32>,
+) -> Result<(), EnableError> {
+    let original = access(CommandAccess::Read).ok_or(EnableError::Access)? as u16;
+    let required = command::MEMORY_SPACE | command::BUS_MASTER;
+    if original & required == required {
+        return Ok(());
+    }
+    let wanted = original | required;
+
+    let failure = match access(CommandAccess::Write(wanted)) {
+        None => EnableError::Access,
+        Some(_) => match access(CommandAccess::Read) {
+            Some(bits) if bits as u16 & wanted == wanted => return Ok(()),
+            Some(bits) => EnableError::Refused(bits as u16),
+            None => EnableError::Access,
+        },
+    };
+
+    let _ = access(CommandAccess::Write(original));
+    match access(CommandAccess::Read) {
+        Some(bits) if bits as u16 == original => Err(failure),
+        Some(_) | None => Err(EnableError::Restore),
+    }
+}
+
 /// One configuration-space cycle in a BAR-probe transaction.
 ///
 /// A platform adapter implements these against its configuration mechanism.
@@ -795,6 +866,48 @@ mod tests {
     use super::*;
 
     const TRACE_CAPACITY: usize = 40;
+    const COMMAND_TRACE_CAPACITY: usize = 5;
+
+    struct FakeCommand {
+        command: u16,
+        writable: u16,
+        trace: [Option<CommandAccess>; COMMAND_TRACE_CAPACITY],
+        calls: usize,
+        fail_at: Option<usize>,
+    }
+
+    impl FakeCommand {
+        fn new(command: u16, writable: u16) -> Self {
+            Self {
+                command,
+                writable,
+                trace: [None; COMMAND_TRACE_CAPACITY],
+                calls: 0,
+                fail_at: None,
+            }
+        }
+
+        fn access(&mut self, event: CommandAccess) -> Option<u32> {
+            let call = self.calls;
+            self.trace[call] = Some(event);
+            self.calls += 1;
+            if self.fail_at == Some(call) {
+                return None;
+            }
+
+            match event {
+                CommandAccess::Read => Some(u32::from(self.command)),
+                CommandAccess::Write(value) => {
+                    self.command = (self.command & !self.writable) | (value & self.writable);
+                    Some(0)
+                }
+            }
+        }
+
+        fn events(&self) -> &[Option<CommandAccess>] {
+            &self.trace[..self.calls]
+        }
+    }
 
     #[derive(Clone)]
     struct FakeConfig {
@@ -855,6 +968,91 @@ mod tests {
         fn events(&self) -> &[Option<ProbeAccess>] {
             &self.trace[..self.calls]
         }
+    }
+
+    /// A successful enable is read back and preserves every unrelated bit.
+    #[test]
+    fn bus_master_enable_is_verified_and_preserves_the_command() {
+        const OTHER: u16 = 1 << 9;
+        let original = command::IO_SPACE | OTHER;
+        let wanted = original | command::MEMORY_SPACE | command::BUS_MASTER;
+        let mut fake = FakeCommand::new(original, u16::MAX);
+
+        assert_eq!(enable_bus_master(|event| fake.access(event)), Ok(()));
+        assert_eq!(fake.command, wanted);
+        assert_eq!(
+            fake.events(),
+            &[
+                Some(CommandAccess::Read),
+                Some(CommandAccess::Write(wanted)),
+                Some(CommandAccess::Read),
+            ]
+        );
+
+        let mut already = FakeCommand::new(wanted, u16::MAX);
+        assert_eq!(enable_bus_master(|event| already.access(event)), Ok(()));
+        assert_eq!(already.events(), &[Some(CommandAccess::Read)]);
+    }
+
+    /// A write is not success until the device reports every required bit.
+    #[test]
+    fn a_refused_bus_master_enable_restores_the_exact_command() {
+        const OTHER: u16 = 1 << 9;
+        let original = command::IO_SPACE | OTHER;
+        let wanted = original | command::MEMORY_SPACE | command::BUS_MASTER;
+        let observed = wanted & !command::BUS_MASTER;
+        let mut fake = FakeCommand::new(original, !command::BUS_MASTER);
+
+        assert_eq!(
+            enable_bus_master(|event| fake.access(event)),
+            Err(EnableError::Refused(observed))
+        );
+        assert_eq!(fake.command, original);
+        assert_eq!(
+            fake.events(),
+            &[
+                Some(CommandAccess::Read),
+                Some(CommandAccess::Write(wanted)),
+                Some(CommandAccess::Read),
+                Some(CommandAccess::Write(original)),
+                Some(CommandAccess::Read),
+            ]
+        );
+    }
+
+    /// Every access loss after a possible write either restores or says it could not.
+    #[test]
+    fn every_failed_bus_master_access_restores_or_reports_uncertainty() {
+        const OTHER: u16 = 1 << 9;
+        let original = command::IO_SPACE | OTHER;
+
+        for fail_at in 0..=2 {
+            let mut fake = FakeCommand::new(original, u16::MAX);
+            fake.fail_at = Some(fail_at);
+            assert_eq!(
+                enable_bus_master(|event| fake.access(event)),
+                Err(EnableError::Access),
+                "access {fail_at}"
+            );
+            assert_eq!(fake.command, original, "access {fail_at}");
+        }
+
+        let refuses_bus_master = !command::BUS_MASTER;
+        let mut restore_write = FakeCommand::new(original, refuses_bus_master);
+        restore_write.fail_at = Some(3);
+        assert_eq!(
+            enable_bus_master(|event| restore_write.access(event)),
+            Err(EnableError::Restore)
+        );
+        assert_ne!(restore_write.command, original);
+
+        let mut restore_read = FakeCommand::new(original, refuses_bus_master);
+        restore_read.fail_at = Some(4);
+        assert_eq!(
+            enable_bus_master(|event| restore_read.access(event)),
+            Err(EnableError::Restore)
+        );
+        assert_eq!(restore_read.command, original);
     }
 
     /// An address is the bus, device, function and offset the manual gives.

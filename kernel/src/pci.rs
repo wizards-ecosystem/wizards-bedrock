@@ -24,8 +24,8 @@
 //! thirty-two kilobytes and a malicious or broken bridge topology is a cycle.
 
 use pci_config::{
-    Address, Bar, ClaimRegistry, Class, HeaderType, ProbeError, RegistryError, Window, command,
-    header,
+    Address, Bar, ClaimRegistry, Class, CommandAccess, EnableError, HeaderType, ProbeError,
+    RegistryError, Window, header,
 };
 use wost::arch::current::pci;
 use wost::sync::SpinLock;
@@ -240,6 +240,12 @@ pub(crate) struct Device {
     /// with the ports and no device would be the arrangement D-77 objected to.
     #[expect(dead_code)]
     ports: [Option<wost::arch::current::port::PortSpan>; BARS],
+    /// Deterministic refusal before a test claim can touch configuration space.
+    #[cfg(feature = "selftest")]
+    forced_enable_error: Option<EnableError>,
+    /// Enable attempts made through this claim.
+    #[cfg(feature = "selftest")]
+    enable_attempts: u32,
 }
 
 impl Device {
@@ -266,16 +272,58 @@ impl Device {
     /// expensive bit to forget in this subsystem, which is why it is set here,
     /// by the thing that holds the claim, rather than by a driver that might
     /// not.
-    pub(crate) fn enable_bus_master(&mut self) -> bool {
-        let Some(at) = self.at.at(header::COMMAND) else {
-            return false;
-        };
-        let Some(current) = pci::read(at) else {
-            return false;
-        };
-        let wanted = current as u16 | command::MEMORY_SPACE | command::BUS_MASTER;
-        pci::write_command(at, wanted)
-            && pci::read(at).is_some_and(|back| back as u16 & wanted == wanted)
+    ///
+    /// # Errors
+    ///
+    /// [`EnableError`] after an exact rollback, or when rollback could not be
+    /// verified. No caller may use a window after either result.
+    pub(crate) fn enable_bus_master(&mut self) -> Result<(), EnableError> {
+        #[cfg(feature = "selftest")]
+        {
+            self.enable_attempts += 1;
+            if let Some(error) = self.forced_enable_error {
+                return Err(error);
+            }
+        }
+
+        let at = self.at.at(header::COMMAND).ok_or(EnableError::Access)?;
+        pci_config::enable_bus_master(|access| match access {
+            CommandAccess::Read => pci::read(at),
+            CommandAccess::Write(value) => pci::write_command(at, value).then_some(0),
+        })
+    }
+
+    /// A claim-shaped controller which refuses before configuration access.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn refusing_bus_master() -> Option<Self> {
+        const WINDOW_ADDRESS: u64 = 0xDEAD_0000;
+        const WINDOW_BYTES: u64 = 0x4000;
+
+        let at = Address::new(0, 0, 0, header::VENDOR)?;
+        let mut windows = [None; BARS];
+        windows[0] = Some(Window {
+            bar: Bar::Memory {
+                address: WINDOW_ADDRESS,
+                wide: false,
+                prefetchable: false,
+            },
+            size: WINDOW_BYTES,
+        });
+        Some(Self {
+            at,
+            vendor: 0xFFFF,
+            device: 0xFFFF,
+            windows,
+            ports: [const { None }; BARS],
+            forced_enable_error: Some(EnableError::Refused(0)),
+            enable_attempts: 0,
+        })
+    }
+
+    /// Enable attempts made through this claim.
+    #[cfg(feature = "selftest")]
+    pub(crate) const fn enable_attempts(&self) -> u32 {
+        self.enable_attempts
     }
 }
 
@@ -361,6 +409,10 @@ pub(crate) fn claim(context: &mut ThreadContext, at: Address) -> Result<Device, 
                 device: (identity >> 16) as u16,
                 windows,
                 ports,
+                #[cfg(feature = "selftest")]
+                forced_enable_error: None,
+                #[cfg(feature = "selftest")]
+                enable_attempts: 0,
             })
         })
         .map_err(|error| match error {
