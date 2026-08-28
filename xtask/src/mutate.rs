@@ -1184,6 +1184,45 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a large address space returns every table frame",
         reddens: Caught::Check("a large space returns every table frame"),
     },
+    // Turn the transaction's terminal table release into a refusal. Every
+    // earlier resource still drops, so the complete ledger is what notices.
+    Mutation {
+        file: "kernel/src/user.rs",
+        find: "        let table_result = space.reclaim(released);",
+        replace: "        let table_result = Err(ReclaimError::Reclaimed);",
+        breaks: "a refused process construction returns its page tables",
+        reddens: Caught::Check("every refused spawn returns every resource"),
+    },
+    // Admit an entry outside every executable segment. The image is otherwise
+    // valid, so this reaches mapping unless the entry participates in preflight.
+    Mutation {
+        file: "kernel/src/user.rs",
+        find: "    if !entry_is_executable {\n        return Err(LoadError::InvalidEntry(entry));\n    }",
+        replace: "    if false && !entry_is_executable {\n        return Err(LoadError::InvalidEntry(entry));\n    }",
+        breaks: "an ELF entry must be inside executable program memory",
+        reddens: Caught::Check("the loader refuses what it may not map"),
+    },
+    // The original failure found by driving Fabricated twice: retiring the
+    // first attempt zeroed the arena stack address reused by the second.
+    Mutation {
+        file: "wost/src/arch/x86_64/task.rs",
+        find: "        let stack_top = table.slots[slot].stack_top;\n        table.slots[slot] = Slot {\n            stack_top,\n            ..Slot::VACANT\n        };",
+        replace: "        table.slots[slot] = Slot::VACANT;",
+        breaks: "a retired construction preserves its reusable kernel stack",
+        reddens: Caught::Panic(
+            "the second fabrication writes through the zeroed stack top before a verdict",
+        ),
+    },
+    // Leave the scheduler reservation behind after its launch records refuse
+    // publication. `wost` and the process transaction both clean up, so the
+    // complete ledger has to notice the otherwise quiet slot loss.
+    Mutation {
+        file: "kernel/src/thread.rs",
+        find: "    if !arrange(slot) {\n        let _ = task::retire(slot);\n        THREADS.lock_leaf().release(slot);\n        return Err(SpawnError::Arrangement);\n    }",
+        replace: "    if !arrange(slot) {\n        let _ = task::retire(slot);\n        return Err(SpawnError::Arrangement);\n    }",
+        breaks: "a refused thread arrangement releases its scheduler slot",
+        reddens: Caught::Check("every refused spawn returns every resource"),
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.

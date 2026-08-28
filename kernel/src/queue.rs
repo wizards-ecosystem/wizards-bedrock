@@ -354,6 +354,8 @@ pub(crate) struct Queue {
     served: AtomicUsize,
 }
 
+static LIVE_QUEUES: AtomicUsize = AtomicUsize::new(0);
+
 impl Queue {
     /// Build a ring and its pages, ready to be mapped.
     ///
@@ -380,6 +382,7 @@ impl Queue {
         let completion = Capacity::new(COMPLETIONS).ok()?;
         let state = Queues::new(submission, completion).ok()?;
 
+        LIVE_QUEUES.fetch_add(1, Ordering::AcqRel);
         Some(Self {
             shared: SpinLock::new(shared),
             state: SpinLock::new(state),
@@ -1189,6 +1192,18 @@ impl Queue {
             read_u32(&shared, header::COMPLETIONS),
         )
     }
+}
+
+impl Drop for Queue {
+    fn drop(&mut self) {
+        LIVE_QUEUES.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Rings whose storage is still live.
+#[cfg(feature = "selftest")]
+pub(crate) fn live_for_test() -> usize {
+    LIVE_QUEUES.load(Ordering::Acquire)
 }
 
 /// A completion that carries a refusal and no result.

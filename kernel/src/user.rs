@@ -138,6 +138,8 @@ pub(crate) enum LoadError {
     OutOfMemory,
     /// It could not be mapped.
     NotMapped(MapError),
+    /// Its entry point is not inside an executable load segment.
+    InvalidEntry(u64),
     /// It has nothing to load.
     Empty,
 }
@@ -162,6 +164,12 @@ impl core::fmt::Display for LoadError {
             Self::NotUserMemory(at) => write!(f, "the segment at {at:#x} is not user memory"),
             Self::OutOfMemory => f.write_str("no memory for the program"),
             Self::NotMapped(error) => write!(f, "{error}"),
+            Self::InvalidEntry(at) => {
+                write!(
+                    f,
+                    "the entry point at {at:#x} is not executable program memory"
+                )
+            }
             Self::Empty => f.write_str("the program has nothing to load"),
         }
     }
@@ -180,35 +188,31 @@ impl core::fmt::Display for LoadError {
 ///
 /// The pages are filled *before* they are mapped, so a segment that is
 /// executable is never writable even for the instant it is being written.
-fn load(
-    space: &mut AddressSpace,
-    shift: u64,
-    regions: &mut [Option<(u64, u64)>; MAX_REGIONS],
-    used: &mut usize,
-) -> Result<u64, LoadError> {
+fn load(space: &mut AddressSpace, shift: u64) -> Result<LoadedImage, LoadError> {
     let bytes = (*IMAGE.lock_leaf()).ok_or(LoadError::Missing)?;
-    let entry = load_image(space, bytes, shift)?;
-    // What it mapped, so the same comes back. Read from the placements rather
-    // than recomputed, so a change to how a segment is rounded cannot leave a
-    // region behind (D-117).
-    for (at, len) in last_placements() {
-        remember(regions, used, at, len);
-    }
-    Ok(entry)
+    load_image(space, bytes, shift)
 }
 
-/// Where the last successful `load_image` put things.
+/// One image load and the exact ranges it installed.
 ///
-/// A static rather than a return value because `load_image` is also called by
-/// the checks with a doctored image, and threading an out-parameter through
-/// every one of those would be noise around the thing they test. Written only
-/// on success, and read only by `load` immediately after.
-static PLACED: SpinLock<[Option<(u64, u64)>; MAX_REGIONS]> = SpinLock::new([None; MAX_REGIONS]);
+/// Placement is transaction data rather than global last-call state, so two
+/// constructions cannot take each other's cleanup record (D-191).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LoadedImage {
+    entry: u64,
+    regions: [Option<(u64, u64)>; MAX_SEGMENTS],
+}
 
-/// Take what the last load placed.
-fn last_placements() -> impl Iterator<Item = (u64, u64)> {
-    let taken = core::mem::take(&mut *PLACED.lock_leaf());
-    taken.into_iter().flatten()
+impl LoadedImage {
+    /// Address at which execution begins.
+    const fn entry(&self) -> u64 {
+        self.entry
+    }
+
+    /// Ranges this load installed, for cleanup evidence.
+    pub(crate) fn regions(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.regions.iter().copied().flatten()
+    }
 }
 
 /// Fill and map one validated placement.
@@ -257,6 +261,7 @@ const MAX_SEGMENTS: usize = 8;
 #[derive(Clone, Copy)]
 struct Placement {
     at: u64,
+    end: u64,
     pages: usize,
     from: usize,
     len: usize,
@@ -278,7 +283,7 @@ pub(crate) fn load_image(
     space: &mut AddressSpace,
     bytes: &[u8],
     shift: u64,
-) -> Result<u64, LoadError> {
+) -> Result<LoadedImage, LoadError> {
     let elf = Elf::parse(bytes).map_err(LoadError::NotAnElf)?;
 
     let mut placements = [None; MAX_SEGMENTS];
@@ -322,6 +327,7 @@ pub(crate) fn load_image(
         }
         let placement = Placement {
             at,
+            end,
             pages: segment.memory_size().div_ceil(PAGE_SIZE) as usize,
             from: segment.offset() as usize,
             len: segment.file_size() as usize,
@@ -345,6 +351,23 @@ pub(crate) fn load_image(
         loaded += 1;
     }
 
+    if loaded == 0 {
+        return Err(LoadError::Empty);
+    }
+
+    let entry = elf
+        .entry()
+        .checked_add(shift)
+        .ok_or(LoadError::NotUserMemory(elf.entry()))?;
+    let entry_is_executable = placements.iter().flatten().any(|placement| {
+        !placement.flags.contains(Flags::NO_EXECUTE)
+            && entry >= placement.at
+            && entry < placement.end
+    });
+    if !entry_is_executable {
+        return Err(LoadError::InvalidEntry(entry));
+    }
+
     for (done, placement) in placements.iter().flatten().enumerate() {
         match place(space, bytes, placement) {
             Ok(()) => {}
@@ -359,25 +382,11 @@ pub(crate) fn load_image(
         }
     }
 
-    if loaded == 0 {
-        return Err(LoadError::Empty);
+    let mut regions = [None; MAX_SEGMENTS];
+    for (slot, placement) in placements.iter().flatten().enumerate() {
+        regions[slot] = Some((placement.at, placement.pages as u64 * PAGE_SIZE));
     }
-
-    // Recorded for `load`, which is the only caller that maps into a space
-    // something will later reclaim.
-    {
-        let mut placed = PLACED.lock_leaf();
-        *placed = [None; MAX_REGIONS];
-        for (slot, placement) in placements.iter().flatten().enumerate() {
-            if let Some(room) = placed.get_mut(slot) {
-                *room = Some((placement.at, placement.pages as u64 * PAGE_SIZE));
-            }
-        }
-    }
-
-    elf.entry()
-        .checked_add(shift)
-        .ok_or(LoadError::NotUserMemory(elf.entry()))
+    Ok(LoadedImage { entry, regions })
 }
 
 /// What a thread needs to find when it wakes up in a space of its own.
@@ -473,6 +482,85 @@ struct Bootstrap {
     handle: u32,
 }
 
+/// A process that is not yet observable and therefore must be undone on drop.
+struct ProcessConstruction {
+    space: Option<AddressSpace>,
+    regions: [Option<(u64, u64)>; MAX_REGIONS],
+    mapped: usize,
+}
+
+impl ProcessConstruction {
+    fn new(space: AddressSpace) -> Self {
+        Self {
+            space: Some(space),
+            regions: [None; MAX_REGIONS],
+            mapped: 0,
+        }
+    }
+
+    fn space(&mut self) -> Result<&mut AddressSpace, SpawnError> {
+        self.space.as_mut().ok_or(SpawnError::Incomplete)
+    }
+
+    fn remember(&mut self, at: u64, len: u64) {
+        remember(&mut self.regions, &mut self.mapped, at, len);
+    }
+}
+
+impl Drop for ProcessConstruction {
+    fn drop(&mut self) {
+        let Some(mut space) = self.space.take() else {
+            return;
+        };
+
+        let mut pages = 0;
+        for (at, len) in self.regions.into_iter().flatten() {
+            if let Ok(returned) = space.unmap(at, len) {
+                pages += returned.pages() as usize;
+                drop(returned);
+            }
+        }
+
+        let released = task::release_address_space(space.root());
+        let table_result = space.reclaim(released);
+        match table_result {
+            Ok(tables) => {
+                ROLLED_BACK_PAGES.fetch_add(pages, Ordering::AcqRel);
+                ROLLED_BACK_TABLES.fetch_add(tables, Ordering::AcqRel);
+            }
+            Err(reason) => {
+                warn!("user: failed-spawn cleanup refused: {reason}");
+                REFUSED_TABLE_RECLAIMS.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+    }
+}
+
+struct PreparedProcess {
+    construction: ProcessConstruction,
+    table: alloc::sync::Arc<HandleTable>,
+    ring: alloc::sync::Arc<queue::Queue>,
+    handle: u32,
+    launch: Launch,
+}
+
+impl PreparedProcess {
+    fn commit(mut self, slot: usize) -> bool {
+        let Some(space) = self.construction.space.take() else {
+            return false;
+        };
+        LAUNCHES.lock_leaf()[slot] = Some(self.launch);
+        BOOTSTRAPS.lock_leaf()[slot] = Some(Bootstrap {
+            space,
+            regions: self.construction.regions,
+            table: self.table,
+            ring: self.ring,
+            handle: self.handle,
+        });
+        true
+    }
+}
+
 /// One per thread slot, alongside its [`Launch`].
 static BOOTSTRAPS: SpinLock<[Option<Bootstrap>; thread::CAPACITY]> =
     SpinLock::new([const { None }; thread::CAPACITY]);
@@ -525,6 +613,88 @@ pub(crate) fn ring_shape_of(slot: usize) -> Option<(u32, u32, u32)> {
     Some(ring.shape())
 }
 
+/// A completed construction step after which a check may force refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+pub(crate) enum SpawnEdge {
+    /// The private address-space root exists.
+    Space,
+    /// Every image segment is mapped and recorded.
+    Image,
+    /// The user stack is mapped and recorded.
+    Stack,
+    /// The shared time page is visible.
+    TimePage,
+    /// The ring and its frames exist.
+    Ring,
+    /// The ring is mapped into the new space.
+    RingMapping,
+    /// The new space passed binding validation.
+    Binding,
+    /// Both bootstrap channel ends exist.
+    Channel,
+    /// The handle table has committed its quota.
+    Table,
+    /// The child channel end is installed as a handle.
+    Handle,
+    /// A scheduler slot is reserved.
+    ThreadReserved,
+    /// A task record and kernel stack exist.
+    ThreadFabricated,
+    /// The task record names the new address space.
+    ThreadBound,
+    /// The reserved thread refuses its launch records before becoming runnable.
+    ThreadArrangement,
+}
+
+#[cfg(feature = "selftest")]
+impl SpawnEdge {
+    /// Every fallible construction boundary in order.
+    pub(crate) const ALL: [Self; 14] = [
+        Self::Space,
+        Self::Image,
+        Self::Stack,
+        Self::TimePage,
+        Self::Ring,
+        Self::RingMapping,
+        Self::Binding,
+        Self::Channel,
+        Self::Table,
+        Self::Handle,
+        Self::ThreadReserved,
+        Self::ThreadFabricated,
+        Self::ThreadBound,
+        Self::ThreadArrangement,
+    ];
+}
+
+#[derive(Clone, Copy)]
+enum SpawnFault {
+    Never,
+    #[cfg(feature = "selftest")]
+    At(SpawnEdge),
+}
+
+impl SpawnFault {
+    const fn refuses(self, _edge: SpawnEdge) -> bool {
+        match self {
+            Self::Never => false,
+            #[cfg(feature = "selftest")]
+            Self::At(wanted) => wanted as u8 == _edge as u8,
+        }
+    }
+
+    #[cfg(feature = "selftest")]
+    const fn thread_point(self) -> Option<thread::SpawnPoint> {
+        match self {
+            Self::At(SpawnEdge::ThreadReserved) => Some(thread::SpawnPoint::Reserved),
+            Self::At(SpawnEdge::ThreadFabricated) => Some(thread::SpawnPoint::Fabricated),
+            Self::At(SpawnEdge::ThreadBound) => Some(thread::SpawnPoint::Bound),
+            Self::Never | Self::At(_) => None,
+        }
+    }
+}
+
 /// Why a program could not be started.
 #[derive(Debug)]
 pub(crate) enum SpawnError {
@@ -538,6 +708,8 @@ pub(crate) enum SpawnError {
     NotBindable(ActivateError),
     /// No thread could be created.
     NoThread(thread::SpawnError),
+    /// An unfinished transaction lost the address space it owns.
+    Incomplete,
     /// Its bootstrap channel could not be put in its table.
     NoBootstrap(HandleError),
     /// The time page could not be shown to it.
@@ -546,6 +718,9 @@ pub(crate) enum SpawnError {
     NoRing,
     /// No memory for its bootstrap channel.
     NoChannel,
+    /// A self-check stopped construction at one exact edge.
+    #[cfg(feature = "selftest")]
+    Injected(SpawnEdge),
 }
 
 impl fmt::Display for SpawnError {
@@ -556,12 +731,23 @@ impl fmt::Display for SpawnError {
             Self::NoStack => f.write_str("no memory for a stack"),
             Self::NotBindable(error) => write!(f, "the space cannot be installed: {error}"),
             Self::NoThread(error) => write!(f, "no thread: {error}"),
+            Self::Incomplete => f.write_str("the process construction is incomplete"),
             Self::NoBootstrap(error) => write!(f, "no bootstrap channel: {error}"),
             Self::NoTimePage(error) => write!(f, "the time page: {error}"),
             Self::NoRing => f.write_str("no memory for a ring"),
             Self::NoChannel => f.write_str("no memory for a bootstrap channel"),
+            #[cfg(feature = "selftest")]
+            Self::Injected(edge) => write!(f, "construction was stopped after {edge:?}"),
         }
     }
+}
+
+fn stop_after(fault: SpawnFault, edge: SpawnEdge) -> Result<(), SpawnError> {
+    if fault.refuses(edge) {
+        #[cfg(feature = "selftest")]
+        return Err(SpawnError::Injected(edge));
+    }
+    Ok(())
 }
 
 /// Start a program in an address space of its own.
@@ -572,26 +758,37 @@ impl fmt::Display for SpawnError {
 /// proves the space is installable, and a thread whose tables are set before
 /// anything can schedule it (D-106).
 ///
-/// A failure partway leaves no thread naming anything, but it does leak: an
-/// `AddressSpace` has no `Drop`, because its table frames are leaked on
-/// purpose, and the frames a half-load mapped go with them. Bounded by the
-/// fixed self-test program set, and it is the same debt `undo` pays down inside
-/// one load. D-44's accounting is where it is settled.
+/// Until the reserved thread is made runnable, [`ProcessConstruction`] owns
+/// every mapped region and the tables that reach it. Any refusal drops that
+/// transaction, retires a partially fabricated task if necessary and returns
+/// every resource before the error escapes (D-191).
 ///
 /// # Errors
 ///
 /// [`SpawnError`], naming which of those steps refused.
 pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spawned, SpawnError> {
-    let mut space = AddressSpace::for_user().map_err(SpawnError::NoSpace)?;
-    // Every range mapped into it, so the same ranges come back (D-117). The
-    // loader reports its own; the stack and the ring are one each.
-    let mut regions = [None; MAX_REGIONS];
-    let mut mapped = 0;
+    spawn_transaction(name, which, argument, SpawnFault::Never)
+}
 
-    let entry =
-        load(&mut space, which * APART, &mut regions, &mut mapped).map_err(SpawnError::Load)?;
-    let stack = place_stack(&mut space, which).ok_or(SpawnError::NoStack)?;
-    remember(&mut regions, &mut mapped, stack, USER_STACK_BYTES);
+fn spawn_transaction(
+    name: &'static str,
+    which: u64,
+    argument: u64,
+    fault: SpawnFault,
+) -> Result<Spawned, SpawnError> {
+    let space = AddressSpace::for_user().map_err(SpawnError::NoSpace)?;
+    let mut construction = ProcessConstruction::new(space);
+    stop_after(fault, SpawnEdge::Space)?;
+
+    let image = load(construction.space()?, which * APART).map_err(SpawnError::Load)?;
+    for (at, len) in image.regions() {
+        construction.remember(at, len);
+    }
+    stop_after(fault, SpawnEdge::Image)?;
+
+    let stack = place_stack(construction.space()?, which).ok_or(SpawnError::NoStack)?;
+    construction.remember(stack, USER_STACK_BYTES);
+    stop_after(fault, SpawnEdge::Stack)?;
 
     // Its ring, at the same address every program's is — which is what having
     // a space of its own buys. The pages stay the kernel's: `map_shared`
@@ -605,58 +802,80 @@ pub(crate) fn spawn(name: &'static str, which: u64, argument: u64) -> Result<Spa
     // Before the ring, because a program that cannot be shown the time is
     // refused rather than given a space with a hole where the ABI says a page
     // is (D-166).
-    crate::timepage::install(&mut space).map_err(SpawnError::NoTimePage)?;
+    crate::timepage::install(construction.space()?).map_err(SpawnError::NoTimePage)?;
+    stop_after(fault, SpawnEdge::TimePage)?;
 
     let mut ring = queue::Queue::new().ok_or(SpawnError::NoRing)?;
-    ring.install(&mut space, RING)
+    stop_after(fault, SpawnEdge::Ring)?;
+    ring.install(construction.space()?, RING)
         .map_err(SpawnError::NoSpace)?;
     let ring = alloc::sync::Arc::new(ring);
+    stop_after(fault, SpawnEdge::RingMapping)?;
 
-    let root = space.root();
-    let binding = space.bind().map_err(SpawnError::NotBindable)?;
+    let root = construction.space()?.root();
+    let binding = construction
+        .space()?
+        .bind()
+        .map_err(SpawnError::NotBindable)?;
+    stop_after(fault, SpawnEdge::Binding)?;
 
     // Its initial object authority, made before the thread exists so the table
     // is never observable holding anything else. The child's end can be used
     // and sent on; the parent keeps the other (D-111).
     let (theirs, ours) = object::channel().ok_or(SpawnError::NoChannel)?;
+    stop_after(fault, SpawnEdge::Channel)?;
     let table = HandleTable::new(HANDLE_QUOTA).map_err(SpawnError::NoBootstrap)?;
+    stop_after(fault, SpawnEdge::Table)?;
     let handle = table
         .insert(
             theirs,
             Rights::UNIVERSAL.union(Rights::READ).union(Rights::WRITE),
         )
         .map_err(SpawnError::NoBootstrap)?;
+    stop_after(fault, SpawnEdge::Handle)?;
 
-    let mut bootstrap = Some(Bootstrap {
-        space,
-        regions,
+    let mut prepared = Some(PreparedProcess {
+        construction,
         table: alloc::sync::Arc::new(table),
         handle,
         ring,
-    });
-    let slot = thread::spawn_in_space(name, cross, binding, |slot| {
-        *LAUNCHES
-            .lock_leaf()
-            .get_mut(slot)
-            .expect("a slot wost accepted is inside the table") = Some(Launch {
-            entry,
+        launch: Launch {
+            entry: image.entry(),
             stack,
             argument,
             bootstrap_handle: handle,
             which,
             root,
-        });
-        *BOOTSTRAPS
-            .lock_leaf()
-            .get_mut(slot)
-            .expect("a slot wost accepted is inside the table") = bootstrap.take();
-    })
-    .map_err(SpawnError::NoThread)?;
+        },
+    });
+    let arrange = |slot| {
+        if fault.refuses(SpawnEdge::ThreadArrangement) || slot >= thread::CAPACITY {
+            return false;
+        }
+        let Some(process) = prepared.take() else {
+            return false;
+        };
+        process.commit(slot)
+    };
+    #[cfg(feature = "selftest")]
+    let spawned = match fault.thread_point() {
+        Some(point) => thread::spawn_in_space_refusing(name, cross, binding, point, arrange),
+        None => thread::spawn_in_space(name, cross, binding, arrange),
+    };
+    #[cfg(not(feature = "selftest"))]
+    let spawned = thread::spawn_in_space(name, cross, binding, arrange);
+    let slot = spawned.map_err(SpawnError::NoThread)?;
 
     Ok(Spawned {
         slot,
         channel: ours,
     })
+}
+
+/// Stop one never-run construction after `edge`.
+#[cfg(feature = "selftest")]
+pub(crate) fn spawn_refusing(edge: SpawnEdge) -> Result<(), SpawnError> {
+    spawn_transaction("refused-user", 8, BEHAVE, SpawnFault::At(edge)).map(drop)
 }
 
 /// Give back everything a retired program held.
@@ -774,6 +993,8 @@ static ZOMBIES: SpinLock<[Option<Bootstrap>; thread::CAPACITY]> =
 static RECLAIMED_PAGES: AtomicUsize = AtomicUsize::new(0);
 static RECLAIMED_TABLES: AtomicUsize = AtomicUsize::new(0);
 static REFUSED_TABLE_RECLAIMS: AtomicUsize = AtomicUsize::new(0);
+static ROLLED_BACK_PAGES: AtomicUsize = AtomicUsize::new(0);
+static ROLLED_BACK_TABLES: AtomicUsize = AtomicUsize::new(0);
 
 /// What a program held when it died.
 ///
@@ -884,6 +1105,24 @@ pub(crate) fn reclaimed() -> (usize, usize) {
 #[cfg(feature = "selftest")]
 pub(crate) fn refused_table_reclaims() -> usize {
     REFUSED_TABLE_RECLAIMS.load(Ordering::Acquire)
+}
+
+/// Pages and table frames returned by failed constructions.
+#[cfg(feature = "selftest")]
+pub(crate) fn spawn_rollbacks() -> (usize, usize) {
+    (
+        ROLLED_BACK_PAGES.load(Ordering::Acquire),
+        ROLLED_BACK_TABLES.load(Ordering::Acquire),
+    )
+}
+
+/// Launch, process and zombie records currently occupied.
+#[cfg(feature = "selftest")]
+pub(crate) fn process_records_for_test() -> (usize, usize, usize) {
+    let launches = LAUNCHES.lock_leaf().iter().flatten().count();
+    let bootstraps = BOOTSTRAPS.lock_leaf().iter().flatten().count();
+    let zombies = ZOMBIES.lock_leaf().iter().flatten().count();
+    (launches, bootstraps, zombies)
 }
 
 /// What a program asked for, in `rax`.

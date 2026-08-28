@@ -948,7 +948,10 @@ Nothing here is a surprise; each is named in the ADR that created it.
   run. **D-190 removes D-117's former 32-table tracking ceiling:** ownership
   grows fallibly before a table frame is taken, every table returns, and a
   refused table cleanup is a typed, logged and counted result rather than a
-  zero-valued success record.
+  zero-valued success record. **D-191 closes construction as well as
+  destruction:** a never-run process remains one rollback transaction through
+  the reserved-thread commit point, and loader placements are per-call data
+  with the executable entry validated before allocation.
 - ~~A fault during a user copy is still terminal.~~ **Closed by D-120.** The
   copy is assembly with its faulting instructions between named labels, a page
   fault in that range resumes at a fixup, and the caller gets a count of what

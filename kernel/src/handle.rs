@@ -699,6 +699,19 @@ impl HandleTable {
         (arena.committed, arena.slots.capacity())
     }
 
+    /// Committed quotas and occupied slots in the shared arena.
+    pub(crate) fn arena_usage_for_test() -> (usize, usize) {
+        let arena = ARENA.lock_leaf();
+        (
+            arena.committed,
+            arena
+                .slots
+                .iter()
+                .filter(|slot| slot.entry.is_some())
+                .count(),
+        )
+    }
+
     /// The slot `handle` names here, whether or not it is live.
     pub(crate) fn slot_of(&self, handle: u32) -> Option<Slot> {
         Slot::decode(handle, self.mixer)

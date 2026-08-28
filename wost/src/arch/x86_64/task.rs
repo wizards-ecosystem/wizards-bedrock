@@ -608,7 +608,11 @@ pub fn retire(slot: usize) -> Result<(), TaskError> {
     } else if table.slots[slot].state != State::Alive {
         Err(TaskError::Vacant(slot))
     } else {
-        table.slots[slot] = Slot::VACANT;
+        let stack_top = table.slots[slot].stack_top;
+        table.slots[slot] = Slot {
+            stack_top,
+            ..Slot::VACANT
+        };
         Ok(())
     };
     drop(table);

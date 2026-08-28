@@ -101,6 +101,8 @@ pub(crate) enum SpawnError {
     Full,
     /// `wost` refused the slot.
     Task(TaskError),
+    /// The caller could not publish the state the new thread needs.
+    Arrangement,
 }
 
 impl fmt::Display for SpawnError {
@@ -109,11 +111,23 @@ impl fmt::Display for SpawnError {
             Self::Unavailable => f.write_str("threads are unavailable"),
             Self::Full => write!(f, "all {STACK_SLOTS} thread slots are live"),
             Self::Task(error) => write!(f, "{error}"),
+            Self::Arrangement => f.write_str("the thread's launch state could not be arranged"),
         }
     }
 }
 
 impl core::error::Error for SpawnError {}
+
+/// A completed thread-construction step at which a check may force refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpawnPoint {
+    /// The scheduler slot is reserved, but no task exists.
+    Reserved,
+    /// The task exists, but has no user address space.
+    Fabricated,
+    /// The task names the user address space, but is not runnable.
+    Bound,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
@@ -550,7 +564,7 @@ pub(crate) fn spawn_weighted(
     entry: fn(),
     weight: u32,
 ) -> Result<usize, SpawnError> {
-    spawn_prepared(name, entry, weight, None, |_| {})
+    spawn_prepared(name, entry, weight, None, |_| true, |_| false)
 }
 
 /// Create a thread that runs on `binding`'s tables rather than the kernel's.
@@ -569,14 +583,33 @@ pub(crate) fn spawn_weighted(
 /// # Errors
 ///
 /// As [`spawn_weighted`], plus [`SpawnError::Task`] if `wost` refuses the
-/// binding.
+/// binding or [`SpawnError::Arrangement`] if `arrange` returns false.
 pub(crate) fn spawn_in_space(
     name: &'static str,
     entry: fn(),
     binding: Binding,
-    arrange: impl FnOnce(usize),
+    arrange: impl FnOnce(usize) -> bool,
 ) -> Result<usize, SpawnError> {
-    spawn_prepared(name, entry, BASE_WEIGHT, Some(binding), arrange)
+    spawn_prepared(name, entry, BASE_WEIGHT, Some(binding), arrange, |_| false)
+}
+
+/// Create a user thread but refuse it after one exact construction step.
+#[cfg(feature = "selftest")]
+pub(crate) fn spawn_in_space_refusing(
+    name: &'static str,
+    entry: fn(),
+    binding: Binding,
+    point: SpawnPoint,
+    arrange: impl FnOnce(usize) -> bool,
+) -> Result<usize, SpawnError> {
+    spawn_prepared(
+        name,
+        entry,
+        BASE_WEIGHT,
+        Some(binding),
+        arrange,
+        move |seen| seen == point,
+    )
 }
 
 fn spawn_prepared(
@@ -584,7 +617,8 @@ fn spawn_prepared(
     entry: fn(),
     weight: u32,
     binding: Option<Binding>,
-    arrange: impl FnOnce(usize),
+    arrange: impl FnOnce(usize) -> bool,
+    mut refuse: impl FnMut(SpawnPoint) -> bool,
 ) -> Result<usize, SpawnError> {
     // Before looking for a slot: a machine busy enough never to idle would
     // otherwise never collect, and the thing most likely to need a slot is the
@@ -610,6 +644,10 @@ fn spawn_prepared(
         };
         slot
     };
+    if refuse(SpawnPoint::Reserved) {
+        THREADS.lock_leaf().release(slot);
+        return Err(SpawnError::Full);
+    }
 
     // Outside the lock: `fabricate` takes `wost`'s own, and this one is a
     // leaf. The slot is reserved, so no other spawn can choose it and no
@@ -617,6 +655,11 @@ fn spawn_prepared(
     if let Err(error) = task::fabricate(slot, start, slot) {
         THREADS.lock_leaf().release(slot);
         return Err(SpawnError::Task(error));
+    }
+    if refuse(SpawnPoint::Fabricated) {
+        let _ = task::retire(slot);
+        THREADS.lock_leaf().release(slot);
+        return Err(SpawnError::Full);
     }
 
     // Still `Reserved`: nothing can schedule this slot, so the tables and
@@ -638,7 +681,16 @@ fn spawn_prepared(
         THREADS.lock_leaf().release(slot);
         return Err(SpawnError::Task(error));
     }
-    arrange(slot);
+    if refuse(SpawnPoint::Bound) {
+        let _ = task::retire(slot);
+        THREADS.lock_leaf().release(slot);
+        return Err(SpawnError::Full);
+    }
+    if !arrange(slot) {
+        let _ = task::retire(slot);
+        THREADS.lock_leaf().release(slot);
+        return Err(SpawnError::Arrangement);
+    }
 
     // The new thread is the second runnable one, which is the moment the
     // running thread's slice starts mattering — so this is an arming point

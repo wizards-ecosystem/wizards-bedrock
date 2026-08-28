@@ -16,7 +16,7 @@ use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::fmt;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use wost::sync::SpinLock;
 
@@ -395,6 +395,8 @@ pub(crate) struct Channel {
     peer: SpinLock<Weak<Object>>,
 }
 
+static LIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
+
 /// As [`HandleTable`](crate::handle::HandleTable)'s: the checks reach these
 /// and the shipped kernel has no syscall that does yet (D-116).
 #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
@@ -417,6 +419,7 @@ impl Channel {
     fn new() -> Option<Self> {
         let mut messages = VecDeque::new();
         messages.try_reserve_exact(Self::DEPTH).ok()?;
+        LIVE_CHANNELS.fetch_add(1, Ordering::AcqRel);
         Some(Self {
             inbox: SpinLock::new(Inbox { messages }),
             waiters: WaitQueue::new(),
@@ -543,7 +546,14 @@ impl Drop for Channel {
         if let Some(far) = peer.as_ref().and_then(|object| object.as_channel()) {
             far.waiters.wake_all();
         }
+        LIVE_CHANNELS.fetch_sub(1, Ordering::AcqRel);
     }
+}
+
+/// Channel ends whose storage is still live.
+#[cfg(feature = "selftest")]
+pub(crate) fn live_channels_for_test() -> usize {
+    LIVE_CHANNELS.load(Ordering::Acquire)
 }
 
 /// Make a pair of channel ends, each naming the other.

@@ -893,9 +893,10 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
     let Some(original) = user::image() else {
         return false;
     };
-    let scratch = || AddressSpace::for_user().expect("a space to load into");
     /// Offset of the first program header's flags, from the ELF64 layout.
     const FLAGS: usize = elf64::HEADER_BYTES + 4;
+    /// The image entry point in the ELF64 header.
+    const ENTRY: usize = 24;
     /// Its `p_offset`, `p_filesz` and `p_vaddr`.
     const OFFSET: usize = elf64::HEADER_BYTES + 8;
     const VADDR: usize = elf64::HEADER_BYTES + 16;
@@ -907,12 +908,30 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
         copy[at..at + 8].copy_from_slice(&value.to_le_bytes());
         copy
     };
+    let load = |bytes: &[u8], shift: u64| {
+        let Ok(mut space) = AddressSpace::for_user() else {
+            return (Err(user::LoadError::OutOfMemory), false, false);
+        };
+        let held = mm::free_frames();
+        let result = user::load_image(&mut space, bytes, shift);
+        let refused_before_mapping = mm::free_frames() == held;
+        if let Ok(image) = result {
+            for (at, len) in image.regions() {
+                let Ok(returned) = space.unmap(at, len) else {
+                    return (result, false, refused_before_mapping);
+                };
+                drop(returned);
+            }
+        }
+        let cleaned = space.reclaim(None).is_ok();
+        (result, cleaned, refused_before_mapping)
+    };
 
     // Writable and executable at once.
     let mut write_execute = original.to_vec();
     write_execute[FLAGS..FLAGS + 4].copy_from_slice(&0b111u32.to_le_bytes());
     let wx_refused = matches!(
-        user::load_image(&mut scratch(), &write_execute, 0),
+        load(&write_execute, 0).0,
         Err(user::LoadError::WriteExecute(_))
     );
 
@@ -923,34 +942,62 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
     // `contents_fit` bound, the only thing keeping a slice index inside the
     // image, left the gate green (D-105).
     let overrun = doctor(OFFSET, original.len() as u64);
-    let overrun_refused = matches!(
-        user::load_image(&mut scratch(), &overrun, 0),
-        Err(user::LoadError::Truncated(_))
-    );
+    let overrun_refused = matches!(load(&overrun, 0).0, Err(user::LoadError::Truncated(_)));
 
     // More file than memory to put it in, and only that.
     let mut oversized = doctor(FILE_SIZE, 8);
     oversized[MEMORY_SIZE..MEMORY_SIZE + 8].copy_from_slice(&4u64.to_le_bytes());
-    let oversized_refused = matches!(
-        user::load_image(&mut scratch(), &oversized, 0),
-        Err(user::LoadError::Malformed(_))
-    );
+    let oversized_refused = matches!(load(&oversized, 0).0, Err(user::LoadError::Malformed(_)));
 
     // Placed in the kernel's half.
     let intruding = doctor(VADDR, 0xffff_8000_0000_0000);
     let intruding_refused = matches!(
-        user::load_image(&mut scratch(), &intruding, 0),
+        load(&intruding, 0).0,
         Err(user::LoadError::NotUserMemory(_))
     );
 
     // And something that is not an ELF at all.
     let not_an_elf = [0u8; 64];
-    let refused_outright = matches!(
-        user::load_image(&mut scratch(), &not_an_elf, 0),
-        Err(user::LoadError::NotAnElf(_))
-    );
+    let refused_outright = matches!(load(&not_an_elf, 0).0, Err(user::LoadError::NotAnElf(_)));
 
-    wx_refused && overrun_refused && oversized_refused && intruding_refused && refused_outright
+    // The entry is validated before the first placement. Zero is valid user
+    // address arithmetic but not inside this image's executable segment, so a
+    // refusal that arrives after mapping is observably too late.
+    let invalid_entry = doctor(ENTRY, 0);
+    let (entry_result, entry_cleaned, entry_preflight) = load(&invalid_entry, 0);
+    let entry_refused = matches!(entry_result, Err(user::LoadError::InvalidEntry(0)))
+        && entry_cleaned
+        && entry_preflight;
+
+    // Each success carries its own immutable placement record. Loading again
+    // cannot overwrite the first call's cleanup evidence.
+    let (first, first_cleaned, _) = load(original, 0);
+    let (second, second_cleaned, _) = load(original, 0x1_0000);
+    let independent = match (first, second) {
+        (Ok(first), Ok(second)) => {
+            let first: Vec<_> = first.regions().collect();
+            let second: Vec<_> = second.regions().collect();
+            !first.is_empty()
+                && first.len() == second.len()
+                && first
+                    .iter()
+                    .zip(&second)
+                    .all(|((one, one_len), (two, two_len))| {
+                        *two == *one + 0x1_0000 && one_len == two_len
+                    })
+        }
+        _ => false,
+    };
+
+    wx_refused
+        && overrun_refused
+        && oversized_refused
+        && intruding_refused
+        && refused_outright
+        && entry_refused
+        && first_cleaned
+        && second_cleaned
+        && independent
 }
 
 /// A second thread crosses too, and each trap lands on its own kernel stack.
@@ -3726,7 +3773,7 @@ fn a_bound_space_is_not_reclaimed() -> bool {
     };
 
     // A thread to bind it to, which is what makes it un-reclaimable.
-    let Ok(slot) = thread::spawn_in_space("bound-space", leave_at_once, binding, |_| {}) else {
+    let Ok(slot) = thread::spawn_in_space("bound-space", leave_at_once, binding, |_| true) else {
         return false;
     };
 
@@ -3747,6 +3794,81 @@ fn a_bound_space_is_not_reclaimed() -> bool {
     let reclaimed = space.reclaim(released).is_ok_and(|tables| tables > 0) && space.is_reclaimed();
 
     refused && gone && had_evidence && reclaimed
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SpawnResources {
+    frames: usize,
+    heap: mm::heap::Stats,
+    arena: (usize, usize),
+    channels: usize,
+    rings: usize,
+    thread_slots: usize,
+    process_records: (usize, usize, usize),
+    table_refusals: usize,
+}
+
+fn spawn_resources() -> SpawnResources {
+    SpawnResources {
+        frames: mm::free_frames(),
+        heap: mm::heap::stats(),
+        arena: HandleTable::arena_usage_for_test(),
+        channels: object::live_channels_for_test(),
+        rings: queue::live_for_test(),
+        thread_slots: thread::free_slots(),
+        process_records: user::process_records_for_test(),
+        table_refusals: user::refused_table_reclaims(),
+    }
+}
+
+fn refused_at_spawn_edge(edge: user::SpawnEdge) -> bool {
+    match user::spawn_refusing(edge) {
+        Err(user::SpawnError::Injected(found)) => found == edge,
+        Err(user::SpawnError::NoThread(thread::SpawnError::Full)) => matches!(
+            edge,
+            user::SpawnEdge::ThreadReserved
+                | user::SpawnEdge::ThreadFabricated
+                | user::SpawnEdge::ThreadBound
+        ),
+        Err(user::SpawnError::NoThread(thread::SpawnError::Arrangement)) => {
+            edge == user::SpawnEdge::ThreadArrangement
+        }
+        _ => false,
+    }
+}
+
+/// Every refusal before a process becomes runnable restores the whole machine
+/// resource ledger.
+///
+/// Fourteen edges cover the address space, image, stack, shared mappings,
+/// ring, binding, channel, table, handle and the scheduler/task handoff through
+/// launch-record publication. The first pass warms heap size classes and
+/// retained arena backing; the second requires exact steady state after every
+/// individual refusal and verifies that the requested edge, rather than an
+/// earlier error, stopped construction, including explicit page-table rollback
+/// evidence (D-191).
+fn every_refused_spawn_returns_every_resource() -> bool {
+    while user::collect().is_some() {}
+
+    for edge in user::SpawnEdge::ALL {
+        if !refused_at_spawn_edge(edge) {
+            return false;
+        }
+    }
+
+    let baseline = spawn_resources();
+    for edge in user::SpawnEdge::ALL {
+        let (pages_before, tables_before) = user::spawn_rollbacks();
+        if !refused_at_spawn_edge(edge) {
+            return false;
+        }
+        let (pages_after, tables_after) = user::spawn_rollbacks();
+        let pages_returned = matches!(edge, user::SpawnEdge::Space) || pages_after > pages_before;
+        if tables_after <= tables_before || !pages_returned || spawn_resources() != baseline {
+            return false;
+        }
+    }
+    true
 }
 
 /// A program that has ended gives its memory back — its pages, its tables,
@@ -6512,7 +6634,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 195;
+const EXPECTED_CHECKS: usize = 196;
 
 impl Report {
     const fn new() -> Self {
@@ -6872,6 +6994,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a bound space is not reclaimed",
         a_bound_space_is_not_reclaimed(),
+    );
+    report.check(
+        "every refused spawn returns every resource",
+        every_refused_spawn_returns_every_resource(),
     );
     report.check(
         "a user page comes back cleared",
