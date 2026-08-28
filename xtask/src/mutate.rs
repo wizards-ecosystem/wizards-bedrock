@@ -1129,6 +1129,38 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "the decoder is re-derived when translation changes",
         reddens: Caught::Check("a translated keystroke decodes to the same key"),
     },
+    // Treat an unverified stop as a verified one. A fake device completes
+    // later, after the allocator would already have been allowed to reuse the
+    // command's memory.
+    Mutation {
+        file: "libs/nvme/src/lib.rs",
+        find: "        self.state = if verified {\n            DmaOwnership::Quiesced\n        } else {\n            DmaOwnership::Retained\n        };",
+        replace: "        self.state = DmaOwnership::Quiesced;\n        let _ = verified;",
+        breaks: "an unverified controller stop retains its dma memory",
+        reddens: Caught::HostTest {
+            package: "nvme",
+            name: "tests::delayed_completion_cannot_recycle_unquiesced_dma_memory",
+        },
+    },
+    // Return a retained DMA segment to the frame allocator. Safe access is
+    // still gone, so only the allocator count can distinguish this defect.
+    Mutation {
+        file: "wost/src/mm/mod.rs",
+        find: "        if let Some(segment) = self.segment.take() {\n            core::mem::forget(segment);\n        }",
+        replace: "        if let Some(segment) = self.segment.take() {\n            drop(segment);\n        }",
+        breaks: "retained dma memory never returns to the allocator",
+        reddens: Caught::Check("uncertain dma memory is never recycled"),
+    },
+    // The original defect: report timeout directly while the controller still
+    // has the command's physical addresses. The machine check repairs the
+    // deliberately outstanding command only after recording the red result.
+    Mutation {
+        file: "kernel/src/nvme.rs",
+        find: "            core::hint::spin_loop();\n        }\n        self.fail_submitted(BringUpError::NotReady, data)",
+        replace: "            core::hint::spin_loop();\n        }\n        Err(BringUpError::NotReady)",
+        breaks: "a command timeout settles dma before returning",
+        reddens: Caught::Check("an nvme timeout quiesces before dma memory returns"),
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.

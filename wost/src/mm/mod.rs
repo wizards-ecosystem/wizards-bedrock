@@ -548,6 +548,76 @@ impl Drop for Segment {
     }
 }
 
+/// Frames made reachable by a device for direct memory access.
+///
+/// A command whose completion is uncertain cannot return its frames to the
+/// allocator: the device may still write through the physical address it was
+/// given. [`retain`](Self::retain) makes that failure mode safe by permanently
+/// withholding the allocation and removing every safe way to access it.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DmaSegment {
+    segment: Option<Segment>,
+}
+
+impl DmaSegment {
+    /// Where the run begins, unless an uncertain device still owns it.
+    pub const fn address(&self) -> Option<Paddr> {
+        match &self.segment {
+            Some(segment) => Some(segment.address()),
+            None => None,
+        }
+    }
+
+    /// Whether the run is unavailable because a device may still reach it.
+    pub const fn is_retained(&self) -> bool {
+        self.segment.is_none()
+    }
+
+    /// Fill every available byte with `byte`.
+    pub fn fill(&mut self, byte: u8) -> bool {
+        self.segment
+            .as_mut()
+            .is_some_and(|segment| segment.fill(byte))
+    }
+
+    /// Fill every available byte with zeros.
+    pub fn zero(&mut self) -> bool {
+        self.fill(0)
+    }
+
+    /// Write `bytes` at `offset` while the run is host-owned.
+    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
+        self.segment
+            .as_mut()
+            .is_some_and(|segment| segment.write_at(offset, bytes))
+    }
+
+    /// Read bytes while the run is host-owned.
+    pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
+        self.segment
+            .as_ref()
+            .is_some_and(|segment| segment.read_at(offset, into))
+    }
+
+    /// Permanently withhold the run from both safe access and recycling.
+    ///
+    /// Idempotent, so a controller can retain everything it owns without
+    /// distinguishing the object that made its state uncertain.
+    pub fn retain(&mut self) {
+        if let Some(segment) = self.segment.take() {
+            core::mem::forget(segment);
+        }
+    }
+}
+
+impl From<Segment> for DmaSegment {
+    fn from(segment: Segment) -> Self {
+        Self {
+            segment: Some(segment),
+        }
+    }
+}
+
 /// A run of frames whose bytes are ring 3's.
 ///
 /// D-44's untyped split, and the whole of what "untyped" means here: the

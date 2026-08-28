@@ -15,7 +15,7 @@
 //! neither does the cache.
 
 use fat32::{FatError, Sectors, Volume};
-use wost::mm::Segment;
+use wost::mm::DmaSegment;
 
 use crate::nvme::Controller;
 
@@ -32,7 +32,7 @@ pub(crate) const VOLUME_SECTOR: u64 = 2048;
 /// the `static` the driver is kept in and neither can be moved out.
 pub(crate) struct Blocks<'a> {
     controller: &'a mut Controller,
-    buffer: &'a mut Segment,
+    buffer: &'a mut DmaSegment,
 }
 
 impl Sectors for Blocks<'_> {

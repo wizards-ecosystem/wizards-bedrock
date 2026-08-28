@@ -76,6 +76,22 @@ fn frame_round_trips() -> bool {
     taken && mm::free_frames() == before
 }
 
+/// Memory a device may still reach stays out of the allocator permanently.
+fn uncertain_dma_memory_is_never_recycled() -> bool {
+    let before = mm::free_frames();
+    let Some(segment) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    let mut dma = mm::DmaSegment::from(segment);
+    let reserved = mm::free_frames() == before - 1 && dma.address().is_some();
+
+    dma.retain();
+    let inaccessible = dma.address().is_none() && !dma.zero() && !dma.read_at(0, &mut [0u8; 1]);
+    drop(dma);
+
+    reserved && inaccessible && mm::free_frames() == before - 1
+}
+
 /// Two frames held at once are never the same frame.
 fn frames_are_exclusive() -> bool {
     let (Some(first), Some(second)) = (mm::allocate(), mm::allocate()) else {
@@ -2455,6 +2471,17 @@ fn the_controllers_registers_are_uncacheable() -> bool {
         paging::translate(controller.window()).is_some_and(|(_, flags)| {
             flags.contains(Flags::NO_CACHE) && !flags.contains(Flags::WRITE_THROUGH)
         })
+    })
+    .unwrap_or(false)
+}
+
+/// The production timeout arm proves the controller idle before returning.
+///
+/// This resets the one controller, so its report belongs after every storage
+/// and filesystem check has finished.
+fn an_nvme_timeout_quiesces_before_dma_memory_returns() -> bool {
+    nvme::with_controller(|controller, buffer| {
+        controller.a_timeout_quiesces_before_dma_returns(buffer)
     })
     .unwrap_or(false)
 }
@@ -6486,7 +6513,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 192;
+const EXPECTED_CHECKS: usize = 194;
 
 impl Report {
     const fn new() -> Self {
@@ -6570,6 +6597,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a frame is returned when its handle drops",
         frame_round_trips(),
+    );
+    report.check(
+        "uncertain dma memory is never recycled",
+        uncertain_dma_memory_is_never_recycled(),
     );
     report.check(
         "two live frames are different frames",
@@ -7340,7 +7371,7 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_leaf_guard_is_the_last_lock(),
     );
 
-    // **Last, and deliberately.** This one writes a screenful of blank lines
+    // **Last console check, deliberately.** This writes a screenful of blank lines
     // to make a region whose only possible foreground mark is a cursor — which
     // scrolls the console and moves what every earlier console check is
     // looking at. Placed here it disturbs nothing; placed where it was, it
@@ -7348,6 +7379,12 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a scroll leaves no cursor behind",
         a_scroll_leaves_no_cursor_behind(),
+    );
+
+    // Last of all: the timeout proof resets the only storage controller.
+    report.check(
+        "an nvme timeout quiesces before dma memory returns",
+        an_nvme_timeout_quiesces_before_dma_memory_returns(),
     );
 
     let checked = report.passed + report.failed;

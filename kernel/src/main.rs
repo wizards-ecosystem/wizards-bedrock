@@ -441,11 +441,12 @@ fn claim_the_controller(at: pci_config::Address) {
 
     // One block, to prove the whole path: queue built, command submitted,
     // doorbell rung, phase tag recognised, completion matched by identifier.
-    let Some(buffer) = wost::mm::allocate_contiguous(1, 1) else {
+    let Some(segment) = wost::mm::allocate_contiguous(1, 1) else {
         warn!("nvme: no memory for a read buffer");
         return;
     };
-    match controller.read_blocks(0, 1, &buffer) {
+    let mut buffer = wost::mm::DmaSegment::from(segment);
+    match controller.read_blocks(0, 1, &mut buffer) {
         Ok(()) => info!("nvme: read block 0"),
         Err(reason) => warn!("nvme: block 0 could not be read: {reason}"),
     }

@@ -25,9 +25,11 @@
 //! capacity is `size - 1`. The arithmetic is shared through `libs/nvme`; the
 //! structure is not (D-169).
 
-use nvme::{Capabilities, Capacity, Command, Completion, configuration, register, status};
+use nvme::{
+    Capabilities, Capacity, Command, Completion, DmaState, configuration, register, status,
+};
 use wost::arch::current::paging::DeviceMapping;
-use wost::mm::{self, Segment};
+use wost::mm::{self, DmaSegment};
 use wost::mmio::MmioRegion;
 use wost::sync::SpinLock;
 use x86_paging::PAGE_SIZE;
@@ -68,9 +70,9 @@ struct QueuePair {
     /// How many entries each holds.
     capacity: Capacity,
     /// The submission entries, physically contiguous.
-    submission: Segment,
+    submission: DmaSegment,
     /// The completion entries, likewise.
-    completion: Segment,
+    completion: DmaSegment,
     /// Where the host will write next. **Shadowed**, because the doorbell is
     /// write-only and the controller's idea of the tail cannot be read back.
     tail: u32,
@@ -90,8 +92,8 @@ impl QueuePair {
         let submission_frames = frames_for(capacity.submission_bytes());
         let completion_frames = frames_for(capacity.completion_bytes());
 
-        let mut submission = mm::allocate_contiguous(submission_frames, 1)?;
-        let mut completion = mm::allocate_contiguous(completion_frames, 1)?;
+        let mut submission = DmaSegment::from(mm::allocate_contiguous(submission_frames, 1)?);
+        let mut completion = DmaSegment::from(mm::allocate_contiguous(completion_frames, 1)?);
         // Cleared, because the phase tag of an unwritten entry is what says
         // "nothing here yet", and stale memory says whatever it last held.
         if !submission.zero() || !completion.zero() {
@@ -107,6 +109,12 @@ impl QueuePair {
             head: 0,
             phase: true,
         })
+    }
+
+    /// Withhold every queue frame a controller may still reach.
+    fn retain(&mut self) {
+        self.submission.retain();
+        self.completion.retain();
     }
 }
 
@@ -131,6 +139,11 @@ pub(crate) struct Controller {
     /// The next command identifier. Wrapping is fine: a completion is matched
     /// by it and only one command is outstanding at a time.
     next_id: u16,
+    /// Whether the one outstanding command's memory is host-owned again.
+    dma: DmaState,
+    /// Makes the production timeout arm deterministic for its machine proof.
+    #[cfg(feature = "selftest")]
+    force_timeout: bool,
     /// What `Identify` said, kept so a check can ask rather than infer.
     pub(crate) blocks: u64,
     /// Bytes in one logical block.
@@ -214,10 +227,12 @@ pub(crate) fn bring_up(
     wait_for_ready(&mut registers, capabilities, false)?;
 
     let admin = QueuePair::new(0, capacity).ok_or(BringUpError::NoMemory)?;
+    let submission = admin.submission.address().ok_or(BringUpError::NoMemory)?;
+    let completion = admin.completion.address().ok_or(BringUpError::NoMemory)?;
     let aqa = (capacity.as_zero_based() << 16) | capacity.as_zero_based();
     write(&mut registers, register::AQA, aqa)?;
-    write_u64(&mut registers, register::ASQ, admin.submission.address())?;
-    write_u64(&mut registers, register::ACQ, admin.completion.address())?;
+    write_u64(&mut registers, register::ASQ, submission)?;
+    write_u64(&mut registers, register::ACQ, completion)?;
 
     // `MPS` is the host page size as `log2 - 12`, and the entry sizes are the
     // specification's fixed logarithms.
@@ -236,6 +251,9 @@ pub(crate) fn bring_up(
         admin,
         io: None,
         next_id: 1,
+        dma: DmaState::new(),
+        #[cfg(feature = "selftest")]
+        force_timeout: false,
         blocks: 0,
         block_bytes: 0,
     };
@@ -282,17 +300,19 @@ impl Controller {
 
     /// Ask the namespace how large it is and how large its blocks are.
     fn identify_namespace(&mut self) -> Result<(), BringUpError> {
-        let mut buffer = mm::allocate_contiguous(1, 1).ok_or(BringUpError::NoMemory)?;
+        let mut buffer =
+            DmaSegment::from(mm::allocate_contiguous(1, 1).ok_or(BringUpError::NoMemory)?);
         if !buffer.zero() {
             return Err(BringUpError::NoMemory);
         }
+        let address = buffer.address().ok_or(BringUpError::NoMemory)?;
 
         // CNS = 0: this namespace's data structure.
         let command = Command::new(nvme::admin::IDENTIFY, self.take_id())
             .namespace(NAMESPACE)
-            .buffers(buffer.address(), 0)
+            .buffers(address, 0)
             .dword(10, 0);
-        self.run_admin(command)?;
+        self.run_admin(command, Some(&mut buffer))?;
 
         // `NSZE` at 0, and the formatted LBA size index at 26, which selects
         // one of the sixteen `LBAF` entries beginning at 128. Each is four
@@ -317,6 +337,11 @@ impl Controller {
     /// Build the one I/O queue pair, with its interrupts disabled.
     fn create_io_queues(&mut self, capacity: Capacity) -> Result<(), BringUpError> {
         let pair = QueuePair::new(IO_QUEUE, capacity).ok_or(BringUpError::NoMemory)?;
+        let completion_address = pair.completion.address().ok_or(BringUpError::NoMemory)?;
+        let submission_address = pair.submission.address().ok_or(BringUpError::NoMemory)?;
+        // Once either command is published, the controller can retain these
+        // runs. Keeping them here gives failure cleanup ownership of both.
+        self.io = Some(pair);
 
         // The completion queue first: a submission queue names the completion
         // queue that answers it, so the answer has to exist.
@@ -325,20 +350,19 @@ impl Controller {
         // is `IEN`, and it is **left clear**: that is what makes this polled
         // and what removes interrupt sharing from the critical path (`012` §2).
         let completion = Command::new(nvme::admin::CREATE_COMPLETION_QUEUE, self.take_id())
-            .buffers(pair.completion.address(), 0)
+            .buffers(completion_address, 0)
             .dword(10, (capacity.as_zero_based() << 16) | u32::from(IO_QUEUE))
             .dword(11, 1);
-        self.run_admin(completion)?;
+        self.run_admin(completion, None)?;
 
         // `CDW11` here is the completion queue's identifier in the high half,
         // and `PC` in bit 0.
         let submission = Command::new(nvme::admin::CREATE_SUBMISSION_QUEUE, self.take_id())
-            .buffers(pair.submission.address(), 0)
+            .buffers(submission_address, 0)
             .dword(10, (capacity.as_zero_based() << 16) | u32::from(IO_QUEUE))
             .dword(11, (u32::from(IO_QUEUE) << 16) | 1);
-        self.run_admin(submission)?;
+        self.run_admin(submission, None)?;
 
-        self.io = Some(pair);
         Ok(())
     }
 
@@ -352,11 +376,12 @@ impl Controller {
         &mut self,
         lba: u64,
         blocks: u32,
-        into: &Segment,
+        into: &mut DmaSegment,
     ) -> Result<(), BringUpError> {
         let length = u64::from(blocks) * u64::from(self.block_bytes);
+        let address = into.address().ok_or(BringUpError::NotReady)?;
         let built =
-            nvme::regions(into.address(), length, PAGE_SIZE, None).ok_or(BringUpError::NoMemory)?;
+            nvme::regions(address, length, PAGE_SIZE, None).ok_or(BringUpError::NoMemory)?;
 
         let command = Command::new(nvme::nvm::READ, self.take_id())
             .namespace(NAMESPACE)
@@ -371,7 +396,7 @@ impl Controller {
         if !queue {
             return Err(BringUpError::NotReady);
         }
-        self.run_on(IO_QUEUE, command)
+        self.run_on(IO_QUEUE, command, Some(into))
     }
 
     /// The next command identifier.
@@ -382,12 +407,21 @@ impl Controller {
     }
 
     /// Run one command on the admin queue.
-    fn run_admin(&mut self, command: Command) -> Result<(), BringUpError> {
-        self.run_on(0, command)
+    fn run_admin(
+        &mut self,
+        command: Command,
+        data: Option<&mut DmaSegment>,
+    ) -> Result<(), BringUpError> {
+        self.run_on(0, command, data)
     }
 
     /// Submit `command` to queue `which` and spin until it is answered.
-    fn run_on(&mut self, which: u16, command: Command) -> Result<(), BringUpError> {
+    fn run_on(
+        &mut self,
+        which: u16,
+        command: Command,
+        mut data: Option<&mut DmaSegment>,
+    ) -> Result<(), BringUpError> {
         let expected = command.id();
         let capabilities = self.capabilities;
 
@@ -408,18 +442,30 @@ impl Controller {
                 nvme::doorbell(capabilities, which, false).ok_or(BringUpError::NotReady)?,
             )
         };
-        write(&mut self.registers, submission_doorbell, submission_tail)?;
+        if !self.dma.begin() {
+            return Err(BringUpError::NotReady);
+        }
+        if let Err(error) = write(&mut self.registers, submission_doorbell, submission_tail) {
+            return self.fail_submitted(error, data.as_deref_mut());
+        }
 
         // Poll for a completion carrying the phase this pass expects. There is
         // no tail to read; the phase tag is the whole of how a new entry is
         // recognised (`012` §3).
-        for _ in 0..POLL_ATTEMPTS {
+        #[cfg(feature = "selftest")]
+        let attempts = if self.force_timeout { 0 } else { POLL_ATTEMPTS };
+        #[cfg(not(feature = "selftest"))]
+        let attempts = POLL_ATTEMPTS;
+
+        for _ in 0..attempts {
             let found = {
-                let queue = self.queue_mut(which).ok_or(BringUpError::NotReady)?;
+                let Some(queue) = self.queue_mut(which) else {
+                    return self.fail_submitted(BringUpError::NotReady, data.as_deref_mut());
+                };
                 let at = queue.head as usize * nvme::COMPLETION_ENTRY_BYTES;
                 let mut bytes = [0u8; nvme::COMPLETION_ENTRY_BYTES];
                 if !queue.completion.read_at(at, &mut bytes) {
-                    return Err(BringUpError::NoMemory);
+                    return self.fail_submitted(BringUpError::NoMemory, data.as_deref_mut());
                 }
                 let entry = Completion::from_bytes(bytes);
                 if entry.phase == queue.phase {
@@ -437,13 +483,20 @@ impl Controller {
             };
 
             if let Some(entry) = found {
-                let doorbell =
-                    nvme::doorbell(capabilities, which, true).ok_or(BringUpError::NotReady)?;
-                let head = self.queue_mut(which).ok_or(BringUpError::NotReady)?.head;
-                write(&mut self.registers, doorbell, head)?;
-
                 if entry.id != expected {
-                    return Err(BringUpError::Command(entry.status));
+                    return self
+                        .fail_submitted(BringUpError::Command(entry.status), data.as_deref_mut());
+                }
+                self.dma.complete();
+
+                let Some(doorbell) = nvme::doorbell(capabilities, which, true) else {
+                    return self.fail_controller(BringUpError::NotReady);
+                };
+                let Some(head) = self.queue_mut(which).map(|queue| queue.head) else {
+                    return self.fail_controller(BringUpError::NotReady);
+                };
+                if let Err(error) = write(&mut self.registers, doorbell, head) {
+                    return self.fail_controller(error);
                 }
                 if !entry.is_success() {
                     return Err(BringUpError::Command(entry.status));
@@ -452,7 +505,62 @@ impl Controller {
             }
             core::hint::spin_loop();
         }
-        Err(BringUpError::NotReady)
+        self.fail_submitted(BringUpError::NotReady, data)
+    }
+
+    /// Stop uncertain DMA before exposing an error to the caller.
+    fn fail_submitted(
+        &mut self,
+        error: BringUpError,
+        data: Option<&mut DmaSegment>,
+    ) -> Result<(), BringUpError> {
+        self.stop_dma(data);
+        Err(error)
+    }
+
+    /// Fail closed after a completion made the transfer buffer safe.
+    fn fail_controller(&mut self, error: BringUpError) -> Result<(), BringUpError> {
+        self.stop_dma(None);
+        Err(error)
+    }
+
+    /// Disable the controller and verify it idle, or withhold all DMA memory.
+    fn stop_dma(&mut self, data: Option<&mut DmaSegment>) {
+        if !self.dma.is_settled() {
+            let stopped = write(&mut self.registers, register::CC, 0)
+                .and_then(|()| wait_for_ready(&mut self.registers, self.capabilities, false))
+                .is_ok();
+            self.dma.quiesce(stopped);
+        }
+
+        if self.dma.must_retain() {
+            self.admin.retain();
+            if let Some(queue) = self.io.as_mut() {
+                queue.retain();
+            }
+            if let Some(segment) = data {
+                segment.retain();
+            }
+        }
+    }
+
+    /// Force the ordinary timeout arm and prove its cleanup before returning.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn a_timeout_quiesces_before_dma_returns(&mut self, data: &mut DmaSegment) -> bool {
+        self.force_timeout = true;
+        let result = self.read_blocks(0, 1, data);
+        self.force_timeout = false;
+
+        let protected = matches!(result, Err(BringUpError::NotReady))
+            && self.dma.is_quiesced()
+            && !data.is_retained();
+        // A timeout mutation must turn the check red without letting its
+        // deliberately outstanding command make the remainder of the boot
+        // unsafe. Repair only after remembering the failed observation.
+        if self.dma.is_in_flight() {
+            let _ = self.fail_submitted(BringUpError::NotReady, Some(data));
+        }
+        protected
     }
 
     /// The queue pair with this identifier.
@@ -464,11 +572,16 @@ impl Controller {
     }
 }
 
+impl Drop for Controller {
+    fn drop(&mut self) {
+        self.stop_dma(None);
+    }
+}
+
 /// Spin until `CSTS.RDY` matches `wanted`, bounded by `CAP.TO`.
 ///
-/// **`CSTS.CFS` ends the wait too.** A controller that has given up says so
-/// there, and a driver that only watches the ready bit waits out the whole
-/// timeout for an answer that has already arrived.
+/// `CSTS.CFS` ends an enable wait. During disable, observed `RDY = 0` wins:
+/// fatal status does not mean the controller can still reach host memory.
 fn wait_for_ready(
     registers: &mut MmioRegion,
     capabilities: Capabilities,
@@ -481,11 +594,11 @@ fn wait_for_ready(
     let attempts = (capabilities.timeout_ms().max(500) * 20_000).min(20_000_000);
     for _ in 0..attempts {
         let bits = read(registers, register::CSTS)?;
-        if bits & status::FATAL != 0 {
-            return Err(BringUpError::NotReady);
-        }
         if ((bits & status::READY) != 0) == wanted {
             return Ok(());
+        }
+        if wanted && bits & status::FATAL != 0 {
+            return Err(BringUpError::NotReady);
         }
         core::hint::spin_loop();
     }
@@ -543,10 +656,10 @@ pub(crate) fn start(context: &mut ThreadContext, base: u64, len: u64) -> Option<
 /// outlives the function that built it and slice 6's reader is not written
 /// yet. It becomes a block device behind the VFS in slice 7; this is what it
 /// is until then.
-static CONTROLLER: SpinLock<Option<(Controller, Segment)>> = SpinLock::new(None);
+static CONTROLLER: SpinLock<Option<(Controller, DmaSegment)>> = SpinLock::new(None);
 
 /// Keep a controller and the buffer it reads into.
-pub(crate) fn keep(controller: Controller, buffer: Segment) {
+pub(crate) fn keep(controller: Controller, buffer: DmaSegment) {
     *CONTROLLER.lock_leaf() = Some((controller, buffer));
 }
 
@@ -555,7 +668,9 @@ pub(crate) fn keep(controller: Controller, buffer: Segment) {
 /// A leaf guard, and everything reachable from `f` must respect that: the
 /// driver's own path touches memory-mapped registers and direct-mapped frames
 /// and takes no lock, which is what makes this sound (D-85).
-pub(crate) fn with_controller<T>(f: impl FnOnce(&mut Controller, &mut Segment) -> T) -> Option<T> {
+pub(crate) fn with_controller<T>(
+    f: impl FnOnce(&mut Controller, &mut DmaSegment) -> T,
+) -> Option<T> {
     let mut held = CONTROLLER.lock_leaf();
     let (controller, buffer) = held.as_mut()?;
     Some(f(controller, buffer))

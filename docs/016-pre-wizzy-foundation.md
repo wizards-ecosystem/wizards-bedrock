@@ -17,10 +17,10 @@ admission reasons.
 ## What completion means
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
-are **not closed**. The current image has 192 QEMU machine checks. The current
-mutation registry has 90 entries, but the last recorded complete sweep covered
-64; the twenty-six later mutations were broken individually. The current
-192-check image has not completed its human VMware round. The compiler gate in
+are **not closed**. The current image has 194 QEMU machine checks. The current
+mutation registry has 93 entries, but the last recorded complete sweep covered
+64; the twenty-nine later mutations were broken individually. The current
+194-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
 The kernel is ready for the first real Wizzy integration only when:
@@ -64,9 +64,9 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 90 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 90 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
+| PW-001 | REQUIRED | P0 | The register contains 93 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 93 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
-| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 192-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=192 failed=0` transcript, including WP, SMEP/SMAP/UMIP, compacted XSAVE, x2APIC, storage and input evidence |
+| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 194-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=194 failed=0` transcript, including WP, SMEP/SMAP/UMIP, compacted XSAVE, x2APIC, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
 | PW-005 | REQUIRED | P1 | The ordinary gate must describe the same commit as the exceptional evidence | Run `cargo xtask ci` after every register-closing change and once after the evidence-only close | Release/debug self-tests, shipped liveness and degraded boot all pass on the recorded commit |
 | PW-006 | REQUIRED | P1 | D-181 and D-182 were post-audit corrections, and this audit found deeper safe/device boundaries | Re-attack hostile inputs, cleanup paths, safe `wost` callers and release-only invariant failures after the P0/P1 fixes | Phase-close ADR links the audit, every break-test, full evidence manifest and remaining trigger-only rows; no historical evidence is invented |
@@ -90,7 +90,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-200 | READY | P0 | After a doorbell, timeout/error can drop Identify buffers, queue frames or controller state while the device may still DMA | Quiesce/reset/disable and verify the controller before release, or deliberately retain/poison every uncertain DMA object | Delayed-completion fake device shows no frame can be recycled until quiescence; mutation returns directly on timeout and is caught |
+| PW-200 | DONE | P0 | After a doorbell, timeout/error could drop Identify buffers, queue frames or controller state while the device might still DMA | D-188 requires a verified Controller Reset before release and otherwise makes `DmaSegment` permanently inaccessible and unrecyclable | 2026-08-27 delayed fake completion remained retained after an unverified stop; QEMU `uncertain dma memory is never recycled` withheld the frame and `an nvme timeout quiesces before dma memory returns` drove a real read through reset and observed `RDY = 0`; direct-return, false-quiescence and recycle mutations each reddened their exact check |
 | PW-201 | VERIFY | P0 | D-187 replaced the split live probe with one decode-off, wide-aware, fully restored transaction; the current implementation still needs its required VMware observation | Run PW-003 against D-187's transaction and record the discovered NVMe BAR | 2026-08-27 host fake configuration injected every probe cycle and proved exact order/rollback; QEMU booted NVMe at the correct 64-bit BAR; split, no-restore, no-decode-off, malformed-mask and malformed-slot mutations each reddened their exact test; current VMware must confirm the BAR |
 | PW-202 | DONE | P0 | PCI claims keyed the full offset-bearing address, committed before fallible work, and could strand device/port ownership despite the unchanged-on-error contract | D-187 canonicalizes BDF identity and makes registry preparation plus all I/O windows all-or-none | 2026-08-27 two offsets could not claim one QEMU bridge twice; fake preparation failure at every edge left `ClaimRegistry` empty; every possible multi-span conflict stranded nothing; canonicalization, early-commit and partial-port mutations reddened their exact checks |
 | PW-203 | READY | P1 | `read_blocks` permits zero, exceeds the 16-bit NLB field, does not bound namespace end/overflow, and does not prove DMA length fits `Segment` | Put pure transfer validation in `libs/nvme` and accept only a validated request in the driver | Exhaustive boundary/property tests plus machine refusals; zero/overflow/short-buffer mutations cannot ring the doorbell |
@@ -232,8 +232,8 @@ PW-514 includes these exact stale-current-facing corrections still to make:
 
 ## Recommended execution order
 
-1. Close PW-200 and PW-201 before trusting a polished-kernel claim; PW-100,
-   PW-101, PW-202 and PW-300 are closed by D-185 through D-187.
+1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
+   PW-101, PW-200, PW-202 and PW-300 are closed by D-185 through D-188.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

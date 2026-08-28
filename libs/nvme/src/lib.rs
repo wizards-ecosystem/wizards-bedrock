@@ -53,6 +53,100 @@ pub const IOSQES: u32 = 6;
 /// `CC.IOCQES`: the base-two logarithm of [`COMPLETION_ENTRY_BYTES`].
 pub const IOCQES: u32 = 4;
 
+/// Whether memory named by the current command may return to its allocator.
+///
+/// A completion restores ordinary ownership. An uncompleted command does not:
+/// only a verified controller stop makes its memory recyclable, and a failed
+/// stop makes the retained state permanent even if a late completion appears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmaState {
+    state: DmaOwnership,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DmaOwnership {
+    Idle,
+    InFlight,
+    Quiesced,
+    Retained,
+}
+
+impl DmaState {
+    /// No command has made memory device-owned yet.
+    pub const fn new() -> Self {
+        Self {
+            state: DmaOwnership::Idle,
+        }
+    }
+
+    /// Record publication of one command.
+    ///
+    /// False after another command was published or the controller was
+    /// stopped, so the state cannot silently forget an older DMA owner.
+    pub fn begin(&mut self) -> bool {
+        if self.state != DmaOwnership::Idle {
+            return false;
+        }
+        self.state = DmaOwnership::InFlight;
+        true
+    }
+
+    /// Record the matching completion, if a command is still in flight.
+    pub fn complete(&mut self) {
+        if self.state == DmaOwnership::InFlight {
+            self.state = DmaOwnership::Idle;
+        }
+    }
+
+    /// End access by stopping the controller, or retain every reachable run.
+    pub fn quiesce(&mut self, verified: bool) {
+        if matches!(self.state, DmaOwnership::Quiesced | DmaOwnership::Retained) {
+            return;
+        }
+        self.state = if verified {
+            DmaOwnership::Quiesced
+        } else {
+            DmaOwnership::Retained
+        };
+    }
+
+    /// Whether another command may be published.
+    pub const fn may_submit(self) -> bool {
+        matches!(self.state, DmaOwnership::Idle)
+    }
+
+    /// Whether every device access has been settled.
+    pub const fn is_settled(self) -> bool {
+        matches!(self.state, DmaOwnership::Quiesced | DmaOwnership::Retained)
+    }
+
+    /// Whether a controller stop was observed rather than assumed.
+    pub const fn is_quiesced(self) -> bool {
+        matches!(self.state, DmaOwnership::Quiesced)
+    }
+
+    /// Whether a submitted command still lacks a matching completion.
+    pub const fn is_in_flight(self) -> bool {
+        matches!(self.state, DmaOwnership::InFlight)
+    }
+
+    /// Whether memory reachable by this controller must never be recycled.
+    pub const fn must_retain(self) -> bool {
+        matches!(self.state, DmaOwnership::Retained)
+    }
+
+    /// Whether DMA memory can be recycled now.
+    pub const fn may_recycle(self) -> bool {
+        matches!(self.state, DmaOwnership::Idle | DmaOwnership::Quiesced)
+    }
+}
+
+impl Default for DmaState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Byte offsets of the controller registers, from Base 2.2 §3.1.
 pub mod register {
     /// Controller capabilities. 64 bits, and **read, never assumed** — `012`
@@ -555,6 +649,63 @@ pub const fn list_entry(address: u64, length: u64, page_size: u64, index: usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct DelayedDevice {
+        answered: bool,
+        stopped: bool,
+    }
+
+    impl DelayedDevice {
+        fn poll(&self, state: &mut DmaState) {
+            if self.answered {
+                state.complete();
+            }
+        }
+
+        fn stop(&self, state: &mut DmaState) {
+            state.quiesce(self.stopped);
+        }
+    }
+
+    /// A late device can never make memory recyclable after stop was unproven.
+    #[test]
+    fn delayed_completion_cannot_recycle_unquiesced_dma_memory() {
+        let mut uncertain = DmaState::new();
+        assert!(uncertain.begin());
+        let mut device = DelayedDevice {
+            answered: false,
+            stopped: false,
+        };
+        device.poll(&mut uncertain);
+        assert!(!uncertain.may_recycle());
+        device.stop(&mut uncertain);
+        assert!(uncertain.must_retain());
+        assert!(!uncertain.may_recycle());
+
+        device.answered = true;
+        device.poll(&mut uncertain);
+        assert!(
+            uncertain.must_retain(),
+            "a late completion cannot undo retention"
+        );
+        assert!(!uncertain.may_recycle());
+
+        let mut stopped = DmaState::new();
+        assert!(stopped.begin());
+        DelayedDevice {
+            answered: false,
+            stopped: true,
+        }
+        .stop(&mut stopped);
+        assert!(stopped.is_quiesced());
+        assert!(stopped.may_recycle());
+
+        let mut completed = DmaState::new();
+        assert!(completed.begin());
+        completed.complete();
+        assert!(completed.may_submit());
+        assert!(completed.may_recycle());
+    }
 
     /// A queue holds one fewer command than it has entries.
     ///
