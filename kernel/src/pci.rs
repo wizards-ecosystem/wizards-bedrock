@@ -11,10 +11,10 @@
 //! inside a claimed device's I/O window is refused because the device already
 //! has it (D-168).
 //!
-//! **Claims are permanent**, exactly as port claims are and for the same
-//! reason (D-138). There is no release, so there is no window in which a device
-//! is half-claimed, and a refusal strands nothing: the holder is unaffected and
-//! the refused caller has taken nothing.
+//! Fixed driver claims are permanent, exactly as port claims are and for the
+//! same reason (D-138). Storage selection additionally has a transient lease:
+//! it can advance only after restoring the command word and returning every
+//! dynamic I/O span and registry slot as one retirement (D-199).
 //!
 //! **Enumeration recurses.** A scan of bus zero is not enough — VMware places
 //! functions behind `pciBridge0`–`pciBridge7`, and QEMU's q35 puts a
@@ -24,8 +24,8 @@
 //! thirty-two kilobytes and a malicious or broken bridge topology is a cycle.
 
 use pci_config::{
-    Address, Bar, ClaimRegistry, Class, CommandAccess, EnableError, HeaderType, ProbeError,
-    RegistryError, Window, header,
+    Address, Bar, ClaimRegistry, Class, CommandAccess, CommandState, EnableError, HeaderType,
+    ProbeError, RegistryError, Window, header,
 };
 use wost::arch::current::pci;
 use wost::sync::SpinLock;
@@ -37,9 +37,8 @@ pub(crate) const BARS: usize = pci_config::BARS;
 
 /// Functions that may be claimed at once.
 ///
-/// A policy number, small because this kernel has one driver. Claims are
-/// permanent, so this is a bound on devices *ever* claimed rather than on
-/// devices claimed at one time — which is the same trade D-138 made for ports.
+/// A policy number, small because this kernel has one driver. Permanent claims
+/// remain until shutdown; a fully retired selection candidate returns its slot.
 const MAX_CLAIMS: usize = 8;
 
 /// Buses the walk will visit before giving up.
@@ -186,7 +185,7 @@ fn secondary_of(entry: &Function) -> Option<u8> {
     Some(pci_config::secondary_bus(pci::read(at)?))
 }
 
-/// Functions already claimed. Permanent, like the port registry (D-138).
+/// Functions already claimed.
 static CLAIMED: SpinLock<ClaimRegistry<MAX_CLAIMS>> = SpinLock::new(ClaimRegistry::new());
 
 /// Why a device could not be claimed.
@@ -220,11 +219,35 @@ impl core::fmt::Display for ClaimError {
     }
 }
 
+/// Why a transient function lease could not be retired exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReleaseError {
+    /// A configuration write may have taken effect without verified rollback.
+    Command,
+    /// The dynamic I/O claims no longer matched the unique span handles.
+    Ports,
+    /// The function registry no longer held this lease's exact identity.
+    Registry,
+    /// A permanent driver claim was offered to the transient release door.
+    Permanent,
+}
+
+impl core::fmt::Display for ReleaseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Command => f.write_str("the pci command word could not be restored"),
+            Self::Ports => f.write_str("the device's i/o spans could not be returned"),
+            Self::Registry => f.write_str("the device registry did not hold this lease"),
+            Self::Permanent => f.write_str("a permanent device claim cannot be released"),
+        }
+    }
+}
+
 /// A claimed function, and the evidence for touching it.
 ///
 /// Not `Clone` and not `Copy`: it *is* the claim, and a copy would be a second
-/// driver for one device with nothing to say so. There is no release, so no
-/// `Drop` either — a claim outlives the boot (D-138).
+/// driver for one device with nothing to say so. A fixed claim outlives the
+/// boot; a selection lease has an explicit all-or-stop release (D-199).
 #[derive(Debug)]
 pub(crate) struct Device {
     at: Address,
@@ -238,8 +261,13 @@ pub(crate) struct Device {
     /// registers. Slice 5 is its first reader. It is kept in the device rather
     /// than handed back separately because the claim is one thing — a driver
     /// with the ports and no device would be the arrangement D-77 objected to.
-    #[expect(dead_code)]
     ports: [Option<wost::arch::current::port::PortSpan>; BARS],
+    /// Whether this is the permanent claim API rather than a selection lease.
+    permanent: bool,
+    /// The command word to restore before a transient lease may disappear.
+    command_state: Option<CommandState>,
+    /// A failed restoration makes reuse unsafe even if later reads look sane.
+    uncertain: bool,
     /// Deterministic refusal before a test claim can touch configuration space.
     #[cfg(feature = "selftest")]
     forced_enable_error: Option<EnableError>,
@@ -286,11 +314,77 @@ impl Device {
             }
         }
 
+        if self.command_state.is_some() {
+            return Ok(());
+        }
         let at = self.at.at(header::COMMAND).ok_or(EnableError::Access)?;
-        pci_config::enable_bus_master(|access| match access {
+        let result = pci_config::enable_bus_master(|access| match access {
             CommandAccess::Read => pci::read(at),
             CommandAccess::Write(value) => pci::write_command(at, value).then_some(0),
-        })
+        });
+        match result {
+            Ok(state) => {
+                if !self.permanent {
+                    self.command_state = Some(state);
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.uncertain |= matches!(error, EnableError::Restore);
+                Err(error)
+            }
+        }
+    }
+
+    /// Make a successful selection lease permanent.
+    pub(crate) fn commit(mut self) {
+        self.permanent = true;
+        self.command_state = None;
+    }
+
+    /// Restore and return every resource held by a transient lease.
+    ///
+    /// Any uncertainty leaves the function recorded and forbids selection from
+    /// advancing. Successful return is the proof that the next candidate may
+    /// be touched (D-199).
+    pub(crate) fn release(mut self, context: &mut ThreadContext) -> Result<(), ReleaseError> {
+        if self.permanent {
+            return Err(ReleaseError::Permanent);
+        }
+        if self.uncertain {
+            return Err(ReleaseError::Command);
+        }
+        if let Some(state) = self.command_state.take() {
+            let Some(at) = self.at.at(header::COMMAND) else {
+                self.uncertain = true;
+                return Err(ReleaseError::Command);
+            };
+            if pci_config::restore_command(state, |access| match access {
+                CommandAccess::Read => pci::read(at),
+                CommandAccess::Write(value) => pci::write_command(at, value).then_some(0),
+            })
+            .is_err()
+            {
+                self.uncertain = true;
+                return Err(ReleaseError::Command);
+            }
+        }
+
+        // Hold the function slot across the port return. This preflight makes
+        // the second commit infallible under the same guard; a port refusal
+        // leaves both registries unchanged.
+        let mut claimed = CLAIMED.lock(context);
+        if !claimed.is_claimed(self.at) {
+            return Err(ReleaseError::Registry);
+        }
+        let ports = core::mem::replace(&mut self.ports, [const { None }; BARS]);
+        if !wost::arch::current::port::release_spans(ports) {
+            return Err(ReleaseError::Ports);
+        }
+        if !claimed.release(self.at) {
+            return Err(ReleaseError::Registry);
+        }
+        Ok(())
     }
 
     /// A claim-shaped controller which refuses before configuration access.
@@ -315,6 +409,9 @@ impl Device {
             device: 0xFFFF,
             windows,
             ports: [const { None }; BARS],
+            permanent: true,
+            command_state: None,
+            uncertain: false,
             forced_enable_error: Some(EnableError::Refused(0)),
             enable_attempts: 0,
         })
@@ -338,7 +435,21 @@ impl Device {
 ///
 /// See [`ClaimError`]. Every one of them leaves the world as it was: a refused
 /// claim records nothing, and the holder of a taken device is untouched.
+#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 pub(crate) fn claim(context: &mut ThreadContext, at: Address) -> Result<Device, ClaimError> {
+    claim_as(context, at, true)
+}
+
+/// Lease one function while storage selection determines whether to keep it.
+pub(crate) fn lease(context: &mut ThreadContext, at: Address) -> Result<Device, ClaimError> {
+    claim_as(context, at, false)
+}
+
+fn claim_as(
+    context: &mut ThreadContext,
+    at: Address,
+    permanent: bool,
+) -> Result<Device, ClaimError> {
     if !pci::is_available() {
         return Err(ClaimError::NoBus);
     }
@@ -409,6 +520,9 @@ pub(crate) fn claim(context: &mut ThreadContext, at: Address) -> Result<Device, 
                 device: (identity >> 16) as u16,
                 windows,
                 ports,
+                permanent,
+                command_state: None,
+                uncertain: false,
                 #[cfg(feature = "selftest")]
                 forced_enable_error: None,
                 #[cfg(feature = "selftest")]

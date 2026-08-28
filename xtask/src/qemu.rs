@@ -234,6 +234,10 @@ pub fn nvme_image(root: &Path) -> Result<std::path::PathBuf> {
 fn storage(root: &Path) -> Result<Vec<String>> {
     let backing = nvme_image(root)?;
     Ok(vec![
+        // First in PCI enumeration order and deliberately namespace-less: the
+        // kernel must retire it before selecting the usable sibling (D-199).
+        "-device".to_string(),
+        "nvme,serial=wizard-empty".to_string(),
         "-drive".to_string(),
         format!("if=none,id=wizardnvm,format=raw,file={}", backing.display()),
         "-device".to_string(),
@@ -264,7 +268,7 @@ const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// is a thing you do inside a fix and the table is a different file. This line
 /// and its twin in `kernel/src/selftest.rs` are the two you have to touch
 /// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 202;
+const EXPECTED_SELFTEST_CHECKS: usize = 203;
 
 /// Line the self-test kernel prints immediately before its bounded wait for
 /// an injected keystroke. Kept in step with `kernel/src/selftest.rs`.
@@ -281,6 +285,9 @@ const TRANSLATED_MARKER: &str = "selftest: awaiting translated keystroke";
 /// Line the shipped kernel prints once it has finished booting and is doing
 /// the one thing it does. Kept in step with `kernel/src/main.rs`.
 const SETTLED_MARKER: &str = "kernel: reading the keyboard";
+
+/// Proof that the shipped selector retired QEMU's first storage candidate.
+pub const NVME_FALLBACK_MARKER: &str = "nvme: candidate 1 retired cleanly; trying next";
 
 /// A shipped kernel must take this interrupt after announcing its idle loop.
 const SHIPPED_CHALLENGE_QCODE: &str = "a";
@@ -879,12 +886,13 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
     let settled = Arc::new(AtomicBool::new(false));
     let panicked = Arc::new(AtomicBool::new(false));
     let serial_failed = Arc::new(AtomicBool::new(false));
+    let required = vec![(NVME_FALLBACK_MARKER, Arc::new(AtomicBool::new(false)))];
     let forwarder = watch_serial(
         stdout,
         Arc::clone(&settled),
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
-        Vec::new(),
+        required.clone(),
     );
 
     // Reach the idle loop, prove a fresh device interrupt wakes it, then keep
@@ -921,7 +929,12 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
     if panicked.load(Ordering::Acquire) {
         anyhow::bail!("the kernel panicked during the settle window");
     }
-    println!("[xtask] shipped kernel boots, responds, and settles");
+    for (marker, seen) in required {
+        if !seen.load(Ordering::Acquire) {
+            bail!("the shipped kernel settled without reporting {marker:?}");
+        }
+    }
+    println!("[xtask] shipped kernel falls back, boots, responds, and settles");
     Ok(())
 }
 
@@ -1482,6 +1495,27 @@ mod tests {
                 assert_ne!(super::nvme_signature(lba), super::nvme_signature(earlier));
             }
         }
+    }
+
+    /// Queue addresses have a cleanup owner before the controller sees them.
+    #[test]
+    fn nvme_cleanup_ownership_precedes_the_enable_write() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let source =
+            std::fs::read_to_string(root.join("kernel/src/nvme.rs")).expect("kernel nvme source");
+        let owner = source
+            .find("let mut controller = Controller {")
+            .expect("no cleanup-owning controller construction");
+        let enable = source
+            .find("register::CC, cc")
+            .expect("no controller enable write");
+
+        assert!(
+            owner < enable,
+            "the controller can see host queue addresses before cleanup owns them"
+        );
     }
 
     /// The corpus the kernel looks for is the corpus `xtask` writes.

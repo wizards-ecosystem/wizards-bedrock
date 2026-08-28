@@ -35,6 +35,8 @@ use anyhow::{Context, Result};
 /// (D-144). D-185 added two read/write operations at the shared-mapping
 /// lifetime and transaction preflight boundaries.
 /// D-186 added one call into the fixed write-protection fault probe.
+/// D-199 added three lines to consume a unique MMIO capability, inspect its
+/// exact leaves and construct its time-bounded register region.
 ///
 /// Phase 5 added the most unsafe of any phase so far — ring 3, the extended
 /// state, the address space that grows — which is why this is where the number
@@ -52,7 +54,7 @@ pub const BUDGET: usize = 380;
 /// is the truth — so the measurement is recorded beside it and checked, which
 /// makes drift toward the ceiling visible rather than something a reader
 /// infers from a comment that may be a phase out of date.
-pub const MEASURED: usize = 369;
+pub const MEASURED: usize = 372;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///

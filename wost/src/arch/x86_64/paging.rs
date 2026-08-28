@@ -26,6 +26,8 @@
 //!
 //! [`AddressSpace::map_boot`] takes a [`BootRegion`] the memory map covers, and
 //! [`AddressSpace::map_device`] refuses anything that is not a device hole.
+//! Its ordinary claim remains permanent; a transient driver candidate can
+//! instead keep a [`ReleasableDevice`] and return its exact mapping (D-199).
 
 use alloc::vec::Vec;
 use core::fmt;
@@ -1088,7 +1090,87 @@ impl AddressSpace {
             physical,
             len: len_usize,
             root: self.root,
+            virtual_base,
+            pages,
+            device_slot,
         })
+    }
+
+    /// Remove the exact mapping behind a transient device region.
+    ///
+    /// The region is consumed and its access capability dropped before any
+    /// leaf is cleared. The whole range is preflighted first, so a refusal
+    /// changes neither page tables nor ownership records (D-199).
+    ///
+    /// # Errors
+    ///
+    /// [`MapError::NotYours`] if another space minted it,
+    /// [`MapError::NotMapped`] if its ownership record or a leaf is gone, and
+    /// [`MapError::Discontiguous`] if a leaf no longer names the exact device
+    /// extent.
+    pub fn unmap_device(&mut self, region: ReleasableDevice) -> Result<(), MapError> {
+        let ReleasableDevice {
+            mapping,
+            registers: _,
+        } = region;
+
+        if mapping.root != self.root {
+            return Err(MapError::NotYours(mapping.address));
+        }
+        let expected_extent = DeviceExtent {
+            start: mapping.physical,
+            end: mapping
+                .physical
+                .checked_add(mapping.len as u64)
+                .ok_or(MapError::InvalidDeviceRange(mapping.physical))?,
+        };
+        if self.devices.get(mapping.device_slot).copied().flatten() != Some(expected_extent) {
+            return Err(MapError::NotMapped(mapping.address));
+        }
+
+        let offset = mapping.physical % PAGE_SIZE;
+        let physical_base = mapping.physical - offset;
+        for page in 0..mapping.pages / PAGE_SIZE {
+            let address = mapping.virtual_base + page * PAGE_SIZE;
+            let slot = self.leaf(address)?;
+            // SAFETY: `leaf` returned a reachable slot in this space.
+            let entry = unsafe { slot.read_volatile() };
+            if entry.flags().contains(Flags::OWNED)
+                || entry.address() != physical_base + page * PAGE_SIZE
+            {
+                return Err(MapError::Discontiguous(address));
+            }
+        }
+
+        for page in 0..mapping.pages / PAGE_SIZE {
+            let address = mapping.virtual_base + page * PAGE_SIZE;
+            let slot = self.leaf(address)?;
+            // SAFETY: the complete preflight proved this is the exact
+            // unowned device leaf named by the consumed capability.
+            unsafe { slot.write_volatile(Entry::ABSENT) };
+            if is_active() && active_root() == self.root {
+                cpu::invalidate_page(address);
+            }
+        }
+        self.devices[mapping.device_slot] = None;
+        if mapping
+            .virtual_base
+            .checked_add(mapping.pages)
+            .is_some_and(|end| end == self.device_next)
+        {
+            self.device_next = mapping.virtual_base;
+        }
+        Ok(())
+    }
+
+    /// Device mappings this space currently owns.
+    pub fn device_mappings(&self) -> usize {
+        self.devices.iter().flatten().count()
+    }
+
+    /// First unused virtual byte in the device window.
+    pub const fn device_window_next(&self) -> u64 {
+        self.device_next
     }
 
     /// Map every stack of `layout`, leaving every guard gap unmapped.
@@ -1650,7 +1732,7 @@ const DEVICE_WINDOW_END: u64 = 0xffff_ff01_0000_0000;
 /// Device ranges one address space can own before activation.
 const MAX_DEVICE_MAPPINGS: usize = 32;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DeviceExtent {
     start: Paddr,
     end: Paddr,
@@ -1976,6 +2058,9 @@ pub struct DeviceMapping {
     physical: Paddr,
     len: usize,
     root: Paddr,
+    virtual_base: u64,
+    pages: u64,
+    device_slot: usize,
 }
 
 impl DeviceMapping {
@@ -1991,20 +2076,8 @@ impl DeviceMapping {
     /// region can cover the same bytes. `None` until the space is active, and
     /// `None` forever for a claim minted by a space that never became it.
     pub fn claim(self) -> Option<MmioRegion> {
-        if !is_active() || active_root() != self.root {
+        if !self.is_live() {
             return None;
-        }
-        let mut offset = 0usize;
-        while offset < self.len {
-            let virtual_address = self.address.checked_add(offset as u64)?;
-            let expected = self.physical.checked_add(offset as u64)?;
-            let (mapped, _, span) = walk(self.root, virtual_address)?;
-            if mapped != expected {
-                return None;
-            }
-            let inside_leaf = virtual_address & (span - 1);
-            let available = usize::try_from(span - inside_leaf).ok()?;
-            offset = offset.checked_add((self.len - offset).min(available))?;
         }
         // SAFETY: the walk confirmed the mapping is live in the tables that
         // minted this claim; exclusive because `self` cannot be copied and
@@ -2013,5 +2086,80 @@ impl DeviceMapping {
         // mapping never carries it (D-88); four-byte aligned by
         // `map_device_with`.
         Some(unsafe { MmioRegion::new(self.address as *mut u8, self.len) })
+    }
+
+    /// Take a region which can later return this exact device mapping.
+    ///
+    /// Unlike [`claim`](Self::claim), the mapping is not promised permanent:
+    /// the unique region retains this token, and
+    /// [`AddressSpace::unmap_device`] consumes both before clearing it.
+    pub fn claim_releasable(self) -> Result<ReleasableDevice, Self> {
+        if !self.is_live() {
+            return Err(self);
+        }
+        // SAFETY: `is_live` verified the complete mapping in the active root;
+        // `self` is unique and moves beside the region, which is consumed
+        // before that mapping can be removed; four-byte aligned by
+        // `map_device_with`.
+        let registers = unsafe { MmioRegion::new(self.address as *mut u8, self.len) };
+        Ok(ReleasableDevice {
+            mapping: self,
+            registers,
+        })
+    }
+
+    /// Whether every byte still resolves through the root which minted it.
+    fn is_live(&self) -> bool {
+        if !is_active() || active_root() != self.root {
+            return false;
+        }
+        let mut offset = 0usize;
+        while offset < self.len {
+            let Some(virtual_address) = self.address.checked_add(offset as u64) else {
+                return false;
+            };
+            let Some(expected) = self.physical.checked_add(offset as u64) else {
+                return false;
+            };
+            let Some((mapped, _, span)) = walk(self.root, virtual_address) else {
+                return false;
+            };
+            if mapped != expected {
+                return false;
+            }
+            let inside_leaf = virtual_address & (span - 1);
+            let Ok(available) = usize::try_from(span - inside_leaf) else {
+                return false;
+            };
+            let Some(next) = offset.checked_add((self.len - offset).min(available)) else {
+                return false;
+            };
+            offset = next;
+        }
+        true
+    }
+}
+
+/// A unique live MMIO region paired with the token that can remove it.
+#[derive(Debug)]
+pub struct ReleasableDevice {
+    mapping: DeviceMapping,
+    registers: MmioRegion,
+}
+
+impl ReleasableDevice {
+    /// The mapped virtual address.
+    pub const fn address(&self) -> u64 {
+        self.mapping.address
+    }
+
+    /// Read one register word.
+    pub fn read_u32(&self, offset: usize) -> Result<u32, crate::mmio::MmioError> {
+        self.registers.read_u32(offset)
+    }
+
+    /// Write one register word.
+    pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), crate::mmio::MmioError> {
+        self.registers.write_u32(offset, value)
     }
 }

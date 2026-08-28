@@ -6,9 +6,9 @@
 //! behind it, so it lives here and is unit-tested on the host; `wost` wraps one
 //! of these in a lock and hands out the port handles.
 //!
-//! Reservations are permanent by design. A driver owns its registers for the
-//! life of the kernel, and a registry with no release path cannot suffer the
-//! stale-handle problem a releasable one would.
+//! Fixed-driver reservations are permanent. A transient PCI lease may return
+//! several dynamic spans together before a driver commits; the wrapper keeps
+//! release behind the unique span capabilities (D-199).
 //!
 //! # Examples
 //!
@@ -86,11 +86,12 @@ impl PortSpace {
 
     /// Reserve several spans, all or none.
     ///
-    /// A claim in this registry is **permanent** — nothing releases, because a
-    /// driver owns its registers for the life of the kernel. That makes a
-    /// caller wanting two spans a trap: take the first, fail on the second,
-    /// and the first is stranded where nothing can ever claim it again, so the
-    /// thing that needed both can never be built on this boot.
+    /// Fixed-driver claims in this registry are **permanent**, because a driver
+    /// owns its registers for the life of the kernel. A transient higher-level
+    /// lease can return its unique spans through
+    /// [`release_all`](Self::release_all), but that does not help a caller
+    /// which takes one fixed span and fails on the second: the first is
+    /// stranded for the boot.
     ///
     /// Two callers had exactly that shape. `i8042::Controller::new` chains
     /// `DATA` and `CONTROL`, so a refused `CONTROL` foreclosed the keyboard;
@@ -135,6 +136,47 @@ impl PortSpace {
         true
     }
 
+    /// Release several reserved spans, all or none.
+    ///
+    /// This is bookkeeping for a higher-level transient lease, not an
+    /// address-based ownership API: the `wost` wrapper accepts only the unique
+    /// span values its matching reservation returned (D-199).
+    ///
+    /// False, and nothing changed, if the request is empty, malformed,
+    /// overlaps itself, or contains any port which is not currently reserved.
+    #[must_use = "a refused release leaves every requested port reserved"]
+    pub fn release_all(&mut self, spans: &[(usize, usize)]) -> bool {
+        if spans.is_empty() {
+            return false;
+        }
+
+        let mut resolved = [const { None }; MAX_SPANS];
+        let Some(room) = resolved.get_mut(..spans.len()) else {
+            return false;
+        };
+        for (index, (port, len)) in spans.iter().enumerate() {
+            let Some(span) = bounded_span(*port, *len) else {
+                return false;
+            };
+            if !span.clone().all(|port| self.is_reserved(port)) {
+                return false;
+            }
+            for earlier in room.iter().take(index).flatten() {
+                if overlaps(&span, earlier) {
+                    return false;
+                }
+            }
+            room[index] = Some(span);
+        }
+
+        for span in room.iter().flatten() {
+            for port in span.clone() {
+                self.reserved[port / PORTS_PER_WORD] &= !bit(port);
+            }
+        }
+        true
+    }
+
     /// Whether the `len` ports starting at `port` could be reserved right now.
     ///
     /// The question [`reserve`](Self::reserve) answers as a side effect,
@@ -146,13 +188,10 @@ impl PortSpace {
     /// The ports a `len`-wide access at `port` reaches, or `None` if that span
     /// is not this caller's to take.
     fn span(&self, port: usize, len: usize) -> Option<Range<usize>> {
-        if len == 0 {
-            return None;
-        }
-        let end = port.checked_add(len).filter(|&end| end <= PORT_COUNT)?;
-        (port..end)
+        let span = bounded_span(port, len)?;
+        span.clone()
             .all(|port| !self.is_reserved(port))
-            .then_some(port..end)
+            .then_some(span)
     }
 }
 
@@ -165,6 +204,15 @@ impl Default for PortSpace {
 /// The bit within its word that `port` occupies.
 const fn bit(port: usize) -> u64 {
     1 << (port % PORTS_PER_WORD)
+}
+
+/// A non-empty span inside the architectural port space.
+fn bounded_span(port: usize, len: usize) -> Option<Range<usize>> {
+    if len == 0 {
+        return None;
+    }
+    let end = port.checked_add(len).filter(|&end| end <= PORT_COUNT)?;
+    Some(port..end)
 }
 
 /// Spans one [`reserve_all`](PortSpace::reserve_all) may take at once.
@@ -428,6 +476,33 @@ mod tests {
         assert!(space.is_reserved(boundary - 1), "last bit of the low word");
         assert!(space.is_reserved(boundary), "first bit of the high word");
         assert!(!space.is_reserved(boundary + 2));
+    }
+
+    /// A transient owner returns every span together or retains all of them.
+    #[test]
+    fn a_multi_span_release_is_exact_and_all_or_none() {
+        let spans = [(0x100usize, 4usize), (0x120, 8), (0x1ff, 2)];
+        let mut space = PortSpace::new();
+        assert!(space.reserve_all(&spans));
+
+        for refused in [
+            vec![(0x100, 4), (0x140, 1)],
+            vec![(0x100, 4), (0x102, 2)],
+            vec![(0x100, 0)],
+            vec![(PORT_COUNT, 1)],
+        ] {
+            let before = space;
+            assert!(!space.release_all(&refused));
+            assert_eq!(space, before);
+        }
+
+        assert!(space.release_all(&spans));
+        for (base, len) in spans {
+            assert!(space.is_available(base, len));
+        }
+        let empty = space;
+        assert!(!space.release_all(&spans), "nothing is held a second time");
+        assert_eq!(space, empty);
     }
 
     /// Sweeping the whole space one port at a time: every port reserves once

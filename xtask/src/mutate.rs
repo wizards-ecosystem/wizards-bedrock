@@ -598,6 +598,18 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a device claim covers the ports it decodes",
         reddens: Caught::Check("a claimed device's io window is not claimable bare"),
     },
+    // Consume the dynamic span handles without returning their bitmap bits.
+    // The real QEMU I/O-window witness releases and reacquires the same BDF,
+    // so registry-only cleanup cannot make this pass.
+    Mutation {
+        file: "kernel/src/pci.rs",
+        find: "        if !wost::arch::current::port::release_spans(ports) {
+            return Err(ReleaseError::Ports);
+        }",
+        replace: "        drop(ports);",
+        breaks: "a transient pci lease returns every dynamic io span",
+        reddens: Caught::Check("a claimed device's io window is not claimable bare"),
+    },
     // A bridge's bus numbers decoded as a base address and then probed —
     // all ones written into the register that says which bus is behind it.
     Mutation {
@@ -667,15 +679,36 @@ pub const MUTATIONS: &[Mutation] = &[
     // A conflict later in the list then strands all earlier runs.
     Mutation {
         file: "libs/port-space/src/lib.rs",
-        find: "            room[index] = Some(span);",
+        find: "            room[index] = Some(span);
+        }
+
+        for span in room.iter().flatten() {
+            for port in span.clone() {
+                self.reserved[port / PORTS_PER_WORD] |= bit(port);",
         replace: "            for port in span.clone() {
                 self.reserved[port / PORTS_PER_WORD] |= bit(port);
             }
-            room[index] = Some(span);",
+            room[index] = Some(span);
+        }
+
+        for span in room.iter().flatten() {
+            for port in span.clone() {
+                self.reserved[port / PORTS_PER_WORD] |= bit(port);",
         breaks: "a refused multi-span reservation records no earlier span",
         reddens: Caught::HostTest {
             package: "port-space",
             name: "tests::a_refused_multi_span_reservation_takes_nothing",
+        },
+    },
+    // Keep the unique handles consumed but leave their bitmap bits set.
+    Mutation {
+        file: "libs/port-space/src/lib.rs",
+        find: "                self.reserved[port / PORTS_PER_WORD] &= !bit(port);",
+        replace: "                self.reserved[port / PORTS_PER_WORD] |= bit(port);",
+        breaks: "a transient multi-span release clears every exact port",
+        reddens: Caught::HostTest {
+            package: "port-space",
+            name: "tests::a_multi_span_release_is_exact_and_all_or_none",
         },
     },
     // An address keeps its register offset when asked for its device identity.
@@ -687,6 +720,19 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::HostTest {
             package: "pci-config",
             name: "tests::every_offset_of_one_function_has_one_identity",
+        },
+    },
+    // Report release while leaving the canonical function slot occupied.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "        *slot = None;
+        true",
+        replace: "        *slot = Some(at);
+        true",
+        breaks: "a transient pci claim returns its exact registry slot",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_claim_release_is_exact_and_makes_room_for_the_same_function",
         },
     },
     // A wide BAR in a bridge's last slot would consume its bus-number field.
@@ -772,12 +818,25 @@ pub const MUTATIONS: &[Mutation] = &[
     // command bits, skipping the readback which distinguishes the two claims.
     Mutation {
         file: "libs/pci-config/src/lib.rs",
-        find: "            Some(bits) if bits as u16 & wanted == wanted => return Ok(()),",
-        replace: "            Some(_) => return Ok(()),",
+        find: "            Some(bits) if bits as u16 & wanted == wanted => return Ok(CommandState(original)),",
+        replace: "            Some(_) => return Ok(CommandState(original)),",
         breaks: "a bus master command write is read back before success",
         reddens: Caught::HostTest {
             package: "pci-config",
             name: "tests::a_refused_bus_master_enable_restores_the_exact_command",
+        },
+    },
+    // Read the captured command word back without first restoring it.
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "    let _ = access(CommandAccess::Write(state.0));
+    match access(CommandAccess::Read) {",
+        replace: "    let _ = &mut access;
+    match access(CommandAccess::Read) {",
+        breaks: "a successful pci lease restores its captured command word",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_bus_master_lease_restores_the_exact_command_or_reports_uncertainty",
         },
     },
     // Return the initiating access error without restoring a command write
@@ -1476,6 +1535,59 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "    survey_the_bus();\n    if wost::arch::current::pci::is_available() {\n        survey_the_filesystems();\n    }\n    start_interrupts();",
         breaks: "hardware-free namespaces do not depend on PCI availability",
         reddens: Caught::BootMarker(qemu::DEGRADED_FILESYSTEM_MARKER),
+    },
+    // Leave the failed controller's physical-ownership record behind after
+    // removing access. The page tables can still map its sibling, so only the
+    // selection ledger says the candidate was not completely retired.
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        self.devices[mapping.device_slot] = None;",
+        replace: "        self.devices[mapping.device_slot] = Some(expected_extent);",
+        breaks: "a failed nvme candidate returns its device-mapping ownership",
+        reddens: Caught::Check("a later nvme controller survives an earlier failure"),
+    },
+    // Remove the mapping but strand its virtual-window allocation. One retry
+    // still fits, so the baseline must name the allocator cursor explicitly.
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        if mapping
+            .virtual_base
+            .checked_add(mapping.pages)
+            .is_some_and(|end| end == self.device_next)
+        {
+            self.device_next = mapping.virtual_base;
+        }",
+        replace: "        let _ = self.device_next;",
+        breaks: "a failed nvme candidate returns its device-window address space",
+        reddens: Caught::Check("a later nvme controller survives an earlier failure"),
+    },
+    // Restore everything but stop enumeration anyway, reproducing the
+    // first-candidate-only selector without conflating it with cleanup.
+    Mutation {
+        file: "kernel/src/main.rs",
+        find: "    info!(\"nvme: candidate {ordinal} retired cleanly; trying next\");
+    StorageSelection::Seeking
+}",
+        replace: "    info!(\"nvme: candidate {ordinal} retired cleanly; trying next\");
+    StorageSelection::Halted
+}",
+        breaks: "nvme selection advances after an exact candidate retirement",
+        reddens: Caught::Check("a later nvme controller survives an earlier failure"),
+    },
+    // Publish the queue addresses before moving them into the cleanup owner.
+    // The later ordinary enable remains, so the defect compiles and may look
+    // harmless on QEMU while an error at this first write loses ownership.
+    Mutation {
+        file: "kernel/src/nvme.rs",
+        find: "    // Cleanup owns every published queue address before the enable write.
+    let mut controller = Controller {",
+        replace: "    let _ = write(&mut registers, register::CC, cc);
+    let mut controller = Controller {",
+        breaks: "nvme cleanup owns every published queue before controller enable",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::nvme_cleanup_ownership_precedes_the_enable_write",
+        },
     },
 ];
 

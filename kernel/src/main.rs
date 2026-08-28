@@ -46,6 +46,8 @@ mod vfs;
 mod wait;
 
 use core::fmt::Write;
+#[cfg(feature = "selftest")]
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::arch::current::uart::UartError;
@@ -373,13 +375,13 @@ fn survey_the_bus() {
         return;
     }
 
-    let mut controller = None;
+    let mut selection = StorageSelection::Seeking;
     let mut storage = 0;
     let surveyed = pci::enumerate(|function| {
         if function.class.is_nvme() {
             storage += 1;
-            if controller.is_none() {
-                controller = Some(function.at);
+            if matches!(selection, StorageSelection::Seeking) {
+                selection = try_controller(function.at, storage);
             }
         }
     });
@@ -395,22 +397,38 @@ fn survey_the_bus() {
         }
     }
 
-    match controller {
-        Some(at) => claim_the_controller(at),
-        None => info!("pci: no nvme controller; nothing to claim"),
+    match selection {
+        StorageSelection::Selected => mount_the_volume(),
+        StorageSelection::Seeking if storage == 0 => {
+            info!("pci: no nvme controller; nothing to claim")
+        }
+        StorageSelection::Seeking => info!("nvme: no usable controller"),
+        StorageSelection::Halted => {
+            warn!("nvme: selection stopped because a candidate could not be retired")
+        }
     }
 }
 
-/// Claim the storage controller and say what it decodes.
+/// Whether enumeration should try another storage function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StorageSelection {
+    Seeking,
+    Selected,
+    Halted,
+}
+
+/// Claim one storage candidate and either commit or retire it.
 ///
-/// The claim is what makes touching it legitimate, and it carries the windows
-/// with it (D-168). Slice 5 is what does anything with them; this is the point
-/// at which the shipped kernel and the checked one stop differing, because a
-/// claim path nothing calls in the shipped build is a claim path only the
-/// checks exercise.
-fn claim_the_controller(at: pci_config::Address) {
+/// Selection advances only after the failed candidate has stopped DMA,
+/// unmapped its registers, returned its queues, restored its command word and
+/// released its function and I/O claims (D-199).
+fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
     let mut context = thread::ThreadContext::require();
-    let mut device = match pci::claim(&mut context, at) {
+    let baseline = CandidateBaseline::capture(&mut context);
+    #[cfg(feature = "selftest")]
+    NVME_CANDIDATE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+
+    let mut device = match pci::lease(&mut context, at) {
         Ok(device) => device,
         Err(reason) => {
             warn!(
@@ -419,7 +437,7 @@ fn claim_the_controller(at: pci_config::Address) {
                 at.device(),
                 at.function()
             );
-            return;
+            return StorageSelection::Seeking;
         }
     };
 
@@ -432,27 +450,125 @@ fn claim_the_controller(at: pci_config::Address) {
     );
 
     let Some(window) = admit_controller_window(&mut device) else {
-        return;
+        return retire_candidate(device, &mut context, baseline, ordinal);
     };
 
-    let mut context = wost::sync::ThreadContext::require();
-    let Some(mut controller) = nvme::start(&mut context, window.address, window.size) else {
-        return;
+    let mut controller = match nvme::start(&mut context, window.address, window.size) {
+        Ok(controller) => controller,
+        Err(failure) => {
+            if !failure.is_retired() {
+                warn!(
+                    "nvme: candidate {ordinal} left uncertain controller state after {}",
+                    failure.reason()
+                );
+                return StorageSelection::Halted;
+            }
+            return retire_candidate(device, &mut context, baseline, ordinal);
+        }
     };
 
     // One block, to prove the whole path: queue built, command submitted,
     // doorbell rung, phase tag recognised, completion matched by identifier.
     let Some(segment) = wost::mm::allocate_contiguous(1, 1) else {
         warn!("nvme: no memory for a read buffer");
-        return;
+        if !controller.retire(&mut context) {
+            return StorageSelection::Halted;
+        }
+        return retire_candidate(device, &mut context, baseline, ordinal);
     };
     let mut buffer = wost::mm::DmaSegment::from(segment);
     match controller.read_blocks(0, 1, &mut buffer) {
         Ok(()) => info!("nvme: read block 0"),
-        Err(reason) => warn!("nvme: block 0 could not be read: {reason}"),
+        Err(reason) => {
+            warn!("nvme: block 0 could not be read: {reason}");
+            if !controller.retire(&mut context) {
+                return StorageSelection::Halted;
+            }
+            drop(buffer);
+            return retire_candidate(device, &mut context, baseline, ordinal);
+        }
     }
+    device.commit();
     nvme::keep(controller, buffer);
-    mount_the_volume();
+    #[cfg(feature = "selftest")]
+    NVME_SELECTED_ORDINAL.store(ordinal, Ordering::Release);
+    StorageSelection::Selected
+}
+
+/// Finish one failed lease, stopping selection unless restoration is exact.
+fn retire_candidate(
+    device: pci::Device,
+    context: &mut thread::ThreadContext,
+    baseline: CandidateBaseline,
+    ordinal: usize,
+) -> StorageSelection {
+    if let Err(reason) = device.release(context) {
+        warn!("nvme: candidate {ordinal} could not return its pci lease: {reason}");
+        return StorageSelection::Halted;
+    }
+    if !baseline.is_restored(context) {
+        warn!("nvme: candidate {ordinal} did not restore its resource baseline");
+        return StorageSelection::Halted;
+    }
+    #[cfg(feature = "selftest")]
+    NVME_CLEAN_RETIREMENTS.fetch_add(1, Ordering::Relaxed);
+    info!("nvme: candidate {ordinal} retired cleanly; trying next");
+    StorageSelection::Seeking
+}
+
+/// Resources a failed selection candidate must return exactly.
+#[derive(Debug, Clone, Copy)]
+struct CandidateBaseline {
+    #[cfg(feature = "selftest")]
+    frames: usize,
+    #[cfg(feature = "selftest")]
+    claims: usize,
+    #[cfg(feature = "selftest")]
+    mappings: Option<usize>,
+    #[cfg(feature = "selftest")]
+    device_next: Option<u64>,
+}
+
+impl CandidateBaseline {
+    fn capture(_context: &mut thread::ThreadContext) -> Self {
+        Self {
+            #[cfg(feature = "selftest")]
+            frames: wost::mm::free_frames(),
+            #[cfg(feature = "selftest")]
+            claims: pci::claims(),
+            #[cfg(feature = "selftest")]
+            mappings: mem::device_mappings(_context),
+            #[cfg(feature = "selftest")]
+            device_next: mem::device_window_next(_context),
+        }
+    }
+
+    fn is_restored(self, _context: &mut thread::ThreadContext) -> bool {
+        #[cfg(feature = "selftest")]
+        {
+            wost::mm::free_frames() == self.frames
+                && pci::claims() == self.claims
+                && mem::device_mappings(_context) == self.mappings
+                && mem::device_window_next(_context) == self.device_next
+        }
+        #[cfg(not(feature = "selftest"))]
+        true
+    }
+}
+
+#[cfg(feature = "selftest")]
+static NVME_CANDIDATE_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "selftest")]
+static NVME_CLEAN_RETIREMENTS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "selftest")]
+static NVME_SELECTED_ORDINAL: AtomicUsize = AtomicUsize::new(0);
+
+/// QEMU's namespace-less first controller retired before its usable sibling.
+#[cfg(feature = "selftest")]
+fn a_later_nvme_controller_survives_an_earlier_failure() -> bool {
+    NVME_CANDIDATE_ATTEMPTS.load(Ordering::Acquire) == 2
+        && NVME_CLEAN_RETIREMENTS.load(Ordering::Acquire) == 1
+        && NVME_SELECTED_ORDINAL.load(Ordering::Acquire) == 2
 }
 
 /// A BAR0 extent admitted only after the function can initiate DMA.

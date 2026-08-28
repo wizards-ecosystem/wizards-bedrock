@@ -29,9 +29,8 @@ use nvme::{
     Capabilities, Capacity, Command, Completion, DmaState, NAMESPACE_IDENTIFY_BYTES, Namespace,
     NamespaceError, ReadTransfer, TransferError, configuration, register, status,
 };
-use wost::arch::current::paging::DeviceMapping;
+use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
 use wost::mm::{self, DmaSegment};
-use wost::mmio::MmioRegion;
 use wost::sync::SpinLock;
 use x86_paging::PAGE_SIZE;
 
@@ -133,7 +132,7 @@ pub(crate) struct Controller {
     /// driver's behaviour would say so on an emulator.
     #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
     window: u64,
-    registers: MmioRegion,
+    registers: Option<ReleasableDevice>,
     capabilities: Capabilities,
     admin: QueuePair,
     io: Option<QueuePair>,
@@ -206,6 +205,25 @@ impl core::fmt::Display for BringUpError {
     }
 }
 
+/// A failed candidate and whether every resource it touched was retired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StartFailure {
+    reason: BringUpError,
+    retired: bool,
+}
+
+impl StartFailure {
+    /// Why bring-up failed.
+    pub(crate) const fn reason(self) -> BringUpError {
+        self.reason
+    }
+
+    /// Whether selection may safely advance to another controller.
+    pub(crate) const fn is_retired(self) -> bool {
+        self.retired
+    }
+}
+
 /// Bring a controller up on the registers at `base`.
 ///
 /// The specification's initialisation sequence, in order, with the two waits
@@ -214,43 +232,77 @@ pub(crate) fn bring_up(
     context: &mut ThreadContext,
     base: u64,
     len: u64,
-) -> Result<Controller, BringUpError> {
+) -> Result<Controller, StartFailure> {
     // Uncacheable, which `map_device` chooses: a register file mapped
     // write-back is a driver whose writes arrive when the cache feels like it.
     let mapping: DeviceMapping = mem::map_device(context, base, len)
-        .ok_or(BringUpError::NotMapped)?
-        .map_err(|_| BringUpError::NotMapped)?;
+        .and_then(Result::ok)
+        .ok_or(StartFailure {
+            reason: BringUpError::NotMapped,
+            retired: true,
+        })?;
     let window = mapping.address();
-    let mut registers = mapping.claim().ok_or(BringUpError::NotClaimable)?;
+    let mut registers = mapping.claim_releasable().map_err(|_| StartFailure {
+        reason: BringUpError::NotClaimable,
+        retired: false,
+    })?;
 
     // `CAP` in two halves, because an `MmioRegion` makes thirty-two-bit
     // accesses. The specification allows it for this register.
-    let low = read(&registers, register::CAP)?;
-    let high = read(&registers, register::CAP + 4)?;
+    let low = read(&registers, register::CAP).map_err(|reason| StartFailure {
+        reason,
+        retired: false,
+    })?;
+    let high = read(&registers, register::CAP + 4).map_err(|reason| StartFailure {
+        reason,
+        retired: false,
+    })?;
     let capabilities = Capabilities::from_bits(u64::from(low) | (u64::from(high) << 32));
 
+    // Disabled before any policy refusal, so even an unsupported controller
+    // can be retired without leaving firmware DMA behind.
+    if let Err(reason) = write(&mut registers, register::CC, 0)
+        .and_then(|()| wait_for_ready(&mut registers, capabilities, false))
+    {
+        return Err(StartFailure {
+            reason,
+            retired: false,
+        });
+    }
+
     if !capabilities.supports_nvm_command_set() {
-        return Err(BringUpError::NoCommandSet);
+        return Err(retire_disabled(
+            context,
+            registers,
+            BringUpError::NoCommandSet,
+        ));
     }
     if !capabilities.supports_page_size(PAGE_SIZE) {
-        return Err(BringUpError::PageSize);
+        return Err(retire_disabled(context, registers, BringUpError::PageSize));
     }
-    let most = Capacity::new(capabilities.max_queue_entries()).ok_or(BringUpError::QueueSize)?;
-    let capacity =
-        Capacity::new(WANTED_ENTRIES.min(most.entries())).ok_or(BringUpError::QueueSize)?;
+    let Some(most) = Capacity::new(capabilities.max_queue_entries()) else {
+        return Err(retire_disabled(context, registers, BringUpError::QueueSize));
+    };
+    let Some(capacity) = Capacity::new(WANTED_ENTRIES.min(most.entries())) else {
+        return Err(retire_disabled(context, registers, BringUpError::QueueSize));
+    };
 
-    // Disabled first, and waited for: a controller left enabled by firmware
-    // ignores every register below.
-    write(&mut registers, register::CC, 0)?;
-    wait_for_ready(&mut registers, capabilities, false)?;
-
-    let admin = QueuePair::new(0, capacity).ok_or(BringUpError::NoMemory)?;
-    let submission = admin.submission.address().ok_or(BringUpError::NoMemory)?;
-    let completion = admin.completion.address().ok_or(BringUpError::NoMemory)?;
+    let Some(admin) = QueuePair::new(0, capacity) else {
+        return Err(retire_disabled(context, registers, BringUpError::NoMemory));
+    };
+    let Some(submission) = admin.submission.address() else {
+        return Err(retire_disabled(context, registers, BringUpError::NoMemory));
+    };
+    let Some(completion) = admin.completion.address() else {
+        return Err(retire_disabled(context, registers, BringUpError::NoMemory));
+    };
     let aqa = (capacity.as_zero_based() << 16) | capacity.as_zero_based();
-    write(&mut registers, register::AQA, aqa)?;
-    write_u64(&mut registers, register::ASQ, submission)?;
-    write_u64(&mut registers, register::ACQ, completion)?;
+    if let Err(reason) = write(&mut registers, register::AQA, aqa)
+        .and_then(|()| write_u64(&mut registers, register::ASQ, submission))
+        .and_then(|()| write_u64(&mut registers, register::ACQ, completion))
+    {
+        return Err(retire_disabled(context, registers, reason));
+    }
 
     // `MPS` is the host page size as `log2 - 12`, and the entry sizes are the
     // specification's fixed logarithms.
@@ -259,12 +311,11 @@ pub(crate) fn bring_up(
         | (page_shift << configuration::PAGE_SIZE_SHIFT)
         | (nvme::IOSQES << configuration::SUBMISSION_ENTRY_SHIFT)
         | (nvme::IOCQES << configuration::COMPLETION_ENTRY_SHIFT);
-    write(&mut registers, register::CC, cc)?;
-    wait_for_ready(&mut registers, capabilities, true)?;
 
+    // Cleanup owns every published queue address before the enable write.
     let mut controller = Controller {
         window,
-        registers,
+        registers: Some(registers),
         capabilities,
         admin,
         io: None,
@@ -284,8 +335,38 @@ pub(crate) fn bring_up(
         block_bytes: 0,
     };
 
-    controller.identify_namespace(capacity)?;
+    if let Err(reason) = controller
+        .registers
+        .as_mut()
+        .ok_or(BringUpError::NotMapped)
+        .and_then(|registers| write(registers, register::CC, cc))
+        .and_then(|()| {
+            let registers = controller
+                .registers
+                .as_mut()
+                .ok_or(BringUpError::NotMapped)?;
+            wait_for_ready(registers, capabilities, true)
+        })
+    {
+        let retired = controller.retire(context);
+        return Err(StartFailure { reason, retired });
+    }
+
+    if let Err(reason) = controller.identify_namespace(capacity) {
+        let retired = controller.retire(context);
+        return Err(StartFailure { reason, retired });
+    }
     Ok(controller)
+}
+
+/// Return a mapping while the controller is already verified disabled.
+fn retire_disabled(
+    context: &mut ThreadContext,
+    registers: ReleasableDevice,
+    reason: BringUpError,
+) -> StartFailure {
+    let retired = matches!(mem::unmap_device(context, registers), Some(Ok(())));
+    StartFailure { reason, retired }
 }
 
 impl Controller {
@@ -658,7 +739,12 @@ impl Controller {
         if !self.dma.begin() {
             return Err(BringUpError::NotReady);
         }
-        if let Err(error) = write(&mut self.registers, submission_doorbell, submission_tail) {
+        let rung = self
+            .registers
+            .as_mut()
+            .ok_or(BringUpError::NotMapped)
+            .and_then(|registers| write(registers, submission_doorbell, submission_tail));
+        if let Err(error) = rung {
             return self.fail_submitted(error, data.as_deref_mut());
         }
 
@@ -708,7 +794,12 @@ impl Controller {
                 let Some(head) = self.queue_mut(which).map(|queue| queue.head) else {
                     return self.fail_controller(BringUpError::NotReady);
                 };
-                if let Err(error) = write(&mut self.registers, doorbell, head) {
+                let acknowledged = self
+                    .registers
+                    .as_mut()
+                    .ok_or(BringUpError::NotMapped)
+                    .and_then(|registers| write(registers, doorbell, head));
+                if let Err(error) = acknowledged {
                     return self.fail_controller(error);
                 }
                 if !entry.is_success() {
@@ -740,9 +831,11 @@ impl Controller {
     /// Disable the controller and verify it idle, or withhold all DMA memory.
     fn stop_dma(&mut self, data: Option<&mut DmaSegment>) {
         if !self.dma.is_settled() {
-            let stopped = write(&mut self.registers, register::CC, 0)
-                .and_then(|()| wait_for_ready(&mut self.registers, self.capabilities, false))
-                .is_ok();
+            let stopped = self.registers.as_mut().is_some_and(|registers| {
+                write(registers, register::CC, 0)
+                    .and_then(|()| wait_for_ready(registers, self.capabilities, false))
+                    .is_ok()
+            });
             self.dma.quiesce(stopped);
         }
 
@@ -755,6 +848,18 @@ impl Controller {
                 segment.retain();
             }
         }
+    }
+
+    /// Stop DMA, consume register access, and return the mapping.
+    pub(crate) fn retire(mut self, context: &mut ThreadContext) -> bool {
+        self.stop_dma(None);
+        if !self.dma.is_quiesced() {
+            return false;
+        }
+        let Some(registers) = self.registers.take() else {
+            return false;
+        };
+        matches!(mem::unmap_device(context, registers), Some(Ok(())))
     }
 
     /// Force the ordinary timeout arm and prove its cleanup before returning.
@@ -796,7 +901,7 @@ impl Drop for Controller {
 /// `CSTS.CFS` ends an enable wait. During disable, observed `RDY = 0` wins:
 /// fatal status does not mean the controller can still reach host memory.
 fn wait_for_ready(
-    registers: &mut MmioRegion,
+    registers: &mut ReleasableDevice,
     capabilities: Capabilities,
     wanted: bool,
 ) -> Result<(), BringUpError> {
@@ -818,13 +923,13 @@ fn wait_for_ready(
     Err(BringUpError::NotReady)
 }
 
-fn read(registers: &MmioRegion, offset: usize) -> Result<u32, BringUpError> {
+fn read(registers: &ReleasableDevice, offset: usize) -> Result<u32, BringUpError> {
     registers
         .read_u32(offset)
         .map_err(|_| BringUpError::NotMapped)
 }
 
-fn write(registers: &mut MmioRegion, offset: usize, value: u32) -> Result<(), BringUpError> {
+fn write(registers: &mut ReleasableDevice, offset: usize, value: u32) -> Result<(), BringUpError> {
     registers
         .write_u32(offset, value)
         .map_err(|_| BringUpError::NotMapped)
@@ -835,16 +940,24 @@ fn write(registers: &mut MmioRegion, offset: usize, value: u32) -> Result<(), Br
 /// The specification allows it for `ASQ` and `ACQ`, and an `MmioRegion` makes
 /// thirty-two-bit accesses. Low first because the controller latches on the
 /// high half.
-fn write_u64(registers: &mut MmioRegion, offset: usize, value: u64) -> Result<(), BringUpError> {
+fn write_u64(
+    registers: &mut ReleasableDevice,
+    offset: usize,
+    value: u64,
+) -> Result<(), BringUpError> {
     write(registers, offset, value as u32)?;
     write(registers, offset + 4, (value >> 32) as u32)
 }
 
 /// Bring the controller up and say what it is.
 ///
-/// Declines rather than fails: a machine whose controller will not initialise
-/// still boots, and everything built before this works without storage.
-pub(crate) fn start(context: &mut ThreadContext, base: u64, len: u64) -> Option<Controller> {
+/// Reports a retirement-qualified failure: the selector may keep booting
+/// without storage, but may try a sibling only when teardown was exact.
+pub(crate) fn start(
+    context: &mut ThreadContext,
+    base: u64,
+    len: u64,
+) -> Result<Controller, StartFailure> {
     match bring_up(context, base, len) {
         Ok(controller) => {
             info!(
@@ -854,11 +967,11 @@ pub(crate) fn start(context: &mut ThreadContext, base: u64, len: u64) -> Option<
                 controller.block_bytes,
                 controller.capabilities().doorbell_bytes()
             );
-            Some(controller)
+            Ok(controller)
         }
-        Err(reason) => {
-            warn!("nvme: not brought up: {reason}");
-            None
+        Err(failure) => {
+            warn!("nvme: not brought up: {}", failure.reason());
+            Err(failure)
         }
     }
 }

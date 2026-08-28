@@ -2693,26 +2693,33 @@ fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
     let mut context = context();
     let mut found = None;
     let mut seen = 0;
+    let mut retirement_clean = true;
     let _ = pci::enumerate(|function| {
         if found.is_some() || function.header.is_bridge() || pci::is_claimed(function.at) {
             return;
         }
         seen += 1;
-        let Ok(device) = pci::claim(&mut context, function.at) else {
+        let Ok(device) = pci::lease(&mut context, function.at) else {
             return;
         };
+        let mut io = None;
         for index in 0..pci::BARS {
             if let Some(window) = device.window(index)
                 && let pci_config::Bar::Io { port } = window.bar
                 && window.size > 0
             {
-                found = Some((port, window.size));
-                return;
+                io = Some((port, window.size));
+                break;
             }
+        }
+        if let Some((port, size)) = io {
+            found = Some((device, port, size));
+        } else {
+            retirement_clean &= device.release(&mut context).is_ok();
         }
     });
 
-    let Some((port, size)) = found else {
+    let Some((device, port, size)) = found else {
         return false;
     };
 
@@ -2721,6 +2728,24 @@ fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
     let last = port + (size as u16 - 1);
     let base_refused = wost::arch::current::port::claim::<u8>(port).is_none();
     let last_refused = wost::arch::current::port::claim::<u8>(last).is_none();
+
+    // Returning the unique lease must return both the BDF and every I/O span:
+    // reacquiring this same function exercises both registries. Commit the
+    // replacement so the original permanent-ownership property remains true.
+    let at = device.at();
+    retirement_clean &= device.release(&mut context).is_ok();
+    let reclaimed = match pci::lease(&mut context, at) {
+        Ok(reclaimed) => {
+            let same_window = (0..pci::BARS).any(|index| {
+                reclaimed.window(index).is_some_and(|window| {
+                    window.bar == pci_config::Bar::Io { port } && window.size == size
+                })
+            });
+            reclaimed.commit();
+            same_window
+        }
+        Err(_) => false,
+    };
 
     // And a port outside it is still available, so the refusal is about the
     // window and not about everything. A claim here is permanent, so this
@@ -2731,7 +2756,7 @@ fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
         .and_then(wost::arch::current::port::claim::<u8>)
         .is_some();
 
-    seen > 0 && base_refused && last_refused && outside
+    seen > 0 && base_refused && last_refused && retirement_clean && reclaimed && outside
 }
 
 /// A program that dies with work in flight has it ended before its ring goes.
@@ -6791,7 +6816,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 202;
+const EXPECTED_CHECKS: usize = 203;
 
 impl Report {
     const fn new() -> Self {
@@ -7011,6 +7036,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the controller was read rather than assumed",
         the_controller_was_read_rather_than_assumed(),
+    );
+    report.check(
+        "a later nvme controller survives an earlier failure",
+        crate::a_later_nvme_controller_survives_an_earlier_failure(),
     );
     report.check(
         "a failed bus master enable stops before nvme mapping",

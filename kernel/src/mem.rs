@@ -81,6 +81,26 @@ pub(crate) fn map_device(
     with_active_space(context, |space| space.map_device(physical, len))
 }
 
+/// Remove one transient device mapping after its access owner is consumed.
+pub(crate) fn unmap_device(
+    context: &mut ThreadContext,
+    region: paging::ReleasableDevice,
+) -> Option<Result<(), MapError>> {
+    with_active_space(context, |space| space.unmap_device(region))
+}
+
+/// Device extents currently owned by the running address space.
+#[cfg(feature = "selftest")]
+pub(crate) fn device_mappings(context: &mut ThreadContext) -> Option<usize> {
+    with_active_space(context, |space| space.device_mappings())
+}
+
+/// Next unused byte in the running address space's device window.
+#[cfg(feature = "selftest")]
+pub(crate) fn device_window_next(context: &mut ThreadContext) -> Option<u64> {
+    with_active_space(context, |space| space.device_window_next())
+}
+
 /// A live owned mapping made by a machine check.
 ///
 /// The fields are private and the value is not copyable: the only removal

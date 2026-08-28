@@ -177,7 +177,7 @@ impl Address {
     }
 }
 
-/// A bounded registry of permanently claimed PCI functions.
+/// A bounded registry of claimed PCI functions.
 ///
 /// The fallible preparation closure runs before the registry's commit point.
 /// This makes an unchanged registry on every probe and port-claim error a
@@ -193,7 +193,7 @@ impl<const N: usize> ClaimRegistry<N> {
         Self { slots: [None; N] }
     }
 
-    /// Prepare and permanently claim one function, or change nothing.
+    /// Prepare and claim one function, or change nothing.
     ///
     /// The address is canonicalized before duplicate lookup. `prepare` may do
     /// all fallible configuration and resource work; the registry records the
@@ -231,7 +231,21 @@ impl<const N: usize> ClaimRegistry<N> {
         self.slots.iter().flatten().any(|held| *held == at)
     }
 
-    /// Functions permanently recorded so far.
+    /// Release one function after its transient lease has retired.
+    ///
+    /// The kernel wrapper exposes this only by consuming the unique device
+    /// lease. Permanent driver claims never call it (D-199).
+    #[must_use = "a refused release leaves the function claimed"]
+    pub fn release(&mut self, at: Address) -> bool {
+        let at = at.function_base();
+        let Some(slot) = self.slots.iter_mut().find(|held| **held == Some(at)) else {
+            return false;
+        };
+        *slot = None;
+        true
+    }
+
+    /// Functions recorded so far.
     pub fn len(&self) -> usize {
         self.slots.iter().flatten().count()
     }
@@ -499,6 +513,13 @@ pub enum CommandAccess {
     Write(u16),
 }
 
+/// The exact command word a successful enablement replaced.
+///
+/// Kept opaque so a retiring device lease restores only state which the
+/// verified enable transaction actually observed (D-199).
+#[derive(Debug, PartialEq, Eq)]
+pub struct CommandState(u16);
+
 /// Why memory decode and bus mastering could not be verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -537,18 +558,18 @@ impl core::error::Error for EnableError {}
 /// rollback, and [`EnableError::Restore`] when rollback cannot be verified.
 pub fn enable_bus_master(
     mut access: impl FnMut(CommandAccess) -> Option<u32>,
-) -> Result<(), EnableError> {
+) -> Result<CommandState, EnableError> {
     let original = access(CommandAccess::Read).ok_or(EnableError::Access)? as u16;
     let required = command::MEMORY_SPACE | command::BUS_MASTER;
     if original & required == required {
-        return Ok(());
+        return Ok(CommandState(original));
     }
     let wanted = original | required;
 
     let failure = match access(CommandAccess::Write(wanted)) {
         None => EnableError::Access,
         Some(_) => match access(CommandAccess::Read) {
-            Some(bits) if bits as u16 & wanted == wanted => return Ok(()),
+            Some(bits) if bits as u16 & wanted == wanted => return Ok(CommandState(original)),
             Some(bits) => EnableError::Refused(bits as u16),
             None => EnableError::Access,
         },
@@ -557,6 +578,22 @@ pub fn enable_bus_master(
     let _ = access(CommandAccess::Write(original));
     match access(CommandAccess::Read) {
         Some(bits) if bits as u16 == original => Err(failure),
+        Some(_) | None => Err(EnableError::Restore),
+    }
+}
+
+/// Restore the exact command word captured by [`enable_bus_master`].
+///
+/// # Errors
+///
+/// [`EnableError::Restore`] unless the final readback equals the captured word.
+pub fn restore_command(
+    state: CommandState,
+    mut access: impl FnMut(CommandAccess) -> Option<u32>,
+) -> Result<(), EnableError> {
+    let _ = access(CommandAccess::Write(state.0));
+    match access(CommandAccess::Read) {
+        Some(bits) if bits as u16 == state.0 => Ok(()),
         Some(_) | None => Err(EnableError::Restore),
     }
 }
@@ -978,7 +1015,7 @@ mod tests {
         let wanted = original | command::MEMORY_SPACE | command::BUS_MASTER;
         let mut fake = FakeCommand::new(original, u16::MAX);
 
-        assert_eq!(enable_bus_master(|event| fake.access(event)), Ok(()));
+        let state = enable_bus_master(|event| fake.access(event)).expect("enabled");
         assert_eq!(fake.command, wanted);
         assert_eq!(
             fake.events(),
@@ -990,8 +1027,13 @@ mod tests {
         );
 
         let mut already = FakeCommand::new(wanted, u16::MAX);
-        assert_eq!(enable_bus_master(|event| already.access(event)), Ok(()));
+        let already_state = enable_bus_master(|event| already.access(event)).expect("enabled");
         assert_eq!(already.events(), &[Some(CommandAccess::Read)]);
+
+        restore_command(state, |event| fake.access(event)).expect("restored");
+        assert_eq!(fake.command, original);
+        restore_command(already_state, |event| already.access(event)).expect("restored");
+        assert_eq!(already.command, wanted);
     }
 
     /// A write is not success until the device reports every required bit.
@@ -1053,6 +1095,29 @@ mod tests {
             Err(EnableError::Restore)
         );
         assert_eq!(restore_read.command, original);
+    }
+
+    /// A successful lease retirement restores the captured word exactly.
+    #[test]
+    fn a_bus_master_lease_restores_the_exact_command_or_reports_uncertainty() {
+        const OTHER: u16 = 1 << 9;
+        let original = command::IO_SPACE | OTHER;
+        let mut restored = FakeCommand::new(original, u16::MAX);
+        let state = enable_bus_master(|event| restored.access(event)).expect("enabled");
+        assert_eq!(
+            restore_command(state, |event| restored.access(event)),
+            Ok(())
+        );
+        assert_eq!(restored.command, original);
+
+        let mut refused = FakeCommand::new(original, u16::MAX);
+        let state = enable_bus_master(|event| refused.access(event)).expect("enabled");
+        refused.writable = 0;
+        assert_eq!(
+            restore_command(state, |event| refused.access(event)),
+            Err(EnableError::Restore)
+        );
+        assert_ne!(refused.command, original);
     }
 
     /// An address is the bus, device, function and offset the manual gives.
@@ -1136,6 +1201,28 @@ mod tests {
             Err(RegistryError::Taken)
         );
         assert_eq!(registry.len(), 1, "duplicate refusal changed the holder");
+    }
+
+    /// A transient claim returns exactly its canonical function slot.
+    #[test]
+    fn a_claim_release_is_exact_and_makes_room_for_the_same_function() {
+        let first = Address::new(3, 4, 5, header::CLASS).expect("valid");
+        let second = Address::new(3, 4, 6, header::VENDOR).expect("valid");
+        let absent = Address::new(3, 4, 7, header::VENDOR).expect("valid");
+        let mut registry = ClaimRegistry::<2>::new();
+
+        assert_eq!(registry.claim(first, || Ok::<_, ()>(())), Ok(()));
+        assert_eq!(registry.claim(second, || Ok::<_, ()>(())), Ok(()));
+        assert!(!registry.release(absent));
+        assert_eq!(registry.len(), 2, "a refused release changed the registry");
+
+        assert!(registry.release(first.at(header::BAR0).expect("valid alias")));
+        assert!(!registry.is_claimed(first));
+        assert!(registry.is_claimed(second));
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.claim(first, || Ok::<_, ()>(0xA5)), Ok(0xA5));
+        assert!(!registry.release(absent));
+        assert_eq!(registry.len(), 2);
     }
 
     /// An address that cannot be encoded is refused, not truncated.

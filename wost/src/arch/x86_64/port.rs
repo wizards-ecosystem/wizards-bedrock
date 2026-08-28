@@ -10,10 +10,10 @@
 //! The bookkeeping is `port_space::PortSpace`, where it is host-tested; this
 //! module is the lock around it and the instructions underneath it.
 //!
-//! **A claim is permanent, and a caller that wants two must survive getting
-//! one.** [`PortBlock`] and [`Port`] have no `Drop` and the registry never
-//! releases — which is right for a driver that owns its registers for the life
-//! of the kernel, and is a trap for a caller claiming a set. Take two blocks
+//! **A fixed-driver claim is permanent, and a caller that wants two must
+//! survive getting one.** [`PortBlock`] and [`Port`] have no `Drop`, which is
+//! right for a driver that owns its registers for the life of the kernel, and
+//! is a trap for a caller claiming a set. Take two blocks
 //! and have the second refuse, and the first is claimed and stranded: nothing
 //! can ever claim it again, so whatever needed both can never be built, on
 //! this boot or any later attempt within it.
@@ -34,8 +34,8 @@ use port_space::PortSpace;
 use crate::panic::PanicToken;
 use crate::sync::SpinLock;
 
-/// Which ports are spoken for. Claims are permanent; a driver owns its
-/// registers for the life of the kernel.
+/// Which ports are spoken for. Fixed claims are permanent; only unique dynamic
+/// span capabilities can return a transient lease.
 static CLAIMED: SpinLock<PortSpace> = SpinLock::new(PortSpace::new());
 
 /// Record `len` ports from `number` as claimed, all or nothing.
@@ -109,11 +109,11 @@ pub fn claim_span(base: u16, len: usize) -> Option<PortSpan> {
     Some(PortSpan { base, len })
 }
 
-/// Claim several machine-described runs as one permanent transaction.
+/// Claim several machine-described runs as one transaction.
 ///
 /// A PCI function may decode several I/O BARs. Claiming them one at a time
-/// would strand the early runs if a later one were already owned, and a
-/// permanent registry has no release with which to repair that state.
+/// would strand the early runs if a later one were already owned. A transient
+/// owner may later return this exact set through [`release_spans`].
 ///
 /// `None`, with no run recorded, if the request is empty, has more than `N`
 /// spans, or any span is empty, overlapping, out of range, or already owned.
@@ -134,6 +134,26 @@ pub fn claim_spans<const N: usize>(spans: &[(u16, usize)]) -> Option<[Option<Por
         *slot = Some(PortSpan { base, len });
     }
     Some(claimed)
+}
+
+/// Return one transient device lease's dynamic spans, all or none.
+///
+/// The address-based bitmap operation stays behind the unique [`PortSpan`]
+/// values returned by [`claim_spans`]. Consuming the whole array prevents a
+/// stale safe access handle from surviving a successful release (D-199).
+///
+/// An empty array succeeds without touching the registry. False means the
+/// bookkeeping did not match the capabilities; every requested port remains
+/// reserved and the consumed handles are gone.
+#[must_use = "a refused release leaves every requested port reserved"]
+pub fn release_spans<const N: usize>(spans: [Option<PortSpan>; N]) -> bool {
+    let mut requested = [(0usize, 0usize); N];
+    let mut count = 0;
+    for span in spans.iter().flatten() {
+        requested[count] = (span.base as usize, span.len);
+        count += 1;
+    }
+    count == 0 || CLAIMED.lock_leaf().release_all(&requested[..count])
 }
 
 /// A claimed run of ports of a length read from the machine.
@@ -181,8 +201,8 @@ impl PortSpan {
     /// whatever else lives there.
     pub fn read<T: PortValue>(&mut self, offset: usize) -> T {
         let at = self.port_for::<T>(offset);
-        // SAFETY: `claim_span` reserved every port in the run and no claim is
-        // ever released, and the bound above puts this access inside it.
+        // SAFETY: this unique handle exists only while its reservation does,
+        // and the bound above puts this access inside it.
         unsafe { T::port_read(at) }
     }
 
