@@ -60,18 +60,114 @@ pub(crate) fn init(map: Result<MemoryMap, HandoffError>, direct: Result<DirectMa
 /// that; this is where the space lives afterwards.
 static SPACE: SpinLock<Option<AddressSpace>> = SpinLock::new(None);
 
-/// Run `f` against the kernel's live address space, if there is one.
+/// Run one operation owned by this module against the live address space.
 ///
-/// A token-bearing acquisition (D-85): `f` is arbitrary, so this is not a leaf,
-/// and the borrow means nothing that can block is reachable from inside it. The
-/// frame allocation a new table needs is a leaf underneath, which is exactly
-/// the nesting the two levels exist to make sound.
-///
-pub(crate) fn with_active_space<T>(
+/// Private because `AddressSpace` also carries reclaim and arbitrary unmap
+/// authority over the tables the CPU is using. Callers get only the operations
+/// below, while this token-bearing acquisition preserves D-85's lock order.
+fn with_active_space<T>(
     context: &mut ThreadContext,
     f: impl FnOnce(&mut AddressSpace) -> T,
 ) -> Option<T> {
     SPACE.lock(context).as_mut().map(f)
+}
+
+/// Map one physical device extent into the kernel's device window.
+pub(crate) fn map_device(
+    context: &mut ThreadContext,
+    physical: u64,
+    len: u64,
+) -> Option<Result<paging::DeviceMapping, MapError>> {
+    with_active_space(context, |space| space.map_device(physical, len))
+}
+
+/// A live owned mapping made by a machine check.
+///
+/// The fields are private and the value is not copyable: the only removal
+/// door below consumes exactly the mapping this module just created.
+#[cfg(feature = "selftest")]
+pub(crate) struct ActiveMapping {
+    base: u64,
+    len: u64,
+}
+
+/// Add an owned mapping to the running tables for a machine check.
+#[cfg(feature = "selftest")]
+pub(crate) fn map_owned_for_test(
+    context: &mut ThreadContext,
+    base: u64,
+    run: mm::Segment,
+    flags: Flags,
+) -> Option<Result<ActiveMapping, MapError>> {
+    let len = run.len();
+    with_active_space(context, |space| space.map_owned(base, run, flags))
+        .map(|result| result.map(|()| ActiveMapping { base, len }))
+}
+
+/// Add a user mapping to the running tables for the user-copy machine proof.
+#[cfg(feature = "selftest")]
+pub(crate) fn map_user_for_test(
+    context: &mut ThreadContext,
+    base: u64,
+    run: mm::USegment,
+    flags: Flags,
+) -> Option<Result<(), MapError>> {
+    with_active_space(context, |space| space.map_user(base, run, flags))
+}
+
+/// Map a guarded stack and retain the exact authority needed to remove it.
+#[cfg(feature = "selftest")]
+pub(crate) fn map_reclaimable_stack_for_test(
+    context: &mut ThreadContext,
+    layout: StackLayout,
+) -> Option<Result<(MappedStack, ActiveMapping), MapError>> {
+    let slot = layout.slot(0)?;
+    with_active_space(context, |space| space.map_stack(&slot)).map(|result| {
+        result.map(|stack| {
+            (
+                stack,
+                ActiveMapping {
+                    base: slot.stack_base(),
+                    len: slot.stack_len(),
+                },
+            )
+        })
+    })
+}
+
+/// Remove only the active mapping whose unforgeable value is consumed here.
+#[cfg(feature = "selftest")]
+pub(crate) fn unmap_for_test(
+    context: &mut ThreadContext,
+    mapping: ActiveMapping,
+) -> Option<Result<paging::Unmapped, MapError>> {
+    with_active_space(context, |space| space.unmap(mapping.base, mapping.len))
+}
+
+/// Exercise fixed invalid-unmap requests without exporting an address-taking door.
+#[cfg(feature = "selftest")]
+pub(crate) fn invalid_unmaps_are_refused(context: &mut ThreadContext) -> Option<bool> {
+    const HOLE: u64 = 0xffff_fd00_0004_0000;
+
+    let text = boot::sections().text.start;
+    let direct = mm::direct_map()?.virtual_address(x86_paging::LARGE_PAGE_SIZE)?;
+    with_active_space(context, |space| {
+        matches!(space.unmap(HOLE, FRAME_SIZE), Err(MapError::NotMapped(_)))
+            && matches!(
+                space.unmap(HOLE + 1, FRAME_SIZE),
+                Err(MapError::Misaligned(_))
+            )
+            && matches!(space.unmap(HOLE, 0), Err(MapError::Misaligned(_)))
+            && matches!(
+                space.unmap(HOLE & 0x0000_ffff_ffff_ffff, FRAME_SIZE),
+                Err(MapError::NonCanonical(_))
+            )
+            && matches!(space.unmap(text, FRAME_SIZE), Err(MapError::NotOwned(_)))
+            && matches!(
+                space.unmap(direct, FRAME_SIZE),
+                Err(MapError::Unsplittable(_))
+            )
+    })
 }
 
 /// Move the double-fault handler onto a guarded stack.
@@ -81,7 +177,7 @@ pub(crate) fn with_active_space<T>(
 /// is the half that can be fixed now — a region mapped after the switch, with
 /// the page below it deliberately absent, and the handler pointed at it (D-89).
 ///
-/// The first shipped caller of [`with_active_space`], and the reason D-86 is
+/// The first shipped live mapping, and the reason D-86 is
 /// load-bearing rather than a capability waiting for one.
 fn guard_the_fault_stack() -> Result<u64, MapError> {
     let layout = thread::fault_stack_layout().ok_or(MapError::OutOfMemory)?;

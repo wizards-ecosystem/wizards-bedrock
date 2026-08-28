@@ -18,8 +18,8 @@ admission reasons.
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
 are **not closed**. The current image has 194 QEMU machine checks. The current
-mutation registry has 93 entries, but the last recorded complete sweep covered
-64; the twenty-nine later mutations were broken individually. The current
+mutation registry has 94 entries, but the last recorded complete sweep covered
+64; the thirty later mutations were broken individually. The current
 194-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
@@ -64,7 +64,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 93 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 93 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
+| PW-001 | REQUIRED | P0 | The register contains 94 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 94 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
 | PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 194-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=194 failed=0` transcript, including WP, SMEP/SMAP/UMIP, compacted XSAVE, x2APIC, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
@@ -77,7 +77,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 |---|---|---|---|---|---|
 | PW-100 | DONE | P0 | Safe public `AddressSpace::map_shared` admitted that `Shared` could die while the mapping survived, leaving a user alias to recycled frames | D-185 makes the space retain a non-accessing allocation keepalive until proven reclaim | 2026-08-27 QEMU `a shared mapping keeps its frame` held the frame after the owner dropped and released it only after the mapping became unreachable; dropping the keepalive reddened that exact check |
 | PW-101 | DONE | P0 | `map_range` rollback could clear an identical mapping that existed before the failed call | D-185 preflights each transaction as wholly absent or wholly identical and refuses a mixed range before mutation | 2026-08-27 QEMU `a refused remap preserves every older entry` retained the identical prefix and conflicting leaf; ignoring the preflight reddened that exact check |
-| PW-102 | READY | P0 | `mem::with_active_space` gives safe kernel code unrestricted `&mut AddressSpace` over `Reach::Everywhere`, including reclaim/unmap doors for live kernel tables | Replace it with narrow operations/tokens whose types cannot reclaim or unmap the running kernel | Compile/source proof removes the broad door; machine checks cover every retained mapping operation and a mutation reopens the forbidden operation |
+| PW-102 | DONE | P0 | `mem::with_active_space` gave every safe kernel module unrestricted `&mut AddressSpace` over `Reach::Everywhere`, including reclaim and arbitrary unmap of the live tables | D-189 keeps the borrow private to `mem`; production exposes only guarded-stack and device mapping, while self-test removal consumes an unforgeable token for the exact mapping it created | 2026-08-27 QEMU retained all 194 mapping/device/stack/unmap checks; exact source proof `the running space has no broad safe borrow` passed, and exporting the private closure reddened that host test |
 | PW-103 | READY | P1 | Every failure after `AddressSpace::for_user` in `user::spawn` can abandon tables, mapped image/stack pages, shared mappings and later objects | Make never-run process construction transactional and fail-atomic | Inject failure at every construction edge; frames, tables, handles, arena commitments, channels, rings and thread slots return to baseline |
 | PW-104 | READY | P1 | A space records only 32 owned table frames and intentionally loses later ones; reclaim refusal/loss is weakly observable | Remove the fixed tracking loss or use an ownership structure that reclaims every table; make every refused cleanup visible | Build/reclaim a space beyond the old ceiling and require zero lost frames; repeated launch/exit and injected refusal keep all resource tallies steady |
 | PW-105 | DECIDE | P1 | Leaking a safe `SpinLockGuard` with `mem::forget` permanently strands interrupt/lock state; Rust cannot assume `Drop` runs | Choose a guard-hidden/closure, explicit critical-section token, or explicitly bounded accepted-liveness contract | ADR states the invariant; a compile/runtime witness distinguishes ordinary lock contention from deliberately leaked ownership |
@@ -233,7 +233,7 @@ PW-514 includes these exact stale-current-facing corrections still to make:
 ## Recommended execution order
 
 1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
-   PW-101, PW-200, PW-202 and PW-300 are closed by D-185 through D-188.
+   PW-101, PW-102, PW-200, PW-202 and PW-300 are closed by D-185 through D-189.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

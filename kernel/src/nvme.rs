@@ -198,10 +198,9 @@ pub(crate) fn bring_up(
 ) -> Result<Controller, BringUpError> {
     // Uncacheable, which `map_device` chooses: a register file mapped
     // write-back is a driver whose writes arrive when the cache feels like it.
-    let mapping: DeviceMapping =
-        mem::with_active_space(context, |space| space.map_device(base, len))
-            .ok_or(BringUpError::NotMapped)?
-            .map_err(|_| BringUpError::NotMapped)?;
+    let mapping: DeviceMapping = mem::map_device(context, base, len)
+        .ok_or(BringUpError::NotMapped)?
+        .map_err(|_| BringUpError::NotMapped)?;
     let window = mapping.address();
     let mut registers = mapping.claim().ok_or(BringUpError::NotClaimable)?;
 

@@ -346,9 +346,8 @@ fn a_mapping_added_after_the_switch_is_live() -> bool {
     // so it stays there for the life of the kernel — deliberately, and the
     // debt the next slice pays.
     let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-    let mapped =
-        mem::with_active_space(&mut context(), |space| space.map_owned(PROBE, run, wanted));
-    if !matches!(mapped, Some(Ok(()))) {
+    let mapped = mem::map_owned_for_test(&mut context(), PROBE, run, wanted);
+    if !matches!(mapped, Some(Ok(_))) {
         return false;
     }
 
@@ -1141,17 +1140,13 @@ fn boundary_probe() -> Option<(u64, u64)> {
     let mut context = context();
     // Read-only and executable, as a program's text is: the write refusal
     // below is about the leaf's own permission and needs a page that has it.
-    mem::with_active_space(&mut context, |space| {
-        space.map_user(CODE, code.into(), Flags::NONE)
-    })?
-    .ok()?;
-    mem::with_active_space(&mut context, |space| {
-        space.map_user(
-            STACK,
-            stack.into(),
-            Flags::WRITABLE.union(Flags::NO_EXECUTE),
-        )
-    })?
+    mem::map_user_for_test(&mut context, CODE, code.into(), Flags::NONE)?.ok()?;
+    mem::map_user_for_test(
+        &mut context,
+        STACK,
+        stack.into(),
+        Flags::WRITABLE.union(Flags::NO_EXECUTE),
+    )?
     .ok()?;
 
     *PROBE.lock_leaf() = Some((CODE, STACK));
@@ -5108,10 +5103,8 @@ fn a_refused_mapping_leaves_no_trace() -> bool {
     let Some(taken) = mm::allocate_contiguous(1, 1) else {
         return false;
     };
-    let placed = mem::with_active_space(&mut context(), |space| {
-        space.map_owned(blocker, taken, wanted)
-    });
-    if !matches!(placed, Some(Ok(()))) {
+    let placed = mem::map_owned_for_test(&mut context(), blocker, taken, wanted);
+    if !matches!(placed, Some(Ok(_))) {
         return false;
     }
 
@@ -5121,8 +5114,7 @@ fn a_refused_mapping_leaves_no_trace() -> bool {
     let Some(run) = mm::allocate_contiguous(2, 1) else {
         return false;
     };
-    let refused =
-        mem::with_active_space(&mut context(), |space| space.map_owned(BASE, run, wanted));
+    let refused = mem::map_owned_for_test(&mut context(), BASE, run, wanted);
 
     let rejected = matches!(refused, Some(Err(MapError::Conflict(address))) if address == blocker);
     let no_trace = paging::translate(BASE).is_none();
@@ -5235,11 +5227,9 @@ fn an_unmapped_range_returns_its_frames() -> bool {
     let physical = run.address();
 
     let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-    let mapped =
-        mem::with_active_space(&mut context(), |space| space.map_owned(PROBE, run, wanted));
-    if !matches!(mapped, Some(Ok(()))) {
+    let Some(Ok(mapping)) = mem::map_owned_for_test(&mut context(), PROBE, run, wanted) else {
         return false;
-    }
+    };
     let mapped_here = paging::translate(PROBE).map(|(frame, _)| frame) == Some(physical);
 
     // Counted *after* the mapping, so the page-table frames it may have taken
@@ -5247,9 +5237,7 @@ fn an_unmapped_range_returns_its_frames() -> bool {
     // the check depend on whether a previous one had built the same table.
     let before = mm::free_frames();
 
-    let Some(Ok(token)) = mem::with_active_space(&mut context(), |space| {
-        space.unmap(PROBE, PAGES * PAGE_SIZE)
-    }) else {
+    let Some(Ok(token)) = mem::unmap_for_test(&mut context(), mapping) else {
         return false;
     };
 
@@ -5276,40 +5264,7 @@ fn an_unmapped_range_returns_its_frames() -> bool {
 /// mapped in two-megabyte pages on purpose (D-45), splitting it is not offered,
 /// and the measurement in `010` §8 says keeping it that way is right.
 fn unmapping_refuses_what_it_does_not_own() -> bool {
-    /// Never mapped by anything.
-    const HOLE: u64 = 0xffff_fd00_0004_0000;
-
-    // The kernel's own text, at its linked address: mapped in four-kilobyte
-    // pages, and never the allocator's to hand back.
-    let text = boot::sections().text.start;
-
-    // And a direct-map address, which is mapped in *two-megabyte* pages on
-    // purpose (D-45). Each is a distinct refusal with a distinct reason, and
-    // an earlier version of this check accepted either from one address —
-    // which could not tell which mechanism had fired.
-    // Two megabytes up, not one: the direct map rounds small low regions out
-    // to four-kilobyte pages, so an address below the first aligned stretch is
-    // *not* in a large page and would test the wrong refusal. Probed rather
-    // than assumed.
-    let Some(direct) = mm::direct_map().and_then(|map| map.virtual_address(LARGE_PAGE_SIZE)) else {
-        return false;
-    };
-
-    mem::with_active_space(&mut context(), |space| {
-        matches!(space.unmap(HOLE, PAGE_SIZE), Err(MapError::NotMapped(_)))
-            && matches!(space.unmap(HOLE + 1, PAGE_SIZE), Err(MapError::Misaligned(_)))
-            && matches!(space.unmap(HOLE, 0), Err(MapError::Misaligned(_)))
-            // A low-half alias of a higher-half address walks the same tables
-            // once the top bits are masked, and the invalidation that followed
-            // would name an address `invlpg` ignores (D-94).
-            && matches!(
-                space.unmap(HOLE & 0x0000_ffff_ffff_ffff, PAGE_SIZE),
-                Err(MapError::NonCanonical(_))
-            )
-            && matches!(space.unmap(text, PAGE_SIZE), Err(MapError::NotOwned(_)))
-            && matches!(space.unmap(direct, PAGE_SIZE), Err(MapError::Unsplittable(_)))
-    })
-    .unwrap_or(false)
+    mem::invalid_unmaps_are_refused(&mut context()).unwrap_or(false)
 }
 
 /// A mapping cannot be silently re-pointed; an identical rewrite is the one
@@ -6013,10 +5968,7 @@ fn a_stack_stops_being_installed_when_it_is_unmapped() -> bool {
     else {
         return false;
     };
-    let Some(slot) = above.slot(0) else {
-        return false;
-    };
-    let Some(Ok(stack)) = mem::with_active_space(&mut context, |space| space.map_stack(&slot))
+    let Some(Ok((stack, mapping))) = mem::map_reclaimable_stack_for_test(&mut context, above)
     else {
         return false;
     };
@@ -6025,9 +5977,7 @@ fn a_stack_stops_being_installed_when_it_is_unmapped() -> bool {
 
     // Taken away underneath it. The value is untouched and still names the
     // running root, which is exactly what made the old answer wrong.
-    let unmapped = mem::with_active_space(&mut context, |space| {
-        space.unmap(slot.stack_base(), slot.stack_len())
-    });
+    let unmapped = mem::unmap_for_test(&mut context, mapping);
     let Some(Ok(taken)) = unmapped else {
         return false;
     };

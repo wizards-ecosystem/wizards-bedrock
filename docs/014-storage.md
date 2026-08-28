@@ -960,13 +960,13 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 194 |
-| Mutations | 93 registered; 64 in the last recorded full sweep, with 29 later entries broken individually |
+| Mutations | 94 registered; 64 in the last recorded full sweep, with 30 later entries broken individually |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-188 |
+| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-189 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but that proves registration rather than a current full
-sweep. D-184's register carries the 93-entry run. A number restated in prose can
+sweep. D-184's register carries the 94-entry run. A number restated in prose can
 disagree with itself — which the per-slice lines above did, in seven places, and
 which is why they now say what the gate said rather than what was expected of
 it (D-175). The host-test count is deliberately absent: it changes with every

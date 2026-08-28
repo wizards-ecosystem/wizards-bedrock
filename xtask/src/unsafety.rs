@@ -197,6 +197,24 @@ mod tests {
         assert_eq!((lines, blocks), (0, 0), "kernel/ grew an unsafe block");
     }
 
+    /// Safe kernel modules cannot borrow the running page tables wholesale.
+    #[test]
+    fn the_running_space_has_no_broad_safe_borrow() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let source = std::fs::read_to_string(root.join("kernel/src/mem.rs")).expect("mem.rs");
+
+        assert!(
+            source.contains("\nfn with_active_space<T>("),
+            "the private address-space authority moved; review its new boundary"
+        );
+        assert!(
+            !source.contains("\npub(crate) fn with_active_space<T>("),
+            "safe kernel modules can borrow the running AddressSpace wholesale"
+        );
+    }
+
     /// And every `libs/` crate, which carry `#![forbid(unsafe_code)]`.
     /// Every `libs/` crate still forbids unsafe, and `kernel/` still denies it.
     ///

@@ -1161,6 +1161,18 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a command timeout settles dma before returning",
         reddens: Caught::Check("an nvme timeout quiesces before dma memory returns"),
     },
+    // Re-export the private closure that can hand any safe kernel module the
+    // running `AddressSpace`, including its reclaim and arbitrary-unmap doors.
+    Mutation {
+        file: "kernel/src/mem.rs",
+        find: "fn with_active_space<T>(",
+        replace: "pub(crate) fn with_active_space<T>(",
+        breaks: "the running address space has no broad safe borrow",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "unsafety::tests::the_running_space_has_no_broad_safe_borrow",
+        },
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.
@@ -1381,6 +1393,24 @@ fn host_test_reports(paths: &Paths, package: &str, name: &str) -> Result<bool> {
 mod tests {
     use super::*;
 
+    fn rust_sources_contain(directory: &std::path::Path, needle: &str) -> bool {
+        std::fs::read_dir(directory)
+            .unwrap_or_else(|_| panic!("reading {}", directory.display()))
+            .flatten()
+            .any(|entry| {
+                let path = entry.path();
+                if path.is_dir() {
+                    rust_sources_contain(&path, needle)
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    std::fs::read_to_string(&path)
+                        .unwrap_or_else(|_| panic!("reading {}", path.display()))
+                        .contains(needle)
+                } else {
+                    false
+                }
+            })
+    }
+
     /// Every mutation still names something that exists, exactly once.
     ///
     /// The cheap tier, and the one that matters more: a pattern that has
@@ -1430,8 +1460,8 @@ mod tests {
     /// mutation whose target check was renamed or deleted still boots, still
     /// reddens *something* on the way past, and still prints "caught" — so the
     /// expensive tier cannot see this, and the sweep costs a boot apiece.
-    /// Matching the name against `selftest.rs`'s own `report.check` calls
-    /// costs milliseconds and catches it the moment the rename lands.
+    /// Matching the name against `selftest.rs` or the named host package's
+    /// Rust sources costs milliseconds and catches it when the rename lands.
     #[test]
     fn every_named_check_exists() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1457,13 +1487,16 @@ mod tests {
                         mutation.breaks
                     );
                     let function = name.rsplit("::").next().expect("a test name");
-                    let source = std::fs::read_to_string(root.join(mutation.file))
-                        .unwrap_or_else(|_| panic!("reading {}", mutation.file));
+                    let package = if package == "xtask" {
+                        root.join(package)
+                    } else {
+                        root.join("libs").join(package)
+                    };
                     assert!(
-                        source.contains(&format!("fn {function}(")),
-                        "`{}` names host test `{name}`, which `{}` does not have",
+                        rust_sources_contain(&package, &format!("fn {function}(")),
+                        "`{}` names host test `{name}`, which package `{}` does not have",
                         mutation.breaks,
-                        mutation.file
+                        package.display()
                     );
                 }
                 Caught::Panic(_) => {}
