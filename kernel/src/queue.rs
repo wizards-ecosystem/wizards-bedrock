@@ -20,6 +20,8 @@
 //! kernel is about to write a completion into.
 
 use alloc::sync::Arc;
+#[cfg(feature = "selftest")]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use handle_space::Rights;
@@ -329,6 +331,8 @@ struct Pending {
     token: u32,
     /// When it becomes due, in the clock's nanoseconds.
     deadline_ns: u64,
+    /// A terminal path owns this entry while posting its completion.
+    settling: bool,
 }
 
 /// A submission/completion ring bound to one process.
@@ -352,6 +356,11 @@ pub(crate) struct Queue {
     /// done without reading a number ring 3 can write (D-115's lesson applied
     /// where the answer matters most: the program's own tally is in the page).
     served: AtomicUsize,
+    /// Terminal completions refused before changing accounting.
+    settlement_refusals: AtomicUsize,
+    /// Make one terminal post see the missing-reservation path.
+    #[cfg(feature = "selftest")]
+    refuse_next_post: AtomicBool,
 }
 
 static LIVE_QUEUES: AtomicUsize = AtomicUsize::new(0);
@@ -389,6 +398,9 @@ impl Queue {
             waiters: WaitQueue::new(),
             pending: SpinLock::new([None; SUBMISSIONS as usize]),
             served: AtomicUsize::new(0),
+            settlement_refusals: AtomicUsize::new(0),
+            #[cfg(feature = "selftest")]
+            refuse_next_post: AtomicBool::new(false),
         })
     }
 
@@ -717,11 +729,51 @@ impl Queue {
                 *slot = Some(Pending {
                     token: submission.token,
                     deadline_ns,
+                    settling: false,
                 });
                 return Some(deadline_ns);
             }
         }
         None
+    }
+
+    /// Mark one matching operation as being terminally reported.
+    ///
+    /// The entry remains in its slot until [`settle_pending`](Self::settle_pending)
+    /// posts successfully. Other terminal paths skip the marker, so a refusal
+    /// can restore the live state without racing a second completion (D-192).
+    fn begin_settlement(&self, wanted: impl Fn(Pending) -> bool) -> Option<(usize, Pending)> {
+        let mut pending = self.pending.lock_leaf();
+        for (index, slot) in pending.iter_mut().enumerate() {
+            let Some(entry) = slot.as_mut() else {
+                continue;
+            };
+            if !entry.settling && wanted(*entry) {
+                entry.settling = true;
+                return Some((index, *entry));
+            }
+        }
+        None
+    }
+
+    /// Post one pending operation's terminal record, or leave it live.
+    fn settle_pending(&self, index: usize, entry: Pending, status: u32, value: u64) -> bool {
+        let posted = self.post(Completion {
+            token: entry.token,
+            status,
+            value,
+        });
+        let mut pending = self.pending.lock_leaf();
+        if posted {
+            pending[index] = None;
+        } else {
+            pending[index] = Some(Pending {
+                settling: false,
+                ..entry
+            });
+            self.settlement_refusals.fetch_add(1, Ordering::AcqRel);
+        }
+        posted
     }
 
     /// End an operation early, giving it the completion it was owed.
@@ -737,32 +789,13 @@ impl Queue {
         let Ok(target) = u32::try_from(submission.argument) else {
             return refuse(submission.token, STATUS_NOT_FOUND);
         };
-        // Taken and dropped before `post`, which takes two more leaves. A
-        // guard held across it is the one thing `lock_leaf` forbids (D-121).
-        let found = {
-            let mut pending = self.pending.lock_leaf();
-            let mut taken = None;
-            for slot in pending.iter_mut() {
-                if slot.is_some_and(|entry| entry.token == target) {
-                    taken = slot.take();
-                    break;
-                }
-            }
-            taken
-        };
-
-        let Some(entry) = found else {
+        let Some((index, entry)) = self.begin_settlement(|entry| entry.token == target) else {
             return refuse(submission.token, STATUS_NOT_FOUND);
         };
-        if !self.post(Completion {
-            token: entry.token,
-            status: STATUS_CANCELLED,
-            value: 0,
-        }) {
-            // Unreachable for the reason `serve`'s twin is: the reservation
-            // was taken when the operation was admitted and nothing has spent
-            // it. Reaching it has consumed the operation with no completion.
-            debug_assert!(false, "a cancelled operation had no reserved slot");
+        if !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
+            // The cancellation itself still gets the completion reserved for
+            // it, while the target remains live and may be retried (D-192).
+            return refuse(submission.token, STATUS_NO_ROOM);
         }
         self.served.fetch_add(1, Ordering::Release);
         Completion {
@@ -779,27 +812,9 @@ impl Queue {
     /// is woken finds the entry already in its queue.
     pub(crate) fn expire(&self, now_ns: u64) -> usize {
         let mut due = 0;
-        loop {
-            let ready = {
-                let mut pending = self.pending.lock_leaf();
-                let mut taken = None;
-                for slot in pending.iter_mut() {
-                    if slot.is_some_and(|entry| entry.deadline_ns <= now_ns) {
-                        taken = slot.take();
-                        break;
-                    }
-                }
-                taken
-            };
-            let Some(entry) = ready else {
-                break;
-            };
-            if !self.post(Completion {
-                token: entry.token,
-                status: STATUS_OK,
-                value: entry.deadline_ns,
-            }) {
-                debug_assert!(false, "an expired operation had no reserved slot");
+        while let Some((index, entry)) = self.begin_settlement(|entry| entry.deadline_ns <= now_ns)
+        {
+            if !self.settle_pending(index, entry, STATUS_OK, entry.deadline_ns) {
                 break;
             }
             due += 1;
@@ -819,8 +834,9 @@ impl Queue {
     /// the symptom was mount points staying busy after the process had exited.
     /// So this does not mark anything abandoned and leave: it ends each
     /// operation and posts the completion it was owed, into pages the zombie
-    /// still holds, and when it returns there is nothing left that could
-    /// touch them.
+    /// still holds. It stops if a terminal post refuses; the caller observes
+    /// that through [`is_quiet`](Self::is_quiet) and retains the owner for a
+    /// later retry (D-192).
     ///
     /// The completions go into a ring nobody will read, and that is not waste.
     /// Posting them is what spends the reservations, and a reservation that is
@@ -829,33 +845,14 @@ impl Queue {
     /// will ask.
     ///
     /// **No grace period and no refcount.** Every operation this kernel has
-    /// today ends synchronously, so one sweep is the whole wait. An operation
-    /// that could not — a read the device has already been told to do — is
-    /// slice 5's problem, and the shape it must fit is this one: the sweep
-    /// ends when [`is_quiet`](Self::is_quiet) is true and not before.
+    /// today ends synchronously, so a successful sweep is the whole wait. An
+    /// operation that could not — a read the device has already been told to
+    /// do — is slice 5's problem, and the shape it must fit is this one: the
+    /// sweep ends when [`is_quiet`](Self::is_quiet) is true and not before.
     pub(crate) fn abandon(&self) -> usize {
         let mut ended = 0;
-        loop {
-            let taken = {
-                let mut pending = self.pending.lock_leaf();
-                let mut found = None;
-                for slot in pending.iter_mut() {
-                    if slot.is_some() {
-                        found = slot.take();
-                        break;
-                    }
-                }
-                found
-            };
-            let Some(entry) = taken else {
-                break;
-            };
-            if !self.post(Completion {
-                token: entry.token,
-                status: STATUS_CANCELLED,
-                value: 0,
-            }) {
-                debug_assert!(false, "an abandoned operation had no reserved slot");
+        while let Some((index, entry)) = self.begin_settlement(|_| true) {
+            if !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
                 break;
             }
             ended += 1;
@@ -976,9 +973,18 @@ impl Queue {
         })
     }
 
-    /// Post one completion. `false` only if the reservation was not there,
-    /// which the model says cannot happen.
+    /// Post one completion.
+    ///
+    /// `false` means no reservation accounting changed. The model says the
+    /// production path cannot reach it; checks inject it before the state
+    /// transition to prove every caller handles the refusal. A shared-page
+    /// bounds failure after that transition is fatal instead: retrying an
+    /// already-spent reservation would duplicate accounting (D-192).
     fn post(&self, completion: Completion) -> bool {
+        #[cfg(feature = "selftest")]
+        if self.refuse_next_post.swap(false, Ordering::AcqRel) {
+            return false;
+        }
         let Some(slot) = self.state.lock_leaf().complete() else {
             return false;
         };
@@ -995,9 +1001,10 @@ impl Queue {
 
         let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;
         let mut shared = self.shared.lock_leaf();
-        if !shared.write_at(at, &bytes) {
-            return false;
-        }
+        assert!(
+            shared.write_at(at, &bytes),
+            "an internal completion slot was outside the ring pages"
+        );
         // The entry is in the page before the tail says so: a program that
         // sees the tail move and reads the slot finds what was written, not
         // what was there before — and `complete` already advanced the tail, so
@@ -1047,6 +1054,18 @@ impl Queue {
     #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
     pub(crate) fn is_consistent(&self) -> bool {
         self.state.lock_leaf().is_consistent()
+    }
+
+    /// Refuse the next completion before it changes the reservation account.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn refuse_next_post_for_test(&self) {
+        self.refuse_next_post.store(true, Ordering::Release);
+    }
+
+    /// Terminal posts refused while their operations remained live.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn settlement_refusals_for_test(&self) -> usize {
+        self.settlement_refusals.load(Ordering::Acquire)
     }
 
     /// Write a submission into the shared page as a program would.

@@ -2777,6 +2777,113 @@ fn work_in_flight_is_ended_before_the_ring_is_released() -> bool {
         && queue.abandon() == 0
 }
 
+/// A terminal-completion refusal leaves the operation and every owner intact.
+///
+/// Cancellation, expiry and process retirement all take the same settlement
+/// edge. The injected refusal arrives before reservation accounting changes;
+/// each path must report or retain the work, and a retry must post its one
+/// terminal completion rather than losing or duplicating it (D-192).
+fn a_refused_settlement_retains_every_owner() -> bool {
+    if !crate::time::is_calibrated() {
+        return false;
+    }
+
+    let Some(cancelled) = queue::Queue::new() else {
+        return false;
+    };
+    let cancel_table = shared_handle_table_or_false!(8);
+    cancelled.post_submission_for_test(
+        0,
+        queue::Submission::simple(queue::Opcode::Timer, 0xCA11, u64::MAX),
+    );
+    cancelled.publish_tail_for_test(1);
+    if cancelled.serve(&cancel_table) != 0 || cancelled.in_flight() != 1 {
+        return false;
+    }
+    cancelled.post_submission_for_test(
+        1,
+        queue::Submission::simple(queue::Opcode::Cancel, 0xCA12, 0xCA11),
+    );
+    cancelled.publish_tail_for_test(2);
+    cancelled.refuse_next_post_for_test();
+    let cancel_refused = cancelled.serve(&cancel_table) == 1
+        && cancelled.read_completion(0).token == 0xCA12
+        && cancelled.read_completion(0).status == queue::STATUS_NO_ROOM
+        && cancelled.in_flight() == 1
+        && cancelled.outstanding() == 1
+        && cancelled.settlement_refusals_for_test() == 1;
+    let cancel_retried = cancelled.abandon() == 1
+        && cancelled.read_completion(1).token == 0xCA11
+        && cancelled.read_completion(1).status == queue::STATUS_CANCELLED
+        && cancelled.is_quiet()
+        && cancelled.outstanding() == 0;
+
+    let Some(expired) = queue::Queue::new() else {
+        return false;
+    };
+    let expire_table = shared_handle_table_or_false!(8);
+    expired.post_submission_for_test(
+        0,
+        queue::Submission::simple(queue::Opcode::Timer, 0xE771, u64::MAX),
+    );
+    expired.publish_tail_for_test(1);
+    if expired.serve(&expire_table) != 0 || expired.in_flight() != 1 {
+        return false;
+    }
+    expired.refuse_next_post_for_test();
+    let expiry_refused = expired.expire(u64::MAX) == 0
+        && expired.in_flight() == 1
+        && expired.outstanding() == 1
+        && expired.settlement_refusals_for_test() == 1;
+    let expiry_retried = expired.expire(u64::MAX) == 1
+        && expired.expire(u64::MAX) == 0
+        && expired.read_completion(0).token == 0xE771
+        && expired.read_completion(0).status == queue::STATUS_OK
+        && expired.is_quiet()
+        && expired.outstanding() == 0;
+
+    while user::collect().is_some() {}
+    let refusals_before = user::refused_ring_reclaims();
+    let retirements_before = thread::retirements();
+    let Ok(spawned) = user::run_faulting() else {
+        return false;
+    };
+    let Some((ring, table)) = user::authority_for_test(spawned.slot) else {
+        return false;
+    };
+    ring.post_submission_for_test(
+        0,
+        queue::Submission::simple(queue::Opcode::Timer, 0xDEAD, u64::MAX),
+    );
+    ring.publish_tail_for_test(1);
+    if ring.serve(&table) != 0 || ring.in_flight() != 1 {
+        return false;
+    }
+    ring.refuse_next_post_for_test();
+    if !runs_until(2000, || thread::retirements() > retirements_before) || !user::has_zombies() {
+        return false;
+    }
+    let first_refused = user::collect().is_none()
+        && user::has_zombies()
+        && user::refused_ring_reclaims() == refusals_before + 1
+        && ring.in_flight() == 1
+        && ring.outstanding() == 1
+        && ring.settlement_refusals_for_test() == 1;
+    let collected = user::collect().is_some_and(|reclaimed| reclaimed.abandoned == 1)
+        && !user::has_zombies()
+        && ring.read_completion(0).token == 0xDEAD
+        && ring.read_completion(0).status == queue::STATUS_CANCELLED
+        && ring.is_quiet()
+        && ring.outstanding() == 0;
+
+    cancel_refused
+        && cancel_retried
+        && expiry_refused
+        && expiry_retried
+        && first_refused
+        && collected
+}
+
 /// A promise outlives the program that made it, and gives its slot back.
 ///
 /// The third of D-151's three terminal paths, and the one slice 1 could not
@@ -6634,7 +6741,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 196;
+const EXPECTED_CHECKS: usize = 197;
 
 impl Report {
     const fn new() -> Self {
@@ -6878,6 +6985,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "work in flight is ended before the ring is released",
         work_in_flight_is_ended_before_the_ring_is_released(),
+    );
+    report.check(
+        "a refused settlement retains every owner",
+        a_refused_settlement_retains_every_owner(),
     );
     report.check(
         "a promise outlives the program that made it",

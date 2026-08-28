@@ -466,8 +466,8 @@ pub const MUTATIONS: &[Mutation] = &[
     // *before* the deadline can tell the two kernels apart.
     Mutation {
         file: "kernel/src/queue.rs",
-        find: "                    if slot.is_some_and(|entry| entry.deadline_ns <= now_ns) {",
-        replace: "                    if slot.is_some() {",
+        find: "self.begin_settlement(|entry| entry.deadline_ns <= now_ns)",
+        replace: "self.begin_settlement(|_| true)",
         breaks: "an operation is not due before its deadline",
         reddens: Caught::Check("an operation completes after its deadline and only once"),
     },
@@ -477,12 +477,10 @@ pub const MUTATIONS: &[Mutation] = &[
     // substitute.
     Mutation {
         file: "kernel/src/queue.rs",
-        find: "        if !self.post(Completion {
-            token: entry.token,
-            status: STATUS_CANCELLED,
-            value: 0,
-        }) {",
-        replace: "        if false {",
+        find: "        if !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
+            // The cancellation itself still gets the completion reserved for",
+        replace: "        if false && !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
+            // The cancellation itself still gets the completion reserved for",
         breaks: "a cancelled operation still gets its own completion",
         reddens: Caught::Check("a cancelled operation and its cancellation complete separately"),
     },
@@ -533,16 +531,13 @@ pub const MUTATIONS: &[Mutation] = &[
     // which is invisible until something asks (D-167).
     Mutation {
         file: "kernel/src/queue.rs",
-        find: "            if !self.post(Completion {
-                token: entry.token,
-                status: STATUS_CANCELLED,
-                value: 0,
-            }) {
-                debug_assert!(false, \"an abandoned operation had no reserved slot\");
+        find: "            if !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
                 break;
             }
             ended += 1;",
-        replace: "            ended += 1;",
+        replace: "            let _ = entry;
+            self.pending.lock_leaf()[index] = None;
+            ended += 1;",
         breaks: "a dead program's work is finished, not forgotten",
         reddens: Caught::Check("work in flight is ended before the ring is released"),
     },
@@ -1222,6 +1217,16 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "    if !arrange(slot) {\n        let _ = task::retire(slot);\n        return Err(SpawnError::Arrangement);\n    }",
         breaks: "a refused thread arrangement releases its scheduler slot",
         reddens: Caught::Check("every refused spawn returns every resource"),
+    },
+    // Consume a pending operation when its reserved terminal post refuses.
+    // The accounting still says one completion is owed, so only a witness
+    // that inspects ownership before retrying can distinguish the loss.
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "            pending[index] = Some(Pending {\n                settling: false,\n                ..entry\n            });\n            self.settlement_refusals.fetch_add(1, Ordering::AcqRel);",
+        replace: "            pending[index] = None;\n            self.settlement_refusals.fetch_add(1, Ordering::AcqRel);",
+        breaks: "a refused terminal post retains its pending operation",
+        reddens: Caught::Check("a refused settlement retains every owner"),
     },
 ];
 

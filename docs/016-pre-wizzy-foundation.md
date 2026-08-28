@@ -17,10 +17,10 @@ admission reasons.
 ## What completion means
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
-are **not closed**. The current image has 196 QEMU machine checks. The current
-mutation registry has 99 entries, but the last recorded complete sweep covered
-64; the thirty-five later mutations were broken individually. The current
-196-check image has not completed its human VMware round. The compiler gate in
+are **not closed**. The current image has 197 QEMU machine checks. The current
+mutation registry has 100 entries, but the last recorded complete sweep covered
+64; the thirty-six later mutations were broken individually. The current
+197-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
 The kernel is ready for the first real Wizzy integration only when:
@@ -64,9 +64,9 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 99 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 99 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
+| PW-001 | REQUIRED | P0 | The register contains 100 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 100 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
-| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 196-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=196 failed=0` transcript, including WP, SMEP/SMAP/UMIP, compacted XSAVE, x2APIC, storage and input evidence |
+| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 197-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=197 failed=0` transcript, including WP, SMEP/SMAP/UMIP, compacted XSAVE, x2APIC, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
 | PW-005 | REQUIRED | P1 | The ordinary gate must describe the same commit as the exceptional evidence | Run `cargo xtask ci` after every register-closing change and once after the evidence-only close | Release/debug self-tests, shipped liveness and degraded boot all pass on the recorded commit |
 | PW-006 | REQUIRED | P1 | D-181 and D-182 were post-audit corrections, and this audit found deeper safe/device boundaries | Re-attack hostile inputs, cleanup paths, safe `wost` callers and release-only invariant failures after the P0/P1 fixes | Phase-close ADR links the audit, every break-test, full evidence manifest and remaining trigger-only rows; no historical evidence is invented |
@@ -81,7 +81,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-103 | DONE | P1 | Every failure after `AddressSpace::for_user` in `user::spawn` could abandon tables, mapped image/stack pages, shared mappings and later objects | D-191 keeps the never-run process in one rollback transaction through reserved-slot commit and preserves reusable task-stack identity on abort | 2026-08-27 QEMU `every refused spawn returns every resource` injected all fourteen space/image/stack/shared/object/handle/thread/arrangement edges twice and restored exact frame, table, heap, arena, handle, channel, ring, slot and process-record baselines; skipping table reclaim or arrangement's scheduler release reddened only that check, while restoring stack erasure reproduced the exact pre-verdict fault |
 | PW-104 | DONE | P1 | A space recorded only 32 owned table frames and intentionally lost later ones; `Option` let the process collector report a refused table cleanup as zero returned | D-190 grows table ownership fallibly before taking each frame, returns every recorded frame, and makes refusal a typed result which process collection logs and counts | 2026-08-27 QEMU `a large space returns every table frame` returned all 37 frames from 34 sparse mappings; the controlled bound-space refusal changed no frame tally, forty launch/exit cycles added no refusal, and restoring the 32-entry ceiling reddened only the large-space check |
 | PW-105 | DECIDE | P1 | Leaking a safe `SpinLockGuard` with `mem::forget` permanently strands interrupt/lock state; Rust cannot assume `Drop` runs | Choose a guard-hidden/closure, explicit critical-section token, or explicitly bounded accepted-liveness contract | ADR states the invariant; a compile/runtime witness distinguishes ordinary lock contention from deliberately leaked ownership |
-| PW-106 | READY | P1 | Queue teardown consumes a pending operation and only `debug_assert!`s if its reserved completion cannot be posted | Make invariant failure impossible by construction or fatal/observable in release without losing the operation | Every admitted operation ends exactly once under cancellation, retirement and injected accounting corruption; release boot notices the mutation |
+| PW-106 | DONE | P1 | Queue teardown consumed a pending operation and only `debug_assert!`ed if its reserved completion could not be posted | D-192 retains a settling operation until its terminal record posts and retains the complete zombie until its ring is quiet | 2026-08-27 release QEMU injected refusal through cancellation, expiry and a real faulting process; pending ownership and reservations remained live, cancellation reported pressure, the first collection retained the zombie and retry posted exactly once before reclaim; deleting restoration reddened only `a refused settlement retains every owner` with 196/197 |
 | PW-107 | READY | P1 | The guarded boot-stack allocation may fail and the kernel still launches ring 3 on the unguarded bootloader stack | Fail closed for user launch or establish an equally strong fallback | Forced allocation failure remains diagnosable and controllable but cannot enter untrusted code without the promised guard |
 | PW-108 | VERIFY | P2 | The copied boot memory map silently caps evidence at 128 regions | Decide refusal, checked coalescing, or dynamic bounded storage rather than silently omitting firmware regions | Synthetic maps above and around the limit prove allocator, direct-map and exclusion decisions cover the same complete input |
 | PW-109 | DONE | P2 | The ELF entry was rejected safely at the final crossing but only after allocation, while `PLACED` was global last-load state | D-191 validates entry-in-executable-load during preflight and returns immutable placements in `LoadedImage` | 2026-08-27 QEMU refused an entry outside executable program memory with no frame-count change, reclaimed every negative-test scratch space and retained two shifted successful loads' independent placement records; bypassing entry preflight reddened only the loader check |
@@ -233,7 +233,7 @@ PW-514 includes these exact stale-current-facing corrections still to make:
 ## Recommended execution order
 
 1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
-   PW-101, PW-102, PW-103, PW-104, PW-109, PW-200, PW-202 and PW-300 are closed by D-185 through D-191.
+   PW-101, PW-102, PW-103, PW-104, PW-106, PW-109, PW-200, PW-202 and PW-300 are closed by D-185 through D-192.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

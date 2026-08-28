@@ -613,6 +613,17 @@ pub(crate) fn ring_shape_of(slot: usize) -> Option<(u32, u32, u32)> {
     Some(ring.shape())
 }
 
+/// A program's ring and authority table, for lifecycle checks.
+#[cfg(feature = "selftest")]
+pub(crate) fn authority_for_test(
+    slot: usize,
+) -> Option<(
+    alloc::sync::Arc<queue::Queue>,
+    alloc::sync::Arc<HandleTable>,
+)> {
+    authority_of(slot)
+}
+
 /// A completed construction step after which a check may force refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
@@ -898,8 +909,11 @@ pub(crate) fn spawn_refusing(edge: SpawnEdge) -> Result<(), SpawnError> {
 /// 4. **The tables**, last, because everything above reached memory through
 ///    them.
 ///
+/// The caller has already settled the ring while its zombie still owned every
+/// page and has observed it quiet (D-192).
+///
 /// Returns what went back, for the check that asks whether it did.
-fn reclaim(bootstrap: Bootstrap) -> Reclaimed {
+fn reclaim(bootstrap: Bootstrap, abandoned: usize) -> Reclaimed {
     let Bootstrap {
         mut space,
         regions,
@@ -919,22 +933,6 @@ fn reclaim(bootstrap: Bootstrap) -> Reclaimed {
             drop(returned);
         }
     }
-
-    // **Before the ring's pages go anywhere.** An operation still in flight is
-    // an operation that could still write a completion, and the page it would
-    // write into is about to become the allocator's. So the ring is quietened
-    // first: every outstanding operation is ended and given the completion it
-    // was owed, into memory that still exists (D-167).
-    //
-    // A wait, not a signal — `012` §10, and io_uring's six years of cancelling
-    // out of line with mount points staying busy afterwards. When `abandon`
-    // returns there is nothing left that could touch these pages, which is why
-    // the drop below is safe rather than merely usual.
-    let abandoned = ring.abandon();
-    debug_assert!(
-        ring.is_quiet(),
-        "a zombie's ring still has work in flight after being abandoned"
-    );
 
     // Before the tables: dropping an object can reach the frame allocator, and
     // doing that after the space is gone would be fine — doing it *first* is
@@ -993,6 +991,7 @@ static ZOMBIES: SpinLock<[Option<Bootstrap>; thread::CAPACITY]> =
 static RECLAIMED_PAGES: AtomicUsize = AtomicUsize::new(0);
 static RECLAIMED_TABLES: AtomicUsize = AtomicUsize::new(0);
 static REFUSED_TABLE_RECLAIMS: AtomicUsize = AtomicUsize::new(0);
+static REFUSED_RING_RECLAIMS: AtomicUsize = AtomicUsize::new(0);
 static ROLLED_BACK_PAGES: AtomicUsize = AtomicUsize::new(0);
 static ROLLED_BACK_TABLES: AtomicUsize = AtomicUsize::new(0);
 
@@ -1070,15 +1069,41 @@ pub(crate) fn orphan(slot: usize) {
 ///
 /// `None` if nothing was waiting.
 pub(crate) fn collect() -> Option<Reclaimed> {
+    // Keep the owner in the zombie table until its ring is quiet. A terminal
+    // completion refusal therefore leaves every page, table and object owned
+    // for a later retry instead of turning a bookkeeping fault into reuse
+    // beneath live work (D-192).
+    let found = {
+        let zombies = ZOMBIES.lock_leaf();
+        zombies.iter().enumerate().find_map(|(slot, bootstrap)| {
+            bootstrap
+                .as_ref()
+                .map(|bootstrap| (slot, alloc::sync::Arc::clone(&bootstrap.ring)))
+        })
+    };
+    let (slot, ring) = found?;
+
+    // **Before the ring's pages go anywhere.** A wait, not a signal: every
+    // outstanding operation is given its terminal completion while the zombie
+    // still owns the pages it may write (D-167, D-192).
+    let abandoned = ring.abandon();
+    if !ring.is_quiet() {
+        warn!("user: ring cleanup refused; the zombie remains owned");
+        REFUSED_RING_RECLAIMS.fetch_add(1, Ordering::AcqRel);
+        return None;
+    }
     // Taken out under the guard and reclaimed outside it: `reclaim` frees
     // frames, which reaches the allocator, and this lock is a leaf (D-85).
-    let found = {
+    let bootstrap = {
         let mut zombies = ZOMBIES.lock_leaf();
-        zombies.iter_mut().find_map(Option::take)
+        let current = zombies.get_mut(slot)?.as_ref()?;
+        if !alloc::sync::Arc::ptr_eq(&current.ring, &ring) {
+            return None;
+        }
+        zombies.get_mut(slot)?.take()?
     };
-
-    let bootstrap = found?;
-    let reclaimed = reclaim(bootstrap);
+    drop(ring);
+    let reclaimed = reclaim(bootstrap, abandoned);
     RECLAIMED_PAGES.fetch_add(reclaimed.pages, Ordering::AcqRel);
     RECLAIMED_TABLES.fetch_add(reclaimed.tables, Ordering::AcqRel);
     if reclaimed.table_refusal.is_some() {
@@ -1105,6 +1130,12 @@ pub(crate) fn reclaimed() -> (usize, usize) {
 #[cfg(feature = "selftest")]
 pub(crate) fn refused_table_reclaims() -> usize {
     REFUSED_TABLE_RECLAIMS.load(Ordering::Acquire)
+}
+
+/// Zombie collections retained because terminal ring work could not settle.
+#[cfg(feature = "selftest")]
+pub(crate) fn refused_ring_reclaims() -> usize {
+    REFUSED_RING_RECLAIMS.load(Ordering::Acquire)
 }
 
 /// Pages and table frames returned by failed constructions.

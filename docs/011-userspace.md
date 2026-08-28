@@ -951,7 +951,10 @@ Nothing here is a surprise; each is named in the ADR that created it.
   zero-valued success record. **D-191 closes construction as well as
   destruction:** a never-run process remains one rollback transaction through
   the reserved-thread commit point, and loader placements are per-call data
-  with the executable entry validated before allocation.
+  with the executable entry validated before allocation. **D-192 makes the
+  final ring settlement fail-atomic:** a terminal post retains its pending
+  operation until publication succeeds, and collection retains the complete
+  zombie until the ring is observably quiet.
 - ~~A fault during a user copy is still terminal.~~ **Closed by D-120.** The
   copy is assembly with its faulting instructions between named labels, a page
   fault in that range resumes at a fixup, and the caller gets a count of what
