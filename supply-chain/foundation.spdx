@@ -1,0 +1,858 @@
+SPDXVersion: SPDX-2.3
+DataLicense: CC0-1.0
+SPDXID: SPDXRef-DOCUMENT
+DocumentName: the-wizards-os-foundation
+DocumentNamespace: https://github.com/limbwizard/the-wizards-os/sbom/eb28ab330811256cd14600de90acbd68e156ae5dd480f8b464228d3a12fdbdd7
+Creator: Organization: The Wizard's OS
+Created: 2026-08-29T00:00:00Z
+
+PackageName: the-wizards-os
+SPDXID: SPDXRef-Package-the-wizards-os
+PackageVersion: 0.1.0
+PackageDownloadLocation: https://github.com/limbwizard/the-wizards-os
+FilesAnalyzed: false
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: MIT
+PackageCopyrightText: NOASSERTION
+PackageComment: runtime; project package
+Relationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package-the-wizards-os
+
+PackageName: boot/limine/BOOTX64.EFI
+SPDXID: SPDXRef-Artifact-boot-limine-BOOTX64.EFI-v10.x-binary-2026-07-18
+PackageVersion: v10.x-binary-2026-07-18
+PackageDownloadLocation: NOASSERTION
+FilesAnalyzed: false
+PackageChecksum: SHA256: 91ef81c1f95c4ac8bf77c4393a0b2fcd2628550827d7abf89a43194400e17a85
+PackageLicenseConcluded: BSD-2-Clause
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: runtime; Limine UEFI binary
+Relationship: SPDXRef-Package-the-wizards-os CONTAINS SPDXRef-Artifact-boot-limine-BOOTX64.EFI-v10.x-binary-2026-07-18
+
+PackageName: tools/fat32-corpus/foreign-fat32.sparse
+SPDXID: SPDXRef-Artifact-tools-fat32-corpus-foreign-fat32.sparse-2026-08-28
+PackageVersion: 2026-08-28
+PackageDownloadLocation: NOASSERTION
+FilesAnalyzed: false
+PackageChecksum: SHA256: e04e90ecc72c323a8e5c19ab401502c5967ec5347492cf9be6b5cefbfeeab72d
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; project-authored generated filesystem corpus
+Relationship: SPDXRef-Package-the-wizards-os CONTAINS SPDXRef-Artifact-tools-fat32-corpus-foreign-fat32.sparse-2026-08-28
+
+PackageName: tools/tla/tla2tools.jar
+SPDXID: SPDXRef-Artifact-tools-tla-tla2tools.jar-1.8.0
+PackageVersion: 1.8.0
+PackageDownloadLocation: NOASSERTION
+FilesAnalyzed: false
+PackageChecksum: SHA256: eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; TLA+ tools and TLC
+Relationship: SPDXRef-Package-the-wizards-os CONTAINS SPDXRef-Artifact-tools-tla-tla2tools.jar-1.8.0
+
+PackageName: anyhow
+SPDXID: SPDXRef-Crate-anyhow-1.0.104
+PackageVersion: 1.0.104
+PackageDownloadLocation: https://crates.io/api/v1/crates/anyhow/1.0.104/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-anyhow-1.0.104
+
+PackageName: assoc
+SPDXID: SPDXRef-Crate-assoc-0.1.3
+PackageVersion: 0.1.3
+PackageDownloadLocation: https://crates.io/api/v1/crates/assoc/0.1.3/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: bfdc70193dadb9d7287fa4b633f15f90c876915b31f6af17da307fc59c9859a8
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-assoc-0.1.3
+
+PackageName: autocfg
+SPDXID: SPDXRef-Crate-autocfg-1.5.1
+PackageVersion: 1.5.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/autocfg/1.5.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from Apache-2.0 OR MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-autocfg-1.5.1
+
+PackageName: bitflags
+SPDXID: SPDXRef-Crate-bitflags-1.3.2
+PackageVersion: 1.3.2
+PackageDownloadLocation: https://crates.io/api/v1/crates/bitflags/1.3.2/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-bitflags-1.3.2
+
+PackageName: bitflags
+SPDXID: SPDXRef-Crate-bitflags-2.13.1
+PackageVersion: 2.13.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/bitflags/2.13.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: runtime; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-bitflags-2.13.1
+
+PackageName: bitvec
+SPDXID: SPDXRef-Crate-bitvec-1.1.1
+PackageVersion: 1.1.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/bitvec/1.1.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: ddcec3d12c579d40898fe0a9a358a803c23e9c52ca3c425707f81c9436211837
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-bitvec-1.1.1
+
+PackageName: byteorder
+SPDXID: SPDXRef-Crate-byteorder-1.5.0
+PackageVersion: 1.5.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/byteorder/1.5.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from Unlicense OR MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-byteorder-1.5.0
+
+PackageName: cfg-if
+SPDXID: SPDXRef-Crate-cfg-if-1.0.4
+PackageVersion: 1.0.4
+PackageDownloadLocation: https://crates.io/api/v1/crates/cfg-if/1.0.4/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-cfg-if-1.0.4
+
+PackageName: const-siphasher
+SPDXID: SPDXRef-Crate-const-siphasher-1.0.2
+PackageVersion: 1.0.2
+PackageDownloadLocation: https://crates.io/api/v1/crates/const-siphasher/1.0.2/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 03efed02df0504d71e44bfd51d3329f401b8303a2fd14254acf05c95a0af0153
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-const-siphasher-1.0.2
+
+PackageName: corosensei
+SPDXID: SPDXRef-Crate-corosensei-0.3.4
+PackageVersion: 0.3.4
+PackageDownloadLocation: https://crates.io/api/v1/crates/corosensei/0.3.4/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 6886a0c0f263965933c438626e7179139a62b978a33aa18281cbf0cd5a975f34
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-corosensei-0.3.4
+
+PackageName: fatfs
+SPDXID: SPDXRef-Crate-fatfs-0.3.6
+PackageVersion: 0.3.6
+PackageDownloadLocation: https://crates.io/api/v1/crates/fatfs/0.3.6/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 05669f8e7e2d7badc545c513710f0eba09c2fbef683eb859fd79c46c355048e0
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-fatfs-0.3.6
+
+PackageName: fscommon
+SPDXID: SPDXRef-Crate-fscommon-0.1.1
+PackageVersion: 0.1.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/fscommon/0.1.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 315ce685aca5ddcc5a3e7e436ef47d4a5d0064462849b6f0f628c28140103531
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-fscommon-0.1.1
+
+PackageName: funty
+SPDXID: SPDXRef-Crate-funty-2.0.0
+PackageVersion: 2.0.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/funty/2.0.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-funty-2.0.0
+
+PackageName: getrandom
+SPDXID: SPDXRef-Crate-getrandom-0.2.17
+PackageVersion: 0.2.17
+PackageDownloadLocation: https://crates.io/api/v1/crates/getrandom/0.2.17/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-getrandom-0.2.17
+
+PackageName: getrandom
+SPDXID: SPDXRef-Crate-getrandom-0.3.1
+PackageVersion: 0.3.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/getrandom/0.3.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 43a49c392881ce6d5c3b8cb70f98717b7c07aabbdff06687b9030dbfbe2725f8
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-getrandom-0.3.1
+
+PackageName: hex
+SPDXID: SPDXRef-Crate-hex-0.4.3
+PackageVersion: 0.4.3
+PackageDownloadLocation: https://crates.io/api/v1/crates/hex/0.4.3/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-hex-0.4.3
+
+PackageName: libc
+SPDXID: SPDXRef-Crate-libc-0.2.189
+PackageVersion: 0.2.189
+PackageDownloadLocation: https://crates.io/api/v1/crates/libc/0.2.189/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-libc-0.2.189
+
+PackageName: limine
+SPDXID: SPDXRef-Crate-limine-0.5.0
+PackageVersion: 0.5.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/limine/0.5.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: af6d2ee42712e7bd2c787365cd1dab06ef59a61becbf87bec7b32b970bd2594b
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: runtime; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-limine-0.5.0
+
+PackageName: log
+SPDXID: SPDXRef-Crate-log-0.4.33
+PackageVersion: 0.4.33
+PackageDownloadLocation: https://crates.io/api/v1/crates/log/0.4.33/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-log-0.4.33
+
+PackageName: noto-sans-mono-bitmap
+SPDXID: SPDXRef-Crate-noto-sans-mono-bitmap-0.3.2
+PackageVersion: 0.3.2
+PackageDownloadLocation: https://crates.io/api/v1/crates/noto-sans-mono-bitmap/0.3.2/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: f102c477fd4ec864c149803bf606ecc23bc9329602ec0f99073a728abf454abc
+PackageLicenseConcluded: MIT AND OFL-1.1
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: runtime; MIT crate code and OFL-1.1 Noto glyph data
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-noto-sans-mono-bitmap-0.3.2
+
+PackageName: num-traits
+SPDXID: SPDXRef-Crate-num-traits-0.2.19
+PackageVersion: 0.2.19
+PackageDownloadLocation: https://crates.io/api/v1/crates/num-traits/0.2.19/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-num-traits-0.2.19
+
+PackageName: once_cell
+SPDXID: SPDXRef-Crate-once-cell-1.21.4
+PackageVersion: 1.21.4
+PackageDownloadLocation: https://crates.io/api/v1/crates/once_cell/1.21.4/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-once-cell-1.21.4
+
+PackageName: owo-colors
+SPDXID: SPDXRef-Crate-owo-colors-4.3.0
+PackageVersion: 4.3.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/owo-colors/4.3.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-owo-colors-4.3.0
+
+PackageName: pin-project-lite
+SPDXID: SPDXRef-Crate-pin-project-lite-0.2.17
+PackageVersion: 0.2.17
+PackageDownloadLocation: https://crates.io/api/v1/crates/pin-project-lite/0.2.17/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from Apache-2.0 OR MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-pin-project-lite-0.2.17
+
+PackageName: ppv-lite86
+SPDXID: SPDXRef-Crate-ppv-lite86-0.2.21
+PackageVersion: 0.2.21
+PackageDownloadLocation: https://crates.io/api/v1/crates/ppv-lite86/0.2.21/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-ppv-lite86-0.2.21
+
+PackageName: proc-macro2
+SPDXID: SPDXRef-Crate-proc-macro2-1.0.107
+PackageVersion: 1.0.107
+PackageDownloadLocation: https://crates.io/api/v1/crates/proc-macro2/1.0.107/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-proc-macro2-1.0.107
+
+PackageName: proptest
+SPDXID: SPDXRef-Crate-proptest-1.11.0
+PackageVersion: 1.11.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/proptest/1.11.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 4b45fcc2344c680f5025fe57779faef368840d0bd1f42f216291f0dc4ace4744
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-proptest-1.11.0
+
+PackageName: quote
+SPDXID: SPDXRef-Crate-quote-1.0.47
+PackageVersion: 1.0.47
+PackageDownloadLocation: https://crates.io/api/v1/crates/quote/1.0.47/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-quote-1.0.47
+
+PackageName: radium
+SPDXID: SPDXRef-Crate-radium-0.7.0
+PackageVersion: 0.7.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/radium/0.7.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-radium-0.7.0
+
+PackageName: rand
+SPDXID: SPDXRef-Crate-rand-0.8.7
+PackageVersion: 0.8.7
+PackageDownloadLocation: https://crates.io/api/v1/crates/rand/0.8.7/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 22f6172bdec972074665ed81ed53b71da00bfc44b65a753cfde883ec4c702a1a
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-0.8.7
+
+PackageName: rand
+SPDXID: SPDXRef-Crate-rand-0.9.5
+PackageVersion: 0.9.5
+PackageDownloadLocation: https://crates.io/api/v1/crates/rand/0.9.5/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: b9ef1d0d795eb7d84685bca4f72f3649f064e6641543d3a8c415898726a57b41
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-0.9.5
+
+PackageName: rand_chacha
+SPDXID: SPDXRef-Crate-rand-chacha-0.3.1
+PackageVersion: 0.3.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/rand_chacha/0.3.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-chacha-0.3.1
+
+PackageName: rand_chacha
+SPDXID: SPDXRef-Crate-rand-chacha-0.9.0
+PackageVersion: 0.9.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/rand_chacha/0.9.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-chacha-0.9.0
+
+PackageName: rand_core
+SPDXID: SPDXRef-Crate-rand-core-0.6.4
+PackageVersion: 0.6.4
+PackageDownloadLocation: https://crates.io/api/v1/crates/rand_core/0.6.4/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-core-0.6.4
+
+PackageName: rand_core
+SPDXID: SPDXRef-Crate-rand-core-0.9.5
+PackageVersion: 0.9.5
+PackageDownloadLocation: https://crates.io/api/v1/crates/rand_core/0.9.5/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-core-0.9.5
+
+PackageName: rand_pcg
+SPDXID: SPDXRef-Crate-rand-pcg-0.3.1
+PackageVersion: 0.3.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/rand_pcg/0.3.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 59cad018caf63deb318e5a4586d99a24424a364f40f1e5778c29aca23f4fc73e
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-pcg-0.3.1
+
+PackageName: rand_xorshift
+SPDXID: SPDXRef-Crate-rand-xorshift-0.4.0
+PackageVersion: 0.4.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/rand_xorshift/0.4.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-xorshift-0.4.0
+
+PackageName: regex-syntax
+SPDXID: SPDXRef-Crate-regex-syntax-0.8.11
+PackageVersion: 0.8.11
+PackageDownloadLocation: https://crates.io/api/v1/crates/regex-syntax/0.8.11/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-regex-syntax-0.8.11
+
+PackageName: scoped-tls
+SPDXID: SPDXRef-Crate-scoped-tls-1.0.1
+PackageVersion: 1.0.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/scoped-tls/1.0.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: e1cf6437eb19a8f4a6cc0f7dca544973b0b78843adbfeb3683d1a94a0024a294
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-scoped-tls-1.0.1
+
+PackageName: scopeguard
+SPDXID: SPDXRef-Crate-scopeguard-1.2.0
+PackageVersion: 1.2.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/scopeguard/1.2.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-scopeguard-1.2.0
+
+PackageName: shuttle
+SPDXID: SPDXRef-Crate-shuttle-0.9.3
+PackageVersion: 0.9.3
+PackageDownloadLocation: https://crates.io/api/v1/crates/shuttle/0.9.3/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 786792d8bc94c770b53a938f0ae68726387a3a0a3762f9cc2c38d5e1bb40f0c0
+PackageLicenseConcluded: Apache-2.0
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-shuttle-0.9.3
+
+PackageName: shuttle-engine
+SPDXID: SPDXRef-Crate-shuttle-engine-0.1.1
+PackageVersion: 0.1.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/shuttle-engine/0.1.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: bb03d6daa3cf319f53bef382ee4431203c770912209703452033d19fb71e813b
+PackageLicenseConcluded: Apache-2.0
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-shuttle-engine-0.1.1
+
+PackageName: shuttle-schedulers
+SPDXID: SPDXRef-Crate-shuttle-schedulers-0.1.1
+PackageVersion: 0.1.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/shuttle-schedulers/0.1.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: d7673a579e1660404067f5aa1344d6530f15b59f53b0fe98767d7ab117d14067
+PackageLicenseConcluded: Apache-2.0
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-shuttle-schedulers-0.1.1
+
+PackageName: shuttle-std
+SPDXID: SPDXRef-Crate-shuttle-std-0.1.1
+PackageVersion: 0.1.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/shuttle-std/0.1.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: bf4a3088fd2d19e5ebc24bc3779bc85a68228fafde2d87d138e475b8591dc721
+PackageLicenseConcluded: Apache-2.0
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-shuttle-std-0.1.1
+
+PackageName: smallvec
+SPDXID: SPDXRef-Crate-smallvec-1.15.2
+PackageVersion: 1.15.2
+PackageDownloadLocation: https://crates.io/api/v1/crates/smallvec/1.15.2/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-smallvec-1.15.2
+
+PackageName: syn
+SPDXID: SPDXRef-Crate-syn-2.0.119
+PackageVersion: 2.0.119
+PackageDownloadLocation: https://crates.io/api/v1/crates/syn/2.0.119/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-syn-2.0.119
+
+PackageName: tap
+SPDXID: SPDXRef-Crate-tap-1.0.1
+PackageVersion: 1.0.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/tap/1.0.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-tap-1.0.1
+
+PackageName: tracing
+SPDXID: SPDXRef-Crate-tracing-0.1.44
+PackageVersion: 0.1.44
+PackageDownloadLocation: https://crates.io/api/v1/crates/tracing/0.1.44/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-tracing-0.1.44
+
+PackageName: tracing-core
+SPDXID: SPDXRef-Crate-tracing-core-0.1.36
+PackageVersion: 0.1.36
+PackageDownloadLocation: https://crates.io/api/v1/crates/tracing-core/0.1.36/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-tracing-core-0.1.36
+
+PackageName: unarray
+SPDXID: SPDXRef-Crate-unarray-0.1.4
+PackageVersion: 0.1.4
+PackageDownloadLocation: https://crates.io/api/v1/crates/unarray/0.1.4/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-unarray-0.1.4
+
+PackageName: unicode-ident
+SPDXID: SPDXRef-Crate-unicode-ident-1.0.24
+PackageVersion: 1.0.24
+PackageDownloadLocation: https://crates.io/api/v1/crates/unicode-ident/1.0.24/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75
+PackageLicenseConcluded: MIT AND Unicode-3.0
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected MIT plus required Unicode-3.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-unicode-ident-1.0.24
+
+PackageName: wasi
+SPDXID: SPDXRef-Crate-wasi-0.11.1-wasi-snapshot-preview1
+PackageVersion: 0.11.1+wasi-snapshot-preview1
+PackageDownloadLocation: https://crates.io/api/v1/crates/wasi/0.11.1+wasi-snapshot-preview1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-wasi-0.11.1-wasi-snapshot-preview1
+
+PackageName: wasi
+SPDXID: SPDXRef-Crate-wasi-0.13.3-wasi-0.2.2
+PackageVersion: 0.13.3+wasi-0.2.2
+PackageDownloadLocation: https://crates.io/api/v1/crates/wasi/0.13.3+wasi-0.2.2/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 26816d2e1a4a36a2940b96c5296ce403917633dff8f3440e9b236ed6f6bacad2
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-wasi-0.13.3-wasi-0.2.2
+
+PackageName: windows_aarch64_gnullvm
+SPDXID: SPDXRef-Crate-windows-aarch64-gnullvm-0.52.6
+PackageVersion: 0.52.6
+PackageDownloadLocation: https://crates.io/api/v1/crates/windows_aarch64_gnullvm/0.52.6/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 32a4622180e7a0ec044bb555404c800bc9fd9ec262ec147edd5989ccd0c02cd3
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-aarch64-gnullvm-0.52.6
+
+PackageName: windows_aarch64_msvc
+SPDXID: SPDXRef-Crate-windows-aarch64-msvc-0.52.6
+PackageVersion: 0.52.6
+PackageDownloadLocation: https://crates.io/api/v1/crates/windows_aarch64_msvc/0.52.6/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 09ec2a7bb152e2252b53fa7803150007879548bc709c039df7627cabbd05d469
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-aarch64-msvc-0.52.6
+
+PackageName: windows_i686_gnu
+SPDXID: SPDXRef-Crate-windows-i686-gnu-0.52.6
+PackageVersion: 0.52.6
+PackageDownloadLocation: https://crates.io/api/v1/crates/windows_i686_gnu/0.52.6/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 8e9b5ad5ab802e97eb8e295ac6720e509ee4c243f69d781394014ebfe8bbfa0b
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-i686-gnu-0.52.6
+
+PackageName: windows_i686_gnullvm
+SPDXID: SPDXRef-Crate-windows-i686-gnullvm-0.52.6
+PackageVersion: 0.52.6
+PackageDownloadLocation: https://crates.io/api/v1/crates/windows_i686_gnullvm/0.52.6/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 0eee52d38c090b3caa76c563b86c3a4bd71ef1a819287c19d586d7334ae8ed66
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-i686-gnullvm-0.52.6
+
+PackageName: windows_i686_msvc
+SPDXID: SPDXRef-Crate-windows-i686-msvc-0.52.6
+PackageVersion: 0.52.6
+PackageDownloadLocation: https://crates.io/api/v1/crates/windows_i686_msvc/0.52.6/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-i686-msvc-0.52.6
+
+PackageName: windows_x86_64_gnu
+SPDXID: SPDXRef-Crate-windows-x86-64-gnu-0.52.6
+PackageVersion: 0.52.6
+PackageDownloadLocation: https://crates.io/api/v1/crates/windows_x86_64_gnu/0.52.6/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-x86-64-gnu-0.52.6
+
+PackageName: windows_x86_64_gnullvm
+SPDXID: SPDXRef-Crate-windows-x86-64-gnullvm-0.52.6
+PackageVersion: 0.52.6
+PackageDownloadLocation: https://crates.io/api/v1/crates/windows_x86_64_gnullvm/0.52.6/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 24d5b23dc417412679681396f2b49f3de8c1473deb516bd34410872eff51ed0d
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-x86-64-gnullvm-0.52.6
+
+PackageName: windows_x86_64_msvc
+SPDXID: SPDXRef-Crate-windows-x86-64-msvc-0.52.6
+PackageVersion: 0.52.6
+PackageDownloadLocation: https://crates.io/api/v1/crates/windows_x86_64_msvc/0.52.6/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-x86-64-msvc-0.52.6
+
+PackageName: windows-sys
+SPDXID: SPDXRef-Crate-windows-sys-0.59.0
+PackageVersion: 0.59.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/windows-sys/0.59.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-sys-0.59.0
+
+PackageName: windows-targets
+SPDXID: SPDXRef-Crate-windows-targets-0.52.6
+PackageVersion: 0.52.6
+PackageDownloadLocation: https://crates.io/api/v1/crates/windows-targets/0.52.6/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-targets-0.52.6
+
+PackageName: wit-bindgen-rt
+SPDXID: SPDXRef-Crate-wit-bindgen-rt-0.33.0
+PackageVersion: 0.33.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/wit-bindgen-rt/0.33.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 3268f3d866458b787f390cf61f4bbb563b922d091359f9608842999eaee3943c
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-wit-bindgen-rt-0.33.0
+
+PackageName: wyz
+SPDXID: SPDXRef-Crate-wyz-0.5.1
+PackageVersion: 0.5.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/wyz/0.5.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-wyz-0.5.1
+
+PackageName: zerocopy
+SPDXID: SPDXRef-Crate-zerocopy-0.8.56
+PackageVersion: 0.8.56
+PackageDownloadLocation: https://crates.io/api/v1/crates/zerocopy/0.8.56/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 556764e583adb45a9f8d413c2a147fa7e8d821e48e12b14fd560b607998b75eb
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from BSD-2-Clause OR Apache-2.0 OR MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-zerocopy-0.8.56
+
+PackageName: zerocopy-derive
+SPDXID: SPDXRef-Crate-zerocopy-derive-0.8.56
+PackageVersion: 0.8.56
+PackageDownloadLocation: https://crates.io/api/v1/crates/zerocopy-derive/0.8.56/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: f2ab42fc20575779bd240faa45f94a74256f755c0fa9e89f0ede20d91d0cdfc1
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from BSD-2-Clause OR Apache-2.0 OR MIT
+Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-zerocopy-derive-0.8.56

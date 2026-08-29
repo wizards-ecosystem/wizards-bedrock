@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use crate::cargo::{self, Profile};
 use crate::cli::{CleanScope, FmtMode};
 use crate::paths::{self, Paths};
-use crate::{gate, image, qemu, vendor};
+use crate::{gate, image, qemu, supply_chain, vendor};
 
 /// Whether a subcommand should be pointed at a package's test and bench
 /// targets as well as the ones it ships.
@@ -158,6 +158,7 @@ fn run_ci_step(paths: &Paths, step: gate::Step) -> Result<()> {
         gate::Step::ApiAudit => crate::api::check(paths),
         gate::Step::Documentation => doc(paths),
         gate::Step::HostTests => test(paths),
+        gate::Step::SupplyChain => supply_chain::verify(paths),
         gate::Step::Vendor => vendor::verify(paths),
         gate::Step::SelfTest(profile) => test_boot(paths, profile),
         gate::Step::ShippedBoot => boot_check(paths, Profile::Release),

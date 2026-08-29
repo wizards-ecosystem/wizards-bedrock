@@ -82,11 +82,12 @@ Ordered `cargo xtask ci` stages:
 | 3 | `cargo xtask api-audit` | prove every public foundation API has a caller |
 | 4 | `cargo xtask doc` | build docs for every registered Cargo graph |
 | 5 | `cargo xtask test` | run host tests and doctests |
-| 6 | `cargo xtask verify-vendor` | verify every vendored digest |
-| 7 | `cargo xtask test-boot --release` | run all machine checks on the release kernel |
-| 8 | `cargo xtask test-boot --debug` | run all machine checks with overflow checks enabled |
-| 9 | `cargo xtask boot-check --release` | boot, exercise and settle the shipped image |
-| 10 | `cargo xtask degraded-check --release` | prove the no-PCI and no-x2APIC refusals |
+| 6 | `cargo xtask supply-chain` | bind locked bytes, licenses, scope and SPDX |
+| 7 | `cargo xtask verify-vendor` | verify every vendored digest |
+| 8 | `cargo xtask test-boot --release` | run all machine checks on the release kernel |
+| 9 | `cargo xtask test-boot --debug` | run all machine checks with overflow checks enabled |
+| 10 | `cargo xtask boot-check --release` | boot, exercise and settle the shipped image |
+| 11 | `cargo xtask degraded-check --release` | prove the no-PCI and no-x2APIC refusals |
 <!-- CI-REGISTRY:END -->
 
 `boot-check` boots the shipped kernel and requires it to settle at its prompt;

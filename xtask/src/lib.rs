@@ -29,6 +29,7 @@ pub mod qemu;
 pub mod qmp;
 mod qualification;
 pub mod sha256;
+pub mod supply_chain;
 pub mod tasks;
 pub mod unsafety;
 pub mod vendor;
@@ -72,6 +73,8 @@ pub fn run(task: Task) -> Result<()> {
         Task::BootCheck(profile) => tasks::boot_check(&paths, profile),
         Task::DegradedCheck(profile) => tasks::degraded_check(&paths, profile),
         Task::VerifyVendor => vendor::verify(&paths),
+        Task::SupplyChain => supply_chain::verify(&paths),
+        Task::UpdateSbom => supply_chain::update_spdx(&paths),
         Task::ModelCheck => model::check(&paths),
         Task::Mutate => mutate::run(&paths),
         Task::Ci => tasks::ci(&paths),

@@ -31,6 +31,7 @@ CHECK TASKS:
     test-boot         boot a self-test kernel in QEMU and require its verdict
     boot-check        boot the shipped kernel and require it to settle
     degraded-check    boot without PCI/x2apic and require both refusals
+    supply-chain      verify lock, licenses, artifacts and the SPDX SBOM
     verify-vendor     check vendored binaries against their CHECKSUMS files
     ci                run the registered local gate shown below
 
@@ -49,6 +50,7 @@ and a gate step that fails for want of one teaches people to skip the gate):
                       require a check to go red (one QEMU boot each)
 
 HOUSEKEEPING:
+    update-sbom       regenerate the SPDX SBOM from the reviewed inventory
     clean             remove build output
 
 OPTIONS:
@@ -111,6 +113,10 @@ pub enum Task {
     DegradedCheck(Profile),
     /// Check vendored binaries against their recorded digests.
     VerifyVendor,
+    /// Verify the locked supply chain, licenses and generated SPDX document.
+    SupplyChain,
+    /// Regenerate the deterministic SPDX document.
+    UpdateSbom,
     /// Check the queue protocol's TLA+ model.
     ModelCheck,
     /// Break the kernel on purpose and require the checks to notice.
@@ -207,7 +213,9 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         "test-boot" => Ok(Task::TestBoot(profile)),
         "boot-check" => Ok(Task::BootCheck(profile)),
         "degraded-check" => Ok(Task::DegradedCheck(profile)),
+        "supply-chain" => Ok(Task::SupplyChain),
         "verify-vendor" => Ok(Task::VerifyVendor),
+        "update-sbom" => Ok(Task::UpdateSbom),
         "model-check" => Ok(Task::ModelCheck),
         "mutate" => Ok(Task::Mutate),
         "ci" => Ok(Task::Ci),

@@ -2474,6 +2474,76 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "evidence::tests::an_unavailable_qualification_dependency_is_named_exactly",
         },
     },
+    Mutation {
+        file: "supply-chain/inventory.txt",
+        find: "crate|anyhow|1.0.104|development|330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470|MIT|selected from MIT OR Apache-2.0",
+        replace: "crate|anyhow|1.0.104|development|0000000000000000000000000000000000000000000000000000000000000000|MIT|selected from MIT OR Apache-2.0",
+        breaks: "a reviewed dependency checksum can differ from Cargo.lock",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::every_locked_registry_package_has_one_exact_inventory_row",
+        },
+    },
+    Mutation {
+        file: "supply-chain/inventory.txt",
+        find: "crate|noto-sans-mono-bitmap|0.3.2|runtime|f102c477fd4ec864c149803bf606ecc23bc9329602ec0f99073a728abf454abc|MIT AND OFL-1.1|MIT crate code and OFL-1.1 Noto glyph data",
+        replace: "crate|noto-sans-mono-bitmap|0.3.2|runtime|f102c477fd4ec864c149803bf606ecc23bc9329602ec0f99073a728abf454abc|GPL-3.0-only|MIT crate code and OFL-1.1 Noto glyph data",
+        breaks: "an unreviewed license conclusion enters the dependency record",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::every_license_conclusion_is_from_the_reviewed_policy",
+        },
+    },
+    Mutation {
+        file: "supply-chain/inventory.txt",
+        find: "artifact|boot/limine/BOOTX64.EFI|v10.x-binary-2026-07-18|runtime|91ef81c1f95c4ac8bf77c4393a0b2fcd2628550827d7abf89a43194400e17a85|BSD-2-Clause|Limine UEFI binary",
+        replace: "artifact|boot/limine/BOOTX64.EFI|v10.x-binary-2026-07-18|runtime|0000000000000000000000000000000000000000000000000000000000000000|BSD-2-Clause|Limine UEFI binary",
+        breaks: "a vendored runtime artifact can differ from the inventory digest",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::every_vendored_digest_is_in_the_inventory_and_matches_the_bytes",
+        },
+    },
+    Mutation {
+        file: "supply-chain/inventory.txt",
+        find: "crate|bitflags|2.13.1|runtime|b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da|MIT|selected from MIT OR Apache-2.0",
+        replace: "crate|bitflags|2.13.1|development|b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da|MIT|selected from MIT OR Apache-2.0",
+        breaks: "a crate linked into the kernel is labelled development-only",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::runtime_scope_is_the_kernel_dependency_closure",
+        },
+    },
+    Mutation {
+        file: "supply-chain/foundation.spdx",
+        find: "DocumentName: the-wizards-os-foundation",
+        replace: "DocumentName: unrelated-foundation",
+        breaks: "the committed SBOM differs from its deterministic source facts",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::the_committed_spdx_is_the_deterministic_inventory_rendering",
+        },
+    },
+    Mutation {
+        file: "supply-chain/THIRD-PARTY-NOTICES.md",
+        find: "SIL Open Font License 1.1 (`OFL-1.1`), copyright 2022 The Noto Project",
+        replace: "SIL Open Font License 1.1 (`OFL 1.1`), copyright 2022 The Noto Project",
+        breaks: "runtime notices omit the exact font license identifier",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::every_runtime_notice_and_required_license_is_present",
+        },
+    },
+    Mutation {
+        file: "xtask/src/supply_chain.rs",
+        find: "        matches.len() == 1,",
+        replace: "        !matches.is_empty(),",
+        breaks: "an ambiguous locked dependency silently selects one version",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::a_dependency_with_two_locked_versions_must_name_which_one",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
