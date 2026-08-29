@@ -1,4 +1,9 @@
 //! Crash-safe isolation and progress for mutation sweeps.
+//!
+//! Restoring source also invalidates its compiled package. Cargo's timestamp
+//! cache can otherwise keep the previous mutation's object after the snapshot
+//! copy, contaminating the next mutation even though the bytes are pristine
+//! (D-233).
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -132,7 +137,7 @@ impl Session {
             index == self.journal.completed.len(),
             "active progress is not contiguous"
         );
-        restore_file(&self.snapshot, self.workspace.root(), relative)?;
+        restore_build_input(&self.snapshot, &self.workspace, relative)?;
         self.journal.active = None;
         self.store.save(&mut self.journal)
     }
@@ -171,7 +176,7 @@ impl Session {
             self.journal.active == Some(index),
             "another mutation is active"
         );
-        restore_file(&self.snapshot, self.workspace.root(), relative)?;
+        restore_build_input(&self.snapshot, &self.workspace, relative)?;
         self.journal.completed.push(outcome);
         self.journal.active = None;
         self.store.save(&mut self.journal)
@@ -353,6 +358,46 @@ fn restore_file(snapshot: &Path, workspace: &Path, relative: &str) -> Result<()>
         "restored mutation file differs from its snapshot"
     );
     Ok(())
+}
+
+fn restore_build_input(snapshot: &Path, paths: &Paths, relative: &str) -> Result<()> {
+    restore_file(snapshot, paths.root(), relative)?;
+    invalidate_package(paths, relative)
+}
+
+fn invalidate_package(paths: &Paths, relative: &str) -> Result<()> {
+    let Some(package) = source_package(relative) else {
+        return Ok(());
+    };
+    let output = Command::new(env!("CARGO"))
+        .current_dir(paths.root())
+        .env("CARGO_TARGET_DIR", paths.target_dir())
+        .args(["clean", "--package", package])
+        .output()
+        .with_context(|| format!("spawning Cargo to invalidate restored package {package}"))?;
+    if !output.status.success() {
+        bail!(
+            "invalidating restored package {package} failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+fn source_package(relative: &str) -> Option<&str> {
+    if relative.starts_with("kernel/") {
+        Some(crate::paths::KERNEL_PACKAGE)
+    } else if relative.starts_with("wost/") {
+        Some("wost")
+    } else if relative.starts_with("xtask/") {
+        Some("xtask")
+    } else {
+        relative
+            .strip_prefix("libs/")?
+            .split_once('/')
+            .map(|(package, _)| package)
+    }
 }
 
 fn checked_join(root: &Path, relative: &str) -> Result<PathBuf> {
@@ -785,6 +830,64 @@ mod tests {
             .expect("final Git status");
         assert!(status.status.success());
         assert!(status.stdout.is_empty());
+    }
+
+    #[test]
+    fn restoring_a_compiled_input_invalidates_its_package() {
+        let temp = TempTree::new("invalidation");
+        let snapshot = temp.0.join("snapshot");
+        let workspace = temp.0.join("workspace");
+        let build = temp.0.join("build");
+        std::fs::create_dir_all(snapshot.join("wost/src")).expect("snapshot source");
+        std::fs::create_dir_all(workspace.join("wost/src")).expect("workspace source");
+        std::fs::write(
+            workspace.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"wost\"]\nresolver = \"3\"\n",
+        )
+        .expect("workspace manifest");
+        std::fs::write(
+            workspace.join("wost/Cargo.toml"),
+            "[package]\nname = \"wost\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        )
+        .expect("package manifest");
+        std::fs::write(
+            snapshot.join("wost/src/lib.rs"),
+            "pub fn value() -> u8 { 1 }\n",
+        )
+        .expect("snapshot input");
+        std::fs::write(
+            workspace.join("wost/src/lib.rs"),
+            "pub fn value() -> u8 { 2 }\n",
+        )
+        .expect("mutated input");
+
+        let paths = Paths::new(workspace, Some(&build));
+        let output = Command::new(env!("CARGO"))
+            .current_dir(paths.root())
+            .env("CARGO_TARGET_DIR", paths.target_dir())
+            .args(["check", "--package", "wost"])
+            .output()
+            .expect("building mutated package");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let dependencies = build.join("debug/deps");
+        let has_wost_artifact = || {
+            std::fs::read_dir(&dependencies)
+                .expect("package artifacts")
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().contains("wost"))
+        };
+        assert!(has_wost_artifact());
+
+        restore_build_input(&snapshot, &paths, "wost/src/lib.rs").expect("restoring input");
+        assert_eq!(
+            std::fs::read_to_string(paths.root().join("wost/src/lib.rs")).unwrap(),
+            "pub fn value() -> u8 { 1 }\n"
+        );
+        assert!(!has_wost_artifact());
     }
 
     /// The helper process a parent test really terminates while a mutation is

@@ -20,9 +20,10 @@ The planned Phase 6 slices are landed, but the phase and polished foundation
 are **not closed**. `014-storage.md`'s closing table owns the checked current
 QEMU and mutation totals. The last recorded complete mutation sweep covered the
 former 64-entry registry. The first 276-entry closing attempt caught 270
-exactly and exposed six qualification defects; D-232 repairs those defects,
-and its 277-entry successor still needs the complete closing rerun. The current
-image has not completed its human VMware round. The compiler gate in
+exactly and exposed six qualification defects. D-232 repaired the direct
+defects; its successor exposed cross-mutation build contamination, which D-233
+repairs. The 278-entry registry still needs the complete closing rerun. The
+current image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
 The kernel is ready for the first real Wizzy integration only when:
@@ -66,7 +67,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The first 276-entry closing attempt caught 270 exactly and exposed six qualification defects; D-232 repairs them and adds one bounded-retry witness, leaving the 277-entry successor to qualify | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | Every named mutation is caught by the check it names; record commit, result and duration; source and index digests remain exact |
+| PW-001 | REQUIRED | P0 | The 276-entry attempt exposed six qualification defects; D-232 repaired its direct defects, and the aborted successor exposed the stale compiled-package contamination D-233 repairs, leaving the 278-entry registry to qualify | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | Every named mutation is caught by the check it names; record commit, result and duration; source and index digests remain exact |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
 | PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current image | Boot the current self-test image in VMware and perform every human keyboard round | A dated zero-failure transcript at the verdict's expected total, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |

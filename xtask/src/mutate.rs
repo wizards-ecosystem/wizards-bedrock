@@ -3050,6 +3050,16 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "mutate::tests::an_inconclusive_machine_observation_gets_one_bounded_retry",
         },
     },
+    Mutation {
+        file: "xtask/src/mutation_workspace.rs",
+        find: "    restore_file(snapshot, paths.root(), relative)?;\n    invalidate_package(paths, relative)",
+        replace: "    restore_file(snapshot, paths.root(), relative)?;\n    Ok(())",
+        breaks: "restoring a mutated source leaves its compiled package live",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::restoring_a_compiled_input_invalidates_its_package",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
