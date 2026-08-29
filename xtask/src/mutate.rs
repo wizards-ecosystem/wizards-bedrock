@@ -391,8 +391,8 @@ pub const MUTATIONS: &[Mutation] = &[
     // boundary that would otherwise allocate or panic in trap context.
     Mutation {
         file: "kernel/src/handle.rs",
-        find: "        commit_quota(quota)?;",
-        replace: "        commit_quota(quota.saturating_sub(1))?;",
+        find: "        let id = commit_table(quota)?;",
+        replace: "        let id = commit_table(quota.saturating_sub(1))?;",
         breaks: "a table's final quota slot is backed before any trap can use it",
         reddens: Caught::Check("the handle arena backs a table's whole quota"),
     },
@@ -1693,6 +1693,30 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "    let _ = stored;",
         breaks: "retirement leaves the service worker asleep beside a zombie",
         reddens: Caught::Check("a busy machine reaps a program without another spawn"),
+    },
+    Mutation {
+        file: "libs/handle-space/src/lib.rs",
+        find: "    identity.checked_add(1)",
+        replace: "    Some(identity.wrapping_add(1))",
+        breaks: "table identity arithmetic wraps its exhaustion sentinel to zero",
+        reddens: Caught::HostTest {
+            package: "handle-space",
+            name: "tests::table_identity_exhaustion_never_wraps",
+        },
+    },
+    Mutation {
+        file: "kernel/src/handle.rs",
+        find: "        let successor = handle_space::next_table_identity(self.next_table)\n            .ok_or(HandleError::IdentityExhausted)?;",
+        replace: "        let successor = self.next_table.wrapping_add(1);",
+        breaks: "handle-table construction crosses the exhausted identity boundary",
+        reddens: Caught::Check("table identities never wrap or repeat"),
+    },
+    Mutation {
+        file: "kernel/src/handle.rs",
+        find: "        self.next_table = successor;",
+        replace: "        if successor != u64::MAX {\n            self.next_table = successor;\n        }",
+        breaks: "two simultaneously live handle tables receive one ownership identity",
+        reddens: Caught::Check("table identities never wrap or repeat"),
     },
 ];
 

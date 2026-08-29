@@ -17,10 +17,10 @@ admission reasons.
 ## What completion means
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
-are **not closed**. The current image has 210 QEMU machine checks. The current
-mutation registry has 142 entries, but the last recorded complete sweep covered
-64; the seventy-eight later mutations were broken individually. The current
-210-check image has not completed its human VMware round. The compiler gate in
+are **not closed**. The current image has 211 QEMU machine checks. The current
+mutation registry has 145 entries, but the last recorded complete sweep covered
+64; the eighty-one later mutations were broken individually. The current
+211-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
 The kernel is ready for the first real Wizzy integration only when:
@@ -64,9 +64,9 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 142 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 142 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
+| PW-001 | REQUIRED | P0 | The register contains 145 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 145 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
-| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 210-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=210 failed=0` transcript, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
+| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 211-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=211 failed=0` transcript, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
 | PW-005 | REQUIRED | P1 | The ordinary gate must describe the same commit as the exceptional evidence | Run `cargo xtask ci` after every register-closing change and once after the evidence-only close | Release/debug self-tests, shipped liveness and degraded boot all pass on the recorded commit |
 | PW-006 | REQUIRED | P1 | D-181 and D-182 were post-audit corrections, and this audit found deeper safe/device boundaries | Re-attack hostile inputs, cleanup paths, safe `wost` callers and release-only invariant failures after the P0/P1 fixes | Phase-close ADR links the audit, every break-test, full evidence manifest and remaining trigger-only rows; no historical evidence is invented |
@@ -121,7 +121,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 |---|---|---|---|---|---|
 | PW-400 | READY | P1 | Production boundary code still contains panic assumptions and indexing that deserve a hostile-input audit; four non-selftest `expect` sites are known | Remove recoverable runtime `expect`/panic/index paths or prove them unreachable by type/checked construction; add a narrow source rule where useful | Malformed ring, ELF, PCI, ACPI, FAT and device inputs never panic release/debug kernels; every new refusal is broken once |
 | PW-401 | VERIFY | P1 | Shared-ring prose invokes READ_ONCE, but page copies are ordinary memory operations; the current UP trap path serializes mutation but the compiler/SMP contract is unstated | Specify the actual access and acquire/release/volatile contract, then implement it at the narrow shared-memory boundary | Litmus/stress/disassembly or an explicit model proves publication/consumption order; a weakened-order mutation is caught |
-| PW-402 | READY | P1 | Table identity is a wrapping `u32`; eventual reuse can collide with still-live ownership, independently of the documented 12-bit handle generation tradeoff | Refuse identity exhaustion or widen/prove a non-colliding lifetime | Near-maximum host tests and live-table checks show no owner identity is reused while reachable |
+| PW-402 | DONE | P1 | Table identity was a wrapping `u32`; eventual reuse could collide with still-live ownership, independently of the documented 12-bit handle generation tradeoff | D-204 makes identity a non-repeating `u64`, commits its checked successor with quota under the arena lock and returns typed exhaustion at the terminal sentinel | 2026-08-28 host arithmetic refused the maximum successor; release QEMU held the last table and handle live through two fail-atomic refusals and exact teardown, while wrap and final-nonadvance mutations each reddened only `table identities never wrap or repeat` with 210/211 |
 | PW-403 | VERIFY | P2 | The handle mixer intentionally leaks a small cross-table occupancy signal even though no authority crosses | Measure the oracle and either remove it without weakening stale/owner checks or explicitly accept it | Cross-table experiment states the maximum information leaked and proves the chosen result |
 | PW-404 | READY | P2 | Current TLA+ covers ring admission/accounting and Shuttle explores sequentially consistent host interleavings, not the hardware/shared-page memory contract | Extend the model or add a focused weak-memory model for publish, reserve, cancel, retire and exactly-once completion | Model/litmus mutations for reordered loads/stores, lost reservation and duplicate terminal completion all fail for the intended property |
 | PW-405 | READY | P2 | The constructible syscall wake/arm race and guard `!Send` compile-time property lack durable automated witnesses | Add the smallest host/compile-fail or machine harness that reaches each actual property without copying the production type | Each harness is broken against the exact old behavior and fails for the named reason |
@@ -234,7 +234,7 @@ PW-514 includes these exact stale-current-facing corrections still to make:
 ## Recommended execution order
 
 1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
-   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200, PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-300, PW-302, PW-306 and PW-307 are closed by D-185 through D-203.
+   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200, PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-300, PW-302, PW-306, PW-307 and PW-402 are closed by D-185 through D-204.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

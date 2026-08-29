@@ -23,9 +23,11 @@
 //! - **A generation counter shares the word with the index.** Reusing a slot
 //!   changes the value, so a handle kept across a close does not name whatever
 //!   took the slot next. That is use-after-free turned into a decode failure.
-//! - **The value is mixed with a per-table constant.** Two processes holding
-//!   the same slot see different integers, so a value guessed or leaked from
-//!   one is not a handle in another.
+//! - **The value is mixed with a table-derived constant.** Nearby processes
+//!   holding the same slot see different integers, so a value guessed or
+//!   leaked from one is usually not even well formed in another. Mixers may
+//!   repeat; the kernel's non-repeating owner identity is the authority check
+//!   (D-204).
 //!
 //! # Examples
 //!
@@ -82,7 +84,16 @@ pub const SLOTS: u32 = 1 << INDEX_BITS;
 /// Generations a slot passes through before repeating.
 pub const GENERATIONS: u32 = 1 << GENERATION_BITS;
 
-/// A per-table constant that makes the same slot look different in each table.
+/// The successor of a never-reused table identity.
+///
+/// The kernel stores the next identity it will issue and reserves `u64::MAX`
+/// as the exhausted-state sentinel. Checked addition makes wrapping into an
+/// identity that may still own arena entries unrepresentable (D-204).
+pub const fn next_table_identity(identity: u64) -> Option<u64> {
+    identity.checked_add(1)
+}
+
+/// A table-derived constant that usually makes the same slot look different.
 ///
 /// Fuchsia mixes so that a handle value observed in one process is not a
 /// handle in another. It is not a secret and does not have to be: it removes
@@ -798,6 +809,13 @@ mod tests {
         assert_eq!(Slot::new(0, GENERATIONS), None);
         assert_eq!(Slot::new(u32::MAX, u32::MAX), None);
         assert!(Slot::new(SLOTS - 1, GENERATIONS - 1).is_some());
+    }
+
+    /// Table identities reach a terminal sentinel instead of becoming zero.
+    #[test]
+    fn table_identity_exhaustion_never_wraps() {
+        assert_eq!(next_table_identity(u64::MAX - 1), Some(u64::MAX));
+        assert_eq!(next_table_identity(u64::MAX), None);
     }
 
     /// A tiny set, so the crate needs no dependency to test uniqueness.

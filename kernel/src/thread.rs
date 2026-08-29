@@ -947,12 +947,15 @@ pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
     reschedule_timer(event);
     match next {
         Some(next) => {
-            RETIREMENTS.fetch_add(1, Ordering::AcqRel);
             // Its resources become a zombie: this thread is standing on the
             // stack and running on the tables it would have to free, so it
             // cannot be the one to free them (D-117). Moving one `Option`
             // between two arrays is all that happens here.
             crate::user::orphan(current);
+            // Publish retirement only after `orphan` has recorded the
+            // program's last rites. An acquiring observer which sees the new
+            // generation must also be able to read that evidence (D-203).
+            RETIREMENTS.fetch_add(1, Ordering::AcqRel);
             // `retire_to`, not `switch_from_trap`: the thread is not coming
             // back, so `wost`'s slot must go `Dead` to match the `Free` this
             // table just wrote. Leaving it `Alive` makes the index unusable

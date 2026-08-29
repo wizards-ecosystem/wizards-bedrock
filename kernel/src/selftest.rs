@@ -5193,6 +5193,46 @@ fn a_handle_does_not_cross_tables() -> bool {
     refused && stray && not_by_ownership && still_mine
 }
 
+/// Table ownership reaches a terminal refusal instead of repeating live authority.
+fn table_identities_never_wrap_or_repeat() -> bool {
+    let baseline = HandleTable::arena_usage_for_test();
+    HandleTable::with_next_identity_for_test(u64::MAX - 1, || {
+        let Ok(last) = HandleTable::new(1) else {
+            return false;
+        };
+        let Ok(handle) = last.insert(object::event(), Rights::UNIVERSAL) else {
+            return false;
+        };
+        let live_commitment = HandleTable::arena_usage_for_test();
+
+        let first = HandleTable::new(1);
+        let second = HandleTable::new(1);
+        let refused_twice = matches!(&first, Err(HandleError::IdentityExhausted))
+            && matches!(&second, Err(HandleError::IdentityExhausted));
+        let duplicate_authority = first
+            .as_ref()
+            .ok()
+            .is_some_and(|table| table.resolve(handle).is_ok())
+            || second
+                .as_ref()
+                .ok()
+                .is_some_and(|table| table.resolve(handle).is_ok());
+        let refusal_changed_nothing = HandleTable::arena_usage_for_test() == live_commitment;
+        let last_stayed_live = last.identity_for_test() == u64::MAX - 1
+            && last.kind_of(handle) == Ok(ObjectType::Event);
+
+        drop(first);
+        drop(second);
+        drop(last);
+
+        refused_twice
+            && !duplicate_authority
+            && refusal_changed_nothing
+            && last_stayed_live
+            && HandleTable::arena_usage_for_test() == baseline
+    })
+}
+
 /// Rights are checked, and duplication only ever narrows them.
 fn rights_are_checked_and_only_narrow() -> bool {
     let table = handle_table_or_false!(8);
@@ -7162,7 +7202,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 210;
+const EXPECTED_CHECKS: usize = 211;
 
 impl Report {
     const fn new() -> Self {
@@ -7630,6 +7670,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a handle does not cross tables",
         a_handle_does_not_cross_tables(),
+    );
+    report.check(
+        "table identities never wrap or repeat",
+        table_identities_never_wrap_or_repeat(),
     );
     report.check(
         "rights are checked and only narrow",

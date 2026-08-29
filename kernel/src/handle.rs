@@ -24,7 +24,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use handle_space::{Mixer, Quota, Rights, SLOTS, Slot};
 use wost::sync::SpinLock;
@@ -36,7 +36,7 @@ use crate::object::{ObjectRef, ObjectType};
 /// The single comparison a lookup makes beyond arithmetic. Tables are numbered
 /// rather than addressed so that the arena holds no pointer back to them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TableId(u32);
+pub(crate) struct TableId(u64);
 
 /// Why a handle operation was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +59,8 @@ pub(crate) enum HandleError {
     ArenaFull,
     /// The arena could not allocate backing for this table's quota.
     OutOfMemory,
+    /// Every non-repeating table identity has been issued.
+    IdentityExhausted,
 }
 
 impl core::fmt::Display for HandleError {
@@ -72,6 +74,7 @@ impl core::fmt::Display for HandleError {
             Self::QuotaExhausted => "handle quota exhausted",
             Self::ArenaFull => "the handle arena is full",
             Self::OutOfMemory => "no memory for the handle arena",
+            Self::IdentityExhausted => "handle table identities exhausted",
         })
     }
 }
@@ -106,6 +109,8 @@ struct Arena {
     hint: usize,
     /// Sum of every live table's quota, never greater than `slots.capacity()`.
     committed: usize,
+    /// The next never-reused ownership identity, or the exhausted sentinel.
+    next_table: u64,
 }
 
 impl Arena {
@@ -114,6 +119,7 @@ impl Arena {
             slots: Vec::new(),
             hint: 0,
             committed: 0,
+            next_table: 0,
         }
     }
 
@@ -163,6 +169,28 @@ impl Arena {
         });
         Some(count)
     }
+
+    /// Required commitment for one more table while an identity remains.
+    fn table_requirement(&self, quota: usize) -> Result<(usize, u64), HandleError> {
+        let successor = handle_space::next_table_identity(self.next_table)
+            .ok_or(HandleError::IdentityExhausted)?;
+        let required = self
+            .committed
+            .checked_add(quota)
+            .ok_or(HandleError::ArenaFull)?;
+        if required > SLOTS as usize {
+            return Err(HandleError::ArenaFull);
+        }
+        Ok((required, successor))
+    }
+
+    /// Commit quota and its unique owner as one arena transaction.
+    fn commit_table(&mut self, required: usize, successor: u64) -> TableId {
+        let id = TableId(self.next_table);
+        self.next_table = successor;
+        self.committed = required;
+        id
+    }
 }
 
 static ARENA: SpinLock<Arena> = SpinLock::new(Arena::new());
@@ -180,21 +208,16 @@ static ARENA: SpinLock<Arena> = SpinLock::new(Arena::new());
 ///
 /// # Errors
 ///
-/// [`HandleError::ArenaFull`] if the combined quotas exceed the arena, and
-/// [`HandleError::OutOfMemory`] if backing cannot be allocated.
-fn commit_quota(quota: usize) -> Result<(), HandleError> {
+/// [`HandleError::ArenaFull`] if the combined quotas exceed the arena,
+/// [`HandleError::OutOfMemory`] if backing cannot be allocated, and
+/// [`HandleError::IdentityExhausted`] if no unique owner remains.
+fn commit_table(quota: usize) -> Result<TableId, HandleError> {
     loop {
         let wanted = {
             let mut arena = ARENA.lock_leaf();
-            let Some(required) = arena.committed.checked_add(quota) else {
-                return Err(HandleError::ArenaFull);
-            };
-            if required > SLOTS as usize {
-                return Err(HandleError::ArenaFull);
-            }
+            let (required, successor) = arena.table_requirement(quota)?;
             if arena.slots.capacity() >= required {
-                arena.committed = required;
-                return Ok(());
+                return Ok(arena.commit_table(required, successor));
             }
             required
         };
@@ -205,35 +228,20 @@ fn commit_quota(quota: usize) -> Result<(), HandleError> {
             // this allocation was attempted. Recheck before reporting an
             // exhaustion the machine has already resolved.
             let mut arena = ARENA.lock_leaf();
-            let Some(required) = arena.committed.checked_add(quota) else {
-                return Err(HandleError::ArenaFull);
-            };
-            if required > SLOTS as usize {
-                return Err(HandleError::ArenaFull);
-            }
+            let (required, successor) = arena.table_requirement(quota)?;
             if arena.slots.capacity() >= required {
-                arena.committed = required;
-                return Ok(());
+                return Ok(arena.commit_table(required, successor));
             }
             return Err(HandleError::OutOfMemory);
         }
 
         let mut arena = ARENA.lock_leaf();
-        let Some(required) = arena.committed.checked_add(quota) else {
-            drop(arena);
-            drop(room);
-            return Err(HandleError::ArenaFull);
-        };
-        if required > SLOTS as usize {
-            drop(arena);
-            drop(room);
-            return Err(HandleError::ArenaFull);
-        }
+        let (required, successor) = arena.table_requirement(quota)?;
         if arena.slots.capacity() >= required {
-            arena.committed = required;
+            let id = arena.commit_table(required, successor);
             drop(arena);
             drop(room);
-            return Ok(());
+            return Ok(id);
         }
         if room.capacity() < required {
             drop(arena);
@@ -242,16 +250,13 @@ fn commit_quota(quota: usize) -> Result<(), HandleError> {
         }
 
         room.append(&mut arena.slots);
+        let id = arena.commit_table(required, successor);
         let discarded = core::mem::replace(&mut arena.slots, room);
-        arena.committed = required;
         drop(arena);
         drop(discarded);
-        return Ok(());
+        return Ok(id);
     }
 }
-
-/// Numbers tables, so no two share an identity.
-static NEXT_TABLE: AtomicU32 = AtomicU32::new(0);
 
 /// A process's authority: the handles it holds, and how many it may hold.
 ///
@@ -288,20 +293,21 @@ impl HandleTable {
     ///
     /// The mixer is derived from the identity rather than from entropy: there
     /// is no entropy source until `RDSEED` arrives with the drivers, and a
-    /// distinct-per-table constant is what the property needs. It removes the
-    /// accidental case — a value that leaked from one table naming something
-    /// in another — which is what it is for.
+    /// table-derived constant is what the property needs. Its 32 bits may
+    /// repeat while the 64-bit owner never does; it removes the accidental
+    /// case, while the owner comparison remains the authority boundary
+    /// (D-204).
     ///
     /// # Errors
     ///
-    /// [`HandleError::ArenaFull`] if live table quotas leave no room, and
-    /// [`HandleError::OutOfMemory`] if the quota cannot be backed.
+    /// [`HandleError::ArenaFull`] if live table quotas leave no room,
+    /// [`HandleError::OutOfMemory`] if the quota cannot be backed, and
+    /// [`HandleError::IdentityExhausted`] if every unique owner was issued.
     pub(crate) fn new(quota: usize) -> Result<Self, HandleError> {
-        commit_quota(quota)?;
-        let id = TableId(NEXT_TABLE.fetch_add(1, Ordering::Relaxed));
+        let id = commit_table(quota)?;
         Ok(Self {
             id,
-            mixer: Mixer::for_table(id.0),
+            mixer: Mixer::for_table(id.0 as u32),
             quota,
             counts: AtomicU64::new(Quota::EMPTY),
         })
@@ -725,6 +731,25 @@ impl HandleTable {
     /// never in the arena, and the bounds check refuses it first (D-95).
     pub(crate) fn handle_for(&self, slot: Slot) -> u32 {
         slot.encode(self.mixer)
+    }
+
+    /// This table's non-repeating ownership identity.
+    pub(crate) fn identity_for_test(&self) -> u64 {
+        self.id.0
+    }
+
+    /// Run one check with the identity sequence at a controlled boundary.
+    ///
+    /// The check must drop every table it constructs before returning. Machine
+    /// self-tests are single-driver, so no other constructor races this swap.
+    pub(crate) fn with_next_identity_for_test<T>(next: u64, check: impl FnOnce() -> T) -> T {
+        let previous = {
+            let mut arena = ARENA.lock_leaf();
+            core::mem::replace(&mut arena.next_table, next)
+        };
+        let result = check();
+        ARENA.lock_leaf().next_table = previous;
+        result
     }
 }
 

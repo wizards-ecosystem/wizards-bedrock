@@ -708,6 +708,11 @@ choice. A saturating counter would make one slot's last generation permanent,
 so every later handle for it would decode as valid for ever — the failure the
 counter exists to prevent, made permanent instead of transient.
 
+The ownership identity does **not** share that tradeoff. D-204 widens it to a
+non-repeating `u64`, commits it with the table's quota under the arena lock, and
+refuses the terminal sentinel. Mixers can repeat because they only prevent
+accidental values; the full identity is the authority comparison.
+
 **One arena, and one ownership comparison.** Lookup is decode, bounds,
 generation, owner. A table is a refcounted object rather than a field of a
 process, because Zircon's strict per-process invariant was the first casualty
