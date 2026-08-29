@@ -33,6 +33,10 @@
 //! green before touching the snapshot. Machine mutations must then produce
 //! their exact named check or registry-pinned panic marker; any other failure
 //! is inconclusive rather than caught.
+//!
+//! D-210 keeps one consequential production-source break alive in every pure
+//! crate. A host command must print the exact test's own pass or failure line;
+//! a successful command which selected zero tests proves nothing.
 
 use anyhow::{Context, Result, bail};
 use std::process::Command;
@@ -1959,6 +1963,186 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "qemu::tests::a_failed_verdict_must_name_every_failed_check",
         },
     },
+    Mutation {
+        file: "libs/eevdf/src/lib.rs",
+        find: "        if self.slice_is_spent() {\n            return 0;\n        }",
+        replace: "        if false && self.slice_is_spent() {\n            return 0;\n        }",
+        breaks: "a thread past its deadline wraps into an enormous remaining slice",
+        reddens: Caught::HostTest {
+            package: "eevdf",
+            name: "tests::a_thread_past_its_deadline_has_no_slice_left",
+        },
+    },
+    Mutation {
+        file: "libs/elf64/src/lib.rs",
+        find: "        match self.offset.checked_add(self.file_size) {\n            Some(end) => end <= bytes as u64,\n            None => false,\n        }",
+        replace: "        self.offset.wrapping_add(self.file_size) <= bytes as u64",
+        breaks: "a segment extent wraps around into the elf image",
+        reddens: Caught::HostTest {
+            package: "elf64",
+            name: "tests::a_loader_can_ask_whether_the_contents_fit",
+        },
+    },
+    Mutation {
+        file: "libs/frame-space/src/lib.rs",
+        find: "        for frame in first..end {\n            self.check_releasable(frame)?;\n        }",
+        replace: "        self.check_releasable(first)?;",
+        breaks: "a multi-frame free mutates before its complete run is valid",
+        reddens: Caught::HostTest {
+            package: "frame-space",
+            name: "tests::freeing_a_run_is_all_or_nothing",
+        },
+    },
+    Mutation {
+        file: "libs/mmio-range/src/lib.rs",
+        find: "        if end > region_len {",
+        replace: "        if end > region_len.saturating_add(1) {",
+        breaks: "an mmio access may end one byte beyond its claimed region",
+        reddens: Caught::HostTest {
+            package: "mmio-range",
+            name: "tests::a_span_one_byte_past_the_region_is_refused",
+        },
+    },
+    Mutation {
+        file: "libs/path-walk/src/lib.rs",
+        find: "            depth = depth.checked_sub(1).ok_or(PathError::Escapes)?;",
+        replace: "            depth = depth.saturating_sub(1);",
+        breaks: "ascending above a directory handle is clamped to its root",
+        reddens: Caught::HostTest {
+            package: "path-walk",
+            name: "tests::ascending_past_the_start_is_refused_not_clamped",
+        },
+    },
+    Mutation {
+        file: "libs/pixel/src/lib.rs",
+        find: "        let Some(span) = pitch.checked_mul(height) else {",
+        replace: "        let Some(span) = row_bytes.checked_mul(height) else {",
+        breaks: "a padded framebuffer mapping omits every row's padding",
+        reddens: Caught::HostTest {
+            package: "pixel",
+            name: "tests::a_padded_framebuffer_spans_its_pitch",
+        },
+    },
+    Mutation {
+        file: "libs/ps2-keys/src/decode.rs",
+        find: "            Set::One => protocol::is_reply(byte) && byte != protocol::SELF_TEST_PASSED,",
+        replace: "            Set::One => protocol::is_reply(byte),",
+        breaks: "set one swallows a left-shift release as a controller reply",
+        reddens: Caught::HostTest {
+            package: "ps2-keys",
+            name: "decode::tests::set_1_reads_aa_as_a_shift_release_not_a_self_test_result",
+        },
+    },
+    Mutation {
+        file: "libs/ring-proto/src/lib.rs",
+        find: "        if self.reserved + self.completion.occupied() >= self.completion.capacity().entries() {",
+        replace: "        if self.reserved >= self.completion.capacity().entries() {",
+        breaks: "ring admission ignores completions already occupying their queue",
+        reddens: Caught::HostTest {
+            package: "ring-proto",
+            name: "tests::the_reservation_invariant_holds_under_interleaving",
+        },
+    },
+    Mutation {
+        file: "libs/slab-layout/src/lib.rs",
+        find: "        Ok(None) if size == 0 => Ok(Placement::Frames {\n            count: 1,\n            align: align.div_ceil(FRAME_SIZE),\n        }),",
+        replace: "        Ok(None) if false && size == 0 => Ok(Placement::Frames {\n            count: 1,\n            align: align.div_ceil(FRAME_SIZE),\n        }),",
+        breaks: "an over-aligned zero-size allocation asks for zero frames",
+        reddens: Caught::HostTest {
+            package: "slab-layout",
+            name: "tests::a_zero_sized_request_too_aligned_for_a_class_still_gets_a_frame",
+        },
+    },
+    Mutation {
+        file: "libs/stack-layout/src/lib.rs",
+        find: "            stack_base: guard_base + self.guard_len,",
+        replace: "            stack_base: guard_base,",
+        breaks: "a stack begins on the page reserved as its guard",
+        reddens: Caught::HostTest {
+            package: "stack-layout",
+            name: "tests::every_stack_has_its_guard_immediately_below",
+        },
+    },
+    Mutation {
+        file: "libs/timebase/src/lib.rs",
+        find: "        let carried = advanced - (whole << self.shift);",
+        replace: "        let carried = 0;",
+        breaks: "each clock update discards its fractional nanosecond carry",
+        reddens: Caught::HostTest {
+            package: "timebase",
+            name: "published_tests::a_thousand_updates_do_not_drift_from_one_conversion",
+        },
+    },
+    Mutation {
+        file: "libs/trap-cause/src/lib.rs",
+        find: "        self.0 & (1 << 1) != 0",
+        replace: "        self.0 & (1 << 2) != 0",
+        breaks: "a page fault reports user access as a write",
+        reddens: Caught::HostTest {
+            package: "trap-cause",
+            name: "tests::every_page_fault_bit_is_read_on_its_own",
+        },
+    },
+    Mutation {
+        file: "libs/x86-cpuid/src/xstate.rs",
+        find: "            let Ok(narrowed) = u32::try_from(cursor) else {\n                overflowed = true;\n                break;\n            };",
+        replace: "            let narrowed = cursor as u32;",
+        breaks: "a compacted xstate offset truncates through the u32 boundary",
+        reddens: Caught::HostTest {
+            package: "x86-cpuid",
+            name: "xstate::tests::a_layout_that_overflows_a_u32_offset_is_not_consistent",
+        },
+    },
+    Mutation {
+        file: "libs/x86-paging/src/lib.rs",
+        find: "        Self(self.0 & other.0)",
+        replace: "        Self(self.0 | other.0)",
+        breaks: "a page walk unions permissions that every level must grant",
+        reddens: Caught::HostTest {
+            package: "x86-paging",
+            name: "tests::intersection_keeps_only_what_both_hold",
+        },
+    },
+    Mutation {
+        file: "libs/x86-pit/src/calibrate.rs",
+        find: "        Some(product) => product.checked_add(denominator / 2),",
+        replace: "        Some(product) => product.checked_add(denominator & 0),",
+        breaks: "pit calibration floors instead of rounding to nearest",
+        reddens: Caught::HostTest {
+            package: "x86-pit",
+            name: "calibrate::tests::rounding_is_to_nearest_not_floor",
+        },
+    },
+    Mutation {
+        file: "libs/x86-tables/src/idt.rs",
+        find: "        gate.attributes |= 0b11 << 5;",
+        replace: "        gate.attributes |= 0b11 << 4;",
+        breaks: "a user-callable interrupt gate writes the wrong privilege bits",
+        reddens: Caught::HostTest {
+            package: "x86-tables",
+            name: "idt::tests::a_user_callable_gate_differs_only_in_privilege",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutate.rs",
+        find: "    if success {\n        let passed = format!(\"test {name} ... ok\");\n        if stdout.contains(&passed) || stderr.contains(&passed) {\n            return Ok(false);\n        }\n        bail!(\"host mutation selected no exact test `{name}`\");\n    }",
+        replace: "    if success {\n        return Ok(false);\n    }",
+        breaks: "a successful zero-test command is accepted as an exact host witness",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::an_exact_host_witness_must_run",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutate.rs",
+        find: "            package: \"eevdf\",",
+        replace: "            package: \"xtask\",",
+        breaks: "a pure host crate can lose its only persistent source mutation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::every_host_library_has_a_persistent_source_mutation",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -2266,21 +2450,36 @@ fn host_test_reports(paths: &Paths, package: &str, name: &str) -> Result<bool> {
         .args(["test", "--package", package, name, "--", "--exact"])
         .output()
         .with_context(|| format!("could not spawn host mutation test {package}::{name}"))?;
-    if output.status.success() {
-        return Ok(false);
-    }
-
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assess_host_test(
+        name,
+        output.status.success(),
+        &stdout,
+        &stderr,
+        &output.status.to_string(),
+    )
+}
+
+fn assess_host_test(
+    name: &str,
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+    status: &str,
+) -> Result<bool> {
     let verdict = format!("test {name} ... FAILED");
     if stdout.contains(&verdict) || stderr.contains(&verdict) {
-        Ok(true)
-    } else {
-        bail!(
-            "host mutation did not reach `{name}`; cargo exited {}\n{stdout}{stderr}",
-            output.status
-        )
+        return Ok(true);
     }
+    if success {
+        let passed = format!("test {name} ... ok");
+        if stdout.contains(&passed) || stderr.contains(&passed) {
+            return Ok(false);
+        }
+        bail!("host mutation selected no exact test `{name}`");
+    }
+    bail!("host mutation did not reach `{name}`; cargo exited {status}\n{stdout}{stderr}")
 }
 
 #[cfg(test)]
@@ -2348,14 +2547,15 @@ mod tests {
         assert!(error.to_string().contains("would not be rebuilt"));
     }
 
-    /// Every exact machine or host check a mutation names exists.
+    /// Every named machine check or host test function exists.
     ///
     /// The cheap half of D-134, and the one that runs at every commit. A
     /// mutation whose target check was renamed or deleted still boots, still
     /// reddens *something* on the way past, and still prints "caught" — so the
     /// expensive tier cannot see this, and the sweep costs a boot apiece.
-    /// Matching the name against `selftest.rs` or the named host package's
-    /// Rust sources costs milliseconds and catches it when the rename lands.
+    /// Host module qualification is proved when the exact test command prints
+    /// that test's own verdict; this cheap source check catches a renamed or
+    /// deleted function without recursively invoking Cargo.
     #[test]
     fn every_named_check_exists() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2405,6 +2605,50 @@ mod tests {
                 Caught::Panic { .. } => {}
             }
         }
+    }
+
+    #[test]
+    fn every_host_library_has_a_persistent_source_mutation() {
+        for &package in crate::paths::HOST_PACKAGES {
+            if package == "xtask" {
+                continue;
+            }
+            let source = format!("libs/{package}/src/");
+            assert!(
+                MUTATIONS.iter().any(|mutation| {
+                    mutation.file.starts_with(&source)
+                        && matches!(
+                            mutation.reddens,
+                            Caught::HostTest {
+                                package: actual,
+                                ..
+                            } if actual == package
+                        )
+                }),
+                "{package} has no persistent production-source mutation"
+            );
+        }
+    }
+
+    #[test]
+    fn an_exact_host_witness_must_run() {
+        let name = "tests::the_exact_test";
+        assert!(assess_host_test(name, true, "running 0 tests", "", "0").is_err());
+        assert!(
+            assess_host_test(name, true, "test tests::the_exact_test ... ok", "", "0")
+                .is_ok_and(|caught| !caught)
+        );
+        assert!(
+            assess_host_test(
+                name,
+                false,
+                "test tests::the_exact_test ... FAILED",
+                "",
+                "1"
+            )
+            .is_ok_and(|caught| caught)
+        );
+        assert!(assess_host_test(name, false, "", "compiler error", "1").is_err());
     }
 
     /// Every mutation says what catching it looks like.
