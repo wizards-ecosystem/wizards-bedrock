@@ -18,18 +18,23 @@ admission reasons.
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
 are **not closed**. `014-storage.md`'s closing table owns the checked current
-QEMU and mutation totals. The last recorded complete mutation sweep covered the
-former 64-entry registry. The first 276-entry closing attempt caught 270
-exactly and exposed six qualification defects. D-232 repaired the direct
-defects; its successor exposed cross-mutation build contamination, which D-233
-diagnosed. The complete 278-entry diagnostic successor caught 274 exactly with
-no survivor and exposed the four observer/order gaps D-234 repairs. The first
-283-entry successor then exposed the build contamination D-233 and D-236 had
-each half-repaired, which D-237 replaces with its cause: a restored source
-must be written forward in time, not copied backwards. Six entries now stand
-beyond the last full sweep, leaving the 284-entry registry to qualify. The
-current image has not completed its human VMware round. The compiler gate in
-`015-wizzy-userland.md` is also **CLOSED**.
+QEMU and mutation totals. The qualification history is worth keeping, because
+each attempt found the next defect rather than the same one: the first
+276-entry closing attempt caught 270 exactly and exposed six qualification
+defects; D-232 repaired the direct ones; its successor exposed cross-mutation
+build contamination, which D-233 diagnosed; the complete 278-entry successor
+caught 274 exactly with no survivor and exposed the four observer/order gaps
+D-234 repairs; and the 283-entry successor exposed the contamination D-233 and
+D-236 had each half-repaired. D-237 replaced all of that with its cause — a
+restored source must be written forward in time, not copied backwards — and
+the complete 285-entry sweep on `ff6ddd3` then caught every entry through the
+check it names, with no survivor and no second observation spent anywhere.
+
+What is left is the human VMware round. The current image has not been booted
+by a person, so PW-003, PW-004 and the three observations which depend on them
+are open, and the phase does not close until they are. The compiler gate in
+`015-wizzy-userland.md` is also **CLOSED**, and closing Phase 6 does not open
+it.
 
 The kernel is ready for the first real Wizzy integration only when:
 
@@ -72,8 +77,8 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The 278-entry diagnostic successor caught 274 exactly with no survivor; D-234 repaired its observer/order gaps, and the first 283-entry successor traced its remaining contamination to a restored file's timestamp, which D-237 fixes at the cause, bringing the registry to 284 | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | Every named mutation is caught by the check it names; record commit, result and duration; source and index digests remain exact |
-| PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
+| PW-001 | DONE | P0 | The 278-entry diagnostic successor caught 274 exactly with no survivor; D-234 repaired its observer/order gaps, and the first 283-entry successor traced its remaining contamination to a restored file's timestamp, which D-237 fixed at its cause | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | 2026-08-29 the complete 285-entry sweep on clean commit `ff6ddd3` caught every mutation through the check it names in 44 minutes, with no survivor and no inconclusive first observation anywhere — the first sweep to spend no second observation at all; the journal recorded source `29e66024…5e283e11` and index `29423478…9474e028`, and the tree was byte-identical afterwards |
+| PW-002 | DONE | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | 2026-08-29 OpenJDK 21.0.5 and TLC 2026.08.21.155922 completed `Ring` at 2,901 generated and 1,040 distinct states to depth 49, and `RingMemory` at 2,809 and 1,296 to depth 31, both with zero errors on `ff6ddd3`; all four model mutations violated only the invariant each names |
 | PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current image | Generate `cargo xtask vmware`, boot its identified self-test image and perform every human keyboard round | A dated zero-failure fresh transcript at the verdict's expected total, including image digest, WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Generate `cargo xtask vmware --shipped` and boot its separately identified machine after PW-003 | Its fresh transcript reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
 | PW-005 | REQUIRED | P1 | The ordinary gate must describe the same commit as the exceptional evidence | Run `cargo xtask ci` after every register-closing change and once after the evidence-only close | Release/debug self-tests, shipped liveness and degraded boot all pass on the recorded commit |
@@ -239,22 +244,26 @@ of them without upgrading historical evidence:
 - `000-vision.md` and D-03 now follow D-219: Limine remains the boot boundary,
   and an own loader needs a concrete unmet handoff rather than a roadmap slot.
 
-## Recommended execution order
+## What is left
 
-1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
-   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-108, PW-109, PW-200,
-   PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-210,
-   PW-300, PW-302, PW-303, PW-304, PW-306, PW-307, PW-400, PW-401, PW-402, PW-403, PW-404, PW-405,
-   PW-500, PW-501, PW-502, PW-503, PW-504, PW-505, PW-506, PW-507, PW-508,
-   PW-509, PW-510, PW-511, PW-512, PW-513, PW-514 and PW-515 are closed by D-185
-   through D-231.
-2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
-   (the remaining P1 rows).
-3. Harden the verification runner first (PW-500 through PW-509), so later
-   evidence survives interruption and identifies exact bytes.
-4. Run the complete closing evidence PW-001 through PW-006 on one commit.
-5. In parallel but in `wizards-ink`, complete WZ-001 through WZ-004. Only then
-   execute PW-601/PW-602 and begin `015`'s post-gate slices.
+D-185 through D-238 closed every code-bearing row in this register, and the
+closing qualification ran on `ff6ddd3`: the gate, the complete mutation sweep,
+the ring models and the offline evidence manifest are all recorded above. What
+remains needs a person at a machine.
+
+1. Boot the two generated VMware machines and record both fresh transcripts
+   (PW-003, PW-004). Nothing else here can proceed without them, and generating
+   a machine is not booting one.
+2. Close PW-201, PW-301 and PW-305 from that self-test transcript: the
+   discovered NVMe BAR, active NX beside a calibrated clock and a successful
+   user launch, and `every enabled state component survives a switch` reached
+   through the compacted `XSAVEC` banner rather than the standard form QEMU
+   offers.
+3. Write the phase-close ADR, which is PW-006's deliverable and the last
+   register-closing change, then run `cargo xtask ci` once more (PW-005).
+4. In `wizards-ink`, and independently of all of the above, complete WZ-001
+   through WZ-004. Only then execute PW-601/PW-602 and begin `015`'s post-gate
+   slices.
 
 This ordering is a risk order, not authorization to skip the register's proof
 rules. Every implementation still gets its check, every new check is broken
