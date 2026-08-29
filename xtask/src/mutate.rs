@@ -2594,6 +2594,20 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "publication::tests::kernel_completion_producers_publish_in_tail_order",
         },
     },
+    Mutation {
+        file: "kernel/src/handle.rs",
+        find: "        if entry.owner != self.id {\n            return Err(HandleError::Stale);\n        }",
+        replace: "",
+        breaks: "a resolved handle cannot cross its ownership table",
+        reddens: Caught::Check("a handle reveals no foreign occupancy"),
+    },
+    Mutation {
+        file: "kernel/src/handle.rs",
+        find: "                Some(entry) if entry.owner != self.id => return Err(HandleError::Stale),\n",
+        replace: "",
+        breaks: "closing a foreign handle cannot remove another table's entry",
+        reddens: Caught::Check("a handle reveals no foreign occupancy"),
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

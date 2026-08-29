@@ -767,6 +767,15 @@ arena — a table can learn which slots another holds. Zircon collapses both to
 one error for that reason, and it is a decision for the slice that has a
 syscall to surface them through.
 
+D-222 closes that owed decision before a direct Wizzy handle operation can
+freeze it. One exact slot-generation probe formerly returned `NotYours` for a
+live foreign entry and `Stale` once that entry was absent: one architectural
+occupancy bit per probe, though no authority crossed and the current ring
+already flattened both to `BAD_HANDLE`. Empty, reused and foreign slots now
+all return `Stale`; the ownership comparison remains on resolve and close.
+The result carries zero foreign-occupancy bits. This is an API-result claim,
+not a constant-time or microarchitectural side-channel claim.
+
 ## Slice 5 — ring 3 (2026-08-24)
 
 Recorded as built, per the charter above.

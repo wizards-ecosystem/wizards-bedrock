@@ -44,11 +44,12 @@ pub(crate) struct TableId(u64);
 pub(crate) enum HandleError {
     /// The value is not a well-formed handle at all.
     Malformed,
-    /// It names a slot that is empty, or one whose generation has moved on —
-    /// which is what a handle kept across a close looks like.
+    /// It names no live entry belonging to this table.
+    ///
+    /// Empty, reused and foreign slots deliberately have one answer. Keeping
+    /// the ownership check while collapsing its diagnostic removes the
+    /// global-arena occupancy oracle without letting authority cross (D-222).
     Stale,
-    /// It names a live slot belonging to another table.
-    NotYours,
     /// It does not carry the rights the operation needs.
     Denied,
     /// A right was asked for that means nothing about this kind of object.
@@ -67,8 +68,7 @@ impl core::fmt::Display for HandleError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match *self {
             Self::Malformed => "not a handle",
-            Self::Stale => "handle names nothing live",
-            Self::NotYours => "handle belongs to another table",
+            Self::Stale => "handle names nothing live in this table",
             Self::Denied => "handle does not carry the right",
             Self::Meaningless => "right means nothing for this object type",
             Self::QuotaExhausted => "handle quota exhausted",
@@ -484,10 +484,10 @@ impl HandleTable {
     ///
     /// # Errors
     ///
-    /// [`HandleError::Malformed`], [`HandleError::Stale`] or
-    /// [`HandleError::NotYours`], each naming a different thing that went
-    /// wrong, because a caller that cannot tell them apart cannot report
-    /// usefully.
+    /// [`HandleError::Malformed`] if the encoding is not a handle, or
+    /// [`HandleError::Stale`] if it names no live entry belonging to this
+    /// table. Empty, reused and foreign slots intentionally share the latter
+    /// result so this global arena reveals no occupancy bit (D-222).
     pub(crate) fn resolve(&self, handle: u32) -> Result<(ObjectRef, Rights), HandleError> {
         let named = Slot::decode(handle, self.mixer).ok_or(HandleError::Malformed)?;
         let arena = ARENA.lock_leaf();
@@ -500,7 +500,7 @@ impl HandleTable {
         }
         let entry = slot.entry.as_ref().ok_or(HandleError::Stale)?;
         if entry.owner != self.id {
-            return Err(HandleError::NotYours);
+            return Err(HandleError::Stale);
         }
         Ok((entry.object.clone(), entry.rights))
     }
@@ -650,7 +650,7 @@ impl HandleTable {
             }
             match slot.entry.as_ref() {
                 None => return Err(HandleError::Stale),
-                Some(entry) if entry.owner != self.id => return Err(HandleError::NotYours),
+                Some(entry) if entry.owner != self.id => return Err(HandleError::Stale),
                 Some(_) => {}
             }
             slot.generation = named.reused().generation();

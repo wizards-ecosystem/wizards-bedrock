@@ -5136,45 +5136,40 @@ fn a_meaningless_right_is_refused() -> bool {
         && table.live() == 2
 }
 
-/// A handle from one table is not a handle in another.
+/// A handle from one table neither crosses nor reveals occupancy in another.
 ///
-/// The single ownership comparison that makes a *global* arena safe to share
-/// between tables (D-78). A well-formed handle belonging to someone else is
-/// refused as theirs, and a value from another table usually does not decode
-/// at all, because the mixers differ.
-fn a_handle_does_not_cross_tables() -> bool {
+/// The single ownership comparison still makes the global arena safe to
+/// share. The live and absent cases deliberately have the same result: the
+/// former `NotYours` result exposed one bit for an exact slot-generation probe
+/// even though it granted no authority (D-78, D-222).
+fn a_handle_reveals_no_foreign_occupancy() -> bool {
     let mine = handle_table_or_false!(4);
     let theirs = handle_table_or_false!(4);
     let Ok(handle) = mine.insert(object::event(), Rights::UNIVERSAL) else {
         return false;
     };
 
-    // Forged deliberately, because the accident does not reach the comparison.
-    // Two mixers differ, so `mine`'s handle decodes in `theirs` to an index
-    // that is almost never in the arena — and the bounds check refuses it
-    // before the owner is ever looked at. An earlier version accepted any of
-    // three errors and so passed with the ownership comparison deleted (D-95).
     let Some(slot) = mine.slot_of(handle) else {
         return false;
     };
     let forged = theirs.handle_for(slot);
-    let refused = theirs.resolve(forged).err() == Some(HandleError::NotYours);
+    let live_resolve = theirs.resolve(forged).err();
+    let live_close = theirs.close(forged).err();
+    let foreign_changed_nothing =
+        mine.resolve(handle).is_ok() && mine.live() == 1 && theirs.live() == 0;
 
-    // The accidental case is refused too. `theirs` holds nothing, so the only
-    // refusals reachable are the bounds check and the generation; naming both
-    // is the whole set, which is the `matches!(Err(_) | Err(_) | Err(_))` shape
-    // D-95 deleted from this very function. Named singly instead (D-105).
-    let stray = matches!(
-        theirs.resolve(handle),
-        Err(HandleError::Malformed | HandleError::Stale)
-    );
-    // And *not* by reaching the ownership comparison: `theirs` holds no
-    // entries, so a `NotYours` would mean it read an owner out of an empty
-    // slot. Naming all three refusals — which an earlier version did — says
-    // only "an error", the shape D-95 deleted from this function (D-105).
-    let not_by_ownership = theirs.resolve(handle).err() != Some(HandleError::NotYours);
-    let still_mine = mine.resolve(handle).is_ok();
-    refused && stray && not_by_ownership && still_mine
+    if mine.close(handle).is_err() {
+        return false;
+    }
+    let absent_resolve = theirs.resolve(forged).err();
+    let absent_close = theirs.close(forged).err();
+
+    live_resolve == Some(HandleError::Stale)
+        && live_resolve == absent_resolve
+        && live_close == Some(HandleError::Stale)
+        && live_close == absent_close
+        && foreign_changed_nothing
+        && mine.live() == 0
 }
 
 /// Table ownership reaches a terminal refusal instead of repeating live authority.
@@ -7680,8 +7675,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_meaningless_right_is_refused(),
     );
     report.check(
-        "a handle does not cross tables",
-        a_handle_does_not_cross_tables(),
+        "a handle reveals no foreign occupancy",
+        a_handle_reveals_no_foreign_occupancy(),
     );
     report.check(
         "table identities never wrap or repeat",
@@ -8343,8 +8338,7 @@ fn filling_the_arena_never_repeats_a_slot() -> bool {
     }
 
     // And every one still resolves — an overwrite leaves the loser naming a
-    // slot whose entry belongs to someone else, which `resolve` reports as
-    // `NotYours` or `Stale` rather than as the object it was given.
+    // slot that is stale in its table rather than the object it was given.
     let all_live = handles
         .iter()
         .all(|handle| table.kind_of(*handle) == Ok(ObjectType::Event));
