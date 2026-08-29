@@ -670,48 +670,47 @@ fn two_spaces_map_one_address_to_different_memory() -> bool {
     separate && both_user && shared_kernel
 }
 
-/// What one thread has in a vector register, another thread cannot see, and
-/// the first still has it afterwards.
+/// Every enabled extended-state component follows its thread.
 ///
 /// Eager extended-state save and restore (D-82, D-108). Lazy is CVE-2018-3665
 /// and was never on the table; what was owed was doing it at all, and D-99
 /// made the gap reachable — two threads can be in ring 3, so two threads can
 /// have floating-point state to lose.
 ///
-/// `xmm0` is the probe because it is the one vector register anything in this
-/// kernel touches: the build is `+soft-float`, so no compiled code holds
-/// anything there, which is also why the save can sit before the switch rather
-/// than inside it.
-fn a_vector_register_survives_a_switch() -> bool {
+/// x87, the low half of `xmm0` and the high half of `ymm0` independently
+/// witness the three bits this kernel enables (D-228).
+fn every_enabled_state_component_survives_a_switch() -> bool {
     /// What this thread puts there.
-    const MINE: u64 = 0xA5A5_1234_5678_A5A5;
-    /// What the other thread puts there.
-    const THEIRS: u64 = 0x5A5A_8765_4321_5A5A;
-
+    const MINE: xstate::Probe = xstate::Probe {
+        x87: 0x1234_5678_7654_3210,
+        xmm: 0xA5A5_1234_5678_A5A5,
+        ymm: 0xC3C3_0F0F_F0F0_3C3C,
+    };
     if !xstate::is_enabled() {
         // A processor with no `XSAVE` has nothing to save, and reports so.
         return xstate::bytes() == 0 && xstate::extended_control() == 0;
     }
 
-    // The register the write went to is the register the read comes from,
-    // before anything else runs — a conjunct that would hold with the whole
-    // save path deleted, and named so it is not mistaken for the property.
-    if !xstate::write_vector_probe(MINE) || xstate::read_vector_probe() != Some(MINE) {
+    // The write and read agree before anything else runs. Reading pops x87,
+    // so install the complete probe again for the actual switch.
+    if !xstate::write_probe(MINE)
+        || xstate::read_probe() != Some(MINE)
+        || !xstate::write_probe(MINE)
+    {
         return false;
     }
 
-    VECTOR_INTRUDER_RAN.store(0, Ordering::Release);
-    if thread::spawn("vector-intruder", clobber_a_vector_register).is_err() {
+    EXTENDED_INTRUDER_RAN.store(0, Ordering::Release);
+    EXTENDED_INTRUDER_SAW_OWN.store(0, Ordering::Release);
+    if thread::spawn("extended-intruder", clobber_extended_state).is_err() {
         return false;
     }
-    if !runs_until(500, || VECTOR_INTRUDER_RAN.load(Ordering::Acquire) == 1) {
+    if !runs_until(500, || EXTENDED_INTRUDER_RAN.load(Ordering::Acquire) == 1) {
         return false;
     }
 
-    // The other thread wrote its own value and this one is unchanged, which is
-    // only true if the switch away saved and the switch back restored.
-    let kept = xstate::read_vector_probe() == Some(MINE);
-    let intruded = VECTOR_INTRUDER_SAW.load(Ordering::Acquire) == THEIRS as usize;
+    let kept = xstate::read_probe() == Some(MINE);
+    let intruded = EXTENDED_INTRUDER_SAW_OWN.load(Ordering::Acquire) == 1;
 
     // And `XCR0` holds what boot asked for.
     // Read back from `XCR0` through `XGETBV`, which is guarded on `CR4` and
@@ -724,23 +723,27 @@ fn a_vector_register_survives_a_switch() -> bool {
     kept && intruded && masked
 }
 
-/// Set by the intruding thread once it has run.
-static VECTOR_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
+/// Set by the intruding thread once it has read its restored state.
+static EXTENDED_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
 
-/// What the intruding thread read back from its own register.
-static VECTOR_INTRUDER_SAW: AtomicUsize = AtomicUsize::new(0);
+/// Whether the intruding thread read back all three of its own values.
+static EXTENDED_INTRUDER_SAW_OWN: AtomicUsize = AtomicUsize::new(0);
 
-/// Put a different value in `xmm0` and read it back, on another thread.
-fn clobber_a_vector_register() {
-    const THEIRS: u64 = 0x5A5A_8765_4321_5A5A;
-    if !xstate::write_vector_probe(THEIRS) {
+/// Put different values in every component and read them after a switch.
+fn clobber_extended_state() {
+    const THEIRS: xstate::Probe = xstate::Probe {
+        x87: 0x0FED_CBA9_1357_2468,
+        xmm: 0x5A5A_8765_4321_5A5A,
+        ymm: 0x3C3C_F0F0_0F0F_C3C3,
+    };
+    if !xstate::write_probe(THEIRS) {
         return;
     }
     let mut context = context();
     thread::yield_now(&mut context);
-    let seen = xstate::read_vector_probe().unwrap_or(0) as usize;
-    VECTOR_INTRUDER_SAW.store(seen, Ordering::Release);
-    VECTOR_INTRUDER_RAN.store(1, Ordering::Release);
+    let saw_own = xstate::read_probe() == Some(THEIRS);
+    EXTENDED_INTRUDER_SAW_OWN.store(saw_own as usize, Ordering::Release);
+    EXTENDED_INTRUDER_RAN.store(1, Ordering::Release);
 }
 
 /// A run of frames the kernel owns cannot be mapped where ring 3 can read it.
@@ -7501,8 +7504,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         two_spaces_map_one_address_to_different_memory(),
     );
     report.check(
-        "a vector register survives a switch",
-        a_vector_register_survives_a_switch(),
+        "every enabled state component survives a switch",
+        every_enabled_state_component_survives_a_switch(),
     );
     report.check(
         "a ring announces its shape and keeps its pages",

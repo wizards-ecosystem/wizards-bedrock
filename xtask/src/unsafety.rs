@@ -93,6 +93,8 @@ impl<'ast> Visit<'ast> for UnsafeFacts {
 /// D-206 removed the two unused dynamic-port read/write operations.
 /// D-221 added two volatile shared-payload operations around the atomic ring
 /// publication boundary.
+/// D-228 added ten lines to drive and read x87, SSE and AVX as one complete
+/// extended-state switch witness.
 ///
 /// Phase 5 added the most unsafe of any phase so far — ring 3, the extended
 /// state, the address space that grows — which is why this is where the number
@@ -110,7 +112,7 @@ pub const BUDGET: usize = 380;
 /// is the truth — so the measurement is recorded beside it and checked, which
 /// makes drift toward the ceiling visible rather than something a reader
 /// infers from a comment that may be a phase out of date.
-pub const MEASURED: usize = 370;
+pub const MEASURED: usize = 380;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///
@@ -232,7 +234,7 @@ mod tests {
             "wost/src/arch/x86_64/xstate.rs",
             9,
             3,
-            "d0c4396b88caa5c618a6fc537feb0086448fad58f5fbbfeb26b159a50c567dc5",
+            "b2d50d6b4bdcff34ff628cc720d212db55a9f6966742a179ae9aba0f2910e9df",
         ),
         (
             "wost/src/boot/limine_glue.rs",

@@ -177,7 +177,7 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "    if xstate::is_enabled() {",
         replace: "    if false && xstate::is_enabled() {",
         breaks: "extended state follows the thread",
-        reddens: Caught::Check("a vector register survives a switch"),
+        reddens: Caught::Check("every enabled state component survives a switch"),
     },
     Mutation {
         file: "wost/src/arch/x86_64/task.rs",
@@ -2872,6 +2872,27 @@ pub const MUTATIONS: &[Mutation] = &[
             package: "xtask",
             name: "qemu::tests::storage_construction_is_serialized_across_runners",
         },
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/xstate.rs",
+        find: "const OPERATION_MASK: u32 = u32::MAX;",
+        replace: "const OPERATION_MASK: u32 = u32::MAX & !(xstate::X87 as u32);",
+        breaks: "x87 state follows the thread",
+        reddens: Caught::Check("every enabled state component survives a switch"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/xstate.rs",
+        find: "const OPERATION_MASK: u32 = u32::MAX;",
+        replace: "const OPERATION_MASK: u32 = u32::MAX & !(xstate::SSE as u32);",
+        breaks: "SSE state follows the thread",
+        reddens: Caught::Check("every enabled state component survives a switch"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/xstate.rs",
+        find: "const OPERATION_MASK: u32 = u32::MAX;",
+        replace: "const OPERATION_MASK: u32 = u32::MAX & !(xstate::AVX as u32);",
+        breaks: "AVX state follows the thread",
+        reddens: Caught::Check("every enabled state component survives a switch"),
     },
 ];
 

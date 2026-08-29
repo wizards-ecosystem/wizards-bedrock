@@ -53,6 +53,9 @@ static BYTES: AtomicUsize = AtomicUsize::new(0);
 /// Which save instruction to use: 0 none, 1 `XSAVE`, 2 `XSAVEC`.
 static FORM: AtomicUsize = AtomicUsize::new(0);
 
+/// Components the save and restore instructions are asked to transfer.
+const OPERATION_MASK: u32 = u32::MAX;
+
 /// What [`init`] decided, for the boot report and the checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Extended {
@@ -211,7 +214,7 @@ pub unsafe fn save(area: *mut u8) {
                 asm!(
                     "xsavec [{area}]",
                     area = in(reg) area,
-                    in("eax") u32::MAX,
+                    in("eax") OPERATION_MASK,
                     in("edx") u32::MAX,
                     options(nostack, preserves_flags),
                 );
@@ -223,7 +226,7 @@ pub unsafe fn save(area: *mut u8) {
                 asm!(
                     "xsave [{area}]",
                     area = in(reg) area,
-                    in("eax") u32::MAX,
+                    in("eax") OPERATION_MASK,
                     in("edx") u32::MAX,
                     options(nostack, preserves_flags),
                 );
@@ -250,7 +253,7 @@ pub unsafe fn restore(area: *const u8) {
         asm!(
             "xrstor [{area}]",
             area = in(reg) area,
-            in("eax") u32::MAX,
+            in("eax") OPERATION_MASK,
             in("edx") u32::MAX,
             options(nostack, preserves_flags),
         );
@@ -277,61 +280,76 @@ unsafe fn set_extended_control(mask: u64) {
     }
 }
 
-/// Put `value` in the low quadword of `xmm0`.
+/// Values spanning every extended-state component this kernel enables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Probe {
+    /// One exactly representable value on the x87 register stack.
+    pub x87: i64,
+    /// The low quadword of `xmm0`, in the legacy SSE component.
+    pub xmm: u64,
+    /// The low quadword of `ymm0`'s upper half, in the AVX component.
+    pub ymm: u64,
+}
+
+/// Put `probe` in x87, SSE and AVX state.
 ///
-/// The only thing in this kernel that touches a vector register, and it exists
-/// so a check can ask whether a switch preserved one.
+/// These are the only floating-point/vector instructions in the kernel. The
+/// clobbers cannot be declared because `x86_64-unknown-none` is built
+/// `-sse,+soft-float`; no compiled code can hold these registers, which is
+/// also what lets the switch save before changing stacks (D-108, D-228).
 ///
-/// **The clobber is not declared, and cannot be.** `x86_64-unknown-none` is
-/// built `-sse,+soft-float`, so `xmm0` is not a register LLVM knows how to
-/// allocate — naming it in a clobber list is rejected. What makes this sound
-/// is therefore the *target feature* and not the asm contract: no compiled
-/// code in this kernel holds anything in a vector register, which is also what
-/// lets the switch's save sit before the switch (D-108). Written down because
-/// soundness resting on a build flag should be visible where the flag is
-/// relied on (D-115).
-///
-/// **Refuses where the register is not there to write**, returning `false`.
-/// `movq xmm0, r64` is an SSE instruction, and an SSE instruction is a `#UD`
-/// unless `CR4.OSFXSR` is set and `CR0.EM` is clear. `enable_extended_state`
-/// is the only thing in this kernel that arranges either, and it runs exactly
-/// when [`is_enabled`] goes true — so that is the guard, and a machine with no
-/// `XSAVE` gets a refusal rather than a fault. This was a `pub fn` with no
-/// guard at all: safe code, in `kernel`, one call from an undefined opcode on
-/// a processor this kernel is meant to report and settle on (D-123, D-124).
-pub fn write_vector_probe(value: u64) -> bool {
-    if !is_enabled() {
+/// Returns `false` unless all three components are live. `CR4.OSFXSR`,
+/// `CR4.OSXSAVE` and `CR0.EM` have their required values whenever [`init`]
+/// publishes that mask, so safe callers cannot reach an undefined instruction.
+pub fn write_probe(probe: Probe) -> bool {
+    if !is_enabled() || extended_control() & xstate::PERMITTED != xstate::PERMITTED {
         return false;
     }
-    // SAFETY: writes one register no compiled code in this kernel holds, per
-    // the note above, and reads nothing else. `is_enabled` is evidence the
-    // instruction is not a `#UD`.
+    let x87 = probe.x87;
+    // SAFETY: the instructions touch only the three components named above,
+    // which compiled code cannot hold. The mask check proves each instruction
+    // is enabled, and `x87` remains live for the memory read.
     unsafe {
         asm!(
-            "movq xmm0, {value}",
-            value = in(reg) value,
-            options(nomem, nostack, preserves_flags),
+            "fninit\nfild qword ptr [{x87}]",
+            "movq xmm0, {xmm}",
+            "vmovq xmm1, {ymm}",
+            "vinsertf128 ymm0, ymm0, xmm1, 1",
+            x87 = in(reg) &x87,
+            xmm = in(reg) probe.xmm,
+            ymm = in(reg) probe.ymm,
+            options(nostack, preserves_flags),
         );
     }
     true
 }
 
-/// Read back what [`write_vector_probe`] put there, or `None` where there is
-/// no such register to read.
-pub fn read_vector_probe() -> Option<u64> {
-    if !is_enabled() {
+/// Read and consume the values [`write_probe`] installed.
+///
+/// The x87 value is popped so repeated probes cannot fill its eight-entry
+/// stack. The SSE and AVX lanes are only read.
+pub fn read_probe() -> Option<Probe> {
+    if !is_enabled() || extended_control() & xstate::PERMITTED != xstate::PERMITTED {
         return None;
     }
-    let value: u64;
-    // SAFETY: as above, reading rather than writing.
+    let mut x87 = 0i64;
+    let xmm: u64;
+    let ymm: u64;
+    // SAFETY: as in `write_probe`; `x87` is writable for the instruction and
+    // `out` registers cannot overlap its pointer before the final store.
     unsafe {
         asm!(
-            "movq {value}, xmm0",
-            value = out(reg) value,
-            options(nomem, nostack, preserves_flags),
+            "movq {xmm}, xmm0",
+            "vextractf128 xmm1, ymm0, 1",
+            "vmovq {ymm}, xmm1",
+            "fistp qword ptr [{x87}]",
+            x87 = in(reg) &mut x87,
+            xmm = out(reg) xmm,
+            ymm = out(reg) ymm,
+            options(nostack, preserves_flags),
         );
     }
-    Some(value)
+    Some(Probe { x87, xmm, ymm })
 }
 
 /// Read `XCR0` back, for the check that the write took.
