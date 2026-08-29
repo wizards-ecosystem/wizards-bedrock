@@ -30,7 +30,7 @@ A full OS with userspace that can, eventually:
 | Kernel language | Rust (stable channel while possible); it does not move to Wizzy (D-183) |
 | First-party target userland | Every feasible non-kernel component is Wizzy once the compiler-readiness gate opens; product work waits there. Narrow runtime shims, host tooling, and third-party libraries, ports and compatibility are exceptions (D-183) |
 | Architecture | x86_64 first; `arch/` modules in both `wost` and `kernel`, reached through `arch::current`, isolate arch code for future ports |
-| Boot | UEFI + Limine (vendored); own bootloader is a future side-quest |
+| Boot | UEFI + Limine (vendored); an own bootloader is not planned without a concrete unmet handoff requirement (D-219) |
 | Kernel shape | Monolithic, modular |
 | ABI | **Capability handles + async submission/completion queues** (native); POSIX only as an mlibc translation layer for ports — see `002-architecture.md` |
 | Process model | `spawn()` only — no native `fork()` (compat-fork gated for the POSIX layer) |
@@ -135,7 +135,7 @@ reference — not followed linearly). Docs are numbered in creation order.
 11. Document web — **NetSurf milestone** (D-75): a framebuffer frontend, and
     the integration proof that libc, windowing, networking and TLS hold
     together under a real third-party codebase
-12. Side-quests — own bootloader, SMP, USB, sound, CET shadow stacks,
+12. Side-quests — SMP, USB, sound, CET shadow stacks,
     signed/measured boot, real hardware boot
 13. **WizFS** — the CoW B-tree, in a phase of its own, with crash injection
     and a repair tool in its definition of done (D-73). User-facing repair and

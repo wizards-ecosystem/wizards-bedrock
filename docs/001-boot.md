@@ -3,11 +3,12 @@
 ## Decision
 
 Boot via **UEFI + Limine** (boot protocol base revision 4 since D-42, `limine` crate
-0.5.0 — pinned because 0.6.x requires nightly). Writing our own bootloader
-is deferred to a side-quest; Limine gives us:
+0.5.0 — pinned because 0.6.x requires nightly). Limine remains the maintained,
+vendored boot boundary; an own loader has no standing roadmap slot (D-219).
+It gives us:
 
 - entry directly in 64-bit long mode, higher half
-- framebuffer, memory map, HHDM offset, module loading (future initrd)
+- framebuffer, memory map, HHDM offset, and the module carrying the initrd
 - identical behavior on QEMU/EDK2, VMware EFI, and real UEFI hardware
 
 ## Kernel image contract

@@ -93,12 +93,11 @@ impl PortSpace {
     /// which takes one fixed span and fails on the second: the first is
     /// stranded for the boot.
     ///
-    /// Two callers had exactly that shape. `i8042::Controller::new` chains
-    /// `DATA` and `CONTROL`, so a refused `CONTROL` foreclosed the keyboard;
-    /// `pic::silence` chains its two blocks. Neither could guard against it
-    /// alone, because the check and the claim are two moments and the registry
-    /// has no undo. Doing it under one lock, against one bitmap, is the only
-    /// place the question can be answered (D-138).
+    /// Two callers once had exactly that shape. `i8042::Controller::new`
+    /// chained `DATA` and `CONTROL`, so a refused `CONTROL` foreclosed the
+    /// keyboard; `pic::silence` chained its two blocks. D-138 moved both to
+    /// this all-or-none operation because the registry lock is the only place
+    /// the complete question can be answered.
     ///
     /// False, and nothing recorded, if *any* span is unavailable — checked
     /// against the others in the same call, so two overlapping spans in one

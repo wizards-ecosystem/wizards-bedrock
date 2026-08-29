@@ -416,9 +416,11 @@ fast enough to decode the harness's whole three-key burst in a single drain,
 and the check waiting for the *first* key waited out its ten seconds. Two
 accumulating bitmasks instead. Sixty-nine checks on the machine.
 
-**Still owed.** A wait with a timeout, and a wait on two queues; neither has
-a caller yet. Slice 5 is the phase close: a VMware boot (D-18), and the
-roadmap.
+**Still owed at this phase close.** A wait with a timeout, and a wait on two
+queues; neither had a caller yet. D-164 later built the timed `RingWait` once
+the completion queue supplied that caller. A wait on multiple queues remains
+absent because no caller requires it. Slice 5 is the phase close: a VMware boot
+(D-18), and the roadmap.
 
 ## Slice 5 — the phase close (2026-08-23)
 
@@ -440,8 +442,10 @@ Phase 5's memory objects, are D-76's record. That checkpoint had seventy-five
 machine checks; D-77's completed-phase audit added four and closed Phase 4 at
 seventy-nine.
 
-**What the phase leaves open**, besides D-76's residue: a wait with a timeout
-and a wait on two queues (above); the boot and double-fault stacks are still
-unguarded, owed to Phase 5's stack story alongside CET's second region
-(`010` §10); and the weight plumbing beyond `spawn_weighted`, which waits for
-a caller with an opinion.
+**What the phase left open at this close**, besides D-76's residue: a timed
+wait and a wait on multiple queues; unguarded boot and double-fault stacks; and
+the weight plumbing beyond `spawn_weighted`, which waited for a caller with an
+opinion. Later work paid the timed wait in D-164 and guarded the double-fault
+and boot stacks in D-89 and D-92 respectively. The multi-queue wait remains
+uncalled; the historical close is not a claim that those paid debts are open
+now.

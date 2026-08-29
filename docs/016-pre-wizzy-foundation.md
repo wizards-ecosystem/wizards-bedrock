@@ -144,7 +144,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-511 | READY | P2 | No stable performance/resource baseline says when a correctness-preserving change regresses the foundation | Record deterministic image size, unsafe count, boot time bands, frame/heap/handle steady state, trap latency and storage throughput | Repeated debug/release/QEMU runs state variance and thresholds; baselines are evidence, not ABI promises |
 | PW-512 | READY | P2 | QMP probe/rebind has a local port race and QEMU argument handling has unproved comma/path edge cases | Remove the race where practical and test paths containing spaces/commas plus concurrent runners | Two simultaneous runs cannot steal control channels; hostile temporary paths reach the intended image |
 | PW-513 | READY | P2 | There is no supported Windows debugger task, slowing the exact boundary work still open | Decide LLDB/GDB route and add a documented non-destructive `xtask` entry if a viable pinned tool exists | A breakpoint at kernel entry and one symbolized backtrace work from a clean documented setup |
-| PW-514 | READY | P2 | One real `redundant_clone`, stale historical prose and a stale i8042 port-claim comment are already named | Remove the lint and correct current-facing prose without upgrading old evidence | Clippy/prose tests pass and dated historical numbers remain explicitly historical |
+| PW-514 | DONE | P2 | One real `redundant_clone`, stale historical prose and a stale i8042 port-claim comment were already named | D-219 removes the lint, resolves the bootloader contradiction and makes current summaries name later decisions without rewriting dated evidence | 2026-08-29 the targeted nursery lint, all-graph Clippy, rustdoc and 193-test host suite passed; restoring the retired own-bootloader roadmap failed only `current_facing_foundation_prose_names_the_later_resolutions`, and mutation 219 retains it |
 | PW-515 | DONE | P1 | The bootstrap-authority check observed a short-lived program after making it runnable and paired a global retirement count with a reusable slot's stale exit record | D-217 captures immutable birth evidence before runnability and keys every exit observation to the same non-repeating table identity | 2026-08-29 debug QEMU passed 212/212 after a clean-tree comparison reproduced the timing exposure; returning an unrelated parent channel reddened only `a spawned program holds exactly one handle` with 211/212 and persists as a mutation |
 
 ## Compiler gate and repository handoff
@@ -203,7 +203,7 @@ The missing dated Phase 3 VMware result cannot be reconstructed. Phase 0-5
 VMware boots that used non-self-test images remain liveness evidence only.
 Neither is implementation debt, and neither may be upgraded retroactively.
 
-## Audit cautions and prose cleanup handoff
+## Audit cautions and prose cleanup resolution
 
 The static audit deliberately did not promote these observations into P0
 claims: NVMe polling is bounded (the defect is DMA lifetime after its timeout);
@@ -215,22 +215,20 @@ D-201 records NX as mandatory for ring 3 and SMEP/SMAP/UMIP as preferred
 optional hardening. The current VMware observation still belongs to PW-301
 and PW-003; PW-303 owns clocksource qualification and post-boot revocation.
 
-PW-514 includes these exact stale-current-facing corrections still to make:
+PW-514 carried these exact stale-current-facing corrections; D-219 closes all
+of them without upgrading historical evidence:
 
-- `011-userspace.md`'s old known-hole list still names leaf-closure and
-  `MappedStack` defects closed by D-121 and D-125; only the leaked spin guard
-  remains there, while D-141's active-space door should be named;
-- `011` still says `SPINLOCKS_HELD` is global (D-154 made it per-CPU), bundles
-  the now-paid timeout with the uncalled multi-queue wait, and can be read as
-  claiming a first-class MemoryObject/dynamic stacks that do not exist;
-- `009-multitasking.md` still calls timeouts and guarded boot/double-fault
-  stacks open although D-164, D-89 and D-92 paid them;
-- `001-boot.md` calls initrd module loading future although Phase 5 ships it;
-- `012-research-notes-4.md` calls the backslash key unanchored although D-162
-  closed it; and
-- `000-vision.md`/D-03 still schedule an own bootloader while `010` explicitly
-  declines it. That is a real decision contradiction: resolve it with a small
-  ADR rather than silently editing history.
+- `011-userspace.md` now gives leaf-closure, `MappedStack` and broad active-space
+  access their D-121, D-125/D-214 and D-189 dispositions;
+- `011` names D-154's per-CPU seam, separates D-164's timed wait from the
+  uncalled multi-queue wait, and explicitly says first-class `MemoryObject` and
+  dynamic stacks do not exist;
+- `009-multitasking.md` marks its close as historical and names D-164, D-89 and
+  D-92 as the later payment of timed waits and both stack guards;
+- `001-boot.md` names the shipped initrd module;
+- `012-research-notes-4.md` records D-162's anchored set-2 backslash code; and
+- `000-vision.md` and D-03 now follow D-219: Limine remains the boot boundary,
+  and an own loader needs a concrete unmet handoff rather than a roadmap slot.
 
 ## Recommended execution order
 
@@ -238,7 +236,7 @@ PW-514 includes these exact stale-current-facing corrections still to make:
    PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200,
    PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-210,
    PW-300, PW-302, PW-304, PW-306, PW-307, PW-400, PW-402, PW-500, PW-501,
-   PW-502, PW-503, PW-504, PW-505, PW-506, PW-507, PW-508, PW-509 and PW-515 are closed by D-185 through D-218.
+   PW-502, PW-503, PW-504, PW-505, PW-506, PW-507, PW-508, PW-509, PW-514 and PW-515 are closed by D-185 through D-219.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

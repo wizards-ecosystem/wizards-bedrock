@@ -1069,7 +1069,7 @@ mod tests {
             Sdt::parse_length(&bytes[..Sdt::LEN - 1], usize::MAX),
             Err(AcpiError::TooShort { .. })
         ));
-        let mut short = bytes.clone();
+        let mut short = bytes;
         short[4..8].copy_from_slice(&8u32.to_le_bytes());
         assert_eq!(
             Sdt::parse_length(&short, usize::MAX),

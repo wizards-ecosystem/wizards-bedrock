@@ -10,21 +10,12 @@
 //! The bookkeeping is `port_space::PortSpace`, where it is host-tested; this
 //! module is the lock around it and the instructions underneath it.
 //!
-//! **A fixed-driver claim is permanent, and a caller that wants two must
-//! survive getting one.** [`PortBlock`] and [`Port`] have no `Drop`, which is
-//! right for a driver that owns its registers for the life of the kernel, and
-//! is a trap for a caller claiming a set. Take two blocks
-//! and have the second refuse, and the first is claimed and stranded: nothing
-//! can ever claim it again, so whatever needed both can never be built, on
-//! this boot or any later attempt within it.
-//!
-//! **Two callers do this**, and D-129 said one — `pic::silence`, which claims
-//! its two blocks and names the consequence. The other is
-//! `i8042::Controller::new`, which `?`-chains `DATA` and `CONTROL`: a refused
-//! `CONTROL` strands `DATA`, and the keyboard controller can never be built
-//! again on that boot. Neither is reachable today — on the one path each runs,
-//! the ports are free — and neither can guard against it while a claim is
-//! permanent (D-137).
+//! **A fixed-driver claim is permanent, so a register set is claimed as one
+//! transaction.** [`PortBlock`] and [`Port`] have no `Drop`, which is right for
+//! a driver that owns its registers for the life of the kernel. It also means
+//! a caller must not take one member and then strand it when a later member is
+//! unavailable. [`claim_pair`] answers that for i8042 under one lock;
+//! [`claim_block_pair`] does the same for the PIC (D-138).
 
 use core::arch::asm;
 use core::marker::PhantomData;

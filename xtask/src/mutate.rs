@@ -2315,6 +2315,16 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        file: "docs/000-vision.md",
+        find: "| Boot | UEFI + Limine (vendored); an own bootloader is not planned without a concrete unmet handoff requirement (D-219) |",
+        replace: "| Boot | UEFI + Limine (vendored); own bootloader is a future side-quest |",
+        breaks: "the current roadmap reschedules the declined own-bootloader project",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::current_facing_foundation_prose_names_the_later_resolutions",
+        },
+    },
+    Mutation {
         file: "xtask/src/mutate.rs",
         find: "    if success {\n        let passed = format!(\"test {name} ... ok\");\n        if stdout.contains(&passed) || stderr.contains(&passed) {\n            return Ok(false);\n        }\n        bail!(\"host mutation selected no exact test `{name}`\");\n    }",
         replace: "    if success {\n        return Ok(false);\n    }",

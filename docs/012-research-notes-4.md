@@ -747,9 +747,9 @@ claims no gaps is not one.
   recommended rather than answered.
 - **Whether GRUB's C line counts translate to Rust.** The 673-versus-772
   numbers are measured; the inference that Rust preserves the ratio is not.
-- **The backslash make code**, `0x5C` versus `0x5D` — see D-156. One source
-  read one way, the table reads the other, and the code is deliberately left
-  unanchored rather than guessed.
+- ~~**The backslash make code**, `0x5C` versus `0x5D`.~~ **Resolved by D-162:**
+  `0x5D` is the set 2 value this kernel consumes; `0x5C` was the adjacent set 3
+  column. Two independent tables now anchor the implemented code.
 - **`lore.kernel.org` and `git.kernel.org` are behind an anti-bot wall.** The
   io_uring findings come from a mirror, GitHub, patchwork, LWN and man7, and
   rest on **v2 patch postings rather than merged commits**.

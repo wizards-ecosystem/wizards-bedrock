@@ -44,11 +44,15 @@ gate totals.
 Every debt below is on the record elsewhere; this table is where a future
 session finds them collected.
 
+This table preserves the plan as it stood at the Phase 5 opening. Where a
+later decision changed the answer, the row names that later result rather than
+presenting the old premise as current.
+
 | Debt | Where recorded | What Phase 5 does |
 |---|---|---|
 | The boot thread's stack and the double-fault IST stack are unguarded | `002` §Security baseline; `007` close | Slice 3's stack story guards both, alongside the second region CET will want |
 | The address space cannot grow after boot; how it grows is "a decision Phase 5's address-space work should take deliberately" | D-45, D-49; `009` | Slice 3: `activate` stops consuming the space, and `map` becomes reachable on a live one |
-| Memory objects, moved out of Phase 3 when D-44 answered the untyped question | D-44; `007` slice 6 note | Slice 7, on slice 3's owned frames |
+| Memory objects, moved out of Phase 3 when D-44 answered the untyped question | D-44; `007` slice 6 note | Slice 7 delivered owned/shared mapping foundations; a first-class `MemoryObject` remains absent until its runtime/zero-copy caller (PW-701) |
 | `AddressSpace::map` accepts any physical address without ownership evidence | D-76, D-77 | Slice 3: a mapping takes an owned frame, which is D-44's discipline applied to the mapping API |
 | The untyped split `UFrame`, "absent on purpose" until something can map a frame into a second address space | D-44; `wost/src/mm/mod.rs` | Slice 3 gives it its first real caller |
 | Port claims prove exclusivity but not device entitlement | D-77 | **Not this phase.** The user-memory half is slice 3's; the device half is Phase 6's, with PCI discovery |
@@ -57,10 +61,10 @@ session finds them collected.
 | There are no ring-3 descriptors | `006` | Slice 5 |
 | The lock discipline belongs in the borrow checker — 13 statics, 73 call sites | D-69 | ✅ Slice 2, first, so nothing in this phase was written twice — and D-85 records where its shape was wrong |
 | There is no preempt-disable mechanism; `SpinLock`'s `cli` is doing that job | D-70 rule 2 | A preempt-only lock, with its first caller: every lock a handler can reach must keep disabling interrupts, and today that is all of them |
-| The per-CPU word widens; `SPINLOCKS_HELD` is still a global | D-56, D-70 | Slice 5: `arch::percpu`, reached through `gs:`, alongside `swapgs` |
+| The per-CPU word widens; `SPINLOCKS_HELD` was still global at the phase opening | D-56, D-70 | Phase 5 did not build it; D-154 later moved the count behind `arch::percpu` without adding the still-unneeded `gs:`/`swapgs` path |
 | Per-process quota accounting for kernel-memory DoS — "Phase 5's handle-table doc inherits the quota obligation" | D-44 | Slice 6, at the handle layer, which is where the ADR said it belongs |
-| A wait with a timeout, and a wait on two queues | `009` slice 4 | Slice 9: both fall out of the completion queue, which is why neither was built early |
-| The thread cap of sixteen is a real cap | D-52; `kernel/src/thread.rs` | Slice 3, when stacks stop being committed at table-build time |
+| A wait with a timeout, and a wait on two queues | `009` slice 4 | Phase 5 built neither; D-164 later delivered the timed ring wait, while no caller requires a wait on multiple queues |
+| The thread cap of sixteen is a real cap | D-52; `kernel/src/thread.rs` | Mapping lifetime moved to spawn/exit, but the fixed sixteen-slot arena remains the real cap; dynamic stacks wait for PW-701's runtime trigger |
 | Every new hardcoded window is interest on the KASLR debt | D-46 | Slices 3 and 7 each add an entry to the ledger |
 | `002` states that channels are the sole handle-delegation mechanism, which is false even of Zircon | `010` §3 | Slice 7 replaces it with the checkable invariant and a self-test that holds us to it |
 
@@ -304,15 +308,12 @@ D-66's runtime refusal. A self-test-only controlled `mem::forget` distinguishes
 ordinary contention from deliberate leaked ownership and then restores the
 machine; shipped code has no force-release door.
 
-**A closure taken under a leaf guard is the live hole**, and there are two:
-`mm::with_memory_map` and `dev::with_io_apic` run caller-supplied code with a
-lock held. (`mem::with_active_space` was listed here and does not belong: it
-takes the token — `SPACE.lock(context)` — and is the sanctioned two-level
-nesting D-85 describes, not a leaf acquisition.) The obligation is on the closure and
-nothing checks it — a closure that logs takes the console's `ThreadLock` and
-trips D-63's assert, which is how this was found rather than reasoned. Closing
-it properly means a guard type that forbids calls, and that is a decision this
-phase has not taken.
+**The audit found closures under two leaf guards.** `mm::with_memory_map` and
+`dev::with_io_apic` ran caller-supplied code with a lock held. D-121 closed the
+hole by deleting both closure forms and copying query results out after the
+guard drops. The separate `mem::with_active_space` door was not a leaf-lock
+violation, but it did hand safe code the unrestricted live address space;
+D-189 later made that borrow private and replaced it with narrow operations.
 
 The preempt-only lock is a third kind and sits below both: it disables
 preemption and leaves interrupts on, so it may be taken while nothing else is
@@ -389,24 +390,20 @@ Slice 7 fixed `002` and landed the check in the same commit. D-151 later made
 handle-producing completions an authorized second provenance path without
 changing what a process holds at birth.
 
-## Known holes, carried deliberately
+## Audit holes and their later disposition
 
-Each was found by an adversarial pass (D-94) and each is a design decision
-rather than a repair, so each is written down instead of patched over.
+The Phase 5 adversarial pass (D-94) carried these rather than patching them
+without a decision. Later audits supplied those decisions; this list preserves
+the finding without presenting it as live work.
 
-- **A closure taken under a leaf guard.** `mm::with_memory_map` and
-  `dev::with_io_apic` run caller-supplied code with a lock held, which is
-  exactly what `lock_leaf`'s obligation forbids. (`mem::with_active_space` is
-  not one of them; it takes the token.) The
-  obligation is on the closure and nothing checks it: a closure that logs takes
-  the console's `ThreadLock` under a `SpinLock` and trips D-63's assert — which
-  is how this was found, not by reasoning. Closing it means a guard type that
-  forbids calls, and that shape wants a phase that has more callers to test it
-  against.
-- **`MappedStack` can be invalidated while it is still evidence.** `unmap` will
-  clear a range `map_stack` mapped, since it carries `OWNED`, leaving a live
-  token that claims a stack is there. The result is a fault rather than
-  corruption, which is why it is here rather than in D-94's fixes.
+- **Closure under a leaf guard: closed by D-121.** The closure forms are gone;
+  leaf-backed queries return copied values after releasing their guard.
+- **Stale `MappedStack` evidence: closed at installation by D-125 and after
+  installation by D-214.** Installation re-walks the live mapping, and an
+  installed hardware stack makes its complete virtual extent irrevocable.
+- **Broad live-address-space access: closed by D-189.** The unrestricted safe
+  closure is private; production callers get only the narrow mapping operation
+  they require.
 
 ## Decisions the phase must make (with their tensions)
 
@@ -855,19 +852,19 @@ says where it went.
 |---|---|
 | Boot and double-fault stacks unguarded | **Paid.** D-89 guards the double-fault stack; D-92 moves the boot thread onto a guarded one, since the bootloader's could not be guarded where it sat |
 | The address space cannot grow after boot | **Paid.** D-86: `activate` borrows rather than consumes, and mapping is reachable on a live space |
-| Memory objects, moved out of Phase 3 | **Paid in the part that had a caller.** Owned frames, `map_user`, `map_shared` and the untyped split are here; a first-class `MemoryObject` is still absent and waits for the later zero-copy/runtime caller that can determine its shape |
+| Memory objects, moved out of Phase 3 | **Paid only in the part that had a caller.** Owned frames, `map_user`, `map_shared` and the untyped split exist. A first-class `MemoryObject` does not; PW-701 waits for the later zero-copy/runtime caller that can determine its shape |
 | `map` accepts any physical address without evidence | **Paid.** D-87: every mapping entry takes evidence — an owned run, a `BootRegion`, or a `USegment` — and D-105 closed the two doors that let the evidence be forged |
 | The untyped split, absent on purpose | **Paid.** D-107, with the caller it was waiting for |
 | Port claims prove exclusivity, not entitlement | **Not this phase, as planned.** Phase 6, with PCI discovery |
 | XSAVE | **Paid.** D-108: eager, boot-sized, out of line, and the compacted form is live — the VMware boot reports `compacted`, which QEMU never exercised |
-| `swapgs` and the GS base | **Not paid, and the reason changed.** Nothing needs a per-CPU word yet: there is one CPU, `SPINLOCKS_HELD` is a global, and the thing `swapgs` exists to protect — a kernel entry finding the wrong `GS` — cannot happen until there is a second CPU or a `syscall` instruction. It moves to Phase 12 with SMP, where it has a reason rather than a slot |
+| `swapgs` and the GS base | **Not paid, and the reason changed.** D-154 moved the held-lock count behind the real `arch::percpu` seam. There is still one CPU and no `syscall` entry, so nothing needs a `gs:` accessor or `swapgs`; those move with SMP to Phase 12 |
 | No ring-3 descriptors | **Paid.** D-96 |
 | The lock discipline in the borrow checker | **Paid.** D-85, first, so nothing here was written twice |
 | No preempt-disable mechanism | **Not paid, and it should be said plainly.** Every lock a trap handler can reach still disables interrupts, which is correct and is not what D-70 rule 2 asked for. A preempt-only lock has no caller that would benefit on one CPU, and building one without a caller is how an abstraction gets the wrong shape. Phase 12 |
 | The per-CPU word widens | **Not paid**, with `swapgs`, and for the same reason |
 | Per-process quota | **Paid at the handle layer** (D-111: 64 handles per process). **Not paid** for frames or for per-message allocation, which is D-44's other half and needs an accounting owner |
-| A wait with a timeout, and a wait on two queues | **Not paid.** Both were to fall out of the completion queue, and the ring is built but nothing blocks on it yet. The queue's wait exists and is unused |
-| The thread cap of sixteen is a real cap | **Paid in principle, not in fact.** D-86 and D-88 made a stack mappable at spawn and unmappable at exit; the arena is still committed at table-build time, so sixteen is still sixteen. What changed is that it is now a default rather than a ceiling |
+| A wait with a timeout, and a wait on two queues | **Half paid.** D-164 made `RingWait` sleep until the earliest operation deadline. A wait on multiple queues remains absent because nothing calls for one |
+| The thread cap of sixteen is a real cap | **Not paid.** D-86 and D-88 made stack mappings follow spawn and exit, but the arena remains a fixed sixteen slots. That is a ceiling, not a dynamic-stack implementation; PW-701 names the trigger for changing it |
 | Every new hardcoded window is KASLR interest | **Paid as interest.** Two more windows: the ring at `0x0000_2000_0000_0000` and the boundary probe's pages. The ledger is D-46's |
 | `002`'s false claim about delegation | **Paid.** D-111 makes the corrected sentence a check that counts the table |
 

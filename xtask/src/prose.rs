@@ -407,6 +407,78 @@ mod tests {
         );
     }
 
+    /// Current summaries name later resolutions without rewriting old evidence.
+    #[test]
+    fn current_facing_foundation_prose_names_the_later_resolutions() {
+        let root = root();
+        let read = |path: &str| {
+            std::fs::read_to_string(root.join(path)).unwrap_or_else(|_| panic!("reading {path}"))
+        };
+        let vision = read("docs/000-vision.md");
+        let boot = read("docs/001-boot.md");
+        let multitasking = read("docs/009-multitasking.md");
+        let userspace = read("docs/011-userspace.md");
+        let research = read("docs/012-research-notes-4.md");
+        let decisions = read("docs/004-decision-log.md");
+        let ports = read("wost/src/arch/x86_64/port.rs");
+
+        for decision in ["D-121", "D-125", "D-154", "D-164", "D-189", "D-214"] {
+            assert!(
+                userspace.contains(decision),
+                "the current Phase 5 summary omits {decision}'s later resolution"
+            );
+        }
+        for decision in ["D-89", "D-92", "D-164"] {
+            assert!(
+                multitasking.contains(decision),
+                "the current Phase 4 summary omits {decision}'s later resolution"
+            );
+        }
+        assert!(
+            userspace.contains("A first-class `MemoryObject` does not"),
+            "Phase 5 prose can be read as claiming a first-class MemoryObject"
+        );
+        assert!(
+            userspace.contains("That is a ceiling, not a dynamic-stack implementation"),
+            "Phase 5 prose can be read as claiming dynamic stacks"
+        );
+        assert!(
+            !userspace.contains("`SPINLOCKS_HELD` is a global"),
+            "Phase 5 prose restores the pre-D-154 global-lock-count claim"
+        );
+        assert!(
+            boot.contains("the module carrying the initrd"),
+            "the boot contract still presents the shipped initrd as future"
+        );
+        assert!(
+            research.contains("Resolved by D-162"),
+            "the research summary still presents the anchored backslash code as open"
+        );
+        assert!(
+            ports.contains("[`claim_pair`] answers that for i8042"),
+            "the port contract does not name i8042's atomic pair"
+        );
+        assert!(
+            vision.contains("an own bootloader is not planned without a concrete unmet handoff requirement (D-219)"),
+            "the roadmap reschedules the declined own-bootloader project"
+        );
+        assert!(
+            decisions.contains("**Amended by D-219.** Limine remains the boot boundary"),
+            "D-03 does not name its current bootloader amendment"
+        );
+
+        assert!(
+            vision.contains("124 machine checks at the close")
+                && vision.contains("both have moved since"),
+            "the dated Phase 5 count is no longer explicitly historical"
+        );
+        assert!(
+            userspace.contains("### What the phase cost, measured")
+                && userspace.contains("**124 machine checks**, from 79 at the Phase 4 close"),
+            "the Phase 5 evidence totals lost their historical context"
+        );
+    }
+
     /// The first number in the table row whose left cell is `label`.
     fn table_number(document: &str, label: &str) -> usize {
         table_numbers(document, label)
