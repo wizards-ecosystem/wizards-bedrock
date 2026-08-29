@@ -4441,10 +4441,10 @@ fn a_dead_program_gives_its_memory_back() -> bool {
 /// reads: "the machine is still here" is the weaker half, since a check that
 /// runs at all has already established it.
 fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
-    // Runs after the ring-3 group and waits for its program, for the reason
-    // the bootstrap check does: every check that reads `last_syscall` or
-    // `last_user_fault` sees whichever program crossed most recently, so one
-    // spawned here and left running is a race it creates for its neighbours.
+    // Runs before the stateful ring-3 group and waits for its program: the
+    // trap-context logging mutation must reach its terminal assertion before
+    // unrelated later state can hide the exact cause. Waiting also keeps the
+    // global last-syscall and last-fault records stable for its neighbours.
     let (refused_before, _, _) = user::refusals();
     let retirements_before = thread::retirements();
     let faults_before = trap::last_user_fault().count;
@@ -7546,6 +7546,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_second_switch_is_refused(),
     );
     report.check(
+        "an unserved call is refused without stopping the machine",
+        an_unserved_call_is_refused_without_stopping_the_machine(),
+    );
+    report.check(
         "a thread crosses into ring three and calls back",
         a_thread_crosses_into_ring_three_and_calls_back(),
     );
@@ -7857,10 +7861,6 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a syscall wake arms the timer for what it woke",
         a_syscall_wake_arms_the_timer_for_what_it_woke(),
-    );
-    report.check(
-        "an unserved call is refused without stopping the machine",
-        an_unserved_call_is_refused_without_stopping_the_machine(),
     );
     report.check(
         "a spawned program holds exactly one handle",

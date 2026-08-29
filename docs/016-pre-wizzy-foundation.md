@@ -22,8 +22,11 @@ QEMU and mutation totals. The last recorded complete mutation sweep covered the
 former 64-entry registry. The first 276-entry closing attempt caught 270
 exactly and exposed six qualification defects. D-232 repaired the direct
 defects; its successor exposed cross-mutation build contamination, which D-233
-repairs. The 278-entry registry still needs the complete closing rerun. The
-current image has not completed its human VMware round. The compiler gate in
+repairs. The complete 278-entry diagnostic successor caught 274 exactly with
+no survivor and exposed the four observer/order gaps D-234 repairs. D-235 adds
+five total persistent checks across both corrections, leaving the 283-entry
+registry to qualify. The current image has not completed its human VMware
+round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
 The kernel is ready for the first real Wizzy integration only when:
@@ -67,10 +70,10 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The 276-entry attempt exposed six qualification defects; D-232 repaired its direct defects, and the aborted successor exposed the stale compiled-package contamination D-233 repairs, leaving the 278-entry registry to qualify | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | Every named mutation is caught by the check it names; record commit, result and duration; source and index digests remain exact |
+| PW-001 | REQUIRED | P0 | The 278-entry diagnostic successor caught 274 exactly with no survivor; D-234 repairs its one late trigger and three discarded pre-panic failures, while D-235 brings the registry to 283 | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | Every named mutation is caught by the check it names; record commit, result and duration; source and index digests remain exact |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
-| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current image | Boot the current self-test image in VMware and perform every human keyboard round | A dated zero-failure transcript at the verdict's expected total, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
-| PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
+| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current image | Generate `cargo xtask vmware`, boot its identified self-test image and perform every human keyboard round | A dated zero-failure fresh transcript at the verdict's expected total, including image digest, WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
+| PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Generate `cargo xtask vmware --shipped` and boot its separately identified machine after PW-003 | Its fresh transcript reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
 | PW-005 | REQUIRED | P1 | The ordinary gate must describe the same commit as the exceptional evidence | Run `cargo xtask ci` after every register-closing change and once after the evidence-only close | Release/debug self-tests, shipped liveness and degraded boot all pass on the recorded commit |
 | PW-006 | REQUIRED | P1 | D-181 and D-182 were post-audit corrections, and this audit found deeper safe/device boundaries | Re-attack hostile inputs, cleanup paths, safe `wost` callers and release-only invariant failures after the P0/P1 fixes | Phase-close ADR links the audit, every break-test, full evidence manifest and remaining trigger-only rows; no historical evidence is invented |
 

@@ -15225,3 +15225,79 @@ live and failed that exact test; mutation 278 retains the defect. The aborted
 277-entry run has no closing-evidence value, although its first twelve exact
 outcomes remain diagnostic. PW-001 now belongs to a clean 278-entry successor
 run. No target code, unsafe operation, wire ABI or machine-check count changed.
+
+## D-234 A terminal observation keeps exact failures that preceded it — Status: Accepted (2026-08-29), amends D-209 and D-232; advances PW-001
+
+**Context.** The complete 278-entry diagnostic successor to D-233 ran every
+mutation on clean commit `8de1d4de9c3740617999cfef9ac564b35f706f48` in
+56 minutes 30 seconds. It found no survivor and caught 274 entries exactly.
+Mutation 14 twice failed unrelated ring-3 checks before its late trap-logging
+trigger. Mutations 123 through 125 each made their own ownership check red,
+then the deliberately corrupted state caused a later page fault at
+`0xffffffffffffffe8`. The serial observer had already recorded those named
+failures, but `SelftestOutcome::Panicked` discarded them and exposed only the
+later panic. Retrying reproduced the information loss rather than resolving
+it.
+
+**Decision.** A terminal self-test outcome carries both its exact panic
+transcript and every named check that failed before the panic. A check mutation
+is caught if its own named failure is present, even when later consequences
+stop the kernel before its verdict. A different earlier failure remains
+inconclusive. A panic mutation still requires its exact panic marker; an
+earlier check cannot stand in for it.
+
+The unknown-syscall adversary runs before the long stateful ring-3 group. It
+has no dependency on an earlier user program and waits for its own retirement,
+so placing it first gives the trap-context logging mutation its exact terminal
+assertion before unrelated later state can obscure it.
+
+**Alternatives.** Crediting any panic was rejected because three ownership
+mutations and one unrelated fault would become indistinguishable. Discarding
+the named check because a later panic occurred was rejected because it throws
+away the exact causal observation D-209 requires. Adding more retries was
+rejected because both observations already contained the same evidence.
+Masking the later page fault in each check was rejected because corrupted
+ownership is allowed to have further terminal consequences after its exact
+check has reported it.
+
+**Consequences.** The unmutated reordered image passed all 215 release checks.
+Restoring trap-context logging then stopped at the first adversarial user
+program with exactly `a trap handler may not take a thread lock`. Discarding
+the pre-panic failures failed only the serial-outcome test, and refusing to
+credit the exact retained name failed only the mutation-assessment test.
+Mutations 279 and 280 retain those two observer defects. No unsafe operation,
+wire ABI or machine-check count changed.
+
+## D-235 VMware evidence starts from two identified, separate machines — Status: Accepted (2026-08-29), advances PW-003 and PW-004
+
+**Context.** `cargo xtask vmware` could generate only the self-test image, while
+PW-004 separately requires the shipped image users boot. Regenerating `vm/`
+also reused one machine directory and whatever `serial.log` an earlier round
+left there. The task printed the `vmrun` identity but not the exact image
+digest, so the two required human observations had no direct command-level
+boundary between their state or bytes.
+
+**Decision.** `cargo xtask vmware` remains the self-test default and
+`cargo xtask vmware --shipped` is the explicit PW-004 selector. The self-test
+machine remains in `vm/`; the shipped machine lives in `vm/shipped/`, so its
+NVRAM, logs, disks and Workstation state cannot overwrite the check-bearing
+round. Generation truncates that machine's serial transcript before launch and
+prints the image kind, byte length, SHA-256 digest, resolved `vmrun` identity
+and quoted VMX command. Instructions are image-specific. The keyboard rounds
+remain human evidence as D-18 requires; generation does not pretend that
+creating a VM booted it.
+
+**Alternatives.** Manually copying a shipped image over the self-test flat disk
+was rejected because the command and resulting identity would be implicit.
+One shared VM directory was rejected because a stale verdict or NVRAM state can
+cross the two evidence rounds. Automating GUI keystrokes through host window
+focus was rejected because Workstation exposes no bounded, owned input channel
+equivalent to QEMU's QMP route.
+
+**Consequences.** Host checks distinguish both CLI selectors, require separate
+machine directories and replace a stale serial fixture with an empty file.
+Disabling the selector, merging the directories and appending the transcript
+each fail only their named check; mutations 281 through 283 retain the three
+defects. The generated image digest and pinned tool identity are now ready to
+copy directly into the dated PW-003/PW-004 record. No kernel, unsafe operation,
+wire ABI or machine-check count changed.

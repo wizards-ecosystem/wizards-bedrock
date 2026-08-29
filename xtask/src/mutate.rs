@@ -1959,8 +1959,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/mutate.rs",
-        find: "        (Caught::Panic { marker, .. }, qemu::SelftestOutcome::Panicked(line))\n            if line.contains(marker) =>\n        {\n            Ok(true)\n        }",
-        replace: "        (Caught::Panic { .. }, qemu::SelftestOutcome::Panicked(line))\n            if !line.is_empty() =>\n        {\n            Ok(true)\n        }",
+        find: "        (Caught::Panic { marker, .. }, qemu::SelftestOutcome::Panicked { transcript, .. })\n            if transcript.contains(marker) =>\n        {\n            Ok(true)\n        }",
+        replace: "        (Caught::Panic { .. }, qemu::SelftestOutcome::Panicked { transcript, .. })\n            if !transcript.is_empty() =>\n        {\n            Ok(true)\n        }",
         breaks: "an unrelated kernel panic is credited to a terminal mutation",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1974,7 +1974,7 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a panic continuation is discarded before mutation attribution",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::a_panic_outcome_carries_its_exact_serial_transcript",
+            name: "qemu::tests::a_panic_outcome_preserves_earlier_failures_and_its_exact_transcript",
         },
     },
     Mutation {
@@ -3060,6 +3060,56 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "mutation_workspace::tests::restoring_a_compiled_input_invalidates_its_package",
         },
     },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "            failed: observation.failed,",
+        replace: "            failed: Vec::new(),",
+        breaks: "a terminal observation discards exact checks that failed before its panic",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::a_panic_outcome_preserves_earlier_failures_and_its_exact_transcript",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutate.rs",
+        find: "        (Caught::Check(name), qemu::SelftestOutcome::Panicked { failed, .. })\n            if failed.iter().any(|actual| actual == name) =>\n        {\n            Ok(true)\n        }",
+        replace: "        (Caught::Check(name), qemu::SelftestOutcome::Panicked { failed, .. })\n            if false && failed.iter().any(|actual| actual == name) =>\n        {\n            Ok(true)\n        }",
+        breaks: "an exact failed check loses credit when later corruption panics",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::a_wrong_machine_failure_is_inconclusive_not_caught",
+        },
+    },
+    Mutation {
+        file: "xtask/src/cli.rs",
+        find: "            kernel: if shipped {",
+        replace: "            kernel: if false && shipped {",
+        breaks: "the shipped VMware selector silently generates another self-test image",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cli::tests::task_specific_flags_reach_their_task",
+        },
+    },
+    Mutation {
+        file: "xtask/src/vmware.rs",
+        find: "        Kernel::Shipped => paths.vm_dir().join(\"shipped\"),",
+        replace: "        Kernel::Shipped => paths.vm_dir(),",
+        breaks: "the shipped VMware round overwrites the self-test machine state",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::selftest_and_shipped_vms_do_not_share_machine_state",
+        },
+    },
+    Mutation {
+        file: "xtask/src/vmware.rs",
+        find: "    std::fs::write(path, []).with_context(|| format!(\"resetting {}\", path.display()))",
+        replace: "    std::fs::OpenOptions::new()\n        .create(true)\n        .append(true)\n        .open(path)\n        .map(drop)\n        .with_context(|| format!(\"resetting {}\", path.display()))",
+        breaks: "a generated VMware transcript retains an earlier boot's verdict",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::a_generated_vm_starts_with_a_fresh_serial_transcript",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -3391,16 +3441,28 @@ fn assess_selftest(wanted: Caught, observed: qemu::SelftestOutcome) -> Result<bo
             "mutation expected check {name:?}, but different checks failed: {}",
             failed.join("; ")
         ),
-        (Caught::Check(name), qemu::SelftestOutcome::Panicked(line)) => {
-            bail!("mutation expected check {name:?}, but the kernel panicked: {line}")
-        }
-        (Caught::Panic { marker, .. }, qemu::SelftestOutcome::Panicked(line))
-            if line.contains(marker) =>
+        (Caught::Check(name), qemu::SelftestOutcome::Panicked { failed, .. })
+            if failed.iter().any(|actual| actual == name) =>
         {
             Ok(true)
         }
-        (Caught::Panic { marker, .. }, qemu::SelftestOutcome::Panicked(line)) => {
-            bail!("mutation expected panic marker {marker:?}, but observed: {line}")
+        (Caught::Check(name), qemu::SelftestOutcome::Panicked { transcript, failed }) => {
+            let earlier = if failed.is_empty() {
+                "none".to_string()
+            } else {
+                failed.join("; ")
+            };
+            bail!(
+                "mutation expected check {name:?}, but earlier checks were [{earlier}] before the kernel panicked: {transcript}"
+            )
+        }
+        (Caught::Panic { marker, .. }, qemu::SelftestOutcome::Panicked { transcript, .. })
+            if transcript.contains(marker) =>
+        {
+            Ok(true)
+        }
+        (Caught::Panic { marker, .. }, qemu::SelftestOutcome::Panicked { transcript, .. }) => {
+            bail!("mutation expected panic marker {marker:?}, but observed: {transcript}")
         }
         (Caught::Panic { marker, .. }, qemu::SelftestOutcome::Failed(failed)) => bail!(
             "mutation expected panic marker {marker:?}, but checks failed: {}",
@@ -3665,7 +3727,10 @@ mod tests {
         assert!(
             assess_selftest(
                 wanted,
-                qemu::SelftestOutcome::Panicked("unrelated panic".to_string())
+                qemu::SelftestOutcome::Panicked {
+                    transcript: "unrelated panic".to_string(),
+                    failed: Vec::new(),
+                }
             )
             .is_err()
         );
@@ -3674,6 +3739,16 @@ mod tests {
             assess_selftest(
                 wanted,
                 qemu::SelftestOutcome::Failed(vec!["the intended check".to_string()])
+            )
+            .is_ok_and(|caught| caught)
+        );
+        assert!(
+            assess_selftest(
+                wanted,
+                qemu::SelftestOutcome::Panicked {
+                    transcript: "later corruption".to_string(),
+                    failed: vec!["the intended check".to_string()],
+                }
             )
             .is_ok_and(|caught| caught)
         );
@@ -3688,14 +3763,20 @@ mod tests {
         assert!(
             assess_selftest(
                 wanted,
-                qemu::SelftestOutcome::Panicked("a different panic".to_string())
+                qemu::SelftestOutcome::Panicked {
+                    transcript: "a different panic".to_string(),
+                    failed: Vec::new(),
+                }
             )
             .is_err()
         );
         assert!(
             assess_selftest(
                 wanted,
-                qemu::SelftestOutcome::Panicked("panic: the exact cause".to_string())
+                qemu::SelftestOutcome::Panicked {
+                    transcript: "panic: the exact cause".to_string(),
+                    failed: Vec::new(),
+                }
             )
             .is_ok_and(|caught| caught)
         );
@@ -3708,7 +3789,10 @@ mod tests {
         let caught = qualify_machine_mutation(wanted, || {
             observations += 1;
             Ok(if observations == 1 {
-                qemu::SelftestOutcome::Panicked("incidental panic".to_string())
+                qemu::SelftestOutcome::Panicked {
+                    transcript: "incidental panic".to_string(),
+                    failed: Vec::new(),
+                }
             } else {
                 qemu::SelftestOutcome::Failed(vec!["the intended check".to_string()])
             })
@@ -3720,9 +3804,10 @@ mod tests {
         observations = 0;
         let error = qualify_machine_mutation(wanted, || {
             observations += 1;
-            Ok(qemu::SelftestOutcome::Panicked(
-                "incidental panic".to_string(),
-            ))
+            Ok(qemu::SelftestOutcome::Panicked {
+                transcript: "incidental panic".to_string(),
+                failed: Vec::new(),
+            })
         })
         .expect_err("repeated inconclusive observations still fail qualification");
         assert_eq!(observations, 2);

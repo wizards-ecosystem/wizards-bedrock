@@ -41,11 +41,12 @@ after installing rustup so `cargo` is on PATH; the pinned toolchain and
 `rust-toolchain.toml`.
 
 ```
-cargo xtask build    # compile the kernel (x86_64-unknown-none)
-cargo xtask image    # build target/wizard-os.img — bootable UEFI disk image
-cargo xtask run      # boot it in QEMU (serial output on stdio)
-cargo xtask vmware   # generate vm/wizard-os.vmx + VMDK for VMware Workstation
-cargo xtask help     # every task, including the check tasks below
+cargo xtask build              # compile the kernel (x86_64-unknown-none)
+cargo xtask image              # build target/wizard-os.img — bootable UEFI disk image
+cargo xtask run                # boot it in QEMU (serial output on stdio)
+cargo xtask vmware             # generate the self-test VM in vm/
+cargo xtask vmware --shipped   # generate the user-facing VM in vm/shipped/
+cargo xtask help               # every task, including the check tasks below
 ```
 
 `cargo xtask run -- <args>` passes arguments straight through to QEMU.
@@ -116,9 +117,11 @@ known defect, and `baseline` needs six QEMU boots for descriptive measurements
 rather than correctness. A gate step that fails for want of an exceptional
 tool or a long qualification teaches people to skip the gate.
 `model-check` prints the exact resolved Java identity before invoking it;
-`vmware` prints the resolved `vmrun` identity and a fully quoted launch command
-when Workstation is installed, or names that dependency as unavailable without
-blocking VM generation (D-218).
+`vmware` prints the image kind, exact byte length and SHA-256 digest, resolved
+`vmrun` identity and a fully quoted launch command when Workstation is
+installed, or names that dependency as unavailable without blocking VM
+generation. Self-test and shipped generation use separate machine state and
+start with separate empty serial transcripts (D-218, D-235).
 
 `cargo xtask baseline` builds the fixed-QEMU self-test image once in release
 and debug modes, then boots each three times. It requires a clean ordinary

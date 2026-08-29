@@ -3,12 +3,14 @@
 //! The raw image is copied in alongside the descriptors so the folder is
 //! self-contained and can be moved or archived on its own.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+use crate::image::Kernel;
 use crate::paths::{self, Paths};
 use crate::qualification;
+use crate::sha256;
 
 const VMDK_TEMPLATE: &str = include_str!("../templates/wizard-os.vmdk.in");
 const VMX_TEMPLATE: &str = include_str!("../templates/wizard-os.vmx.in");
@@ -83,10 +85,10 @@ pub fn render(template: &str, values: &[(&str, String)]) -> Result<String> {
     Ok(out)
 }
 
-/// Write a VMware VM directory beside the repository, wrapping `image`.
-pub fn generate(paths: &Paths, image: &Path) -> Result<()> {
+/// Write an isolated VMware VM directory beside the repository, wrapping `image`.
+pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
     let vmrun = qualification::vmrun(paths.root())?;
-    let vm_dir = paths.vm_dir();
+    let vm_dir = vm_directory(paths, kernel);
     std::fs::create_dir_all(&vm_dir).with_context(|| format!("creating {}", vm_dir.display()))?;
 
     let flat = vm_dir.join(FLAT_NAME);
@@ -96,6 +98,9 @@ pub fn generate(paths: &Paths, image: &Path) -> Result<()> {
     let bytes = std::fs::metadata(&flat)
         .with_context(|| format!("measuring {}", flat.display()))?
         .len();
+    let digest = sha256::hex(&sha256::digest(
+        &std::fs::read(&flat).with_context(|| format!("reading {}", flat.display()))?,
+    ));
     let sectors = bytes / paths::SECTOR_SIZE;
     let geometry = geometry(sectors);
 
@@ -140,7 +145,7 @@ pub fn generate(paths: &Paths, image: &Path) -> Result<()> {
     let vmx = render(
         VMX_TEMPLATE,
         &[
-            ("DISPLAY_NAME", DISPLAY_NAME.to_string()),
+            ("DISPLAY_NAME", display_name(kernel)),
             ("VMDK_NAME", VMDK_NAME.to_string()),
             ("NVME_VMDK_NAME", NVME_VMDK_NAME.to_string()),
             ("SERIAL_LOG", SERIAL_LOG.to_string()),
@@ -148,8 +153,14 @@ pub fn generate(paths: &Paths, image: &Path) -> Result<()> {
     )?;
     let vmx_path = vm_dir.join(VMX_NAME);
     write(&vmx_path, &vmx)?;
+    let serial_log = vm_dir.join(SERIAL_LOG);
+    reset_serial_log(&serial_log)?;
 
     println!("[xtask] VMware VM ready: {}", vmx_path.display());
+    println!(
+        "[xtask] VMware {} image: {bytes} bytes, sha256 {digest}",
+        image_label(kernel)
+    );
     println!("[xtask] open it in VMware Workstation");
     if let Some(vmrun) = vmrun {
         println!("[xtask] VMware identity: {}", vmrun.version);
@@ -166,17 +177,52 @@ pub fn generate(paths: &Paths, image: &Path) -> Result<()> {
     }
     println!(
         "[xtask] serial output will appear in {}",
-        vm_dir.join(SERIAL_LOG).display()
+        serial_log.display()
     );
-    // The image carries the self-test feature (D-135), so this boot reports a
-    // verdict like the gate's does. Two things a human has to do that QEMU's
-    // harness does for itself: press the key, and read the result.
-    println!("[xtask] this is the self-test kernel — four things to do:");
-    println!("        1. press `c` at `selftest: awaiting storage-delay keystroke`");
-    println!("        2. press `a`, Backspace, Enter at `selftest: awaiting injected keystroke`");
-    println!("        3. press `b` at `selftest: awaiting translated keystroke`");
-    println!("        4. look for `selftest: verdict` in the serial log");
+    match kernel {
+        Kernel::SelfTest => {
+            println!("[xtask] this is the self-test kernel — four things to do:");
+            println!("        1. press `c` at `selftest: awaiting storage-delay keystroke`");
+            println!(
+                "        2. press `a`, Backspace, Enter at `selftest: awaiting injected keystroke`"
+            );
+            println!("        3. press `b` at `selftest: awaiting translated keystroke`");
+            println!("        4. look for `selftest: verdict` in the fresh serial log");
+        }
+        Kernel::Shipped => {
+            println!("[xtask] this is the shipped kernel — verify its fresh serial log:");
+            println!("        1. storage reaches `nvme: up` and `fat32: mounted`");
+            println!("        2. tmpfs and devfs complete their namespace survey");
+            println!("        3. ring 3 launches and `kernel: reading the keyboard` settles");
+            println!("        4. no `KERNEL PANIC` appears");
+        }
+    }
     Ok(())
+}
+
+fn vm_directory(paths: &Paths, kernel: Kernel) -> PathBuf {
+    match kernel {
+        Kernel::SelfTest => paths.vm_dir(),
+        Kernel::Shipped => paths.vm_dir().join("shipped"),
+    }
+}
+
+fn image_label(kernel: Kernel) -> &'static str {
+    match kernel {
+        Kernel::SelfTest => "self-test",
+        Kernel::Shipped => "shipped",
+    }
+}
+
+fn display_name(kernel: Kernel) -> String {
+    match kernel {
+        Kernel::SelfTest => DISPLAY_NAME.to_string(),
+        Kernel::Shipped => format!("{DISPLAY_NAME} (shipped)"),
+    }
+}
+
+fn reset_serial_log(path: &Path) -> Result<()> {
+    std::fs::write(path, []).with_context(|| format!("resetting {}", path.display()))
 }
 
 fn write(path: &Path, contents: &str) -> Result<()> {
@@ -188,6 +234,34 @@ mod tests {
     use super::*;
 
     const IMAGE_SECTORS: u64 = 64 * 1024 * 1024 / 512;
+
+    #[test]
+    fn selftest_and_shipped_vms_do_not_share_machine_state() {
+        let paths = Paths::new(PathBuf::from("/repo"), None);
+        assert_eq!(vm_directory(&paths, Kernel::SelfTest), paths.vm_dir());
+        assert_eq!(
+            vm_directory(&paths, Kernel::Shipped),
+            paths.vm_dir().join("shipped")
+        );
+    }
+
+    #[test]
+    fn a_generated_vm_starts_with_a_fresh_serial_transcript() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("host clock")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("wizard-vmware-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("VMware fixture directory");
+        let log = root.join(SERIAL_LOG);
+        std::fs::write(&log, "stale verdict").expect("stale transcript");
+
+        reset_serial_log(&log).expect("fresh transcript");
+
+        assert_eq!(std::fs::read(&log).unwrap(), b"");
+        std::fs::remove_dir_all(root).expect("remove VMware fixture");
+    }
 
     #[test]
     fn geometry_rounds_cylinders_up() {

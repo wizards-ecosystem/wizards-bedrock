@@ -62,14 +62,12 @@ pub fn run(task: Task) -> Result<()> {
             let image = image::build_for_run(&paths, profile, image::Kernel::Shipped)?;
             qemu::run(&paths, image.path(), &qemu_args)
         }
-        Task::Vmware(profile) => {
-            // **With the self-test feature.** This built the shipped kernel
-            // until D-135, so the boot D-18 makes every phase's definition of
-            // done ran none of the 137 checks — it showed that the kernel came
-            // up, on a machine chosen because it reaches what QEMU cannot, and
-            // then checked nothing there.
-            let image = image::build(&paths, profile, image::Kernel::SelfTest)?;
-            vmware::generate(&paths, &image)
+        Task::Vmware { profile, kernel } => {
+            // Self-test remains the default. This built the shipped kernel
+            // until D-135, so D-18's phase gate ran none of its checks. The
+            // explicit shipped selector exists for the separate PW-004 round.
+            let image = image::build(&paths, profile, kernel)?;
+            vmware::generate(&paths, &image, kernel)
         }
         Task::Check { message_format } => tasks::check(&paths, message_format.as_deref()),
         Task::ApiAudit => api::check(&paths),

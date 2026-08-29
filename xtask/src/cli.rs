@@ -19,7 +19,7 @@ BUILD TASKS:
     build             compile the kernel
     image             build a bootable UEFI disk image
     run               build an image and boot it in QEMU
-    vmware            build an image and generate vm/ for VMware Workstation
+    vmware            build an image and generate a VMware Workstation VM
 
 CHECK TASKS:
     api-audit         prove every public foundation API has a resolved caller
@@ -60,6 +60,7 @@ OPTIONS:
     --debug           build unoptimised
     --check           fmt: do not rewrite; debug: run the bounded setup proof
     --all             clean only: also remove the generated vm/ directory
+    --shipped         vmware only: generate the image users boot, not self-test
     --message-format=<FMT>
                       check only: forwarded to cargo
     -h, --help        print this help
@@ -91,7 +92,12 @@ pub enum Task {
         qemu_args: Vec<OsString>,
     },
     /// Build an image and generate a VMware VM directory.
-    Vmware(Profile),
+    Vmware {
+        /// Kernel build profile.
+        profile: Profile,
+        /// Which image the generated VM boots.
+        kernel: crate::image::Kernel,
+    },
     /// Type-check every crate.
     Check {
         /// `--message-format` value forwarded to cargo, for editors.
@@ -186,6 +192,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
     let mut message_format = None;
     let mut check = false;
     let mut all = false;
+    let mut shipped = false;
     let mut passthrough = Vec::new();
 
     let mut rest = args;
@@ -196,6 +203,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
             "--debug" => profile = Profile::Dev,
             "--check" => check = true,
             "--all" => all = true,
+            "--shipped" => shipped = true,
             "-h" | "--help" => return Ok(Task::Help),
             "--" => {
                 passthrough.extend(rest.by_ref());
@@ -215,7 +223,14 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
             profile,
             qemu_args: passthrough,
         }),
-        "vmware" => Ok(Task::Vmware(profile)),
+        "vmware" => Ok(Task::Vmware {
+            profile,
+            kernel: if shipped {
+                crate::image::Kernel::Shipped
+            } else {
+                crate::image::Kernel::SelfTest
+            },
+        }),
         "check" => Ok(Task::Check { message_format }),
         "api-audit" => Ok(Task::ApiAudit),
         "clippy" => Ok(Task::Clippy),
@@ -331,6 +346,20 @@ mod tests {
         assert_eq!(
             parse_args(&["debug"]).unwrap(),
             Task::Debug(DebugMode::Interactive)
+        );
+        assert_eq!(
+            parse_args(&["vmware"]).unwrap(),
+            Task::Vmware {
+                profile: Profile::Release,
+                kernel: crate::image::Kernel::SelfTest,
+            }
+        );
+        assert_eq!(
+            parse_args(&["vmware", "--shipped"]).unwrap(),
+            Task::Vmware {
+                profile: Profile::Release,
+                kernel: crate::image::Kernel::Shipped,
+            }
         );
         assert_eq!(
             parse_args(&["clean", "--all"]).unwrap(),

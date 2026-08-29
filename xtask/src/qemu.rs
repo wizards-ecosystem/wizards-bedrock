@@ -542,8 +542,13 @@ pub enum SelftestOutcome {
     /// The final verdict failed and names each red check in report order.
     Failed(Vec<String>),
     /// The kernel stopped before a verdict and carries its exact serial panic
-    /// transcript.
-    Panicked(String),
+    /// transcript plus every check that had already gone red.
+    Panicked {
+        /// The panic line and its continuation.
+        transcript: String,
+        /// Named failures printed before the terminal panic.
+        failed: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -739,8 +744,11 @@ fn correlate_selftest(
     exit_code: Option<i32>,
     observation: SerialObservation,
 ) -> Result<SelftestOutcome> {
-    if let Some(panic) = observation.panic {
-        return Ok(SelftestOutcome::Panicked(panic));
+    if let Some(transcript) = observation.panic {
+        return Ok(SelftestOutcome::Panicked {
+            transcript,
+            failed: observation.failed,
+        });
     }
     let verdict = observation
         .verdict
@@ -1041,7 +1049,9 @@ fn require_selftest(outcome: SelftestOutcome) -> Result<()> {
         SelftestOutcome::Failed(failed) => {
             bail!("{SELFTEST_FAILURE}: {}", failed.join("; "))
         }
-        SelftestOutcome::Panicked(line) => bail!("{PANIC_FAILURE}: {line}"),
+        SelftestOutcome::Panicked { transcript, .. } => {
+            bail!("{PANIC_FAILURE}: {transcript}")
+        }
     }
 }
 
@@ -1864,15 +1874,20 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_outcome_carries_its_exact_serial_transcript() {
+    fn a_panic_outcome_preserves_earlier_failures_and_its_exact_transcript() {
+        let failed = "[error] selftest: an earlier ownership check FAILED\r";
         let line = "[error] KERNEL PANIC on thread 'boot': panicked at source\r";
         let continuation = "exact cause\r";
         let mut observation = SerialObservation::default();
+        observe_selftest_line(&mut observation, failed).unwrap();
         observe_selftest_line(&mut observation, line).unwrap();
         observe_selftest_line(&mut observation, continuation).unwrap();
         assert_eq!(
             correlate_selftest(None, observation).unwrap(),
-            SelftestOutcome::Panicked(format!("{}\n{}", line.trim_end(), continuation.trim_end()))
+            SelftestOutcome::Panicked {
+                transcript: format!("{}\n{}", line.trim_end(), continuation.trim_end()),
+                failed: vec!["an earlier ownership check".to_string()],
+            }
         );
     }
 

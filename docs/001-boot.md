@@ -58,10 +58,11 @@ its search order) and loads the kernel per `path: boot():/boot/wizard-kernel.elf
 
 - **QEMU** (`cargo xtask run`): q35 machine, EDK2 firmware from the QEMU
   install (copied into `target/` as pflash code+vars), serial → stdio.
-- **VMware** (`cargo xtask vmware`): generates `vm/` containing a flat-VMDK
-  descriptor over a copy of the raw image + a `firmware = "efi"` VMX;
-  serial → `vm/serial.log`. Start with VMware GUI or
-  `vmrun start vm\wizard-os.vmx`.
+- **VMware** (`cargo xtask vmware`): generates the self-test machine in `vm/`
+  with a flat-VMDK descriptor over a copy of the raw image and a
+  `firmware = "efi"` VMX; serial → a fresh `vm/serial.log`. The separate
+  `cargo xtask vmware --shipped` machine lives in `vm/shipped/`. Each command
+  prints the exact image digest and quoted `vmrun` invocation (D-235).
 
 ## Verified
 
