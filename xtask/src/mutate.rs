@@ -2213,6 +2213,50 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::ApiAudit("method impl::is_empty"),
     },
     Mutation {
+        file: "libs/stack-layout/src/lib.rs",
+        find: "    left < right_end && right < left_end",
+        replace: "    left <= right_end && right < left_end",
+        breaks: "a range ending beside a stack is mistaken for an overlap",
+        reddens: Caught::HostTest {
+            package: "stack-layout",
+            name: "tests::stack_overlap_is_half_open_and_fails_closed",
+        },
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        if !is_active() || active_root() != self.root {\n            return Err(MapError::Inactive(self.root));\n        }",
+        replace: "        if false && (!is_active() || active_root() != self.root) {\n            return Err(MapError::Inactive(self.root));\n        }",
+        breaks: "a recycled inactive root can mint hardware stack authority",
+        reddens: Caught::Check("the double-fault stack cannot be unmapped"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        if pinned != 0\n            && PINNED_STACK_ROOT.load(Ordering::Relaxed) == self.root\n            && ranges_overlap(\n                pinned,\n                PINNED_STACK_LEN.load(Ordering::Relaxed),\n                virtual_base,\n                len,\n            )\n        {",
+        replace: "        if pinned != 0\n            && PINNED_STACK_ROOT.load(Ordering::Relaxed) == self.root\n            && false\n            && ranges_overlap(\n                pinned,\n                PINNED_STACK_LEN.load(Ordering::Relaxed),\n                virtual_base,\n                len,\n            )\n        {",
+        breaks: "the stack retained by the task-state segment can be unmapped",
+        reddens: Caught::Check("the double-fault stack cannot be unmapped"),
+    },
+    Mutation {
+        file: "xtask/src/unsafety.rs",
+        find: "        self.lines += span.end().line.saturating_sub(span.start().line) + 1;",
+        replace: "        self.lines += 0;",
+        breaks: "the unsafe budget counter ignores every operation's span",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "unsafety::tests::a_block_is_counted_and_a_declaration_is_not",
+        },
+    },
+    Mutation {
+        file: "wost/src/mmio.rs",
+        find: "    pub const unsafe fn new(base: *mut u8, len: usize) -> Self {",
+        replace: "    pub const fn new(base: *mut u8, len: usize) -> Self {",
+        breaks: "the raw MMIO constructor loses its caller safety contract",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "unsafety::tests::every_unsafe_source_has_one_reviewed_fingerprint",
+        },
+    },
+    Mutation {
         file: "xtask/src/mutate.rs",
         find: "    if success {\n        let passed = format!(\"test {name} ... ok\");\n        if stdout.contains(&passed) || stderr.contains(&passed) {\n            return Ok(false);\n        }\n        bail!(\"host mutation selected no exact test `{name}`\");\n    }",
         replace: "    if success {\n        return Ok(false);\n    }",

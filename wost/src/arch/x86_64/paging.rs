@@ -33,7 +33,7 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use stack_layout::{Slot, StackLayout};
+use stack_layout::{Slot, StackLayout, ranges_overlap};
 use x86_paging::{
     ENTRIES, Entry, EntryError, Flags, LARGE_PAGE_SIZE, Level, MappingRange, MappingRangeError,
     PAGE_SIZE, TablePrivilege,
@@ -92,6 +92,12 @@ pub enum MapError {
     /// The range is outside the half this space owns. A space that shares the
     /// kernel's tables is not a handle onto them (D-105).
     NotYours(u64),
+    /// The range touches a stack retained for a hardware table, so removing it
+    /// would leave the processor holding a stale pointer.
+    Pinned(u64),
+    /// A hardware-retained stack was requested in a space this CPU is not
+    /// currently walking.
+    Inactive(Paddr),
 }
 
 impl From<EntryError> for MapError {
@@ -139,6 +145,15 @@ impl fmt::Display for MapError {
             }
             Self::NotYours(address) => {
                 write!(f, "{address:#x} is not in the half this space owns")
+            }
+            Self::Pinned(address) => {
+                write!(
+                    f,
+                    "the hardware-pinned stack at {address:#x} cannot be unmapped"
+                )
+            }
+            Self::Inactive(root) => {
+                write!(f, "the address space at {root:#x} is not active")
             }
             Self::Discontiguous(address) => {
                 write!(f, "the frames behind {address:#x} are not one run")
@@ -767,6 +782,33 @@ impl AddressSpace {
         })
     }
 
+    /// Map one guarded stack and prevent its mapping from being removed.
+    ///
+    /// This is the evidence a hardware table may retain after the call. A
+    /// plain [`MappedStack`] proves the mapping only when inspected; this
+    /// value also makes every overlapping [`unmap`](Self::unmap) fail for the
+    /// life of the address space.
+    ///
+    /// # Errors
+    ///
+    /// As [`map_stack`](Self::map_stack), plus [`MapError::Pinned`] if this
+    /// address space already has a hardware-pinned stack and
+    /// [`MapError::Inactive`] if the CPU is not walking this space.
+    pub fn map_pinned_stack(&mut self, slot: &Slot) -> Result<PinnedStack, MapError> {
+        if !is_active() || active_root() != self.root {
+            return Err(MapError::Inactive(self.root));
+        }
+        let existing = PINNED_STACK_BASE.load(Ordering::Acquire);
+        if existing != 0 {
+            return Err(MapError::Pinned(existing));
+        }
+        let stack = self.map_stack(slot)?;
+        PINNED_STACK_LEN.store(slot.stack_len(), Ordering::Relaxed);
+        PINNED_STACK_ROOT.store(self.root, Ordering::Relaxed);
+        PINNED_STACK_BASE.store(slot.stack_base(), Ordering::Release);
+        Ok(PinnedStack { stack })
+    }
+
     /// Translate through this space's tables, active or not.
     ///
     /// The same walk [`translate`] makes, aimed at a space that may not be the
@@ -907,8 +949,8 @@ impl AddressSpace {
     /// [`MapError::Misaligned`] unless base and length are page-aligned,
     /// [`MapError::NotMapped`] for a hole, [`MapError::Unsplittable`] for a
     /// large page, [`MapError::NotOwned`] for a mapping whose frame is not the
-    /// allocator's, and [`MapError::Discontiguous`] if the frames are not one
-    /// run.
+    /// allocator's, [`MapError::Discontiguous`] if the frames are not one run,
+    /// and [`MapError::Pinned`] if hardware retains any byte of the range.
     pub fn unmap(&mut self, virtual_base: u64, len: u64) -> Result<Unmapped, MapError> {
         if !virtual_base.is_multiple_of(PAGE_SIZE) || len == 0 || !len.is_multiple_of(PAGE_SIZE) {
             return Err(MapError::Misaligned(virtual_base));
@@ -925,6 +967,18 @@ impl AddressSpace {
             return Err(MapError::NonCanonical(virtual_base));
         }
         self.may_reach(virtual_base, len)?;
+        let pinned = PINNED_STACK_BASE.load(Ordering::Acquire);
+        if pinned != 0
+            && PINNED_STACK_ROOT.load(Ordering::Relaxed) == self.root
+            && ranges_overlap(
+                pinned,
+                PINNED_STACK_LEN.load(Ordering::Relaxed),
+                virtual_base,
+                len,
+            )
+        {
+            return Err(MapError::Pinned(pinned));
+        }
         let pages = len / PAGE_SIZE;
 
         // Preflight the whole range before clearing anything, so a refusal
@@ -1453,6 +1507,11 @@ static ACTIVE: Once = Once::new();
 /// The root of the installed space, or zero before [`activate`] succeeds.
 static ACTIVE_ROOT: AtomicU64 = AtomicU64::new(0);
 
+/// One stack address hardware may retain after its Rust token is gone.
+static PINNED_STACK_ROOT: AtomicU64 = AtomicU64::new(0);
+static PINNED_STACK_BASE: AtomicU64 = AtomicU64::new(0);
+static PINNED_STACK_LEN: AtomicU64 = AtomicU64::new(0);
+
 /// Switch this CPU to `space`, keeping it for the life of the kernel.
 ///
 /// Safe because it walks the new tables first, for this function's own code
@@ -1841,6 +1900,27 @@ impl MappedStack {
                     && flags.contains(Flags::WRITABLE)
                     && flags.contains(Flags::NO_EXECUTE)
         )
+    }
+}
+
+/// A guarded stack whose address space will not allow it to be unmapped.
+///
+/// Hardware retains stack addresses without retaining Rust values. This token
+/// proves the address space records the corresponding mapping as pinned, so a
+/// safe caller cannot invalidate the address after installing it in a table.
+#[derive(Debug)]
+pub struct PinnedStack {
+    stack: MappedStack,
+}
+
+impl PinnedStack {
+    /// The address the stack grows down from, sixteen-byte aligned.
+    pub const fn top(&self) -> u64 {
+        self.stack.top()
+    }
+
+    pub(crate) fn is_installed(&self) -> bool {
+        self.stack.is_installed()
     }
 }
 

@@ -82,6 +82,31 @@ impl Slot {
     pub const fn stack_top(&self) -> u64 {
         self.stack_base + self.stack_len
     }
+
+    /// Whether a byte range touches any byte of this stack.
+    ///
+    /// An overflowing range is treated as touching: callers use this to
+    /// protect a live mapping, so an invalid request must fail closed.
+    pub const fn stack_overlaps(&self, base: u64, len: u64) -> bool {
+        ranges_overlap(self.stack_base, self.stack_len, base, len)
+    }
+}
+
+/// Whether two half-open byte ranges overlap.
+///
+/// Empty ranges touch nothing. An overflowing non-empty range is invalid and
+/// treated as overlapping so a caller protecting memory fails closed.
+pub const fn ranges_overlap(left: u64, left_len: u64, right: u64, right_len: u64) -> bool {
+    if left_len == 0 || right_len == 0 {
+        return false;
+    }
+    let Some(left_end) = left.checked_add(left_len) else {
+        return true;
+    };
+    let Some(right_end) = right.checked_add(right_len) else {
+        return true;
+    };
+    left < right_end && right < left_end
 }
 
 impl StackLayout {
@@ -228,6 +253,19 @@ mod tests {
             assert_eq!(slot.stack_top() - slot.stack_base(), 16 * 1024);
             assert_eq!(slot.stack_len(), 16 * 1024);
         }
+    }
+
+    #[test]
+    fn stack_overlap_is_half_open_and_fails_closed() {
+        let slot = layout().slot(0).expect("in range");
+
+        assert!(!slot.stack_overlaps(slot.guard_base(), 4096));
+        assert!(!slot.stack_overlaps(slot.stack_top(), 4096));
+        assert!(!slot.stack_overlaps(slot.stack_base(), 0));
+        assert!(slot.stack_overlaps(slot.stack_base(), 4096));
+        assert!(slot.stack_overlaps(slot.stack_base() - 1, 2));
+        assert!(slot.stack_overlaps(slot.stack_top() - 1, 2));
+        assert!(slot.stack_overlaps(u64::MAX - 1, 4));
     }
 
     /// `end()` and `last.stack_top()` are the same expression written twice,

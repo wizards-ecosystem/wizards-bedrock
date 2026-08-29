@@ -111,7 +111,7 @@ anyhow = "1"
 fatfs = { version = "0.3", default-features = false, features = ["std", "alloc"] }
 fscommon = "0.1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
-syn = { version = "2", features = ["full"] }
+syn = { version = "2", features = ["full", "visit"] }
 
 # Verification, for `libs/ring-proto` only (D-84). Both are dev-dependencies of
 # one crate, so nothing they pull in reaches the kernel or the image.

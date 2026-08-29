@@ -5574,6 +5574,34 @@ fn the_double_fault_stack_is_guarded() -> bool {
     true
 }
 
+/// The mapping retained by the task-state segment cannot be removed safely.
+fn the_double_fault_stack_cannot_be_unmapped() -> bool {
+    let Some(layout) = thread::fault_stack_layout() else {
+        return false;
+    };
+    let Some(slot) = layout.slot(0) else {
+        return false;
+    };
+    let Ok(mut inactive) = AddressSpace::new() else {
+        return false;
+    };
+    let inactive_root = inactive.root();
+    let inactive_refused = matches!(
+        inactive.map_pinned_stack(&slot),
+        Err(MapError::Inactive(root)) if root == inactive_root
+    );
+    let inactive_reclaimed = inactive.reclaim(None) == Ok(1);
+    let mut context = ThreadContext::require();
+
+    inactive_refused
+        && inactive_reclaimed
+        && matches!(
+            mem::unmap_fault_stack_for_test(&mut context),
+            Some(Err(MapError::Pinned(address))) if address == slot.stack_base()
+        )
+        && the_double_fault_stack_is_guarded()
+}
+
 /// A second address space has the kernel and nothing of anyone else.
 ///
 /// The shape a process needs (D-104): the higher half shared so a trap from
@@ -7202,7 +7230,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 211;
+const EXPECTED_CHECKS: usize = 212;
 
 impl Report {
     const fn new() -> Self {
@@ -7702,6 +7730,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the double-fault stack is guarded",
         the_double_fault_stack_is_guarded(),
+    );
+    report.check(
+        "the double-fault stack cannot be unmapped",
+        the_double_fault_stack_cannot_be_unmapped(),
     );
     report.check(
         "a second space holds the kernel and nothing else",
@@ -8398,20 +8430,8 @@ fn a_stale_root_authorises_no_walk() -> bool {
 /// and it is kept because it is the thing a *different* firmware would break.
 /// Said plainly rather than left for the next audit to find (D-139).
 ///
-/// Safe to open for those few instructions: no program can be entered in
-/// between — this runs on a kernel thread, and `enter_user` refuses while
-/// either door is open, so a failure here stops programs rather than exposing
-/// one.
 fn the_fast_syscall_doors_are_shut_by_this_kernel() -> bool {
-    let shut_at_boot = cpu::fast_syscall_doors_are_shut();
-
-    cpu::open_fast_syscall_doors_for_test();
-    let reader_sees_it = !cpu::fast_syscall_doors_are_shut();
-
-    cpu::shut_fast_syscall_doors();
-    let shut_again = cpu::fast_syscall_doors_are_shut();
-
-    shut_at_boot && reader_sees_it && shut_again
+    cpu::drive_fast_syscall_shutdown_for_test()
 }
 
 /// A reclaimed address space answers nothing and binds to nothing.

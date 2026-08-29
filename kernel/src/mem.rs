@@ -212,7 +212,7 @@ fn guard_the_fault_stack() -> Result<u64, MapError> {
     // self-checks (D-94). Doing this by hand was the first version, and the
     // difference is exactly the evidence.
     let mut context = ThreadContext::require();
-    let stack = with_active_space(&mut context, |space| space.map_stack(&slot))
+    let stack = with_active_space(&mut context, |space| space.map_pinned_stack(&slot))
         .ok_or(MapError::OutOfMemory)??;
 
     let top = stack.top();
@@ -220,6 +220,17 @@ fn guard_the_fault_stack() -> Result<u64, MapError> {
         return Err(MapError::Misaligned(top));
     }
     Ok(top)
+}
+
+/// Try to remove the hardware-retained fault stack through the normal door.
+#[cfg(feature = "selftest")]
+pub(crate) fn unmap_fault_stack_for_test(
+    context: &mut ThreadContext,
+) -> Option<Result<paging::Unmapped, MapError>> {
+    let slot = thread::fault_stack_layout()?.slot(0)?;
+    with_active_space(context, |space| {
+        space.unmap(slot.stack_base(), slot.stack_len())
+    })
 }
 
 /// Map the boot thread's own guarded stack.

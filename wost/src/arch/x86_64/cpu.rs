@@ -422,27 +422,30 @@ fn shut_the_fast_syscall_doors() {
     unsafe { msr::write(SYSENTER_CS, 0) };
 }
 
-/// Open the fast-syscall doors, so a check can watch them be shut again.
+/// Drive a fast-syscall door open and through the kernel's closing path.
 ///
-/// Nothing in this kernel wants them open. It exists because the check for
+/// Nothing in this kernel wants one open. This exists because the check for
 /// D-139 could not otherwise fail: Limine leaves `SCE` clear and
 /// `SYSENTER_CS` is zero at reset, so `fast_syscall_doors_are_shut` answers
 /// true whether or not the kernel ever wrote anything. Observing a state the
 /// firmware already arranged is not a check of the code that arranges it.
 ///
-/// Paired with [`shut_fast_syscall_doors`] and used in one place, immediately.
-pub fn open_fast_syscall_doors_for_test() {
+/// Interrupts stay excluded across the deliberately unsafe state, and the
+/// door is closed before this function returns. The result requires it to
+/// have started shut, to have been observed open, and to end shut again.
+pub fn drive_fast_syscall_shutdown_for_test() -> bool {
+    let disabled = interrupt::disable();
+    let shut_at_start = fast_syscall_doors_are_shut();
     // SAFETY: sets the bit that enables an instruction this kernel never
-    // executes — no `syscall` or `sysret` appears in the tree — and the caller
-    // shuts it again in the next statement. Ring 3 cannot run in between:
-    // this is called from a kernel thread, and no program is entered until
-    // `enter_user`, which refuses while the door is open.
+    // executes — no `syscall` or `sysret` appears in the tree — and interrupts
+    // are excluded until the private closing path runs below, so no existing
+    // ring-3 context can resume through the open door.
     unsafe { msr::write(EFER, msr::read(EFER) | EFER_SYSCALL) };
-}
-
-/// Shut them again, for the same check.
-pub fn shut_fast_syscall_doors() {
+    let reader_sees_open = !fast_syscall_doors_are_shut();
     shut_the_fast_syscall_doors();
+    let shut_again = fast_syscall_doors_are_shut();
+    disabled.restore();
+    shut_at_start && reader_sees_open && shut_again
 }
 
 /// Whether both fast-syscall doors are shut.

@@ -12,7 +12,7 @@ use x86_tables::Selector;
 use x86_tables::gdt::{Descriptor, SystemDescriptor};
 use x86_tables::tss::TaskState;
 
-use super::paging::MappedStack;
+use super::paging::PinnedStack;
 use super::table::TablePointer;
 use crate::cell::HardwareCell;
 use crate::sync::Once;
@@ -235,10 +235,12 @@ fn reload_selectors() {
 /// D-95 refused; from inside it, with that walk behind it, it is the same
 /// evidence by a different route (D-99).
 ///
-/// **There was a `pub fn set_kernel_stack(&MappedStack)` beside this, and it
-/// is gone.** It asked for the evidence this one does not, and had no callers:
+/// **There was a `pub fn set_kernel_stack(&paging::MappedStack)` beside this,
+/// and it is gone.** It asked for the evidence this one does not, and had no
+/// callers:
 /// the switch writes `RSP0` *before* it installs the arriving thread's tables,
-/// so `MappedStack::is_installed` — which walks the running tables since
+/// so [`paging::MappedStack::is_installed`](super::paging::MappedStack::is_installed)
+/// — which walks the running tables since
 /// D-125 — would refuse the arriving stack every time. A safe wrapper its only
 /// intended caller cannot use by construction is the speculative API `005`
 /// forbids, and keeping it suggested a road that was never open (D-129).
@@ -273,26 +275,24 @@ pub fn kernel_stack() -> u64 {
 /// runs into whatever the linker put next, silently. Once the tables are live a
 /// guarded region can be mapped and the handler pointed at it (D-89).
 ///
-/// Safe, and the reason is the width. The interrupt-stack table entry is a
-/// single naturally-aligned eight-byte field, so this store is atomic on
-/// x86-64: a double fault arriving during it sees either the old stack or the
-/// new one, and both are mapped and writable. The old one is never unmapped —
-/// it is in the kernel image — so there is no window in which the losing
-/// value is invalid.
+/// Safe for two reasons. [`PinnedStack`] makes the new mapping non-revocable,
+/// and the old one is a kernel-image array that cannot be unmapped. The
+/// interrupt-stack table entry is a single naturally-aligned eight-byte field,
+/// so this store is atomic on x86-64: a double fault arriving during it sees
+/// one complete mapped, writable value or the other.
 ///
 /// `false` if the stack does not belong to the address space this CPU is
 /// walking, which would point the handler at memory it cannot reach.
-pub fn set_double_fault_stack(stack: &MappedStack) -> bool {
+pub fn set_double_fault_stack(stack: &PinnedStack) -> bool {
     if !stack.is_installed() {
         return false;
     }
-    // SAFETY: `MappedStack` is evidence that this region was mapped writable
-    // with its guard verified absent, `is_installed` has just confirmed the
-    // CPU walks the space that mapped it, and the field written is the
-    // interrupt-stack entry alone — eight bytes, naturally aligned, so a
-    // double fault arriving mid-store reads the old stack or the new one and
-    // never a mixture. Both are mapped: the `.bss` array `init` installed is
-    // in the kernel image and is never unmapped.
+    // SAFETY: `PinnedStack` proves this region was mapped writable with its
+    // guard absent and that safe unmap calls must refuse it; `is_installed`
+    // has just confirmed the CPU walks the space that owns it. The field is
+    // eight bytes and naturally aligned, so a double fault arriving mid-store
+    // reads the old stack or the new one, never a mixture. The old `.bss`
+    // stack is in the kernel image and cannot be unmapped either.
     let at = TaskState::interrupt_stack_offset(DOUBLE_FAULT_STACK as usize);
     // The alignment this store needs is arranged by `AlignedTaskState`, not
     // assumed: `IST1` is at `0x24`, which is four-mod-eight, so the segment is
