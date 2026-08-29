@@ -224,12 +224,6 @@ pub mod register {
     /// Controller capabilities. 64 bits, and **read, never assumed** — `012`
     /// §11 records that VMware's values are unmeasured.
     pub const CAP: usize = 0x00;
-    /// Version.
-    pub const VS: usize = 0x08;
-    /// Interrupt mask set.
-    pub const INTMS: usize = 0x0C;
-    /// Interrupt mask clear.
-    pub const INTMC: usize = 0x10;
     /// Controller configuration.
     pub const CC: usize = 0x14;
     /// Controller status.
@@ -248,8 +242,6 @@ pub mod register {
 pub mod configuration {
     /// Enable.
     pub const ENABLE: u32 = 1;
-    /// Shift of `CSS`, the command set.
-    pub const COMMAND_SET_SHIFT: u32 = 4;
     /// Shift of `MPS`, the host page size as `log2(size) - 12`.
     pub const PAGE_SIZE_SHIFT: u32 = 7;
     /// Shift of `IOSQES`.

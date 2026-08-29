@@ -79,13 +79,14 @@ Ordered `cargo xtask ci` stages:
 |---:|---|---|
 | 1 | `cargo xtask fmt --check` | refuse unformatted source |
 | 2 | `cargo xtask clippy` | lint every registered Cargo graph |
-| 3 | `cargo xtask doc` | build docs for every registered Cargo graph |
-| 4 | `cargo xtask test` | run host tests and doctests |
-| 5 | `cargo xtask verify-vendor` | verify every vendored digest |
-| 6 | `cargo xtask test-boot --release` | run all machine checks on the release kernel |
-| 7 | `cargo xtask test-boot --debug` | run all machine checks with overflow checks enabled |
-| 8 | `cargo xtask boot-check --release` | boot, exercise and settle the shipped image |
-| 9 | `cargo xtask degraded-check --release` | prove the no-PCI and no-x2APIC refusals |
+| 3 | `cargo xtask api-audit` | prove every public foundation API has a caller |
+| 4 | `cargo xtask doc` | build docs for every registered Cargo graph |
+| 5 | `cargo xtask test` | run host tests and doctests |
+| 6 | `cargo xtask verify-vendor` | verify every vendored digest |
+| 7 | `cargo xtask test-boot --release` | run all machine checks on the release kernel |
+| 8 | `cargo xtask test-boot --debug` | run all machine checks with overflow checks enabled |
+| 9 | `cargo xtask boot-check --release` | boot, exercise and settle the shipped image |
+| 10 | `cargo xtask degraded-check --release` | prove the no-PCI and no-x2APIC refusals |
 <!-- CI-REGISTRY:END -->
 
 `boot-check` boots the shipped kernel and requires it to settle at its prompt;
@@ -110,6 +111,13 @@ kernel asks for one (D-38), and reads the verdict from the exit code, which
 is how anything needing a real machine gets tested (D-28). `doc` exists to
 make the rustdoc link lints fire — nothing else in the gate runs rustdoc, so
 without it a doc link can rot unnoticed (D-22).
+
+`api-audit` uses stable rustc's resolved deprecation diagnostics across every
+registered Cargo graph to require a real caller for each public `libs/` and
+`wost` item declaration or enum variant. It distinguishes same-name items and
+does not treat re-exports or documentation as callers; fields remain outside
+the claim because rustc does not diagnose every live destructuring pattern
+(D-213).
 
 Every Cargo-driven check runs over every graph in the registry above. A Cargo
 feature is a different crate graph, and linting only one of them is how two

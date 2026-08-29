@@ -47,9 +47,6 @@ const XSAVEC_SUPPORTED: u32 = 1 << 1;
 /// not set cannot make it larger.
 pub const CEILING: usize = 1024;
 
-/// Alignment `XSAVE` requires of its area.
-pub const ALIGNMENT: usize = 64;
-
 /// Bytes the save instructions actually write, or zero before [`init`].
 static BYTES: AtomicUsize = AtomicUsize::new(0);
 
@@ -190,7 +187,7 @@ pub fn save_stays_inside_its_area() -> bool {
     // `XSAVE` writes only the components whose bits it is given and the header;
     // the rest of the area is left as it was, so the sentinel is the only part
     // this reads back.
-    // SAFETY: `area` is `ALIGNMENT`-aligned by its `repr` and at least `bytes`
+    // SAFETY: `area` is 64-byte aligned by its `repr` and at least `bytes`
     // long, checked above — which is exactly `save`'s contract.
     unsafe { save(area.0.as_mut_ptr()) };
 
@@ -199,26 +196,11 @@ pub fn save_stays_inside_its_area() -> bool {
         .all(|byte| *byte == MARK)
 }
 
-/// Whether [`save`] uses the compacted form.
-///
-/// Read from the dispatch's own word, not from what `CPUID` reported. Nothing
-/// read this, and the two can disagree: [`bytes`] is computed for whichever
-/// form `init` chose, so a `FORM` naming the *uncompacted* path with a
-/// *compacted* size writes past the end of every save area on the machine.
-/// They are stored together and agreed; what was missing was any way to find
-/// out if they stopped (D-144).
-///
-/// `main.rs` prints ", compacted" from `Extended::compacted`, a `CPUID` bool —
-/// so the banner would have gone on saying it with the dispatch switched.
-pub fn saves_compacted() -> bool {
-    FORM.load(Ordering::Acquire) == 2
-}
-
 /// Save this CPU's extended state into `area`.
 ///
 /// # Safety
 ///
-/// `area` must be [`ALIGNMENT`]-aligned and at least [`bytes`] long, and
+/// `area` must be 64-byte aligned and at least [`bytes`] long, and
 /// writable for that whole span. Nothing else may be reading or writing it.
 pub unsafe fn save(area: *mut u8) {
     match FORM.load(Ordering::Acquire) {

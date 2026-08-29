@@ -2148,11 +2148,6 @@ pub struct ReleasableDevice {
 }
 
 impl ReleasableDevice {
-    /// The mapped virtual address.
-    pub const fn address(&self) -> u64 {
-        self.mapping.address
-    }
-
     /// Read one register word.
     pub fn read_u32(&self, offset: usize) -> Result<u32, crate::mmio::MmioError> {
         self.registers.read_u32(offset)

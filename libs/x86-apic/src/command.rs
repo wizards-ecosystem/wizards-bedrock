@@ -42,11 +42,6 @@ impl Command {
         Self(vector as u32 | DELIVERY_FIXED | ASSERT | SHORTHAND_SELF)
     }
 
-    /// Interpret what the register returned.
-    pub const fn from_bits(bits: u32) -> Self {
-        Self(bits)
-    }
-
     /// The value to write.
     ///
     /// The register is 64 bits wide and its upper half is the destination,

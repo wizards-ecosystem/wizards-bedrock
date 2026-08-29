@@ -76,6 +76,8 @@ pub enum Caught {
         /// Fully qualified test name accepted by `--exact`.
         name: &'static str,
     },
+    /// The compiler-resolved API audit must name this exact dead item.
+    ApiAudit(&'static str),
     /// A shipped degraded boot must emit one exact serial marker.
     BootMarker(&'static str),
     /// The defect kills the machine before the verdict.
@@ -2164,6 +2166,53 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        file: "libs/elf64/src/lib.rs",
+        find: "            offset: read_u64(header, 40)?,",
+        replace: "            offset: read_u64(header, 32)?,",
+        breaks: "the section table offset is read from the program table field",
+        reddens: Caught::HostTest {
+            package: "elf64",
+            name: "tests::the_section_table_fields_are_where_the_file_header_puts_them",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "            if inventory.is_reexport(file, at) {\n                continue;\n            }",
+        replace: "            if false && inventory.is_reexport(file, at) {\n                continue;\n            }",
+        breaks: "a public re-export is mistaken for an executable caller",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::reexports_docs_and_same_names_are_resolved_by_the_compiler",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "    public_name();\n    api::nested::same_name();",
+        replace: "    public_name();\n    api::documented();\n    api::nested::same_name();",
+        breaks: "the fixture's documentation-only API secretly gains a code caller",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::reexports_docs_and_same_names_are_resolved_by_the_compiler",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "    api::nested::same_name();",
+        replace: "    api::same_name();",
+        breaks: "the same-name fixture calls the other declaration",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::reexports_docs_and_same_names_are_resolved_by_the_compiler",
+        },
+    },
+    Mutation {
+        file: "libs/mmio-range/src/lib.rs",
+        find: "    pub const fn len(self) -> usize {\n        self.len\n    }\n\n    /// Exclusive end byte.",
+        replace: "    pub const fn len(self) -> usize {\n        self.len\n    }\n\n    /// Whether this access range covers no bytes.\n    pub const fn is_empty(self) -> bool {\n        self.len == 0\n    }\n\n    /// Exclusive end byte.",
+        breaks: "lint appeasement recreates a public API with no caller",
+        reddens: Caught::ApiAudit("method impl::is_empty"),
+    },
+    Mutation {
         file: "xtask/src/mutate.rs",
         find: "    if success {\n        let passed = format!(\"test {name} ... ok\");\n        if stdout.contains(&passed) || stderr.contains(&passed) {\n            return Ok(false);\n        }\n        bail!(\"host mutation selected no exact test `{name}`\");\n    }",
         replace: "    if success {\n        return Ok(false);\n    }",
@@ -2188,6 +2237,7 @@ pub const MUTATIONS: &[Mutation] = &[
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct Baselines {
     host: bool,
+    api: bool,
     selftest: bool,
     degraded: bool,
 }
@@ -2197,6 +2247,7 @@ fn baselines_for(mutations: &[Mutation]) -> Baselines {
     for mutation in mutations {
         match mutation.reddens {
             Caught::HostTest { .. } => baselines.host = true,
+            Caught::ApiAudit(_) => baselines.api = true,
             Caught::Check(_) | Caught::Panic { .. } => baselines.selftest = true,
             Caught::BootMarker(_) => baselines.degraded = true,
         }
@@ -2213,6 +2264,10 @@ fn prove_green_baselines(paths: &Paths, mutations: &[Mutation]) -> Result<()> {
     if baselines.host {
         println!("[xtask] proving the pristine host mutation baseline");
         require_green("host", tasks::test(paths))?;
+    }
+    if baselines.api {
+        println!("[xtask] proving the pristine API-audit mutation baseline");
+        require_green("API audit", crate::api::check(paths))?;
     }
     if baselines.selftest {
         println!("[xtask] proving the pristine self-test mutation baseline");
@@ -2366,6 +2421,10 @@ fn registry_fingerprint() -> String {
                 field(&mut material, package);
                 field(&mut material, name);
             }
+            Caught::ApiAudit(item) => {
+                field(&mut material, "api-audit");
+                field(&mut material, item);
+            }
             Caught::BootMarker(marker) => {
                 field(&mut material, "boot-marker");
                 field(&mut material, marker);
@@ -2382,14 +2441,14 @@ fn registry_fingerprint() -> String {
 
 /// Refuse source the already-running mutation driver would consume itself.
 fn ensure_target_is_rebuilt(mutation: &Mutation) -> Result<()> {
-    let rebuilt_host_test = matches!(
+    let rebuilt_witness = matches!(
         mutation.reddens,
         Caught::HostTest {
             package: "xtask",
             ..
-        }
+        } | Caught::ApiAudit(_)
     );
-    if mutation.file.starts_with("xtask/") && !rebuilt_host_test {
+    if mutation.file.starts_with("xtask/") && !rebuilt_witness {
         bail!(
             "{}: `{}` belongs to the running mutation driver and would not be rebuilt by its witness",
             mutation.file,
@@ -2446,6 +2505,19 @@ fn mutation_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
             }
         };
     }
+    if let Caught::ApiAudit(item) = wanted {
+        return match crate::api::check(paths) {
+            Ok(()) => Ok(false),
+            Err(error) => {
+                let report = format!("{error:#}");
+                if report.contains("public API item(s) have no caller") && report.contains(item) {
+                    Ok(true)
+                } else {
+                    Err(error)
+                }
+            }
+        };
+    }
     let observed = tasks::observe_test_boot(paths, crate::cargo::Profile::Release)?;
     assess_selftest(wanted, observed)
 }
@@ -2477,7 +2549,7 @@ fn assess_selftest(wanted: Caught, observed: qemu::SelftestOutcome) -> Result<bo
             "mutation expected panic marker {marker:?}, but checks failed: {}",
             failed.join("; ")
         ),
-        (Caught::HostTest { .. } | Caught::BootMarker(_), _) => {
+        (Caught::HostTest { .. } | Caught::ApiAudit(_) | Caught::BootMarker(_), _) => {
             unreachable!("other witnesses return before self-test assessment")
         }
     }
@@ -2632,6 +2704,9 @@ mod tests {
                         mutation.breaks,
                         package.display()
                     );
+                }
+                Caught::ApiAudit(item) => {
+                    assert!(!item.is_empty(), "API-audit mutations name an exact item");
                 }
                 Caught::BootMarker(marker) => {
                     let qemu = std::fs::read_to_string(root.join("xtask/src/qemu.rs"))

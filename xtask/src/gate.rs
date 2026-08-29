@@ -41,6 +41,7 @@ impl CargoPass {
 pub(crate) enum Step {
     Format,
     Clippy,
+    ApiAudit,
     Documentation,
     HostTests,
     Vendor,
@@ -54,6 +55,7 @@ impl Step {
         match self {
             Self::Format => "fmt --check",
             Self::Clippy => "clippy",
+            Self::ApiAudit => "api-audit",
             Self::Documentation => "doc",
             Self::HostTests => "test",
             Self::Vendor => "verify-vendor",
@@ -68,6 +70,7 @@ impl Step {
         match self {
             Self::Format => "refuse unformatted source",
             Self::Clippy => "lint every registered Cargo graph",
+            Self::ApiAudit => "prove every public foundation API has a caller",
             Self::Documentation => "build docs for every registered Cargo graph",
             Self::HostTests => "run host tests and doctests",
             Self::Vendor => "verify every vendored digest",
@@ -135,6 +138,7 @@ const CARGO_PASSES: &[CargoPass] = &[
 const STEPS: &[Step] = &[
     Step::Format,
     Step::Clippy,
+    Step::ApiAudit,
     Step::Documentation,
     Step::HostTests,
     Step::Vendor,

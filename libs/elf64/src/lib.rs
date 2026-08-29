@@ -11,8 +11,9 @@
 //! every header offset for two phases; they agreed, nothing checked that they
 //! did, and a repair to one copy left the other two validations short — which
 //! is how `x86-tables` and `trap-cause` came to disagree about vector 28.
-//! What stays there is the **section** table and its string table: a loader
-//! never reads one, so this crate does not either.
+//! What stays there is the **section-entry** and string-table parser: a loader
+//! never walks either. This crate exposes only their four file-header fields,
+//! so the host verifier does not privately transcribe part of the header.
 //!
 //! **Nothing here allocates, indexes unchecked, or panics.** The bytes may
 //! come from an initrd a program supplied, so every read is bounds-checked
@@ -307,6 +308,40 @@ impl Segment {
     }
 }
 
+/// The file header's description of the section table.
+///
+/// This is metadata, not a validated table. Program loading never needs to
+/// walk sections; the host image verifier does, and owns that parser (D-213).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SectionTable {
+    offset: u64,
+    entry_size: u16,
+    count: u16,
+    names_index: u16,
+}
+
+impl SectionTable {
+    /// File offset of the first section header.
+    pub const fn offset(self) -> u64 {
+        self.offset
+    }
+
+    /// Bytes in each section header.
+    pub const fn entry_size(self) -> u16 {
+        self.entry_size
+    }
+
+    /// Number of section headers.
+    pub const fn count(self) -> u16 {
+        self.count
+    }
+
+    /// Index of the section-name string table.
+    pub const fn names_index(self) -> u16 {
+        self.names_index
+    }
+}
+
 /// A parsed ELF64 image, borrowing the bytes it came from.
 #[derive(Debug, Clone, Copy)]
 pub struct Elf<'a> {
@@ -314,6 +349,7 @@ pub struct Elf<'a> {
     entry: u64,
     program_offset: u64,
     program_count: u16,
+    sections: SectionTable,
 }
 
 impl<'a> Elf<'a> {
@@ -357,6 +393,12 @@ impl<'a> Elf<'a> {
         let program_offset = read_u64(header, 32)?;
         let entry_size = read_u16(header, 54)?;
         let program_count = read_u16(header, 56)?;
+        let sections = SectionTable {
+            offset: read_u64(header, 40)?,
+            entry_size: read_u16(header, 58)?,
+            count: read_u16(header, 60)?,
+            names_index: read_u16(header, 62)?,
+        };
 
         if program_count != 0 && entry_size as usize != PROGRAM_HEADER_BYTES {
             return Err(ElfError::WrongProgramHeaderSize(entry_size));
@@ -381,6 +423,7 @@ impl<'a> Elf<'a> {
             entry,
             program_offset,
             program_count,
+            sections,
         })
     }
 
@@ -394,9 +437,9 @@ impl<'a> Elf<'a> {
         self.program_count
     }
 
-    /// The bytes this was parsed from.
-    pub const fn bytes(&self) -> &'a [u8] {
-        self.bytes
+    /// The section-table fields from the file header.
+    pub const fn section_table(&self) -> SectionTable {
+        self.sections
     }
 
     /// Every program header, in order.
@@ -537,6 +580,21 @@ mod tests {
         assert_eq!(segment.file_size(), 0x100, "p_filesz is at offset 32");
         assert_eq!(segment.memory_size(), 0x200, "p_memsz is at offset 40");
         assert_eq!(segment.alignment(), 0x1000, "p_align is at offset 48");
+    }
+
+    #[test]
+    fn the_section_table_fields_are_where_the_file_header_puts_them() {
+        let mut bytes = image(&[]);
+        bytes[40..48].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+        bytes[58..60].copy_from_slice(&0x1234u16.to_le_bytes());
+        bytes[60..62].copy_from_slice(&0x2345u16.to_le_bytes());
+        bytes[62..64].copy_from_slice(&0x3456u16.to_le_bytes());
+
+        let table = Elf::parse(&bytes).expect("well formed").section_table();
+        assert_eq!(table.offset(), 0x1122_3344_5566_7788);
+        assert_eq!(table.entry_size(), 0x1234);
+        assert_eq!(table.count(), 0x2345);
+        assert_eq!(table.names_index(), 0x3456);
     }
 
     /// Anything that is not this format is refused, each for its own reason.

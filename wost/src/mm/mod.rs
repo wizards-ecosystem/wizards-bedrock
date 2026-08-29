@@ -300,11 +300,6 @@ impl Frame {
         self.index as u64 * FRAME_SIZE
     }
 
-    /// The frame's index — its address divided by the frame size.
-    pub const fn index(&self) -> usize {
-        self.index
-    }
-
     /// Fill every byte of the frame with `byte`.
     ///
     /// Returns `false` if the direct map cannot reach it, which means either
@@ -328,39 +323,6 @@ impl Frame {
     /// Fill the frame with zeros.
     pub fn zero(&mut self) -> bool {
         self.fill(0)
-    }
-
-    /// Write `bytes` at `offset` within the frame.
-    ///
-    /// The one way to put chosen content into a frame from safe code, and the
-    /// reason it exists: loading a program means copying its image somewhere,
-    /// and the kernel may not hold a raw pointer to do it (D-13). Written
-    /// through the direct map, so the frame need not be mapped anywhere else
-    /// yet — which is what lets a page be filled *before* it is mapped
-    /// read-only and executable, rather than mapped writable and then
-    /// demoted (D-96).
-    ///
-    /// `false` if the write would run past the frame, or if the direct map
-    /// cannot reach it.
-    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
-        let Some(end) = offset.checked_add(bytes.len()) else {
-            return false;
-        };
-        if end > FRAME_SIZE as usize {
-            return false;
-        }
-        let Some(base) = direct_map_pointer(self.address()) else {
-            return false;
-        };
-        // SAFETY: the bounds check above places `offset` inside the frame, so
-        // this stays within the allocation `direct_map_pointer` vouched for.
-        let destination = unsafe { base.add(offset) };
-        // SAFETY: `self` owns this frame — the allocator hands out one handle
-        // per frame and this takes `&mut self` — and `bytes` ends inside it,
-        // so the destination is a live range nothing else can name. The two
-        // cannot overlap: `bytes` is the caller's and this is a frame.
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
-        true
     }
 
     /// Whether every byte of the frame is zero, or `None` if the direct map
@@ -421,15 +383,12 @@ impl Segment {
     }
 
     /// Bytes in the run.
+    #[expect(
+        clippy::len_without_is_empty,
+        reason = "allocation refuses a zero-frame segment"
+    )]
     pub const fn len(&self) -> u64 {
         self.count as u64 * FRAME_SIZE
-    }
-
-    /// Whether the run is empty. Never true — the allocator refuses a run of
-    /// zero frames — but `clippy::len_without_is_empty` asks, and answering is
-    /// cheaper than an `allow`.
-    pub const fn is_empty(&self) -> bool {
-        self.count == 0
     }
 
     /// Fill every byte of the run with `byte`.
@@ -569,16 +528,15 @@ impl DmaSegment {
     }
 
     /// Bytes in the run, unless uncertain device ownership retained it.
+    #[expect(
+        clippy::len_without_is_empty,
+        reason = "None means retained by a device, not an empty collection"
+    )]
     pub const fn len(&self) -> Option<u64> {
         match &self.segment {
             Some(segment) => Some(segment.len()),
             None => None,
         }
-    }
-
-    /// Whether no accessible bytes remain.
-    pub const fn is_empty(&self) -> bool {
-        matches!(self.len(), None | Some(0))
     }
 
     /// Whether the run is unavailable because a device may still reach it.
@@ -653,21 +611,6 @@ impl USegment {
         self.0.address()
     }
 
-    /// Frames in the run.
-    pub const fn frames(&self) -> usize {
-        self.0.frames()
-    }
-
-    /// Bytes in the run.
-    pub const fn len(&self) -> u64 {
-        self.0.len()
-    }
-
-    /// Whether the run is empty. Never true; see [`Segment::is_empty`].
-    pub const fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     /// Pin this run for sharing, giving up the right to map it as owned.
     ///
     /// Consuming, and [`Shared`] is not convertible back. That is the whole
@@ -736,13 +679,12 @@ impl Shared {
     }
 
     /// Bytes in the run.
+    #[expect(
+        clippy::len_without_is_empty,
+        reason = "shared allocations cannot contain zero frames"
+    )]
     pub fn len(&self) -> u64 {
         self.0.0.len()
-    }
-
-    /// Whether the run is empty. Never true; see [`Segment::is_empty`].
-    pub fn is_empty(&self) -> bool {
-        self.0.0.is_empty()
     }
 
     /// Write `bytes` at `offset` within the run.

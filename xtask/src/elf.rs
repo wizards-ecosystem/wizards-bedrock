@@ -281,8 +281,9 @@ impl Image {
 /// step. D-105 recorded that duplication as owed and D-124 found what it costs:
 /// a repair to one copy left the other two validations short (D-158).
 ///
-/// The section table stays here. `elf64` is a loader's crate and a loader
-/// never reads one; nothing else in the tree wants it.
+/// The section-entry and string-table parser stays here. `elf64` exposes the
+/// four file-header fields so this verifier does not privately transcribe the
+/// header, but a loader never needs the host-only entry walk (D-213).
 pub fn parse(bytes: &[u8]) -> Result<Image> {
     let image = elf64::Elf::parse(bytes).map_err(|error| anyhow::anyhow!("{error}"))?;
     let segments = image
@@ -295,7 +296,7 @@ pub fn parse(bytes: &[u8]) -> Result<Image> {
             memory_size: segment.memory_size(),
         })
         .collect();
-    let sections = parse_sections(bytes)?;
+    let sections = parse_sections(bytes, image.section_table())?;
     Ok(Image {
         entry: image.entry(),
         segments,
@@ -322,18 +323,22 @@ fn field(at: usize, offset: usize) -> Result<usize> {
         .context("a header field runs off the end of the address space")
 }
 
-fn parse_sections(bytes: &[u8]) -> Result<Vec<Section>> {
-    let table = read_u64(bytes, 0x28)? as usize;
-    let stride = read_u16(bytes, 0x3A)? as usize;
-    let count = read_u16(bytes, 0x3C)? as usize;
-    let names_index = read_u16(bytes, 0x3E)? as usize;
+fn parse_sections(bytes: &[u8], header: elf64::SectionTable) -> Result<Vec<Section>> {
+    let table = usize::try_from(header.offset()).context("section table offset is too large")?;
+    let stride = usize::from(header.entry_size());
+    let count = usize::from(header.count());
+    let names_index = usize::from(header.names_index());
     if count == 0 {
         return Ok(Vec::new());
     }
     if names_index >= count {
         bail!("the section name table index is outside the section table");
     }
-    let names = read_u64(bytes, field(entry_at(table, names_index, stride)?, 0x18)?)? as usize;
+    let names = usize::try_from(read_u64(
+        bytes,
+        field(entry_at(table, names_index, stride)?, 0x18)?,
+    )?)
+    .context("section name table offset is too large")?;
 
     (0..count)
         .map(|index| {
@@ -375,10 +380,6 @@ fn read_bytes<const N: usize>(bytes: &[u8], at: usize) -> Result<[u8; N]> {
     let mut out = [0u8; N];
     out.copy_from_slice(slice);
     Ok(out)
-}
-
-fn read_u16(bytes: &[u8], at: usize) -> Result<u16> {
-    read_bytes(bytes, at).map(u16::from_le_bytes)
 }
 
 fn read_u32(bytes: &[u8], at: usize) -> Result<u32> {

@@ -46,9 +46,6 @@
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
 )]
 
-/// Buses a configuration address can name.
-pub const BUSES: u8 = u8::MAX;
-
 /// Devices on one bus.
 pub const DEVICES: u8 = 32;
 

@@ -960,13 +960,13 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 211 |
-| Mutations | 190 registered; 64 in the last recorded full sweep, with 126 later entries broken individually |
+| Mutations | 195 registered; 64 in the last recorded full sweep, with 131 later entries broken individually |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-212 |
+| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-213 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but that proves registration rather than a current full
-sweep. D-184's register carries the 190-entry count. A number restated in prose can
+sweep. D-184's register carries the 195-entry count. A number restated in prose can
 disagree with itself — which the per-slice lines above did, in seven places, and
 which is why they now say what the gate said rather than what was expected of
 it (D-175). The host-test count is deliberately absent: it changes with every
@@ -981,7 +981,7 @@ it (D-175). The host-test count is deliberately absent: it changes with every
 | Port claims prove exclusivity, not entitlement | Slice 4 (D-168) |
 | `sys_clock_get` OWED under D-114's former taxonomy | Slice 2 — monotonic time stopped being a call (D-166); D-181 records the reader and fallback as PARTIAL |
 | An in-flight operation whose program retires | Slice 3 (D-167) |
-| `xtask/src/elf.rs` transcribes ELF offsets | Paid early, in the pre-phase pass (D-158) |
+| `xtask/src/elf.rs` transcribes ELF offsets | Program loading paid early in D-158; D-213 moved the remaining section-table file-header fields into `libs/elf64` |
 | A wait with a timeout | Slice 1 (D-164) |
 | KASLR ledger entries | Slice 2's time page; slice 4 needed none — the NVMe window is discovered, not fixed |
 

@@ -225,11 +225,6 @@ pub fn current() -> usize {
     CURRENT.load(Ordering::Acquire)
 }
 
-/// Slots in the table, the boot slot included; zero before [`init`].
-pub fn count() -> usize {
-    TABLE.lock_leaf().count
-}
-
 /// Give `slot` a fresh thread that will begin at `entry(arg)`.
 ///
 /// Writes the frame the first switch into the slot will pop, so that the

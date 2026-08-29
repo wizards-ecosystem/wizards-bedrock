@@ -89,26 +89,6 @@ pub fn claim_pair<T: PortValue, U: PortValue>(
     Some((first, second))
 }
 
-/// Claim a run of ports whose length is not known until it is read.
-///
-/// [`claim_block`] wants its length as a constant, which is right for the
-/// fixed hardware this kernel already talks to — a PIT has three ports and a
-/// UART has eight, and those numbers are in the manual. A **device's** I/O
-/// window is not: it is whatever the base address register's all-ones probe
-/// says, and that is a number the machine supplies (D-168).
-///
-/// `None` if any port in the run is already claimed, if the run is empty, or
-/// if it would pass the end of I/O space.
-pub fn claim_span(base: u16, len: usize) -> Option<PortSpan> {
-    if len == 0 {
-        return None;
-    }
-    if !reserve(base, len) {
-        return None;
-    }
-    Some(PortSpan { base, len })
-}
-
 /// Claim several machine-described runs as one transaction.
 ///
 /// A PCI function may decode several I/O BARs. Claiming them one at a time
@@ -331,11 +311,6 @@ impl<T: PortValue> Port<T> {
             number,
             value: PhantomData,
         }
-    }
-
-    /// The port number this handle covers.
-    pub const fn number(&self) -> u16 {
-        self.number
     }
 
     /// Read one value from the port.

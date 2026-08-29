@@ -131,13 +131,12 @@ impl AccessRange {
     }
 
     /// Bytes covered by all accesses.
+    #[expect(
+        clippy::len_without_is_empty,
+        reason = "construction refuses zero-width accesses"
+    )]
     pub const fn len(self) -> usize {
         self.len
-    }
-
-    /// Whether no bytes are accessed.
-    pub const fn is_empty(self) -> bool {
-        self.len == 0
     }
 
     /// Exclusive end byte.

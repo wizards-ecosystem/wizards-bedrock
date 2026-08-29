@@ -22,6 +22,7 @@ BUILD TASKS:
     vmware            build an image and generate vm/ for VMware Workstation
 
 CHECK TASKS:
+    api-audit         prove every public foundation API has a resolved caller
     check             cargo check, host and kernel targets
     clippy            cargo clippy, host and kernel targets
     doc               build the docs, failing on a broken doc link
@@ -88,6 +89,8 @@ pub enum Task {
         /// `--message-format` value forwarded to cargo, for editors.
         message_format: Option<String>,
     },
+    /// Prove every public foundation API has a compiler-resolved caller.
+    ApiAudit,
     /// Lint every crate.
     Clippy,
     /// Build the documentation, so the doc-link lints fire.
@@ -184,6 +187,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         }),
         "vmware" => Ok(Task::Vmware(profile)),
         "check" => Ok(Task::Check { message_format }),
+        "api-audit" => Ok(Task::ApiAudit),
         "clippy" => Ok(Task::Clippy),
         "doc" => Ok(Task::Doc),
         "fmt" => Ok(Task::Fmt(if check {

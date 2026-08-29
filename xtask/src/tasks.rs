@@ -151,6 +151,7 @@ fn run_ci_step(paths: &Paths, step: gate::Step) -> Result<()> {
     match step {
         gate::Step::Format => fmt(paths, FmtMode::Check),
         gate::Step::Clippy => clippy(paths),
+        gate::Step::ApiAudit => crate::api::check(paths),
         gate::Step::Documentation => doc(paths),
         gate::Step::HostTests => test(paths),
         gate::Step::Vendor => vendor::verify(paths),

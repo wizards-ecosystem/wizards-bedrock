@@ -718,11 +718,6 @@ impl<S: Sectors> Volume<S> {
 
         last.ok_or(FatError::NotFound)
     }
-
-    /// Give the source back.
-    pub fn into_source(self) -> S {
-        self.source
-    }
 }
 
 #[cfg(test)]

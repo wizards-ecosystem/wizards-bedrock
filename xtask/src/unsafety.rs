@@ -55,7 +55,7 @@ pub const BUDGET: usize = 380;
 /// is the truth — so the measurement is recorded beside it and checked, which
 /// makes drift toward the ceiling visible rather than something a reader
 /// infers from a comment that may be a phase out of date.
-pub const MEASURED: usize = 370;
+pub const MEASURED: usize = 368;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///
@@ -184,7 +184,7 @@ mod tests {
         // which is how the doc came to state a count two phases old (D-124).
         assert_eq!(
             lines, MEASURED,
-            "wost holds {lines} lines of unsafe, not the {MEASURED} recorded beside the budget;              update MEASURED and say in the commit what was added"
+            "wost holds {lines} lines of unsafe, not the {MEASURED} recorded beside the budget;              update MEASURED and say in the commit what changed"
         );
     }
 

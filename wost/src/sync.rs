@@ -257,33 +257,6 @@ impl<T> SpinLock<T> {
         self.acquire(true)
     }
 
-    /// Acquire the lock from a trap handler, spinning until it is free.
-    ///
-    /// The token is not a compromise here: in a handler the interrupt flag is
-    /// already clear, so "cannot block here" is enforced by the machine and a
-    /// token would prove something already true. Asserting the context makes
-    /// this and [`lock`](Self::lock) mutually exclusive by construction.
-    ///
-    /// # Panics
-    ///
-    /// Outside trap context, where [`lock`](Self::lock) is the entry point and
-    /// its borrow is the discipline.
-    #[track_caller]
-    pub fn lock_from_trap(&self) -> SpinLockGuard<'_, T> {
-        assert!(
-            interrupt::in_trap() || crate::panic::is_panicking(),
-            "lock_from_trap outside a trap handler"
-        );
-        loop {
-            if let Some(guard) = self.acquire(true) {
-                return guard;
-            }
-            while self.is_locked() {
-                spin_loop();
-            }
-        }
-    }
-
     /// Acquire the lock if it is free, from a trap handler or the panic path.
     ///
     /// Context-free because it cannot wait, which is what a handler needs and

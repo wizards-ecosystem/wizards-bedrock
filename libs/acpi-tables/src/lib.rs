@@ -393,11 +393,6 @@ impl Sdt {
     pub const fn length(self) -> u32 {
         self.length
     }
-
-    /// The table's revision.
-    pub const fn revision(self) -> u8 {
-        self.revision
-    }
 }
 
 /// The most table pointers a root table may list before the rest are ignored.

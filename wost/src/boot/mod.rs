@@ -74,16 +74,6 @@ impl Framebuffer {
         self.info
     }
 
-    /// Bytes in the checked framebuffer mapping.
-    pub const fn len(&self) -> usize {
-        self.layout.span()
-    }
-
-    /// Whether the mapping contains no bytes. Always false for a framebuffer.
-    pub const fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// Give the framebuffer a shadow copy in RAM.
     ///
     /// Separate from construction because the framebuffer is built during the
@@ -536,16 +526,6 @@ impl ImageAddress {
     /// Record the pair the bootloader reported.
     pub(crate) const fn new(physical: u64, virtual_: u64) -> Self {
         Self { physical, virtual_ }
-    }
-
-    /// Where the image begins in physical memory.
-    pub const fn physical_base(self) -> u64 {
-        self.physical
-    }
-
-    /// Where the image begins in virtual memory — the linker's base.
-    pub const fn virtual_base(self) -> u64 {
-        self.virtual_
     }
 
     /// The frame behind a virtual address inside the image, or `None` if the

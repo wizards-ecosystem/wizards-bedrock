@@ -708,6 +708,8 @@ dependencies = [
  "fat32",
  "fatfs",
  "fscommon",
+ "proc-macro2",
+ "syn",
 ]
 
 [[package]]

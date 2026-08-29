@@ -10,6 +10,7 @@
 // unsafe is permitted nowhere in silence still applies here.
 #![forbid(unsafe_code)]
 
+pub mod api;
 pub mod boundary;
 pub mod cargo;
 pub mod cli;
@@ -60,6 +61,7 @@ pub fn run(task: Task) -> Result<()> {
             vmware::generate(&paths, &image)
         }
         Task::Check { message_format } => tasks::check(&paths, message_format.as_deref()),
+        Task::ApiAudit => api::check(&paths),
         Task::Clippy => tasks::clippy(&paths),
         Task::Doc => tasks::doc(&paths),
         Task::Fmt(mode) => tasks::fmt(&paths, mode),
