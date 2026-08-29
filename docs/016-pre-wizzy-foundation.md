@@ -18,8 +18,8 @@ admission reasons.
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
 are **not closed**. The current image has 211 QEMU machine checks. The current
-mutation registry has 150 entries, but the last recorded complete sweep covered
-64; the eighty-six later mutations were broken individually. The current
+mutation registry has 155 entries, but the last recorded complete sweep covered
+64; the ninety-one later mutations were broken individually. The current
 211-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
@@ -64,7 +64,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 150 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 150 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
+| PW-001 | REQUIRED | P0 | The register contains 155 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 155 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
 | PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 211-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=211 failed=0` transcript, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
@@ -119,7 +119,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-400 | READY | P1 | Production boundary code still contains panic assumptions and indexing that deserve a hostile-input audit; four non-selftest `expect` sites are known | Remove recoverable runtime `expect`/panic/index paths or prove them unreachable by type/checked construction; add a narrow source rule where useful | Malformed ring, ELF, PCI, ACPI, FAT and device inputs never panic release/debug kernels; every new refusal is broken once |
+| PW-400 | DONE | P1 | Production boundary code retained four panic assumptions, and FAT accepted geometry whose later arithmetic could panic in debug or wrap in release | D-206 removes the unused dynamic-port access API, guards target boundaries with compiler/source rules, validates FAT geometry at construction and walks offsets by quotient/remainder | 2026-08-28 each of three FAT arithmetic refusals and two source rules failed for its named reason; five persistent mutations retain them; release/debug QEMU mounted and read the valid corpus and passed all 211 checks |
 | PW-401 | VERIFY | P1 | Shared-ring prose invokes READ_ONCE, but page copies are ordinary memory operations; the current UP trap path serializes mutation but the compiler/SMP contract is unstated | Specify the actual access and acquire/release/volatile contract, then implement it at the narrow shared-memory boundary | Litmus/stress/disassembly or an explicit model proves publication/consumption order; a weakened-order mutation is caught |
 | PW-402 | DONE | P1 | Table identity was a wrapping `u32`; eventual reuse could collide with still-live ownership, independently of the documented 12-bit handle generation tradeoff | D-204 makes identity a non-repeating `u64`, commits its checked successor with quota under the arena lock and returns typed exhaustion at the terminal sentinel | 2026-08-28 host arithmetic refused the maximum successor; release QEMU held the last table and handle live through two fail-atomic refusals and exact teardown, while wrap and final-nonadvance mutations each reddened only `table identities never wrap or repeat` with 210/211 |
 | PW-403 | VERIFY | P2 | The handle mixer intentionally leaks a small cross-table occupancy signal even though no authority crosses | Measure the oracle and either remove it without weakening stale/owner checks or explicitly accept it | Cross-table experiment states the maximum information leaked and proves the chosen result |
@@ -136,7 +136,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-503 | READY | P2 | Host/library break-tests are one-off and have no persistent mutation registry | Add targeted source mutations for high-value pure invariants where a stable transformation exists | Every registered host mutation still applies exactly once and its named test, not an unrelated failure, catches it |
 | PW-504 | READY | P2 | A mutation can look caught when its named check was already red or another check failed first | Capture a green baseline and require the exact expected verdict delta/marker for every machine mutation | Deliberately pre-red and wrong-check cases are inconclusive/fail, never counted as caught |
 | PW-505 | READY | P2 | The public `libs/`/`wost` API sweep was a text search and `xtask` still duplicates ELF offsets | Add compiler-aware reachability/dead-public-API evidence and use `libs/elf64` for host image parsing where practical | Re-export, doc-only and same-name fixtures prove the audit; no private transcription claims to be canonical |
-| PW-506 | READY | P2 | `wost` has 372 unsafe lines against a 380-line budget and SAFETY prose truth can only be read | Perform a final semantic unsafe/safe-wrapper audit; reduce or deliberately revise the budget with reasons | Every operation has one true safety ground, every safe public caller is adversarially reviewed, and no allowance grows silently |
+| PW-506 | READY | P2 | `wost` has 370 unsafe lines against a 380-line budget and SAFETY prose truth can only be read | Perform a final semantic unsafe/safe-wrapper audit; reduce or deliberately revise the budget with reasons | Every operation has one true safety ground, every safe public caller is adversarially reviewed, and no allowance grows silently |
 | PW-507 | READY | P2 | Documentation checking does not cover Markdown links/anchors, CLI claims, all numeric claims, or docs 008-012 from D-146 | Add cheap structural checks and complete the manual semantic/numeric sweep without rewriting historical results | Broken link/anchor/command/current-count fixtures fail; corrections distinguish dated history from current state |
 | PW-508 | READY | P2 | A release lacks one reproducible evidence manifest tying source, tools and booted bytes together | Add a release/evidence task with source commit, locked dependencies, firmware/vendor hashes, kernel/image hashes and test results | Two clean paths produce byte-identical artifacts or an ADR names each unavoidable input; the manifest verifies offline |
 | PW-509 | READY | P2 | QEMU machine aliases, firmware, VMware, Java and Rust versions can drift underneath evidence | Pin where stable; otherwise record exact resolved versions and hashes per qualification run | Re-running from the manifest either recreates the environment or reports the precise unavailable dependency |
@@ -234,7 +234,7 @@ PW-514 includes these exact stale-current-facing corrections still to make:
 ## Recommended execution order
 
 1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
-   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200, PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-300, PW-302, PW-304, PW-306, PW-307 and PW-402 are closed by D-185 through D-205.
+   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200, PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-300, PW-302, PW-304, PW-306, PW-307, PW-400 and PW-402 are closed by D-185 through D-206.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

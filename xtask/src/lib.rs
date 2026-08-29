@@ -10,6 +10,7 @@
 // unsafe is permitted nowhere in silence still applies here.
 #![forbid(unsafe_code)]
 
+pub mod boundary;
 pub mod cargo;
 pub mod cli;
 pub mod decisions;

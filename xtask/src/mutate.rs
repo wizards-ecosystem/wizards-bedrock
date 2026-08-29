@@ -1768,6 +1768,56 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "io::tests::any_overlap_refuses_the_complete_inventory",
         },
     },
+    Mutation {
+        file: "libs/fat32/src/lib.rs",
+        find: "#![cfg_attr(\n    not(test),\n    deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)\n)]",
+        replace: "",
+        breaks: "a hostile-input parser regains expect, unwrap and panic shortcuts",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "boundary::tests::target_boundaries_keep_panicking_shortcuts_out",
+        },
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/port.rs",
+        find: "pub struct PortSpan {\n    base: u16,\n    len: usize,\n}",
+        replace: "pub struct PortSpan {\n    base: u16,\n    len: usize,\n}\n\nimpl PortSpan {\n    pub const fn base(&self) -> u16 {\n        self.base\n    }\n}",
+        breaks: "the dynamic port ownership lease regains an uncalled register API",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "boundary::tests::target_boundaries_keep_panicking_shortcuts_out",
+        },
+    },
+    Mutation {
+        file: "libs/fat32/src/lib.rs",
+        find: "        if first_data_sector >= total_sectors as u64 {",
+        replace: "        if false && first_data_sector >= total_sectors as u64 {",
+        breaks: "a FAT table extent at or beyond the volume is accepted",
+        reddens: Caught::HostTest {
+            package: "fat32",
+            name: "tests::impossible_volume_geometry_is_refused_before_arithmetic",
+        },
+    },
+    Mutation {
+        file: "libs/fat32/src/lib.rs",
+        find: "        if (root_cluster - FIRST_DATA_CLUSTER) as u64 >= data_clusters {",
+        replace: "        if false && (root_cluster - FIRST_DATA_CLUSTER) as u64 >= data_clusters {",
+        breaks: "a FAT root directory may begin outside the complete data clusters",
+        reddens: Caught::HostTest {
+            package: "fat32",
+            name: "tests::the_root_cluster_must_lie_inside_the_data_area",
+        },
+    },
+    Mutation {
+        file: "libs/fat32/src/lib.rs",
+        find: "        let skip_clusters = offset / cluster_bytes;\n        for _ in 0..skip_clusters {\n            match self.next_cluster(current)? {\n                Next::Cluster(next) => current = next,\n                Next::End => return Ok(0),\n                Next::Bad | Next::Free => return Err(FatError::BadCluster(current)),\n            }\n        }\n\n        let mut done = 0;\n        let mut within = (offset % cluster_bytes) as usize;",
+        replace: "        let mut skipped = 0;\n        while skipped + cluster_bytes <= offset {\n            match self.next_cluster(current)? {\n                Next::Cluster(next) => current = next,\n                Next::End => return Ok(0),\n                Next::Bad | Next::Free => return Err(FatError::BadCluster(current)),\n            }\n            skipped += cluster_bytes;\n            if skipped > entry.size {\n                return Ok(0);\n            }\n        }\n\n        let mut done = 0;\n        let mut within = (offset - skipped) as usize;",
+        breaks: "a maximum FAT file offset overflows accumulated chain bytes",
+        reddens: Caught::HostTest {
+            package: "fat32",
+            name: "tests::a_maximum_file_offset_does_not_overflow_chain_progress",
+        },
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.

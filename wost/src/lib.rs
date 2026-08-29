@@ -13,6 +13,7 @@
 // A refactor that emptied it would be the framekernel's best day and would
 // fail this build.
 #![allow(unsafe_code)]
+#![deny(clippy::expect_used, clippy::unwrap_used)]
 #![no_std]
 
 extern crate alloc;

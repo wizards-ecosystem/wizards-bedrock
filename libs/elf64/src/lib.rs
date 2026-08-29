@@ -53,6 +53,10 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
+)]
 
 /// Bytes of the identification array at the start of every ELF.
 pub const IDENT_BYTES: usize = 16;

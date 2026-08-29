@@ -41,6 +41,10 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
+)]
 
 /// The separator, and the only one.
 pub const SEPARATOR: u8 = b'/';

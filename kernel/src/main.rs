@@ -8,6 +8,10 @@
 #![no_std]
 #![no_main]
 #![deny(unsafe_code)]
+#![cfg_attr(
+    not(feature = "selftest"),
+    deny(clippy::expect_used, clippy::unwrap_used)
+)]
 
 /// The heap `wost::mm::heap` provides. Nothing in the kernel may allocate
 /// before `mem::init` has run, which is why the boot order in `kernel_main`

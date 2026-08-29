@@ -39,6 +39,10 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
+)]
 
 /// Bytes in the only sector size this reader supports.
 ///
@@ -193,6 +197,15 @@ impl Bpb {
             || root_cluster < FIRST_DATA_CLUSTER
             || total_sectors == 0
         {
+            return Err(FatError::Malformed);
+        }
+
+        let first_data_sector = reserved_sectors as u64 + fats as u64 * sectors_per_fat as u64;
+        if first_data_sector >= total_sectors as u64 {
+            return Err(FatError::Malformed);
+        }
+        let data_clusters = (total_sectors as u64 - first_data_sector) / sectors_per_cluster as u64;
+        if (root_cluster - FIRST_DATA_CLUSTER) as u64 >= data_clusters {
             return Err(FatError::Malformed);
         }
 
@@ -631,21 +644,17 @@ impl<S: Sectors> Volume<S> {
         // first: a chain is a linked list and there is no other way to index
         // it.
         let mut current = entry.cluster;
-        let mut skipped = 0;
-        while skipped + cluster_bytes <= offset {
+        let skip_clusters = offset / cluster_bytes;
+        for _ in 0..skip_clusters {
             match self.next_cluster(current)? {
                 Next::Cluster(next) => current = next,
                 Next::End => return Ok(0),
                 Next::Bad | Next::Free => return Err(FatError::BadCluster(current)),
             }
-            skipped += cluster_bytes;
-            if skipped > entry.size {
-                return Ok(0);
-            }
         }
 
         let mut done = 0;
-        let mut within = (offset - skipped) as usize;
+        let mut within = (offset % cluster_bytes) as usize;
         let mut visited = 0u32;
 
         while done < wanted {
@@ -788,6 +797,27 @@ mod tests {
         assert_eq!(Bpb::parse(&rooted), Err(FatError::Malformed));
     }
 
+    /// Tables cannot consume the whole volume or extend beyond it.
+    #[test]
+    fn impossible_volume_geometry_is_refused_before_arithmetic() {
+        let mut outside = boot_sector();
+        outside[32..36].copy_from_slice(&2_079u32.to_le_bytes());
+        assert_eq!(Bpb::parse(&outside), Err(FatError::Malformed));
+
+        outside[32..36].copy_from_slice(&2_080u32.to_le_bytes());
+        assert_eq!(Bpb::parse(&outside), Err(FatError::Malformed));
+    }
+
+    /// The root directory is data and must name one complete data cluster.
+    #[test]
+    fn the_root_cluster_must_lie_inside_the_data_area() {
+        let mut outside = boot_sector();
+        let clusters = (131_072 - 2_080) / 8;
+        outside[44..48].copy_from_slice(&(FIRST_DATA_CLUSTER + clusters).to_le_bytes());
+
+        assert_eq!(Bpb::parse(&outside), Err(FatError::Malformed));
+    }
+
     /// A cluster's sector is biased by two, and out-of-range clusters are
     /// refused.
     ///
@@ -913,5 +943,48 @@ mod tests {
         assert!(!entry.is_named(b"HELLO.TX"), "a prefix is not the name");
         assert!(!entry.is_named(b"HELLO.TXTX"));
         assert!(!entry.is_named(b"GOODBYE.TXT"));
+    }
+
+    #[derive(Debug)]
+    struct CyclicFat;
+
+    impl Sectors for CyclicFat {
+        type Error = core::convert::Infallible;
+
+        fn read_sector(
+            &mut self,
+            sector: u64,
+            into: &mut [u8; SECTOR_BYTES],
+        ) -> Result<(), Self::Error> {
+            into.fill(0);
+            if sector == 1 {
+                into[8..12].copy_from_slice(&3u32.to_le_bytes());
+                into[12..16].copy_from_slice(&3u32.to_le_bytes());
+            }
+            Ok(())
+        }
+    }
+
+    /// Even the largest file offset advances by clusters without byte
+    /// arithmetic crossing `u32::MAX`.
+    #[test]
+    fn a_maximum_file_offset_does_not_overflow_chain_progress() {
+        let bpb = Bpb {
+            sectors_per_cluster: 128,
+            reserved_sectors: 1,
+            fats: 1,
+            sectors_per_fat: 1,
+            root_cluster: FIRST_DATA_CLUSTER,
+            total_sectors: u32::MAX,
+        };
+        let mut volume = Volume {
+            source: CyclicFat,
+            base: 0,
+            bpb,
+        };
+        let entry = Entry::for_contents(FIRST_DATA_CLUSTER, u32::MAX);
+        let mut byte = [0u8; 1];
+
+        assert_eq!(volume.read_file(&entry, u32::MAX - 1, &mut byte), Ok(1));
     }
 }
