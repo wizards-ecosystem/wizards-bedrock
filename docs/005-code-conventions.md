@@ -233,8 +233,8 @@ is an assertion about the tree, and each was found wrong during the Phase 0–6
 sweep. So they are checked like any other: `xtask/src/decisions.rs` requires
 every `D-NNN` cited anywhere to name an entry the log defines and the log to
 have no gaps; `xtask/src/prose.rs` requires every `libs/` crate the documents
-name to exist or be declared absent with a reason, and the README's count of
-`ci`'s boots to match what `ci` runs; `xtask/src/unsafety.rs` pins `wost`'s
+name to exist or be declared absent with a reason, and the README's marked CI
+table to match the typed registry execution reads; `xtask/src/unsafety.rs` pins `wost`'s
 unsafe line count rather than only capping it; `xtask/src/qemu.rs` compares the
 C header against the kernel's own constants, discovers every active sysdep,
 checks its BODY evidence, and checks its two-axis source marker against the exact
@@ -267,10 +267,11 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   those arrive.
 - **The gate runs over a configuration matrix, not a codebase.** A cargo
   feature is a different crate graph, and a lint that fires in one need not
-  fire in the other: `cargo xtask ci` covers the host packages, the kernel
-  packages, and the kernel packages *again* with `selftest` on. Adding a
-  feature means adding a pass — see the `PASSES` table in `xtask/src/tasks.rs`
-  and the D-22 amendment for what it cost to learn.
+  fire in the other: `cargo xtask ci` covers the host packages plus shipped,
+  self-test and `refuse-pci` kernel graphs. Adding a build-only feature means
+  adding a graph to `xtask/src/gate.rs`; D-212 makes the same registry drive
+  execution, help and README, while D-22 records what missing the shipped graph
+  once cost.
 - Anything the linker produces is checked rather than trusted:
   `xtask/src/elf.rs` reads the linked kernel back after every build and
   requires the properties `kernel/linker.ld` is written to produce (D-40).

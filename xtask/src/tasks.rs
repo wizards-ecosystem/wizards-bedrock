@@ -1,9 +1,7 @@
 //! The check, format, and housekeeping tasks.
 //!
-//! Each cargo-driven task runs over every configuration the gate covers — the
-//! host packages, and the kernel packages with and without their self-test
-//! feature — reading the package lists from [`crate::paths`], so a local run
-//! and a scripted one cannot drift apart.
+//! Each Cargo-driven task runs over every graph in `crate::gate::REGISTRY`,
+//! so standalone commands and the complete local gate cannot drift apart.
 
 use std::time::Duration;
 
@@ -12,7 +10,7 @@ use anyhow::{Context, Result};
 use crate::cargo::{self, Profile};
 use crate::cli::{CleanScope, FmtMode};
 use crate::paths::{self, Paths};
-use crate::{image, qemu, vendor};
+use crate::{gate, image, qemu, vendor};
 
 /// Whether a subcommand should be pointed at a package's test and bench
 /// targets as well as the ones it ships.
@@ -31,7 +29,7 @@ pub fn check(paths: &Paths, message_format: Option<&str>) -> Result<()> {
     let extra: Vec<String> = message_format
         .map(|format| vec![format!("--message-format={format}")])
         .unwrap_or_default();
-    for_each_half(paths, "check", "check", Scope::AllTargets, &extra, &[])
+    for_each_pass(paths, "check", "check", Scope::AllTargets, &extra, &[])
 }
 
 /// Lint every crate, treating warnings as errors.
@@ -40,7 +38,7 @@ pub fn check(paths: &Paths, message_format: Option<&str>) -> Result<()> {
 /// would replace the target rustflags in `.cargo/config.toml` and silently
 /// build a kernel without `code-model=kernel`.
 pub fn clippy(paths: &Paths) -> Result<()> {
-    for_each_half(
+    for_each_pass(
         paths,
         "clippy",
         "clippy",
@@ -58,7 +56,7 @@ pub fn clippy(paths: &Paths) -> Result<()> {
 /// gate step runs. The lints themselves are declared in `[workspace.lints]`,
 /// so an editor reports them too; this is what makes them a gate.
 pub fn doc(paths: &Paths) -> Result<()> {
-    for_each_half(
+    for_each_pass(
         paths,
         "docs",
         "doc",
@@ -142,22 +140,24 @@ const BOOT_SETTLE: Duration = Duration::from_secs(5);
 
 /// Everything the gate runs, in the order that fails fastest.
 pub fn ci(paths: &Paths) -> Result<()> {
-    fmt(paths, FmtMode::Check)?;
-    clippy(paths)?;
-    doc(paths)?;
-    test(paths)?;
-    vendor::verify(paths)?;
-    test_boot(paths, Profile::Release)?;
-    // Again with overflow checks on: release wraps in silence.
-    test_boot(paths, Profile::Dev)?;
-    // The only step that runs the image the disk gets.
-    boot_check(paths, Profile::Release)?;
-    // And the only one that runs it on a machine it cannot fully use: every
-    // other boot has every feature, so nothing else exercises these refusals
-    // (D-90, D-198).
-    degraded_check(paths, Profile::Release)?;
+    for &step in gate::REGISTRY.verified_steps(paths.root())? {
+        run_ci_step(paths, step)?;
+    }
     println!("[xtask] ci passed");
     Ok(())
+}
+
+fn run_ci_step(paths: &Paths, step: gate::Step) -> Result<()> {
+    match step {
+        gate::Step::Format => fmt(paths, FmtMode::Check),
+        gate::Step::Clippy => clippy(paths),
+        gate::Step::Documentation => doc(paths),
+        gate::Step::HostTests => test(paths),
+        gate::Step::Vendor => vendor::verify(paths),
+        gate::Step::SelfTest(profile) => test_boot(paths, profile),
+        gate::Step::ShippedBoot => boot_check(paths, Profile::Release),
+        gate::Step::DegradedBoot => degraded_check(paths, Profile::Release),
+    }
 }
 
 /// Remove build output.
@@ -174,61 +174,8 @@ pub fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
     Ok(())
 }
 
-/// One pass of a cargo subcommand: which packages, for which target, with
-/// which features.
-///
-/// There are four, not two. The host packages are one; the kernel packages
-/// are three, because a cargo feature is a different crate graph and a lint
-/// that fires in one configuration need not fire in another. Linting only the
-/// self-test build is how `dead_code` on a constant used solely by `selftest`
-/// reached a release image unreported (D-22).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Pass {
-    packages: &'static [&'static str],
-    target: Option<&'static str>,
-    features: Option<&'static str>,
-}
-
-impl Pass {
-    /// How this pass is named in the log line and in a failure.
-    fn label(self) -> String {
-        match (self.target, self.features) {
-            (None, _) => "host".to_string(),
-            (Some(target), None) => target.to_string(),
-            (Some(target), Some(features)) => format!("{target} +{features}"),
-        }
-    }
-}
-
-/// Every configuration the gate covers.
-///
-/// The shipped kernel comes before the self-test one so the fastest failure is
-/// also the one that matters most: an image nobody could boot.
-const PASSES: &[Pass] = &[
-    Pass {
-        packages: paths::HOST_PACKAGES,
-        target: None,
-        features: None,
-    },
-    Pass {
-        packages: paths::KERNEL_PACKAGES,
-        target: Some(paths::KERNEL_TARGET),
-        features: None,
-    },
-    Pass {
-        packages: paths::KERNEL_PACKAGES,
-        target: Some(paths::KERNEL_TARGET),
-        features: Some(paths::SELFTEST_FEATURE_SPEC),
-    },
-    Pass {
-        packages: paths::KERNEL_PACKAGES,
-        target: Some(paths::KERNEL_TARGET),
-        features: Some(paths::REFUSE_PCI_FEATURE_SPEC),
-    },
-];
-
-/// Run `subcommand` over every configuration in [`PASSES`].
-fn for_each_half(
+/// Run `subcommand` over every registered Cargo graph.
+fn for_each_pass(
     paths: &Paths,
     description: &str,
     subcommand: &str,
@@ -236,8 +183,8 @@ fn for_each_half(
     extra: &[String],
     after_dashes: &[String],
 ) -> Result<()> {
-    for pass in PASSES {
-        let args = half_args(subcommand, *pass, scope, extra, after_dashes);
+    for pass in gate::REGISTRY.cargo_passes() {
+        let args = pass_args(subcommand, *pass, scope, extra, after_dashes);
         let label = pass.label();
         cargo::run(paths, &format!("{description} ({label})"), &args)?;
     }
@@ -251,9 +198,9 @@ fn for_each_half(
 /// any, but the host crates do — and without it neither `check` nor `clippy`
 /// ever sees their test code. A `useless_vec` in `sha256.rs`'s tests sat there
 /// unreported until someone ran clippy by hand.
-fn half_args(
+fn pass_args(
     subcommand: &str,
-    pass: Pass,
+    pass: gate::CargoPass,
     scope: Scope,
     extra: &[String],
     after_dashes: &[String],
@@ -282,8 +229,9 @@ mod tests {
 
     const PIXEL: &[&str] = &["pixel"];
 
-    fn pass(target: Option<&'static str>, features: Option<&'static str>) -> Pass {
-        Pass {
+    fn pass(target: Option<&'static str>, features: Option<&'static str>) -> gate::CargoPass {
+        gate::CargoPass {
+            name: "fixture",
             packages: PIXEL,
             target,
             features,
@@ -291,7 +239,7 @@ mod tests {
     }
 
     fn args(target: Option<&'static str>) -> Vec<String> {
-        half_args(
+        pass_args(
             "clippy",
             pass(target, None),
             Scope::AllTargets,
@@ -320,7 +268,7 @@ mod tests {
 
     #[test]
     fn a_pass_with_features_names_them_and_one_without_names_none() {
-        let with = half_args(
+        let with = pass_args(
             "clippy",
             pass(
                 Some(paths::KERNEL_TARGET),
@@ -346,15 +294,15 @@ mod tests {
 
     #[test]
     fn nothing_follows_a_bare_double_dash() {
-        let args = half_args("check", pass(None, None), Scope::AllTargets, &[], &[]);
+        let args = pass_args("check", pass(None, None), Scope::AllTargets, &[], &[]);
         assert!(!args.contains(&"--".to_string()));
     }
 
     /// `cargo doc` rejects `--all-targets` rather than ignoring it, so the
-    /// scope has to be part of the call and not inferred from the half.
+    /// scope has to be part of the call and not inferred from the graph.
     #[test]
     fn a_default_scope_asks_for_no_extra_targets() {
-        let args = half_args("doc", pass(None, None), Scope::Default, &[], &[]);
+        let args = pass_args("doc", pass(None, None), Scope::Default, &[], &[]);
 
         assert_eq!(args, ["doc", "--package", "pixel"]);
     }
@@ -364,7 +312,8 @@ mod tests {
     /// linted at all, and two `dead_code` warnings rode a release image out.
     #[test]
     fn the_gate_covers_every_kernel_feature_graph_it_boots() {
-        let kernel: Vec<Option<&str>> = PASSES
+        let kernel: Vec<Option<&str>> = gate::REGISTRY
+            .cargo_passes()
             .iter()
             .filter(|pass| pass.packages == paths::KERNEL_PACKAGES)
             .map(|pass| pass.features)
@@ -382,7 +331,8 @@ mod tests {
 
     #[test]
     fn the_gate_covers_the_host_packages_exactly_once() {
-        let host = PASSES
+        let host = gate::REGISTRY
+            .cargo_passes()
             .iter()
             .filter(|pass| pass.packages == paths::HOST_PACKAGES)
             .count();
@@ -394,7 +344,11 @@ mod tests {
     /// configuration reads as a failure in the other.
     #[test]
     fn every_pass_is_labelled_distinctly() {
-        let labels: Vec<String> = PASSES.iter().map(|pass| pass.label()).collect();
+        let labels: Vec<String> = gate::REGISTRY
+            .cargo_passes()
+            .iter()
+            .map(|pass| pass.label())
+            .collect();
 
         for (index, label) in labels.iter().enumerate() {
             assert!(!label.is_empty());
@@ -410,7 +364,7 @@ mod tests {
     /// what produces phantom errors across every kernel file.
     #[test]
     fn only_the_host_pass_builds_for_the_host() {
-        for pass in PASSES {
+        for pass in gate::REGISTRY.cargo_passes() {
             let cross = pass.target == Some(paths::KERNEL_TARGET);
             assert_eq!(
                 cross,

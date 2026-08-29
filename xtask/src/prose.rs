@@ -370,111 +370,22 @@ mod tests {
         }
     }
 
-    /// The README's count of `ci`'s boots is `ci`'s count of its boots.
-    ///
-    /// It said three and ran four for as long as `degraded-check` has existed.
-    /// A reader deciding whether the gate covers the no-x2APIC path reads that
-    /// sentence, and it was wrong — which is the same defect class as a stale
-    /// constant, in the file most likely to be someone's first (D-124).
-    ///
-    /// Counted from `tasks.rs`'s text rather than by running anything: the
-    /// question is what `ci` is composed of, which is a property of the source.
     #[test]
-    fn the_readme_counts_the_boots_that_ci_runs() {
-        /// How the README spells each number it might say.
-        const SPELLED: [(&str, usize); 5] = [
-            ("two boots", 2),
-            ("three boots", 3),
-            ("four boots", 4),
-            ("five boots", 5),
-            ("six boots", 6),
-        ];
-
+    fn the_ci_registry_drives_help_and_documentation() {
         let root = root();
-        let tasks = std::fs::read_to_string(root.join("xtask/src/tasks.rs")).expect("tasks.rs");
-        let body = tasks
-            .split_once("pub fn ci(paths: &Paths) -> Result<()> {")
-            .expect("ci's definition")
-            .1
-            .split_once("\n}")
-            .expect("ci's end")
-            .0;
-        let boots = body
-            .lines()
-            .filter(|line| {
-                let line = line.trim();
-                !line.starts_with("//")
-                    && (line.starts_with("test_boot(")
-                        || line.starts_with("boot_check(")
-                        || line.starts_with("degraded_check("))
-            })
-            .count();
-        assert!(
-            boots >= 2,
-            "found {boots} boots in `ci`; the scan is broken"
-        );
+        crate::gate::verify_documentation(&root).expect("README renders the CI registry");
 
-        let readme = std::fs::read_to_string(root.join("README.md")).expect("README.md");
-        let said = SPELLED
-            .iter()
-            .find(|(phrase, _)| readme.contains(phrase))
-            .unwrap_or_else(|| panic!("the README does not say how many boots `ci` runs"));
-        assert_eq!(
-            said.1, boots,
-            "the README says `{}` and `ci` runs {boots}",
-            said.0
-        );
-    }
-
-    /// `ci` still runs every step it is supposed to.
-    ///
-    /// The boot count beside this is checked against the README, and nothing
-    /// checked the rest: delete `vendor::verify(paths)?` from `ci` and all
-    /// host tests stay green, because each step is also its own task and the
-    /// tests exercise the tasks. `ci` is the only gate this project has
-    /// (D-26), so a step silently leaving it is the gate quietly shrinking
-    /// (D-147).
-    ///
-    /// Read from `tasks.rs`'s text, as the boot count is: the question is what
-    /// `ci` is composed of, which is a property of the source.
-    #[test]
-    fn ci_runs_every_step_it_is_supposed_to() {
-        /// Every call `ci`'s body must contain, in no particular order.
-        const STEPS: [&str; 8] = [
-            "fmt(paths, FmtMode::Check)",
-            "clippy(paths)",
-            "doc(paths)",
-            "test(paths)",
-            "vendor::verify(paths)",
-            "test_boot(paths, Profile::Release)",
-            "test_boot(paths, Profile::Dev)",
-            "boot_check(paths, Profile::Release)",
-        ];
-
-        let root = root();
-        let tasks = std::fs::read_to_string(root.join("xtask/src/tasks.rs")).expect("tasks.rs");
-        let body = tasks
-            .split_once("pub fn ci(paths: &Paths) -> Result<()> {")
-            .expect("ci's definition")
-            .1
-            .split_once(
-                "
-}",
-            )
-            .expect("ci's end")
-            .0;
-
-        for step in STEPS {
+        let help = crate::cli::help();
+        for pass in crate::gate::REGISTRY.cargo_passes() {
+            assert!(help.contains(&pass.label()), "help omits {}", pass.label());
+        }
+        for step in crate::gate::REGISTRY.steps_for_test() {
             assert!(
-                body.contains(step),
-                "`ci` no longer runs `{step}`; the only gate this project has just got smaller"
+                help.contains(step.invocation()),
+                "help omits {}",
+                step.invocation()
             );
         }
-        // And the degraded boot, which is the ninth and the one D-90 added.
-        assert!(
-            body.contains("degraded_check(paths"),
-            "`ci` no longer runs the degraded boot"
-        );
     }
 
     #[test]

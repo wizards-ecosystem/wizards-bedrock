@@ -2144,6 +2144,26 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        file: "xtask/src/gate.rs",
+        find: "    CargoPass {\n        name: \"kernel refuse-pci\",\n        packages: paths::KERNEL_PACKAGES,\n        target: Some(paths::KERNEL_TARGET),\n        features: Some(paths::REFUSE_PCI_FEATURE_SPEC),\n    },\n",
+        replace: "",
+        breaks: "a kernel feature graph leaves every Cargo-driven gate stage",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::the_ci_registry_drives_help_and_documentation",
+        },
+    },
+    Mutation {
+        file: "xtask/src/gate.rs",
+        find: "    Step::ShippedBoot,\n    Step::DegradedBoot,",
+        replace: "    Step::ShippedBoot,\n    Step::ShippedBoot,\n    Step::DegradedBoot,",
+        breaks: "the local gate silently gains a duplicate shipped-image boot",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::the_ci_registry_drives_help_and_documentation",
+        },
+    },
+    Mutation {
         file: "xtask/src/mutate.rs",
         find: "    if success {\n        let passed = format!(\"test {name} ... ok\");\n        if stdout.contains(&passed) || stderr.contains(&passed) {\n            return Ok(false);\n        }\n        bail!(\"host mutation selected no exact test `{name}`\");\n    }",
         replace: "    if success {\n        return Ok(false);\n    }",

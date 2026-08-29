@@ -9,8 +9,7 @@ use anyhow::{Result, bail};
 
 use crate::cargo::Profile;
 
-/// Usage text, printed for `--help` and on any parse error.
-pub const HELP: &str = "\
+const HELP_BEFORE_REGISTRY: &str = "\
 cargo xtask — build orchestrator for The Wizard's OS
 
 USAGE:
@@ -32,8 +31,11 @@ CHECK TASKS:
     boot-check        boot the shipped kernel and require it to settle
     degraded-check    boot without PCI/x2apic and require both refusals
     verify-vendor     check vendored binaries against their CHECKSUMS files
-    ci                every check above, in the order that fails fastest
+    ci                run the registered local gate shown below
 
+";
+
+const HELP_AFTER_REGISTRY: &str = "\
 NOT IN CI (each needs a tool this project cannot vendor into a Rust build,
 and a gate step that fails for want of one teaches people to skip the gate):
     model-check       run TLC over models/Ring.tla (needs java)
@@ -55,10 +57,18 @@ OPTIONS:
     -- <ARGS>...      run only: pass ARGS through to QEMU
 ";
 
+/// Usage text, with CI composition rendered from the gate registry.
+pub fn help() -> String {
+    format!(
+        "{HELP_BEFORE_REGISTRY}{}\n{HELP_AFTER_REGISTRY}",
+        crate::gate::help_section()
+    )
+}
+
 /// What the user asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Task {
-    /// Print [`HELP`].
+    /// Print [`help`].
     Help,
     /// Compile the kernel.
     Build(Profile),
@@ -312,10 +322,11 @@ mod tests {
             names.len()
         );
 
+        let help = help();
         for name in names {
             assert!(parse_args(&[name]).is_ok(), "{name} does not parse");
             assert!(
-                HELP.contains(&format!("\n    {name} ")),
+                help.contains(&format!("\n    {name} ")),
                 "{name} is missing from the help text"
             );
         }

@@ -18,8 +18,8 @@ admission reasons.
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
 are **not closed**. The current image has 211 QEMU machine checks. The current
-mutation registry has 188 entries, but the last recorded complete sweep covered
-64; the one hundred twenty-four later mutations were broken individually. The
+mutation registry has 190 entries, but the last recorded complete sweep covered
+64; the one hundred twenty-six later mutations were broken individually. The
 current 211-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
@@ -64,7 +64,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 188 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 188 named mutations are caught by the check each names; record commit, result and duration; source and index digests remain exact |
+| PW-001 | REQUIRED | P0 | The register contains 190 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 190 named mutations are caught by the check each names; record commit, result and duration; source and index digests remain exact |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
 | PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 211-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=211 failed=0` transcript, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
@@ -131,7 +131,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
 | PW-500 | DONE | P2 | `image::build` still accepted `&[&str]`, allowing shipped/self-test image confusion | D-211 makes `Kernel::{Shipped, SelfTest}` the complete normal-image selector and gives the degraded witness its own fixed constructor | 2026-08-28 release shipped and self-test images reopened their FAT payload, matched the verified ELF byte for byte and identified as requested; mapping self-test to no features and reading the program in place of the kernel reddened their exact host checks and persist as mutations |
-| PW-501 | READY | P2 | CI composition and prose counts are partly inferred from source text | Make pass/boot composition single-source and data-driven without changing the self-contained local gate | Help, execution and documentation derive from one registry; mutation removes/adds a pass and the repository check fails |
+| PW-501 | DONE | P2 | CI composition and prose counts were partly inferred from source text, and README already claimed three Cargo graphs where four ran | D-212 makes one typed registry own every Cargo graph and ordered local-gate stage; execution and help iterate it, while README carries its exact checked Markdown rendering | 2026-08-28 the unchanged four-graph, nine-stage gate rendered identically in help and README; removing the `refuse-pci` graph and adding a duplicate shipped boot each reddened `the_ci_registry_drives_help_and_documentation` and persist as mutations |
 | PW-502 | DONE | P1 | The mutation runner edited tracked source in place; interruption could leave a live worktree modified | D-208 runs from a locked tracked-file copy with a private build directory and alternating checksummed progress journals | 2026-08-28 real child processes killed at build and boot left an active journal and reusable lock; each resume restored the sandbox exactly while the source and index stayed byte-exact; isolation, private Cargo target, live-lock, restoration and newest-journal breaks reddened their exact host tests and persist as five mutations |
 | PW-503 | DONE | P2 | Host/library break-tests were one-off and could silently stop reaching production code | D-210 retains one high-consequence production-source mutation in every pure crate and derives the coverage floor from `HOST_PACKAGES` | 2026-08-28 all sixteen newly represented crates compiled their deliberate defect and reddened the measured exact host test; the ring's plausible test stayed green and its interleaving oracle was pinned instead, a zero-test timebase name was refused and corrected, and two more mutations prove the coverage floor and exact-test execution can fail |
 | PW-504 | DONE | P2 | A mutation can look caught when its named check was already red or another check failed first | D-209 captures one pristine green baseline per remaining witness class and admits only an exact named check or panic marker afterward | 2026-08-28 pre-red, wrong-check, wrong-panic, discarded-continuation and unnamed-failure breaks each reddened only their exact host check; three terminal mutations were pinned to causes measured on release QEMU, and all six new witnesses persist in the registry |
@@ -236,8 +236,8 @@ PW-514 includes these exact stale-current-facing corrections still to make:
 1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
    PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200,
    PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-210,
-   PW-300, PW-302, PW-304, PW-306, PW-307, PW-400, PW-402, PW-500, PW-502,
-   PW-503 and PW-504 are closed by D-185 through D-211.
+   PW-300, PW-302, PW-304, PW-306, PW-307, PW-400, PW-402, PW-500, PW-501,
+   PW-502, PW-503 and PW-504 are closed by D-185 through D-212.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

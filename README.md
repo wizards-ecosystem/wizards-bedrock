@@ -55,17 +55,39 @@ override that.
 ## Development
 
 ```
-cargo xtask ci       # the gate: fmt --check, clippy, doc, tests, vendor digests,
-                     #   then four boots — test-boot (release), test-boot
-                     #   (debug, overflow checks on), boot-check (D-65), and
-                     #   degraded-check (no PCI/x2apic, D-90/D-198)
+cargo xtask ci       # run the complete local gate below
 ```
 
 `ci` is the only gate — there is no hosted CI (D-26). `cargo xtask help` lists
-every task and is the authority. A host test requires every task the parser
-accepts to appear in that help text — but **nothing checks this file against
-either**, and an earlier version of this paragraph claimed otherwise. `clean`
-and `verify-vendor` are named nowhere below.
+every task and renders this same registry. The marked section is checked byte
+for byte against the registry that execution iterates, so changing a Cargo
+graph or gate stage requires a reviewable documentation change (D-212).
+
+<!-- CI-REGISTRY:START -->
+Cargo graphs used by each Cargo-driven gate stage:
+
+| Graph | Target | Features |
+|---|---|---|
+| host | `host` | `none` |
+| kernel shipped | `x86_64-unknown-none` | `none` |
+| kernel self-test | `x86_64-unknown-none` | `wizard-kernel/selftest` |
+| kernel refuse-pci | `x86_64-unknown-none` | `wizard-kernel/refuse-pci` |
+
+Ordered `cargo xtask ci` stages:
+
+| Order | Invocation | Purpose |
+|---:|---|---|
+| 1 | `cargo xtask fmt --check` | refuse unformatted source |
+| 2 | `cargo xtask clippy` | lint every registered Cargo graph |
+| 3 | `cargo xtask doc` | build docs for every registered Cargo graph |
+| 4 | `cargo xtask test` | run host tests and doctests |
+| 5 | `cargo xtask verify-vendor` | verify every vendored digest |
+| 6 | `cargo xtask test-boot --release` | run all machine checks on the release kernel |
+| 7 | `cargo xtask test-boot --debug` | run all machine checks with overflow checks enabled |
+| 8 | `cargo xtask boot-check --release` | boot, exercise and settle the shipped image |
+| 9 | `cargo xtask degraded-check --release` | prove the no-PCI and no-x2APIC refusals |
+<!-- CI-REGISTRY:END -->
+
 `boot-check` boots the shipped kernel and requires it to settle at its prompt;
 `degraded-check` boots it with PCI configuration forced unavailable and on a
 processor with no x2APIC. It requires both refusals, the hardware-free tmpfs and
@@ -89,11 +111,10 @@ is how anything needing a real machine gets tested (D-28). `doc` exists to
 make the rustdoc link lints fire — nothing else in the gate runs rustdoc, so
 without it a doc link can rot unnoticed (D-22).
 
-Every cargo-driven check runs over **three** configurations, not two: the
-host packages, the kernel packages, and the kernel packages again with
-`selftest` on. A cargo feature is a different crate graph, and linting only
-one of them is how two dead constants once rode a release image out. Adding a
-feature means adding a pass to `PASSES` in `xtask/src/tasks.rs`.
+Every Cargo-driven check runs over every graph in the registry above. A Cargo
+feature is a different crate graph, and linting only one of them is how two
+dead constants once rode a release image out. Adding a build-only feature
+means adding its graph to `xtask/src/gate.rs`.
 
 Every kernel build is read back and checked against what `kernel/linker.ld` is
 written to produce — entry in the higher half, no orphan sections, no segment

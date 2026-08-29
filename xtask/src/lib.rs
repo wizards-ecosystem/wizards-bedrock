@@ -15,6 +15,7 @@ pub mod cargo;
 pub mod cli;
 pub mod decisions;
 pub mod elf;
+mod gate;
 pub mod image;
 pub mod machine;
 pub mod model;
@@ -40,7 +41,7 @@ pub fn run(task: Task) -> Result<()> {
     let paths = Paths::discover()?;
     match task {
         Task::Help => {
-            println!("{}", cli::HELP);
+            println!("{}", cli::help());
             Ok(())
         }
         Task::Build(profile) => cargo::build_kernel(&paths, profile, &[]).map(drop),
