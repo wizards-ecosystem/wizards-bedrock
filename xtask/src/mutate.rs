@@ -506,7 +506,7 @@ pub const MUTATIONS: &[Mutation] = &[
             entry
                 .kind
                 .deadline()
-                .is_some_and(|deadline| deadline <= now_ns)
+                .is_some_and(|deadline| !clock_live || deadline <= now_ns)
         })",
         replace: "self.begin_settlement(|entry| entry.kind.deadline().is_some())",
         breaks: "an operation is not due before its deadline",
@@ -2308,8 +2308,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Machine checks | 212 |",
-        replace: "| Machine checks | 211 |",
+        find: "| Machine checks | 213 |",
+        replace: "| Machine checks | 212 |",
         breaks: "the current documentation count disagrees with the machine oracle",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2657,6 +2657,61 @@ pub const MUTATIONS: &[Mutation] = &[
             package: "memory-map",
             name: "tests::the_region_limit_is_all_or_nothing",
         },
+    },
+    Mutation {
+        file: "libs/x86-cpuid/src/lib.rs",
+        find: "                let product = (crystal_hz as u64).checked_mul(numerator as u64);",
+        replace: "                let product = (crystal_hz as u64).checked_mul(denominator as u64);",
+        breaks: "the CPUID TSC ratio cannot exchange its numerator and denominator",
+        reddens: Caught::HostTest {
+            package: "x86-cpuid",
+            name: "tests::frequency_leaves_keep_exact_and_nominal_evidence_distinct",
+        },
+    },
+    Mutation {
+        file: "libs/x86-pit/src/calibrate.rs",
+        find: "    if observed_hz.abs_diff(expected_tsc_hz) <= expected_tsc_hz / AGREEMENT_DIVISOR {",
+        replace: "    if observed_hz.abs_diff(observed_hz) <= expected_tsc_hz / AGREEMENT_DIVISOR {",
+        breaks: "a stopped TSC cannot agree with an advancing PIT",
+        reddens: Caught::HostTest {
+            package: "x86-pit",
+            name: "calibrate::tests::the_watchdog_distinguishes_disagreement_from_delay",
+        },
+    },
+    Mutation {
+        file: "libs/x86-pit/src/calibrate.rs",
+        find: "    if apic_remaining != 0 || expected_pit_ticks == 0 || expected_tsc_hz == 0 {",
+        replace: "    if false && apic_remaining != 0 || expected_pit_ticks == 0 || expected_tsc_hz == 0 {",
+        breaks: "an older pending APIC interrupt cannot judge a newly armed timer",
+        reddens: Caught::HostTest {
+            package: "x86-pit",
+            name: "calibrate::tests::the_watchdog_distinguishes_disagreement_from_delay",
+        },
+    },
+    Mutation {
+        file: "kernel/src/time.rs",
+        find: "            if failures >= WATCHDOG_FAILURES {",
+        replace: "            if failures > WATCHDOG_FAILURES {",
+        breaks: "the required watchdog failures revoke the live timing source",
+        reddens: Caught::Check(
+            "a clock disagreement revokes time without stranding timers",
+        ),
+    },
+    Mutation {
+        file: "kernel/src/timepage.rs",
+        find: "    DESIRED_MODE.store(mode, Ordering::Release);",
+        replace: "    DESIRED_MODE.store(MODE_COUNTER, Ordering::Release);",
+        breaks: "clock revocation survives the time page's temporary mapping absence",
+        reddens: Caught::Check("revoking the clock sends readers to ring Uptime"),
+    },
+    Mutation {
+        file: "kernel/src/time.rs",
+        find: "        Some(now.saturating_add(elapsed))",
+        replace: "        Some(now.saturating_add(elapsed.saturating_sub(elapsed)))",
+        breaks: "the retained PIT advances scheduler time after public-clock revocation",
+        reddens: Caught::Check(
+            "a clock disagreement revokes time without stranding timers",
+        ),
     },
 ];
 

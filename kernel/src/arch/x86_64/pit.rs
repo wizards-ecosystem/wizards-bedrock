@@ -1,9 +1,10 @@
 //! 8254 interval timer driver — the calibration reference.
 //!
-//! The kernel touches this chip exactly once, to measure the APIC timer
-//! against a crystal whose rate has been fixed since 1981, and then parks it.
-//! It is never an interrupt source: counter 0's output goes to a legacy
-//! controller slice 2 masked, so it can count without anything hearing it.
+//! The kernel measures the APIC timer against a crystal whose rate has been
+//! fixed since 1981, then retains the claimed chip to validate APIC-delivered
+//! clock windows. It is never an interrupt source: counter 0's output goes to
+//! a legacy controller slice 2 masked, so each bounded window can count
+//! without anything hearing it.
 
 use core::fmt;
 

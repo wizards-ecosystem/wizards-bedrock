@@ -42,6 +42,60 @@ pub const SPEC_CTRL_MSR: u32 = 0x0000_0048;
 /// `IA32_SPEC_CTRL.IBRS`.
 pub const SPEC_CTRL_IBRS: u64 = 1 << 0;
 
+/// Frequency information reported by the basic `cpuid` leaves.
+///
+/// Leaf 0x15 is an architectural ratio to a crystal and can name the TSC's
+/// rate exactly enough to build a conversion. Leaf 0x16 is only the nominal
+/// processor base frequency, so it remains separate diagnostic evidence and
+/// is never silently promoted into a clock rate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrequencyHints {
+    tsc_hz: Option<u64>,
+    base_hz: Option<u64>,
+}
+
+impl FrequencyHints {
+    /// Decode optional leaf 0x15 and leaf 0x16 answers.
+    ///
+    /// `ratio` is `(denominator, numerator, crystal_hz)`. Zero fields mean the
+    /// processor did not provide a usable ratio. Only the low sixteen bits of
+    /// `base_mhz` are defined by leaf 0x16.
+    pub fn from_leaves(ratio: Option<(u32, u32, u32)>, base_mhz: Option<u32>) -> Self {
+        let tsc_hz = match ratio {
+            Some((denominator, numerator, crystal_hz))
+                if denominator != 0 && numerator != 0 && crystal_hz != 0 =>
+            {
+                let product = (crystal_hz as u64).checked_mul(numerator as u64);
+                match product {
+                    Some(product) => product
+                        .checked_add(u64::from(denominator) / 2)
+                        .map(|rounded| rounded / u64::from(denominator))
+                        .filter(|hz| *hz != 0),
+                    None => None,
+                }
+            }
+            _ => None,
+        };
+        let base_mhz = base_mhz.unwrap_or(0) & u32::from(u16::MAX);
+        let base_hz = if base_mhz == 0 {
+            None
+        } else {
+            Some(base_mhz as u64 * 1_000_000)
+        };
+        Self { tsc_hz, base_hz }
+    }
+
+    /// The TSC rate derived from leaf 0x15's crystal ratio, if complete.
+    pub const fn tsc_hz(self) -> Option<u64> {
+        self.tsc_hz
+    }
+
+    /// Leaf 0x16's nominal processor base frequency, for diagnostics only.
+    pub const fn base_hz(self) -> Option<u64> {
+        self.base_hz
+    }
+}
+
 /// What a processor says about speculative-execution mitigation.
 ///
 /// Absence and safety are deliberately different states. A processor with no
@@ -166,6 +220,24 @@ impl core::fmt::Display for Speculation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frequency_leaves_keep_exact_and_nominal_evidence_distinct() {
+        let hints = FrequencyHints::from_leaves(Some((3, 125, 24_000_000)), Some(0xfeed_0e10));
+        assert_eq!(hints.tsc_hz(), Some(1_000_000_000));
+        assert_eq!(hints.base_hz(), Some(3_600_000_000));
+
+        for ratio in [
+            None,
+            Some((0, 125, 24_000_000)),
+            Some((3, 0, 24_000_000)),
+            Some((3, 125, 0)),
+            Some((u32::MAX, 1, 1)),
+        ] {
+            assert_eq!(FrequencyHints::from_leaves(ratio, None).tsc_hz(), None);
+        }
+        assert_eq!(FrequencyHints::from_leaves(None, Some(0)).base_hz(), None);
+    }
 
     /// Saying nothing is not the same as saying safe.
     ///

@@ -7,18 +7,22 @@
 //! one-shot, armed for the next moment the scheduler has a reason to look and
 //! stopped when there is none.
 //!
-//! Neither rate is reported, so both are measured against the 8254 in the
-//! same twenty-millisecond window. D-36 for the measurement, D-57 for why the
-//! tick it once produced is gone.
+//! Both rates are normally measured against the 8254 in one twenty-millisecond
+//! window. A complete invariant CPUID ratio can replace a refused TSC
+//! measurement, and the retained 8254 then validates live APIC appointments.
+//! D-36 for calibration, D-57 for tickless scheduling, D-225 for selection and
+//! revocation.
 
 use core::fmt;
 #[cfg(feature = "selftest")]
 use core::sync::atomic::AtomicBool;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use timebase::Timebase;
 use wost::arch::current::{apic, cpu, interrupt};
+use wost::sync::SpinLock;
 use x86_apic::timer::{self, Divide};
+use x86_pit::calibrate::WatchdogVerdict;
 use x86_pit::{CRYSTAL_HZ, calibrate, elapsed_ticks};
 
 use crate::arch::current::pit::Pit;
@@ -68,6 +72,15 @@ const MAX_POLLS: u32 = 100_000;
 /// clock; a stall that survived the step guard cannot fake agreement twice.
 const AGREEMENT_DIVISOR: u64 = 64;
 
+/// Longest interval between validation interrupts while a deadline exists.
+///
+/// Forty milliseconds stays inside the PIT's unambiguous 54.9 ms span. An
+/// idle machine with no deadline still arms nothing.
+const WATCHDOG_NS: u64 = 40 * NANOSECONDS_PER_MS;
+
+/// Consecutive conclusive failures required before revocation.
+const WATCHDOG_FAILURES: usize = 2;
+
 const _: () = {
     assert!(
         CRYSTAL_HZ / 50 <= u16::MAX as u32,
@@ -102,6 +115,65 @@ static NANOSECONDS_TO_APIC: AtomicU64 = AtomicU64::new(0);
 /// Both measured rates, kept for reporting only.
 static TSC_HZ: AtomicU64 = AtomicU64::new(0);
 static APIC_HZ: AtomicU64 = AtomicU64::new(0);
+
+/// Nanoseconds at which the timing subsystem was revoked.
+static REVOKED_AT_NS: AtomicU64 = AtomicU64::new(0);
+
+/// Private scheduling epoch after the public clock is revoked.
+static SCHEDULER_NOW_NS: AtomicU64 = AtomicU64::new(0);
+
+/// Why the live timing subsystem was revoked; zero means it remains active.
+static REVOCATION: AtomicUsize = AtomicUsize::new(0);
+
+/// Last live watchdog operands, retained for post-trap diagnosis.
+static LAST_WATCHDOG_TSC: AtomicU64 = AtomicU64::new(0);
+static LAST_WATCHDOG_PIT: AtomicU64 = AtomicU64::new(0);
+static LAST_WATCHDOG_EXPECTED: AtomicU64 = AtomicU64::new(0);
+
+/// Consecutive conclusive watchdog disagreements.
+static WATCHDOG_DISAGREEMENTS: AtomicUsize = AtomicUsize::new(0);
+
+/// The claimed reference clock and the validation window currently armed.
+static HARDWARE: SpinLock<ClockHardware> = SpinLock::new(ClockHardware::EMPTY);
+
+#[derive(Debug)]
+struct ClockHardware {
+    pit: Option<Pit>,
+    armed: Option<WatchdogArm>,
+}
+
+impl ClockHardware {
+    const EMPTY: Self = Self {
+        pit: None,
+        armed: None,
+    };
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WatchdogArm {
+    tsc_start: u64,
+    pit_start: u16,
+    expected_pit_ticks: u16,
+}
+
+/// A post-boot reason the clock and alarm are no longer trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Revocation {
+    /// The timing subsystem remains active.
+    None = 0,
+    /// A live APIC/TSC window disagreed with the PIT crystal.
+    WatchdogDisagreed = 1,
+}
+
+impl Revocation {
+    /// The current post-boot clock state.
+    pub(crate) fn current() -> Self {
+        match REVOCATION.load(Ordering::Acquire) {
+            1 => Self::WatchdogDisagreed,
+            _ => Self::None,
+        }
+    }
+}
 
 /// Timer interrupts taken since the clock started.
 ///
@@ -150,6 +222,18 @@ pub(crate) struct Calibration {
     apic_hz: u64,
     /// Whether the processor advertises the counter as invariant.
     invariant: bool,
+    /// Which independent evidence supplied the rate.
+    source: CalibrationSource,
+    /// Exact TSC rate reported by CPUID leaf 0x15, when complete.
+    cpuid_tsc_hz: Option<u64>,
+    /// Nominal core rate from leaf 0x16, for diagnostics only.
+    cpuid_base_hz: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CalibrationSource {
+    Pit,
+    Cpuid,
 }
 
 impl Calibration {
@@ -185,19 +269,31 @@ impl fmt::Display for Calibration {
             self.tsc_hz,
             if self.invariant { " (invariant)" } else { "" },
             self.apic_hz * u64::from(DIVIDE.factor()),
-        )
+        )?;
+        match self.source {
+            CalibrationSource::Pit => f.write_str(", measured against pit")?,
+            CalibrationSource::Cpuid => f.write_str(", tsc from cpuid")?,
+        }
+        if let Some(cpuid_hz) = self.cpuid_tsc_hz {
+            write!(f, ", cpuid tsc {cpuid_hz} hz")?;
+        }
+        if let Some(base_hz) = self.cpuid_base_hz {
+            write!(f, ", nominal core {base_hz} hz")?;
+        }
+        Ok(())
     }
 }
 
-/// Measure both clocks against the interval timer and start the kernel's.
+/// Select, validate and start the kernel's clock and alarm.
 ///
 /// Runs with the interrupt flag still clear — asserted, because it is what
 /// makes the measurement unpreemptible for free. Two consecutive windows must
 /// agree before their answer is believed: every guard inside [`measure`] can
 /// be slipped by a stall of exactly the wrong length, but a second
-/// independent window cannot be slipped to the same wrong answer. The
-/// interval timer is parked afterwards — stopped, its ports claimed for good
-/// — because these measurements are all this kernel will ever ask of it.
+/// independent window cannot be slipped to the same wrong answer. An invariant
+/// TSC with a complete CPUID crystal ratio is an alternate rate source when
+/// those windows refuse; the APIC is then measured against that TSC. The PIT
+/// remains claimed as the independent live watchdog.
 ///
 /// Nothing is armed at the end. The timer is put in one-shot mode and left
 /// stopped; the first thing to want an interrupt from it is the scheduler,
@@ -206,13 +302,16 @@ impl fmt::Display for Calibration {
 /// # Errors
 ///
 /// [`TimeError::PitUnavailable`] if the reference is already claimed, and
-/// [`TimeError::Implausible`] if no two windows agreed on believable numbers.
+/// [`TimeError::Implausible`] if neither PIT measurement nor an invariant,
+/// complete CPUID ratio produced two agreeing, believable windows.
 pub(crate) fn init() -> Result<Calibration, TimeError> {
     assert!(
         !interrupt::are_enabled(),
         "calibration must run before interrupts are enabled"
     );
     let mut pit = Pit::claim().map_err(|_| TimeError::PitUnavailable)?;
+    let frequency = cpu::frequency_hints();
+    let invariant = cpu::has_invariant_tsc();
     apic::set_timer_divide(DIVIDE);
 
     let mut candidate: Option<Calibration> = None;
@@ -232,23 +331,33 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
             _ => candidate = Some(current),
         }
     }
-    pit.park();
-
-    let Some(calibration) = outcome else {
+    let mut calibration = if let Some(calibration) = outcome {
+        calibration
+    } else if let Some(tsc_hz) = frequency.tsc_hz().filter(|_| invariant) {
+        let Some(calibration) = calibrate_apic_from_tsc(tsc_hz) else {
+            pit.park();
+            return Err(TimeError::Implausible);
+        };
+        calibration
+    } else {
         // Windows that each looked fine and never agreed is a seventh way to
         // reach this line, and the one an emulated crystal reaches first
         // (D-176).
         if measured_windows > 0 {
             LAST_REFUSAL.store(Refusal::Disagreed as usize, Ordering::Relaxed);
         }
+        pit.park();
         return Err(TimeError::Implausible);
     };
+    calibration.cpuid_tsc_hz = frequency.tsc_hz();
+    calibration.cpuid_base_hz = frequency.base_hz();
     // Both conversions exist for any rate inside the believable ranges; the
     // arithmetic refuses only ratios no pair of clocks produces.
     let (Some(elapsed), Some(countdown)) = (
         Timebase::nanoseconds(calibration.tsc_hz),
         Timebase::ticks(calibration.apic_hz),
     ) else {
+        pit.park();
         return Err(TimeError::Implausible);
     };
 
@@ -266,7 +375,70 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
     // the machine as the age of the kernel.
     ORIGIN.store(cpu::timestamp(), Ordering::Relaxed);
     TSC_TO_NANOSECONDS.store(elapsed.to_bits(), Ordering::Relaxed);
+    *HARDWARE.lock_leaf() = ClockHardware {
+        pit: Some(pit),
+        armed: None,
+    };
     Ok(calibration)
+}
+
+/// Calibrate the APIC against an invariant TSC whose crystal ratio CPUID gave.
+fn calibrate_apic_from_tsc(tsc_hz: u64) -> Option<Calibration> {
+    let mut candidate: Option<Calibration> = None;
+    for _ in 0..MEASUREMENT_ATTEMPTS {
+        let Some(current) = measure_apic_from_tsc(tsc_hz) else {
+            candidate = None;
+            continue;
+        };
+        if candidate.is_some_and(|previous| previous.agrees_with(current)) {
+            return Some(current);
+        }
+        candidate = Some(current);
+    }
+    LAST_REFUSAL.store(Refusal::Disagreed as usize, Ordering::Relaxed);
+    None
+}
+
+/// One bounded APIC window against the CPUID-rated TSC.
+fn measure_apic_from_tsc(tsc_hz: u64) -> Option<Calibration> {
+    const WINDOW_DIVISOR: u64 = 500;
+    const MAX_TSC_POLLS: u32 = 20_000_000;
+
+    let target = tsc_hz / WINDOW_DIVISOR;
+    if target == 0 {
+        return None;
+    }
+    apic::arm_timer(u32::MAX);
+    let apic_start = apic::timer_current_count();
+    let tsc_start = cpu::timestamp();
+    let mut tsc_counted = 0;
+    for _ in 0..MAX_TSC_POLLS {
+        tsc_counted = cpu::timestamp().checked_sub(tsc_start)?;
+        if tsc_counted >= target {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    if !(target..=target.saturating_add(target / 2)).contains(&tsc_counted) {
+        LAST_REFUSAL.store(Refusal::Overshot as usize, Ordering::Relaxed);
+        return None;
+    }
+    let apic_counted = u64::from(apic_start.checked_sub(apic::timer_current_count())?);
+    let apic_hz = Timebase::new(tsc_hz, tsc_counted)?.convert(apic_counted);
+    LAST_TSC_HZ.store(tsc_hz, Ordering::Relaxed);
+    LAST_APIC_HZ.store(apic_hz, Ordering::Relaxed);
+    if !BELIEVABLE_APIC_HZ.contains(&apic_hz) || !BELIEVABLE_TSC_HZ.contains(&tsc_hz) {
+        LAST_REFUSAL.store(Refusal::NotBelievable as usize, Ordering::Relaxed);
+        return None;
+    }
+    Some(Calibration {
+        tsc_hz,
+        apic_hz,
+        invariant: true,
+        source: CalibrationSource::Cpuid,
+        cpuid_tsc_hz: Some(tsc_hz),
+        cpuid_base_hz: None,
+    })
 }
 
 /// One bracketed window, measuring both clocks.
@@ -457,6 +629,9 @@ fn measured(pit: &mut Pit) -> Result<Calibration, Refusal> {
         tsc_hz,
         apic_hz,
         invariant: cpu::has_invariant_tsc(),
+        source: CalibrationSource::Pit,
+        cpuid_tsc_hz: None,
+        cpuid_base_hz: None,
     })
 }
 
@@ -464,11 +639,41 @@ fn measured(pit: &mut Pit) -> Result<Calibration, Refusal> {
 ///
 /// One counter read and one multiply, taking no lock — which is what makes it
 /// callable from a trap handler, where every scheduling decision is made.
-/// Nothing clamps, so monotonicity is the counter's claim and the check that
-/// watches for it is watching the hardware (D-57).
+/// A revoked clock freezes at its last trusted reading. It never fabricates
+/// progress and never moves backwards while callers unwind their waits.
 pub(crate) fn now_ns() -> u64 {
+    if Revocation::current() != Revocation::None {
+        return REVOKED_AT_NS.load(Ordering::Acquire);
+    }
+    let current = raw_now_ns();
+    if Revocation::current() == Revocation::None {
+        current
+    } else {
+        REVOKED_AT_NS.load(Ordering::Acquire)
+    }
+}
+
+fn raw_now_ns() -> u64 {
     let elapsed = Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed));
     elapsed.convert(cpu::timestamp().wrapping_sub(ORIGIN.load(Ordering::Relaxed)))
+}
+
+/// Nanoseconds used only for scheduler progress.
+///
+/// Before revocation this is the public monotonic clock. Afterwards each APIC
+/// expiry advances it from the independent PIT window, while [`now_ns`]
+/// remains frozen and no caller can mistake fallback scheduling for trusted
+/// elapsed time.
+pub(crate) fn scheduler_now_ns() -> u64 {
+    if Revocation::current() != Revocation::None {
+        return SCHEDULER_NOW_NS.load(Ordering::Acquire);
+    }
+    let current = raw_now_ns();
+    if Revocation::current() == Revocation::None {
+        current
+    } else {
+        SCHEDULER_NOW_NS.load(Ordering::Acquire)
+    }
 }
 
 /// The counter reading the clock's zero sits at.
@@ -496,8 +701,9 @@ pub(crate) fn uptime_ms() -> u64 {
 /// What anything that means to wait must ask first: with no clock there is no
 /// deadline and no timer, so a wait would be a hang.
 pub(crate) fn is_calibrated() -> bool {
-    let calibrated =
-        Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed)).is_calibrated();
+    let calibrated = Timebase::from_bits(TSC_TO_NANOSECONDS.load(Ordering::Relaxed))
+        .is_calibrated()
+        && Revocation::current() == Revocation::None;
     #[cfg(feature = "selftest")]
     let calibrated = calibrated && !REFUSE_CALIBRATION.load(Ordering::Acquire);
     calibrated
@@ -520,19 +726,45 @@ pub(crate) fn without_calibration_for_test<T>(check: impl FnOnce() -> T) -> T {
 /// Ask for a timer interrupt at `deadline`, or as soon as the hardware can
 /// manage if it has already passed.
 ///
-/// Does nothing before the clock is calibrated, which is also the state a
-/// machine whose timer declined stays in for good.
+/// Does nothing before the alarm is calibrated. After public-clock revocation
+/// it continues to provide bounded scheduler progress against the retained
+/// PIT, but it admits no new timing promise.
 pub(crate) fn arm_at(deadline_ns: u64) {
     let countdown = Timebase::from_bits(NANOSECONDS_TO_APIC.load(Ordering::Relaxed));
     if !countdown.is_calibrated() {
+        disarm();
         return;
     }
-    let lead = deadline_ns.saturating_sub(now_ns()).max(MINIMUM_LEAD_NS);
+    let lead = deadline_ns
+        .saturating_sub(scheduler_now_ns())
+        .clamp(MINIMUM_LEAD_NS, WATCHDOG_NS);
+    let Some(pit_countdown) = Timebase::ticks(CRYSTAL_HZ.into()) else {
+        disarm();
+        return;
+    };
+    let Some(expected_pit_ticks) = u16::try_from(pit_countdown.convert(lead)).ok() else {
+        disarm();
+        return;
+    };
+    let mut hardware = HARDWARE.lock_leaf();
+    let Some(pit) = hardware.pit.as_mut() else {
+        apic::disarm_timer();
+        return;
+    };
+    pit.start_measurement();
+    let pit_start = pit.count();
+    let arm = WatchdogArm {
+        tsc_start: cpu::timestamp(),
+        pit_start,
+        expected_pit_ticks,
+    };
+    hardware.armed = Some(arm);
     apic::arm_timer(timer::initial_count(countdown.convert(lead)));
 }
 
 /// Stop the timer. Nothing is waiting, so nothing needs waking.
 pub(crate) fn disarm() {
+    HARDWARE.lock_leaf().armed = None;
     apic::disarm_timer();
 }
 
@@ -541,6 +773,125 @@ pub(crate) fn disarm() {
 /// scheduler's, and it is called next.
 pub(crate) fn on_expiry() {
     EXPIRIES.fetch_add(1, Ordering::Relaxed);
+    let apic_remaining = apic::timer_current_count();
+    let tsc_end = cpu::timestamp();
+    let (verdict, pit_ticks) = {
+        let mut hardware = HARDWARE.lock_leaf();
+        let Some(arm) = hardware.armed.take() else {
+            return;
+        };
+        let Some(pit) = hardware.pit.as_mut() else {
+            return;
+        };
+        let pit_ticks = elapsed_ticks(arm.pit_start, pit.count());
+        let verdict = match tsc_end.checked_sub(arm.tsc_start) {
+            Some(tsc_ticks) => {
+                LAST_WATCHDOG_TSC.store(tsc_ticks, Ordering::Relaxed);
+                LAST_WATCHDOG_PIT.store(u64::from(pit_ticks), Ordering::Relaxed);
+                LAST_WATCHDOG_EXPECTED.store(u64::from(arm.expected_pit_ticks), Ordering::Relaxed);
+                calibrate::watchdog_verdict(
+                    apic_remaining,
+                    tsc_ticks,
+                    pit_ticks,
+                    arm.expected_pit_ticks,
+                    TSC_HZ.load(Ordering::Relaxed),
+                )
+            }
+            None => WatchdogVerdict::Disagreed,
+        };
+        (verdict, pit_ticks)
+    };
+    if Revocation::current() != Revocation::None {
+        advance_scheduler(pit_ticks);
+        return;
+    }
+    act_on_watchdog(verdict);
+}
+
+fn advance_scheduler(pit_ticks: u16) {
+    let Some(conversion) = Timebase::nanoseconds(CRYSTAL_HZ.into()) else {
+        return;
+    };
+    let elapsed = conversion.convert(u64::from(pit_ticks.max(1)));
+    let _ = SCHEDULER_NOW_NS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |now| {
+        Some(now.saturating_add(elapsed))
+    });
+}
+
+fn act_on_watchdog(verdict: WatchdogVerdict) {
+    match verdict {
+        WatchdogVerdict::Stable | WatchdogVerdict::Inconclusive => {
+            WATCHDOG_DISAGREEMENTS.store(0, Ordering::Release);
+        }
+        WatchdogVerdict::Disagreed => {
+            let failures = WATCHDOG_DISAGREEMENTS.fetch_add(1, Ordering::AcqRel) + 1;
+            if failures >= WATCHDOG_FAILURES {
+                revoke(Revocation::WatchdogDisagreed);
+            }
+        }
+        _ => WATCHDOG_DISAGREEMENTS.store(0, Ordering::Release),
+    }
+}
+
+fn revoke(reason: Revocation) -> bool {
+    if reason == Revocation::None || Revocation::current() != Revocation::None {
+        return false;
+    }
+    let last_trusted = raw_now_ns();
+    REVOKED_AT_NS.store(last_trusted, Ordering::Release);
+    SCHEDULER_NOW_NS.store(last_trusted, Ordering::Release);
+    if REVOCATION
+        .compare_exchange(
+            Revocation::None as usize,
+            reason as usize,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return false;
+    }
+    disarm();
+    crate::timepage::publish(crate::timepage::MODE_NONE, origin_ticks(), conversion());
+    true
+}
+
+/// Run a check while a stopped-TSC watchdog sample revokes the live clock.
+#[cfg(feature = "selftest")]
+pub(crate) fn with_watchdog_disagreement_for_test<T>(check: impl FnOnce() -> T) -> T {
+    let disabled = interrupt::disable();
+    let expected = WINDOW_TICKS;
+    for _ in 0..WATCHDOG_FAILURES {
+        act_on_watchdog(calibrate::watchdog_verdict(
+            0,
+            0,
+            expected,
+            expected,
+            TSC_HZ.load(Ordering::Relaxed),
+        ));
+    }
+    let result = check();
+    WATCHDOG_DISAGREEMENTS.store(0, Ordering::Release);
+    REVOCATION.store(Revocation::None as usize, Ordering::Release);
+    crate::timepage::publish(crate::timepage::MODE_COUNTER, origin_ticks(), conversion());
+    disabled.restore();
+    result
+}
+
+/// Advance the private fallback epoch through its production conversion.
+#[cfg(feature = "selftest")]
+pub(crate) fn advance_scheduler_for_test() {
+    advance_scheduler(WINDOW_TICKS);
+}
+
+/// Operands behind the most recent live watchdog decision.
+#[cfg(feature = "selftest")]
+pub(crate) fn last_watchdog_sample() -> (u64, u64, u64) {
+    (
+        LAST_WATCHDOG_TSC.load(Ordering::Relaxed),
+        LAST_WATCHDOG_PIT.load(Ordering::Relaxed),
+        LAST_WATCHDOG_EXPECTED.load(Ordering::Relaxed),
+    )
 }
 
 /// Timer interrupts taken since the clock started.

@@ -301,7 +301,7 @@ const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// is a thing you do inside a fix and the table is a different file. This line
 /// and its twin in `kernel/src/selftest.rs` are the two you have to touch
 /// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 212;
+const EXPECTED_SELFTEST_CHECKS: usize = 213;
 
 /// The worker has submitted an NVMe command but remains preemptible.
 const STORAGE_DELAY_MARKER: &str = "selftest: awaiting storage-delay keystroke";

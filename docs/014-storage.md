@@ -518,12 +518,14 @@ detail: a clock updated at a kilohertz that dropped it falls a microsecond
 behind every second.
 
 **This clock makes no periodic adjustment, and that limit is explicit.**
-`time::init` accepts two believable, agreeing measurement windows; the
-invariant-TSC bit is reported and warned on, not a veto. The conversion and
-origin then remain fixed for the supported uptime, and a reader computes
-`convert(rdtsc - origin)`, exactly what `now_ns` computes. A counter whose rate
-changes later makes the clock drift; the mode permits revocation, but suspend,
-NTP adjustment and an instability detector do not exist yet (D-57, D-181).
+`time::init` normally accepts two believable PIT windows; a complete CPUID
+0x15 ratio on an invariant TSC can supply the rate when those windows refuse,
+while leaf 0x16 stays diagnostic. D-225 retains the claimed PIT to validate
+every bounded APIC appointment. Two consecutive conclusive APIC/TSC
+disagreements freeze public time, revoke the page and unwind every Timer; late
+or folded windows are inconclusive. PIT samples continue a private scheduler
+epoch so an already-running program remains preemptible without publishing
+untrusted elapsed time. Suspend and NTP adjustment remain unsupported.
 
 ### Three things that were wrong first
 
@@ -959,10 +961,10 @@ first, because a caller freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 212 |
-| Mutations | 236 registered; 64 in the last recorded full sweep, with 172 later entries broken individually |
+| Machine checks | 213 |
+| Mutations | 242 registered; 64 in the last recorded full sweep, with 178 later entries broken individually |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-224 |
+| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-225 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but that proves registration rather than a current full

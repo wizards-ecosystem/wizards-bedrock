@@ -218,8 +218,12 @@ allowed preparatory side of the boundary stated above.
 D-201 also fixes the target-side launch precondition the eventual runtime may
 rely on: a program starts only with enforced NX and a calibrated monotonic/APIC
 clock. A target adapter still has to implement the versioned time-page reader
-and correlated Uptime fallback for post-launch revocation; PW-303 owns the
-clocksource and revocation policy rather than permitting a clockless launch.
+and correlated Uptime fallback for post-launch revocation. D-225 has fixed the
+kernel clocksource and revocation policy; that target-side fallback remains a
+Wizzy compiler/runtime gate item rather than permission for clockless launch.
+After revocation the kernel exposes only the last trusted uptime, refuses new
+Timer and process admission, and keeps existing execution preemptible on a
+private PIT-sampled scheduler epoch.
 
 ## The dependency chain
 

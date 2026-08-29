@@ -1103,17 +1103,24 @@ impl Queue {
     ///
     /// The completion is posted **after** the deadline and by the kernel, not
     /// by the program asking again: a program that submits a timer, waits, and
-    /// is woken finds the entry already in its queue.
+    /// is woken finds the entry already in its queue. Clock revocation settles
+    /// every Timer as unavailable regardless of its former deadline.
     pub(crate) fn expire(&self, now_ns: u64) -> usize {
+        let clock_live = crate::time::is_calibrated();
         let mut due = 0;
         while let Some((index, entry)) = self.begin_settlement(|entry| {
             entry
                 .kind
                 .deadline()
-                .is_some_and(|deadline| deadline <= now_ns)
+                .is_some_and(|deadline| !clock_live || deadline <= now_ns)
         }) {
             let deadline = entry.kind.deadline().unwrap_or(now_ns);
-            if !self.settle_pending(index, entry, STATUS_OK, deadline) {
+            let (status, value) = if clock_live {
+                (STATUS_OK, deadline)
+            } else {
+                (STATUS_UNAVAILABLE, 0)
+            };
+            if !self.settle_pending(index, entry, status, value) {
                 break;
             }
             due += 1;

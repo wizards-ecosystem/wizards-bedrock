@@ -105,7 +105,11 @@ Held open deliberately; each becomes an ADR when taken.
   deadlines, or something else — decided in slice 3 with the calibration
   machinery D-36 already built. *Taken in D-57: the timestamp counter, on the
   same window, with accumulated deadlines rejected because an idle machine's
-  clock would stop.*
+  clock would stop. D-225 later adds CPUID 0x15 selection and retains the PIT
+  as an APIC-delivery-sampled validator; two conclusive disagreements revoke
+  public time and unwind sleepers/Timer promises. PIT samples then advance a
+  private scheduler epoch so already-running programs remain preemptible,
+  while a machine with no deadline still arms nothing.*
 
 ## The lock order
 

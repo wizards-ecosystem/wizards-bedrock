@@ -292,11 +292,13 @@ impl RunQueue {
     /// Make every sleeper whose deadline has passed runnable again.
     ///
     /// Each comes back at the fair-share point offset by the lag it left
-    /// with, which is where D-53's clamp acts.
+    /// with, which is where D-53's clamp acts. Revoking the clock wakes every
+    /// sleeper because none may remain parked on an unreachable deadline.
     fn wake_due(&mut self, now: u64) {
+        let clock_live = crate::time::is_calibrated();
         for slot in 0..CAPACITY {
             let thread = &self.slots[slot];
-            if thread.state != State::Sleeping || thread.wake_at > now {
+            if thread.state != State::Sleeping || (clock_live && thread.wake_at > now) {
                 continue;
             }
             self.make_ready(slot);
@@ -449,7 +451,7 @@ pub(crate) fn init(arena: StackArena) -> Result<usize, TaskError> {
     threads.queue.slots[BOOT] = Scheduled {
         state: State::Running,
         entity,
-        started: time::now_ns(),
+        started: time::scheduler_now_ns(),
         ..Scheduled::FREE
     };
     Ok(threads.spawnable)
@@ -766,7 +768,7 @@ fn spawn_prepared(
     // running thread's slice starts mattering — so this is an arming point
     // even though nothing switches here.
     let saved = interrupt::disable();
-    let now = time::now_ns();
+    let now = time::scheduler_now_ns();
     let event = {
         let mut threads = THREADS.lock_leaf();
         let average = threads.queue.average().unwrap_or(0);
@@ -799,7 +801,7 @@ pub(crate) fn yield_now(context: &mut ThreadContext) {
     // Flag clear from decision to switch, so an expiry cannot preempt between
     // them and act on a table that says `next` is running when it is not.
     let saved = interrupt::disable();
-    let now = time::now_ns();
+    let now = time::scheduler_now_ns();
     let (next, event) = {
         let mut threads = THREADS.lock(context);
         let current = task::current();
@@ -854,7 +856,7 @@ pub(crate) fn sleep_ns(context: &mut ThreadContext, nanoseconds: u64) {
     // A loop rather than one switch: a thread can be woken by something other
     // than its own deadline — the halt below returns on any interrupt — and
     // the deadline, not the wakeup, is what this promised.
-    while time::now_ns() < wake_at {
+    while time::is_calibrated() && time::now_ns() < wake_at {
         THREADS.lock(context).queue.slots[task::current()].wake_at = wake_at;
         park(context, State::Sleeping, Some(wake_at));
     }
@@ -871,7 +873,7 @@ pub(crate) fn sleep_ns(context: &mut ThreadContext, nanoseconds: u64) {
 /// timer. Called with the flag already clear, and it stays clear until after
 /// the switch.
 fn park(context: &mut ThreadContext, leaving: State, until: Option<u64>) {
-    let now = time::now_ns();
+    let now = time::scheduler_now_ns();
     let (next, event) = {
         let mut threads = THREADS.lock(context);
         let current = task::current();
@@ -932,7 +934,7 @@ fn park(context: &mut ThreadContext, leaving: State, until: Option<u64>) {
 /// `false` if there is nobody to switch to, which cannot happen once the idle
 /// thread exists, or if `wost` refuses the switch.
 pub(crate) fn retire_from_trap(frame: &TrapFrame) -> bool {
-    let now = time::now_ns();
+    let now = time::scheduler_now_ns();
     let current = task::current();
     let (next, event) = {
         let mut threads = THREADS.lock_leaf();
@@ -1047,7 +1049,7 @@ pub(crate) fn unblock(slots: u32) -> usize {
         if interrupt::in_trap() {
             HANDLER_ARMS.fetch_add(1, Ordering::Relaxed);
         }
-        reschedule_timer(Some(time::now_ns()));
+        reschedule_timer(Some(time::scheduler_now_ns()));
     }
     woken
 }
@@ -1095,7 +1097,7 @@ pub(crate) fn current_name() -> &'static str {
 /// (D-54). Waking and re-arming happen either way: a sleeper whose deadline
 /// has passed has no other appointment. Nothing here logs (D-31).
 pub(crate) fn reschedule(frame: &TrapFrame) {
-    let now = time::now_ns();
+    let now = time::scheduler_now_ns();
     let switchable = frame.flags() & INTERRUPT_FLAG != 0;
     let (next, event) = {
         let mut threads = THREADS.lock_leaf();
@@ -1153,7 +1155,7 @@ pub(crate) fn wait_from_trap(frame: &TrapFrame, wake_at: Option<u64>) -> bool {
     if wake_at.is_some() && !time::is_calibrated() {
         return false;
     }
-    let now = time::now_ns();
+    let now = time::scheduler_now_ns();
     if wake_at.is_some_and(|deadline| now >= deadline) {
         return false;
     }
@@ -1218,6 +1220,20 @@ fn reschedule_timer(event: Option<u64>) {
     }
 }
 
+/// Restore the current scheduler appointment after a reversible clock check.
+#[cfg(feature = "selftest")]
+pub(crate) fn rearm_current_for_test() {
+    let now = time::scheduler_now_ns();
+    let event = {
+        let threads = THREADS.lock_leaf();
+        if threads.spawnable == 0 {
+            return;
+        }
+        threads.queue.next_event(task::current(), now)
+    };
+    reschedule_timer(event);
+}
+
 /// `RFLAGS` bit 9, restated here rather than imported: the test is against
 /// what the CPU pushed, not what a helper believes.
 const INTERRUPT_FLAG: u64 = 1 << 9;
@@ -1234,7 +1250,7 @@ pub(crate) fn exit() -> ! {
     // decision and the switch would find a thread that is neither running
     // nor free.
     let _off = interrupt::disable();
-    let now = time::now_ns();
+    let now = time::scheduler_now_ns();
     let (next, event) = {
         let mut threads = THREADS.lock_leaf();
         let current = task::current();

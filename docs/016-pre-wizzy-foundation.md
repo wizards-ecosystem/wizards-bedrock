@@ -109,7 +109,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-300 | DONE | P0 | CR0.WP was neither enabled nor read back, so supervisor writes to read-only kernel pages depended on bootloader state | D-186 puts WP in the boot protection contract and gives its controlled fault an exact private recovery window | 2026-08-27 QEMU `supervisor writes obey read-only pages` drove WP through the kernel setter, then recovered only the expected supervisor write fault on `.rodata`; omitting the bit reddened that exact check |
 | PW-301 | VERIFY | P1 | D-201 makes active NX and calibrated progress mandatory before ring 3, but its accepted-contract proof still needs the current VMware observation | Run PW-003 and record NX, calibration and successful user launch together | 2026-08-28 release QEMU injected missing NX before allocation with no syscall or resource change; bypassing it reddened only `no-execute protection closes the user boundary`; degraded `qemu64` retained `wp nx` without SMEP/SMAP/UMIP and refused userspace for its missing clock; current VMware must complete the proof |
 | PW-302 | DONE | P1 | Failed clock calibration deliberately still launched a user process with no preemption and admitted Timer promises with no progress source | D-201 gates user launch and Timer admission on the live calibration predicate | 2026-08-28 release QEMU injected calibration loss, refused launch before allocation or syscall crossing, and posted one immediate `STATUS_UNAVAILABLE` Timer completion with no pending state; bypassing the user and Timer gates separately reddened only `an uncalibrated clock admits no user or timer`, and degraded QEMU remained responsive with ring 3 closed |
-| PW-303 | DECIDE | P1 | VMware already produced one unexplained calibration refusal; suspend, rate change, instability detection and revocation are absent | Cost CPUID frequency leaves and at least one independent clocksource/validation path; define post-boot instability policy | Deterministic disagreement/failure injection selects or revokes a source without time going backward or pending timers hanging |
+| PW-303 | DONE | P1 | VMware already produced one unexplained calibration refusal; suspend, rate change, instability detection and revocation were absent | D-225 permits a complete invariant CPUID 0x15 ratio to replace refused PIT TSC calibration, retains the PIT as an independent APIC-delivery-sampled validator, and defines conservative post-boot revocation; leaf 0x16 is diagnostic and suspend remains unsupported | 2026-08-29 host tests separated exact 0x15 evidence, nominal 0x16 MHz, stopped/early disagreement, stale APIC delivery and late inconclusive windows; release/debug QEMU injected two conclusive failures through the production policy, froze monotonic time, preserved private scheduler progress, survived the time-page mapping gap and terminalized an admitted Timer; all six breaks reddened only their named checks and persist as mutations 237–242 |
 | PW-304 | DONE | P1 | ACPI retained only the first I/O APIC, so a valid GSI owned by a later controller could not be routed | D-205 inventories up to sixteen controllers, probes and masks every hardware-sized range under releasable ownership, rejects ambiguity and retains only the unique owner | 2026-08-28 host tables retained two controllers and refused bounded overflow; pure range tests rejected empty, overflowing and overlapping ownership and selected a later owner across a gap; all five exact mutations reddened their named tests; release QEMU returned the probe mapping, remapped the selected owner, routed GSI 1 and passed all 211 checks |
 | PW-305 | READY | P2 | XSAVE bounds are checked, but restore correctness observes XMM0 only, not every enabled state component | Add independent enabled-state coverage feasible on QEMU/VMware and explicitly bound what cannot yet be generated | Values in each claimed component survive switches; compacted and standard forms are both exercised; mutations omit one component |
 | PW-306 | DONE | P1 | The idle-start latch was set before spawn succeeded, so a transient full table prevented idle from ever being retried | D-202 reserves a three-state idle attempt, rolls back every spawn refusal, and classifies the slot before making it runnable | 2026-08-28 release QEMU filled every spawnable slot, refused idle creation without consuming its retry, freed the fillers and created exactly one idle thread despite two retries; burning the reservation reddened only `a failed idle start can be retried exactly once` with 208/209 |
@@ -213,7 +213,8 @@ non-executable ELF entry (PW-109 is earlier/cleaner refusal); and the two
 unsafe *safe API* rather than a demonstrated exploit before D-185 closed it.
 D-201 records NX as mandatory for ring 3 and SMEP/SMAP/UMIP as preferred
 optional hardening. The current VMware observation still belongs to PW-301
-and PW-003; PW-303 owns clocksource qualification and post-boot revocation.
+and PW-003; D-225 closes PW-303's clocksource qualification and post-boot
+revocation without upgrading that pending VMware observation.
 
 PW-514 carried these exact stale-current-facing corrections; D-219 closes all
 of them without upgrading historical evidence:
@@ -235,9 +236,9 @@ of them without upgrading historical evidence:
 1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
    PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-108, PW-109, PW-200,
    PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-210,
-   PW-300, PW-302, PW-304, PW-306, PW-307, PW-400, PW-401, PW-402, PW-403, PW-405,
+   PW-300, PW-302, PW-303, PW-304, PW-306, PW-307, PW-400, PW-401, PW-402, PW-403, PW-405,
    PW-500, PW-501, PW-502, PW-503, PW-504, PW-505, PW-506, PW-507, PW-508,
-   PW-509, PW-510, PW-514 and PW-515 are closed by D-185 through D-224.
+   PW-509, PW-510, PW-514 and PW-515 are closed by D-185 through D-225.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

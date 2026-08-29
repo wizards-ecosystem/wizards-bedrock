@@ -3187,11 +3187,14 @@ fn revoking_the_clock_sends_readers_to_uptime() -> bool {
         return false;
     };
 
-    if !timepage::publish(
-        timepage::MODE_NONE,
-        crate::time::origin_ticks(),
-        crate::time::conversion(),
-    ) {
+    let deferred = timepage::with_page_absent_for_test(|| {
+        !timepage::publish(
+            timepage::MODE_NONE,
+            crate::time::origin_ticks(),
+            crate::time::conversion(),
+        )
+    });
+    if deferred != Some(true) {
         return false;
     }
 
@@ -4267,6 +4270,65 @@ fn an_uncalibrated_clock_admits_no_user_or_timer() -> bool {
         && time::is_calibrated()
         && trap::last_syscall().count == crossings_before
         && spawn_resources() == resources_before
+}
+
+/// A live independent-clock disagreement revokes every timing promise.
+///
+/// The injected stopped-TSC sample enters the production watchdog decision.
+/// The kernel clock freezes monotonically, the shared page closes, and an
+/// already-admitted Timer receives a terminal unavailable completion rather
+/// than waiting for a deadline the kernel no longer claims it can reach.
+fn a_clock_disagreement_revokes_time_without_stranding_timers() -> bool {
+    if !time::is_calibrated() || time::Revocation::current() != time::Revocation::None {
+        return false;
+    }
+    let Some(ring) = queue::Queue::new() else {
+        return false;
+    };
+    let table = shared_handle_table_or_false!(1);
+    ring.post_submission_for_test(
+        0,
+        queue::Submission::simple(queue::Opcode::Timer, 0xC10D, 10_000_000_000),
+    );
+    ring.publish_tail_for_test(1);
+    if ring.serve(&table) != 0 || ring.in_flight() != 1 {
+        return false;
+    }
+
+    let before = time::now_ns();
+    let sequence = timepage::sequence();
+    let during = time::with_watchdog_disagreement_for_test(|| {
+        let frozen = time::now_ns();
+        let scheduler_before = time::scheduler_now_ns();
+        time::advance_scheduler_for_test();
+        let settled = ring.expire(frozen);
+        let completion = ring.read_completion(0);
+        let page_revoked =
+            timepage::read().is_some_and(|reading| reading.mode == timepage::MODE_NONE);
+        time::Revocation::current() == time::Revocation::WatchdogDisagreed
+            && !time::is_calibrated()
+            && frozen >= before
+            && time::now_ns() == frozen
+            && time::scheduler_now_ns() > scheduler_before
+            && settled == 1
+            && completion.token == 0xC10D
+            && completion.status == queue::STATUS_UNAVAILABLE
+            && completion.value == 0
+            && ring.in_flight() == 0
+            && ring.is_consistent()
+            && page_revoked
+    });
+    thread::rearm_current_for_test();
+    let page_restored =
+        timepage::read().is_some_and(|reading| reading.mode == timepage::MODE_COUNTER);
+
+    during
+        && time::is_calibrated()
+        && time::Revocation::current() == time::Revocation::None
+        && page_restored
+        && sequence
+            .zip(timepage::sequence())
+            .is_some_and(|(before, after)| after.wrapping_sub(before) == 4)
 }
 
 /// A program that has ended gives its memory back — its pages, its tables,
@@ -7283,7 +7345,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 212;
+const EXPECTED_CHECKS: usize = 213;
 
 impl Report {
     const fn new() -> Self {
@@ -7300,6 +7362,13 @@ impl Report {
         } else {
             self.failed += 1;
             error!("selftest: {name} FAILED");
+            if time::Revocation::current() != time::Revocation::None {
+                let (tsc, pit, expected) = time::last_watchdog_sample();
+                error!(
+                    "selftest: clock revoked {:?}, watchdog tsc={tsc} pit={pit} expected={expected}",
+                    time::Revocation::current()
+                );
+            }
         }
     }
 }
@@ -7691,6 +7760,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "an uncalibrated clock admits no user or timer",
         an_uncalibrated_clock_admits_no_user_or_timer(),
+    );
+    report.check(
+        "a clock disagreement revokes time without stranding timers",
+        a_clock_disagreement_revokes_time_without_stranding_timers(),
     );
     report.check(
         "a user page comes back cleared",
@@ -8833,8 +8906,9 @@ fn a_sleeper_wakes_on_time_and_quietly() -> bool {
     /// Long enough that a surviving tick would be caught many times, short
     /// beside the harness's patience.
     const SLEEP_MS: u64 = 200;
-    /// The wake itself, and room for the odd extra expiry around it.
-    const EXPIRY_BUDGET: u64 = 4;
+    /// Five bounded validation windows, and room for the odd extra expiry
+    /// around the wake. The retired periodic tick would spend twenty.
+    const EXPIRY_BUDGET: u64 = 7;
     /// How late the wake may be. Nothing else is runnable, so the thread
     /// resumes the moment its own timer fires — this is slack for the
     /// hypervisor, not for the policy.

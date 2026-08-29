@@ -9,7 +9,7 @@ use core::fmt;
 
 use super::interrupt;
 use super::msr;
-use x86_cpuid::{SPEC_CTRL_MSR, Speculation};
+use x86_cpuid::{FrequencyHints, SPEC_CTRL_MSR, Speculation};
 
 /// Extended feature enable register.
 const EFER: u32 = 0xC000_0080;
@@ -111,6 +111,21 @@ pub fn has_invariant_tsc() -> bool {
     const INVARIANT: u32 = 1 << 8;
 
     max_leaf(0x8000_0000) >= 0x8000_0007 && cpuid(0x8000_0007, 0).edx & INVARIANT != 0
+}
+
+/// Frequency evidence from `cpuid` leaves 0x15 and 0x16.
+///
+/// The pure decoder keeps the architectural ratio distinct from leaf 0x16's
+/// nominal processor frequency. Unsupported leaves are represented as absent
+/// rather than queried and mistaken for answers from another leaf.
+pub fn frequency_hints() -> FrequencyHints {
+    let maximum = max_leaf(0);
+    let ratio = (maximum >= 0x15).then(|| {
+        let leaf = cpuid(0x15, 0);
+        (leaf.eax, leaf.ebx, leaf.ecx)
+    });
+    let base_mhz = (maximum >= 0x16).then(|| cpuid(0x16, 0).eax);
+    FrequencyHints::from_leaves(ratio, base_mhz)
 }
 
 /// The timestamp counter: cycles since the processor started.
@@ -547,6 +562,7 @@ pub fn enable_speculation_controls() -> Speculation {
 /// One `cpuid` answer.
 #[derive(Debug, Clone, Copy, Default)]
 struct CpuidResult {
+    eax: u32,
     ebx: u32,
     ecx: u32,
     edx: u32,
@@ -566,6 +582,7 @@ fn max_leaf(leaf: u32) -> u32 {
 fn cpuid(leaf: u32, sub_leaf: u32) -> CpuidResult {
     let result = __cpuid_count(leaf, sub_leaf);
     CpuidResult {
+        eax: result.eax,
         ebx: result.ebx,
         ecx: result.ecx,
         edx: result.edx,

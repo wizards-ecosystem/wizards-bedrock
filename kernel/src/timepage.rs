@@ -13,15 +13,12 @@
 //! error-prone reads from the protocol entirely. The clock region carries
 //! Linux's seqlock, both barriers included.
 //!
-//! **This clock is fixed after calibration, and the limit is explicit.** Linux
-//! rewrites its published clock for adjustable or idle-stopping sources and
-//! for NTP. This kernel instead accepts two believable, agreeing measurement
-//! windows; the invariant-TSC bit is reported and warned on, not a veto
-//! (`time::init`). The conversion and origin then stay fixed for the supported
-//! uptime, so a reader computes exactly what
-//! [`time::now_ns`](crate::time::now_ns) computes. A machine whose counter rate
-//! later changes gets only that counter's steadiness; the mode permits
-//! revocation, but no suspend or NTP updater exists yet (D-57, D-181).
+//! **The conversion is fixed; permission to use it is not.** Linux rewrites its
+//! published clock for adjustable sources and NTP. This kernel keeps one
+//! conversion, while a retained PIT validates bounded APIC/TSC windows. Two
+//! consecutive conclusive disagreements freeze public time and publish
+//! `MODE_NONE` through this page's sequence protocol (D-225). Suspend and NTP
+//! adjustment remain unsupported rather than pretending continuity.
 //!
 //! **The revocation gate is why the Uptime fallback stays.** `mode` is the
 //! reader's permission to use the page at all. A kernel that learns its counter
@@ -30,7 +27,7 @@
 //! pressure-test reader explicitly returns ENOSYS until a shared,
 //! token-correlating ring client exists (D-181).
 
-use core::sync::atomic::{AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering, fence};
 
 use timebase::{Seq, Timebase};
 use wost::arch::current::paging::{AddressSpace, MapError};
@@ -101,6 +98,13 @@ mod clock {
 /// and a page each would be a page each to keep in step.
 static PAGE: SpinLock<Option<Shared>> = SpinLock::new(None);
 
+/// The mode the page must show when an installation temporarily returns it.
+///
+/// `install` moves the owner out while it maps the frame. A revocation may
+/// interrupt that allocation window, so the desired mode cannot live only in
+/// the temporarily absent page.
+static DESIRED_MODE: AtomicU32 = AtomicU32::new(MODE_NONE);
+
 /// Times the sequence counter was left odd with interrupts on.
 ///
 /// D-152 makes "the writer is not preemptible" a **precondition, not a
@@ -163,6 +167,7 @@ pub(crate) fn init(counter_hz: u64) -> bool {
 /// go through the same sequence-counter protocol, because a revocation a
 /// reader half-sees is worse than one it does not see at all.
 pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> bool {
+    DESIRED_MODE.store(mode, Ordering::Release);
     let mut guard = PAGE.lock_leaf();
     // Inside the guard, which is the whole point: this asks whether the
     // *window* below can be preempted, and the guard is what closes it. Not a
@@ -226,18 +231,33 @@ pub(crate) fn install(space: &mut AddressSpace) -> Result<(), TimePageError> {
     // address out instead would hand on a bare number where the type is the
     // evidence (D-115), so the run itself moves.
     //
-    // The window is real and benign: a publication landing while the page is
-    // out finds `None` and does nothing. The kernel's own clock is unaffected —
-    // `now_ns` reads the counter directly — so a skipped publication leaves the
-    // page holding a conversion that is still true.
+    // The window is real. A publication landing while the page is out records
+    // its desired mode, and returning the owner applies a deferred revocation.
+    // A stale conversion is harmless only while the clock remains trusted.
     let taken = PAGE.lock_leaf().take();
     let Some(shared) = taken else {
         return Err(TimePageError::Absent);
     };
 
     let result = space.map_shared(TIME, &shared, Flags::NO_EXECUTE);
-    *PAGE.lock_leaf() = Some(shared);
+    restore(shared);
     result.map_err(TimePageError::Map)
+}
+
+fn restore(shared: Shared) {
+    *PAGE.lock_leaf() = Some(shared);
+    if DESIRED_MODE.load(Ordering::Acquire) == MODE_NONE {
+        publish(MODE_NONE, 0, Timebase::UNCALIBRATED);
+    }
+}
+
+/// Run a check while the page owner is temporarily held outside its lock.
+#[cfg(feature = "selftest")]
+pub(crate) fn with_page_absent_for_test<T>(check: impl FnOnce() -> T) -> Option<T> {
+    let shared = PAGE.lock_leaf().take()?;
+    let result = check();
+    restore(shared);
+    Some(result)
 }
 
 /// Why a program could not be shown the time.
