@@ -4404,6 +4404,16 @@ fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
     counted && answered && exited
 }
 
+/// Wait for the exit record belonging to this exact process incarnation.
+fn last_rites_for(spawned: &user::Spawned, ms: u64) -> Option<user::LastRites> {
+    let table = user::birth_of(spawned)?.table;
+    let exact = || user::last_rites_of(spawned.slot).is_some_and(|rites| rites.table == table);
+    if !runs_until(ms, exact) {
+        return None;
+    }
+    user::last_rites_of(spawned.slot).filter(|rites| rites.table == table)
+}
+
 /// A program posts an operation, rings the doorbell, and reads its own answer.
 ///
 /// The whole async ABI, driven from ring 3 rather than from the kernel — which
@@ -4424,22 +4434,17 @@ fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
 /// disagree in the same direction.
 fn a_program_drives_its_own_ring() -> bool {
     let faults_before = trap::last_user_fault().count;
-    let retirements_before = thread::retirements();
 
     let Ok(spawned) = user::run_for_bootstrap() else {
         return false;
     };
 
     // It has to load, cross, submit, be served, check the answer, and exit.
-    if !runs_until(2000, || thread::retirements() > retirements_before) {
-        return false;
-    }
-
     // Read from the *exit record*, not from the program: reclamation has
     // already given its ring's pages back by now, and reading a process the
     // kernel has collected is reading a corpse (D-117). The record is taken
     // at the moment of death, while there is still something to read.
-    let Some(rites) = user::last_rites_of(spawned.slot) else {
+    let Some(rites) = last_rites_for(&spawned, 2_000) else {
         return false;
     };
     let (served, submitted, completed) = (rites.served, rites.submitted, rites.completed);
@@ -4472,16 +4477,11 @@ fn a_program_drives_its_own_ring() -> bool {
 /// READ-only duplicate, validates the authority-bearing completion and exits.
 fn a_program_duplicates_its_bootstrap_handle() -> bool {
     let faults_before = trap::last_user_fault().count;
-    let retirements_before = thread::retirements();
 
     let Ok(spawned) = user::run_duplicating() else {
         return false;
     };
-    if !runs_until(2000, || thread::retirements() > retirements_before) {
-        return false;
-    }
-
-    let Some(rites) = user::last_rites_of(spawned.slot) else {
+    let Some(rites) = last_rites_for(&spawned, 2_000) else {
         return false;
     };
     let submitted = rites.submitted;
@@ -4514,16 +4514,12 @@ fn a_program_duplicates_its_bootstrap_handle() -> bool {
 /// A program blocks in RingWait and resumes with its deferred completion.
 fn a_program_waits_through_its_trap_frame() -> bool {
     let faults_before = trap::last_user_fault().count;
-    let retirements_before = thread::retirements();
     let waits_before = thread::trap_waits();
 
     let Ok(spawned) = user::run_waiting() else {
         return false;
     };
-    if !runs_until(2_000, || thread::retirements() > retirements_before) {
-        return false;
-    }
-    let Some(rites) = user::last_rites_of(spawned.slot) else {
+    let Some(rites) = last_rites_for(&spawned, 2_000) else {
         return false;
     };
 
@@ -4549,60 +4545,48 @@ fn a_program_waits_through_its_trap_frame() -> bool {
 /// The parent's evidence is the other end. It is the only way to reach the
 /// child: a spawner that dropped its end could never send it a grant.
 fn a_spawned_program_holds_exactly_one_handle() -> bool {
-    let retirements_before = thread::retirements();
     // Its own program rather than a shared launcher: every ring-3 check
     // counts crossings, and an extra one from here would be attributed to
     // whichever check happened to look next.
     let Ok(spawned) = user::run_for_bootstrap() else {
         return false;
     };
-
-    // Its table, while it is alive, and again from the record once it is not:
-    // the count is the claim, and a program that gained a handle *during* its
-    // life would break it just as surely as one born with two (D-111, D-117).
-    let Some((entries, kind)) = user::bootstrap_of(spawned.slot) else {
+    let Some(birth) = user::birth_of(&spawned) else {
         return false;
     };
-    let exactly_one = entries == 1;
-    let a_channel = kind == object::ObjectType::Channel;
+
+    // Captured from the objects committed while the slot was still Reserved:
+    // observing the live tables after `spawn` returns races this deliberately
+    // short program's exit (D-217).
+    let exactly_one = birth.handles == 1;
+    let a_channel = birth.bootstrap == object::ObjectType::Channel;
 
     // And a ring, at the address every program's is, readable by it. The
     // handle is the process's authority; the ring is its data path, and both
     // are in place before its first instruction (D-113).
-    // The kernel's record, not the header page: the program is live in ring 3
-    // by now and that page is its to write, so `2 * submissions` on a number
-    // it chose overflows and panics the debug kernel (D-115).
-    let has_a_ring =
-        user::ring_shape_of(spawned.slot).is_some_and(|(version, submissions, completions)| {
-            version == ring_proto::VERSION
-                && submissions > 0
-                && completions >= submissions.saturating_mul(2)
-        });
-    let mapped = task::address_space_of(spawned.slot).is_some_and(|root| {
-        paging::translate_in_root(root, user::RING)
-            .is_some_and(|(_, flags)| flags.contains(Flags::USER))
-    });
+    // The kernel's record, not the header page that ring 3 may rewrite
+    // (D-115).
+    let (version, submissions, completions) = birth.ring;
+    let has_a_ring = version == ring_proto::VERSION
+        && submissions > 0
+        && completions >= submissions.saturating_mul(2);
+    let mapped = birth.ring_flags.contains(Flags::USER);
 
     // The parent's end is live and is the far side of the child's: a message
     // put in here is one the child could read, which is what makes it a
-    // bootstrap rather than a decoration.
-    let Some(ours) = spawned.channel.as_channel() else {
-        return false;
-    };
-    let paired = !ours.is_orphaned();
-    let usable =
-        object::Message::new(b"hello, child").is_ok_and(|message| ours.send(message).is_ok());
+    // bootstrap rather than a decoration. `birth_of` returned only after
+    // matching this endpoint to the child's recorded peer.
+    let parent_is_a_channel = spawned.channel.kind() == object::ObjectType::Channel;
 
     // And it leaves with one, having never been given a second. Waited for
     // rather than left running: a program retiring during a later check moves
     // the free-slot count under it, which is a race this check would be
     // creating for its neighbours (D-117).
-    let gone = runs_until(2000, || thread::retirements() > retirements_before);
-    let died_with_one = user::last_rites_of(spawned.slot).is_some_and(|rites| {
+    let died_with_one = last_rites_for(&spawned, 2_000).is_some_and(|rites| {
         rites.handles == 1 && rites.bootstrap == Some(object::ObjectType::Channel)
     });
 
-    exactly_one && a_channel && has_a_ring && mapped && paired && usable && gone && died_with_one
+    exactly_one && a_channel && has_a_ring && mapped && parent_is_a_channel && died_with_one
 }
 
 /// Bytes sent down one end of a channel come out of the other, once.

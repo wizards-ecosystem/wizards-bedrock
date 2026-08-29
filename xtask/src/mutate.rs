@@ -256,22 +256,40 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a stack that is no longer mapped is no longer installed",
         reddens: Caught::Check("an unmapped stack is no longer installed"),
     },
-    // D-126's detector, exercised by putting a violation back. `bootstrap_of`
-    // is the smallest of the four that were fixed: holding the table's guard
-    // across `kind_of` takes the handle arena's under it.
+    // D-126's detector, exercised by putting a violation back. Holding the
+    // process table's guard while inspecting its ring takes a second leaf
+    // underneath it.
     Mutation {
         file: "kernel/src/user.rs",
-        find: "    let (table, handle) = {
-        let guard = BOOTSTRAPS.lock_leaf();
-        let bootstrap = guard.get(slot)?.as_ref()?;
-        (alloc::sync::Arc::clone(&bootstrap.table), bootstrap.handle)
-    };",
+        find: "    let guard = BOOTSTRAPS.lock_leaf();
+    let bootstrap = guard.get(slot).and_then(Option::as_ref)?;
+    Some((
+        alloc::sync::Arc::clone(&bootstrap.ring),
+        alloc::sync::Arc::clone(&bootstrap.table),
+    ))",
         replace: "    let guard = BOOTSTRAPS.lock_leaf();
-    let bootstrap = guard.get(slot)?.as_ref()?;
-    let table = alloc::sync::Arc::clone(&bootstrap.table);
-    let handle = bootstrap.handle;",
+    let bootstrap = guard.get(slot).and_then(Option::as_ref)?;
+    let _ = bootstrap.ring.shape();
+    Some((
+        alloc::sync::Arc::clone(&bootstrap.ring),
+        alloc::sync::Arc::clone(&bootstrap.table),
+    ))",
         breaks: "no lock is taken while a leaf guard is held",
         reddens: Caught::Check("no lock is taken while a leaf guard is held"),
+    },
+    Mutation {
+        file: "kernel/src/user.rs",
+        find: "    Ok(Spawned {
+        slot,
+        channel: ours,
+    })",
+        replace: "    let channel = match object::channel() {
+        Some((unrelated, _)) => unrelated,
+        None => ours,
+    };
+    Ok(Spawned { slot, channel })",
+        breaks: "a spawned program returns the parent end of its own bootstrap channel",
+        reddens: Caught::Check("a spawned program holds exactly one handle"),
     },
     Mutation {
         file: "wost/src/arch/x86_64/paging.rs",

@@ -14098,3 +14098,68 @@ registry to 213. This record covers the self-contained local gate and shipped
 QEMU artifact; it does not turn the deliberately separate VMware, TLC or full
 mutation qualifications into CI, and it does not close PW-509's remaining
 environment recreation policy.
+
+## D-217 Process birth and death evidence names one exact incarnation — Status: Accepted (2026-08-29), closes PW-515
+
+**Context.** The clean evidence refresh after D-216 exposed an intermittent
+debug failure in `a spawned program holds exactly one handle`. The check made
+the child runnable, then read its live bootstrap table, ring and address space.
+The emitted program is deliberately short: a timer interrupt could run it
+through exit before the observer reached any of those reads. The same check,
+and three neighbouring ring-program checks, then treated any increase in a
+global retirement count as this child's death and read the last record for a
+reusable slot. Neither half named the process whose facts it claimed.
+
+A first repair carried the birth snapshot through `Spawned` and captured it
+inside the by-value commit. That was logically exact but increased the nested
+debug stack enough to drive the already-large process transaction into its
+guard page. Two boots double-faulted at `Option<AddressSpace>::take`, at
+different later spawns. A detached build of unchanged `5ca4227` passed all
+212 checks; restoring the original `spawn_transaction` and commit frame sizes
+made the repaired kernel pass too. Evidence code may not perturb the boundary
+it is meant to observe.
+
+**Decision.** Self-test builds record an immutable `Birth` immediately before
+the reserved thread commits and becomes runnable. It contains the authority
+table's non-repeating identity, initial live-handle count and bootstrap kind,
+the kernel-owned ring shape, the ring mapping's flags, and the object identity
+of the child's exact channel peer. The returned parent endpoint is compared
+with that peer identity; a merely live but unrelated channel cannot satisfy
+the claim.
+
+The birth record lives in a fixed per-slot side table rather than in the
+transaction's return value. Recording is a separate call that returns before
+the original by-value commit begins, keeping the debug transaction and commit
+frames at their clean-tree sizes. A returned `Spawned` can have a birth record
+only after every resource has been prepared, and the thread remains
+`Reserved` until the immediately following commit succeeds.
+
+`LastRites` now carries the same non-repeating table identity. Every check that
+reads a program's ring exit record waits for that identity, not for a global
+retirement count and not for whichever program last occupied the slot. The
+racy live-table and live-ring helpers are gone. The global counter remains for
+checks whose independent trap/fault record already identifies their event.
+
+**Rationale.** A table identity already has the no-reuse property this proof
+needs (D-204); inventing a second process generation would duplicate a harder
+invariant. Capturing prepared objects while scheduling still says `Reserved`
+turns a timing observation into a construction fact. Keeping birth evidence
+and last rites keyed by the same identity makes “born with one” and “died with
+one” statements about one incarnation even after its numeric thread slot is
+reused.
+
+**Alternatives.** Sleeping or lengthening the probe program only widens the
+race. Clearing stale rites on spawn prevents one false positive but does not
+identify a later overwrite or stabilize the birth observation. Teaching the
+program a test-only wait protocol would add target ABI behaviour solely for a
+kernel check. Enlarging `Spawned` or the commit frame was rejected by the
+measured debug stack faults.
+
+**Consequences.** A repaired debug boot passed 212/212. Replacing the returned
+parent endpoint with a newly created unrelated channel failed only `a spawned
+program holds exactly one handle`, at 211/212; the transformation was restored
+and persists as mutation 214. Removing the obsolete live-table helper also
+required retargeting D-126's existing leaf-lock mutation to the production
+authority lookup; its property and registry cardinality are unchanged. The
+failed D-216 evidence refresh is not release evidence and must be regenerated
+on the committed repair before qualification resumes.

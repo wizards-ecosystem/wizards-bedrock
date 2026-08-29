@@ -561,6 +561,38 @@ impl PreparedProcess {
         });
         true
     }
+
+    #[cfg(feature = "selftest")]
+    fn record_birth(&self, slot: usize) -> bool {
+        let Some((_, ring_flags)) = self
+            .construction
+            .space
+            .as_ref()
+            .and_then(|space| space.lookup(RING))
+        else {
+            return false;
+        };
+        let Ok((bootstrap, _)) = self.table.resolve(self.handle) else {
+            return false;
+        };
+        let Some(parent) = bootstrap.channel_peer_identity_for_test() else {
+            return false;
+        };
+        let birth = Birth {
+            table: self.table.identity_for_test(),
+            handles: self.table.live(),
+            bootstrap: bootstrap.kind(),
+            ring: self.ring.shape(),
+            ring_flags,
+            parent,
+        };
+        let mut births = BIRTHS.lock_leaf();
+        let Some(room) = births.get_mut(slot) else {
+            return false;
+        };
+        *room = Some(birth);
+        true
+    }
 }
 
 /// One per thread slot, alongside its [`Launch`].
@@ -585,34 +617,38 @@ pub(crate) struct Spawned {
     pub(crate) channel: ObjectRef,
 }
 
-/// What a spawned program's table holds, for the check that counts it.
+/// What process construction committed before the first user instruction.
 #[cfg(feature = "selftest")]
-pub(crate) fn bootstrap_of(slot: usize) -> Option<(usize, ObjectType)> {
-    // Cloned out and the guard dropped before the arena is touched.
-    let (table, handle) = {
-        let guard = BOOTSTRAPS.lock_leaf();
-        let bootstrap = guard.get(slot)?.as_ref()?;
-        (alloc::sync::Arc::clone(&bootstrap.table), bootstrap.handle)
-    };
-    let kind = table.kind_of(handle).ok()?;
-    Some((table.live(), kind))
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Birth {
+    /// The non-repeating identity of the process's authority table.
+    pub(crate) table: u64,
+    /// Handles in that table at commit.
+    pub(crate) handles: usize,
+    /// What its bootstrap entry named.
+    pub(crate) bootstrap: ObjectType,
+    /// The kernel-owned shape of its shared ring.
+    pub(crate) ring: (u32, u32, u32),
+    /// Flags on the committed ring mapping.
+    pub(crate) ring_flags: Flags,
+    /// Identity of the exact peer of the child's bootstrap entry.
+    pub(crate) parent: usize,
 }
 
-/// What the **kernel** believes a spawned program's ring is.
-///
-/// Not the header page, which the program can rewrite the moment it runs: a
-/// check reading that is asking ring 3 what shape its own ring is, and one
-/// arithmetic step later is a panic in the debug kernel on a number a program
-/// chose (D-115).
 #[cfg(feature = "selftest")]
-pub(crate) fn ring_shape_of(slot: usize) -> Option<(u32, u32, u32)> {
-    // Cloned out, as in `serve_ring`: `shape` takes the ring's own lock, and
-    // taking it under this table's leaf guard is what `lock_leaf` forbids.
-    let ring = {
-        let guard = BOOTSTRAPS.lock_leaf();
-        alloc::sync::Arc::clone(&guard.get(slot)?.as_ref()?.ring)
-    };
-    Some(ring.shape())
+static BIRTHS: SpinLock<[Option<Birth>; thread::CAPACITY]> =
+    SpinLock::new([const { None }; thread::CAPACITY]);
+
+/// Immutable birth evidence for this exact process incarnation.
+#[cfg(feature = "selftest")]
+pub(crate) fn birth_of(spawned: &Spawned) -> Option<Birth> {
+    let parent = spawned.channel.identity_for_test()?;
+    BIRTHS
+        .lock_leaf()
+        .get(spawned.slot)
+        .copied()
+        .flatten()
+        .filter(|birth| birth.parent == parent)
 }
 
 /// A program's ring and authority table, for lifecycle checks.
@@ -895,6 +931,10 @@ fn spawn_transaction(
         let Some(process) = prepared.take() else {
             return false;
         };
+        #[cfg(feature = "selftest")]
+        if !process.record_birth(slot) {
+            return false;
+        }
         process.commit(slot)
     };
     #[cfg(feature = "selftest")]
@@ -1058,6 +1098,9 @@ static ROLLED_BACK_TABLES: AtomicUsize = AtomicUsize::new(0);
 #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LastRites {
+    /// The non-repeating table identity of the program that left this record.
+    #[cfg(feature = "selftest")]
+    pub(crate) table: u64,
     /// Handles in its table at the end.
     pub(crate) handles: usize,
     /// What its one bootstrap handle named.
@@ -1090,6 +1133,8 @@ pub(crate) fn orphan(slot: usize) {
     if let Some(bootstrap) = taken {
         // The record first, while there is still something to read.
         let rites = LastRites {
+            #[cfg(feature = "selftest")]
+            table: bootstrap.table.identity_for_test(),
             handles: bootstrap.table.live(),
             bootstrap: bootstrap.table.kind_of(bootstrap.handle).ok(),
             served: bootstrap.ring.served_count(),

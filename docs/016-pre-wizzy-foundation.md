@@ -145,6 +145,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-512 | READY | P2 | QMP probe/rebind has a local port race and QEMU argument handling has unproved comma/path edge cases | Remove the race where practical and test paths containing spaces/commas plus concurrent runners | Two simultaneous runs cannot steal control channels; hostile temporary paths reach the intended image |
 | PW-513 | READY | P2 | There is no supported Windows debugger task, slowing the exact boundary work still open | Decide LLDB/GDB route and add a documented non-destructive `xtask` entry if a viable pinned tool exists | A breakpoint at kernel entry and one symbolized backtrace work from a clean documented setup |
 | PW-514 | READY | P2 | One real `redundant_clone`, stale historical prose and a stale i8042 port-claim comment are already named | Remove the lint and correct current-facing prose without upgrading old evidence | Clippy/prose tests pass and dated historical numbers remain explicitly historical |
+| PW-515 | DONE | P1 | The bootstrap-authority check observed a short-lived program after making it runnable and paired a global retirement count with a reusable slot's stale exit record | D-217 captures immutable birth evidence before runnability and keys every exit observation to the same non-repeating table identity | 2026-08-29 debug QEMU passed 212/212 after a clean-tree comparison reproduced the timing exposure; returning an unrelated parent channel reddened only `a spawned program holds exactly one handle` with 211/212 and persists as a mutation |
 
 ## Compiler gate and repository handoff
 
@@ -237,7 +238,7 @@ PW-514 includes these exact stale-current-facing corrections still to make:
    PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200,
    PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-210,
    PW-300, PW-302, PW-304, PW-306, PW-307, PW-400, PW-402, PW-500, PW-501,
-   PW-502, PW-503, PW-504, PW-505, PW-506, PW-507 and PW-508 are closed by D-185 through D-216.
+   PW-502, PW-503, PW-504, PW-505, PW-506, PW-507, PW-508 and PW-515 are closed by D-185 through D-217.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

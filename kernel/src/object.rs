@@ -215,6 +215,26 @@ impl ObjectRef {
         }
     }
 
+    /// Stable identity of this shared object for one machine check.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn identity_for_test(&self) -> Option<usize> {
+        match self {
+            Self::Shared(object) => Some(Arc::as_ptr(object) as usize),
+            Self::File(_) | Self::Directory(_) => None,
+        }
+    }
+
+    /// Stable identity of this channel's live peer for one machine check.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn channel_peer_identity_for_test(&self) -> Option<usize> {
+        let channel = self.as_channel()?;
+        channel
+            .peer
+            .lock_leaf()
+            .upgrade()
+            .map(|peer| Arc::as_ptr(&peer) as usize)
+    }
+
     /// The event inside, if that is what this is.
     #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
     pub(crate) fn as_event(&self) -> Option<&Event> {
