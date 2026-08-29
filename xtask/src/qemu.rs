@@ -1,18 +1,19 @@
 //! Locating and launching QEMU.
 
 use std::ffi::OsString;
+use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::paths::Paths;
+use crate::paths::{self, Paths};
 use crate::qmp::Qmp;
 
 /// Default install location on Windows, checked before `PATH`.
@@ -130,32 +131,19 @@ pub(crate) fn installation() -> Result<Installation> {
 /// Boot `image` in QEMU, forwarding `extra` arguments verbatim.
 pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
     let installation = installation()?;
-
-    // The variable store must be writable, and starting from the pristine
-    // template every run keeps boots reproducible.
-    let vars = paths.efi_vars();
-    std::fs::copy(&installation.vars_firmware, &vars).with_context(|| {
-        format!(
-            "copying {} to {}",
-            installation.vars_firmware.display(),
-            vars.display()
-        )
-    })?;
+    let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
 
     println!("[xtask] launching QEMU (serial on stdio, close the window to exit)");
 
     let status = Command::new(&installation.emulator)
         .args(MACHINE)
         .args(["-serial", "stdio"])
-        .args(drive(&format!(
-            "if=pflash,format=raw,readonly=on,file={}",
-            installation.code_firmware.display()
-        )))
-        .args(drive(&format!(
-            "if=pflash,format=raw,file={}",
-            vars.display()
-        )))
-        .args(drive(&format!("format=raw,file={}", image.display())))
+        .args(drive_file(
+            "if=pflash,format=raw,readonly=on",
+            &installation.code_firmware,
+        ))
+        .args(drive_file("if=pflash,format=raw", vars.path()))
+        .args(snapshot_drive_file("format=raw", image))
         .args(storage(paths.root())?)
         .args(extra)
         .status()
@@ -169,8 +157,71 @@ pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
     Ok(())
 }
 
-fn drive(spec: &str) -> [String; 2] {
-    ["-drive".to_string(), spec.to_string()]
+fn drive_file(options: &str, path: &Path) -> [OsString; 2] {
+    let escaped = path.to_string_lossy().replace(',', ",,");
+    [
+        OsString::from("-drive"),
+        OsString::from(format!("{options},file={escaped}")),
+    ]
+}
+
+fn snapshot_drive_file(options: &str, path: &Path) -> [OsString; 2] {
+    drive_file(&format!("{options},snapshot=on"), path)
+}
+
+static NEXT_RUN: AtomicU64 = AtomicU64::new(0);
+
+struct RunVars {
+    path: PathBuf,
+}
+
+impl RunVars {
+    fn create(target: &Path, template: &Path) -> Result<Self> {
+        let directory = target.join(paths::QEMU_RUN_DIRECTORY);
+        std::fs::create_dir_all(&directory)
+            .with_context(|| format!("creating {}", directory.display()))?;
+
+        for _ in 0..1024 {
+            let sequence = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
+            let path = directory.join(format!("efi-vars-{}-{sequence}.fd", std::process::id()));
+            let mut destination = match OpenOptions::new().write(true).create_new(true).open(&path)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| format!("creating {}", path.display()));
+                }
+            };
+            let copied = (|| -> Result<()> {
+                let mut source = File::open(template)
+                    .with_context(|| format!("opening {}", template.display()))?;
+                std::io::copy(&mut source, &mut destination).with_context(|| {
+                    format!("copying {} to {}", template.display(), path.display())
+                })?;
+                destination
+                    .sync_all()
+                    .with_context(|| format!("flushing {}", path.display()))?;
+                Ok(())
+            })();
+            if let Err(error) = copied {
+                drop(destination);
+                let _ = std::fs::remove_file(&path);
+                return Err(error);
+            }
+            return Ok(Self { path });
+        }
+        bail!("could not reserve a private QEMU variable store")
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for RunVars {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// Bytes of one logical block on the NVMe namespace.
@@ -247,6 +298,7 @@ pub fn nvme_image(root: &Path) -> Result<std::path::PathBuf> {
     let at = NVME_VOLUME_SECTOR as usize * NVME_BLOCK_BYTES;
     content[at..at + volume.len()].copy_from_slice(&volume);
 
+    let _lock = acquire_storage_lock(&backing.with_extension("lock"))?;
     let current = std::fs::read(&backing).unwrap_or_default();
     if !namespace_is_exact(&current, &content) {
         std::fs::write(&backing, &content)
@@ -255,8 +307,38 @@ pub fn nvme_image(root: &Path) -> Result<std::path::PathBuf> {
     Ok(backing)
 }
 
+const STORAGE_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn acquire_storage_lock(path: &Path) -> Result<File> {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("opening storage build lock {}", path.display()))?;
+    let deadline = Instant::now() + STORAGE_LOCK_TIMEOUT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) => {
+                if Instant::now() >= deadline {
+                    bail!("another runner did not release {}", path.display());
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            Err(TryLockError::Error(error)) => {
+                return Err(error)
+                    .with_context(|| format!("locking storage build {}", path.display()));
+            }
+        }
+    }
+}
+
 pub(crate) fn nvme_path(root: &Path) -> PathBuf {
-    root.join("target").join("nvme.img")
+    root.join("target")
+        .join("qemu storage,private")
+        .join("nvme.img")
 }
 
 fn namespace_is_exact(current: &[u8], expected: &[u8]) -> bool {
@@ -264,17 +346,18 @@ fn namespace_is_exact(current: &[u8], expected: &[u8]) -> bool {
 }
 
 /// A storage controller for QEMU to find, and the file behind it.
-fn storage(root: &Path) -> Result<Vec<String>> {
+fn storage(root: &Path) -> Result<Vec<OsString>> {
     let backing = nvme_image(root)?;
+    let [drive_flag, drive_spec] = snapshot_drive_file("if=none,id=wizardnvm,format=raw", &backing);
     Ok(vec![
         // First in PCI enumeration order and deliberately namespace-less: the
         // kernel must retire it before selecting the usable sibling (D-199).
-        "-device".to_string(),
-        "nvme,serial=wizard-empty".to_string(),
-        "-drive".to_string(),
-        format!("if=none,id=wizardnvm,format=raw,file={}", backing.display()),
-        "-device".to_string(),
-        "nvme,serial=wizard0,drive=wizardnvm".to_string(),
+        OsString::from("-device"),
+        OsString::from("nvme,serial=wizard-empty"),
+        drive_flag,
+        drive_spec,
+        OsString::from("-device"),
+        OsString::from("nvme,serial=wizard0,drive=wizardnvm"),
     ])
 }
 
@@ -543,8 +626,12 @@ fn correlate_selftest(
 /// failure that cannot be read from the log. The monitor knows the
 /// instruction pointer and can disassemble around it, which is enough to name
 /// the loop: the interrupt flag in `RFLAGS` says whether it can ever end.
-fn report_hang(port: u16) {
-    let Ok(state) = monitor(port, "info registers\n") else {
+fn report_hang(listener: &TcpListener) {
+    let Ok(mut monitor) = Monitor::accept(listener, Instant::now() + MONITOR_TIMEOUT) else {
+        println!("[xtask] no monitor: where the kernel hung is unknown");
+        return;
+    };
+    let Ok(state) = monitor.command("info registers\n") else {
         println!("[xtask] no monitor: where the kernel hung is unknown");
         return;
     };
@@ -560,7 +647,7 @@ fn report_hang(port: u16) {
     else {
         return;
     };
-    let Ok(code) = monitor(port, &format!("x/8i 0x{rip}\n")) else {
+    let Ok(code) = monitor.command(&format!("x/8i 0x{rip}\n")) else {
         return;
     };
     for line in code
@@ -571,37 +658,79 @@ fn report_hang(port: u16) {
     }
 }
 
-/// One monitor exchange on a connection of its own.
-///
-/// A fresh connection per command because the monitor serves one at a time,
-/// and every read is bounded: this runs when the machine is already wedged.
-fn monitor(port: u16, command: &str) -> Result<String> {
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
-    let mut stream = TcpStream::connect_timeout(&address, MONITOR_TIMEOUT)
-        .context("connecting to the QEMU monitor")?;
-    stream
-        .set_read_timeout(Some(MONITOR_TIMEOUT))
-        .context("setting the QEMU monitor read timeout")?;
-    stream
-        .write_all(command.as_bytes())
-        .context("writing a QEMU monitor command")?;
+struct ControlSockets {
+    qmp: TcpListener,
+    monitor: TcpListener,
+}
 
-    let mut text = String::new();
-    let mut buffer = [0u8; 4096];
-    loop {
-        // The prompt appears once on connect and once after the reply.
-        if text.matches(MONITOR_PROMPT).count() >= 2 {
-            break;
-        }
-        let read = stream
-            .read(&mut buffer)
-            .context("reading a QEMU monitor reply")?;
-        if read == 0 {
-            bail!("QEMU monitor closed before completing its reply");
-        }
-        text.push_str(&String::from_utf8_lossy(&buffer[..read]));
+impl ControlSockets {
+    fn bind() -> Result<Self> {
+        let qmp = control_listener("QMP")?;
+        let monitor = control_listener("monitor")?;
+        Ok(Self { qmp, monitor })
     }
-    Ok(text)
+}
+
+fn control_listener(label: &str) -> Result<TcpListener> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .with_context(|| format!("binding the {label} loopback listener"))?;
+    listener
+        .set_nonblocking(true)
+        .with_context(|| format!("making the {label} listener non-blocking"))?;
+    Ok(listener)
+}
+
+fn control_endpoint(listener: &TcpListener, suffix: &str) -> Result<String> {
+    Ok(format!(
+        "tcp:{}{suffix}",
+        listener
+            .local_addr()
+            .context("reading a control-socket address")?
+    ))
+}
+
+struct Monitor {
+    stream: TcpStream,
+    reader: BufReader<TcpStream>,
+}
+
+impl Monitor {
+    fn accept(listener: &TcpListener, deadline: Instant) -> Result<Self> {
+        let stream = accept_stream_before(listener, deadline, None)?;
+        stream
+            .set_nonblocking(false)
+            .context("switching the monitor stream to blocking")?;
+        stream
+            .set_read_timeout(Some(MONITOR_TIMEOUT))
+            .context("setting the QEMU monitor read timeout")?;
+        let reader = BufReader::new(stream.try_clone().context("cloning the monitor stream")?);
+        let mut monitor = Self { stream, reader };
+        monitor.read_reply().context("reading the monitor prompt")?;
+        Ok(monitor)
+    }
+
+    fn command(&mut self, command: &str) -> Result<String> {
+        self.stream
+            .write_all(command.as_bytes())
+            .context("writing a QEMU monitor command")?;
+        self.read_reply()
+    }
+
+    fn read_reply(&mut self) -> Result<String> {
+        let mut text = String::new();
+        let mut buffer = [0u8; 4096];
+        while !text.contains(MONITOR_PROMPT) {
+            let read = self
+                .reader
+                .read(&mut buffer)
+                .context("reading a QEMU monitor reply")?;
+            if read == 0 {
+                bail!("QEMU monitor closed before completing its reply");
+            }
+            text.push_str(&String::from_utf8_lossy(&buffer[..read]));
+        }
+        Ok(text)
+    }
 }
 
 /// Long enough for a reply, short enough not to extend a failing run.
@@ -609,6 +738,9 @@ const MONITOR_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// What the monitor prints when it wants a command.
 const MONITOR_PROMPT: &str = "(qemu)";
+
+/// Make QEMU dial the listener already owned by the harness.
+const MONITOR_CLIENT_SUFFIX: &str = ",server=off";
 
 /// A kernel that neither passes nor fails within `timeout` is a hang, which is
 /// itself a failure — so the emulator is killed rather than left running.
@@ -628,34 +760,10 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
 /// mutation caller.
 pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<SelftestOutcome> {
     let installation = installation()?;
-    let vars = paths.efi_vars();
-    std::fs::copy(&installation.vars_firmware, &vars).with_context(|| {
-        format!(
-            "copying {} to {}",
-            installation.vars_firmware.display(),
-            vars.display()
-        )
-    })?;
-
-    let listener =
-        TcpListener::bind(("127.0.0.1", 0)).context("binding the QMP loopback listener")?;
-    listener
-        .set_nonblocking(true)
-        .context("making the QMP listener non-blocking")?;
-    let qmp_endpoint = format!(
-        "tcp:{}",
-        listener.local_addr().context("reading the QMP port")?
-    );
-
-    // Bound and dropped: QEMU wants a port number, and this is how a free
-    // one is found without guessing.
-    let monitor_port = {
-        let probe = TcpListener::bind(("127.0.0.1", 0)).context("probing for a monitor port")?;
-        probe
-            .local_addr()
-            .context("reading the monitor port")?
-            .port()
-    };
+    let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
+    let ControlSockets { qmp, monitor } = ControlSockets::bind()?;
+    let qmp_endpoint = control_endpoint(&qmp, "")?;
+    let monitor_endpoint = control_endpoint(&monitor, MONITOR_CLIENT_SUFFIX)?;
 
     println!("[xtask] booting the self-test kernel");
 
@@ -664,19 +772,13 @@ pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Resul
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
         .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
         .args(["-qmp", &qmp_endpoint])
-        .args([
-            "-monitor",
-            &format!("tcp:127.0.0.1:{monitor_port},server,nowait"),
-        ])
-        .args(drive(&format!(
-            "if=pflash,format=raw,readonly=on,file={}",
-            installation.code_firmware.display()
-        )))
-        .args(drive(&format!(
-            "if=pflash,format=raw,file={}",
-            vars.display()
-        )))
-        .args(drive(&format!("format=raw,file={}", image.display())))
+        .args(["-monitor", &monitor_endpoint])
+        .args(drive_file(
+            "if=pflash,format=raw,readonly=on",
+            &installation.code_firmware,
+        ))
+        .args(drive_file("if=pflash,format=raw", vars.path()))
+        .args(snapshot_drive_file("format=raw", image))
         .args(storage(paths.root())?)
         .stdout(Stdio::piped())
         .spawn()
@@ -692,9 +794,14 @@ pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Resul
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
     );
-    inject_on_marker(listener, markers_seen);
-
     let deadline = Instant::now() + timeout;
+    let injection_cancelled = Arc::new(AtomicBool::new(false));
+    let injector = inject_on_marker(
+        qmp,
+        markers_seen,
+        deadline,
+        Arc::clone(&injection_cancelled),
+    );
     let status = loop {
         if let Some(status) = child.try_wait().context("waiting for QEMU")? {
             break status;
@@ -702,19 +809,22 @@ pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Resul
         // A panicking kernel halts rather than reporting, so the timeout
         // would otherwise be the only way it ever ends.
         if panicked.load(Ordering::Acquire) {
-            let _ = child.kill();
+            stop_qemu(&mut child)?;
             let observation = finish_selftest_serial(forwarder)?;
+            finish_injector(injector, &injection_cancelled)?;
             return correlate_selftest(None, observation);
         }
         if serial_failed.load(Ordering::Acquire) {
-            let _ = child.kill();
+            stop_qemu(&mut child)?;
             finish_selftest_serial(forwarder)?;
+            finish_injector(injector, &injection_cancelled)?;
             unreachable!("a flagged serial failure returned success");
         }
         if Instant::now() >= deadline {
-            report_hang(monitor_port);
-            let _ = child.kill();
+            report_hang(&monitor);
+            stop_qemu(&mut child)?;
             finish_selftest_serial(forwarder)?;
+            finish_injector(injector, &injection_cancelled)?;
             bail!(
                 "self-test did not finish within {} seconds",
                 timeout.as_secs()
@@ -725,6 +835,7 @@ pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Resul
 
     // Trailing serial lines print before the verdict does.
     let observation = finish_selftest_serial(forwarder)?;
+    finish_injector(injector, &injection_cancelled)?;
 
     correlate_selftest(status.code(), observation)
 }
@@ -807,26 +918,37 @@ fn finish_selftest_serial(
 /// the kernel's bounded wait is what turns a missing key red.
 ///
 /// A dedicated thread rather than steps woven into the poll loop, so that no
-/// QMP stall — a slow handshake, a peer dribbling bytes — can ever delay the
-/// loop that enforces the run's deadline. The thread is deliberately never
-/// joined: if QEMU dies without connecting, the accept loop below would spin
-/// until process exit reaps it, and every exit path already has the verdict
-/// by then.
-fn inject_on_marker(listener: TcpListener, markers_seen: Arc<AtomicUsize>) {
+/// QMP stall — a slow handshake, a peer dribbling bytes — can delay the loop
+/// that enforces the run's deadline. Accepting and marker waits share that
+/// deadline; every exit path cancels and joins the thread.
+fn inject_on_marker(
+    listener: TcpListener,
+    markers_seen: Arc<AtomicUsize>,
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
+) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        let outcome = accept(&listener).and_then(|mut qmp| {
-            for (round, keys) in [
-                (1, STORAGE_DELAY_QCODES),
-                (2, INJECTED_QCODES),
-                (3, TRANSLATED_QCODES),
-            ] {
-                while markers_seen.load(Ordering::Acquire) < round {
-                    std::thread::sleep(POLL_INTERVAL);
+        let outcome = accept_stream_before(&listener, deadline, Some(&cancelled))
+            .and_then(Qmp::handshake)
+            .and_then(|mut qmp| {
+                for (round, keys) in [
+                    (1, STORAGE_DELAY_QCODES),
+                    (2, INJECTED_QCODES),
+                    (3, TRANSLATED_QCODES),
+                ] {
+                    while markers_seen.load(Ordering::Acquire) < round {
+                        if cancelled.load(Ordering::Acquire) {
+                            bail!("QMP injection was cancelled");
+                        }
+                        if Instant::now() >= deadline {
+                            bail!("QMP injection reached the run deadline");
+                        }
+                        std::thread::sleep(POLL_INTERVAL);
+                    }
+                    keys.iter().try_for_each(|qcode| qmp.inject_key(qcode))?;
                 }
-                keys.iter().try_for_each(|qcode| qmp.inject_key(qcode))?;
-            }
-            Ok(())
-        });
+                Ok(())
+            });
         match outcome {
             Ok(()) => println!(
                 "[xtask] qmp: {} keystrokes injected across three rounds",
@@ -836,33 +958,35 @@ fn inject_on_marker(listener: TcpListener, markers_seen: Arc<AtomicUsize>) {
                 println!("[xtask] qmp: {reason:#}; the keystroke check will report it");
             }
         }
-    });
+    })
 }
 
-/// Wait for QEMU's connection and negotiate on it.
-///
-/// The listener stays non-blocking — `run_selftest` configured it before the
-/// spawn — so this polls rather than parks, and a QEMU that dies before
-/// connecting leaves a loop that process exit cleans up.
-fn accept(listener: &TcpListener) -> Result<Qmp> {
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => return Qmp::handshake(stream),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(POLL_INTERVAL);
-            }
-            Err(error) => return Err(error).context("accepting QEMU's QMP connection"),
-        }
-    }
+/// Cancel and join the self-test injector.
+fn finish_injector(injector: JoinHandle<()>, cancelled: &AtomicBool) -> Result<()> {
+    cancelled.store(true, Ordering::Release);
+    injector
+        .join()
+        .map_err(|_| anyhow!("the QMP injector panicked"))
 }
 
 fn accept_before(listener: &TcpListener, deadline: Instant) -> Result<Qmp> {
+    Qmp::handshake(accept_stream_before(listener, deadline, None)?)
+}
+
+fn accept_stream_before(
+    listener: &TcpListener,
+    deadline: Instant,
+    cancelled: Option<&AtomicBool>,
+) -> Result<TcpStream> {
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return Qmp::handshake(stream),
+            Ok((stream, _)) => return Ok(stream),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                    bail!("QEMU control connection was cancelled");
+                }
                 if Instant::now() >= deadline {
-                    bail!("QEMU did not open its QMP connection");
+                    bail!("QEMU did not open its control connection");
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
@@ -874,6 +998,25 @@ fn accept_before(listener: &TcpListener, deadline: Instant) -> Result<Qmp> {
 /// How often to check whether QEMU has exited. Short enough that a passing run
 /// is not padded noticeably, long enough not to spin.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+fn stop_qemu(child: &mut Child) -> Result<()> {
+    if child
+        .try_wait()
+        .context("checking whether QEMU exited")?
+        .is_none()
+    {
+        let killed = child.kill();
+        if let Err(error) = killed {
+            let status = child
+                .try_wait()
+                .context("checking QEMU after termination failed")?;
+            if status.is_none() {
+                return Err(error).context("terminating QEMU");
+            }
+        }
+    }
+    child.wait().context("reaping QEMU").map(drop)
+}
 
 fn irq_count(report: &str, irq: u8) -> Option<u64> {
     let mut recognized = false;
@@ -896,8 +1039,10 @@ fn irq_count(report: &str, irq: u8) -> Option<u64> {
     recognized.then_some(total)
 }
 
-fn keyboard_irq_count(port: u16) -> Result<u64> {
-    let report = monitor(port, "info irq\n").context("querying keyboard IRQ progress")?;
+fn keyboard_irq_count(monitor: &mut Monitor) -> Result<u64> {
+    let report = monitor
+        .command("info irq\n")
+        .context("querying keyboard IRQ progress")?;
     irq_count(&report, 1).context("QEMU monitor returned no IRQ statistics")
 }
 
@@ -905,7 +1050,7 @@ fn await_keyboard_irq(
     child: &mut Child,
     panicked: &AtomicBool,
     serial_failed: &AtomicBool,
-    monitor_port: u16,
+    monitor: &mut Monitor,
     before: u64,
 ) -> Result<u64> {
     let deadline = Instant::now() + SHIPPED_CHALLENGE_TIMEOUT;
@@ -917,7 +1062,7 @@ fn await_keyboard_irq(
             Duration::from_millis(1),
             None,
         )?;
-        let after = keyboard_irq_count(monitor_port)?;
+        let after = keyboard_irq_count(monitor)?;
         if after > before {
             return Ok(after);
         }
@@ -933,31 +1078,10 @@ fn await_keyboard_irq(
 /// the serial log says: the settled marker, and no panic.
 pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
     let installation = installation()?;
-    let vars = paths.efi_vars();
-    std::fs::copy(&installation.vars_firmware, &vars).with_context(|| {
-        format!(
-            "copying {} to {}",
-            installation.vars_firmware.display(),
-            vars.display()
-        )
-    })?;
-
-    let listener =
-        TcpListener::bind(("127.0.0.1", 0)).context("binding the shipped QMP listener")?;
-    listener
-        .set_nonblocking(true)
-        .context("making the shipped QMP listener non-blocking")?;
-    let qmp_endpoint = format!(
-        "tcp:{}",
-        listener.local_addr().context("reading the QMP port")?
-    );
-    let monitor_port = {
-        let probe = TcpListener::bind(("127.0.0.1", 0)).context("probing for a monitor port")?;
-        probe
-            .local_addr()
-            .context("reading the monitor port")?
-            .port()
-    };
+    let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
+    let ControlSockets { qmp, monitor } = ControlSockets::bind()?;
+    let qmp_endpoint = control_endpoint(&qmp, "")?;
+    let monitor_endpoint = control_endpoint(&monitor, MONITOR_CLIENT_SUFFIX)?;
 
     println!("[xtask] booting the shipped kernel");
 
@@ -965,19 +1089,13 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
         .args(MACHINE)
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
         .args(["-qmp", &qmp_endpoint])
-        .args([
-            "-monitor",
-            &format!("tcp:127.0.0.1:{monitor_port},server,nowait"),
-        ])
-        .args(drive(&format!(
-            "if=pflash,format=raw,readonly=on,file={}",
-            installation.code_firmware.display()
-        )))
-        .args(drive(&format!(
-            "if=pflash,format=raw,file={}",
-            vars.display()
-        )))
-        .args(drive(&format!("format=raw,file={}", image.display())))
+        .args(["-monitor", &monitor_endpoint])
+        .args(drive_file(
+            "if=pflash,format=raw,readonly=on",
+            &installation.code_firmware,
+        ))
+        .args(drive_file("if=pflash,format=raw", vars.path()))
+        .args(snapshot_drive_file("format=raw", image))
         .args(storage(paths.root())?)
         .stdout(Stdio::piped())
         .spawn()
@@ -1006,20 +1124,22 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
         Some(&settled),
     )
     .and_then(|()| {
-        let before = keyboard_irq_count(monitor_port)?;
-        let mut qmp = accept_before(&listener, Instant::now() + SHIPPED_CHALLENGE_TIMEOUT)?;
+        let mut monitor = Monitor::accept(&monitor, Instant::now() + SHIPPED_CHALLENGE_TIMEOUT)?;
+        let before = keyboard_irq_count(&mut monitor)?;
+        let mut qmp = accept_before(&qmp, Instant::now() + SHIPPED_CHALLENGE_TIMEOUT)?;
         qmp.inject_key(SHIPPED_CHALLENGE_QCODE)
             .context("injecting the shipped-kernel liveness key")?;
         let after =
-            await_keyboard_irq(&mut child, &panicked, &serial_failed, monitor_port, before)?;
+            await_keyboard_irq(&mut child, &panicked, &serial_failed, &mut monitor, before)?;
         println!("[xtask] shipped liveness: keyboard IRQ count {before} -> {after}");
         Ok(())
     })
     .and_then(|()| watch(&mut child, &panicked, &serial_failed, settle, None));
 
-    let _ = child.kill();
+    let stop_outcome = stop_qemu(&mut child);
     let serial_outcome = finish_boot_serial(forwarder);
 
+    stop_outcome?;
     serial_outcome?;
     outcome?;
     // Consulted once more after the join. `watch` returns as soon as the
@@ -1082,14 +1202,7 @@ pub const DEGRADED_USER_MARKER: &str = "user: no program: no calibrated clock; r
 /// its steady state rather than triple-faulting on a missing register.
 pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
     let installation = installation()?;
-    let vars = paths.efi_vars();
-    std::fs::copy(&installation.vars_firmware, &vars).with_context(|| {
-        format!(
-            "copying {} to {}",
-            installation.vars_firmware.display(),
-            vars.display()
-        )
-    })?;
+    let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
 
     println!("[xtask] booting a kernel with no PCI configuration or x2apic");
 
@@ -1097,15 +1210,12 @@ pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Resu
         .args(MACHINE)
         .args(DEGRADED_CPU)
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
-        .args(drive(&format!(
-            "if=pflash,format=raw,readonly=on,file={}",
-            installation.code_firmware.display()
-        )))
-        .args(drive(&format!(
-            "if=pflash,format=raw,file={}",
-            vars.display()
-        )))
-        .args(drive(&format!("format=raw,file={}", image.display())))
+        .args(drive_file(
+            "if=pflash,format=raw,readonly=on",
+            &installation.code_firmware,
+        ))
+        .args(drive_file("if=pflash,format=raw", vars.path()))
+        .args(snapshot_drive_file("format=raw", image))
         .args(storage(paths.root())?)
         .stdout(Stdio::piped())
         .spawn()
@@ -1144,9 +1254,10 @@ pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Resu
     )
     .and_then(|()| watch(&mut child, &panicked, &serial_failed, settle, None));
 
-    let _ = child.kill();
+    let stop_outcome = stop_qemu(&mut child);
     let serial_outcome = finish_boot_serial(forwarder);
 
+    stop_outcome?;
     serial_outcome?;
     outcome?;
     for (marker, seen) in required {
@@ -1247,6 +1358,34 @@ fn finish_boot_serial(forwarder: JoinHandle<Result<()>>) -> Result<()> {
 mod tests {
     use super::*;
 
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    struct QemuFixture {
+        root: PathBuf,
+        template: PathBuf,
+    }
+
+    impl QemuFixture {
+        fn create() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "wizard qemu,fixture-{}-{}",
+                std::process::id(),
+                NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&root).expect("QEMU fixture directory");
+            let template = root.join("firmware template,pristine.fd");
+            std::fs::write(&template, b"pristine firmware variables")
+                .expect("QEMU variable-store template");
+            Self { root, template }
+        }
+    }
+
+    impl Drop for QemuFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
     #[test]
     fn the_machine_type_is_a_versioned_q35_not_an_alias() {
         let Some(version) = MACHINE_TYPE.strip_prefix("pc-q35-") else {
@@ -1289,11 +1428,141 @@ mod tests {
     }
 
     #[test]
-    fn drive_produces_a_flag_and_its_value() {
+    fn drive_paths_escape_commas_without_quoting_spaces() {
         assert_eq!(
-            drive("format=raw,file=disk.img"),
-            ["-drive", "format=raw,file=disk.img"]
+            drive_file("format=raw", Path::new("a space/disk,name.img")),
+            [
+                OsString::from("-drive"),
+                OsString::from("format=raw,file=a space/disk,,name.img")
+            ]
         );
+    }
+
+    #[test]
+    fn shared_media_writes_use_a_private_snapshot() {
+        assert_eq!(
+            snapshot_drive_file("format=raw", Path::new("disk.img")),
+            [
+                OsString::from("-drive"),
+                OsString::from("format=raw,snapshot=on,file=disk.img")
+            ]
+        );
+    }
+
+    #[test]
+    fn simultaneous_control_sets_reserve_four_distinct_ports() {
+        let first = ControlSockets::bind().expect("first control set");
+        let second = ControlSockets::bind().expect("second control set");
+        let addresses = [
+            first.qmp.local_addr().expect("first QMP address"),
+            first.monitor.local_addr().expect("first monitor address"),
+            second.qmp.local_addr().expect("second QMP address"),
+            second.monitor.local_addr().expect("second monitor address"),
+        ];
+        let mut unique = addresses.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), addresses.len());
+        for address in addresses {
+            assert!(
+                TcpListener::bind(address).is_err(),
+                "reserved control port {address} could be stolen"
+            );
+        }
+    }
+
+    #[test]
+    fn the_monitor_dials_the_reserved_listener() {
+        let controls = ControlSockets::bind().expect("control set");
+        let address = controls.monitor.local_addr().expect("monitor address");
+        assert_eq!(
+            control_endpoint(&controls.monitor, MONITOR_CLIENT_SUFFIX).unwrap(),
+            format!("tcp:{address},server=off")
+        );
+    }
+
+    #[test]
+    fn simultaneous_runs_get_distinct_writable_firmware() {
+        let fixture = QemuFixture::create();
+        let target = Arc::new(fixture.root.join("target"));
+        let template = Arc::new(fixture.template.clone());
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+
+        let first = {
+            let target = Arc::clone(&target);
+            let template = Arc::clone(&template);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                RunVars::create(&target, &template).expect("first private variable store")
+            })
+        };
+        let second = {
+            let target = Arc::clone(&target);
+            let template = Arc::clone(&template);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                RunVars::create(&target, &template).expect("second private variable store")
+            })
+        };
+        barrier.wait();
+        let first = first.join().expect("first firmware creator");
+        let second = second.join().expect("second firmware creator");
+
+        assert_ne!(first.path(), second.path());
+        assert_eq!(
+            std::fs::read(first.path()).unwrap(),
+            b"pristine firmware variables"
+        );
+        assert_eq!(
+            std::fs::read(second.path()).unwrap(),
+            b"pristine firmware variables"
+        );
+        let first_path = first.path().to_path_buf();
+        let second_path = second.path().to_path_buf();
+        drop(first);
+        drop(second);
+        assert!(!first_path.exists());
+        assert!(!second_path.exists());
+    }
+
+    #[test]
+    fn storage_construction_is_serialized_across_runners() {
+        let fixture = QemuFixture::create();
+        let lock_path = fixture.root.join("storage build,lock");
+        let held = acquire_storage_lock(&lock_path).expect("first storage builder");
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let contender = std::thread::spawn(move || {
+            started_tx.send(()).expect("announce contender");
+            let _lock = acquire_storage_lock(&lock_path).expect("second storage builder");
+            acquired_tx.send(()).expect("announce acquisition");
+        });
+
+        started_rx.recv().expect("contender started");
+        assert_eq!(
+            acquired_rx.recv_timeout(Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        );
+        drop(held);
+        acquired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("contender acquired released lock");
+        contender.join().expect("storage contender");
+    }
+
+    #[test]
+    fn a_cancelled_control_wait_returns_without_a_connection() {
+        let listener = control_listener("cancelled test").unwrap();
+        let cancelled = AtomicBool::new(true);
+        let error = accept_stream_before(
+            &listener,
+            Instant::now() + Duration::from_millis(1),
+            Some(&cancelled),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
     }
 
     #[test]

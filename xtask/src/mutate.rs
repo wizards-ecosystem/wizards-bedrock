@@ -2793,6 +2793,86 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "handoff::platform_v1_is_entry_ring_and_time_v1",
         },
     },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "    let escaped = path.to_string_lossy().replace(',', \",,\");",
+        replace: "    let escaped = path.to_string_lossy().into_owned();",
+        breaks: "a comma in a disk path remains QEMU drive syntax",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::drive_paths_escape_commas_without_quoting_spaces",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "    drive_file(&format!(\"{options},snapshot=on\"), path)",
+        replace: "    drive_file(&format!(\"{options},snapshot=off\"), path)",
+        breaks: "two QEMU runs may write the same shared build media",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::shared_media_writes_use_a_private_snapshot",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "        let monitor = control_listener(\"monitor\")?;",
+        replace: "        let monitor = qmp.try_clone().context(\"cloning the QMP listener\")?;",
+        breaks: "QMP and the human monitor contend for one control port",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::simultaneous_control_sets_reserve_four_distinct_ports",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "const MONITOR_CLIENT_SUFFIX: &str = \",server=off\";",
+        replace: "const MONITOR_CLIENT_SUFFIX: &str = \",server=on\";",
+        breaks: "QEMU tries to bind the monitor port already held by the harness",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::the_monitor_dials_the_reserved_listener",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "            let sequence = NEXT_RUN.fetch_add(1, Ordering::Relaxed);",
+        replace: "            let sequence = NEXT_RUN.load(Ordering::Relaxed);",
+        breaks: "concurrent QEMU runs reuse one firmware-store name",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::simultaneous_runs_get_distinct_writable_firmware",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "                if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {",
+        replace: "                if cancelled.is_some_and(|_| false) {",
+        breaks: "a cancelled QEMU control accept waits until its old deadline",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::a_cancelled_control_wait_returns_without_a_connection",
+        },
+    },
+    Mutation {
+        file: "xtask/src/image/mod.rs",
+        find: "            let sequence = NEXT_RUN_IMAGE.fetch_add(1, Ordering::Relaxed);",
+        replace: "            let sequence = NEXT_RUN_IMAGE.load(Ordering::Relaxed);",
+        breaks: "concurrent QEMU builds reserve one boot-image path",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "image::tests::two_qemu_images_are_private_and_removed",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "        match file.try_lock() {",
+        replace: "        match std::result::Result::<(), TryLockError>::Ok(()) {",
+        breaks: "concurrent runners can rewrite the NVMe corpus together",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::storage_construction_is_serialized_across_runners",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

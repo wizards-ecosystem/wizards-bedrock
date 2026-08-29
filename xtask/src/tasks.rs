@@ -88,8 +88,8 @@ pub fn test(paths: &Paths) -> Result<()> {
 /// This is the only automated check that exercises the kernel on a machine
 /// rather than as arithmetic on the host.
 pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
-    let image = image::build(paths, profile, image::Kernel::SelfTest)?;
-    qemu::run_selftest(paths, &image, selftest_timeout(profile))
+    let image = image::build_for_run(paths, profile, image::Kernel::SelfTest)?;
+    qemu::run_selftest(paths, image.path(), selftest_timeout(profile))
 }
 
 /// Boot a self-test kernel while preserving a valid failed or panic verdict.
@@ -99,8 +99,8 @@ pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
 /// If the kernel cannot be built, QEMU cannot run, or its serial and exit
 /// evidence do not form one valid outcome.
 pub fn observe_test_boot(paths: &Paths, profile: Profile) -> Result<qemu::SelftestOutcome> {
-    let image = image::build(paths, profile, image::Kernel::SelfTest)?;
-    qemu::observe_selftest(paths, &image, selftest_timeout(profile))
+    let image = image::build_for_run(paths, profile, image::Kernel::SelfTest)?;
+    qemu::observe_selftest(paths, image.path(), selftest_timeout(profile))
 }
 
 /// How long a self-test boot may take, by profile.
@@ -124,8 +124,8 @@ const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// The self-test kernel exits at the debug-exit device the moment it has a
 /// verdict; this boots the image that goes on the disk.
 pub fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
-    let image = image::build(paths, profile, image::Kernel::Shipped)?;
-    boot_shipped_image(paths, &image)
+    let image = image::build_for_run(paths, profile, image::Kernel::Shipped)?;
+    boot_shipped_image(paths, image.path())
 }
 
 pub(crate) fn boot_shipped_image(paths: &Paths, image: &std::path::Path) -> Result<()> {
@@ -134,8 +134,8 @@ pub(crate) fn boot_shipped_image(paths: &Paths, image: &std::path::Path) -> Resu
 
 /// Boot without PCI configuration or x2APIC and require both refusals.
 pub fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
-    let image = image::build_degraded(paths, profile)?;
-    qemu::run_degraded_check(paths, &image, BOOT_SETTLE)
+    let image = image::build_degraded_for_run(paths, profile)?;
+    qemu::run_degraded_check(paths, image.path(), BOOT_SETTLE)
 }
 
 /// Seconds of running after the kernel says it has settled, so one that dies

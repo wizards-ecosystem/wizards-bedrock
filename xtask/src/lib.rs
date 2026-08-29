@@ -57,8 +57,8 @@ pub fn run(task: Task) -> Result<()> {
         Task::Build(profile) => cargo::build_kernel(&paths, profile, &[]).map(drop),
         Task::Image(profile) => image::build(&paths, profile, image::Kernel::Shipped).map(drop),
         Task::Run { profile, qemu_args } => {
-            let image = image::build(&paths, profile, image::Kernel::Shipped)?;
-            qemu::run(&paths, &image, &qemu_args)
+            let image = image::build_for_run(&paths, profile, image::Kernel::Shipped)?;
+            qemu::run(&paths, image.path(), &qemu_args)
         }
         Task::Vmware(profile) => {
             // **With the self-test feature.** This built the shipped kernel

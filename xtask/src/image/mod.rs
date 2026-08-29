@@ -12,9 +12,10 @@ pub mod program;
 #[cfg(test)]
 mod foreign;
 
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use fatfs::{FatType, FileSystem, FsOptions, ReadWriteSeek};
@@ -65,10 +66,57 @@ pub fn build(paths: &Paths, profile: Profile, kernel: Kernel) -> Result<PathBuf>
     build_with_features(paths, profile, kernel, kernel.features())
 }
 
-/// Build the shipped kernel with the fixed PCI-refusal injection used by the
-/// degraded-boot witness.
-pub fn build_degraded(paths: &Paths, profile: Profile) -> Result<PathBuf> {
-    build_with_features(
+/// A boot image owned by one QEMU run.
+pub(crate) struct RunImage {
+    path: PathBuf,
+}
+
+impl RunImage {
+    fn reserve(target: &Path) -> Result<(Self, File)> {
+        let directory = target.join(paths::QEMU_RUN_DIRECTORY);
+        std::fs::create_dir_all(&directory)
+            .with_context(|| format!("creating {}", directory.display()))?;
+
+        for _ in 0..1024 {
+            let sequence = NEXT_RUN_IMAGE.fetch_add(1, Ordering::Relaxed);
+            let path = directory.join(format!("wizard-os-{}-{sequence}.img", std::process::id()));
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => return Ok((Self { path }, file)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| format!("creating {}", path.display()));
+                }
+            }
+        }
+        bail!("could not reserve a private QEMU boot image")
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for RunImage {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+static NEXT_RUN_IMAGE: AtomicU64 = AtomicU64::new(0);
+
+/// Compile `kernel` into an image that one QEMU process owns and removes.
+pub(crate) fn build_for_run(paths: &Paths, profile: Profile, kernel: Kernel) -> Result<RunImage> {
+    build_for_run_with_features(paths, profile, kernel, kernel.features())
+}
+
+/// Build the fixed degraded kernel into a private QEMU image.
+pub(crate) fn build_degraded_for_run(paths: &Paths, profile: Profile) -> Result<RunImage> {
+    build_for_run_with_features(
         paths,
         profile,
         Kernel::Shipped,
@@ -82,17 +130,12 @@ fn build_with_features(
     wanted: Kernel,
     features: &[&str],
 ) -> Result<PathBuf> {
-    let kernel = cargo::build_kernel(paths, profile, features)?;
-    let kernel = std::fs::read(&kernel)
-        .with_context(|| format!("reading {} kernel artifact", wanted.label()))?;
+    let kernel = kernel_bytes(paths, profile, wanted, features)?;
     let image = paths.image();
 
     std::fs::create_dir_all(paths.target_dir())
         .with_context(|| format!("creating {}", paths.target_dir().display()))?;
     println!("[xtask] creating disk image {}", image.display());
-
-    let bytes = paths::DISK_MIB * 1024 * 1024;
-    let total_sectors = bytes / paths::SECTOR_SIZE;
 
     let mut disk = OpenOptions::new()
         .read(true)
@@ -101,27 +144,68 @@ fn build_with_features(
         .truncate(true)
         .open(&image)
         .with_context(|| format!("creating {}", image.display()))?;
+    assemble(paths, wanted, &kernel, &image, &mut disk)?;
+    Ok(image)
+}
+
+fn build_for_run_with_features(
+    paths: &Paths,
+    profile: Profile,
+    wanted: Kernel,
+    features: &[&str],
+) -> Result<RunImage> {
+    let kernel = kernel_bytes(paths, profile, wanted, features)?;
+    let (image, mut disk) = RunImage::reserve(paths.target_dir())?;
+    println!(
+        "[xtask] creating private disk image {}",
+        image.path.display()
+    );
+    let result = assemble(paths, wanted, &kernel, image.path(), &mut disk);
+    drop(disk);
+    result?;
+    Ok(image)
+}
+
+fn kernel_bytes(
+    paths: &Paths,
+    profile: Profile,
+    wanted: Kernel,
+    features: &[&str],
+) -> Result<Vec<u8>> {
+    let kernel = cargo::build_kernel(paths, profile, features)?;
+    std::fs::read(&kernel).with_context(|| format!("reading {} kernel artifact", wanted.label()))
+}
+
+fn assemble(
+    paths: &Paths,
+    wanted: Kernel,
+    kernel: &[u8],
+    image: &Path,
+    disk: &mut File,
+) -> Result<()> {
+    let bytes = paths::DISK_MIB * 1024 * 1024;
+    let total_sectors = bytes / paths::SECTOR_SIZE;
     disk.set_len(bytes)
         .with_context(|| format!("sizing {} to {bytes} bytes", image.display()))?;
 
     let partition = mbr::PartitionEntry::efi_system(paths::PART_START_LBA, total_sectors)?;
-    mbr::write(&mut disk, &mbr::record(&[partition]))?;
+    mbr::write(&mut *disk, &mbr::record(&[partition]))?;
 
     let start = u64::from(partition.start_lba) * paths::SECTOR_SIZE;
     let end = start + u64::from(partition.sectors) * paths::SECTOR_SIZE;
-    let slice = StreamSlice::new(&mut disk, start, end)
+    let slice = StreamSlice::new(&mut *disk, start, end)
         .context("addressing the EFI system partition within the image")?;
     let mut volume = BufStream::new(slice);
 
     esp::format(&mut volume, FatType::Fat32)?;
     let filesystem =
         FileSystem::new(volume, FsOptions::new()).context("mounting the EFI system partition")?;
-    esp::populate(&filesystem, paths, &kernel)?;
+    esp::populate(&filesystem, paths, kernel)?;
     filesystem
         .unmount()
         .context("flushing the EFI system partition")?;
 
-    let carried = read_kernel(&mut disk, partition)?;
+    let carried = read_kernel(&mut *disk, partition)?;
     if carried != kernel {
         bail!(
             "the kernel read back from {} differs from the verified {} artifact",
@@ -139,7 +223,7 @@ fn build_with_features(
     }
 
     println!("[xtask] image ready ({} kernel read back)", found.label());
-    Ok(image)
+    Ok(())
 }
 
 fn read_kernel<D: ReadWriteSeek>(disk: &mut D, partition: mbr::PartitionEntry) -> Result<Vec<u8>> {
@@ -172,10 +256,46 @@ fn read_kernel<D: ReadWriteSeek>(disk: &mut D, partition: mbr::PartitionEntry) -
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::sync::Arc;
 
     use super::*;
 
     const TEST_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+    static NEXT_TEST_TARGET: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn two_qemu_images_are_private_and_removed() {
+        let target = Arc::new(std::env::temp_dir().join(format!(
+            "wizard image,fixture-{}-{}",
+            std::process::id(),
+            NEXT_TEST_TARGET.fetch_add(1, Ordering::Relaxed)
+        )));
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let reserve = |target: Arc<PathBuf>, barrier: Arc<std::sync::Barrier>| {
+            std::thread::spawn(move || {
+                barrier.wait();
+                RunImage::reserve(&target).expect("private QEMU image")
+            })
+        };
+        let first = reserve(Arc::clone(&target), Arc::clone(&barrier));
+        let second = reserve(Arc::clone(&target), Arc::clone(&barrier));
+        barrier.wait();
+        let (first, first_file) = first.join().expect("first image reservation");
+        let (second, second_file) = second.join().expect("second image reservation");
+
+        assert_ne!(first.path(), second.path());
+        assert!(first.path().exists());
+        assert!(second.path().exists());
+        let first_path = first.path().to_path_buf();
+        let second_path = second.path().to_path_buf();
+        drop(first_file);
+        drop(second_file);
+        drop(first);
+        drop(second);
+        assert!(!first_path.exists());
+        assert!(!second_path.exists());
+        let _ = std::fs::remove_dir_all(target.as_ref());
+    }
 
     fn image_with(kernel: &[u8]) -> (Cursor<Vec<u8>>, mbr::PartitionEntry) {
         let mut disk = Cursor::new(vec![0u8; TEST_IMAGE_BYTES]);

@@ -103,6 +103,9 @@ pub const PROGRAM_ON_ESP: &str = "hello.elf";
 /// File name of the bootable disk image.
 pub const IMAGE_NAME: &str = "wizard-os.img";
 
+/// Per-run QEMU state whose lifetime is shorter than a build artifact.
+pub(crate) const QEMU_RUN_DIRECTORY: &str = "qemu runs,private";
+
 /// Size of that image, in MiB.
 pub const DISK_MIB: u64 = 64;
 
@@ -170,11 +173,6 @@ impl Paths {
     /// The bootable disk image.
     pub fn image(&self) -> PathBuf {
         self.target_dir.join(IMAGE_NAME)
-    }
-
-    /// Writable copy of the UEFI variable store QEMU boots against.
-    pub fn efi_vars(&self) -> PathBuf {
-        self.target_dir.join("efi-vars.fd")
     }
 
     /// Generated VMware VM directory.
