@@ -91,6 +91,8 @@ impl<'ast> Visit<'ast> for UnsafeFacts {
 /// D-199 added three lines to consume a unique MMIO capability, inspect its
 /// exact leaves and construct its time-bounded register region.
 /// D-206 removed the two unused dynamic-port read/write operations.
+/// D-221 added two volatile shared-payload operations around the atomic ring
+/// publication boundary.
 ///
 /// Phase 5 added the most unsafe of any phase so far — ring 3, the extended
 /// state, the address space that grows — which is why this is where the number
@@ -108,7 +110,7 @@ pub const BUDGET: usize = 380;
 /// is the truth — so the measurement is recorded beside it and checked, which
 /// makes drift toward the ceiling visible rather than something a reader
 /// infers from a comment that may be a phase out of date.
-pub const MEASURED: usize = 368;
+pub const MEASURED: usize = 370;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///
@@ -258,9 +260,9 @@ mod tests {
         ),
         (
             "wost/src/mm/mod.rs",
-            11,
+            13,
             2,
-            "20af8b41852f1f20619145ce438b1e0eae9d978d5e0bf1b87ea9650038c60a32",
+            "341a68d61d9c9f9cb76f9d415677936a3be1eabfd29e5e75c8ec6fc0f8a54b21",
         ),
         (
             "wost/src/mmio.rs",

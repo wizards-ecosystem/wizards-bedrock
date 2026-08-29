@@ -217,7 +217,9 @@ synchronous will deliver the 1.06×.
   fetch is the canonical hole and it is not theoretical: CVE-2025-39816 is
   literally "always use `READ_ONCE()` to read ring pointers." This is enforced
   by the shape of the API, not by discipline — the validated copy is the only
-  thing the kernel can reach.
+  thing the kernel can reach. D-221 later closes the distinct ordering half:
+  acquire the producer's atomic tail, volatile-copy once, then release the
+  consumer head after use.
 
 **Ports and completion queues are the same shape; build one.** A Zircon port
 *is* a completion queue whose entries are events. Building both gives userspace
@@ -367,6 +369,13 @@ eventually retires them. This tier also gets its break: a variant built with
 `Relaxed` where the protocol needs `Acquire`/`Release` must **fail** under
 shuttle. A concurrency harness that passes a knowingly wrong program is not a
 harness.
+
+D-112 records that this proposed Shuttle break itself passed: Shuttle explores
+its own scheduling points under sequential consistency and cannot answer a
+weak-memory question. D-221 replaces that false oracle with an explicit event
+order model bound to the actual `wost` acquire/release methods; weakening
+either edge admits the published-index/old-payload outcome and fails its exact
+host witness.
 
 Expected machine checks, refined per slice: a preempt-only lock is held across
 a delivered interrupt; a mapping into a live address space is readable and

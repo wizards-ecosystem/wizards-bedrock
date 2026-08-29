@@ -25,6 +25,8 @@ pub mod mutate;
 pub mod mutation_workspace;
 pub mod paths;
 pub mod prose;
+#[cfg(test)]
+mod publication;
 pub mod qemu;
 pub mod qmp;
 mod qualification;

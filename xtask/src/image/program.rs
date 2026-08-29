@@ -48,11 +48,15 @@ pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 ///   cd 80                    int 0x80
 ///   48 83 f8 01              cmp rax, 1                  ; exactly one served
 ///   75 ..                    jne die
+///   8b 43 1c                 mov eax, [rbx+28]            ; acquire CQ tail
+///   83 f8 01                 cmp eax, 1
+///   75 ..                    jne die
 ///   8b 8b 04 11 00 00        mov ecx, [rbx+0x1104]       ; completion status
 ///   85 c9                    test ecx, ecx
 ///   75 ..                    jnz die
 ///   48 8b 8b 08 11 00 00     mov rcx, [rbx+0x1108]       ; completion value
 ///   ...                      require the echo, or a new nonzero handle
+///   c7 43 18 01 00 00 00     mov dword [rbx+24], 1       ; release CQ head
 ///   31 c0                    xor eax, eax                ; exit
 ///   cd 80                    int 0x80
 /// leap:
@@ -101,7 +105,11 @@ fn code() -> Vec<u8> {
     /// First completion entry: eight submissions after them.
     const COMPLETIONS_AT: u32 = SUBMISSIONS_AT + 8 * SUBMISSION_BYTES;
     /// `header::SUBMISSION_TAIL`.
-    const TAIL_AT: u8 = 20;
+    const SUBMISSION_TAIL_AT: u8 = 20;
+    /// `header::COMPLETION_HEAD`.
+    const COMPLETION_HEAD_AT: u8 = 24;
+    /// `header::COMPLETION_TAIL`.
+    const COMPLETION_TAIL_AT: u8 = 28;
     /// `WIZ_OP_ECHO`.
     const ECHO: u32 = 1;
     /// `WIZ_OP_DUPLICATE`.
@@ -232,7 +240,7 @@ fn code() -> Vec<u8> {
     let publish = code.len();
     patch(&mut code, echo_ready, publish);
     patch(&mut code, duplicate_ready, publish);
-    code.extend_from_slice(&[0xC7, 0x43, TAIL_AT]); // mov dword [rbx+20], imm32
+    code.extend_from_slice(&[0xC7, 0x43, SUBMISSION_TAIL_AT]);
     code.extend_from_slice(&1u32.to_le_bytes());
 
     // Ring the doorbell.
@@ -254,6 +262,13 @@ fn code() -> Vec<u8> {
     patch(&mut code, immediate, expect_one);
     code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x01]); // cmp rax, 1
     let served = branch(&mut code, 0x75); // jne die
+
+    // Acquire the kernel's publication before reading its completion. A plain
+    // aligned `mov` is an acquire load on x86-64; the ABI still requires the
+    // portable Wizzy runtime to express the operation as acquire (D-221).
+    code.extend_from_slice(&[0x8B, 0x43, COMPLETION_TAIL_AT]);
+    code.extend_from_slice(&[0x83, 0xF8, 0x01]); // cmp eax, 1
+    let completion_published = branch(&mut code, 0x75); // jne die
 
     // With a clean status, or die.
     code.extend_from_slice(&[0x8B, 0x8B]); // mov ecx, [rbx+disp32]
@@ -291,6 +306,10 @@ fn code() -> Vec<u8> {
     let exit = code.len();
     patch(&mut code, answered, exit);
     patch(&mut code, duplicated, exit);
+    // Release the slot only after its completion has been consumed. A plain
+    // aligned store is a release on x86-64; see the acquire above.
+    code.extend_from_slice(&[0xC7, 0x43, COMPLETION_HEAD_AT]);
+    code.extend_from_slice(&1u32.to_le_bytes());
     code.extend_from_slice(&[0x31, 0xC0]); // xor eax, eax
     code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
 
@@ -302,6 +321,7 @@ fn code() -> Vec<u8> {
     for site in [
         completed_early,
         served,
+        completion_published,
         clean,
         echoed,
         empty_handle,
@@ -621,8 +641,35 @@ mod tests {
             .filter(|site| *site as i64 + 2 + i64::from(code[*site + 1] as i8) == die as i64)
             .count();
         assert_eq!(
-            failures, 7,
-            "seven terminal validations reach the final ud2"
+            failures, 8,
+            "eight terminal validations reach the final ud2"
+        );
+    }
+
+    /// The real ring-3 client follows both halves of the publication contract.
+    #[test]
+    fn the_ring_client_orders_shared_memory() {
+        let code = code();
+        let find = |instruction: &[u8]| {
+            code.windows(instruction.len())
+                .position(|bytes| bytes == instruction)
+                .unwrap_or_else(|| panic!("missing instruction {instruction:02x?}"))
+        };
+
+        let payload = find(&[0xC7, 0x83, 0x04, 0x10, 0, 0, 0x34, 0x12, 0, 0]);
+        let submission_tail = find(&[0xC7, 0x43, 0x14, 1, 0, 0, 0]);
+        let completion_tail = find(&[0x8B, 0x43, 0x1C, 0x83, 0xF8, 1]);
+        let completion_status = find(&[0x8B, 0x8B, 0x04, 0x11, 0, 0]);
+        let completion_value = find(&[0x48, 0x8B, 0x8B, 0x08, 0x11, 0, 0]);
+        let completion_head = find(&[0xC7, 0x43, 0x18, 1, 0, 0, 0]);
+
+        assert!(
+            payload < submission_tail
+                && submission_tail < completion_tail
+                && completion_tail < completion_status
+                && completion_status < completion_value
+                && completion_value < completion_head,
+            "payload, SQ release, CQ acquire, completion copy and CQ release are out of order"
         );
     }
 }

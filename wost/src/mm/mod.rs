@@ -17,7 +17,8 @@ pub mod heap;
 
 use alloc::sync::Arc;
 use core::fmt;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::mem::{align_of, size_of};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use frame_space::{FRAME_SIZE, FrameSpace, words_for};
 
@@ -447,9 +448,9 @@ impl Segment {
     ///
     /// The counterpart to [`write_at`](Self::write_at).
     ///
-    /// [`Shared`] forwards to it, because reading what userspace wrote is a
-    /// shared ring's whole job (D-113) — and the rule there is that the copy
-    /// is validated after it is taken and never re-read. A [`USegment`] has no
+    /// [`Shared`] instead has volatile payload copies and atomic publication
+    /// indices, because ordinary copies do not define the compiler/SMP
+    /// contract for memory ring 3 can change (D-221). A [`USegment`] has no
     /// reader at all: the only way to get bytes out of one is
     /// [`reclaim`](USegment::reclaim), which clears them first, so a frame
     /// that held a program's stack cannot come back to the kernel still
@@ -668,7 +669,8 @@ pub(crate) struct SharedKeepalive {
     _allocation: Arc<SharedAllocation>,
 }
 
-/// A pinned run with exclusive safe access and non-accessing mapping owners.
+/// A pinned run with a narrow shared-memory access boundary and non-accessing
+/// mapping owners.
 #[derive(Debug)]
 pub struct Shared(Arc<SharedAllocation>);
 
@@ -687,24 +689,101 @@ impl Shared {
         self.0.0.len()
     }
 
-    /// Write `bytes` at `offset` within the run.
+    /// Volatile-write `bytes` at `offset` within the run.
     ///
-    /// The kernel's side of a page ring 3 also has.
-    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
-        let allocation = Arc::as_ptr(&self.0).cast_mut();
-        // SAFETY: `Shared` is not clonable and this method requires its unique
-        // mutable borrow. The other `Arc` owners are `SharedKeepalive`s, which
-        // expose no reference to the allocation, so no Rust access aliases it.
-        let allocation = unsafe { &mut *allocation };
-        allocation.0.write_at(offset, bytes)
+    /// This is the payload half of a shared-memory publication protocol. It
+    /// prevents the compiler from inventing, merging or eliding accesses, but
+    /// it is not a memory-ordering edge: a producer must follow the copy with
+    /// [`store_release_u32`](Self::store_release_u32), and a consumer must
+    /// first observe that index through
+    /// [`load_acquire_u32`](Self::load_acquire_u32).
+    pub fn write_volatile_at(&mut self, offset: usize, bytes: &[u8]) -> bool {
+        let Some(end) = offset.checked_add(bytes.len()) else {
+            return false;
+        };
+        if end as u64 > self.len() {
+            return false;
+        }
+        let Some(base) = direct_pointer(self.address(), self.len()) else {
+            return false;
+        };
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            let destination = base.wrapping_add(offset + index);
+            // SAFETY: the bounds check places every destination inside the
+            // allocated run, and the direct map covers allocator-owned frames.
+            // Volatile access is required because ring 3 may observe the byte.
+            unsafe { destination.write_volatile(byte) };
+        }
+        true
     }
 
-    /// Read `into.len()` bytes from `offset` within the run.
+    /// Volatile-read `into.len()` bytes from `offset` within the run.
     ///
     /// **Every byte read here is ring 3's**, and the rule is that the copy is
-    /// validated after it is taken and never re-read (D-79).
-    pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {
-        self.0.0.read_at(offset, into)
+    /// validated after it is taken and never re-read (D-79). This is the
+    /// payload half of the protocol; the consumer must first acquire-load the
+    /// producer's index with
+    /// [`load_acquire_u32`](Self::load_acquire_u32).
+    pub fn read_volatile_at(&self, offset: usize, into: &mut [u8]) -> bool {
+        let Some(end) = offset.checked_add(into.len()) else {
+            return false;
+        };
+        if end as u64 > self.len() {
+            return false;
+        }
+        let Some(base) = direct_pointer(self.address(), self.len()) else {
+            return false;
+        };
+        for (index, byte) in into.iter_mut().enumerate() {
+            let source = base.wrapping_add(offset + index);
+            // SAFETY: the bounds check places every source inside the
+            // allocated run, and the direct map covers allocator-owned frames.
+            // Volatile access is required because ring 3 may rewrite the byte.
+            *byte = unsafe { source.read_volatile() };
+        }
+        true
+    }
+
+    /// Acquire-load one aligned little-endian publication index.
+    ///
+    /// `None` means the four-byte word is out of bounds, misaligned or not
+    /// reachable through the direct map. An acquired producer tail makes its
+    /// earlier volatile payload writes visible; an acquired consumer head
+    /// makes its earlier payload reads precede slot reuse.
+    pub fn load_acquire_u32(&self, offset: usize) -> Option<u32> {
+        let word = self.atomic_u32(offset)?;
+        Some(u32::from_le(word.load(Ordering::Acquire)))
+    }
+
+    /// Release-store one aligned little-endian publication index.
+    ///
+    /// `false` means the four-byte word is out of bounds, misaligned or not
+    /// reachable through the direct map. A producer publishes its completed
+    /// volatile payload writes through a tail; a consumer publishes completed
+    /// payload reads through a head before the producer may reuse the slot.
+    pub fn store_release_u32(&self, offset: usize, value: u32) -> bool {
+        let Some(word) = self.atomic_u32(offset) else {
+            return false;
+        };
+        word.store(value.to_le(), Ordering::Release);
+        true
+    }
+
+    /// The aligned atomic word at `offset`, if it is wholly inside the run.
+    fn atomic_u32(&self, offset: usize) -> Option<&AtomicU32> {
+        let end = offset.checked_add(size_of::<u32>())?;
+        if end as u64 > self.len() {
+            return None;
+        }
+        let base = direct_pointer(self.address(), self.len())?;
+        let pointer = base.wrapping_add(offset).cast::<AtomicU32>();
+        if !(pointer as usize).is_multiple_of(align_of::<AtomicU32>()) {
+            return None;
+        }
+        // SAFETY: the checked word lies inside this allocation and has
+        // `AtomicU32` alignment. Shared-memory clients access publication
+        // indices as one aligned 32-bit atomic word under D-221.
+        Some(unsafe { &*pointer })
     }
 
     /// Retain the allocation without exposing its bytes.

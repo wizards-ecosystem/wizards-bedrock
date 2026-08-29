@@ -305,6 +305,17 @@ source-level caller; a low-level runtime shim needing `u32` is not one. A compac
 buffer is a real language/runtime question because file and channel payloads
 need one without boxing every byte.
 
+D-221 makes “volatile access” precise rather than using it as a synonym for
+ordering. Each direction is SPSC. The producer volatile-writes an entry and
+any data it names, then release-stores the aligned 32-bit tail. The consumer
+acquire-loads the tail, volatile-copies the entry exactly once, and
+release-stores its head only after consumption; the producer acquire-loads
+that head before slot reuse. The four indices are the synchronizing atomics.
+Volatile payload copies preserve external accesses but do not create a
+happens-before edge, and a fence around an ordinary index access is not a
+substitute. The Wizzy runtime seam must expose these fixed operations without
+letting application code select a weaker order.
+
 ### Authority and effects
 
 The first Wizzy-level security claim waits for its capability values to exist

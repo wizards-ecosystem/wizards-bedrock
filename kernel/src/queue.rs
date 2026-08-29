@@ -5,12 +5,15 @@
 //! under proptest. What is here is the part neither of those can be: the
 //! boundary with pages ring 3 can rewrite at any moment.
 //!
-//! **The rule that shapes every function below: copy out exactly once, then
-//! validate the copy.** CVE-2025-39816 is literally "always use `READ_ONCE()`
-//! to read ring pointers", and a double fetch is how a validated value becomes
-//! a different value before it is used. So every read of the shared pages
-//! happens through [`Snapshot`], which is taken once and never refreshed, and
-//! no function here takes an index it did not compute itself (D-113).
+//! **The rule that shapes every function below: acquire the peer's publication,
+//! copy out exactly once, then validate the copy.** CVE-2025-39816 is literally
+//! "always use `READ_ONCE()` to read ring pointers", and a double fetch is how
+//! a validated value becomes a different value before it is used. The two
+//! peer-owned indices are acquire-loaded into one [`Snapshot`]; entry and data
+//! bytes are volatile-copied once; locally owned indices are release-stored
+//! only after the corresponding copy. The acquire/release pair is the compiler
+//! and SMP contract, while the spin lock serializes only kernel callers
+//! (D-113, D-221).
 //!
 //! **The pages are the kernel's**, mapped into the process rather than donated
 //! to it: `map_shared` writes no `OWNED` bit, so the space can never hand
@@ -513,13 +516,24 @@ static WORK_PAUSED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "selftest")]
 static WORK_RUNS: AtomicUsize = AtomicUsize::new(0);
 
+/// The shared pages and the private state which orders their publication.
+#[derive(Debug)]
+struct SharedQueue {
+    /// The shared pages. The kernel's, for the ring's whole life.
+    pages: Shared,
+    /// The kernel's own protocol state, which userspace cannot reach.
+    protocol: Queues,
+}
+
 /// A submission/completion ring bound to one process.
 #[derive(Debug)]
 pub(crate) struct Queue {
-    /// The shared pages. The kernel's, for the ring's whole life.
-    shared: SpinLock<Shared>,
-    /// The kernel's own protocol state, which userspace cannot reach.
-    state: SpinLock<Queues>,
+    /// Pages and protocol state under one bounded publication lock.
+    ///
+    /// Keeping them together makes concurrent kernel completion paths one
+    /// logical producer: no later tail can become visible before every entry
+    /// below it has been written (D-221).
+    ring: SpinLock<SharedQueue>,
     /// Woken when a completion is posted.
     waiters: WaitQueue,
     /// Operations admitted and not yet completed.
@@ -561,9 +575,9 @@ impl Queue {
 
         // The header is written before the pages are ever mapped, so a
         // program never sees a ring whose shape it cannot read.
-        write_u32(&mut shared, header::VERSION, ring_proto::VERSION);
-        write_u32(&mut shared, header::SUBMISSIONS, SUBMISSIONS);
-        write_u32(&mut shared, header::COMPLETIONS, COMPLETIONS);
+        write_u32_volatile(&mut shared, header::VERSION, ring_proto::VERSION);
+        write_u32_volatile(&mut shared, header::SUBMISSIONS, SUBMISSIONS);
+        write_u32_volatile(&mut shared, header::COMPLETIONS, COMPLETIONS);
 
         let submission = Capacity::new(SUBMISSIONS).ok()?;
         let completion = Capacity::new(COMPLETIONS).ok()?;
@@ -571,8 +585,10 @@ impl Queue {
 
         LIVE_QUEUES.fetch_add(1, Ordering::AcqRel);
         Some(Arc::new(Self {
-            shared: SpinLock::new(shared),
-            state: SpinLock::new(state),
+            ring: SpinLock::new(SharedQueue {
+                pages: shared,
+                protocol: state,
+            }),
             waiters: WaitQueue::new(),
             pending: SpinLock::new(PendingTable::new()),
             served: AtomicUsize::new(0),
@@ -599,7 +615,7 @@ impl Queue {
     pub(crate) fn install(&mut self, space: &mut AddressSpace, at: u64) -> Result<(), MapError> {
         space.map_shared(
             at,
-            self.shared.get_mut(),
+            &self.ring.get_mut().pages,
             Flags::WRITABLE.union(Flags::NO_EXECUTE),
         )
     }
@@ -678,8 +694,10 @@ impl Queue {
     /// other.
     #[cfg(feature = "selftest")]
     pub(crate) fn reserve_for_test(&self, count: usize) -> usize {
-        let mut state = self.state.lock_leaf();
-        (0..count).take_while(|_| state.submit().is_some()).count()
+        let mut ring = self.ring.lock_leaf();
+        (0..count)
+            .take_while(|_| ring.protocol.submit().is_some())
+            .count()
     }
 
     /// Carry out one submission, or admit it as still in flight.
@@ -902,15 +920,19 @@ impl Queue {
         if len > into.len() {
             return None;
         }
-        self.shared
+        self.ring
             .lock_leaf()
-            .read_at(DATA_AT + at, &mut into[..len])
+            .pages
+            .read_volatile_at(DATA_AT + at, &mut into[..len])
             .then_some(len)
     }
 
     /// Copy `bytes` into the data area at `offset`.
     fn write_data(&self, at: usize, bytes: &[u8]) -> bool {
-        self.shared.lock_leaf().write_at(DATA_AT + at, bytes)
+        self.ring
+            .lock_leaf()
+            .pages
+            .write_volatile_at(DATA_AT + at, bytes)
     }
 
     /// Record an operation as in flight, and say when it comes due.
@@ -1187,10 +1209,10 @@ impl Queue {
 
     /// Copy the indices out of the shared page, once.
     fn snapshot(&self) -> Snapshot {
-        let shared = self.shared.lock_leaf();
+        let ring = self.ring.lock_leaf();
         Snapshot {
-            submission_tail: read_u32(&shared, header::SUBMISSION_TAIL),
-            completion_head: read_u32(&shared, header::COMPLETION_HEAD),
+            submission_tail: load_index(&ring.pages, header::SUBMISSION_TAIL),
+            completion_head: load_index(&ring.pages, header::COMPLETION_HEAD),
         }
     }
 
@@ -1201,20 +1223,21 @@ impl Queue {
     /// stays where it is and is served on a later call, which is what makes an
     /// unreportable operation impossible rather than merely unlikely.
     fn take(&self, snapshot: &Snapshot) -> Option<Submission> {
-        let slot = {
-            let mut state = self.state.lock_leaf();
+        let mut bytes = [0u8; SUBMISSION_BYTES];
+        {
+            let mut ring = self.ring.lock_leaf();
             // The tail is userspace's number, so it bounds nothing on its own:
             // what it says is how many operations userspace *claims* to have
             // written, and a tail that ran away would otherwise walk the kernel
             // through slots nothing was written into.
             let published = snapshot
                 .submission_tail
-                .wrapping_sub(state.submissions().head());
+                .wrapping_sub(ring.protocol.submissions().head());
             if published == 0 || published > SUBMISSIONS {
                 return None;
             }
             // The reservation, taken before the operation is accepted.
-            state.submit()?;
+            ring.protocol.submit()?;
             // Unreachable: `submit` has just produced into this ring, so there
             // is something to consume. Loud in a debug build for the reason
             // D-115 gave `serve`'s twin two functions down — every path past
@@ -1222,24 +1245,30 @@ impl Queue {
             // for ever. The ring then admits nothing more and the program waits
             // on a completion that will not come: a permanent wedge, which is
             // worse than a panic because nothing can diagnose it (D-133).
-            match state.take() {
+            let slot = match ring.protocol.take() {
                 Some(slot) => slot,
                 None => {
                     debug_assert!(false, "a submission was reserved and then was not there");
                     return None;
                 }
-            }
-        };
+            };
 
-        let mut bytes = [0u8; SUBMISSION_BYTES];
-        let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
-        // Unreachable for the same reason and with the same cost: `slot` is
-        // below `SUBMISSIONS` and the entries are a page in, so the range is
-        // inside the shared run by construction. This one has *consumed* the
-        // submission as well as reserved, so it loses the operation too.
-        if !self.shared.lock_leaf().read_at(at, &mut bytes) {
-            debug_assert!(false, "a submission slot was outside the shared pages");
-            return None;
+            let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
+            // Unreachable for the same reason and with the same cost: `slot`
+            // is below `SUBMISSIONS` and the entries are a page in, so the
+            // range is inside the shared run by construction. This one has
+            // *consumed* the submission as well as reserved, so it loses the
+            // operation too.
+            if !ring.pages.read_volatile_at(at, &mut bytes) {
+                debug_assert!(false, "a submission slot was outside the shared pages");
+                return None;
+            }
+
+            // The head userspace reads is published after the entry has been
+            // copied out, so a program that watches it cannot see the kernel
+            // release a slot it is still reading.
+            let head = ring.protocol.submissions().head();
+            publish_index(&ring.pages, header::SUBMISSION_HEAD, head);
         }
 
         // Validated after the copy, and the copy is what is used. A second
@@ -1250,12 +1279,6 @@ impl Queue {
         let length = read_entry_u32(&bytes, submission::LENGTH);
         let offset = read_entry_u64(&bytes, submission::OFFSET);
         let argument = read_entry_u64(&bytes, submission::ARGUMENT);
-
-        // The head userspace reads is published after the entry has been
-        // copied out, so a program that watches it cannot see the kernel
-        // release a slot it is still reading.
-        let head = self.state.lock_leaf().submissions().head();
-        write_u32(&mut self.shared.lock_leaf(), header::SUBMISSION_HEAD, head);
 
         Some(Submission {
             opcode,
@@ -1279,31 +1302,30 @@ impl Queue {
         if self.refuse_next_post.swap(false, Ordering::AcqRel) {
             return false;
         }
-        let Some(slot) = self.state.lock_leaf().complete() else {
-            return false;
-        };
-
         let mut bytes = [0u8; COMPLETION_BYTES];
         write_entry_u32(&mut bytes, completion::TOKEN, completion.token);
         write_entry_u32(&mut bytes, completion::STATUS, completion.status);
         write_entry_u64(&mut bytes, completion::VALUE, completion.value);
 
-        // `state` before `shared`, which is the order `take` uses. The two are
-        // never held together, and taking them in opposite orders in the two
-        // functions was an inversion pre-seeded for SMP (D-70, D-115).
-        let tail = self.state.lock_leaf().completions().tail();
+        // One bounded guard makes every kernel completion path one logical
+        // producer. With separate state and page locks, CPU 2 could advance
+        // to tail 2 and publish it before CPU 1 had written slot 0 (D-221).
+        let mut ring = self.ring.lock_leaf();
+        let Some(slot) = ring.protocol.complete() else {
+            return false;
+        };
+        let tail = ring.protocol.completions().tail();
 
         let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;
-        let mut shared = self.shared.lock_leaf();
         assert!(
-            shared.write_at(at, &bytes),
+            ring.pages.write_volatile_at(at, &bytes),
             "an internal completion slot was outside the ring pages"
         );
         // The entry is in the page before the tail says so: a program that
         // sees the tail move and reads the slot finds what was written, not
         // what was there before — and `complete` already advanced the tail, so
         // this publishes a value taken before the write and stored after it.
-        write_u32(&mut shared, header::COMPLETION_TAIL, tail);
+        publish_index(&ring.pages, header::COMPLETION_TAIL, tail);
         true
     }
 
@@ -1313,7 +1335,7 @@ impl Queue {
     /// and passed in — this function reads no page. What it does with the
     /// value is bound it: see below.
     pub(crate) fn reap_up_to(&self, claimed_head: u32) -> usize {
-        let mut state = self.state.lock_leaf();
+        let mut ring = self.ring.lock_leaf();
 
         // Bounded before it drives anything, exactly as the submission tail is
         // (D-79's copy-out-then-*validate*). A head further ahead than there
@@ -1322,12 +1344,12 @@ impl Queue {
         // the one claim the completion queue exists to make. The loop's own
         // termination is not a bound: `reap` would happily drain all of them
         // (D-115).
-        let posted = state.completions().occupied();
-        let asked = claimed_head.wrapping_sub(state.completions().head());
+        let posted = ring.protocol.completions().occupied();
+        let asked = claimed_head.wrapping_sub(ring.protocol.completions().head());
         let allowed = asked.min(posted);
 
         let mut reaped = 0;
-        while reaped < allowed && state.reap().is_some() {
+        while reaped < allowed && ring.protocol.reap().is_some() {
             reaped += 1;
         }
         reaped as usize
@@ -1341,13 +1363,13 @@ impl Queue {
     /// Operations admitted and not yet reported.
     #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
     pub(crate) fn outstanding(&self) -> u32 {
-        self.state.lock_leaf().outstanding()
+        self.ring.lock_leaf().protocol.outstanding()
     }
 
     /// Whether the accounting still says a completion cannot be dropped.
     #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
     pub(crate) fn is_consistent(&self) -> bool {
-        self.state.lock_leaf().is_consistent()
+        self.ring.lock_leaf().protocol.is_consistent()
     }
 
     /// Refuse the next completion before it changes the reservation account.
@@ -1390,20 +1412,19 @@ impl Queue {
         write_entry_u64(&mut bytes, submission::OFFSET, submission.offset);
         write_entry_u64(&mut bytes, submission::ARGUMENT, submission.argument);
         let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
-        let mut shared = self.shared.lock_leaf();
-        shared.write_at(at, &bytes);
+        self.ring.lock_leaf().pages.write_volatile_at(at, &bytes);
     }
 
     /// Move the submission tail as a program would.
     #[cfg(feature = "selftest")]
     pub(crate) fn publish_tail_for_test(&self, tail: u32) {
-        write_u32(&mut self.shared.lock_leaf(), header::SUBMISSION_TAIL, tail);
+        publish_index(&self.ring.lock_leaf().pages, header::SUBMISSION_TAIL, tail);
     }
 
     /// Move the completion head as a program that has reaped would.
     #[cfg(feature = "selftest")]
     pub(crate) fn publish_completion_head_for_test(&self, head: u32) {
-        write_u32(&mut self.shared.lock_leaf(), header::COMPLETION_HEAD, head);
+        publish_index(&self.ring.lock_leaf().pages, header::COMPLETION_HEAD, head);
     }
 
     /// Read a submission back out of the shared page.
@@ -1414,7 +1435,7 @@ impl Queue {
     pub(crate) fn read_submission(&self, slot: usize) -> Submission {
         let mut bytes = [0u8; SUBMISSION_BYTES];
         let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
-        self.shared.lock_leaf().read_at(at, &mut bytes);
+        self.ring.lock_leaf().pages.read_volatile_at(at, &mut bytes);
         Submission {
             opcode: Opcode::decode(read_entry_u32(&bytes, submission::OPCODE)),
             token: read_entry_u32(&bytes, submission::TOKEN),
@@ -1434,7 +1455,10 @@ impl Queue {
     /// Read the data area back, as a program would after a completion.
     #[cfg(feature = "selftest")]
     pub(crate) fn read_data_for_test(&self, at: usize, into: &mut [u8]) -> bool {
-        self.shared.lock_leaf().read_at(DATA_AT + at, into)
+        self.ring
+            .lock_leaf()
+            .pages
+            .read_volatile_at(DATA_AT + at, into)
     }
 
     /// A submission that names a handle, an offset, a buffer and a length.
@@ -1464,7 +1488,7 @@ impl Queue {
     pub(crate) fn read_completion(&self, slot: usize) -> Completion {
         let mut bytes = [0u8; COMPLETION_BYTES];
         let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;
-        self.shared.lock_leaf().read_at(at, &mut bytes);
+        self.ring.lock_leaf().pages.read_volatile_at(at, &mut bytes);
         Completion {
             token: read_entry_u32(&bytes, completion::TOKEN),
             status: read_entry_u32(&bytes, completion::STATUS),
@@ -1474,7 +1498,7 @@ impl Queue {
 
     /// The shape the **kernel** believes this ring has.
     ///
-    /// From `state`, which ring 3 cannot reach. The header page carries the
+    /// From `protocol`, which ring 3 cannot reach. The header page carries the
     /// same three numbers for a program to read, and a check that asked *it*
     /// would be asking ring 3 what shape its own ring is — which a program
     /// installed at `user::RING` can answer however it likes, including with a
@@ -1482,11 +1506,11 @@ impl Queue {
     /// kernel (D-115).
     #[cfg(feature = "selftest")]
     pub(crate) fn shape(&self) -> (u32, u32, u32) {
-        let state = self.state.lock_leaf();
+        let ring = self.ring.lock_leaf();
         (
             ring_proto::VERSION,
-            state.submissions().capacity().entries(),
-            state.completions().capacity().entries(),
+            ring.protocol.submissions().capacity().entries(),
+            ring.protocol.completions().capacity().entries(),
         )
     }
 
@@ -1498,11 +1522,11 @@ impl Queue {
     /// [`shape`](Self::shape) on a ring no program has been given.
     #[cfg(feature = "selftest")]
     pub(crate) fn published_shape(&self) -> (u32, u32, u32) {
-        let shared = self.shared.lock_leaf();
+        let ring = self.ring.lock_leaf();
         (
-            read_u32(&shared, header::VERSION),
-            read_u32(&shared, header::SUBMISSIONS),
-            read_u32(&shared, header::COMPLETIONS),
+            read_u32_volatile(&ring.pages, header::VERSION),
+            read_u32_volatile(&ring.pages, header::SUBMISSIONS),
+            read_u32_volatile(&ring.pages, header::COMPLETIONS),
         )
     }
 }
@@ -1679,16 +1703,35 @@ fn refuse(token: u32, status: u32) -> Completion {
     }
 }
 
-/// Read one little-endian `u32` out of the shared pages.
-fn read_u32(shared: &Shared, at: usize) -> u32 {
+/// Read one immutable little-endian `u32` out of the shared pages.
+#[cfg(feature = "selftest")]
+fn read_u32_volatile(shared: &Shared, at: usize) -> u32 {
     let mut bytes = [0u8; 4];
-    shared.read_at(at, &mut bytes);
+    shared.read_volatile_at(at, &mut bytes);
     u32::from_le_bytes(bytes)
 }
 
-/// Write one little-endian `u32` into the shared pages.
-fn write_u32(shared: &mut Shared, at: usize, value: u32) {
-    shared.write_at(at, &value.to_le_bytes());
+/// Write one immutable little-endian `u32` into the shared pages.
+fn write_u32_volatile(shared: &mut Shared, at: usize, value: u32) {
+    shared.write_volatile_at(at, &value.to_le_bytes());
+}
+
+/// Acquire one peer-owned queue index.
+fn load_index(shared: &Shared, at: usize) -> u32 {
+    let value = shared.load_acquire_u32(at);
+    debug_assert!(
+        value.is_some(),
+        "a ring index was out of bounds or misaligned"
+    );
+    value.unwrap_or(0)
+}
+
+/// Release-publish one locally owned queue index.
+fn publish_index(shared: &Shared, at: usize, value: u32) {
+    assert!(
+        shared.store_release_u32(at, value),
+        "a ring index was out of bounds or misaligned"
+    );
 }
 
 fn read_entry_u32(bytes: &[u8], at: usize) -> u32 {

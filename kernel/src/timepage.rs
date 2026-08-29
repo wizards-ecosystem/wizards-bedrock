@@ -177,7 +177,7 @@ pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> bool {
     };
 
     let mut header = [0u8; 4];
-    if !page.read_at(CLOCK_AT + clock::SEQ, &mut header) {
+    if !page.read_volatile_at(CLOCK_AT + clock::SEQ, &mut header) {
         return false;
     }
     let seq = u32::from_le_bytes(header);
@@ -375,22 +375,22 @@ pub(crate) fn is_published() -> bool {
 }
 
 fn write_u32(page: &mut Shared, at: usize, value: u32) {
-    page.write_at(at, &value.to_le_bytes());
+    page.write_volatile_at(at, &value.to_le_bytes());
 }
 
 fn write_u64(page: &mut Shared, at: usize, value: u64) {
-    page.write_at(at, &value.to_le_bytes());
+    page.write_volatile_at(at, &value.to_le_bytes());
 }
 
 fn read_u32(page: &Shared, at: usize) -> u32 {
     let mut bytes = [0u8; 4];
-    page.read_at(at, &mut bytes);
+    page.read_volatile_at(at, &mut bytes);
     u32::from_le_bytes(bytes)
 }
 
 #[cfg(feature = "selftest")]
 fn read_u64(page: &Shared, at: usize) -> u64 {
     let mut bytes = [0u8; 8];
-    page.read_at(at, &mut bytes);
+    page.read_volatile_at(at, &mut bytes);
     u64::from_le_bytes(bytes)
 }

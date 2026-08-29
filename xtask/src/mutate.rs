@@ -2544,6 +2544,56 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "supply_chain::tests::a_dependency_with_two_locked_versions_must_name_which_one",
         },
     },
+    Mutation {
+        file: "wost/src/mm/mod.rs",
+        find: "        word.store(value.to_le(), Ordering::Release);",
+        replace: "        word.store(value.to_le(), Ordering::Relaxed);",
+        breaks: "a published queue index can become visible before its payload",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "publication::tests::release_publication_excludes_an_old_payload",
+        },
+    },
+    Mutation {
+        file: "wost/src/mm/mod.rs",
+        find: "        Some(u32::from_le(word.load(Ordering::Acquire)))",
+        replace: "        Some(u32::from_le(word.load(Ordering::Relaxed)))",
+        breaks: "a shared payload read can move before its published index",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "publication::tests::acquire_consumption_excludes_an_early_payload_read",
+        },
+    },
+    Mutation {
+        file: "wost/src/mm/mod.rs",
+        find: "            unsafe { destination.write_volatile(byte) };",
+        replace: "            unsafe { destination.write(byte) };",
+        breaks: "the compiler can merge or elide shared payload writes",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "publication::tests::every_shared_payload_copy_is_volatile",
+        },
+    },
+    Mutation {
+        file: "xtask/src/image/program.rs",
+        find: "    const COMPLETION_TAIL_AT: u8 = 28;",
+        replace: "    const COMPLETION_TAIL_AT: u8 = 24;",
+        breaks: "the real ring client acquires its own head instead of the completion tail",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "image::program::tests::the_ring_client_orders_shared_memory",
+        },
+    },
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "        let tail = ring.protocol.completions().tail();\n\n        let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;",
+        replace: "        let tail = ring.protocol.completions().tail();\n        drop(ring);\n        let mut ring = self.ring.lock_leaf();\n\n        let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;",
+        breaks: "a later kernel completion can publish past an unwritten earlier slot",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "publication::tests::kernel_completion_producers_publish_in_tail_order",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

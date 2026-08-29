@@ -118,7 +118,20 @@ struct wiz_entry_block {
 
 /* The header page. Every field is little-endian, and the first is a version:
  * a ring that cannot say what shape it is cannot be extended without guessing,
- * which is IoRing's improvement over io_uring (D-79). */
+ * which is IoRing's improvement over io_uring (D-79).
+ *
+ * The four indices are naturally aligned atomic 32-bit words. For each queue,
+ * the producer volatile-writes the complete entry before release-storing its
+ * tail. The consumer acquire-loads that tail before volatile-copying an entry
+ * exactly once, then release-stores its head only after it has finished using
+ * the copy. The producer acquire-loads the head before reusing the slot. A
+ * volatile index or an acquire/release fence around an ordinary index access
+ * is not equivalent: the index itself is the synchronizing atomic (D-221).
+ *
+ * The current hand-emitted x86-64 client uses naturally aligned `mov`
+ * instructions, which have acquire/release semantics under x86 TSO and have
+ * no compiler to reorder them. A compiled portable runtime must use its
+ * platform atomic/volatile primitives explicitly. */
 struct wiz_ring_header {
 	uint32_t version;
 	uint32_t submissions;      /* Entries in the submission queue. */

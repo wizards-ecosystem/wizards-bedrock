@@ -2974,8 +2974,10 @@ mod tests {
         writes32_from_esi: Vec<u32>,
         writes64_from_imm32: Vec<(u32, u32)>,
         short_writes32: Vec<(u8, u32)>,
+        short_reads32: Vec<u8>,
         reads32: Vec<u32>,
         reads64: Vec<u32>,
+        eax_imm8_comparisons: Vec<u8>,
         ecx_zero_tests: usize,
         rcx_zero_tests: usize,
         ecx_esi_comparisons: usize,
@@ -2998,8 +3000,10 @@ mod tests {
             writes32_from_esi: Vec::new(),
             writes64_from_imm32: Vec::new(),
             short_writes32: Vec::new(),
+            short_reads32: Vec::new(),
             reads32: Vec::new(),
             reads64: Vec::new(),
+            eax_imm8_comparisons: Vec::new(),
             ecx_zero_tests: 0,
             rcx_zero_tests: 0,
             ecx_esi_comparisons: 0,
@@ -3087,6 +3091,13 @@ mod tests {
                     immediate32(3),
                 ));
                 7
+            } else if rest.starts_with(&[0x8B, 0x43]) {
+                operands.short_reads32.push(
+                    *rest
+                        .get(2)
+                        .unwrap_or_else(|| panic!("truncated disp8 at byte {at}")),
+                );
+                3
             } else if rest.starts_with(&[0x8B, 0x8B]) {
                 operands.reads32.push(immediate32(2));
                 6
@@ -3098,6 +3109,13 @@ mod tests {
             } else if rest.starts_with(&[0x48, 0x83, 0xF8]) {
                 4
             } else if rest.starts_with(&[0x83, 0xFF]) {
+                3
+            } else if rest.starts_with(&[0x83, 0xF8]) {
+                operands.eax_imm8_comparisons.push(
+                    *rest
+                        .get(2)
+                        .unwrap_or_else(|| panic!("truncated cmp eax, imm8 at byte {at}")),
+                );
                 3
             } else if rest.starts_with(&[0x48, 0x85, 0xC9]) {
                 operands.rcx_zero_tests += 1;
@@ -3309,6 +3327,10 @@ mod tests {
         let marker = format!("{module}::");
         let identifier = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
         for (operation, width) in [
+            ("read_u32_volatile", 4usize),
+            ("write_u32_volatile", 4),
+            ("load_index", 4),
+            ("publish_index", 4),
             ("read_u32", 4usize),
             ("write_u32", 4),
             ("read_u64", 8),
@@ -4595,8 +4617,21 @@ const LIVE: u32 = 7;
         );
         assert_eq!(
             operands.short_writes32,
-            [(ring_header_layout["SUBMISSION_TAIL"] as u8, 1)],
-            "the emitted program publishes through a different header field"
+            [
+                (ring_header_layout["SUBMISSION_TAIL"] as u8, 1),
+                (ring_header_layout["COMPLETION_HEAD"] as u8, 1),
+            ],
+            "the emitted program publishes through different header fields"
+        );
+        assert_eq!(
+            operands.short_reads32,
+            [ring_header_layout["COMPLETION_TAIL"] as u8],
+            "the emitted program acquires a different header field"
+        );
+        assert_eq!(
+            operands.eax_imm8_comparisons,
+            [1],
+            "the emitted program does not require one published completion"
         );
         assert_eq!(
             operands.reads32,

@@ -27,10 +27,11 @@
 //!   wrap at `u32::MAX`.
 //!
 //! Nothing here reads shared memory. A ring's real head and tail live in pages
-//! userspace can write at any moment, so the kernel copies them out once and
-//! validates the copy (D-79, CVE-2025-39816); the copy is what these functions
-//! take. Keeping that boundary outside this crate is deliberate — it means no
-//! function here can be handed a value it did not already have to trust.
+//! userspace can write at any moment, so the kernel acquire-loads an atomic
+//! index, volatile-copies an entry once and validates that copy (D-79, D-221,
+//! CVE-2025-39816). Keeping that boundary outside this crate is deliberate —
+//! it means no function here can be handed a value it did not already have to
+//! trust.
 //!
 //! # Examples
 //!
