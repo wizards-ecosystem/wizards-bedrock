@@ -1,7 +1,7 @@
 //! Driving cargo.
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
@@ -37,13 +37,12 @@ impl Profile {
 }
 
 /// Run a cargo command, failing if it does not exit cleanly.
-pub fn run<I, S>(root: &Path, description: &str, args: I) -> Result<()>
+pub fn run<I, S>(paths: &Paths, description: &str, args: I) -> Result<()>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let status = Command::new(env!("CARGO"))
-        .current_dir(root)
+    let status = command(paths)
         .args(args)
         .status()
         .with_context(|| format!("could not spawn cargo to {description}"))?;
@@ -51,6 +50,14 @@ where
         bail!("{description} failed ({status})");
     }
     Ok(())
+}
+
+fn command(paths: &Paths) -> Command {
+    let mut command = Command::new(env!("CARGO"));
+    command
+        .current_dir(paths.root())
+        .env("CARGO_TARGET_DIR", paths.target_dir());
+    command
 }
 
 /// Expand `packages` into the `--package NAME` pairs cargo expects.
@@ -72,7 +79,7 @@ pub fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -> Resul
     if !features.is_empty() {
         args.extend(["--features".to_string(), features.join(",")]);
     }
-    run(paths.root(), "kernel build", &args)?;
+    run(paths, "kernel build", &args)?;
 
     let elf = paths.kernel_elf(profile);
     if !elf.exists() {
@@ -103,5 +110,18 @@ mod tests {
             package_args(&["wost", "wizard-kernel"]),
             ["--package", "wost", "--package", "wizard-kernel"]
         );
+    }
+
+    #[test]
+    fn a_cargo_command_uses_the_paths_private_target() {
+        let paths = Paths::new(
+            PathBuf::from("workspace"),
+            Some(std::path::Path::new("private-build")),
+        );
+        let command = command(&paths);
+        assert_eq!(command.get_current_dir(), Some(paths.root()));
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "CARGO_TARGET_DIR" && value == Some(paths.target_dir().as_os_str())
+        }));
     }
 }

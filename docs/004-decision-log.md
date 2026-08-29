@@ -13480,6 +13480,6 @@ source and index bytes remained exact. A real temporary Git repository proved
 that only tracked files reach a distinct workspace and that ignored files and
 `.git` do not. A two-slot test selected the newest complete generation and fell
 back after its newest slot was torn. Redirecting the workspace to the checkout,
-bypassing the lock, omitting restore and selecting the oldest journal each made
-only its named test red. Four persistent host mutations retain those witnesses,
-bringing the registry to 161.
+bypassing the private Cargo target, bypassing the lock, omitting restore and
+selecting the oldest journal each made only its named test red. Five persistent
+host mutations retain those witnesses, bringing the registry to 162.

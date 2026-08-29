@@ -1880,6 +1880,16 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "mutation_workspace::tests::journal_uses_the_newest_complete_slot_and_falls_back_from_a_torn_write",
         },
     },
+    Mutation {
+        file: "xtask/src/cargo.rs",
+        find: "        .env(\"CARGO_TARGET_DIR\", paths.target_dir());",
+        replace: "        .env_remove(\"CARGO_TARGET_DIR\");",
+        breaks: "isolated cargo builds write outside their private target directory",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cargo::tests::a_cargo_command_uses_the_paths_private_target",
+        },
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.

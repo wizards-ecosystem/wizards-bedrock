@@ -74,7 +74,7 @@ pub fn fmt(paths: &Paths, mode: FmtMode) -> Result<()> {
     if mode == FmtMode::Check {
         args.extend(["--".to_string(), "--check".to_string()]);
     }
-    cargo::run(paths.root(), "formatting", &args)
+    cargo::run(paths, "formatting", &args)
 }
 
 /// Run the host test suite. The kernel crates have no host tests by
@@ -82,7 +82,7 @@ pub fn fmt(paths: &Paths, mode: FmtMode) -> Result<()> {
 pub fn test(paths: &Paths) -> Result<()> {
     let mut args = vec!["test".to_string()];
     args.extend(cargo::package_args(paths::HOST_PACKAGES));
-    cargo::run(paths.root(), "tests", &args)
+    cargo::run(paths, "tests", &args)
 }
 
 /// Boot a self-test kernel under QEMU and require its verdict.
@@ -151,7 +151,7 @@ pub fn ci(paths: &Paths) -> Result<()> {
 
 /// Remove build output.
 pub fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
-    cargo::run(paths.root(), "clean", ["clean"])?;
+    cargo::run(paths, "clean", ["clean"])?;
     if scope == CleanScope::Everything {
         let vm_dir = paths.vm_dir();
         if vm_dir.exists() {
@@ -228,7 +228,7 @@ fn for_each_half(
     for pass in PASSES {
         let args = half_args(subcommand, *pass, scope, extra, after_dashes);
         let label = pass.label();
-        cargo::run(paths.root(), &format!("{description} ({label})"), &args)?;
+        cargo::run(paths, &format!("{description} ({label})"), &args)?;
     }
     Ok(())
 }

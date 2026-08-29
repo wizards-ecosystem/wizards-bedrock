@@ -18,8 +18,8 @@ admission reasons.
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
 are **not closed**. The current image has 211 QEMU machine checks. The current
-mutation registry has 161 entries, but the last recorded complete sweep covered
-64; the ninety-seven later mutations were broken individually. The current
+mutation registry has 162 entries, but the last recorded complete sweep covered
+64; the ninety-eight later mutations were broken individually. The current
 211-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
@@ -64,7 +64,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 161 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 161 named mutations are caught by the check each names; record commit, result and duration; source and index digests remain exact |
+| PW-001 | REQUIRED | P0 | The register contains 162 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 162 named mutations are caught by the check each names; record commit, result and duration; source and index digests remain exact |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
 | PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 211-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=211 failed=0` transcript, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
@@ -132,7 +132,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 |---|---|---|---|---|---|
 | PW-500 | READY | P2 | `image::build` still accepts `&[&str]`, allowing shipped/self-test image confusion | Use a typed `Kernel::{Shipped, SelfTest}` selector through every image/VM caller | Compile-time API makes the wrong pairing unspellable; both image kinds are read back and identified |
 | PW-501 | READY | P2 | CI composition and prose counts are partly inferred from source text | Make pass/boot composition single-source and data-driven without changing the self-contained local gate | Help, execution and documentation derive from one registry; mutation removes/adds a pass and the repository check fails |
-| PW-502 | DONE | P1 | The mutation runner edited tracked source in place; interruption could leave a live worktree modified | D-208 runs from a locked tracked-file copy with a private build directory and alternating checksummed progress journals | 2026-08-28 real child processes killed at build and boot left an active journal and reusable lock; each resume restored the sandbox exactly while the source and index stayed byte-exact; isolation, live-lock, restoration and newest-journal breaks reddened their exact host tests and persist as four mutations |
+| PW-502 | DONE | P1 | The mutation runner edited tracked source in place; interruption could leave a live worktree modified | D-208 runs from a locked tracked-file copy with a private build directory and alternating checksummed progress journals | 2026-08-28 real child processes killed at build and boot left an active journal and reusable lock; each resume restored the sandbox exactly while the source and index stayed byte-exact; isolation, private Cargo target, live-lock, restoration and newest-journal breaks reddened their exact host tests and persist as five mutations |
 | PW-503 | READY | P2 | Host/library break-tests are one-off and have no persistent mutation registry | Add targeted source mutations for high-value pure invariants where a stable transformation exists | Every registered host mutation still applies exactly once and its named test, not an unrelated failure, catches it |
 | PW-504 | READY | P2 | A mutation can look caught when its named check was already red or another check failed first | Capture a green baseline and require the exact expected verdict delta/marker for every machine mutation | Deliberately pre-red and wrong-check cases are inconclusive/fail, never counted as caught |
 | PW-505 | READY | P2 | The public `libs/`/`wost` API sweep was a text search and `xtask` still duplicates ELF offsets | Add compiler-aware reachability/dead-public-API evidence and use `libs/elf64` for host image parsing where practical | Re-export, doc-only and same-name fixtures prove the audit; no private transcription claims to be canonical |
