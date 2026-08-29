@@ -5439,16 +5439,16 @@ fn a_signal_wakes_a_thread_waiting_on_a_handle() -> bool {
     *WAITED_EVENT.lock_leaf() = Some(object.clone());
     EVENT_WAITER.store(0, Ordering::Release);
     let free_before = thread::free_slots();
-    let blocks_before = thread::blocks();
-    if thread::spawn("event-waiter", wait_on_the_event).is_err() {
+    let Ok(waiter) = thread::spawn("event-waiter", wait_on_the_event) else {
         return false;
-    }
+    };
 
-    // Wait for the *block*, not for the flag the waiter sets on its way in.
+    // Wait for this slot's *block*, not for the flag the waiter sets on its
+    // way in or for the global count another kernel worker can advance.
     // Signalling between those two would leave nothing on the queue to wake,
     // and this check would pass on a thread that never slept — which is the
     // shape D-49 caught lying, and which the first version of this check had.
-    if !runs_until(200, || thread::blocks() > blocks_before) {
+    if !runs_until(200, || thread::slot_is_blocked(waiter)) {
         return false;
     }
     let blocked = EVENT_WAITER.load(Ordering::Acquire) == 1;

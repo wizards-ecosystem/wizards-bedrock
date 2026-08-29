@@ -650,6 +650,147 @@ impl Iterator for MadtEntries<'_> {
     }
 }
 
+/// One I/O APIC description retained from a MADT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IoApic {
+    id: u8,
+    address: u32,
+    gsi_base: u32,
+}
+
+impl IoApic {
+    /// The controller identifier firmware assigned.
+    pub const fn id(self) -> u8 {
+        self.id
+    }
+
+    /// Physical address of the controller's register window.
+    pub const fn address(self) -> u32 {
+        self.address
+    }
+
+    /// The first global system interrupt the controller reports.
+    pub const fn gsi_base(self) -> u32 {
+        self.gsi_base
+    }
+}
+
+/// Why a MADT could not become a complete bounded interrupt inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InterruptError {
+    /// The MADT itself is not structurally valid.
+    Table(AcpiError),
+    /// Firmware described more I/O APICs than the caller can retain.
+    TooManyIoApics {
+        /// Number of descriptions the caller permitted.
+        limit: usize,
+    },
+}
+
+impl fmt::Display for InterruptError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Table(error) => write!(f, "madt is unusable: {error}"),
+            Self::TooManyIoApics { limit } => {
+                write!(f, "madt describes more than {limit} i/o apics")
+            }
+        }
+    }
+}
+
+impl core::error::Error for InterruptError {}
+
+impl From<AcpiError> for InterruptError {
+    fn from(error: AcpiError) -> Self {
+        Self::Table(error)
+    }
+}
+
+/// A complete, fixed-capacity view of MADT interrupt routing.
+#[derive(Debug, Clone, Copy)]
+pub struct MadtInterrupts<const IO_APICS: usize> {
+    io_apics: [Option<IoApic>; IO_APICS],
+    io_apic_count: usize,
+    overrides: [Option<(u32, u16)>; 16],
+}
+
+impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
+    /// Parse every I/O APIC and legacy interrupt override in `table`.
+    ///
+    /// # Errors
+    ///
+    /// [`InterruptError::Table`] for a malformed MADT, or
+    /// [`InterruptError::TooManyIoApics`] rather than returning a truncated
+    /// inventory.
+    pub fn parse(table: &[u8]) -> Result<Self, InterruptError> {
+        let entries = MadtEntries::new(table)?;
+        let mut model = Self {
+            io_apics: [None; IO_APICS],
+            io_apic_count: 0,
+            overrides: [None; 16],
+        };
+
+        for entry in entries {
+            match entry {
+                MadtEntry::IoApic {
+                    id,
+                    address,
+                    gsi_base,
+                } => {
+                    let Some(slot) = model.io_apics.get_mut(model.io_apic_count) else {
+                        return Err(InterruptError::TooManyIoApics { limit: IO_APICS });
+                    };
+                    *slot = Some(IoApic {
+                        id,
+                        address,
+                        gsi_base,
+                    });
+                    model.io_apic_count += 1;
+                }
+                MadtEntry::InterruptSourceOverride {
+                    source, gsi, flags, ..
+                } => {
+                    if let Some(slot) = model.overrides.get_mut(source as usize) {
+                        *slot = Some((gsi, flags));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(model)
+    }
+
+    /// Every I/O APIC description, in firmware order.
+    pub fn io_apics(&self) -> impl Iterator<Item = IoApic> + '_ {
+        self.io_apics[..self.io_apic_count]
+            .iter()
+            .copied()
+            .flatten()
+    }
+
+    /// Number of I/O APIC descriptions retained.
+    pub const fn io_apic_count(&self) -> usize {
+        self.io_apic_count
+    }
+
+    /// The global system interrupt `irq` arrives on.
+    pub fn gsi_for(&self, irq: u8) -> u32 {
+        self.override_for(irq)
+            .map_or(u32::from(irq), |(gsi, _)| gsi)
+    }
+
+    /// The MPS INTI flags for `irq`, or zero when firmware gave none.
+    pub fn flags_for(&self, irq: u8) -> u16 {
+        self.override_for(irq).map_or(0, |(_, flags)| flags)
+    }
+
+    /// Firmware's explicit override for `irq`, if it supplied one.
+    pub fn override_for(&self, irq: u8) -> Option<(u32, u16)> {
+        self.overrides.get(irq as usize).copied().flatten()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1083,6 +1224,63 @@ mod tests {
                 },
                 MadtEntry::Other { kind: 4 },
             ]
+        );
+    }
+
+    #[test]
+    fn a_bounded_interrupt_inventory_keeps_every_controller() {
+        let mut body = vec![0u8; 8];
+        body.extend_from_slice(&[1, 12, 7, 0]);
+        body.extend_from_slice(&0xfec0_0000u32.to_le_bytes());
+        body.extend_from_slice(&0u32.to_le_bytes());
+        body.extend_from_slice(&[2, 10, 0, 1]);
+        body.extend_from_slice(&25u32.to_le_bytes());
+        body.extend_from_slice(&0x000fu16.to_le_bytes());
+        body.extend_from_slice(&[1, 12, 9, 0]);
+        body.extend_from_slice(&0xfec1_0000u32.to_le_bytes());
+        body.extend_from_slice(&24u32.to_le_bytes());
+        let bytes = table(&Sdt::MADT, &body);
+
+        let inventory = MadtInterrupts::<2>::parse(&bytes).expect("two controllers fit");
+        assert_eq!(inventory.io_apic_count(), 2);
+        assert_eq!(
+            inventory.io_apics().collect::<Vec<_>>(),
+            [
+                IoApic {
+                    id: 7,
+                    address: 0xfec0_0000,
+                    gsi_base: 0,
+                },
+                IoApic {
+                    id: 9,
+                    address: 0xfec1_0000,
+                    gsi_base: 24,
+                },
+            ]
+        );
+        assert_eq!(inventory.gsi_for(1), 25);
+        assert_eq!(inventory.flags_for(1), 0x000f);
+        assert_eq!(inventory.gsi_for(2), 2);
+        assert_eq!(inventory.flags_for(2), 0);
+    }
+
+    #[test]
+    fn an_interrupt_inventory_refuses_overflow_instead_of_truncating() {
+        let mut body = vec![0u8; 8];
+        for (id, address, base) in [
+            (1, 0xfec0_0000u32, 0u32),
+            (2, 0xfec1_0000, 24),
+            (3, 0xfec2_0000, 48),
+        ] {
+            body.extend_from_slice(&[1, 12, id, 0]);
+            body.extend_from_slice(&address.to_le_bytes());
+            body.extend_from_slice(&base.to_le_bytes());
+        }
+        let bytes = table(&Sdt::MADT, &body);
+
+        assert_eq!(
+            MadtInterrupts::<2>::parse(&bytes).map(|inventory| inventory.io_apic_count()),
+            Err(InterruptError::TooManyIoApics { limit: 2 })
         );
     }
 

@@ -1,72 +1,30 @@
 //! Finding the interrupt controllers ACPI describes.
 //!
-//! Enough of the table tree to find the I/O APIC and learn which global system
-//! interrupt a legacy IRQ arrives on. Parsing is `acpi_tables`, host-tested;
-//! the bytes come through `wost`'s ACPI-only physical reader.
+//! Enough of the table tree to find every bounded I/O APIC and learn which
+//! global system interrupt a legacy IRQ arrives on. Parsing and inventory are
+//! `acpi_tables`, host-tested; the bytes come through `wost`'s ACPI-only
+//! physical reader.
 //!
 //! Read before the page tables are built. That was forced while mapping was
 //! one-way (D-45, D-49); since D-86 it is merely the simplest order, because
 //! the bootloader's direct map still covers the tables at that point and
 //! nothing has had to be mapped to reach them.
 
-use acpi_tables::{MadtEntries, MadtEntry, Rsdp, Sdt, SdtPointers};
+use acpi_tables::{MadtInterrupts, Rsdp, Sdt, SdtPointers};
 use alloc::vec::Vec;
 use wost::mm::{self, FirmwareMemory};
 
 use crate::{debug, warn};
 
-/// Legacy IRQ numbers, which is as many overrides as can exist.
-const LEGACY_IRQS: usize = 16;
+/// I/O APIC descriptions this boot may temporarily map at once.
+const MAX_IO_APICS: usize = 16;
 
 /// A corrupt firmware length must not turn table discovery into an unbounded
 /// allocation. Real ACPI tables are far smaller than this ceiling.
 const MAX_FIRMWARE_TABLE_BYTES: usize = 1 << 20;
 
-/// An I/O APIC, as the MADT describes it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct IoApic {
-    /// Physical address of its register window.
-    pub(crate) address: u32,
-    /// The first global system interrupt it routes.
-    pub(crate) gsi_base: u32,
-}
-
 /// What ACPI says about interrupt routing.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Interrupts {
-    io_apic: IoApic,
-    /// For each legacy IRQ, the GSI and flags an override gave it.
-    overrides: [Option<(u32, u16)>; LEGACY_IRQS],
-}
-
-impl Interrupts {
-    /// The first I/O APIC. One is all this kernel routes through.
-    pub(crate) const fn io_apic(&self) -> IoApic {
-        self.io_apic
-    }
-
-    /// The global system interrupt `irq` arrives on.
-    ///
-    /// Identity unless firmware said otherwise. Assuming identity is the
-    /// classic way to program an I/O APIC that then delivers nothing: the
-    /// override table exists because firmware commonly remaps the timer, and
-    /// may remap anything.
-    pub(crate) fn gsi_for(&self, irq: u8) -> u32 {
-        match self.overrides.get(irq as usize).copied().flatten() {
-            Some((gsi, _)) => gsi,
-            None => u32::from(irq),
-        }
-    }
-
-    /// The MPS INTI flags for `irq`, or zero — "conforms to the bus" — if
-    /// firmware gave none.
-    pub(crate) fn flags_for(&self, irq: u8) -> u16 {
-        match self.overrides.get(irq as usize).copied().flatten() {
-            Some((_, flags)) => flags,
-            None => 0,
-        }
-    }
-}
+pub(crate) type Interrupts = MadtInterrupts<MAX_IO_APICS>;
 
 /// Walk the ACPI tables from the root pointer and report interrupt routing.
 ///
@@ -93,42 +51,28 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
     };
 
     let madt = find_madt(firmware, root)?;
-    let entries = match MadtEntries::new(&madt) {
-        Ok(entries) => entries,
+    let interrupts = match Interrupts::parse(&madt) {
+        Ok(interrupts) => interrupts,
         Err(reason) => {
             warn!("acpi: madt unusable: {reason}");
             return None;
         }
     };
 
-    let mut io_apic = None;
-    let mut overrides = [None; LEGACY_IRQS];
-    for entry in entries {
-        match entry {
-            MadtEntry::IoApic {
-                id,
-                address,
-                gsi_base,
-            } => {
-                debug!("acpi: io apic {id} at {address:#x}, gsi base {gsi_base}");
-                io_apic.get_or_insert(IoApic { address, gsi_base });
-            }
-            MadtEntry::InterruptSourceOverride {
-                source, gsi, flags, ..
-            } => {
-                debug!("acpi: irq {source} is routed to gsi {gsi}, flags {flags:#x}");
-                if let Some(slot) = overrides.get_mut(source as usize) {
-                    *slot = Some((gsi, flags));
-                }
-            }
-            other => debug!("acpi: {other:?}"),
+    for io_apic in interrupts.io_apics() {
+        debug!(
+            "acpi: io apic {} at {:#x}, gsi base {}",
+            io_apic.id(),
+            io_apic.address(),
+            io_apic.gsi_base()
+        );
+    }
+    for source in 0..16 {
+        if let Some((gsi, flags)) = interrupts.override_for(source) {
+            debug!("acpi: irq {source} is routed to gsi {gsi}, flags {flags:#x}");
         }
     }
-
-    Some(Interrupts {
-        io_apic: io_apic?,
-        overrides,
-    })
+    (interrupts.io_apic_count() != 0).then_some(interrupts)
 }
 
 /// The MADT, found by walking whichever root table the RSDP offers.

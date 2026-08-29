@@ -18,8 +18,8 @@ admission reasons.
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
 are **not closed**. The current image has 211 QEMU machine checks. The current
-mutation registry has 145 entries, but the last recorded complete sweep covered
-64; the eighty-one later mutations were broken individually. The current
+mutation registry has 150 entries, but the last recorded complete sweep covered
+64; the eighty-six later mutations were broken individually. The current
 211-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
@@ -64,7 +64,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 145 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 145 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
+| PW-001 | REQUIRED | P0 | The register contains 150 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 150 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
 | PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 211-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=211 failed=0` transcript, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
@@ -110,7 +110,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-301 | VERIFY | P1 | D-201 makes active NX and calibrated progress mandatory before ring 3, but its accepted-contract proof still needs the current VMware observation | Run PW-003 and record NX, calibration and successful user launch together | 2026-08-28 release QEMU injected missing NX before allocation with no syscall or resource change; bypassing it reddened only `no-execute protection closes the user boundary`; degraded `qemu64` retained `wp nx` without SMEP/SMAP/UMIP and refused userspace for its missing clock; current VMware must complete the proof |
 | PW-302 | DONE | P1 | Failed clock calibration deliberately still launched a user process with no preemption and admitted Timer promises with no progress source | D-201 gates user launch and Timer admission on the live calibration predicate | 2026-08-28 release QEMU injected calibration loss, refused launch before allocation or syscall crossing, and posted one immediate `STATUS_UNAVAILABLE` Timer completion with no pending state; bypassing the user and Timer gates separately reddened only `an uncalibrated clock admits no user or timer`, and degraded QEMU remained responsive with ring 3 closed |
 | PW-303 | DECIDE | P1 | VMware already produced one unexplained calibration refusal; suspend, rate change, instability detection and revocation are absent | Cost CPUID frequency leaves and at least one independent clocksource/validation path; define post-boot instability policy | Deterministic disagreement/failure injection selects or revokes a source without time going backward or pending timers hanging |
-| PW-304 | VERIFY | P1 | ACPI retains only the first I/O APIC, so a valid GSI owned by a later controller cannot be routed | Represent all bounded MADT I/O APICs and select by GSI range | Host table corpus plus machine routing proof covers multiple controllers, overlap/malformed ranges and fallback |
+| PW-304 | DONE | P1 | ACPI retained only the first I/O APIC, so a valid GSI owned by a later controller could not be routed | D-205 inventories up to sixteen controllers, probes and masks every hardware-sized range under releasable ownership, rejects ambiguity and retains only the unique owner | 2026-08-28 host tables retained two controllers and refused bounded overflow; pure range tests rejected empty, overflowing and overlapping ownership and selected a later owner across a gap; all five exact mutations reddened their named tests; release QEMU returned the probe mapping, remapped the selected owner, routed GSI 1 and passed all 211 checks |
 | PW-305 | READY | P2 | XSAVE bounds are checked, but restore correctness observes XMM0 only, not every enabled state component | Add independent enabled-state coverage feasible on QEMU/VMware and explicitly bound what cannot yet be generated | Values in each claimed component survive switches; compacted and standard forms are both exercised; mutations omit one component |
 | PW-306 | DONE | P1 | The idle-start latch was set before spawn succeeded, so a transient full table prevented idle from ever being retried | D-202 reserves a three-state idle attempt, rolls back every spawn refusal, and classifies the slot before making it runnable | 2026-08-28 release QEMU filled every spawnable slot, refused idle creation without consuming its retry, freed the fillers and created exactly one idle thread despite two retries; burning the reservation reddened only `a failed idle start can be retried exactly once` with 208/209 |
 | PW-307 | DONE | P1 | A zombie progressed only at idle or a later spawn and was bounded rather than deterministically reaped | D-203 makes retirement wake the mandatory service worker, which alternates bounded reclamation with file work and gates ring-3 launch on its readiness | 2026-08-28 release QEMU kept normal work runnable while the worker reclaimed a retired program without another spawn, direct collection or idle halt and restored the exact resource ledger; missing-worker and missing-wake mutations each reddened only that check with 209/210 |
@@ -234,7 +234,7 @@ PW-514 includes these exact stale-current-facing corrections still to make:
 ## Recommended execution order
 
 1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
-   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200, PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-300, PW-302, PW-306, PW-307 and PW-402 are closed by D-185 through D-204.
+   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200, PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-300, PW-302, PW-304, PW-306, PW-307 and PW-402 are closed by D-185 through D-205.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

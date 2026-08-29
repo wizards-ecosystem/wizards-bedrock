@@ -114,7 +114,7 @@ fn kernel_main(boot: BootInfo) -> ! {
     // than the linker — and before everything else, because from here on
     // anything may want a frame.
     mem::init(boot.memory_map, boot.direct_map);
-    let routing = mem::init_paging(boot.memory_map, boot.direct_map, boot.image, boot.rsdp);
+    let interrupts = mem::init_paging(boot.memory_map, boot.direct_map, boot.image, boot.rsdp);
 
     // The boot thread leaves the bootloader's stack here, which is the only way
     // to guard it: that stack has nothing below it and lives inside the direct
@@ -122,7 +122,7 @@ fn kernel_main(boot: BootInfo) -> ! {
     // runs in `boot_continue`, on a stack with an unmapped page beneath it.
     *HANDOFF.lock_leaf() = Some(Handoff {
         serial,
-        routing,
+        interrupts,
         module: boot.module,
     });
     match mem::map_boot_stack() {
@@ -142,7 +142,7 @@ fn kernel_main(boot: BootInfo) -> ! {
 /// pointer into it would be a pointer into memory nothing owns any more.
 struct Handoff {
     serial: Result<(), UartError>,
-    routing: Option<mem::Routing>,
+    interrupts: Option<acpi::Interrupts>,
     /// The initrd, which the boot thread reads before it changes stacks and
     /// the loader reads long after.
     module: Result<&'static [u8], wost::boot::HandoffError>,
@@ -176,7 +176,7 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     BOOT_STACK_GUARDED.store(guarded == 1, Ordering::Release);
     let Some(Handoff {
         serial,
-        routing,
+        interrupts,
         module,
     }) = HANDOFF.lock_leaf().take()
     else {
@@ -187,6 +187,7 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     // shadow in RAM is what stops every scroll reading uncached device memory
     // back (D-48).
     dev::attach_back_buffer();
+    let routing = prepare_keyboard_routing(interrupts);
 
     #[cfg(feature = "refuse-pci")]
     refuse_pci_for_degraded_boot();
@@ -743,9 +744,6 @@ fn survey_the_filesystems() {
 /// or whose registers would not answer, keeps the polled path Phase 2 left
 /// behind (D-37), which `input::start_poller` then gives a thread to.
 fn route_keyboard(routing: Option<mem::Routing>) {
-    /// The legacy line the keyboard controller has always used.
-    const KEYBOARD_IRQ: u8 = 1;
-
     let Some(mut routing) = routing else {
         info!("keyboard: no io apic; a poller thread drains it instead");
         return;
@@ -780,3 +778,20 @@ fn route_keyboard(routing: Option<mem::Routing>) {
         vector::KEYBOARD
     );
 }
+
+/// Map and select the controller which owns the keyboard's resolved GSI.
+///
+/// This runs before [`start_interrupts`], so probing masks every described
+/// controller while the CPU still refuses external delivery.
+fn prepare_keyboard_routing(interrupts: Option<acpi::Interrupts>) -> Option<mem::Routing> {
+    let interrupts = interrupts?;
+    let gsi = interrupts.gsi_for(KEYBOARD_IRQ);
+    let Some(mut context) = thread::ThreadContext::claim() else {
+        warn!("ioapic: no thread context for mapping; staying polled");
+        return None;
+    };
+    mem::prepare_routing(&mut context, interrupts, gsi)
+}
+
+/// The legacy line the keyboard controller has always used.
+const KEYBOARD_IRQ: u8 = 1;

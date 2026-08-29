@@ -9,8 +9,9 @@
 
 use core::fmt;
 use wost::arch::current::apic;
-
+use wost::arch::current::paging::ReleasableDevice;
 use wost::mmio::{MmioError, MmioRegion};
+use x86_apic::io::GsiRange;
 
 use crate::debug;
 
@@ -123,33 +124,103 @@ impl From<MmioError> for RoutingError {
     }
 }
 
-/// An I/O APIC.
-#[derive(Debug)]
-pub(crate) struct IoApic {
-    registers: MmioRegion,
-    gsi_base: u32,
-    entries: u32,
+/// Why an I/O APIC could not become a checked, masked controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TakeError {
+    /// The register window refused an access.
+    Registers(MmioError),
+    /// The ACPI base and hardware entry count leave the GSI namespace.
+    InvalidRange { base: u32, entries: u32 },
 }
 
-impl IoApic {
+impl fmt::Display for TakeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Registers(error) => write!(f, "{error}"),
+            Self::InvalidRange { base, entries } => {
+                write!(f, "{entries} entries from gsi {base} are not representable")
+            }
+        }
+    }
+}
+
+/// A failed controller probe together with the mapping it did not consume.
+#[derive(Debug)]
+pub(crate) struct TakeFailure<R> {
+    pub(crate) registers: R,
+    pub(crate) reason: TakeError,
+}
+
+/// The register operations shared by permanent and releasable mappings.
+pub(crate) trait RegisterAccess {
+    fn read_u32(&self, offset: usize) -> Result<u32, MmioError>;
+    fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError>;
+}
+
+impl RegisterAccess for MmioRegion {
+    fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
+        Self::read_u32(self, offset)
+    }
+
+    fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
+        Self::write_u32(self, offset, value)
+    }
+}
+
+impl RegisterAccess for ReleasableDevice {
+    fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
+        Self::read_u32(self, offset)
+    }
+
+    fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
+        Self::write_u32(self, offset, value)
+    }
+}
+
+/// An I/O APIC.
+#[derive(Debug)]
+pub(crate) struct IoApic<R = MmioRegion> {
+    registers: R,
+    range: GsiRange,
+}
+
+impl<R: RegisterAccess> IoApic<R> {
     /// Take over a controller whose registers are at `registers`.
     ///
     /// Masks every line it owns before returning: firmware leaves them in
     /// whatever state its own drivers wanted, and a kernel that unmasks one
     /// line while another is still live from before takes an interrupt it has
     /// no handler for.
-    pub(crate) fn take(mut registers: MmioRegion, gsi_base: u32) -> Result<Self, MmioError> {
-        let version = read(&mut registers, index::VERSION)?;
+    pub(crate) fn take(mut registers: R, gsi_base: u32) -> Result<Self, TakeFailure<R>> {
+        let version = match read(&mut registers, index::VERSION) {
+            Ok(version) => version,
+            Err(error) => {
+                return Err(TakeFailure {
+                    registers,
+                    reason: TakeError::Registers(error),
+                });
+            }
+        };
         // Bits 23:16 hold the highest entry index, so the count is one more.
         let entries = ((version >> 16) & 0xFF) + 1;
-
-        let mut io_apic = Self {
-            registers,
-            gsi_base,
-            entries,
+        let Some(range) = GsiRange::new(gsi_base, entries) else {
+            return Err(TakeFailure {
+                registers,
+                reason: TakeError::InvalidRange {
+                    base: gsi_base,
+                    entries,
+                },
+            });
         };
+
+        let mut io_apic = Self { registers, range };
         for line in 0..entries {
-            io_apic.mask_line(line)?;
+            if let Err(error) = io_apic.mask_line(line) {
+                return Err(TakeFailure {
+                    registers: io_apic.registers,
+                    reason: TakeError::Registers(error),
+                });
+            }
         }
         debug!("ioapic: {entries} entries from gsi {gsi_base}, all masked");
         Ok(io_apic)
@@ -163,12 +234,17 @@ impl IoApic {
     /// (D-121).
     #[cfg(feature = "selftest")]
     pub(crate) const fn base(&self) -> u32 {
-        self.gsi_base
+        self.range.first()
     }
 
     /// The global system interrupts this controller routes.
     pub(crate) const fn handles(&self, gsi: u32) -> bool {
-        gsi >= self.gsi_base && gsi - self.gsi_base < self.entries
+        self.range.contains(gsi)
+    }
+
+    /// The complete checked GSI range this controller routes.
+    pub(crate) const fn range(&self) -> GsiRange {
+        self.range
     }
 
     /// The line `gsi` occupies on this controller.
@@ -176,7 +252,7 @@ impl IoApic {
     /// Every entry below goes through this rather than subtracting for itself.
     fn line_for(&self, gsi: u32) -> Result<u32, RoutingError> {
         self.handles(gsi)
-            .then(|| gsi - self.gsi_base)
+            .then(|| gsi - self.range.first())
             .ok_or(RoutingError::NotOurs(gsi))
     }
 
@@ -230,19 +306,34 @@ impl IoApic {
     }
 }
 
+impl IoApic<ReleasableDevice> {
+    /// Make the selected controller permanent.
+    pub(crate) fn retain(self) -> IoApic {
+        IoApic {
+            registers: self.registers.retain(),
+            range: self.range,
+        }
+    }
+
+    /// Return the mapping behind an unselected controller.
+    pub(crate) fn into_releasable(self) -> ReleasableDevice {
+        self.registers
+    }
+}
+
 /// The first of the two register indices holding `line`'s redirection entry.
 const fn redirection(line: u32) -> u32 {
     index::REDIRECTION + line * 2
 }
 
 /// Read the indexed register `index`.
-fn read(registers: &mut MmioRegion, index: u32) -> Result<u32, MmioError> {
+fn read(registers: &mut impl RegisterAccess, index: u32) -> Result<u32, MmioError> {
     registers.write_u32(window::SELECT, index)?;
     registers.read_u32(window::DATA)
 }
 
 /// Write the indexed register `index`.
-fn write(registers: &mut MmioRegion, index: u32, value: u32) -> Result<(), MmioError> {
+fn write(registers: &mut impl RegisterAccess, index: u32, value: u32) -> Result<(), MmioError> {
     registers.write_u32(window::SELECT, index)?;
     registers.write_u32(window::DATA, value)
 }

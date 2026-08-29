@@ -1718,6 +1718,56 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "two simultaneously live handle tables receive one ownership identity",
         reddens: Caught::Check("table identities never wrap or repeat"),
     },
+    Mutation {
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                    model.io_apic_count += 1;",
+        replace: "                    model.io_apic_count = 1;",
+        breaks: "the MADT inventory discards every I/O APIC after the first",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_bounded_interrupt_inventory_keeps_every_controller",
+        },
+    },
+    Mutation {
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                    let Some(slot) = model.io_apics.get_mut(model.io_apic_count) else {\n                        return Err(InterruptError::TooManyIoApics { limit: IO_APICS });\n                    };",
+        replace: "                    let Some(slot) = model.io_apics.get_mut(model.io_apic_count) else {\n                        break;\n                    };",
+        breaks: "an over-capacity MADT is silently truncated into a usable inventory",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::an_interrupt_inventory_refuses_overflow_instead_of_truncating",
+        },
+    },
+    Mutation {
+        file: "libs/x86-apic/src/io.rs",
+        find: "        let Some(distance) = entries.checked_sub(1) else {\n            return None;\n        };",
+        replace: "        let distance = entries.saturating_sub(1);",
+        breaks: "an I/O APIC reporting zero entries claims its base GSI",
+        reddens: Caught::HostTest {
+            package: "x86-apic",
+            name: "io::tests::a_range_is_non_empty_and_stays_inside_the_gsi_namespace",
+        },
+    },
+    Mutation {
+        file: "libs/x86-apic/src/io.rs",
+        find: "    Ok(ranges.iter().position(|range| range.contains(gsi)))",
+        replace: "    Ok(ranges\n        .first()\n        .filter(|range| range.contains(gsi))\n        .map(|_| 0))",
+        breaks: "GSI ownership search stops at the first I/O APIC",
+        reddens: Caught::HostTest {
+            package: "x86-apic",
+            name: "io::tests::a_gsi_selects_its_later_controller_across_a_gap",
+        },
+    },
+    Mutation {
+        file: "libs/x86-apic/src/io.rs",
+        find: "            if ranges[first].overlaps(ranges[second]) {",
+        replace: "            if ranges[first].overlaps(ranges[second]) && first == second {",
+        breaks: "two I/O APICs may ambiguously own the same GSI",
+        reddens: Caught::HostTest {
+            package: "x86-apic",
+            name: "io::tests::any_overlap_refuses_the_complete_inventory",
+        },
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.

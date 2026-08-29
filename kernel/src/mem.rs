@@ -4,13 +4,17 @@
 //! pointer, so it is `wost`'s (D-43). What is here is the part that needs no
 //! privilege: deciding whether the handoff is usable at all, and saying so.
 
+use alloc::vec::Vec;
 use stack_layout::StackLayout;
 use wost::arch::current::cpu;
-use wost::arch::current::paging::{self, AddressSpace, BootRegion, MapError, MappedStack};
+use wost::arch::current::paging::{
+    self, AddressSpace, BootRegion, MapError, MappedStack, ReleasableDevice,
+};
 use wost::arch::current::segment;
 use wost::boot::{self, DirectMap, HandoffError, ImageAddress, MemoryKind, MemoryMap};
 use wost::mm;
 use wost::sync::SpinLock;
+use x86_apic::io;
 use x86_paging::Flags;
 
 use crate::acpi::Interrupts;
@@ -299,7 +303,7 @@ pub(crate) fn init_paging(
     direct: Result<DirectMap, HandoffError>,
     image: Result<ImageAddress, HandoffError>,
     rsdp: Result<u64, HandoffError>,
-) -> Option<Routing> {
+) -> Option<Interrupts> {
     let (Ok(map), Ok(direct), Ok(image)) = (map, direct, image) else {
         warn!("paging: incomplete handoff; staying on the bootloader's tables");
         return None;
@@ -338,17 +342,6 @@ pub(crate) fn init_paging(
         }
     };
 
-    // Claimed after the switch, mapped before it.
-    let pending = interrupts.and_then(|interrupts| {
-        match space.map_device(u64::from(interrupts.io_apic().address), IO_APIC_WINDOW) {
-            Ok(mapping) => Some((mapping, interrupts)),
-            Err(reason) => {
-                warn!("ioapic: not mapped: {reason}; no interrupt routing");
-                None
-            }
-        }
-    });
-
     // Before the switch: the CR3 load is the flush the PAT rewrite needs.
     let write_combining = cpu::enable_write_combining();
 
@@ -381,18 +374,133 @@ pub(crate) fn init_paging(
         info!("framebuffer: write-combining");
     }
 
-    let (mapping, interrupts) = pending?;
-    let registers = mapping.claim()?;
-    match IoApic::take(registers, interrupts.io_apic().gsi_base) {
-        Ok(io_apic) => Some(Routing {
-            io_apic,
-            interrupts,
-        }),
+    interrupts
+}
+
+/// Probe every described I/O APIC and retain the unique owner of `gsi`.
+///
+/// Called before interrupts are enabled. Every controller is therefore masked
+/// before firmware state could deliver an unowned vector, while the active
+/// address space lets all temporary mappings be returned after selection.
+pub(crate) fn prepare_routing(
+    context: &mut ThreadContext,
+    interrupts: Interrupts,
+    gsi: u32,
+) -> Option<Routing> {
+    let count = interrupts.io_apic_count();
+    let mut controllers = Vec::new();
+    let mut ranges = Vec::new();
+    if controllers.try_reserve_exact(count).is_err() || ranges.try_reserve_exact(count).is_err() {
+        warn!("ioapic: no memory for {count} routing candidates; staying polled");
+        return None;
+    }
+
+    for description in interrupts.io_apics() {
+        let Some(controller) = probe_io_apic(context, description) else {
+            release_io_apics(context, &mut controllers);
+            return None;
+        };
+        ranges.push(controller.range());
+        controllers.push(controller);
+    }
+
+    let owner = match io::owner_of(&ranges, gsi) {
+        Ok(Some(owner)) => owner,
+        Ok(None) => {
+            warn!("keyboard: no io apic owns gsi {gsi}; staying polled");
+            release_io_apics(context, &mut controllers);
+            return None;
+        }
         Err(reason) => {
-            warn!("ioapic: registers unreadable: {reason}; no interrupt routing");
+            warn!("ioapic: {reason}; staying polled");
+            release_io_apics(context, &mut controllers);
+            return None;
+        }
+    };
+    let Some(selected) = interrupts.io_apics().nth(owner) else {
+        warn!("ioapic: selected controller has no firmware description; staying polled");
+        release_io_apics(context, &mut controllers);
+        return None;
+    };
+
+    // Releasing in reverse restores the transient device-window cursor. The
+    // owner is then mapped once in its final permanent position, rather than
+    // leaving holes for every controller inspected before it.
+    if !release_io_apics(context, &mut controllers) {
+        warn!("ioapic: candidate mappings did not retire exactly; staying polled");
+        return None;
+    }
+    let io_apic = probe_io_apic(context, selected)?.retain();
+    Some(Routing {
+        io_apic,
+        interrupts,
+    })
+}
+
+/// Map, mask and retain removal authority for one routing candidate.
+fn probe_io_apic(
+    context: &mut ThreadContext,
+    description: acpi_tables::IoApic,
+) -> Option<IoApic<ReleasableDevice>> {
+    let mapping = match map_device(context, u64::from(description.address()), IO_APIC_WINDOW) {
+        Some(Ok(mapping)) => mapping,
+        Some(Err(reason)) => {
+            warn!(
+                "ioapic {}: registers at {:#x} not mapped: {reason}; staying polled",
+                description.id(),
+                description.address()
+            );
+            return None;
+        }
+        None => {
+            warn!("ioapic: no active address space; staying polled");
+            return None;
+        }
+    };
+    let registers = match mapping.claim_releasable() {
+        Ok(registers) => registers,
+        Err(_) => {
+            warn!(
+                "ioapic {}: mapped registers are not live; staying polled",
+                description.id()
+            );
+            return None;
+        }
+    };
+    match IoApic::take(registers, description.gsi_base()) {
+        Ok(controller) => Some(controller),
+        Err(failure) => {
+            let reason = failure.reason;
+            let released = matches!(unmap_device(context, failure.registers), Some(Ok(())));
+            warn!(
+                "ioapic {}: registers unusable: {reason}; mapping returned={released}; staying polled",
+                description.id()
+            );
             None
         }
     }
+}
+
+/// Return candidate mappings in the order that restores their window cursor.
+fn release_io_apics(
+    context: &mut ThreadContext,
+    controllers: &mut Vec<IoApic<ReleasableDevice>>,
+) -> bool {
+    let mut exact = true;
+    while let Some(controller) = controllers.pop() {
+        match unmap_device(context, controller.into_releasable()) {
+            Some(Ok(())) => {}
+            Some(Err(reason)) => {
+                warn!("ioapic: candidate mapping not returned: {reason}");
+                exact = false;
+            }
+            None => {
+                warn!("ioapic: active address space disappeared during cleanup");
+                exact = false;
+            }
+        }
+    }
+    exact
 }
 
 /// Bytes of register window an I/O APIC occupies. The index/data pair sits in

@@ -2162,4 +2162,19 @@ impl ReleasableDevice {
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), crate::mmio::MmioError> {
         self.registers.write_u32(offset, value)
     }
+
+    /// Keep this mapping permanently and return its register access.
+    ///
+    /// Consuming the removal token makes the mapping intentionally
+    /// unreachable to [`AddressSpace::unmap_device`]. This is for the one
+    /// controller selected after a set of temporary device probes; all
+    /// rejected candidates should return their tokens instead.
+    #[must_use]
+    pub fn retain(self) -> MmioRegion {
+        let Self {
+            mapping: _,
+            registers,
+        } = self;
+        registers
+    }
 }

@@ -1,4 +1,4 @@
-//! Local APIC register encoding.
+//! Local and I/O APIC register encoding and range policy.
 //!
 //! Which register is which, which bit software-enables the controller, how a
 //! local vector table entry packs a vector and a mask, what a self-directed
@@ -35,6 +35,7 @@
 
 pub mod base;
 pub mod command;
+pub mod io;
 pub mod local_vector;
 pub mod register;
 pub mod spurious;

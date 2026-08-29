@@ -488,6 +488,17 @@ pub(crate) fn blocks() -> usize {
     BLOCKS.load(Ordering::Relaxed)
 }
 
+/// Whether one exact slot is blocked on an undated wait.
+#[cfg(feature = "selftest")]
+pub(crate) fn slot_is_blocked(slot: usize) -> bool {
+    THREADS
+        .lock_leaf()
+        .queue
+        .slots
+        .get(slot)
+        .is_some_and(|scheduled| scheduled.state == State::Blocked)
+}
+
 /// Ring-3 waits which switched through their saved trap frame.
 #[cfg(feature = "selftest")]
 pub(crate) fn trap_waits() -> usize {
