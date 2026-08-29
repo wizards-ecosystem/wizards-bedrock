@@ -790,12 +790,11 @@ impl Controller {
         // Poll for a completion carrying the phase this pass expects. There is
         // no tail to read; the phase tag is the whole of how a new entry is
         // recognised (`012` §3).
+        let mut limit = PollLimit::after_ms(clock_ns(), COMMAND_TIMEOUT_MS, POLL_ATTEMPTS);
         #[cfg(feature = "selftest")]
         if self.force_timeout {
-            return self.fail_submitted(BringUpError::NotReady, data);
+            limit = PollLimit::Attempts(0);
         }
-
-        let mut limit = PollLimit::after_ms(clock_ns(), COMMAND_TIMEOUT_MS, POLL_ATTEMPTS);
         while limit.permit(clock_ns()) {
             let found = {
                 let Some(queue) = self.queue_mut(which) else {

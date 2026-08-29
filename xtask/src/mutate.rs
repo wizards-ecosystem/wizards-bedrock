@@ -32,7 +32,9 @@
 //! **A red run is causal only after green.** D-209 proves each witness class
 //! green before touching the snapshot. Machine mutations must then produce
 //! their exact named check or registry-pinned panic marker; any other failure
-//! is inconclusive rather than caught.
+//! is inconclusive rather than caught. D-232 permits one bounded second
+//! observation after an inconclusive first; a survivor or exact catch is
+//! terminal, and two inconclusive observations still fail qualification.
 //!
 //! D-210 keeps one consequential production-source break alive in every pure
 //! crate. A host command must print the exact test's own pass or failure line;
@@ -577,7 +579,7 @@ pub const MUTATIONS: &[Mutation] = &[
             }
             ended += 1;",
         replace: "            let _ = entry;
-            self.pending.lock_leaf()[index] = None;
+            self.pending.lock_leaf().slots[index] = None;
             ended += 1;",
         breaks: "a dead program's work is finished, not forgotten",
         reddens: Caught::Check("work in flight is ended before the ring is released"),
@@ -3038,6 +3040,16 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "prose::tests::every_documented_xtask_invocation_parses",
         },
     },
+    Mutation {
+        file: "xtask/src/mutate.rs",
+        find: "const MACHINE_OBSERVATIONS: usize = 2;\n\nfn qualify_machine_mutation",
+        replace: "const MACHINE_OBSERVATIONS: usize = 1;\n\nfn qualify_machine_mutation",
+        breaks: "one incidental machine failure can invalidate an otherwise exact mutation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::an_inconclusive_machine_observation_gets_one_bounded_retry",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -3324,8 +3336,37 @@ fn mutation_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
             }
         };
     }
-    let observed = tasks::observe_test_boot(paths, crate::cargo::Profile::Release)?;
-    assess_selftest(wanted, observed)
+    qualify_machine_mutation(wanted, || {
+        tasks::observe_test_boot(paths, crate::cargo::Profile::Release)
+    })
+}
+
+const MACHINE_OBSERVATIONS: usize = 2;
+
+fn qualify_machine_mutation(
+    wanted: Caught,
+    mut observe: impl FnMut() -> Result<qemu::SelftestOutcome>,
+) -> Result<bool> {
+    let mut first_error = None;
+    for attempt in 1..=MACHINE_OBSERVATIONS {
+        match observe().and_then(|observed| assess_selftest(wanted, observed)) {
+            Ok(caught) => return Ok(caught),
+            Err(error) if attempt < MACHINE_OBSERVATIONS => {
+                let report = format!("{error:#}");
+                eprintln!("[xtask]   machine observation inconclusive; retrying once: {report}");
+                first_error = Some(report);
+            }
+            Err(error) => {
+                if let Some(first) = first_error {
+                    bail!(
+                        "machine mutation remained inconclusive after {MACHINE_OBSERVATIONS} observations; first: {first}; retry: {error:#}"
+                    );
+                }
+                return Err(error);
+            }
+        }
+    }
+    unreachable!("the bounded observation loop returns on every outcome")
 }
 
 fn assess_selftest(wanted: Caught, observed: qemu::SelftestOutcome) -> Result<bool> {
@@ -3648,6 +3689,34 @@ mod tests {
             )
             .is_ok_and(|caught| caught)
         );
+    }
+
+    #[test]
+    fn an_inconclusive_machine_observation_gets_one_bounded_retry() {
+        let wanted = Caught::Check("the intended check");
+        let mut observations = 0;
+        let caught = qualify_machine_mutation(wanted, || {
+            observations += 1;
+            Ok(if observations == 1 {
+                qemu::SelftestOutcome::Panicked("incidental panic".to_string())
+            } else {
+                qemu::SelftestOutcome::Failed(vec!["the intended check".to_string()])
+            })
+        })
+        .expect("the exact retry is causal");
+        assert!(caught);
+        assert_eq!(observations, 2);
+
+        observations = 0;
+        let error = qualify_machine_mutation(wanted, || {
+            observations += 1;
+            Ok(qemu::SelftestOutcome::Panicked(
+                "incidental panic".to_string(),
+            ))
+        })
+        .expect_err("repeated inconclusive observations still fail qualification");
+        assert_eq!(observations, 2);
+        assert!(error.to_string().contains("after 2 observations"));
     }
 
     /// No two mutations break the same property.
