@@ -6940,6 +6940,55 @@ fn the_polled_fallback_runs_its_rounds_and_sleeps() -> bool {
     passes == ROUNDS && exited && slept
 }
 
+/// Release every thread used to fill the table before the idle retry.
+static RELEASE_IDLE_FILLERS: AtomicUsize = AtomicUsize::new(0);
+
+fn wait_for_idle_retry() {
+    while RELEASE_IDLE_FILLERS.load(Ordering::Acquire) == 0 {
+        spin_loop();
+    }
+}
+
+/// A full table refuses idle creation without consuming its future retry.
+fn a_failed_idle_start_can_be_retried_exactly_once() -> bool {
+    let free = thread::free_slots();
+    if free == 0 || thread::idle_threads() != 0 {
+        return false;
+    }
+
+    RELEASE_IDLE_FILLERS.store(0, Ordering::Release);
+    for _ in 0..free {
+        if thread::spawn("idle-slot-filler", wait_for_idle_retry).is_err() {
+            RELEASE_IDLE_FILLERS.store(1, Ordering::Release);
+            let _ = yields_until(|| thread::free_slots() == free);
+            return false;
+        }
+    }
+
+    thread::start_idle();
+    let refused =
+        thread::free_slots() == 0 && !thread::idle_is_started() && thread::idle_threads() == 0;
+
+    RELEASE_IDLE_FILLERS.store(1, Ordering::Release);
+    let released = yields_until(|| thread::free_slots() == free);
+    RELEASE_IDLE_FILLERS.store(0, Ordering::Release);
+    if !released {
+        return false;
+    }
+
+    thread::start_idle();
+    thread::start_idle();
+    let exact = refused
+        && thread::idle_is_started()
+        && thread::idle_threads() == 1
+        && thread::free_slots() + 1 == free;
+    if !thread::idle_is_started() {
+        thread::restore_idle_retry_for_test();
+        thread::start_idle();
+    }
+    exact
+}
+
 /// The idle thread runs when nothing else can, and never when something can.
 ///
 /// Both halves, because either alone is satisfied by a bug: an idle thread
@@ -7056,7 +7105,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 208;
+const EXPECTED_CHECKS: usize = 209;
 
 impl Report {
     const fn new() -> Self {
@@ -7797,6 +7846,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     // state the sleep checks needed: with nothing else runnable, a sleeper
     // halts on its own stack, and that branch has no other witness. From here
     // there is always something runnable, which is what the rest assumes.
+    report.check(
+        "a failed idle start can be retried exactly once",
+        a_failed_idle_start_can_be_retried_exactly_once(),
+    );
     thread::start_idle();
     report.check("the idle thread is running", thread::idle_is_started());
     report.check(

@@ -17,7 +17,7 @@
 //! half-made decision.
 
 use core::fmt;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use eevdf::{BASE_WEIGHT, Entity};
 use stack_layout::StackLayout;
@@ -25,8 +25,8 @@ use wost::arch::current::cpu;
 use wost::arch::current::interrupt::{self, TrapFrame};
 use wost::arch::current::paging::{Binding, StackArena};
 use wost::arch::current::task::{self, BOOT, TaskError};
+use wost::sync::SpinLock;
 pub(crate) use wost::sync::ThreadContext;
-use wost::sync::{Once, SpinLock};
 
 use crate::time::{self, NANOSECONDS_PER_MS};
 
@@ -424,8 +424,12 @@ static TRAP_WAITS: AtomicUsize = AtomicUsize::new(0);
 /// to do.
 static IDLE_HALTS: AtomicUsize = AtomicUsize::new(0);
 
-/// Started once, by whoever gets there first.
-static IDLE_STARTED: Once = Once::new();
+const IDLE_UNSTARTED: u8 = 0;
+const IDLE_STARTING: u8 = 1;
+const IDLE_STARTED: u8 = 2;
+
+/// Reserved while an idle spawn is in flight and committed only on success.
+static IDLE_STATE: AtomicU8 = AtomicU8::new(IDLE_UNSTARTED);
 
 /// Take the mapped arena into use, making the caller the boot thread.
 ///
@@ -499,7 +503,30 @@ pub(crate) fn idle_halts() -> usize {
 /// Whether the idle thread is running.
 #[cfg(feature = "selftest")]
 pub(crate) fn idle_is_started() -> bool {
-    IDLE_STARTED.is_claimed() && THREADS.lock_leaf().queue.idle().is_some()
+    IDLE_STATE.load(Ordering::Acquire) == IDLE_STARTED && THREADS.lock_leaf().queue.idle().is_some()
+}
+
+/// How many live slots are classified as idle.
+#[cfg(feature = "selftest")]
+pub(crate) fn idle_threads() -> usize {
+    THREADS
+        .lock_leaf()
+        .queue
+        .slots
+        .iter()
+        .filter(|slot| slot.class == Class::Idle && slot.state != State::Free)
+        .count()
+}
+
+/// Release a deliberately burned in-progress reservation after its check.
+#[cfg(feature = "selftest")]
+pub(crate) fn restore_idle_retry_for_test() {
+    let _ = IDLE_STATE.compare_exchange(
+        IDLE_STARTING,
+        IDLE_UNSTARTED,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
 }
 
 /// Start the thread that runs when nothing else can.
@@ -507,15 +534,38 @@ pub(crate) fn idle_is_started() -> bool {
 /// Outside the policy entirely (see [`Class::Idle`]), so a machine with
 /// nothing to do halts on this thread and still takes no interrupts — the
 /// difference being that everything else may now assume something is
-/// runnable. Does nothing after the first call, or with no threads.
+/// runnable. Does nothing once started, while another attempt is active, or
+/// with no threads. A refused spawn leaves a later call free to retry.
 pub(crate) fn start_idle() {
-    if !is_available() || !IDLE_STARTED.claim() {
+    if !is_available()
+        || IDLE_STATE
+            .compare_exchange(
+                IDLE_UNSTARTED,
+                IDLE_STARTING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+    {
         return;
     }
-    let Ok(slot) = spawn("idle", idle_loop) else {
+
+    let spawned = spawn_prepared(
+        "idle",
+        idle_loop,
+        BASE_WEIGHT,
+        None,
+        |slot| {
+            THREADS.lock_leaf().queue.slots[slot].class = Class::Idle;
+            true
+        },
+        |_| false,
+    );
+    if spawned.is_err() {
+        IDLE_STATE.store(IDLE_UNSTARTED, Ordering::Release);
         return;
-    };
-    THREADS.lock_leaf().queue.slots[slot].class = Class::Idle;
+    }
+    IDLE_STATE.store(IDLE_STARTED, Ordering::Release);
 }
 
 /// What the idle thread does: nothing, as cheaply as the hardware allows.

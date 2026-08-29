@@ -1673,6 +1673,13 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a clockless Timer is refused before it becomes pending",
         reddens: Caught::Check("an uncalibrated clock admits no user or timer"),
     },
+    Mutation {
+        file: "kernel/src/thread.rs",
+        find: "    if spawned.is_err() {\n        IDLE_STATE.store(IDLE_UNSTARTED, Ordering::Release);\n        return;\n    }",
+        replace: "    if spawned.is_err() {\n        IDLE_STATE.store(IDLE_STARTING, Ordering::Release);\n        return;\n    }",
+        breaks: "a refused idle spawn leaves its reservation permanently burned",
+        reddens: Caught::Check("a failed idle start can be retried exactly once"),
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.
