@@ -1899,8 +1899,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/mutation_workspace.rs",
-        find: "    std::fs::copy(&source, &destination).with_context(|| {\n        format!(\n            \"restoring isolated mutation {} from {}\",\n            destination.display(),\n            source.display()\n        )\n    })?;",
-        replace: "    let _ = (&source, &destination);",
+        find: "    write_source(&destination, &bytes)?;\n    ensure!(\n        std::fs::read(&destination)",
+        replace: "    ensure!(\n        std::fs::read(&destination)",
         breaks: "resume leaves the interrupted mutation applied in its sandbox",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -3050,14 +3050,26 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "mutate::tests::an_inconclusive_machine_observation_gets_one_bounded_retry",
         },
     },
+    // The bytes on disk are pristine either way; only a rebuild of everything
+    // that inlined them can tell the two apart.
     Mutation {
         file: "xtask/src/mutation_workspace.rs",
-        find: "    restore_file(snapshot, paths.root(), relative)?;\n    invalidate_package(paths, relative)",
-        replace: "    restore_file(snapshot, paths.root(), relative)?;\n    Ok(())",
-        breaks: "restoring a mutated source leaves its compiled package live",
+        find: "    write_source(&destination, &bytes)?;\n    ensure!(",
+        replace: "    std::fs::copy(&source, &destination)\n        .map(|_| ())\n        .with_context(|| format!(\"writing {}\", destination.display()))?;\n    ensure!(",
+        breaks: "a restored mutation carries its snapshot timestamp backwards",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "mutation_workspace::tests::restoring_a_compiled_input_invalidates_its_package",
+            name: "mutation_workspace::tests::a_restored_input_is_what_the_next_build_observes",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutation_workspace.rs",
+        find: "        let bytes =\n            std::fs::read(&source).with_context(|| format!(\"reading {}\", source.display()))?;\n        write_source(&destination, &bytes)?;",
+        replace: "        std::fs::copy(&source, &destination)\n            .map(|_| ())\n            .with_context(|| format!(\"copying {}\", source.display()))?;",
+        breaks: "a re-copied workspace carries its snapshot timestamps backwards",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::a_recopied_workspace_is_what_the_next_build_observes",
         },
     },
     Mutation {
@@ -3108,50 +3120,6 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::HostTest {
             package: "xtask",
             name: "vmware::tests::a_generated_vm_starts_with_a_fresh_serial_transcript",
-        },
-    },
-    Mutation {
-        file: "xtask/src/mutation_workspace.rs",
-        find: "    if relative.starts_with(\"wost/\") {\n        return clean_packages(\n            paths,\n            &[package, crate::paths::KERNEL_PACKAGE],\n            Some(crate::paths::KERNEL_TARGET),\n        );\n    }",
-        replace: "    if relative.starts_with(\"wost/\") {\n        return clean_packages(\n            paths,\n            &[package],\n            Some(crate::paths::KERNEL_TARGET),\n        );\n    }",
-        breaks: "restoring a target dependency leaves its linked kernel artifact live",
-        reddens: Caught::HostTest {
-            package: "xtask",
-            name: "mutation_workspace::tests::restoring_a_compiled_input_invalidates_its_package",
-        },
-    },
-    Mutation {
-        file: "xtask/src/mutation_workspace.rs",
-        find: "    if relative.starts_with(\"wost/\") {\n        return clean_packages(\n            paths,\n            &[package, crate::paths::KERNEL_PACKAGE],\n            Some(crate::paths::KERNEL_TARGET),\n        );\n    }",
-        replace: "    if relative.starts_with(\"wost/\") {\n        return clean_packages(\n            paths,\n            &[package, crate::paths::KERNEL_PACKAGE],\n            None,\n        );\n    }",
-        breaks: "restoring a target dependency leaves its cross-target artifacts live",
-        reddens: Caught::HostTest {
-            package: "xtask",
-            name: "mutation_workspace::tests::restoring_a_compiled_input_invalidates_its_package",
-        },
-    },
-    // A library reaches the kernel through `wost`, which inlines it. Naming
-    // only the far end of that chain leaves the near one holding the defect.
-    Mutation {
-        file: "xtask/src/mutation_workspace.rs",
-        find: "        let mut consumers = vec![package];\n        consumers.extend_from_slice(crate::paths::KERNEL_PACKAGES);",
-        replace: "        let mut consumers = vec![package];\n        consumers.push(crate::paths::KERNEL_PACKAGE);",
-        breaks: "restoring a library leaves the wost artifact that inlined it live",
-        reddens: Caught::HostTest {
-            package: "xtask",
-            name: "mutation_workspace::tests::restoring_a_library_input_invalidates_every_consumer",
-        },
-    },
-    // `xtask` inlines three libraries the same way, so the host side needs
-    // every host member and not just the one whose source came back.
-    Mutation {
-        file: "xtask/src/mutation_workspace.rs",
-        find: "        let host: Vec<&str> = members.iter().map(String::as_str).collect();\n        clean_packages(paths, &host, None)?;",
-        replace: "        clean_packages(paths, &[package], None)?;",
-        breaks: "restoring a library leaves the host artifacts that inlined it live",
-        reddens: Caught::HostTest {
-            package: "xtask",
-            name: "mutation_workspace::tests::restoring_a_library_input_invalidates_every_consumer",
         },
     },
 ];

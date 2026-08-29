@@ -1,9 +1,8 @@
 //! Crash-safe isolation and progress for mutation sweeps.
 //!
-//! Restoring source also invalidates its compiled package and every artifact
-//! that linked it. Cargo's timestamp cache can otherwise keep the previous
-//! mutation's object after the snapshot copy, and a consumer that inlined it
-//! stays fresh even once the bytes are pristine (D-233, D-236).
+//! Source the harness lays down is written, never copied. `fs::copy` carries
+//! the snapshot timestamp with it, and a source older than the object built
+//! from the mutation is exactly what Cargo declines to rebuild (D-237).
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -137,7 +136,7 @@ impl Session {
             index == self.journal.completed.len(),
             "active progress is not contiguous"
         );
-        restore_build_input(&self.snapshot, &self.workspace, relative)?;
+        restore_file(&self.snapshot, self.workspace.root(), relative)?;
         self.journal.active = None;
         self.store.save(&mut self.journal)
     }
@@ -176,7 +175,7 @@ impl Session {
             self.journal.active == Some(index),
             "another mutation is active"
         );
-        restore_build_input(&self.snapshot, &self.workspace, relative)?;
+        restore_file(&self.snapshot, self.workspace.root(), relative)?;
         self.journal.completed.push(outcome);
         self.journal.active = None;
         self.store.save(&mut self.journal)
@@ -334,114 +333,37 @@ fn copy_tracked(from: &Path, to: &Path, tracked: &[PathBuf]) -> Result<()> {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        std::fs::copy(&source, &destination).with_context(|| {
-            format!("copying {} to {}", source.display(), destination.display())
-        })?;
+        let bytes =
+            std::fs::read(&source).with_context(|| format!("reading {}", source.display()))?;
+        write_source(&destination, &bytes)?;
     }
     Ok(())
+}
+
+/// Write a source file the way an editor would, so the build system sees it
+/// change.
+///
+/// `std::fs::copy` carries the source's timestamp onto the destination, which
+/// moves a restored file *backwards* in time — behind the object built from
+/// the mutation. Cargo calls that fresh and keeps the defect, in the package
+/// and in everything that inlined it (D-237).
+fn write_source(destination: &Path, bytes: &[u8]) -> Result<()> {
+    std::fs::write(destination, bytes).with_context(|| format!("writing {}", destination.display()))
 }
 
 fn restore_file(snapshot: &Path, workspace: &Path, relative: &str) -> Result<()> {
     let source = checked_join(snapshot, relative)?;
     let destination = checked_join(workspace, relative)?;
-    std::fs::copy(&source, &destination).with_context(|| {
-        format!(
-            "restoring isolated mutation {} from {}",
-            destination.display(),
-            source.display()
-        )
-    })?;
+    let bytes =
+        std::fs::read(&source).with_context(|| format!("reading snapshot {}", source.display()))?;
+    write_source(&destination, &bytes)?;
     ensure!(
-        std::fs::read(&source).with_context(|| format!("reading {}", source.display()))?
-            == std::fs::read(&destination)
-                .with_context(|| format!("reading {}", destination.display()))?,
+        std::fs::read(&destination)
+            .with_context(|| format!("reading {}", destination.display()))?
+            == bytes,
         "restored mutation file differs from its snapshot"
     );
     Ok(())
-}
-
-fn restore_build_input(snapshot: &Path, paths: &Paths, relative: &str) -> Result<()> {
-    restore_file(snapshot, paths.root(), relative)?;
-    invalidate_package(paths, relative)
-}
-
-fn invalidate_package(paths: &Paths, relative: &str) -> Result<()> {
-    let Some(package) = source_package(relative) else {
-        return Ok(());
-    };
-    // A restored package rebuilds to its old fingerprint, so every artifact
-    // already linked against it stays fresh with the defect inlined (D-236).
-    if relative.starts_with("wost/") {
-        return clean_packages(
-            paths,
-            &[package, crate::paths::KERNEL_PACKAGE],
-            Some(crate::paths::KERNEL_TARGET),
-        );
-    }
-    if relative.starts_with("kernel/") {
-        return clean_packages(paths, &[package], Some(crate::paths::KERNEL_TARGET));
-    }
-    if relative.starts_with("libs/") {
-        let manifest = std::fs::read_to_string(paths.root().join("Cargo.toml"))
-            .context("reading the workspace manifest")?;
-        let members = crate::paths::default_members(&manifest);
-        ensure!(
-            members.iter().any(|member| member == package),
-            "restored library {package} is not a host workspace member"
-        );
-        let host: Vec<&str> = members.iter().map(String::as_str).collect();
-        clean_packages(paths, &host, None)?;
-        let mut consumers = vec![package];
-        consumers.extend_from_slice(crate::paths::KERNEL_PACKAGES);
-        return clean_packages(paths, &consumers, Some(crate::paths::KERNEL_TARGET));
-    }
-    clean_packages(paths, &[package], None)
-}
-
-fn clean_packages(paths: &Paths, packages: &[&str], target: Option<&str>) -> Result<()> {
-    let mut command = Command::new(env!("CARGO"));
-    command
-        .current_dir(paths.root())
-        .env("CARGO_TARGET_DIR", paths.target_dir())
-        .arg("clean");
-    if let Some(target) = target {
-        command.args(["--target", target]);
-    }
-    for package in packages {
-        command.args(["--package", package]);
-    }
-    let output = command.output().with_context(|| {
-        format!(
-            "spawning Cargo to invalidate restored package(s) {} for {}",
-            packages.join(", "),
-            target.unwrap_or("the host")
-        )
-    })?;
-    if !output.status.success() {
-        bail!(
-            "invalidating restored package(s) {} for {} failed ({}): {}",
-            packages.join(", "),
-            target.unwrap_or("the host"),
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
-}
-
-fn source_package(relative: &str) -> Option<&str> {
-    if relative.starts_with("kernel/") {
-        Some(crate::paths::KERNEL_PACKAGE)
-    } else if relative.starts_with("wost/") {
-        Some("wost")
-    } else if relative.starts_with("xtask/") {
-        Some("xtask")
-    } else {
-        relative
-            .strip_prefix("libs/")?
-            .split_once('/')
-            .map(|(package, _)| package)
-    }
 }
 
 fn checked_join(root: &Path, relative: &str) -> Result<PathBuf> {
@@ -876,216 +798,110 @@ mod tests {
         assert!(status.stdout.is_empty());
     }
 
-    #[test]
-    fn restoring_a_compiled_input_invalidates_its_package() {
-        let temp = TempTree::new("invalidation");
+    fn chain_source(value: u8) -> String {
+        format!("#[inline(always)]\npub fn value() -> u8 {{ {value} }}\n")
+    }
+
+    /// A workspace whose library value is inlined through two more crates, so
+    /// only a real rebuild of the whole chain can change what it prints.
+    ///
+    /// The snapshot is written before the first build on purpose: that is what
+    /// makes its timestamp older than the objects a later restore has to
+    /// invalidate.
+    fn chain(name: &str) -> (TempTree, PathBuf, Paths) {
+        let temp = TempTree::new(name);
         let snapshot = temp.0.join("snapshot");
         let workspace = temp.0.join("workspace");
         let build = temp.0.join("build");
-        std::fs::create_dir_all(snapshot.join("wost/src")).expect("snapshot source");
-        std::fs::create_dir_all(workspace.join("wost/src")).expect("workspace source");
-        std::fs::create_dir_all(workspace.join("kernel/src")).expect("kernel source");
-        std::fs::write(
-            workspace.join("Cargo.toml"),
-            "[workspace]\nmembers = [\"wost\", \"kernel\"]\nresolver = \"3\"\n",
-        )
-        .expect("workspace manifest");
-        std::fs::write(
-            workspace.join("wost/Cargo.toml"),
-            "[package]\nname = \"wost\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
-        )
-        .expect("package manifest");
-        std::fs::write(
-            workspace.join("kernel/Cargo.toml"),
-            "[package]\nname = \"wizard-kernel\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-             [dependencies]\nwost = { path = \"../wost\" }\n",
-        )
-        .expect("kernel manifest");
-        std::fs::write(
-            snapshot.join("wost/src/lib.rs"),
-            "#![no_std]\npub fn value() -> u8 { 1 }\n",
-        )
-        .expect("snapshot input");
-        std::fs::write(
-            workspace.join("wost/src/lib.rs"),
-            "#![no_std]\npub fn value() -> u8 { 2 }\n",
-        )
-        .expect("mutated input");
-        std::fs::write(
-            workspace.join("kernel/src/lib.rs"),
-            "#![no_std]\npub fn observed() -> u8 { wost::value() }\n",
-        )
-        .expect("kernel input");
+        std::fs::create_dir_all(snapshot.join("libs/probe/src")).expect("snapshot source");
+        for directory in ["libs/probe/src", "middle/src", "app/src"] {
+            std::fs::create_dir_all(workspace.join(directory)).expect("workspace source");
+        }
+        for (path, contents) in [
+            (
+                "Cargo.toml",
+                "[workspace]\nresolver = \"3\"\nmembers = [\"libs/probe\", \"middle\", \"app\"]\n",
+            ),
+            (
+                "libs/probe/Cargo.toml",
+                "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+            ),
+            (
+                "middle/Cargo.toml",
+                "[package]\nname = \"middle\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
+                 [dependencies]\nprobe = { path = \"../libs/probe\" }\n",
+            ),
+            (
+                "app/Cargo.toml",
+                "[package]\nname = \"app\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
+                 [dependencies]\nmiddle = { path = \"../middle\" }\n",
+            ),
+            (
+                "middle/src/lib.rs",
+                "#[inline(always)]\npub fn seen() -> u8 { probe::value() }\n",
+            ),
+            (
+                "app/src/main.rs",
+                "fn main() { print!(\"{}\", middle::seen()); }\n",
+            ),
+        ] {
+            std::fs::write(workspace.join(path), contents).expect("fixture file");
+        }
+        std::fs::write(snapshot.join(CHAIN_INPUT), chain_source(1)).expect("snapshot input");
+        std::fs::write(workspace.join(CHAIN_INPUT), chain_source(1)).expect("pristine input");
+        (temp, snapshot, Paths::new(workspace, Some(&build)))
+    }
 
-        let paths = Paths::new(workspace, Some(&build));
+    const CHAIN_INPUT: &str = "libs/probe/src/lib.rs";
+
+    fn observed(paths: &Paths) -> String {
         let output = Command::new(env!("CARGO"))
             .current_dir(paths.root())
             .env("CARGO_TARGET_DIR", paths.target_dir())
-            .args([
-                "check",
-                "--package",
-                crate::paths::KERNEL_PACKAGE,
-                "--target",
-                crate::paths::KERNEL_TARGET,
-            ])
+            .args(["run", "--quiet", "--package", "app"])
             .output()
-            .expect("building mutated target consumer");
+            .expect("running the fixture application");
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let dependencies = build.join(crate::paths::KERNEL_TARGET).join("debug/deps");
-        let has_wost_artifact = || {
-            std::fs::read_dir(&dependencies)
-                .expect("package artifacts")
-                .flatten()
-                .any(|entry| entry.file_name().to_string_lossy().contains("wost"))
-        };
-        let has_kernel_artifact = || {
-            std::fs::read_dir(&dependencies)
-                .expect("kernel artifacts")
-                .flatten()
-                .any(|entry| {
-                    entry
-                        .file_name()
-                        .to_string_lossy()
-                        .contains("wizard_kernel")
-                })
-        };
-        assert!(has_wost_artifact());
-        assert!(has_kernel_artifact());
-
-        restore_build_input(&snapshot, &paths, "wost/src/lib.rs").expect("restoring input");
-        assert_eq!(
-            std::fs::read_to_string(paths.root().join("wost/src/lib.rs")).unwrap(),
-            "#![no_std]\npub fn value() -> u8 { 1 }\n"
-        );
-        assert!(!has_wost_artifact());
-        assert!(!has_kernel_artifact());
+        String::from_utf8(output.stdout).expect("fixture output")
     }
 
+    /// A restored mutation must be what the next build *observes*, not merely
+    /// what the file on disk says.
     #[test]
-    fn restoring_a_library_input_invalidates_every_consumer() {
-        let temp = TempTree::new("chain-invalidation");
-        let snapshot = temp.0.join("snapshot");
-        let workspace = temp.0.join("workspace");
-        let build = temp.0.join("build");
-        for tree in [&snapshot, &workspace] {
-            std::fs::create_dir_all(tree.join("libs/probe/src")).expect("library source");
-        }
-        std::fs::create_dir_all(workspace.join("consumer/src")).expect("host consumer source");
-        std::fs::create_dir_all(workspace.join("wost/src")).expect("wost source");
-        std::fs::create_dir_all(workspace.join("kernel/src")).expect("kernel source");
-        std::fs::write(
-            workspace.join("Cargo.toml"),
-            "[workspace]\nresolver = \"3\"\n\
-             members = [\n\"libs/probe\",\n\"consumer\",\n\"wost\",\n\"kernel\",\n]\n\
-             default-members = [\n\"libs/probe\",\n\"consumer\",\n]\n",
-        )
-        .expect("workspace manifest");
-        std::fs::write(
-            workspace.join("libs/probe/Cargo.toml"),
-            "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
-        )
-        .expect("library manifest");
-        std::fs::write(
-            workspace.join("consumer/Cargo.toml"),
-            "[package]\nname = \"consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-             [dependencies]\nprobe = { path = \"../libs/probe\" }\n",
-        )
-        .expect("host consumer manifest");
-        std::fs::write(
-            workspace.join("wost/Cargo.toml"),
-            "[package]\nname = \"wost\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-             [dependencies]\nprobe = { path = \"../libs/probe\" }\n",
-        )
-        .expect("wost manifest");
-        std::fs::write(
-            workspace.join("kernel/Cargo.toml"),
-            "[package]\nname = \"wizard-kernel\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\
-             [dependencies]\nwost = { path = \"../wost\" }\n",
-        )
-        .expect("kernel manifest");
-        // Inlined, so a stale consumer really would carry the defect rather
-        // than pick up the restored library at the final link.
-        std::fs::write(
-            snapshot.join("libs/probe/src/lib.rs"),
-            "#![no_std]\n#[inline(always)]\npub fn value() -> u8 { 1 }\n",
-        )
-        .expect("snapshot input");
-        std::fs::write(
-            workspace.join("libs/probe/src/lib.rs"),
-            "#![no_std]\n#[inline(always)]\npub fn value() -> u8 { 2 }\n",
-        )
-        .expect("mutated input");
-        std::fs::write(
-            workspace.join("consumer/src/lib.rs"),
-            "pub fn seen() -> u8 { probe::value() }\n",
-        )
-        .expect("host consumer input");
-        std::fs::write(
-            workspace.join("wost/src/lib.rs"),
-            "#![no_std]\npub fn seen() -> u8 { probe::value() }\n",
-        )
-        .expect("wost input");
-        std::fs::write(
-            workspace.join("kernel/src/lib.rs"),
-            "#![no_std]\npub fn observed() -> u8 { wost::seen() }\n",
-        )
-        .expect("kernel input");
+    fn a_restored_input_is_what_the_next_build_observes() {
+        let (_temp, snapshot, paths) = chain("restore");
+        assert_eq!(observed(&paths), "1");
+        std::fs::write(paths.root().join(CHAIN_INPUT), chain_source(2)).expect("mutated input");
+        assert_eq!(observed(&paths), "2");
 
-        let paths = Paths::new(workspace, Some(&build));
-        let check = |arguments: &[&str]| {
-            let output = Command::new(env!("CARGO"))
-                .current_dir(paths.root())
-                .env("CARGO_TARGET_DIR", paths.target_dir())
-                .args(arguments)
-                .output()
-                .expect("building the mutated library and its consumers");
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
-        check(&["check", "--package", "consumer"]);
-        check(&[
-            "check",
-            "--package",
-            crate::paths::KERNEL_PACKAGE,
-            "--target",
-            crate::paths::KERNEL_TARGET,
-        ]);
+        restore_file(&snapshot, paths.root(), CHAIN_INPUT).expect("restoring input");
+        assert_eq!(
+            std::fs::read_to_string(paths.root().join(CHAIN_INPUT)).unwrap(),
+            chain_source(1)
+        );
+        assert_eq!(observed(&paths), "1");
+    }
 
-        let host = build.join("debug/deps");
-        let target = build.join(crate::paths::KERNEL_TARGET).join("debug/deps");
-        let artifact = |directory: &std::path::Path, needle: &'static str| {
-            let directory = directory.to_path_buf();
-            move || {
-                std::fs::read_dir(&directory)
-                    .expect("compiled artifacts")
-                    .flatten()
-                    .any(|entry| entry.file_name().to_string_lossy().contains(needle))
-            }
-        };
-        let has_host_library = artifact(&host, "probe");
-        let has_host_consumer = artifact(&host, "consumer");
-        let has_target_library = artifact(&target, "probe");
-        let has_target_wost = artifact(&target, "wost");
-        let has_target_kernel = artifact(&target, "wizard_kernel");
-        assert!(has_host_library());
-        assert!(has_host_consumer());
-        assert!(has_target_library());
-        assert!(has_target_wost());
-        assert!(has_target_kernel());
+    /// A sweep that starts over an earlier sweep's build directory must not
+    /// inherit its last mutation.
+    ///
+    /// Completing a sweep retires the journal but keeps the workspace and its
+    /// objects, so the next sweep re-copies tracked sources over compiled
+    /// output that is newer than the snapshot they come from.
+    #[test]
+    fn a_recopied_workspace_is_what_the_next_build_observes() {
+        let (_temp, snapshot, paths) = chain("recopy");
+        assert_eq!(observed(&paths), "1");
+        std::fs::write(paths.root().join(CHAIN_INPUT), chain_source(2)).expect("mutated input");
+        assert_eq!(observed(&paths), "2");
 
-        restore_build_input(&snapshot, &paths, "libs/probe/src/lib.rs").expect("restoring input");
-        assert!(!has_host_library());
-        assert!(!has_host_consumer());
-        assert!(!has_target_library());
-        assert!(!has_target_wost());
-        assert!(!has_target_kernel());
+        copy_tracked(&snapshot, paths.root(), &[PathBuf::from(CHAIN_INPUT)])
+            .expect("recopying tracked source");
+        assert_eq!(observed(&paths), "1");
     }
 
     /// The helper process a parent test really terminates while a mutation is
