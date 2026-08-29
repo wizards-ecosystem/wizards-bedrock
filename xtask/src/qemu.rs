@@ -251,7 +251,7 @@ const SELFTEST_PASSED: i32 = 33;
 const SELFTEST_FAILED: i32 = 35;
 
 /// The serial verdict contract shared with `kernel/src/selftest.rs`.
-const SELFTEST_VERDICT_PREFIX: &str = "selftest: verdict ";
+pub(crate) const SELFTEST_VERDICT_PREFIX: &str = "selftest: verdict ";
 /// What the kernel prints around a failing check's name, from
 /// `kernel/src/selftest.rs`'s `error!("selftest: {name} FAILED")`.
 const SELFTEST_CHECK_PREFIX: &str = "selftest: ";

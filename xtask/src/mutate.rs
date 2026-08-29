@@ -2124,6 +2124,26 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        file: "xtask/src/image/mod.rs",
+        find: "            Self::SelfTest => &[paths::SELFTEST_FEATURE],",
+        replace: "            Self::SelfTest => &[],",
+        breaks: "the self-test image selector compiles the shipped kernel",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "image::tests::selectors_build_only_their_named_kernel",
+        },
+    },
+    Mutation {
+        file: "xtask/src/image/mod.rs",
+        find: "            .open_file(paths::KERNEL_ON_ESP)",
+        replace: "            .open_file(paths::PROGRAM_ON_ESP)",
+        breaks: "image verification reads another payload instead of the kernel",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "image::tests::both_kernel_kinds_are_read_back_and_identified",
+        },
+    },
+    Mutation {
         file: "xtask/src/mutate.rs",
         find: "    if success {\n        let passed = format!(\"test {name} ... ok\");\n        if stdout.contains(&passed) || stderr.contains(&passed) {\n            return Ok(false);\n        }\n        bail!(\"host mutation selected no exact test `{name}`\");\n    }",
         replace: "    if success {\n        return Ok(false);\n    }",

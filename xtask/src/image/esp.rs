@@ -38,7 +38,7 @@ pub fn copy_into<D: ReadWriteSeek>(dir: &Dir<'_, D>, name: &str, source: &Path) 
 pub fn populate<D: ReadWriteSeek>(
     filesystem: &FileSystem<D>,
     paths: &Paths,
-    kernel: &Path,
+    kernel: &[u8],
 ) -> Result<()> {
     let root = filesystem.root_dir();
 
@@ -49,7 +49,7 @@ pub fn populate<D: ReadWriteSeek>(
     copy_into(&efi_boot, "BOOTX64.EFI", &paths.limine_efi())?;
 
     let boot = root.create_dir("boot").context("creating /boot")?;
-    copy_into(&boot, paths::KERNEL_ON_ESP, kernel)?;
+    write_file(&boot, paths::KERNEL_ON_ESP, kernel)?;
 
     // The initrd, such as it is: one program, built rather than compiled
     // (D-100). It goes beside the kernel because Limine's `module_path` is

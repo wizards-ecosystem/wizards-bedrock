@@ -44,9 +44,9 @@ pub fn run(task: Task) -> Result<()> {
             Ok(())
         }
         Task::Build(profile) => cargo::build_kernel(&paths, profile, &[]).map(drop),
-        Task::Image(profile) => image::build(&paths, profile, &[]).map(drop),
+        Task::Image(profile) => image::build(&paths, profile, image::Kernel::Shipped).map(drop),
         Task::Run { profile, qemu_args } => {
-            let image = image::build(&paths, profile, &[])?;
+            let image = image::build(&paths, profile, image::Kernel::Shipped)?;
             qemu::run(&paths, &image, &qemu_args)
         }
         Task::Vmware(profile) => {
@@ -55,7 +55,7 @@ pub fn run(task: Task) -> Result<()> {
             // done ran none of the 137 checks — it showed that the kernel came
             // up, on a machine chosen because it reaches what QEMU cannot, and
             // then checked nothing there.
-            let image = image::build(&paths, profile, &[paths::SELFTEST_FEATURE])?;
+            let image = image::build(&paths, profile, image::Kernel::SelfTest)?;
             vmware::generate(&paths, &image)
         }
         Task::Check { message_format } => tasks::check(&paths, message_format.as_deref()),

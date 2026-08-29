@@ -90,7 +90,7 @@ pub fn test(paths: &Paths) -> Result<()> {
 /// This is the only automated check that exercises the kernel on a machine
 /// rather than as arithmetic on the host.
 pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
-    let image = image::build(paths, profile, &[paths::SELFTEST_FEATURE])?;
+    let image = image::build(paths, profile, image::Kernel::SelfTest)?;
     qemu::run_selftest(paths, &image, selftest_timeout(profile))
 }
 
@@ -101,7 +101,7 @@ pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
 /// If the kernel cannot be built, QEMU cannot run, or its serial and exit
 /// evidence do not form one valid outcome.
 pub fn observe_test_boot(paths: &Paths, profile: Profile) -> Result<qemu::SelftestOutcome> {
-    let image = image::build(paths, profile, &[paths::SELFTEST_FEATURE])?;
+    let image = image::build(paths, profile, image::Kernel::SelfTest)?;
     qemu::observe_selftest(paths, &image, selftest_timeout(profile))
 }
 
@@ -126,13 +126,13 @@ const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// The self-test kernel exits at the debug-exit device the moment it has a
 /// verdict; this boots the image that goes on the disk.
 pub fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
-    let image = image::build(paths, profile, &[])?;
+    let image = image::build(paths, profile, image::Kernel::Shipped)?;
     qemu::run_boot_check(paths, &image, BOOT_SETTLE)
 }
 
 /// Boot without PCI configuration or x2APIC and require both refusals.
 pub fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
-    let image = image::build(paths, profile, &[paths::REFUSE_PCI_FEATURE])?;
+    let image = image::build_degraded(paths, profile)?;
     qemu::run_degraded_check(paths, &image, BOOT_SETTLE)
 }
 
