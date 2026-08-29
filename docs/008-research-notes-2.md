@@ -3,7 +3,8 @@
 > **Historical pre-Phase-3 snapshot.** `010` re-checks this pass and records the
 > current conclusions. In particular, it corrects Atmosphere's proof-to-code
 > ratio, replaces the WASI target, and stages verification tooling differently.
-> Normative choices live in `004-decision-log.md`.
+> Numeric measurements and words such as "current" are dated to this pass;
+> normative choices and present repository state live in `004-decision-log.md`.
 
 Produced 2026-08-22, opening Phase 3. Where `003-research-notes.md` surveyed
 architecture before the code existed, this pass is aimed: it closes the gaps

@@ -17,10 +17,10 @@ admission reasons.
 ## What completion means
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
-are **not closed**. The current image has 212 QEMU machine checks. The current
-mutation registry has 200 entries, but the last recorded complete sweep covered
-64; the one hundred thirty-six later mutations were broken individually. The
-current 212-check image has not completed its human VMware round. The compiler gate in
+are **not closed**. `014-storage.md`'s closing table owns the checked current
+QEMU and mutation totals. The last recorded complete mutation sweep covered the
+former 64-entry registry; every later entry was broken individually. The
+current image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
 The kernel is ready for the first real Wizzy integration only when:
@@ -64,9 +64,9 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 200 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 200 named mutations are caught by the check each names; record commit, result and duration; source and index digests remain exact |
+| PW-001 | REQUIRED | P0 | The mutation registry has grown since the former 64-entry sweep; later entries have only individual results | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | Every named mutation is caught by the check it names; record commit, result and duration; source and index digests remain exact |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
-| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 212-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=212 failed=0` transcript, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
+| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current image | Boot the current self-test image in VMware and perform every human keyboard round | A dated zero-failure transcript at the verdict's expected total, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
 | PW-005 | REQUIRED | P1 | The ordinary gate must describe the same commit as the exceptional evidence | Run `cargo xtask ci` after every register-closing change and once after the evidence-only close | Release/debug self-tests, shipped liveness and degraded boot all pass on the recorded commit |
 | PW-006 | REQUIRED | P1 | D-181 and D-182 were post-audit corrections, and this audit found deeper safe/device boundaries | Re-attack hostile inputs, cleanup paths, safe `wost` callers and release-only invariant failures after the P0/P1 fixes | Phase-close ADR links the audit, every break-test, full evidence manifest and remaining trigger-only rows; no historical evidence is invented |
@@ -137,7 +137,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-504 | DONE | P2 | A mutation can look caught when its named check was already red or another check failed first | D-209 captures one pristine green baseline per remaining witness class and admits only an exact named check or panic marker afterward | 2026-08-28 pre-red, wrong-check, wrong-panic, discarded-continuation and unnamed-failure breaks each reddened only their exact host check; three terminal mutations were pinned to causes measured on release QEMU, and all six new witnesses persist in the registry |
 | PW-505 | DONE | P2 | The public `libs/`/`wost` API sweep was a text search and `xtask` still duplicated section-table ELF header offsets | D-213 adds a stable-rustc semantic reachability audit and makes `libs/elf64::SectionTable` own those four file-header fields | 2026-08-28 all 1,466 item declarations and enum variants had compiler-resolved callers after 29 dead APIs were removed; re-export, doc-only and same-name fixture defects each reddened the exact host test, the ELF-offset defect reddened its parser test, and restoring a dead API made the full audit name only that method; all five persist as mutations |
 | PW-506 | DONE | P2 | `wost` has 368 unsafe lines against a 380-line budget and SAFETY prose truth can only be read | D-214 pins every unsafe-bearing file's full reviewed revision, makes the counter syntactic and closes two safe-wrapper lifetimes | 2026-08-28 all 169 blocks and 38 declarations in 18 files were read; hardware-pinned stacks refuse inactive roots and every overlapping unmap, the syscall probe cannot return open, and five exact mutations reddened their host or 212-check machine witness |
-| PW-507 | READY | P2 | Documentation checking does not cover Markdown links/anchors, CLI claims, all numeric claims, or docs 008-012 from D-146 | Add cheap structural checks and complete the manual semantic/numeric sweep without rewriting historical results | Broken link/anchor/command/current-count fixtures fail; corrections distinguish dated history from current state |
+| PW-507 | DONE | P2 | Documentation checking did not cover Markdown links/anchors, CLI claims, current numeric claims, or docs 008-012 from D-146 | D-215 checks local Markdown targets and fragments, parses every formatted xtask command with the real CLI, derives current counts, and dates the 008-012 numeric record | 2026-08-28 missing path, missing heading, unknown command and stale current-count mutations each reddened only their named host proof; the Phase 4 close was corrected from D-76's 75-check checkpoint to D-77's 79 |
 | PW-508 | READY | P2 | A release lacks one reproducible evidence manifest tying source, tools and booted bytes together | Add a release/evidence task with source commit, locked dependencies, firmware/vendor hashes, kernel/image hashes and test results | Two clean paths produce byte-identical artifacts or an ADR names each unavoidable input; the manifest verifies offline |
 | PW-509 | READY | P2 | QEMU machine aliases, firmware, VMware, Java and Rust versions can drift underneath evidence | Pin where stable; otherwise record exact resolved versions and hashes per qualification run | Re-running from the manifest either recreates the environment or reports the precise unavailable dependency |
 | PW-510 | DECIDE | P2 | D-16 deferred advisory/license/SBOM policy, yet the project now vendors boot and firmware artifacts and ships dependencies | Choose advisory, license inventory, SBOM and offline-build expectations proportionate to a solo OS | Tooling is self-contained or deliberately exceptional; a dependency/license/digest fixture makes the check fail |
@@ -237,7 +237,7 @@ PW-514 includes these exact stale-current-facing corrections still to make:
    PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200,
    PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-210,
    PW-300, PW-302, PW-304, PW-306, PW-307, PW-400, PW-402, PW-500, PW-501,
-   PW-502, PW-503, PW-504, PW-505 and PW-506 are closed by D-185 through D-214.
+   PW-502, PW-503, PW-504, PW-505, PW-506 and PW-507 are closed by D-185 through D-215.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

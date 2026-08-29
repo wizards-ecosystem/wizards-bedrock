@@ -57,7 +57,8 @@ defer the merge that is coming anyway. Do not create one unless Isaac asks.
 ## Commands
 
 `cargo xtask ci` is the gate — run it before claiming work is done. `cargo
-xtask help` lists every task. The README's Development section covers the two
+xtask help` lists every task. The README's [Development](README.md#development)
+section covers the two
 non-obvious rules (`cargo build --workspace` cannot work here; never set
 `RUSTFLAGS`) — read it before reaching for a bare cargo command.
 

@@ -25,9 +25,9 @@ and LWN 969062; Asterinas OSTD's task/scheduler split (the framekernel
 precedent D-13 follows); Intel SDM Vol. 3A ch. 7 (hardware task management,
 for what is deliberately not used) and Vol. 3A ch. 11 (APIC timer modes).
 
-Check totals below are dated slice-close snapshots. The phase-close total is
-the current total at the end of Phase 4, not a promise that later phases retain
-the same number.
+Quantities below are dated proposal or slice-close observations. The
+phase-close total is the total at the end of Phase 4, not a promise that later
+phases retain it; `014-storage.md` owns the checked current gate totals.
 
 ## What earlier phases left owing
 
@@ -436,8 +436,9 @@ ABI's promise. Symptomless without SSE, invisible to the register checks, and
 caught only by asking the machine where it actually put a sixteen-byte local.
 The frame grew its padding word, and `a thread starts aligned` now stands
 where the gap was. The other four, and the residue deliberately left for
-Phase 5's memory objects, are D-76's record. Seventy-five checks on the
-machine.
+Phase 5's memory objects, are D-76's record. That checkpoint had seventy-five
+machine checks; D-77's completed-phase audit added four and closed Phase 4 at
+seventy-nine.
 
 **What the phase leaves open**, besides D-76's residue: a wait with a timeout
 and a wait on two queues (above); the boot and double-fault stacks are still

@@ -1,5 +1,10 @@
 # 010 — Deep Research III: Verifying the Foundation
 
+> **Historical pre-Phase-5 snapshot.** Numeric measurements, dependency and
+> tool versions, and words such as "current" or "today" are observations from
+> the production date below. Later correction notes and
+> `004-decision-log.md` govern the present repository.
+
 Produced 2026-08-23, at the close of Phase 4 and before Phase 5 fixes the two
 interfaces this project will live with longest: the handle table and the async
 queue ABI.

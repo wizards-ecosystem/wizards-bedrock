@@ -1,5 +1,10 @@
 # 012 — Deep Research IV: Storage, and the ABI that has to precede it
 
+> **Historical pre-Phase-6 snapshot.** Numeric measurements, dependency and
+> tool versions, and words such as "current" or "today" are observations from
+> the production date below. Delivered-correction notes and
+> `004-decision-log.md` govern the present repository.
+
 Produced 2026-08-25, at the close of the Phase 0–5 audit and before Phase 6,
 when storage was expected to become the first subsystem in this kernel that
 **waits**. The delivered correction is D-149/D-164: Timer proved deferral

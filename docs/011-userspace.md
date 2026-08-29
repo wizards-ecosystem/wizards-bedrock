@@ -34,9 +34,10 @@ record, Windows RIO's reservation model, Clements et al., *The Scalable
 Commutativity Rule* (SOSP'13), Intel SDM Vol. 3A ch. 6 (trap delivery) and
 Vol. 1 ch. 13 (XSAVE), and mlibc's porting book.
 
-Check totals below are dated slice-close snapshots. The phase-close total is
-the current total at the end of Phase 5, not a promise that later phases retain
-the same number.
+Quantities and host-tool observations below are dated proposal or slice-close
+measurements. The phase-close total is the total at the end of Phase 5, not a
+promise that later phases retain it; `014-storage.md` owns the checked current
+gate totals.
 
 ## What earlier phases left owing
 

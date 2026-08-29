@@ -105,6 +105,8 @@ fn mentions(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+    use std::ffi::OsString;
     use std::path::PathBuf;
 
     fn root() -> PathBuf {
@@ -112,6 +114,210 @@ mod tests {
             .parent()
             .expect("xtask sits below the workspace root")
             .to_path_buf()
+    }
+
+    /// Project-authored Markdown whose paths and commands are promises to a
+    /// reader. The bootloader README is upstream material and stays outside
+    /// this list.
+    fn markdown_documents(root: &Path) -> Vec<PathBuf> {
+        let mut documents = [
+            "README.md",
+            "AGENTS.md",
+            "userland/README.md",
+            "tools/tla/README.md",
+            "tools/fat32-corpus/README.md",
+        ]
+        .iter()
+        .map(|relative| root.join(relative))
+        .collect::<Vec<_>>();
+        documents.extend(
+            std::fs::read_dir(root.join("docs"))
+                .expect("docs")
+                .filter_map(|entry| {
+                    let path = entry.ok()?.path();
+                    (path.extension().and_then(|extension| extension.to_str()) == Some("md"))
+                        .then_some(path)
+                }),
+        );
+        documents.sort();
+        documents
+    }
+
+    fn markdown_destinations(document: &str) -> Vec<(usize, String)> {
+        let mut destinations = Vec::new();
+        for (line_index, line) in document.lines().enumerate() {
+            let mut rest = line;
+            while let Some(open) = rest.find("](") {
+                let after = &rest[open + 2..];
+                let Some(close) = after.find(')') else {
+                    break;
+                };
+                let raw = after[..close]
+                    .split_ascii_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim_matches(['<', '>']);
+                if !raw.is_empty() {
+                    destinations.push((line_index + 1, raw.to_string()));
+                }
+                rest = &after[close + 1..];
+            }
+        }
+        destinations
+    }
+
+    fn heading_anchors(document: &str) -> BTreeSet<String> {
+        let mut anchors = BTreeSet::new();
+        let mut repetitions = BTreeMap::<String, usize>::new();
+        for line in document.lines() {
+            let line = line.trim_start();
+            let hashes = line.bytes().take_while(|byte| *byte == b'#').count();
+            if !(1..=6).contains(&hashes)
+                || !line[hashes..]
+                    .chars()
+                    .next()
+                    .is_some_and(char::is_whitespace)
+            {
+                continue;
+            }
+            let heading = line[hashes..].trim().trim_end_matches('#').trim();
+            let mut slug = String::new();
+            for character in heading.chars().flat_map(char::to_lowercase) {
+                if character.is_alphanumeric() || character == '_' || character == '-' {
+                    slug.push(character);
+                } else if character.is_whitespace() {
+                    slug.push('-');
+                }
+            }
+            let repeated = repetitions.entry(slug.clone()).or_default();
+            let anchor = if *repeated == 0 {
+                slug.clone()
+            } else {
+                format!("{slug}-{repeated}")
+            };
+            *repeated += 1;
+            anchors.insert(anchor);
+        }
+        anchors
+    }
+
+    fn local_markdown_failures(root: &Path, source: &Path, document: &str) -> Vec<String> {
+        let mut failures = Vec::new();
+        let workspace = root.canonicalize().expect("workspace root");
+        for (line, destination) in markdown_destinations(document) {
+            if destination.contains("://") || destination.starts_with("mailto:") {
+                continue;
+            }
+            let (path, fragment) = destination
+                .split_once('#')
+                .map_or((destination.as_str(), None), |(path, fragment)| {
+                    (path, Some(fragment))
+                });
+            let target = if path.is_empty() {
+                source.to_path_buf()
+            } else if let Some(path) = path.strip_prefix('/') {
+                root.join(path)
+            } else {
+                source
+                    .parent()
+                    .expect("Markdown source has a parent")
+                    .join(path)
+            };
+            let label = source.strip_prefix(root).unwrap_or(source).display();
+            if !target.exists() {
+                failures.push(format!(
+                    "{label}:{line}: local Markdown target `{destination}` does not exist"
+                ));
+                continue;
+            }
+            let resolved = target
+                .canonicalize()
+                .unwrap_or_else(|_| panic!("resolving {}", target.display()));
+            if !resolved.starts_with(&workspace) {
+                failures.push(format!(
+                    "{label}:{line}: local Markdown target `{destination}` leaves the workspace"
+                ));
+                continue;
+            }
+            let Some(fragment) = fragment else {
+                continue;
+            };
+            if fragment.is_empty() || !resolved.is_file() {
+                failures.push(format!(
+                    "{label}:{line}: local Markdown anchor `{destination}` has no document heading"
+                ));
+                continue;
+            }
+            let target_document = std::fs::read_to_string(&resolved)
+                .unwrap_or_else(|_| panic!("reading {}", resolved.display()));
+            if !heading_anchors(&target_document).contains(fragment) {
+                failures.push(format!(
+                    "{label}:{line}: local Markdown anchor `{destination}` does not resolve"
+                ));
+            }
+        }
+        failures
+    }
+
+    fn xtask_invocations(document: &str) -> Vec<(usize, Vec<OsString>)> {
+        let mut invocations = Vec::new();
+        let mut fragments = Vec::new();
+        let mut cursor = 0usize;
+        while let Some(relative) = document[cursor..].find('`') {
+            let open = cursor + relative;
+            let ticks = document[open..]
+                .bytes()
+                .take_while(|byte| *byte == b'`')
+                .count();
+            cursor = open + ticks;
+            if ticks != 1 {
+                continue;
+            }
+            let Some(relative_close) = document[cursor..].find('`') else {
+                break;
+            };
+            let close = cursor + relative_close;
+            fragments.push((open, &document[cursor..close]));
+            cursor = close + 1;
+        }
+
+        let mut in_fence = false;
+        let mut line_offset = 0usize;
+        for line in document.split_inclusive('\n') {
+            let trimmed = line.trim();
+            if trimmed.starts_with("```") {
+                in_fence = !in_fence;
+            } else if in_fence && trimmed.starts_with("cargo xtask") {
+                fragments.push((line_offset, trimmed));
+            }
+            line_offset += line.len();
+        }
+
+        for (offset, fragment) in fragments {
+            let Some(at) = fragment.find("cargo xtask") else {
+                continue;
+            };
+            let after = &fragment[at + "cargo xtask".len()..];
+            let args = after
+                .split_ascii_whitespace()
+                .take_while(|argument| {
+                    argument.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || "-_=.".contains(character)
+                    })
+                })
+                .map(OsString::from)
+                .collect::<Vec<_>>();
+            if args.is_empty() {
+                continue;
+            }
+            let line = document[..offset]
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count()
+                + 1;
+            invocations.push((line, args));
+        }
+        invocations
     }
 
     /// The crates `libs/` actually holds.
@@ -169,25 +375,89 @@ mod tests {
             "`014`'s closing table says {claimed_mutations} mutations and there are {}",
             crate::mutate::MUTATIONS.len()
         );
+
+        let mutation_numbers = table_numbers(&storage, "Mutations");
+        assert_eq!(
+            mutation_numbers.len(),
+            3,
+            "the mutation row must state total, last full sweep and later individual count"
+        );
+        assert_eq!(
+            mutation_numbers[0] - mutation_numbers[1],
+            mutation_numbers[2],
+            "`014`'s later-mutation count is not total minus the last full sweep"
+        );
+
+        let decisions =
+            std::fs::read_to_string(root.join("docs/004-decision-log.md")).expect("decision log");
+        let latest_decision = decisions
+            .lines()
+            .filter_map(|line| line.strip_prefix("## D-"))
+            .filter_map(|rest| rest.split_ascii_whitespace().next())
+            .filter_map(|number| number.parse::<usize>().ok())
+            .max()
+            .expect("a decision heading");
+        let claimed_decision = table_numbers(&storage, "Decisions")
+            .into_iter()
+            .max()
+            .expect("a decision number in `014`");
+        assert_eq!(
+            claimed_decision, latest_decision,
+            "`014` ends at D-{claimed_decision}, but the log ends at D-{latest_decision}"
+        );
     }
 
     /// The first number in the table row whose left cell is `label`.
     fn table_number(document: &str, label: &str) -> usize {
+        table_numbers(document, label)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("the `{label}` row states no number"))
+    }
+
+    fn table_numbers(document: &str, label: &str) -> Vec<usize> {
         let row = document
             .lines()
             .find(|line| line.trim_start().starts_with(&format!("| {label} |")))
             .unwrap_or_else(|| panic!("no `{label}` row in the closing table"));
         row.split('|')
             .nth(2)
-            .and_then(|cell| {
-                let digits: String = cell
-                    .trim()
-                    .chars()
-                    .take_while(char::is_ascii_digit)
-                    .collect();
-                digits.parse().ok()
+            .into_iter()
+            .flat_map(|cell| {
+                cell.split(|character: char| !character.is_ascii_digit())
+                    .filter(|digits| !digits.is_empty())
+                    .filter_map(|digits| digits.parse().ok())
             })
-            .unwrap_or_else(|| panic!("the `{label}` row states no number: {row}"))
+            .collect()
+    }
+
+    #[test]
+    fn every_local_markdown_link_and_anchor_resolves() {
+        let root = root();
+        let mut failures = Vec::new();
+        for source in markdown_documents(&root) {
+            let document = std::fs::read_to_string(&source)
+                .unwrap_or_else(|_| panic!("reading {}", source.display()));
+            failures.extend(local_markdown_failures(&root, &source, &document));
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn every_documented_xtask_invocation_parses() {
+        let root = root();
+        let mut failures = Vec::new();
+        for source in markdown_documents(&root) {
+            let document = std::fs::read_to_string(&source)
+                .unwrap_or_else(|_| panic!("reading {}", source.display()));
+            let label = source.strip_prefix(&root).unwrap_or(&source).display();
+            for (line, args) in xtask_invocations(&document) {
+                if let Err(error) = crate::cli::parse(args) {
+                    failures.push(format!("{label}:{line}: {error}"));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// Every crate the documents name either exists or is declared absent.

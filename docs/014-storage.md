@@ -960,16 +960,17 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 212 |
-| Mutations | 200 registered; 64 in the last recorded full sweep, with 136 later entries broken individually |
+| Mutations | 204 registered; 64 in the last recorded full sweep, with 140 later entries broken individually |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-214 |
+| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-215 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but that proves registration rather than a current full
-sweep. D-184's register carries the 200-entry count. A number restated in prose can
-disagree with itself — which the per-slice lines above did, in seven places, and
-which is why they now say what the gate said rather than what was expected of
-it (D-175). The host-test count is deliberately absent: it changes with every
+sweep. The code registry carries the entries; this table's count is its checked
+restatement. A number copied anywhere else can disagree with both — which the
+per-slice lines above did, in seven places, and which is why they now say what
+the gate said rather than what was expected of it (D-175). The host-test count
+is deliberately absent: it changes with every
 `libs/` crate and nothing would be learned from pinning it here.
 
 ### Every debt this file opened with

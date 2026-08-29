@@ -192,7 +192,7 @@ visible.
 
 ## Open items
 
-- GDB stub debugging (`-s -S`) — wire a `cargo xtask gdb` once we have a
+- GDB stub debugging (`-s -S`) — wire a `gdb` xtask once we have a
   debugger story on Windows (gdb isn't installed natively; candidates:
   lldb, gdb-multiarch via a future decision)
 - Limine crate 0.6.x when its nightly requirement lands on stable, or if

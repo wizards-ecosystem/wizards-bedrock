@@ -2257,6 +2257,46 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        file: "README.md",
+        find: "See [docs/002-architecture.md](docs/002-architecture.md).",
+        replace: "See [docs/002-architecture.md](docs/002-architectur.md).",
+        breaks: "a local Markdown link names a path the repository does not hold",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::every_local_markdown_link_and_anchor_resolves",
+        },
+    },
+    Mutation {
+        file: "AGENTS.md",
+        find: "[Development](README.md#development)",
+        replace: "[Development](README.md#developmnt)",
+        breaks: "a local Markdown fragment names no heading in its target",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::every_local_markdown_link_and_anchor_resolves",
+        },
+    },
+    Mutation {
+        file: "AGENTS.md",
+        find: "`kernel/src/selftest.rs` and runs under `cargo xtask test-boot`.",
+        replace: "`kernel/src/selftest.rs` and runs under `cargo xtask test-bot`.",
+        breaks: "an operational document offers an xtask command the parser rejects",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::every_documented_xtask_invocation_parses",
+        },
+    },
+    Mutation {
+        file: "docs/014-storage.md",
+        find: "| Machine checks | 212 |",
+        replace: "| Machine checks | 211 |",
+        breaks: "the current documentation count disagrees with the machine oracle",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::the_phase_close_says_what_the_source_says",
+        },
+    },
+    Mutation {
         file: "xtask/src/mutate.rs",
         find: "    if success {\n        let passed = format!(\"test {name} ... ok\");\n        if stdout.contains(&passed) || stderr.contains(&passed) {\n            return Ok(false);\n        }\n        bail!(\"host mutation selected no exact test `{name}`\");\n    }",
         replace: "    if success {\n        return Ok(false);\n    }",
