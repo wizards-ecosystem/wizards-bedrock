@@ -24,6 +24,7 @@ members = [
     "libs/stack-layout",
     "libs/timebase",
     "libs/trap-cause",
+    "libs/wizzy-handoff",
     "libs/x86-apic",
     "libs/x86-cpuid",
     "libs/x86-paging",
@@ -56,6 +57,7 @@ default-members = [
     "libs/stack-layout",
     "libs/timebase",
     "libs/trap-cause",
+    "libs/wizzy-handoff",
     "libs/x86-apic",
     "libs/x86-cpuid",
     "libs/x86-paging",
@@ -92,6 +94,7 @@ slab-layout = { path = "libs/slab-layout" }
 stack-layout = { path = "libs/stack-layout" }
 timebase = { path = "libs/timebase" }
 trap-cause = { path = "libs/trap-cause" }
+wizzy-handoff = { path = "libs/wizzy-handoff" }
 x86-apic = { path = "libs/x86-apic" }
 x86-cpuid = { path = "libs/x86-cpuid" }
 x86-paging = { path = "libs/x86-paging" }

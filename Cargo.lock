@@ -657,6 +657,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "wizzy-handoff"
+version = "0.1.0"
+
+[[package]]
 name = "wost"
 version = "0.1.0"
 dependencies = [
@@ -715,6 +719,7 @@ dependencies = [
  "fscommon",
  "proc-macro2",
  "syn",
+ "wizzy-handoff",
 ]
 
 [[package]]

@@ -195,6 +195,23 @@ infer the other's current checkout. The normal OS gate consumes committed or
 vendored artifact bytes with pinned provenance and a checked digest. That
 proves exactly which bytes booted; it does not prove how they were produced.
 
+D-226 gives that agreement one route-neutral envelope. Its format is
+`wizard-wizzy-handoff-v1`, its target is `x86_64-unknown-wizard`, and the
+current aggregate platform contract is `wizard-platform-v1`. Artifact,
+runtime and effect-encoding versions are opaque, exact-match tokens supplied
+by the pinned integration: this repository does not invent the values that
+WZ-002 and WZ-003 still owe. Effect requirements are a canonical sorted set
+and remain requests rather than grants. The same record carries the source,
+compiler and runtime revisions, dependency-lock digest, artifact length and
+artifact digest. It deliberately carries no delivery-route field.
+
+`handoff/conformance-v1.wzh` and its adjacent opaque payload are a format
+fixture, not a Wizzy program or compiler pin. Host tests parse those committed
+bytes, hash the payload and require every identifier and version explicitly;
+the fixture therefore proves the OS-side handoff without consulting a sibling
+checkout. The gate-opening record later uses the same envelope with the real
+Wizzy-owned values and reachable provenance.
+
 D-180's integration qualification is stronger. A separate integration task
 regenerates the artifact twice from pinned Wizzy source, pinned
 compiler/runtime revisions and locked dependencies, requires byte-identical

@@ -2713,6 +2713,86 @@ pub const MUTATIONS: &[Mutation] = &[
             "a clock disagreement revokes time without stranding timers",
         ),
     },
+    Mutation {
+        file: "libs/wizzy-handoff/src/lib.rs",
+        find: "pub const FORMAT: &str = \"wizard-wizzy-handoff-v1\";",
+        replace: "pub const FORMAT: &str = \"wizard-wizzy-handoff-v2\";",
+        breaks: "the pinned handoff example uses the one supported envelope version",
+        reddens: Caught::HostTest {
+            package: "wizzy-handoff",
+            name: "tests::a_canonical_record_is_accepted",
+        },
+    },
+    Mutation {
+        file: "libs/wizzy-handoff/src/lib.rs",
+        find: "    if lines.next() != Some(FORMAT) {",
+        replace: "    if lines.next().is_none() {",
+        breaks: "an unknown handoff envelope version cannot be parsed as version one",
+        reddens: Caught::HostTest {
+            package: "wizzy-handoff",
+            name: "tests::an_unknown_envelope_version_is_refused",
+        },
+    },
+    Mutation {
+        file: "libs/wizzy-handoff/src/lib.rs",
+        find: "    extra.is_none()",
+        replace: "    extra.is_none() || true",
+        breaks: "an unknown handoff field cannot be silently ignored",
+        reddens: Caught::HostTest {
+            package: "wizzy-handoff",
+            name: "tests::unknown_or_noncanonical_fields_are_refused",
+        },
+    },
+    Mutation {
+        file: "libs/wizzy-handoff/src/lib.rs",
+        find: "    token(record.artifact_abi)",
+        replace: "    true || token(record.artifact_abi)",
+        breaks: "handoff values cannot use ambiguous encodings or ambient provenance",
+        reddens: Caught::HostTest {
+            package: "wizzy-handoff",
+            name: "tests::every_value_encoding_is_canonical",
+        },
+    },
+    Mutation {
+        file: "libs/wizzy-handoff/src/lib.rs",
+        find: "    record.target_id == TARGET_ID",
+        replace: "    true || record.target_id == TARGET_ID",
+        breaks: "every handoff target and ABI version must match exactly",
+        reddens: Caught::HostTest {
+            package: "wizzy-handoff",
+            name: "tests::every_version_must_match_exactly",
+        },
+    },
+    Mutation {
+        file: "libs/wizzy-handoff/src/lib.rs",
+        find: "    record.artifact_bytes == artifact.bytes && record.artifact_sha256 == artifact.sha256",
+        replace: "    record.artifact_bytes == artifact.bytes || record.artifact_sha256 == artifact.sha256",
+        breaks: "artifact length and digest must both match the consumed bytes",
+        reddens: Caught::HostTest {
+            package: "wizzy-handoff",
+            name: "tests::artifact_length_and_digest_identify_the_same_bytes",
+        },
+    },
+    Mutation {
+        file: "handoff/conformance-v1.artifact",
+        find: "This payload is opaque to the handoff envelope.",
+        replace: "This payload is altered for the handoff envelope.",
+        breaks: "the committed handoff payload cannot differ from its pinned digest",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "handoff::the_committed_handoff_fixture_is_self_contained",
+        },
+    },
+    Mutation {
+        file: "userland/abi/wizard_abi.h",
+        find: "#define WIZ_TIME_VERSION 1u",
+        replace: "#define WIZ_TIME_VERSION 2u",
+        breaks: "platform ABI v1 cannot silently contain a version-two wire region",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "handoff::platform_v1_is_entry_ring_and_time_v1",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

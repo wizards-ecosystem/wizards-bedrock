@@ -24,3 +24,4 @@ fatfs.workspace = true
 fscommon.workspace = true
 proc-macro2.workspace = true
 syn.workspace = true
+wizzy-handoff.workspace = true

@@ -20,6 +20,8 @@ pub mod decisions;
 pub mod elf;
 mod evidence;
 mod gate;
+#[cfg(test)]
+mod handoff;
 pub mod image;
 pub mod machine;
 pub mod model;

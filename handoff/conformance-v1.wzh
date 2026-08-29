@@ -1,0 +1,14 @@
+wizard-wizzy-handoff-v1
+artifact.abi=fixture.artifact-v1
+artifact.bytes=48
+artifact.sha256=3f5fb312ab211cf4977f62a0b4ff74011e93d1fd6675668fba440fb14cd51b07
+effects.abi=fixture.effects-v1
+effects.required=fixture.console,fixture.sleep
+platform.abi=wizard-platform-v1
+provenance.compiler-revision=1111111111111111111111111111111111111111
+provenance.lock.sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+provenance.repository=https://example.invalid/wizzy-handoff-fixture
+provenance.runtime-revision=2222222222222222222222222222222222222222
+provenance.source-revision=3333333333333333333333333333333333333333
+runtime.abi=fixture.runtime-v1
+target.id=x86_64-unknown-wizard
