@@ -8,12 +8,15 @@ use anyhow::{Context, Result, ensure};
 
 use crate::cargo::Profile;
 use crate::paths::Paths;
-use crate::{gate, image, qemu, sha256, tasks, vendor};
+use crate::{gate, image, qemu, qualification, sha256, tasks, vendor};
 
-const FORMAT: &str = "wizard-evidence-v1";
+const FORMAT: &str = "wizard-evidence-v2";
 const MANIFEST_NAME: &str = "MANIFEST";
 const MANIFEST_TEMP: &str = "MANIFEST.incomplete";
 const PASS: &str = "pass";
+const AVAILABLE: &str = "available";
+const UNAVAILABLE: &str = "unavailable";
+const QUALIFICATION_TOOLS: &[&str] = &["tool.java", "tool.vmware"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Digest {
@@ -189,12 +192,7 @@ pub(crate) fn verify(paths: &Paths) -> Result<()> {
     expected_keys.insert("result.shipped-artifact-boot".to_string());
     require_exact_keys(&record, &expected_keys)?;
 
-    for (key, value) in &observed.fields {
-        ensure!(
-            record.get(key)? == value,
-            "evidence input `{key}` differs from the manifest"
-        );
-    }
+    require_inputs_match(&record, &observed)?;
     verify_artifacts(&record, &root)?;
     require_pass_results(&record)?;
     println!("[xtask] evidence manifest and every recorded byte verify offline");
@@ -233,12 +231,82 @@ fn input_record(paths: &Paths) -> Result<Record> {
         version_output(paths.root(), &qemu.emulator, &["--version"])
             .context("reading the QEMU version")?,
     )?;
+    record.insert("tool.qemu.machine", qemu::MACHINE_TYPE)?;
     add_digest(&mut record, "tool.qemu", &qemu.emulator)?;
     add_digest(&mut record, "firmware.code", &qemu.code_firmware)?;
     add_digest(&mut record, "firmware.vars-template", &qemu.vars_firmware)?;
     add_digest(&mut record, "input.nvme", &qemu::nvme_path(paths.root()))?;
+    add_optional_tool(&mut record, "tool.java", qualification::java(paths.root())?)?;
+    add_optional_tool(
+        &mut record,
+        "tool.vmware",
+        qualification::vmrun(paths.root())?,
+    )?;
     add_vendor_inputs(&mut record, paths)?;
     Ok(record)
+}
+
+fn add_optional_tool(
+    record: &mut Record,
+    prefix: &str,
+    tool: Option<qualification::Tool>,
+) -> Result<()> {
+    let identity = match tool {
+        Some(tool) => ToolIdentity::Available {
+            version: tool.version,
+            digest: digest_file(&tool.path)?,
+        },
+        None => ToolIdentity::Unavailable,
+    };
+    add_tool_identity(record, prefix, &identity)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ToolIdentity {
+    Available { version: String, digest: Digest },
+    Unavailable,
+}
+
+fn add_tool_identity(record: &mut Record, prefix: &str, identity: &ToolIdentity) -> Result<()> {
+    let (state, version, bytes, sha256) = match identity {
+        ToolIdentity::Available { version, digest } => (
+            AVAILABLE,
+            version.replace('\n', "\\n"),
+            digest.bytes.to_string(),
+            digest.sha256.clone(),
+        ),
+        ToolIdentity::Unavailable => (
+            UNAVAILABLE,
+            UNAVAILABLE.to_string(),
+            UNAVAILABLE.to_string(),
+            UNAVAILABLE.to_string(),
+        ),
+    };
+    record.insert(format!("{prefix}.state"), state)?;
+    record.insert(format!("{prefix}.version"), version)?;
+    record.insert(format!("{prefix}.bytes"), bytes)?;
+    record.insert(format!("{prefix}.sha256"), sha256)?;
+    Ok(())
+}
+
+fn require_inputs_match(record: &Record, observed: &Record) -> Result<()> {
+    for prefix in QUALIFICATION_TOOLS {
+        let key = format!("{prefix}.state");
+        let expected = record.get(&key)?;
+        let actual = observed.get(&key)?;
+        ensure!(
+            expected == actual,
+            "qualification dependency `{prefix}` differs: manifest `{expected}`, current `{actual}`"
+        );
+    }
+    for (key, actual) in &observed.fields {
+        let expected = record.get(key)?;
+        ensure!(
+            expected == actual,
+            "evidence input `{key}` differs: manifest `{expected}`, current `{actual}`"
+        );
+    }
+    Ok(())
 }
 
 fn add_vendor_inputs(record: &mut Record, paths: &Paths) -> Result<()> {
@@ -608,5 +676,63 @@ mod tests {
         assert!(verify_artifacts(&record, &root).is_err());
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn optional_tools_never_change_the_manifest_schema() {
+        let mut absent = Record::default();
+        add_tool_identity(&mut absent, "tool.java", &ToolIdentity::Unavailable).unwrap();
+
+        let mut present = Record::default();
+        add_tool_identity(
+            &mut present,
+            "tool.java",
+            &ToolIdentity::Available {
+                version: "java 21\nVM build 11".to_string(),
+                digest: Digest {
+                    bytes: 42,
+                    sha256: "a".repeat(64),
+                },
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            absent.fields.keys().collect::<Vec<_>>(),
+            present.fields.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(absent.get("tool.java.state").unwrap(), UNAVAILABLE);
+        assert_eq!(
+            present.get("tool.java.version").unwrap(),
+            "java 21\\nVM build 11"
+        );
+    }
+
+    #[test]
+    fn an_unavailable_qualification_dependency_is_named_exactly() {
+        let mut recorded = Record::default();
+        let mut observed = Record::default();
+        add_tool_identity(
+            &mut recorded,
+            "tool.java",
+            &ToolIdentity::Available {
+                version: "java 21".to_string(),
+                digest: Digest {
+                    bytes: 42,
+                    sha256: "a".repeat(64),
+                },
+            },
+        )
+        .unwrap();
+        add_tool_identity(&mut observed, "tool.java", &ToolIdentity::Unavailable).unwrap();
+        add_tool_identity(&mut recorded, "tool.vmware", &ToolIdentity::Unavailable).unwrap();
+        add_tool_identity(&mut observed, "tool.vmware", &ToolIdentity::Unavailable).unwrap();
+
+        let error = require_inputs_match(&recorded, &observed)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("tool.java"), "{error}");
+        assert!(error.contains("manifest `available`"), "{error}");
+        assert!(error.contains("current `unavailable`"), "{error}");
     }
 }

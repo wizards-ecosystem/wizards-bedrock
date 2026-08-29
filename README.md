@@ -98,7 +98,11 @@ Three tasks are deliberately **not** in `ci`, each because it needs a tool this
 project cannot vendor into a Rust build: `model-check` (TLC, needs Java),
 `vmware` (needs VMware Workstation to boot the result), and `mutate` (one QEMU
 boot per known defect, which is minutes rather than seconds). A gate step that
-fails for want of a tool teaches people to skip the gate.
+fails for want of a tool teaches people to skip the gate. `model-check` prints
+the exact resolved Java identity before invoking it; `vmware` prints the
+resolved `vmrun` identity and a fully quoted launch command when Workstation is
+installed, or names that dependency as unavailable without blocking VM
+generation (D-218).
 
 `mutate` requires a clean `HEAD` and writes only to a locked, journalled copy
 under `target/mutate/`, with its own build directory. An interrupted sweep
@@ -111,7 +115,11 @@ kernel and image artifacts, and boots the exact bundled image. It writes the
 deterministic bundle under `target/evidence/`; `cargo xtask verify-evidence`
 then rechecks its source identity, installed tool and firmware identities,
 vendored and machine inputs, artifact hashes, reproducibility result and boot
-result without network access.
+result without network access. The QEMU hardware ABI is pinned to
+`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v2 always carries
+Java and VMware state, version and executable digest fields—even when either
+tool is unavailable—so verification reports the exact missing or changed
+qualification dependency rather than changing schema (D-218).
 
 `test` runs the host suite; `test-boot` boots a kernel built with the
 `selftest` feature headless in QEMU, injects a keystroke over QMP when the

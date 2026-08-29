@@ -27,6 +27,7 @@ pub mod paths;
 pub mod prose;
 pub mod qemu;
 pub mod qmp;
+mod qualification;
 pub mod sha256;
 pub mod tasks;
 pub mod unsafety;

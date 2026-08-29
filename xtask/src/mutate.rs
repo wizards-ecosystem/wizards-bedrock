@@ -2424,6 +2424,46 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "evidence::tests::artifact_bytes_must_match_the_manifest",
         },
     },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "pub(crate) const MACHINE_TYPE: &str = \"pc-q35-9.2\";",
+        replace: "pub(crate) const MACHINE_TYPE: &str = \"q35\";",
+        breaks: "QEMU's moving q35 alias changes the qualified hardware model",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::the_machine_type_is_a_versioned_q35_not_an_alias",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qualification.rs",
+        find: "    Ok(version.to_string())",
+        replace: "    Ok(report.trim().to_string())",
+        breaks: "vmrun usage text is recorded as part of its version identity",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::vmrun_version_is_separated_from_its_usage_text",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "    record.insert(format!(\"{prefix}.version\"), version)?;",
+        replace: "    record.insert(format!(\"{prefix}.reported-version\"), version)?;",
+        breaks: "an unavailable optional tool changes the evidence schema",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::optional_tools_never_change_the_manifest_schema",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "    for prefix in QUALIFICATION_TOOLS {",
+        replace: "    for prefix in QUALIFICATION_TOOLS.iter().take(0) {",
+        breaks: "an unavailable qualification dependency is reported as an unrelated byte mismatch",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::an_unavailable_qualification_dependency_is_named_exactly",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

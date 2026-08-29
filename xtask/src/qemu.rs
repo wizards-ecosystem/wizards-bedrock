@@ -24,9 +24,11 @@ const WINDOWS_DEFAULT: &str = r"C:\Program Files\qemu";
 /// SMAP nor UMIP: the kernel would switch its security baseline on against a
 /// CPU that cannot enforce it, and the check that it did would pass vacuously.
 /// The VMware target of D-18 and the real machine both have all three.
+pub(crate) const MACHINE_TYPE: &str = "pc-q35-9.2";
+
 const MACHINE: &[&str] = &[
     "-machine",
-    "q35",
+    MACHINE_TYPE,
     "-cpu",
     "max",
     "-m",
@@ -1244,6 +1246,22 @@ fn finish_boot_serial(forwarder: JoinHandle<Result<()>>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_machine_type_is_a_versioned_q35_not_an_alias() {
+        let Some(version) = MACHINE_TYPE.strip_prefix("pc-q35-") else {
+            panic!("the QEMU machine is not a q35 model");
+        };
+        let Some((major, minor)) = version.split_once('.') else {
+            panic!("the QEMU machine has no explicit version");
+        };
+        assert!(
+            !major.is_empty()
+                && !minor.is_empty()
+                && major.bytes().all(|byte| byte.is_ascii_digit())
+                && minor.bytes().all(|byte| byte.is_ascii_digit())
+        );
+    }
 
     #[test]
     fn exe_name_carries_the_platform_suffix() {

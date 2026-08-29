@@ -8,6 +8,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::paths::{self, Paths};
+use crate::qualification;
 
 const VMDK_TEMPLATE: &str = include_str!("../templates/wizard-os.vmdk.in");
 const VMX_TEMPLATE: &str = include_str!("../templates/wizard-os.vmx.in");
@@ -84,6 +85,7 @@ pub fn render(template: &str, values: &[(&str, String)]) -> Result<String> {
 
 /// Write a VMware VM directory beside the repository, wrapping `image`.
 pub fn generate(paths: &Paths, image: &Path) -> Result<()> {
+    let vmrun = qualification::vmrun(paths.root())?;
     let vm_dir = paths.vm_dir();
     std::fs::create_dir_all(&vm_dir).with_context(|| format!("creating {}", vm_dir.display()))?;
 
@@ -148,8 +150,20 @@ pub fn generate(paths: &Paths, image: &Path) -> Result<()> {
     write(&vmx_path, &vmx)?;
 
     println!("[xtask] VMware VM ready: {}", vmx_path.display());
-    println!("[xtask] open it in VMware Workstation, or run:");
-    println!("        vmrun start \"{}\"", vmx_path.display());
+    println!("[xtask] open it in VMware Workstation");
+    if let Some(vmrun) = vmrun {
+        println!("[xtask] VMware identity: {}", vmrun.version);
+        println!("[xtask] or run:");
+        println!(
+            "        \"{}\" -T ws start \"{}\"",
+            vmrun.path.display(),
+            vmx_path.display()
+        );
+    } else {
+        println!(
+            "[xtask] vmrun unavailable: install VMware Workstation or open the VMX on another recorded host"
+        );
+    }
     println!(
         "[xtask] serial output will appear in {}",
         vm_dir.join(SERIAL_LOG).display()

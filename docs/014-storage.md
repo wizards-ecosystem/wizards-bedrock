@@ -960,9 +960,9 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 212 |
-| Mutations | 214 registered; 64 in the last recorded full sweep, with 150 later entries broken individually |
+| Mutations | 218 registered; 64 in the last recorded full sweep, with 154 later entries broken individually |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-217 |
+| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-218 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but that proves registration rather than a current full

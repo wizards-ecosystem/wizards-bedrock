@@ -17,6 +17,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 
 use crate::paths::Paths;
+use crate::qualification;
 use crate::sha256;
 
 /// The pinned TLA+ tools jar, relative to the workspace root.
@@ -46,10 +47,16 @@ const CLEAN: &str = "Model checking completed. No error has been found.";
 pub fn check(paths: &Paths) -> Result<()> {
     let jar = paths.root().join(JAR);
     verify_jar(&jar)?;
+    let java = qualification::java(paths.root())?
+        .context("Java is unavailable; put the JVM for TLC on PATH")?;
 
     let models = paths.root().join(MODEL_DIR);
+    println!(
+        "[xtask] Java identity: {}",
+        java.version.replace('\n', " | ")
+    );
     println!("[xtask] model-check: TLC over {MODEL_DIR}/{MODEL}");
-    let output = Command::new("java")
+    let output = Command::new(&java.path)
         .current_dir(&models)
         // TLC's default collector spends most of a short run in GC.
         .arg("-XX:+UseParallelGC")
@@ -60,7 +67,7 @@ pub fn check(paths: &Paths) -> Result<()> {
         .arg(CONFIG)
         .arg(MODEL)
         .output()
-        .context("could not run java; the model check needs a JVM on PATH")?;
+        .with_context(|| format!("could not run the resolved JVM at {}", java.path.display()))?;
 
     let report = String::from_utf8_lossy(&output.stdout);
     print!("{report}");
