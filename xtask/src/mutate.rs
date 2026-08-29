@@ -3110,6 +3110,50 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "vmware::tests::a_generated_vm_starts_with_a_fresh_serial_transcript",
         },
     },
+    Mutation {
+        file: "xtask/src/mutation_workspace.rs",
+        find: "    if relative.starts_with(\"wost/\") {\n        return clean_packages(\n            paths,\n            &[package, crate::paths::KERNEL_PACKAGE],\n            Some(crate::paths::KERNEL_TARGET),\n        );\n    }",
+        replace: "    if relative.starts_with(\"wost/\") {\n        return clean_packages(\n            paths,\n            &[package],\n            Some(crate::paths::KERNEL_TARGET),\n        );\n    }",
+        breaks: "restoring a target dependency leaves its linked kernel artifact live",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::restoring_a_compiled_input_invalidates_its_package",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutation_workspace.rs",
+        find: "    if relative.starts_with(\"wost/\") {\n        return clean_packages(\n            paths,\n            &[package, crate::paths::KERNEL_PACKAGE],\n            Some(crate::paths::KERNEL_TARGET),\n        );\n    }",
+        replace: "    if relative.starts_with(\"wost/\") {\n        return clean_packages(\n            paths,\n            &[package, crate::paths::KERNEL_PACKAGE],\n            None,\n        );\n    }",
+        breaks: "restoring a target dependency leaves its cross-target artifacts live",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::restoring_a_compiled_input_invalidates_its_package",
+        },
+    },
+    // A library reaches the kernel through `wost`, which inlines it. Naming
+    // only the far end of that chain leaves the near one holding the defect.
+    Mutation {
+        file: "xtask/src/mutation_workspace.rs",
+        find: "        let mut consumers = vec![package];\n        consumers.extend_from_slice(crate::paths::KERNEL_PACKAGES);",
+        replace: "        let mut consumers = vec![package];\n        consumers.push(crate::paths::KERNEL_PACKAGE);",
+        breaks: "restoring a library leaves the wost artifact that inlined it live",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::restoring_a_library_input_invalidates_every_consumer",
+        },
+    },
+    // `xtask` inlines three libraries the same way, so the host side needs
+    // every host member and not just the one whose source came back.
+    Mutation {
+        file: "xtask/src/mutation_workspace.rs",
+        find: "        let host: Vec<&str> = members.iter().map(String::as_str).collect();\n        clean_packages(paths, &host, None)?;",
+        replace: "        clean_packages(paths, &[package], None)?;",
+        breaks: "restoring a library leaves the host artifacts that inlined it live",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::restoring_a_library_input_invalidates_every_consumer",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
