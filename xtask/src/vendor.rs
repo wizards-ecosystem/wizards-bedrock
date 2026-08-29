@@ -118,7 +118,11 @@ pub fn verify_listing(listing: &Path) -> Result<usize> {
 /// a directory nothing checks, which is the drift `paths.rs`'s
 /// `default-members` test exists to prevent one layer up (D-105).
 pub fn verify(paths: &Paths) -> Result<()> {
-    for listing in [paths.limine_checksums(), paths.tla_checksums()] {
+    for listing in [
+        paths.limine_checksums(),
+        paths.tla_checksums(),
+        paths.fat32_corpus_checksums(),
+    ] {
         let count = verify_listing(&listing)?;
         println!(
             "[xtask] {count} vendored file(s) match {}",
@@ -236,6 +240,7 @@ mod tests {
         let listed = [
             root.join("boot").join("limine").join("CHECKSUMS"),
             root.join("tools").join("tla").join("CHECKSUMS"),
+            root.join("tools").join("fat32-corpus").join("CHECKSUMS"),
         ];
 
         let mut found = Vec::new();

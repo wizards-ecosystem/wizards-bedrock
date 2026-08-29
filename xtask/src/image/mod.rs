@@ -9,6 +9,9 @@ pub mod esp;
 pub mod mbr;
 pub mod program;
 
+#[cfg(test)]
+mod foreign;
+
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 

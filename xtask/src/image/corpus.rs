@@ -12,10 +12,10 @@
 //! One corpus, so a check that passes on the host is a check about the same
 //! bytes the machine sees (D-170).
 //!
-//! **One weakness, budgeted for in `014`:** the corpus has a single writer.
-//! Until a foreign-produced FAT32 image is obtained, this reader is validated
-//! against the tool that made its input, and a shared misreading of the
-//! specification would pass both.
+//! D-207 closes this corpus's former single-writer proof gap with a separately
+//! pinned `dosfstools`/`mtools` image. This local corpus remains because it is
+//! the exact one the kernel boots; the foreign one independently checks the
+//! format assumptions on the host.
 
 use std::io::{Cursor, Write};
 

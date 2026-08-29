@@ -18,8 +18,8 @@ admission reasons.
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
 are **not closed**. The current image has 211 QEMU machine checks. The current
-mutation registry has 155 entries, but the last recorded complete sweep covered
-64; the ninety-one later mutations were broken individually. The current
+mutation registry has 157 entries, but the last recorded complete sweep covered
+64; the ninety-three later mutations were broken individually. The current
 211-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
@@ -64,7 +64,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 155 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 155 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
+| PW-001 | REQUIRED | P0 | The register contains 157 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 157 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
 | PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 211-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=211 failed=0` transcript, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
@@ -100,7 +100,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-207 | DONE | P1 | Early PCI failures returned before tmpfs/devfs survey despite the claim that those backends exist whatever the bus held | D-198 makes PCI discovery, the hardware-free namespace survey and interrupt bring-up sibling boot steps; the degraded image forces the production CF8/CFC claim to refuse | 2026-08-27 degraded QEMU logged the PCI refusal, enumerated tmpfs, resolved both devfs devices, refused x2APIC and settled; restoring the PCI-conditioned survey removed those lines and the harness failed exactly on missing `tmpfs:` |
 | PW-208 | DONE | P1 | Enumeration attempted only the first NVMe candidate, so one broken controller masked a later good one | D-199 gives discovery a pre-commit lease and advances only after verified controller, mapping, frame, command, port and function retirement | 2026-08-27 release QEMU retired an earlier namespace-less real controller to the exact free-frame, mapping-count, device-window and PCI-claim baseline, then mounted and read the corpus-backed sibling; leaked mapping ownership/cursor and stopped-selection mutations reddened `a later nvme controller survives an earlier failure`, while real I/O-window reacquisition caught omitted dynamic-port release |
 | PW-209 | DONE | P2 | Readiness and command timeouts were iteration guesses even after a monotonic clock existed | D-200 gives `libs/nvme::PollLimit` a monotonic deadline when time exists and an explicit attempt bound during early bring-up | Host tests proved iteration-independent deadlines, exact clockless exhaustion and saturation; each defect was broken and reddened only its exact test, while release QEMU completed the real delayed-command route within the five-second policy |
-| PW-210 | READY | P1 | The FAT oracle uses two readers but one image writer, so a shared writer misconception can pass both | Add an independently produced, provenance-pinned FAT32 image and adversarial directory/layout cases | Both readers agree on foreign and local corpora; deliberate parser disagreement is caught; license/provenance and digest are recorded |
+| PW-210 | DONE | P1 | The FAT oracle used two readers but one image writer, so a shared writer misconception could pass both | D-207 pins a dosfstools/mtools volume as exact sparse sectors, verifies its package and image provenance, and reads it independently of the unchanged boot corpus | 2026-08-28 raw inspection proved a multi-cluster root, deleted/live and long-name slots and a fragmented 40-cluster file; both readers agreed on 44 root entries and the fragmented, long-name and nested payloads; duplicate-sector and first-cluster-only breaks reddened their exact tests and persist as two mutations |
 
 ## CPU, time, interrupts and scheduling
 
@@ -234,7 +234,7 @@ PW-514 includes these exact stale-current-facing corrections still to make:
 ## Recommended execution order
 
 1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
-   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200, PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-300, PW-302, PW-304, PW-306, PW-307, PW-400 and PW-402 are closed by D-185 through D-206.
+   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200, PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-210, PW-300, PW-302, PW-304, PW-306, PW-307, PW-400 and PW-402 are closed by D-185 through D-207.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

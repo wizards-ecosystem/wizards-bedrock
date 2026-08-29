@@ -1818,6 +1818,26 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "tests::a_maximum_file_offset_does_not_overflow_chain_progress",
         },
     },
+    Mutation {
+        file: "tools/fat32-corpus/foreign-fat32.sparse",
+        find: "sector 7 ",
+        replace: "sector 1 ",
+        breaks: "the foreign FAT envelope records one sector twice and omits another",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "image::foreign::foreign_envelope_is_exact_and_hostile_records_are_refused",
+        },
+    },
+    Mutation {
+        file: "libs/fat32/src/lib.rs",
+        find: "                Next::Cluster(next) => current = next,\n                Next::End => return Ok(()),",
+        replace: "                Next::Cluster(_) => return Ok(()),\n                Next::End => return Ok(()),",
+        breaks: "a FAT directory walk silently stops after its first cluster",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "image::foreign::both_readers_agree_on_the_adversarial_foreign_layout",
+        },
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.

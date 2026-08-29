@@ -176,9 +176,10 @@ Do not implement exFAT. It is the one variant with live patents; FAT32
 including long names is unencumbered, and Microsoft's licensing page no longer
 lists a FAT programme.
 
-**One weakness to budget for:** the corpus comes from a single writer. Obtain a
-foreign-produced FAT32 image so the reader is not validated solely against the
-tool that made its input.
+**The formerly budgeted one-writer weakness is closed.** D-207 pins a volume
+formatted and populated by `dosfstools`/`mtools`, with adversarial valid layouts
+which both host readers must interpret identically. The local `fatfs` corpus
+remains the one the kernel boots.
 
 ### The device: NVMe, polled (`012` §2)
 
@@ -383,7 +384,6 @@ Specific checks this phase owes, named now so they are not invented later:
 - **One namespace per program, and no way to compose two.** Plan 9's `bind` and
   Fuchsia's namespace construction are both out of scope; a program gets the
   directory handles it was given.
-- **The corpus has one writer**, until a foreign image is obtained.
 - **POSIX `sys_open` remains partial platform and compatibility work.** Native
   OpenAt resolves existing paths from a directory handle, but ring 3 cannot yet
   receive the first one. The adapter then supplies root/cwd/descriptor state
@@ -771,10 +771,9 @@ D-165's rule again, arriving through the corpus rather than through the set-up.
 ### Carried deliberately
 
 512-byte sectors only, refused rather than misread — that is what lets every
-buffer be a fixed array. And the corpus still has **one writer**: until a
-foreign-produced image is obtained, a shared misreading of the specification
-would pass both implementations, which is the honest limit of an oracle built
-from one tool.
+buffer be a fixed array. D-207 adds the independent writer evidence: a pinned
+foreign volume forces both readers through a multi-cluster directory,
+deleted/long-name slots and a fragmented file without changing the boot corpus.
 
 ---
 
@@ -961,13 +960,13 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 211 |
-| Mutations | 155 registered; 64 in the last recorded full sweep, with 91 later entries broken individually |
+| Mutations | 157 registered; 64 in the last recorded full sweep, with 93 later entries broken individually |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-206 |
+| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-207 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but that proves registration rather than a current full
-sweep. D-184's register carries the 155-entry count. A number restated in prose can
+sweep. D-184's register carries the 157-entry count. A number restated in prose can
 disagree with itself — which the per-slice lines above did, in seven places, and
 which is why they now say what the gate said rather than what was expected of
 it (D-175). The host-test count is deliberately absent: it changes with every
@@ -1126,10 +1125,9 @@ discovers which of them were about the first machine.**
 No write path. No page cache. No symlinks or hard links. One namespace per
 program with no way to compose two. POSIX `sys_open` still needs a ring-3 route
 for its first delegated directory, compatibility root/cwd/descriptor policy and
-explicit EROFS handling for mutating modes. And the corpus still has **one
-writer** — until a foreign-produced FAT32 image is obtained, a shared
-misreading of the specification would pass both implementations, which is the
-honest limit of an oracle built from one tool.
+explicit EROFS handling for mutating modes. D-207 closes the former one-writer
+corpus limitation with pinned independent formatter output while retaining the
+local corpus as the exact booted bytes.
 
 ### What this phase taught the next one
 
