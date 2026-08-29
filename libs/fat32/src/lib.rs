@@ -484,13 +484,6 @@ pub struct Volume<S: Sectors> {
     bpb: Bpb,
 }
 
-/// How many clusters a walk will follow before calling the chain a loop.
-///
-/// A FAT is a linked list a hostile volume can make circular, and following one
-/// is a hang rather than a fault. The bound is the cluster count, because a
-/// chain longer than the volume has visited one twice.
-const MAX_CHAIN: u32 = 1 << 24;
-
 impl<S: Sectors> Volume<S> {
     /// Read the boot sector at `base` and mount what it describes.
     ///
@@ -520,6 +513,18 @@ impl<S: Sectors> Volume<S> {
         self.source
             .read_sector(at, into)
             .map_err(|_| FatError::Unreadable)
+    }
+
+    /// How many clusters a walk will follow before calling the chain a loop.
+    ///
+    /// A FAT is a linked list a hostile volume can make circular, and
+    /// following one is a hang rather than a fault. The bound is the volume's
+    /// own cluster count, because a chain longer than the volume has visited
+    /// one twice — and every step past that is a device read a caller waits
+    /// for, so a fixed ceiling is sixteen million of them on a volume that
+    /// cannot hold a thousand.
+    const fn chain_limit(&self) -> u32 {
+        self.bpb.clusters()
     }
 
     /// What follows `cluster`.
@@ -581,7 +586,7 @@ impl<S: Sectors> Volume<S> {
             }
 
             visited += 1;
-            if visited > MAX_CHAIN {
+            if visited > self.chain_limit() {
                 return Err(FatError::Unbounded);
             }
             match self.next_cluster(current)? {
@@ -645,6 +650,9 @@ impl<S: Sectors> Volume<S> {
         // it.
         let mut current = entry.cluster;
         let skip_clusters = offset / cluster_bytes;
+        if skip_clusters > self.chain_limit() {
+            return Err(FatError::Unbounded);
+        }
         for _ in 0..skip_clusters {
             match self.next_cluster(current)? {
                 Next::Cluster(next) => current = next,
@@ -677,7 +685,7 @@ impl<S: Sectors> Volume<S> {
                 break;
             }
             visited += 1;
-            if visited > MAX_CHAIN {
+            if visited > self.chain_limit() {
                 return Err(FatError::Unbounded);
             }
             match self.next_cluster(current)? {
@@ -981,5 +989,91 @@ mod tests {
         let mut byte = [0u8; 1];
 
         assert_eq!(volume.read_file(&entry, u32::MAX - 1, &mut byte), Ok(1));
+    }
+
+    /// A source that serves a two-cluster cycle and counts what it is asked
+    /// for, refusing past `ceiling` so a runaway walk ends in the test rather
+    /// than in ten minutes of sector reads.
+    #[derive(Debug)]
+    struct CountedCycle {
+        reads: u32,
+        ceiling: u32,
+    }
+
+    impl Sectors for CountedCycle {
+        type Error = ();
+
+        fn read_sector(
+            &mut self,
+            sector: u64,
+            into: &mut [u8; SECTOR_BYTES],
+        ) -> Result<(), Self::Error> {
+            self.reads += 1;
+            if self.reads > self.ceiling {
+                return Err(());
+            }
+            if sector == 1 {
+                into.fill(0);
+                into[8..12].copy_from_slice(&3u32.to_le_bytes());
+                into[12..16].copy_from_slice(&2u32.to_le_bytes());
+            } else {
+                // Every slot deleted: the directory never reaches its end, so
+                // only the chain bound can stop the walk.
+                into.fill(0xE5);
+            }
+            Ok(())
+        }
+    }
+
+    /// A volume of `clusters` data clusters, one sector each.
+    fn tiny(clusters: u32) -> Bpb {
+        Bpb {
+            sectors_per_cluster: 1,
+            reserved_sectors: 1,
+            fats: 1,
+            sectors_per_fat: 1,
+            root_cluster: FIRST_DATA_CLUSTER,
+            total_sectors: clusters + 2,
+        }
+    }
+
+    /// A cyclic chain is refused within the volume that could hold it.
+    ///
+    /// The bound was a fixed sixteen million while the reasoning written above
+    /// it was the pigeonhole argument — a chain longer than the volume has
+    /// visited a cluster twice. On a sixty-two-cluster volume the gap was five
+    /// orders of magnitude, and every step of it is a device read the caller
+    /// waits for.
+    #[test]
+    fn a_cyclic_chain_is_refused_within_the_volume() {
+        let bpb = tiny(62);
+        assert_eq!(bpb.clusters(), 62);
+        // Four reads per cluster the volume holds is far more rope than a
+        // bounded walk needs and far less than a fixed cap consumes.
+        let ceiling = bpb.clusters() * 4;
+
+        let mut volume = Volume {
+            source: CountedCycle { reads: 0, ceiling },
+            base: 0,
+            bpb,
+        };
+        assert_eq!(
+            volume.walk_directory(FIRST_DATA_CLUSTER, |_| true),
+            Err(FatError::Unbounded),
+            "the walk ran past every cluster the volume holds"
+        );
+
+        let mut volume = Volume {
+            source: CountedCycle { reads: 0, ceiling },
+            base: 0,
+            bpb,
+        };
+        let entry = Entry::for_contents(FIRST_DATA_CLUSTER, u32::MAX);
+        let mut byte = [0u8; 1];
+        assert_eq!(
+            volume.read_file(&entry, u32::MAX - 1, &mut byte),
+            Err(FatError::Unbounded),
+            "the skip walked a cycle with no bound at all"
+        );
     }
 }

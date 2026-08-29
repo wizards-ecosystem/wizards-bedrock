@@ -1849,12 +1849,22 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "libs/fat32/src/lib.rs",
-        find: "        let skip_clusters = offset / cluster_bytes;\n        for _ in 0..skip_clusters {\n            match self.next_cluster(current)? {\n                Next::Cluster(next) => current = next,\n                Next::End => return Ok(0),\n                Next::Bad | Next::Free => return Err(FatError::BadCluster(current)),\n            }\n        }\n\n        let mut done = 0;\n        let mut within = (offset % cluster_bytes) as usize;",
+        find: "        let skip_clusters = offset / cluster_bytes;\n        if skip_clusters > self.chain_limit() {\n            return Err(FatError::Unbounded);\n        }\n        for _ in 0..skip_clusters {\n            match self.next_cluster(current)? {\n                Next::Cluster(next) => current = next,\n                Next::End => return Ok(0),\n                Next::Bad | Next::Free => return Err(FatError::BadCluster(current)),\n            }\n        }\n\n        let mut done = 0;\n        let mut within = (offset % cluster_bytes) as usize;",
         replace: "        let mut skipped = 0;\n        while skipped + cluster_bytes <= offset {\n            match self.next_cluster(current)? {\n                Next::Cluster(next) => current = next,\n                Next::End => return Ok(0),\n                Next::Bad | Next::Free => return Err(FatError::BadCluster(current)),\n            }\n            skipped += cluster_bytes;\n            if skipped > entry.size {\n                return Ok(0);\n            }\n        }\n\n        let mut done = 0;\n        let mut within = (offset - skipped) as usize;",
         breaks: "a maximum FAT file offset overflows accumulated chain bytes",
         reddens: Caught::HostTest {
             package: "fat32",
             name: "tests::a_maximum_file_offset_does_not_overflow_chain_progress",
+        },
+    },
+    Mutation {
+        file: "libs/fat32/src/lib.rs",
+        find: "    const fn chain_limit(&self) -> u32 {\n        self.bpb.clusters()\n    }",
+        replace: "    const fn chain_limit(&self) -> u32 {\n        1 << 24\n    }",
+        breaks: "a FAT chain walk is bounded by the volume that could hold it",
+        reddens: Caught::HostTest {
+            package: "fat32",
+            name: "tests::a_cyclic_chain_is_refused_within_the_volume",
         },
     },
     Mutation {
