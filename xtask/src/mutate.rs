@@ -22,17 +22,19 @@
 //! pure host logic runs the exact host test it names. It is not in `ci`
 //! because the machine entries still cost one QEMU boot apiece.
 //!
-//! **Restoring is not optional and not best-effort.** Every mutation is
-//! applied to a file that is restored from an in-memory copy of the original
-//! before the next one, and on every error path. A crash between the two would
-//! leave the tree modified, which is why the mutation is written back before
-//! anything is allowed to fail.
+//! **The checkout is never the mutation target.** D-208 requires a clean
+//! `HEAD`, copies only tracked bytes into a commit- and registry-pinned
+//! workspace, and journals each active mutation before changing that copy.
+//! Builds and boots use the copy and a private target directory. A killed run
+//! resumes from its newest complete journal, restores the active file from an
+//! immutable snapshot, and never needs to repair the user's source or index.
 
 use anyhow::{Context, Result, bail};
 use std::process::Command;
 
+use crate::mutation_workspace::{Outcome, Session};
 use crate::paths::Paths;
-use crate::{qemu, tasks};
+use crate::{qemu, sha256, tasks};
 
 /// One deliberate defect, and what it is a defect *in*.
 #[derive(Debug, Clone, Copy)]
@@ -1838,6 +1840,46 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "image::foreign::both_readers_agree_on_the_adversarial_foreign_layout",
         },
     },
+    Mutation {
+        file: "xtask/src/mutation_workspace.rs",
+        find: "            workspace: Paths::new(workspace_root, Some(&build)),",
+        replace: "            workspace: Paths::new(paths.root().to_path_buf(), Some(&build)),",
+        breaks: "mutation builds run from the user checkout instead of the tracked copy",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::a_session_builds_only_from_its_tracked_copy",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutation_workspace.rs",
+        find: "    file.try_lock().with_context(|| {",
+        replace: "    std::io::Result::<()>::Ok(()).with_context(|| {",
+        breaks: "two mutation sweeps can use one sandbox concurrently",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::a_killed_build_or_boot_resumes_outside_the_user_tree",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutation_workspace.rs",
+        find: "    std::fs::copy(&source, &destination).with_context(|| {\n        format!(\n            \"restoring isolated mutation {} from {}\",\n            destination.display(),\n            source.display()\n        )\n    })?;",
+        replace: "    let _ = (&source, &destination);",
+        breaks: "resume leaves the interrupted mutation applied in its sandbox",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::a_killed_build_or_boot_resumes_outside_the_user_tree",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutation_workspace.rs",
+        find: ".max_by_key(|journal| journal.generation)",
+        replace: ".min_by_key(|journal| journal.generation)",
+        breaks: "resume chooses stale progress over the newest complete journal generation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::journal_uses_the_newest_complete_slot_and_falls_back_from_a_torn_write",
+        },
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.
@@ -1848,14 +1890,31 @@ pub const MUTATIONS: &[Mutation] = &[
 /// mutation **survives** — which is the interesting failure and the reason
 /// this exists.
 pub fn run(paths: &Paths) -> Result<()> {
-    let mut survivors = Vec::new();
-    let mut inconclusive = Vec::new();
+    let registry = registry_fingerprint();
+    let mut session = Session::open(paths, &registry, MUTATIONS.len())?;
+    if let Some(active) = session.active() {
+        let mutation = MUTATIONS
+            .get(active)
+            .with_context(|| format!("journal names absent mutation {active}"))?;
+        println!(
+            "[xtask] restoring interrupted mutation {}/{}: {}",
+            active + 1,
+            MUTATIONS.len(),
+            mutation.breaks
+        );
+        session.recover(active, mutation.file)?;
+    }
 
-    for (index, mutation) in MUTATIONS.iter().enumerate() {
+    let first = session.completed().len();
+    if first != 0 {
+        println!(
+            "[xtask] resuming after {first}/{} durable mutation outcomes",
+            MUTATIONS.len()
+        );
+    }
+    for (index, mutation) in MUTATIONS.iter().enumerate().skip(first) {
         ensure_target_is_rebuilt(mutation)?;
-        let path = paths.root().join(mutation.file);
-        let original = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let original = session.original(mutation.file)?;
         let mutated = apply(&original, mutation)?;
 
         println!(
@@ -1864,19 +1923,16 @@ pub fn run(paths: &Paths) -> Result<()> {
             MUTATIONS.len(),
             mutation.breaks
         );
-        std::fs::write(&path, &mutated).with_context(|| format!("writing {}", path.display()))?;
-
-        let noticed = mutation_reports(paths, mutation.reddens);
-
-        // Before anything is allowed to fail, including the check below.
-        std::fs::write(&path, &original)
-            .with_context(|| format!("restoring {}", path.display()))?;
-
-        match noticed {
-            Ok(true) => println!("[xtask]   caught"),
+        session.begin(index)?;
+        session.write(mutation.file, &mutated)?;
+        let outcome = match mutation_reports(session.paths(), mutation.reddens) {
+            Ok(true) => {
+                println!("[xtask]   caught");
+                Outcome::Caught
+            }
             Ok(false) => {
                 println!("[xtask]   SURVIVED");
-                survivors.push(mutation);
+                Outcome::Survived
             }
             Err(error) => {
                 // A build failure is not a survivor: the mutation did not run,
@@ -1890,11 +1946,22 @@ pub fn run(paths: &Paths) -> Result<()> {
                 // missing check that is not missing. The summary used to call
                 // both "survived" and did exactly that (D-175).
                 println!("[xtask]   inconclusive: {error}");
-                inconclusive.push((mutation, error));
+                Outcome::Inconclusive(format!("{error:#}"))
             }
-        }
+        };
+        session.finish(index, mutation.file, outcome)?;
     }
 
+    let outcomes = session.complete(MUTATIONS.len())?;
+    let mut survivors = Vec::new();
+    let mut inconclusive = Vec::new();
+    for (mutation, outcome) in MUTATIONS.iter().zip(&outcomes) {
+        match outcome {
+            Outcome::Caught => {}
+            Outcome::Survived => survivors.push(mutation),
+            Outcome::Inconclusive(error) => inconclusive.push((mutation, error)),
+        }
+    }
     if survivors.is_empty() && inconclusive.is_empty() {
         println!("[xtask] every mutation was caught by the check it names");
         return Ok(());
@@ -1926,11 +1993,53 @@ pub fn run(paths: &Paths) -> Result<()> {
     }
 }
 
+fn registry_fingerprint() -> String {
+    fn field(material: &mut Vec<u8>, value: &str) {
+        material.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        material.extend_from_slice(value.as_bytes());
+    }
+
+    let mut material = Vec::new();
+    for mutation in MUTATIONS {
+        field(&mut material, mutation.file);
+        field(&mut material, mutation.find);
+        field(&mut material, mutation.replace);
+        field(&mut material, mutation.breaks);
+        match mutation.reddens {
+            Caught::Check(name) => {
+                field(&mut material, "check");
+                field(&mut material, name);
+            }
+            Caught::HostTest { package, name } => {
+                field(&mut material, "host");
+                field(&mut material, package);
+                field(&mut material, name);
+            }
+            Caught::BootMarker(marker) => {
+                field(&mut material, "boot-marker");
+                field(&mut material, marker);
+            }
+            Caught::Panic(reason) => {
+                field(&mut material, "panic");
+                field(&mut material, reason);
+            }
+        }
+    }
+    sha256::hex(&sha256::digest(&material))
+}
+
 /// Refuse source the already-running mutation driver would consume itself.
 fn ensure_target_is_rebuilt(mutation: &Mutation) -> Result<()> {
-    if mutation.file.starts_with("xtask/") {
+    let rebuilt_host_test = matches!(
+        mutation.reddens,
+        Caught::HostTest {
+            package: "xtask",
+            ..
+        }
+    );
+    if mutation.file.starts_with("xtask/") && !rebuilt_host_test {
         bail!(
-            "{}: `{}` belongs to the running mutation driver and would not be rebuilt",
+            "{}: `{}` belongs to the running mutation driver and would not be rebuilt by its witness",
             mutation.file,
             mutation.breaks
         );
@@ -2049,6 +2158,7 @@ fn mutation_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
 fn host_test_reports(paths: &Paths, package: &str, name: &str) -> Result<bool> {
     let output = Command::new(env!("CARGO"))
         .current_dir(paths.root())
+        .env("CARGO_TARGET_DIR", paths.target_dir())
         .args(["test", "--package", package, name, "--", "--exact"])
         .output()
         .with_context(|| format!("could not spawn host mutation test {package}::{name}"))?;

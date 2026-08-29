@@ -77,6 +77,11 @@ project cannot vendor into a Rust build: `model-check` (TLC, needs Java),
 boot per known defect, which is minutes rather than seconds). A gate step that
 fails for want of a tool teaches people to skip the gate.
 
+`mutate` requires a clean `HEAD` and writes only to a locked, journalled copy
+under `target/mutate/`, with its own build directory. An interrupted sweep
+resumes at its active mutation after restoring that copy; it never repairs or
+rewrites the checkout or Git index (D-208).
+
 `test` runs the host suite; `test-boot` boots a kernel built with the
 `selftest` feature headless in QEMU, injects a keystroke over QMP when the
 kernel asks for one (D-38), and reads the verdict from the exit code, which

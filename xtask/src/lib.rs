@@ -19,6 +19,7 @@ pub mod image;
 pub mod machine;
 pub mod model;
 pub mod mutate;
+pub mod mutation_workspace;
 pub mod paths;
 pub mod prose;
 pub mod qemu;
