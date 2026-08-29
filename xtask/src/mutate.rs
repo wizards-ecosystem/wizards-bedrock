@@ -28,6 +28,11 @@
 //! Builds and boots use the copy and a private target directory. A killed run
 //! resumes from its newest complete journal, restores the active file from an
 //! immutable snapshot, and never needs to repair the user's source or index.
+//!
+//! **A red run is causal only after green.** D-209 proves each witness class
+//! green before touching the snapshot. Machine mutations must then produce
+//! their exact named check or registry-pinned panic marker; any other failure
+//! is inconclusive rather than caught.
 
 use anyhow::{Context, Result, bail};
 use std::process::Command;
@@ -69,12 +74,13 @@ pub enum Caught {
     },
     /// A shipped degraded boot must emit one exact serial marker.
     BootMarker(&'static str),
-    /// Nothing names it: the defect kills the machine before the verdict.
-    ///
-    /// Carries *why*, because a bare variant would be a hole anything could be
-    /// driven through. A reason someone can check by reading is what keeps
-    /// this from becoming the way to dodge naming a check (D-134).
-    Panic(&'static str),
+    /// The defect kills the machine before the verdict.
+    Panic {
+        /// Exact text which must occur in the serial panic line.
+        marker: &'static str,
+        /// Why a terminal outcome is the defect's expected witness.
+        why: &'static str,
+    },
 }
 
 /// The defects, each of which some check must notice.
@@ -190,10 +196,11 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "&& usercopy::recover(frame) =>",
         replace: "&& false && usercopy::recover(frame) =>",
         breaks: "a faulting user copy resumes instead of stopping the machine",
-        reddens: Caught::Panic(
-            "without the fixup the fault is terminal, so the kernel dies before it \
-             reaches a verdict at all",
-        ),
+        reddens: Caught::Panic {
+            marker: "faulting address 0x0000600000000000",
+            why: "without the fixup the fault is terminal, so the kernel dies before it \
+                  reaches a verdict at all",
+        },
     },
     // Its failure mode is a panic: the assert in `ThreadLock` fires, which is
     // the defect being a defect. A program reaching this halted the machine
@@ -203,10 +210,11 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "            REFUSED_CALLS.fetch_add(1, Ordering::Relaxed);",
         replace: "            crate::warn!(\"refused\");",
         breaks: "an unserved call does not log from trap context",
-        reddens: Caught::Panic(
-            "logging from trap context trips `ThreadLock`'s assert, which is the \
-             defect being a defect",
-        ),
+        reddens: Caught::Panic {
+            marker: "a trap handler may not take a thread lock",
+            why: "logging from trap context trips `ThreadLock`'s assert, which is the \
+                  defect being a defect",
+        },
     },
     // The dropping road no check can observe: those frames go to the
     // allocator, and reading them again needs it to hand back the same ones.
@@ -1492,9 +1500,10 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "        let stack_top = table.slots[slot].stack_top;\n        table.slots[slot] = Slot {\n            stack_top,\n            ..Slot::VACANT\n        };",
         replace: "        table.slots[slot] = Slot::VACANT;",
         breaks: "a retired construction preserves its reusable kernel stack",
-        reddens: Caught::Panic(
-            "the second fabrication writes through the zeroed stack top before a verdict",
-        ),
+        reddens: Caught::Panic {
+            marker: "address 0xffffffffffffffe8",
+            why: "the second fabrication writes through the zeroed stack top before a verdict",
+        },
     },
     // Leave the scheduler reservation behind after its launch records refuse
     // publication. `wost` and the process transaction both clean up, so the
@@ -1890,7 +1899,113 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "cargo::tests::a_cargo_command_uses_the_paths_private_target",
         },
     },
+    Mutation {
+        file: "xtask/src/mutate.rs",
+        find: "            marker: \"faulting address 0x0000600000000000\",",
+        replace: "            marker: \"\",",
+        breaks: "a terminal mutation can name no exact panic cause",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::a_panicking_mutation_names_an_exact_marker_and_why_it_is_terminal",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutate.rs",
+        find: "    result.with_context(|| format!(\"pristine {label} mutation baseline is not green\"))",
+        replace: "    let _ = (label, result);\n    Ok(())",
+        breaks: "a red pristine baseline is allowed to precede mutation credit",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::a_red_baseline_stops_before_any_mutation",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutate.rs",
+        find: "        (Caught::Check(name), qemu::SelftestOutcome::Failed(failed))\n            if failed.iter().any(|actual| actual == name) =>\n        {\n            Ok(true)\n        }",
+        replace: "        (Caught::Check(_), qemu::SelftestOutcome::Failed(failed))\n            if !failed.is_empty() =>\n        {\n            Ok(true)\n        }",
+        breaks: "an unrelated failed check is credited to the intended mutation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::a_wrong_machine_failure_is_inconclusive_not_caught",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutate.rs",
+        find: "        (Caught::Panic { marker, .. }, qemu::SelftestOutcome::Panicked(line))\n            if line.contains(marker) =>\n        {\n            Ok(true)\n        }",
+        replace: "        (Caught::Panic { .. }, qemu::SelftestOutcome::Panicked(line))\n            if !line.is_empty() =>\n        {\n            Ok(true)\n        }",
+        breaks: "an unrelated kernel panic is credited to a terminal mutation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::a_panic_requires_its_exact_marker",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "        panic.push_str(line.trim_end());",
+        replace: "        panic.push_str(PANIC_MARKER);",
+        breaks: "a panic continuation is discarded before mutation attribution",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::a_panic_outcome_carries_its_exact_serial_transcript",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "    if observation.failed.len() != verdict.failed {",
+        replace: "    if false && observation.failed.len() != verdict.failed {",
+        breaks: "a failed verdict may omit the names of its red checks",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::a_failed_verdict_must_name_every_failed_check",
+        },
+    },
 ];
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Baselines {
+    host: bool,
+    selftest: bool,
+    degraded: bool,
+}
+
+fn baselines_for(mutations: &[Mutation]) -> Baselines {
+    let mut baselines = Baselines::default();
+    for mutation in mutations {
+        match mutation.reddens {
+            Caught::HostTest { .. } => baselines.host = true,
+            Caught::Check(_) | Caught::Panic { .. } => baselines.selftest = true,
+            Caught::BootMarker(_) => baselines.degraded = true,
+        }
+    }
+    baselines
+}
+
+fn require_green(label: &str, result: Result<()>) -> Result<()> {
+    result.with_context(|| format!("pristine {label} mutation baseline is not green"))
+}
+
+fn prove_green_baselines(paths: &Paths, mutations: &[Mutation]) -> Result<()> {
+    let baselines = baselines_for(mutations);
+    if baselines.host {
+        println!("[xtask] proving the pristine host mutation baseline");
+        require_green("host", tasks::test(paths))?;
+    }
+    if baselines.selftest {
+        println!("[xtask] proving the pristine self-test mutation baseline");
+        require_green(
+            "self-test",
+            tasks::test_boot(paths, crate::cargo::Profile::Release),
+        )?;
+    }
+    if baselines.degraded {
+        println!("[xtask] proving the pristine degraded mutation baseline");
+        require_green(
+            "degraded",
+            tasks::degraded_check(paths, crate::cargo::Profile::Release),
+        )?;
+    }
+    Ok(())
+}
 
 /// Apply each mutation, run its exact machine or host witness, and require red.
 ///
@@ -1922,6 +2037,7 @@ pub fn run(paths: &Paths) -> Result<()> {
             MUTATIONS.len()
         );
     }
+    prove_green_baselines(session.paths(), &MUTATIONS[first..])?;
     for (index, mutation) in MUTATIONS.iter().enumerate().skip(first) {
         ensure_target_is_rebuilt(mutation)?;
         let original = session.original(mutation.file)?;
@@ -1945,16 +2061,17 @@ pub fn run(paths: &Paths) -> Result<()> {
                 Outcome::Survived
             }
             Err(error) => {
-                // A build failure is not a survivor: the mutation did not run,
-                // so it proved nothing either way, and reporting it as caught
-                // would be the same lie this task exists to find.
+                // A harness failure or a different red verdict is not a
+                // survivor: this mutation's intended question was not
+                // answered, so crediting it would be the lie this task exists
+                // to find.
                 //
                 // **Kept apart from the survivors**, because the two want
                 // different work. A survivor is a property nothing checks; a
-                // mutation that will not build is a *defect in the mutation*,
-                // and reading one as the other sends the reader looking for a
-                // missing check that is not missing. The summary used to call
-                // both "survived" and did exactly that (D-175).
+                // mutation with no valid causal verdict is a mutation or
+                // harness defect, and reading it as the other sends the reader
+                // looking for a missing check that is not missing (D-175,
+                // D-209).
                 println!("[xtask]   inconclusive: {error}");
                 Outcome::Inconclusive(format!("{error:#}"))
             }
@@ -1981,23 +2098,23 @@ pub fn run(paths: &Paths) -> Result<()> {
     }
     for (mutation, error) in &inconclusive {
         println!(
-            "[xtask] did not build: {} ({}) — {error}",
+            "[xtask] inconclusive: {} ({}) — {error}",
             mutation.breaks, mutation.file
         );
     }
 
     match (survivors.len(), inconclusive.len()) {
         (0, count) => bail!(
-            "{count} of {} mutations would not build; each is a defect in the mutation, \
-             not a missing check",
+            "{count} of {} mutations were inconclusive; each needs a valid build and its \
+             exact expected verdict",
             MUTATIONS.len()
         ),
         (count, 0) => bail!(
             "{count} of {} mutations survived; each is a property nothing checks",
             MUTATIONS.len()
         ),
-        (survived, unbuilt) => bail!(
-            "{survived} of {} mutations survived and {unbuilt} would not build",
+        (survived, inconclusive) => bail!(
+            "{survived} of {} mutations survived and {inconclusive} were inconclusive",
             MUTATIONS.len()
         ),
     }
@@ -2029,9 +2146,10 @@ fn registry_fingerprint() -> String {
                 field(&mut material, "boot-marker");
                 field(&mut material, marker);
             }
-            Caught::Panic(reason) => {
+            Caught::Panic { marker, why } => {
                 field(&mut material, "panic");
-                field(&mut material, reason);
+                field(&mut material, marker);
+                field(&mut material, why);
             }
         }
     }
@@ -2074,23 +2192,6 @@ fn apply(original: &str, mutation: &Mutation) -> Result<String> {
     }
 }
 
-/// The check names in a self-test failure, one element at a time.
-///
-/// `correlate_selftest` joins them with `"; "` after the constant, so the list
-/// is everything past it.
-fn failed_checks(text: &str) -> impl Iterator<Item = &str> {
-    text.split_once(qemu::SELFTEST_FAILURE)
-        .map(|(_, rest)| rest.trim_start_matches(": "))
-        .unwrap_or("")
-        // The error may carry context after the list; a name never contains a
-        // newline, so the first line is the list.
-        .lines()
-        .next()
-        .unwrap_or("")
-        .split("; ")
-        .map(str::trim)
-}
-
 /// Run the named host or machine witness and report whether **this** mutation
 /// made its exact check go red.
 ///
@@ -2121,46 +2222,39 @@ fn mutation_reports(paths: &Paths, wanted: Caught) -> Result<bool> {
             }
         };
     }
-    match tasks::test_boot(paths, crate::cargo::Profile::Release) {
-        // The kernel booted and every check passed: the mutation survived.
-        Ok(()) => Ok(false),
-        Err(error) => {
-            let text = format!("{error:#}");
-            match wanted {
-                // The name comes from the machine's own report, forwarded by
-                // `qemu::correlate_selftest`, not from anything inferred here.
-                Caught::Check(name) => {
-                    if text.contains(qemu::SELFTEST_FAILURE) {
-                        // A **whole** element of the `"; "`-joined list, not a
-                        // substring of it. A future check whose name contains
-                        // another's would otherwise satisfy that other one —
-                        // D-134's own defect, re-entered through the substring
-                        // door (D-147).
-                        Ok(failed_checks(&text).any(|failed| failed == name))
-                    } else if text.contains(qemu::PANIC_FAILURE) {
-                        // A panic where a check was named is not this check
-                        // failing; it is the kernel dying before it could say.
-                        Ok(false)
-                    } else {
-                        Err(error)
-                    }
-                }
-                Caught::Panic(_) => {
-                    if text.contains(qemu::PANIC_FAILURE) {
-                        Ok(true)
-                    } else if text.contains(qemu::SELFTEST_FAILURE) {
-                        // Something went red where a panic was expected. The
-                        // entry says nothing names this defect, and something
-                        // now does — which is a better world and a wrong table.
-                        Ok(false)
-                    } else {
-                        Err(error)
-                    }
-                }
-                Caught::HostTest { .. } | Caught::BootMarker(_) => {
-                    unreachable!("other witnesses return before self-test booting")
-                }
-            }
+    let observed = tasks::observe_test_boot(paths, crate::cargo::Profile::Release)?;
+    assess_selftest(wanted, observed)
+}
+
+fn assess_selftest(wanted: Caught, observed: qemu::SelftestOutcome) -> Result<bool> {
+    match (wanted, observed) {
+        (_, qemu::SelftestOutcome::Passed) => Ok(false),
+        (Caught::Check(name), qemu::SelftestOutcome::Failed(failed))
+            if failed.iter().any(|actual| actual == name) =>
+        {
+            Ok(true)
+        }
+        (Caught::Check(name), qemu::SelftestOutcome::Failed(failed)) => bail!(
+            "mutation expected check {name:?}, but different checks failed: {}",
+            failed.join("; ")
+        ),
+        (Caught::Check(name), qemu::SelftestOutcome::Panicked(line)) => {
+            bail!("mutation expected check {name:?}, but the kernel panicked: {line}")
+        }
+        (Caught::Panic { marker, .. }, qemu::SelftestOutcome::Panicked(line))
+            if line.contains(marker) =>
+        {
+            Ok(true)
+        }
+        (Caught::Panic { marker, .. }, qemu::SelftestOutcome::Panicked(line)) => {
+            bail!("mutation expected panic marker {marker:?}, but observed: {line}")
+        }
+        (Caught::Panic { marker, .. }, qemu::SelftestOutcome::Failed(failed)) => bail!(
+            "mutation expected panic marker {marker:?}, but checks failed: {}",
+            failed.join("; ")
+        ),
+        (Caught::HostTest { .. } | Caught::BootMarker(_), _) => {
+            unreachable!("other witnesses return before self-test assessment")
         }
     }
 }
@@ -2308,19 +2402,24 @@ mod tests {
                         mutation.breaks
                     );
                 }
-                Caught::Panic(_) => {}
+                Caught::Panic { .. } => {}
             }
         }
     }
 
     /// Every mutation says what catching it looks like.
     ///
-    /// A `Panic` with no reason would be the way to dodge naming a check, so
-    /// the reason has to be long enough to be one.
+    /// A generic panic would be the way to credit an unrelated crash, and a
+    /// panic with no reason would be the way to dodge naming a check.
     #[test]
-    fn a_panicking_mutation_says_why_nothing_names_it() {
+    fn a_panicking_mutation_names_an_exact_marker_and_why_it_is_terminal() {
         for mutation in MUTATIONS {
-            if let Caught::Panic(why) = mutation.reddens {
+            if let Caught::Panic { marker, why } = mutation.reddens {
+                assert!(
+                    marker.len() > 12,
+                    "`{}` has no exact panic marker",
+                    mutation.breaks
+                );
                 assert!(
                     why.len() > 40,
                     "`{}` claims nothing names it and does not say why",
@@ -2328,6 +2427,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_red_baseline_stops_before_any_mutation() {
+        let error = require_green("self-test", Err(anyhow::anyhow!("already red")))
+            .expect_err("a red baseline cannot be accepted");
+        assert!(format!("{error:#}").contains("pristine self-test mutation baseline"));
+    }
+
+    #[test]
+    fn a_wrong_machine_failure_is_inconclusive_not_caught() {
+        let wanted = Caught::Check("the intended check");
+        assert!(
+            assess_selftest(
+                wanted,
+                qemu::SelftestOutcome::Failed(vec!["another check".to_string()])
+            )
+            .is_err()
+        );
+        assert!(
+            assess_selftest(
+                wanted,
+                qemu::SelftestOutcome::Panicked("unrelated panic".to_string())
+            )
+            .is_err()
+        );
+        assert!(assess_selftest(wanted, qemu::SelftestOutcome::Passed).is_ok_and(|caught| !caught));
+        assert!(
+            assess_selftest(
+                wanted,
+                qemu::SelftestOutcome::Failed(vec!["the intended check".to_string()])
+            )
+            .is_ok_and(|caught| caught)
+        );
+    }
+
+    #[test]
+    fn a_panic_requires_its_exact_marker() {
+        let wanted = Caught::Panic {
+            marker: "the exact cause",
+            why: "this fixture explains why no ordinary check can report the terminal defect",
+        };
+        assert!(
+            assess_selftest(
+                wanted,
+                qemu::SelftestOutcome::Panicked("a different panic".to_string())
+            )
+            .is_err()
+        );
+        assert!(
+            assess_selftest(
+                wanted,
+                qemu::SelftestOutcome::Panicked("panic: the exact cause".to_string())
+            )
+            .is_ok_and(|caught| caught)
+        );
     }
 
     /// No two mutations break the same property.

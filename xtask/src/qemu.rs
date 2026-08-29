@@ -309,6 +309,18 @@ const PANIC_MARKER: &str = "KERNEL PANIC";
 pub const SELFTEST_FAILURE: &str = "self-test reported failures - see the log above";
 pub const PANIC_FAILURE: &str = "the self-test kernel panicked — see the log above";
 
+/// A complete, structurally valid self-test machine outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelftestOutcome {
+    /// Every registered check passed.
+    Passed,
+    /// The final verdict failed and names each red check in report order.
+    Failed(Vec<String>),
+    /// The kernel stopped before a verdict and carries its exact serial panic
+    /// transcript.
+    Panicked(String),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VerdictStatus {
     Pass,
@@ -335,6 +347,8 @@ struct SerialObservation {
     /// the table — mutation 4 reddens mutation 3's check, so deleting 4's own
     /// target would leave it printing "caught" for ever (D-134).
     failed: Vec<String>,
+    /// The serial panic line and any continuation the kernel printed.
+    panic: Option<String>,
 }
 
 /// The check name in a `selftest: <name> FAILED` line, if it is one.
@@ -413,6 +427,15 @@ fn parse_verdict_count(field: Option<&str>, name: &str) -> Result<usize> {
 }
 
 fn observe_selftest_line(observation: &mut SerialObservation, line: &str) -> Result<()> {
+    if let Some(panic) = &mut observation.panic {
+        panic.push('\n');
+        panic.push_str(line.trim_end());
+        return Ok(());
+    }
+    if line.contains(PANIC_MARKER) {
+        observation.panic = Some(line.trim_end().to_string());
+        return Ok(());
+    }
     if let Some(name) = parse_failed_check(line) {
         observation.failed.push(name.to_string());
         return Ok(());
@@ -427,7 +450,13 @@ fn observe_selftest_line(observation: &mut SerialObservation, line: &str) -> Res
     Ok(())
 }
 
-fn correlate_selftest(exit_code: Option<i32>, observation: SerialObservation) -> Result<()> {
+fn correlate_selftest(
+    exit_code: Option<i32>,
+    observation: SerialObservation,
+) -> Result<SelftestOutcome> {
+    if let Some(panic) = observation.panic {
+        return Ok(SelftestOutcome::Panicked(panic));
+    }
     let verdict = observation
         .verdict
         .context("QEMU exited without a serial self-test verdict")?;
@@ -452,13 +481,18 @@ fn correlate_selftest(exit_code: Option<i32>, observation: SerialObservation) ->
     if (verdict.status == VerdictStatus::Pass) != counts_pass {
         bail!("self-test serial status contradicts its counts");
     }
+    if observation.failed.len() != verdict.failed {
+        bail!(
+            "self-test verdict counted {} failures but named {}",
+            verdict.failed,
+            observation.failed.len()
+        );
+    }
 
     match (exit_code, verdict.status) {
-        (Some(SELFTEST_PASSED), VerdictStatus::Pass) => Ok(()),
+        (Some(SELFTEST_PASSED), VerdictStatus::Pass) => Ok(SelftestOutcome::Passed),
         (Some(SELFTEST_FAILED), VerdictStatus::Fail) => {
-            // The names go in the error, not only in the log, because a caller
-            // deciding whether the *right* thing broke cannot read the log.
-            bail!("{SELFTEST_FAILURE}: {}", observation.failed.join("; "))
+            Ok(SelftestOutcome::Failed(observation.failed))
         }
         (Some(SELFTEST_PASSED | SELFTEST_FAILED), _) => {
             bail!("self-test serial verdict contradicts its debug-exit status")
@@ -554,6 +588,12 @@ const MONITOR_PROMPT: &str = "(qemu)";
 /// here: the missing keystroke turns the kernel's own bounded check red, so
 /// the verdict stays the kernel's.
 pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()> {
+    require_selftest(observe_selftest(paths, image, timeout)?)
+}
+
+/// Boot `image` headless and preserve a valid red or panic outcome for a
+/// mutation caller.
+pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<SelftestOutcome> {
     let qemu_dir = locate()?;
     let code = firmware(&qemu_dir, CODE_FIRMWARE)?;
     let vars_template = firmware(&qemu_dir, VARS_FIRMWARE)?;
@@ -628,8 +668,8 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
         // would otherwise be the only way it ever ends.
         if panicked.load(Ordering::Acquire) {
             let _ = child.kill();
-            finish_selftest_serial(forwarder)?;
-            bail!(PANIC_FAILURE);
+            let observation = finish_selftest_serial(forwarder)?;
+            return correlate_selftest(None, observation);
         }
         if serial_failed.load(Ordering::Acquire) {
             let _ = child.kill();
@@ -651,9 +691,20 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
     // Trailing serial lines print before the verdict does.
     let observation = finish_selftest_serial(forwarder)?;
 
-    correlate_selftest(status.code(), observation)?;
-    println!("[xtask] self-test passed");
-    Ok(())
+    correlate_selftest(status.code(), observation)
+}
+
+fn require_selftest(outcome: SelftestOutcome) -> Result<()> {
+    match outcome {
+        SelftestOutcome::Passed => {
+            println!("[xtask] self-test passed");
+            Ok(())
+        }
+        SelftestOutcome::Failed(failed) => {
+            bail!("{SELFTEST_FAILURE}: {}", failed.join("; "))
+        }
+        SelftestOutcome::Panicked(line) => bail!("{PANIC_FAILURE}: {line}"),
+    }
 }
 
 /// Forward every serial line to the console, flagging the ready marker.
@@ -1236,6 +1287,35 @@ mod tests {
     }
 
     #[test]
+    fn a_panic_outcome_carries_its_exact_serial_transcript() {
+        let line = "[error] KERNEL PANIC on thread 'boot': panicked at source\r";
+        let continuation = "exact cause\r";
+        let mut observation = SerialObservation::default();
+        observe_selftest_line(&mut observation, line).unwrap();
+        observe_selftest_line(&mut observation, continuation).unwrap();
+        assert_eq!(
+            correlate_selftest(None, observation).unwrap(),
+            SelftestOutcome::Panicked(format!("{}\n{}", line.trim_end(), continuation.trim_end()))
+        );
+    }
+
+    #[test]
+    fn a_failed_verdict_must_name_every_failed_check() {
+        let observation = SerialObservation {
+            verdict: Some(SelftestVerdict {
+                status: VerdictStatus::Fail,
+                passed: EXPECTED_SELFTEST_CHECKS - 1,
+                failed: 1,
+                expected: EXPECTED_SELFTEST_CHECKS,
+            }),
+            failed: Vec::new(),
+            panic: None,
+        };
+        let error = correlate_selftest(Some(SELFTEST_FAILED), observation).unwrap_err();
+        assert!(error.to_string().contains("counted 1 failures but named 0"));
+    }
+
+    #[test]
     fn malformed_or_unknown_verdicts_are_rejected() {
         for line in [
             "selftest: verdict v2 PASS passed=76 failed=0 expected=76",
@@ -1263,12 +1343,14 @@ mod tests {
         let observation = SerialObservation {
             failed: Vec::new(),
             verdict: Some(passing_verdict()),
+            panic: None,
         };
         assert!(correlate_selftest(Some(SELFTEST_PASSED), observation).is_ok());
 
         let observation = SerialObservation {
             failed: Vec::new(),
             verdict: Some(passing_verdict()),
+            panic: None,
         };
         let error = correlate_selftest(Some(SELFTEST_FAILED), observation).unwrap_err();
         assert!(error.to_string().contains("debug-exit"));
@@ -1285,6 +1367,7 @@ mod tests {
                     failed: 0,
                     expected: EXPECTED_SELFTEST_CHECKS,
                 }),
+                panic: None,
             };
             let error = correlate_selftest(Some(SELFTEST_PASSED), observation).unwrap_err();
             assert!(error.to_string().contains("counted"));
@@ -1300,6 +1383,7 @@ mod tests {
                 passed: EXPECTED_SELFTEST_CHECKS - 1,
                 ..passing_verdict()
             }),
+            panic: None,
         };
         let error = correlate_selftest(Some(SELFTEST_PASSED), observation).unwrap_err();
         assert!(error.to_string().contains("harness requires"));
@@ -1313,6 +1397,7 @@ mod tests {
                 status: VerdictStatus::Fail,
                 ..passing_verdict()
             }),
+            panic: None,
         };
         let error = correlate_selftest(Some(SELFTEST_FAILED), observation).unwrap_err();
         assert!(error.to_string().contains("contradicts its counts"));

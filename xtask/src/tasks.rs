@@ -94,6 +94,17 @@ pub fn test_boot(paths: &Paths, profile: Profile) -> Result<()> {
     qemu::run_selftest(paths, &image, selftest_timeout(profile))
 }
 
+/// Boot a self-test kernel while preserving a valid failed or panic verdict.
+///
+/// # Errors
+///
+/// If the kernel cannot be built, QEMU cannot run, or its serial and exit
+/// evidence do not form one valid outcome.
+pub fn observe_test_boot(paths: &Paths, profile: Profile) -> Result<qemu::SelftestOutcome> {
+    let image = image::build(paths, profile, &[paths::SELFTEST_FEATURE])?;
+    qemu::observe_selftest(paths, &image, selftest_timeout(profile))
+}
+
 /// How long a self-test boot may take, by profile.
 ///
 /// A debug kernel runs several times slower under emulation — a console
