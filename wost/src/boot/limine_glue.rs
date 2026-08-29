@@ -145,19 +145,12 @@ pub struct Requests {
 fn take_memory_map(request: &'static MemoryMapRequest) -> Result<MemoryMap, HandoffError> {
     let response = request.get_response().ok_or(HandoffError::NoResponse)?;
     let entries = response.entries();
-    if entries.is_empty() {
-        return Err(HandoffError::Empty);
-    }
-
-    let mut map = MemoryMap::new();
-    for entry in entries {
-        map.push(MemoryRegion {
-            base: entry.base,
-            len: entry.length,
-            kind: kind_of(entry.entry_type),
-        });
-    }
-    Ok(map)
+    MemoryMap::try_from_regions(entries.iter().map(|entry| MemoryRegion {
+        base: entry.base,
+        len: entry.length,
+        kind: kind_of(entry.entry_type),
+    }))
+    .map_err(HandoffError::MemoryMap)
 }
 
 /// Translate one protocol entry type.

@@ -26,6 +26,7 @@ pub const HOST_PACKAGES: &[&str] = &[
     "fat32",
     "frame-space",
     "handle-space",
+    "memory-map",
     "mmio-range",
     "nvme",
     "path-walk",

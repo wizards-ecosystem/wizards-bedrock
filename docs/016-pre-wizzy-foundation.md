@@ -83,7 +83,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-105 | DONE | P1 | Leaking a safe `SpinLockGuard` with `mem::forget` permanently strands interrupt/lock state; Rust cannot assume `Drop` runs | D-194 bounds deliberate guard loss as a liveness violation and retains every D-66 transition refusal; shipped code gets no unsound recovery door | 2026-08-27 release QEMU used real safe `mem::forget` behind a controlled recovery owner, distinguished ordinary contention from forgotten ownership, kept the lock unavailable, and restored its lock/accounting/interrupt state; suppressing the state transition reddened only `forgotten lock ownership is distinct from contention` with 198/199 |
 | PW-106 | DONE | P1 | Queue teardown consumed a pending operation and only `debug_assert!`ed if its reserved completion could not be posted | D-192 retains a settling operation until its terminal record posts and retains the complete zombie until its ring is quiet | 2026-08-27 release QEMU injected refusal through cancellation, expiry and a real faulting process; pending ownership and reservations remained live, cancellation reported pressure, the first collection retained the zombie and retry posted exactly once before reclaim; deleting restoration reddened only `a refused settlement retains every owner` with 196/197 |
 | PW-107 | DONE | P1 | The guarded boot-stack allocation could fail and the kernel still launched ring 3 on the unguarded bootloader stack | D-193 records the actual continuation path and refuses process construction before allocation unless the boot stack is guarded | 2026-08-27 release QEMU injected the exact missing-guard state, returned `UnguardedBootStack`, recorded no syscall crossing and preserved the complete resource ledger; the state restored for later user checks, while bypassing the gate launched a real program and reddened only `an unguarded boot stack closes the user boundary` with 197/198 |
-| PW-108 | VERIFY | P2 | The copied boot memory map silently caps evidence at 128 regions | Decide refusal, checked coalescing, or dynamic bounded storage rather than silently omitting firmware regions | Synthetic maps above and around the limit prove allocator, direct-map and exclusion decisions cover the same complete input |
+| PW-108 | DONE | P2 | The copied boot memory map silently capped evidence at 128 regions | D-224 moves the allocation-free map into `libs/memory-map` and refuses an empty or oversized handoff whole instead of returning a prefix | 2026-08-29 host maps retained all policy-relevant tail entries at 127/128, rejected 129 with the exact count and proved allocator/direct-map/exclusion answers; restoring silent overflow reddened only `the_region_limit_is_all_or_nothing`, retained as mutation 236 |
 | PW-109 | DONE | P2 | The ELF entry was rejected safely at the final crossing but only after allocation, while `PLACED` was global last-load state | D-191 validates entry-in-executable-load during preflight and returns immutable placements in `LoadedImage` | 2026-08-27 QEMU refused an entry outside executable program memory with no frame-count change, reclaimed every negative-test scratch space and retained two shifted successful loads' independent placement records; bypassing entry preflight reddened only the loader check |
 
 ## PCI, NVMe, FAT and filesystem resilience
@@ -233,11 +233,11 @@ of them without upgrading historical evidence:
 ## Recommended execution order
 
 1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
-   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200,
+   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-108, PW-109, PW-200,
    PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-210,
    PW-300, PW-302, PW-304, PW-306, PW-307, PW-400, PW-401, PW-402, PW-403, PW-405,
    PW-500, PW-501, PW-502, PW-503, PW-504, PW-505, PW-506, PW-507, PW-508,
-   PW-509, PW-510, PW-514 and PW-515 are closed by D-185 through D-223.
+   PW-509, PW-510, PW-514 and PW-515 are closed by D-185 through D-224.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

@@ -58,8 +58,6 @@ pub struct Report {
     pub managed: usize,
     /// Frames dropped because they lie above [`CEILING`].
     pub ignored: usize,
-    /// Memory-map regions the handoff could not carry.
-    pub dropped_regions: usize,
 }
 
 impl Report {
@@ -84,9 +82,6 @@ impl fmt::Display for Report {
                 self.ignored,
                 CEILING >> 30
             )?;
-        }
-        if self.dropped_regions != 0 {
-            write!(f, ", {} map regions dropped", self.dropped_regions)?;
         }
         Ok(())
     }
@@ -116,11 +111,7 @@ pub fn init(map: &MemoryMap, direct: DirectMap) -> Report {
     let managed = frames.managed_count();
     drop(frames);
 
-    Report {
-        managed,
-        ignored,
-        dropped_regions: map.dropped(),
-    }
+    Report { managed, ignored }
 }
 
 /// Frames managed and free, right now.

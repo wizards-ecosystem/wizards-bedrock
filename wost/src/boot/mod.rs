@@ -10,11 +10,11 @@ mod limine_glue;
 use core::fmt;
 
 pub use limine_glue::enter;
+pub use memory_map::{MemoryKind, MemoryMap, MemoryMapError, MemoryRegion};
 use pixel::FramebufferLayout;
 pub use pixel::{FramebufferLayoutError, PixelFormat, PixelFormatError, Rgb};
 
 use crate::mmio::MmioRegion;
-use x86_paging::PAGE_SIZE;
 
 /// Bytes in one framebuffer word — the only access width the region supports.
 const WORD: usize = size_of::<u32>();
@@ -251,239 +251,6 @@ impl fmt::Display for FramebufferError {
 
 impl core::error::Error for FramebufferError {}
 
-/// What a region of the physical address space is for.
-///
-/// Named after what the kernel may do with a region rather than after any one
-/// bootloader's constants. `Unknown` carries the raw value so an unrecognised
-/// type is reportable rather than silently folded into `Reserved` — the
-/// discipline `005-code-conventions.md` requires of our own `#[non_exhaustive]`
-/// enums, applied to a foreign one (D-42).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum MemoryKind {
-    /// Free RAM, ours to hand out.
-    Usable,
-    /// The bootloader's own structures. Usable once nothing refers to them.
-    BootloaderReclaimable,
-    /// The kernel image and any modules loaded with it.
-    KernelAndModules,
-    /// A framebuffer.
-    Framebuffer,
-    /// ACPI tables. Usable once they have been parsed.
-    AcpiReclaimable,
-    /// ACPI non-volatile storage. Must survive.
-    AcpiNvs,
-    /// Reserved by firmware. Not ours.
-    Reserved,
-    /// Known-bad memory.
-    BadMemory,
-    /// A type this kernel does not recognise, with the value the bootloader
-    /// gave. Treated as [`Reserved`](Self::Reserved) everywhere it matters.
-    Unknown(u64),
-}
-
-impl MemoryKind {
-    /// Whether the frame allocator may hand this region out.
-    ///
-    /// Only [`Usable`](Self::Usable). The reclaimable kinds are deliberately
-    /// excluded: bootloader structures are still being read when the allocator
-    /// is built, and ACPI tables have not been parsed yet. Reclaiming either is
-    /// a later decision with a precondition attached, not a default.
-    pub const fn is_allocatable(self) -> bool {
-        matches!(self, Self::Usable)
-    }
-
-    /// Whether immutable firmware-table reads may reach this region.
-    pub const fn is_firmware_table(self) -> bool {
-        matches!(self, Self::AcpiReclaimable | Self::AcpiNvs)
-    }
-
-    /// Whether the kernel's own direct map should cover this region.
-    ///
-    /// Everything that is memory, and nothing that is not (D-45). The
-    /// exclusions are the point: `Reserved` is where device holes live, and
-    /// mapping one here would give it the direct map's cache type instead of
-    /// the one its device needs — so devices are mapped deliberately, through
-    /// `MmioRegion`, and never reached by accident.
-    ///
-    /// The inclusions are equally deliberate. The kernel is *executing on* a
-    /// stack the bootloader placed in `BootloaderReclaimable`, and *logging
-    /// through* a `Framebuffer` region; a direct map of only `Usable` memory
-    /// would triple-fault the instant `CR3` changed.
-    pub const fn is_direct_mapped(self) -> bool {
-        matches!(
-            self,
-            Self::Usable
-                | Self::BootloaderReclaimable
-                | Self::KernelAndModules
-                | Self::Framebuffer
-                | Self::AcpiReclaimable
-                | Self::AcpiNvs
-        )
-    }
-}
-
-impl fmt::Display for MemoryKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::Usable => f.write_str("usable"),
-            Self::BootloaderReclaimable => f.write_str("bootloader reclaimable"),
-            Self::KernelAndModules => f.write_str("kernel and modules"),
-            Self::Framebuffer => f.write_str("framebuffer"),
-            Self::AcpiReclaimable => f.write_str("acpi reclaimable"),
-            Self::AcpiNvs => f.write_str("acpi nvs"),
-            Self::Reserved => f.write_str("reserved"),
-            Self::BadMemory => f.write_str("bad memory"),
-            Self::Unknown(value) => write!(f, "unknown type {value}"),
-        }
-    }
-}
-
-/// One entry of the physical memory map.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MemoryRegion {
-    /// First physical byte.
-    pub base: u64,
-    /// Length in bytes.
-    pub len: u64,
-    /// What the region is for.
-    pub kind: MemoryKind,
-}
-
-/// Regions [`MemoryMap`] can hold.
-///
-/// Firmware maps run to a few dozen entries; the largest seen from OVMF is
-/// under thirty. Overflow is counted and reported rather than truncated
-/// silently, so a machine that exceeds this says so in the boot log.
-const MAX_REGIONS: usize = 128;
-
-/// The physical memory map, copied out of the bootloader's structures.
-///
-/// Copied rather than borrowed on purpose: the map itself lives in
-/// bootloader-reclaimable memory, and a kernel that intends to reclaim that
-/// memory cannot also be holding a reference into it.
-#[derive(Clone, Copy)]
-pub struct MemoryMap {
-    regions: [MemoryRegion; MAX_REGIONS],
-    len: usize,
-    dropped: usize,
-}
-
-impl MemoryMap {
-    /// An empty map.
-    pub(crate) const fn new() -> Self {
-        Self {
-            regions: [MemoryRegion {
-                base: 0,
-                len: 0,
-                kind: MemoryKind::Reserved,
-            }; MAX_REGIONS],
-            len: 0,
-            dropped: 0,
-        }
-    }
-
-    /// Append a region, counting it as dropped if there is no room.
-    pub(crate) const fn push(&mut self, region: MemoryRegion) {
-        if self.len == MAX_REGIONS {
-            self.dropped += 1;
-            return;
-        }
-        self.regions[self.len] = region;
-        self.len += 1;
-    }
-
-    /// Every region the bootloader reported, in the order it reported them.
-    pub fn regions(&self) -> impl Iterator<Item = MemoryRegion> + '_ {
-        self.regions[..self.len].iter().copied()
-    }
-
-    /// Regions the bootloader reported that did not fit.
-    ///
-    /// Non-zero means the kernel is running on less memory than the machine
-    /// has, which is a bug in this module's region limit rather than in the
-    /// machine.
-    pub const fn dropped(&self) -> usize {
-        self.dropped
-    }
-
-    /// Whether every byte of `start..end` lies inside some described region.
-    ///
-    /// Regions may abut, so this walks rather than looking for one region that
-    /// holds the whole range: a span crossing a boundary between two adjacent
-    /// regions is still described. A gap of even one byte is not.
-    ///
-    /// The bootloader does not promise its regions are sorted, so each step
-    /// searches the whole list. There is a bounded number of them and
-    /// the one caller runs a handful of times at boot.
-    pub fn covers(&self, start: u64, end: u64) -> bool {
-        self.covered_by(start, end, |_| true)
-    }
-
-    /// Whether every byte of `start..end` is covered, and covered by memory.
-    ///
-    /// "Described" and "is memory" are different claims, and mapping evidence
-    /// wants the second one: a `Reserved` stretch is described, and it is
-    /// where device holes live, so a writeback mapping over one is a cacheable
-    /// alias of registers rather than a view of RAM (D-105).
-    pub fn covers_memory(&self, start: u64, end: u64) -> bool {
-        self.covered_by(start, end, |kind| kind.is_direct_mapped())
-    }
-
-    /// Where the map covers `len` bytes with memory, page-aligned and never
-    /// physical zero.
-    ///
-    /// A caller that needs *a* described range should ask the map for one
-    /// rather than name an address that happens to be memory on the machine
-    /// the caller was written on. Four checks named `0x1000`, and on a machine
-    /// whose firmware describes that page differently they did not fail —
-    /// they never ran, and the harness cannot tell those apart (D-177).
-    pub fn first_memory_run(&self, len: u64) -> Option<u64> {
-        self.regions()
-            .filter(|region| region.kind.is_direct_mapped())
-            .find_map(|region| {
-                let end = region.base.checked_add(region.len)?;
-                let base = region.base.max(PAGE_SIZE).next_multiple_of(PAGE_SIZE);
-                (end.checked_sub(base)? >= len).then_some(base)
-            })
-    }
-
-    fn covered_by(&self, start: u64, end: u64, allowed: impl Fn(MemoryKind) -> bool) -> bool {
-        let mut cursor = start;
-        while cursor < end {
-            let Some(region) = self.regions().find(|region| {
-                region.base <= cursor && cursor < region.base.saturating_add(region.len)
-            }) else {
-                return false;
-            };
-            if !allowed(region.kind) {
-                return false;
-            }
-            cursor = region.base.saturating_add(region.len);
-        }
-        true
-    }
-
-    /// Total bytes across regions the frame allocator may hand out.
-    pub fn allocatable_bytes(&self) -> u64 {
-        self.regions()
-            .filter(|region| region.kind.is_allocatable())
-            .map(|region| region.len)
-            .sum()
-    }
-}
-
-/// Counts and totals. Printing 128 regions from a panic handler helps nobody.
-impl fmt::Debug for MemoryMap {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MemoryMap")
-            .field("regions", &self.len)
-            .field("dropped", &self.dropped)
-            .field("allocatable", &self.allocatable_bytes())
-            .finish()
-    }
-}
-
 /// The bootloader's direct map of physical memory into the higher half.
 ///
 /// Every physical address the memory map lists is readable at
@@ -639,6 +406,8 @@ pub enum HandoffError {
     NoResponse,
     /// The bootloader answered, but with nothing in it.
     Empty,
+    /// The memory map could not be copied completely into early storage.
+    MemoryMap(MemoryMapError),
 }
 
 impl fmt::Display for HandoffError {
@@ -646,6 +415,7 @@ impl fmt::Display for HandoffError {
         match self {
             Self::NoResponse => f.write_str("bootloader ignored the request"),
             Self::Empty => f.write_str("bootloader answered with nothing"),
+            Self::MemoryMap(reason) => write!(f, "invalid memory map: {reason}"),
         }
     }
 }

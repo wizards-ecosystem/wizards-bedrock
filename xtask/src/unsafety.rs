@@ -238,13 +238,13 @@ mod tests {
             "wost/src/boot/limine_glue.rs",
             3,
             0,
-            "d9d9d90c4496fac8909fe1f5187ab2b8bfdf221a263c4bce4f140e8ccf1e777c",
+            "3602d77654140ed3f8dbfb2cfe37919b405750d6a7348ef0f8c15e590fab41c4",
         ),
         (
             "wost/src/boot/mod.rs",
             0,
             1,
-            "4130e7a3de031848699ba45e68ba4f90c6b97f203ea2718563ecb667f2277d4e",
+            "250ad7c8df1c5d987f935c6408a531f5bc14af4ecc6c186a9682339e41321d58",
         ),
         (
             "wost/src/cell.rs",
@@ -262,7 +262,7 @@ mod tests {
             "wost/src/mm/mod.rs",
             13,
             2,
-            "341a68d61d9c9f9cb76f9d415677936a3be1eabfd29e5e75c8ec6fc0f8a54b21",
+            "7a20c2a3a1fa6566e21381483e946e8f0235d11b9e41a58fbe00fdcb87ea7850",
         ),
         (
             "wost/src/mmio.rs",

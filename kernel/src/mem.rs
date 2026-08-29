@@ -284,12 +284,6 @@ fn describe(map: &MemoryMap) {
             region.kind
         );
     }
-    if map.dropped() != 0 {
-        warn!(
-            "memory: {} regions did not fit the handoff; some memory is lost",
-            map.dropped()
-        );
-    }
     if let Some(kind) = map.regions().map(|region| region.kind).find(unrecognised) {
         info!("memory: bootloader reported {kind}");
     }

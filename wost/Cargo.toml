@@ -16,6 +16,7 @@ selftest = []
 
 [dependencies]
 frame-space.workspace = true
+memory-map.workspace = true
 mmio-range.workspace = true
 pci-config.workspace = true
 limine.workspace = true

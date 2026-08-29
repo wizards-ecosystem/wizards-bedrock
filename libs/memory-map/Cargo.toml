@@ -1,0 +1,11 @@
+[package]
+name = "memory-map"
+description = "Bounded, allocation-free physical memory-map policy for The Wizard's OS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

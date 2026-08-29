@@ -171,9 +171,8 @@ triple and reports phantom errors across every kernel file.
 ```
 wost/       privileged kernel framework — the only crate that may write `unsafe`
 kernel/     the kernel binary (no_std, #![deny(unsafe_code)], higher-half)
-libs/       shared no_std crates: pure logic, host-testable (acpi-tables, eevdf,
-            frame-space, pixel, port-space, ps2-keys, slab-layout, stack-layout,
-            timebase, x86-apic, x86-paging, x86-pit, x86-tables)
+libs/       shared no_std crates: pure logic, host-testable (including
+            memory-map, frame-space, ring-proto, and architecture encodings)
 xtask/      build orchestrator: pure-Rust disk imaging, QEMU/VMware runners
 boot/       limine.conf + vendored Limine UEFI binary (digest-pinned)
 docs/       design docs (design-first: docs before code)

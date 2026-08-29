@@ -11,6 +11,7 @@ members = [
     "libs/fat32",
     "libs/frame-space",
     "libs/handle-space",
+    "libs/memory-map",
     "libs/mmio-range",
     "libs/nvme",
     "libs/path-walk",
@@ -42,6 +43,7 @@ default-members = [
     "libs/fat32",
     "libs/frame-space",
     "libs/handle-space",
+    "libs/memory-map",
     "libs/mmio-range",
     "libs/nvme",
     "libs/path-walk",
@@ -77,6 +79,7 @@ elf64 = { path = "libs/elf64" }
 fat32 = { path = "libs/fat32" }
 frame-space = { path = "libs/frame-space" }
 handle-space = { path = "libs/handle-space" }
+memory-map = { path = "libs/memory-map" }
 mmio-range = { path = "libs/mmio-range" }
 nvme = { path = "libs/nvme" }
 path-walk = { path = "libs/path-walk" }

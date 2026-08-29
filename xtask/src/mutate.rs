@@ -1396,11 +1396,14 @@ pub const MUTATIONS: &[Mutation] = &[
     // A run offered from a region that is described but is not memory, which
     // is the hole the four probes fell into on VMware (D-177).
     Mutation {
-        file: "wost/src/boot/mod.rs",
+        file: "libs/memory-map/src/lib.rs",
         find: "            .filter(|region| region.kind.is_direct_mapped())",
         replace: "            .filter(|region| !region.kind.is_direct_mapped())",
         breaks: "a probed run is memory, not merely described",
-        reddens: Caught::Check("the map offers a run to probe"),
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::every_accepted_region_informs_memory_policy",
+        },
     },
     // Launch the shipped ring-3 program on its Echo route. The image and all
     // completion validation remain intact; only the machine check's handle
@@ -2637,6 +2640,22 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::HostTest {
             package: "xtask",
             name: "contracts::guard_types_do_not_cross_cpus",
+        },
+    },
+    Mutation {
+        file: "libs/memory-map/src/lib.rs",
+        find: "            } else {
+                overflow = true;
+            }
+            reported = reported.saturating_add(1);",
+        replace: "            } else {
+                continue;
+            }
+            reported = reported.saturating_add(1);",
+        breaks: "an oversized boot map cannot become an accepted prefix",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::the_region_limit_is_all_or_nothing",
         },
     },
 ];

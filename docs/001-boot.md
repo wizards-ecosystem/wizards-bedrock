@@ -11,6 +11,11 @@ It gives us:
 - framebuffer, memory map, HHDM offset, and the module carrying the initrd
 - identical behavior on QEMU/EDK2, VMware EFI, and real UEFI hardware
 
+The allocation-free memory-map copy is all or nothing: `libs/memory-map`
+retains every reported region through the fixed 128-entry bound and returns a
+typed refusal above it. Allocator, direct-map and firmware exclusion policy
+therefore never act on a plausible-looking prefix (D-224).
+
 ## Kernel image contract
 
 - ELF64, linked at `0xffffffff80000000` (linker script `kernel/linker.ld`)

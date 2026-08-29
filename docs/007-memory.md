@@ -171,6 +171,11 @@ moving underneath us is a compile error; anything unrecognised becomes
 announce itself. On QEMU with OVMF it has not appeared — every region so far
 is one of the eight the pinned crate names.
 
+D-224 later moved that pure representation to `libs/memory-map` and made its
+128-region early-boot bound fail closed. A 129th entry no longer disappears:
+the whole map is refused, so none of the allocator, direct-map or firmware
+coverage decisions can treat a prefix as the complete handoff.
+
 **The allocator** is D-43: `libs/frame-space` holds the arithmetic and knows
 only frame indices, `wost::mm` holds the lock and the physical access and hands
 out `Frame` and `Segment` handles whose `Drop` releases them. Nothing computes
