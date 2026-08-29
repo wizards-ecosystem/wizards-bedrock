@@ -2894,6 +2894,46 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "AVX state follows the thread",
         reddens: Caught::Check("every enabled state component survives a switch"),
     },
+    Mutation {
+        file: "libs/ring-proto/src/lib.rs",
+        find: "                self.reserved += 1;",
+        replace: "                self.reserved += 0;",
+        breaks: "an admitted operation has no completion reservation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "publication::tests::admission_reserves_before_the_shared_submission_is_consumed",
+        },
+    },
+    Mutation {
+        file: "kernel/src/queue.rs",
+        find: "            if !entry.settling && wanted(*entry) {",
+        replace: "            if wanted(*entry) {",
+        breaks: "two terminal paths can claim one pending operation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "publication::tests::every_terminal_path_claims_one_settlement_until_publication",
+        },
+    },
+    Mutation {
+        file: "models/RingMemory.tla",
+        find: "        \\/ BeginRetire(op)\n",
+        replace: "",
+        breaks: "retirement is absent from the terminal-ownership state graph",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "model::tests::every_terminal_cause_is_a_reachable_model_action",
+        },
+    },
+    Mutation {
+        file: "xtask/src/model.rs",
+        find: "{} is missing; see tools/tla/README.md for where it comes from",
+        replace: "{} is missing; see models/README.md for where it comes from",
+        breaks: "a missing model checker points to a nonexistent recovery document",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "model::tests::a_missing_model_checker_points_to_its_vendoring_instructions",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

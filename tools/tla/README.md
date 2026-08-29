@@ -9,7 +9,8 @@ Vendored TLA+ tools
   that decides whether a design is correct, so a silently swapped one is a
   silently swapped answer (D-25, D-112).
 
-It runs the model in `models/`:
+It runs both correct models in `models/`, then requires every adjacent mutant
+configuration to violate its exact named invariant:
 
 ```
 cargo xtask model-check      # needs a JVM on PATH
@@ -27,5 +28,5 @@ commit so the change is reviewable.
 
 ```
 cargo xtask verify-vendor    # after updating, must pass
-cargo xtask model-check      # and the model must still check clean
+cargo xtask model-check      # correct models clean; deliberate mutants exact
 ```

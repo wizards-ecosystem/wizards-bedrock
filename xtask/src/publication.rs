@@ -27,12 +27,20 @@ mod tests {
     }
 
     fn method<'a>(source: &'a str, name: &str) -> &'a str {
-        let public = format!("    pub fn {name}");
-        let private = format!("fn {name}");
-        let start = source
-            .find(&public)
-            .or_else(|| source.find(&private))
+        let signatures = [
+            format!("    pub fn {name}"),
+            format!("    pub const fn {name}"),
+            format!("fn {name}"),
+        ];
+        let start = signatures
+            .iter()
+            .filter_map(|signature| source.find(signature))
+            .min()
             .unwrap_or_else(|| panic!("missing method `{name}`"));
+        method_at(source, start)
+    }
+
+    fn method_at(source: &str, start: usize) -> &str {
         let rest = &source[start..];
         let end = rest.find("\n    ///").unwrap_or(rest.len());
         &rest[..end]
@@ -109,6 +117,11 @@ mod tests {
             std::fs::read_to_string(root.join("wost/src/mm/mod.rs")).expect("wost mm source"),
             std::fs::read_to_string(root.join("kernel/src/queue.rs")).expect("queue source"),
         )
+    }
+
+    fn protocol_source() -> String {
+        std::fs::read_to_string(root().join("libs/ring-proto/src/lib.rs"))
+            .expect("ring protocol source")
     }
 
     fn shared_impl(source: &str) -> &str {
@@ -207,5 +220,91 @@ mod tests {
             complete < payload && payload < publish,
             "a completion tail can pass the entry it publishes"
         );
+    }
+
+    #[test]
+    fn admission_reserves_before_the_shared_submission_is_consumed() {
+        let (_, queue) = sources();
+        let protocol = protocol_source();
+        let submit = method(&protocol, "submit");
+        let produce = submit
+            .find("self.submission.produce()")
+            .expect("submission admission");
+        let reserve = submit
+            .find("self.reserved += 1;")
+            .expect("completion reservation");
+        assert!(
+            produce < reserve,
+            "the completion reservation can precede refused admission"
+        );
+
+        let take_start = queue
+            .find("    fn take(&self, snapshot: &Snapshot)")
+            .expect("queue submission take");
+        let take = method_at(&queue, take_start);
+        let reserve = take
+            .find("ring.protocol.submit()?")
+            .expect("reservation at admission");
+        let consume = take
+            .find("ring.protocol.take()")
+            .expect("submission consumption");
+        let payload = take
+            .find("ring.pages.read_volatile_at")
+            .expect("submission payload read");
+        let publish = take
+            .find("publish_index(&ring.pages, header::SUBMISSION_HEAD, head)")
+            .expect("submission-head publication");
+        assert!(
+            reserve < consume && consume < payload && payload < publish,
+            "admission, payload consumption and slot release do not follow ownership order"
+        );
+    }
+
+    #[test]
+    fn every_terminal_path_claims_one_settlement_until_publication() {
+        let (_, queue) = sources();
+        let begin = method(&queue, "begin_settlement");
+        assert_eq!(
+            begin.matches("self.pending.lock_leaf()").count(),
+            1,
+            "settlement eligibility and its claim use different locks"
+        );
+        let guard = begin
+            .find("if !entry.settling && wanted(*entry)")
+            .expect("one-shot settlement guard");
+        let claim = begin
+            .find("entry.settling = true;")
+            .expect("settlement claim");
+        assert!(
+            guard < claim,
+            "a terminal path publishes before owning the entry"
+        );
+
+        let settle = method(&queue, "settle_pending");
+        let publish = settle.find("self.post(Completion").expect("terminal post");
+        let release = settle
+            .find("pending.slots[index] = None;")
+            .expect("pending release");
+        let restore = settle
+            .find("settling: false")
+            .expect("refused-post restoration");
+        assert!(
+            publish < release && publish < restore,
+            "pending ownership can end before terminal publication answers"
+        );
+
+        for path in ["cancel", "expire", "abandon"] {
+            let body = method(&queue, path);
+            let begin = body
+                .find("self.begin_settlement")
+                .unwrap_or_else(|| panic!("`{path}` bypasses settlement ownership"));
+            let settle = body
+                .find("self.settle_pending")
+                .unwrap_or_else(|| panic!("`{path}` bypasses terminal publication"));
+            assert!(
+                begin < settle,
+                "`{path}` publishes before claiming ownership"
+            );
+        }
     }
 }

@@ -44,7 +44,7 @@ QUALIFICATION TASKS:
 const HELP_AFTER_REGISTRY: &str = "\
 NOT IN CI (each needs a tool this project cannot vendor into a Rust build,
 and a gate step that fails for want of one teaches people to skip the gate):
-    model-check       run TLC over models/Ring.tla (needs java)
+    model-check       run TLC over the ring models (needs java)
     vmware            as above (needs VMware Workstation to boot the result)
     mutate            break the kernel on purpose, once per known defect, and
                       require a check to go red (one QEMU boot each)
