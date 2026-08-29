@@ -4533,6 +4533,104 @@ fn a_program_waits_through_its_trap_frame() -> bool {
         && trap::last_user_fault().count == faults_before
 }
 
+/// The real ring a kernel thread waits on during the syscall wake check.
+static SYSCALL_WAKE_RING: SpinLock<Option<Arc<queue::Queue>>> = SpinLock::new(None);
+
+/// Zero while the waiter is live and one after its production wait returns.
+static SYSCALL_WAITER_RETURNED: AtomicUsize = AtomicUsize::new(0);
+
+/// Makes failed orchestration release a waiter instead of stranding its slot.
+static CANCEL_SYSCALL_WAITER: AtomicUsize = AtomicUsize::new(0);
+
+fn wait_on_the_program_ring() {
+    let ring = SYSCALL_WAKE_RING.lock_leaf().as_ref().map(Arc::clone);
+    let Some(ring) = ring else {
+        return;
+    };
+    ring.wait_for_test(&mut context(), &CANCEL_SYSCALL_WAITER);
+    SYSCALL_WAITER_RETURNED.store(1, Ordering::Release);
+}
+
+/// A syscall wake arms the timer for the kernel waiter it made runnable.
+///
+/// The child stops in the kernel before its first user instruction. A second
+/// kernel thread then registers on that child's real completion queue. Only
+/// after both waits are observable does the child enter ring 3, submit Echo
+/// and execute the real `RingEnter` trap. The completion therefore wakes the
+/// kernel waiter from the syscall arm which D-133 originally repaired.
+///
+/// The returned waiter is not the assertion: an already-armed slice would run
+/// it even if this wake armed nothing. The handler-arm delta is the direct
+/// witness, just as D-133's keyboard proxy was before this path existed.
+fn a_syscall_wake_arms_the_timer_for_what_it_woke() -> bool {
+    let free = thread::free_slots();
+    let faults = trap::last_user_fault().count;
+    let ring_arms = user::ring_enter_arms_for_test();
+    let handler_arms = thread::handler_arms();
+    SYSCALL_WAITER_RETURNED.store(0, Ordering::Release);
+    CANCEL_SYSCALL_WAITER.store(0, Ordering::Release);
+    *SYSCALL_WAKE_RING.lock_leaf() = None;
+
+    let Ok(spawned) = user::run_gated_for_wake() else {
+        return false;
+    };
+    finish_syscall_wake_check(spawned, free, faults, ring_arms, handler_arms)
+}
+
+fn finish_syscall_wake_check(
+    spawned: user::Spawned,
+    free: usize,
+    faults: usize,
+    ring_arms: usize,
+    handler_arms: usize,
+) -> bool {
+    let Some((ring, _)) = user::authority_for_test(spawned.slot) else {
+        let _ = user::release_gated_cross();
+        return false;
+    };
+    *SYSCALL_WAKE_RING.lock_leaf() = Some(Arc::clone(&ring));
+    let waiter_started = thread::spawn("syscall-ring-waiter", wait_on_the_program_ring).is_ok();
+    let registered = waiter_started
+        && runs_until(500, || {
+            user::gated_cross_is_waiting() && ring.has_waiter_for_test()
+        });
+    let served = ring.served_count();
+    let child_released = user::release_gated_cross() == 1;
+    let woke = registered
+        && child_released
+        && runs_until(2_000, || {
+            ring.served_count() == served + 1
+                && SYSCALL_WAITER_RETURNED.load(Ordering::Acquire) == 1
+                && user::ring_enter_arms_for_test() == ring_arms + 1
+        });
+    let rites = last_rites_for(&spawned, 2_000);
+
+    CANCEL_SYSCALL_WAITER.store(1, Ordering::Release);
+    let _ = ring.release_waiter_for_test();
+    *SYSCALL_WAKE_RING.lock_leaf() = None;
+    let settled = runs_until(2_000, || thread::free_slots() == free);
+
+    let answered = rites.is_some_and(|rites| {
+        rites.submitted.opcode == queue::Opcode::Echo
+            && rites.served == served + 1
+            && rites.completed.token == rites.submitted.token
+            && rites.completed.status == queue::STATUS_OK
+    });
+    info!(
+        "selftest: syscall wake evidence registered={registered} released={child_released} woke={woke} answered={answered} ring-arms={}->{} handler-arms={}->{} returned={} settled={settled}",
+        ring_arms,
+        user::ring_enter_arms_for_test(),
+        handler_arms,
+        thread::handler_arms(),
+        SYSCALL_WAITER_RETURNED.load(Ordering::Acquire)
+    );
+
+    woke && answered
+        && trap::last_user_fault().count == faults
+        && user::ring_enter_arms_for_test() == ring_arms + 1
+        && settled
+}
+
 /// A freshly spawned program holds exactly one handle, and it is a channel.
 ///
 /// `002`'s pillar 1, converted from a sentence into a check (D-111): *a
@@ -6936,30 +7034,6 @@ fn the_blocked_reader_woke_with_the_key() -> bool {
         && input::dropped_events() == 0
 }
 
-/// A wake from a handler arms the timer for what it woke.
-///
-/// `thread.rs` states the rule without qualification — every path that changes
-/// who is runnable ends by arming the timer — and `unblock` exempted trap
-/// context, because the trap exit reschedules (D-54). That holds for the timer
-/// and keyboard arms, which both end in `thread::reschedule`. It does not hold
-/// for the syscall arm, which serves the ring and returns to ring 3: a
-/// `ring_enter` that wakes a waiter left it runnable with nothing armed for it.
-/// The premise was in `thread.rs` and the arms are in `trap.rs`, and nothing
-/// compared them (D-133).
-///
-/// **The assertion is about the arming, not the running.** A woken thread runs
-/// eventually whatever happens here — this checking thread's own yields and
-/// sleeps arm timers, and any of them will pick it up — so a check that waited
-/// for it to run would pass with the exemption in place. That is the shape
-/// D-124 kept finding, and it is why this reads a counter.
-///
-/// The blocked reader is the machine's only wake from a handler, so the check
-/// above establishing that it happened is what makes a zero here mean "one did
-/// and armed nothing" rather than "none ever happened".
-fn a_wake_from_a_handler_armed_the_timer() -> bool {
-    READER_SAW.load(Ordering::Acquire) != 0 && thread::handler_arms() > 0
-}
-
 /// The polled keyboard fallback drains, sleeps and stops.
 ///
 /// D-37's path had never run: both test machines have an I/O APIC. Started
@@ -7639,6 +7713,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_program_waits_through_its_trap_frame(),
     );
     report.check(
+        "a syscall wake arms the timer for what it woke",
+        a_syscall_wake_arms_the_timer_for_what_it_woke(),
+    );
+    report.check(
         "an unserved call is refused without stopping the machine",
         an_unserved_call_is_refused_without_stopping_the_machine(),
     );
@@ -8053,11 +8131,6 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "the blocked reader woke with the injected key, without polling",
         the_blocked_reader_woke_with_the_key(),
     );
-    report.check(
-        "a wake from a handler arms the timer for what it woke",
-        a_wake_from_a_handler_armed_the_timer(),
-    );
-
     // Before the editing check and not merely beside it: this is what makes
     // that one's cursor readings its own. Enter is the last key the harness
     // injects, and only a press echoes a character, so its release is the

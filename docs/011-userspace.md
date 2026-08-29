@@ -527,6 +527,11 @@ so a `compile_fail` doctest cannot run against it (D-41), and a copy in `libs/`
 would drift. It is verified by hand, recorded in D-85, and re-verifying it is a
 manual step when the guard types change.
 
+D-223 closes the distinct D-68 auto-trait debt without copying a guard into
+`libs/`: a host compile-fail crate imports the actual `wost` types and requires
+rustc to reject both as `Send`. The borrow/`Drop` property above remains the
+separate manual check this paragraph records.
+
 ## Slice 3 — the address space that grows (2026-08-24)
 
 Recorded as built, per the charter above.

@@ -1372,18 +1372,17 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a token that does not fit names no operation",
         reddens: Caught::Check("a word that does not fit is refused rather than truncated"),
     },
-    // D-133's exemption, put back. The inner test is left in place so the
-    // counter still cannot move, which is the point: the woken thread runs
-    // either way, because the keyboard arm reschedules a moment later, so only
-    // a check that reads the arming can tell the two boots apart.
+    // D-133's exemption, put back. The woken waiter still runs on the slice
+    // already armed for the program, so only the counter can distinguish the
+    // defect from a working syscall wake.
     Mutation {
         file: "kernel/src/thread.rs",
         find: "    if woken > 0 {
         if interrupt::in_trap() {",
         replace: "    if woken > 0 && !interrupt::in_trap() {
         if interrupt::in_trap() {",
-        breaks: "a wake from a handler arms the timer for what it woke",
-        reddens: Caught::Check("a wake from a handler arms the timer for what it woke"),
+        breaks: "a syscall wake arms the timer for what it woke",
+        reddens: Caught::Check("a syscall wake arms the timer for what it woke"),
     },
     // A discriminant and its `match` arm drifting apart, which is how a
     // diagnosis comes to name the wrong guard (D-176).
@@ -2607,6 +2606,38 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "",
         breaks: "closing a foreign handle cannot remove another table's entry",
         reddens: Caught::Check("a handle reveals no foreign occupancy"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/interrupt.rs",
+        find: "pub struct InterruptState {
+    was_enabled: bool,
+    stays_here: PhantomData<*mut ()>,
+}",
+        replace: "pub struct InterruptState {
+    was_enabled: bool,
+    stays_here: PhantomData<()>,
+}",
+        breaks: "a spin-lock guard cannot restore another CPU's interrupt flag",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::guard_types_do_not_cross_cpus",
+        },
+    },
+    Mutation {
+        file: "wost/src/sync.rs",
+        find: "pub struct ThreadLockGuard<'a, T> {
+    lock: &'a ThreadLock<T>,
+    stays_here: PhantomData<*const ()>,
+}",
+        replace: "pub struct ThreadLockGuard<'a, T> {
+    lock: &'a ThreadLock<T>,
+    stays_here: PhantomData<()>,
+}",
+        breaks: "a thread-lock guard cannot be released on another CPU",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::guard_types_do_not_cross_cpus",
+        },
     },
 ];
 

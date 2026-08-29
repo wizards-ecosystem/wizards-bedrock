@@ -124,7 +124,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-402 | DONE | P1 | Table identity was a wrapping `u32`; eventual reuse could collide with still-live ownership, independently of the documented 12-bit handle generation tradeoff | D-204 makes identity a non-repeating `u64`, commits its checked successor with quota under the arena lock and returns typed exhaustion at the terminal sentinel | 2026-08-28 host arithmetic refused the maximum successor; release QEMU held the last table and handle live through two fail-atomic refusals and exact teardown, while wrap and final-nonadvance mutations each reddened only `table identities never wrap or repeat` with 210/211 |
 | PW-403 | DONE | P2 | The handle mixer exposed `NotYours` versus `Stale`, one foreign-occupancy bit per exact slot-generation probe even though no authority crossed | D-222 collapses empty, reused and foreign slots to `Stale` while retaining the ownership checks on resolve and close; the API result now carries zero occupancy bits | 2026-08-29 the real-arena experiment observed identical live-foreign and closed/absent resolve and close results while the owner retained its entry; removing either ownership check reddened only `a handle reveals no foreign occupancy` and both breaks persist as mutations; the offline gate passed release/debug QEMU at 212/212 plus shipped and degraded boots |
 | PW-404 | READY | P2 | Current TLA+ covers ring admission/accounting and Shuttle explores sequentially consistent host interleavings, not the hardware/shared-page memory contract | Extend the model or add a focused weak-memory model for publish, reserve, cancel, retire and exactly-once completion | Model/litmus mutations for reordered loads/stores, lost reservation and duplicate terminal completion all fail for the intended property |
-| PW-405 | READY | P2 | The constructible syscall wake/arm race and guard `!Send` compile-time property lack durable automated witnesses | Add the smallest host/compile-fail or machine harness that reaches each actual property without copying the production type | Each harness is broken against the exact old behavior and fails for the named reason |
+| PW-405 | DONE | P2 | The constructible syscall wake/arm race and guard `!Send` compile-time property lacked durable automated witnesses | D-223 drives a real child `RingEnter` only after a kernel waiter registers on its ring, and cross-compiles `Send` assertions against both actual `wost` guard types | 2026-08-29 release QEMU observed both waits, one exact RingEnter arm, Echo ownership and exact cleanup; restoring the trap exemption reddened only `a syscall wake arms the timer for what it woke` at 211/212, while removing either CPU-local marker made the named host compile-fail test red; mutations 234 and 235 retain the type breaks |
 
 ## Verification, release engineering and repository truth
 
@@ -235,9 +235,9 @@ of them without upgrading historical evidence:
 1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
    PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200,
    PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-210,
-   PW-300, PW-302, PW-304, PW-306, PW-307, PW-400, PW-401, PW-402, PW-403,
+   PW-300, PW-302, PW-304, PW-306, PW-307, PW-400, PW-401, PW-402, PW-403, PW-405,
    PW-500, PW-501, PW-502, PW-503, PW-504, PW-505, PW-506, PW-507, PW-508,
-   PW-509, PW-510, PW-514 and PW-515 are closed by D-185 through D-222.
+   PW-509, PW-510, PW-514 and PW-515 are closed by D-185 through D-223.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

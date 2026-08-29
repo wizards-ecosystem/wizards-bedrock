@@ -286,7 +286,6 @@ impl<T> SpinLock<T> {
                     lock: self,
                     leaf,
                     interrupts,
-                    stays_here: PhantomData,
                 })
             }
             Err(_) => {
@@ -345,14 +344,14 @@ impl<T: fmt::Debug> fmt::Debug for SpinLock<T> {
 ///
 /// Not `Send`: the flag this guard restores belongs to the CPU that cleared
 /// it, so releasing on another one would leave the first interruptible inside
-/// its own critical section (D-68).
+/// its own critical section. [`InterruptState`] carries that fact for every
+/// owner of the state rather than making each owner repeat it (D-68, D-223).
 pub struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
     /// Whether this came from [`SpinLock::lock_leaf`], so its release knows
     /// which counter to undo.
     leaf: bool,
     interrupts: InterruptState,
-    stays_here: PhantomData<*const ()>,
 }
 
 impl<T: fmt::Debug> fmt::Debug for SpinLockGuard<'_, T> {

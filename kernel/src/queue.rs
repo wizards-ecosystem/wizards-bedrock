@@ -1201,6 +1201,31 @@ impl Queue {
         self.served_count().wrapping_sub(before)
     }
 
+    /// Wait for this ring's next completion through the production wait queue.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn wait_for_test(
+        &self,
+        context: &mut crate::thread::ThreadContext,
+        cancelled: &AtomicUsize,
+    ) {
+        let before = self.served_count();
+        self.waiters.wait_unless(context, || {
+            self.served_count() != before || cancelled.load(Ordering::Acquire) != 0
+        });
+    }
+
+    /// Whether the production wait queue currently names a waiter.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn has_waiter_for_test(&self) -> bool {
+        !self.waiters.is_idle()
+    }
+
+    /// Release a test waiter when a failed orchestration has no completion.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn release_waiter_for_test(&self) -> usize {
+        self.waiters.wake_all()
+    }
+
     /// How many operations are in flight.
     #[cfg(feature = "selftest")]
     pub(crate) fn in_flight(&self) -> usize {

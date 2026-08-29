@@ -14,6 +14,8 @@ pub mod api;
 pub mod boundary;
 pub mod cargo;
 pub mod cli;
+#[cfg(test)]
+mod contracts;
 pub mod decisions;
 pub mod elf;
 mod evidence;

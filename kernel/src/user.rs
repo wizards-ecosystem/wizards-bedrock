@@ -33,6 +33,8 @@ use x86_paging::{Flags, PAGE_SIZE};
 
 use crate::handle::{HandleError, HandleTable};
 use crate::object::{self, ObjectRef, ObjectType};
+#[cfg(feature = "selftest")]
+use crate::wait::WaitQueue;
 use crate::{info, queue, thread, warn};
 
 /// Where the first user program's page of code goes.
@@ -1312,6 +1314,10 @@ static LAST_REFUSED: AtomicUsize = AtomicUsize::new(0);
 /// live one by construction.
 static UNANSWERED: AtomicUsize = AtomicUsize::new(0);
 
+/// RingEnter calls whose completion wake armed the timer in that trap.
+#[cfg(feature = "selftest")]
+static RING_ENTER_ARMS: AtomicUsize = AtomicUsize::new(0);
+
 /// Refusals already reported, so each is said once.
 static REPORTED: AtomicUsize = AtomicUsize::new(0);
 
@@ -1349,6 +1355,12 @@ pub(crate) fn refusals() -> (usize, usize, usize) {
     )
 }
 
+/// RingEnter completion wakes observed to arm before the handler returned.
+#[cfg(feature = "selftest")]
+pub(crate) fn ring_enter_arms_for_test() -> usize {
+    RING_ENTER_ARMS.load(Ordering::Acquire)
+}
+
 /// `-ENOSYS`, as `abis/linux` numbers it and as the ABI header states.
 const ENOSYS: u64 = (-38i64) as u64;
 
@@ -1375,7 +1387,13 @@ pub(crate) fn call(frame: &TrapFrame) {
             }
         }
         Call::RingEnter => {
+            #[cfg(feature = "selftest")]
+            let arms = thread::handler_arms();
             let served = serve_ring(slot);
+            #[cfg(feature = "selftest")]
+            if served > 0 && thread::handler_arms() > arms {
+                RING_ENTER_ARMS.fetch_add(1, Ordering::Release);
+            }
             // The frame is the innermost live one — this is a handler running
             // on it — so the write cannot be refused for any reason a caller
             // could cause. Counted rather than logged; see below.
@@ -1507,6 +1525,12 @@ fn cross() {
     };
     let which = launch.which;
 
+    #[cfg(feature = "selftest")]
+    if GATE_NEXT_CROSS.swap(false, Ordering::AcqRel) {
+        let mut context = thread::ThreadContext::require();
+        CROSS_GATE.wait_unless(&mut context, || CROSS_MAY_ENTER.load(Ordering::Acquire));
+    }
+
     // The tables really are this thread's. Checked rather than assumed
     // because everything below writes to addresses that mean something
     // different in another space, and a missed switch would put one program's
@@ -1583,6 +1607,38 @@ pub(crate) fn run_waiting() -> Result<Spawned, SpawnError> {
     spawn("user-wait", 7, WAIT)
 }
 
+/// An echoing program held just before ring-3 entry for wake orchestration.
+#[cfg(feature = "selftest")]
+pub(crate) fn run_gated_for_wake() -> Result<Spawned, SpawnError> {
+    if !CROSS_GATE.is_idle() || GATE_NEXT_CROSS.load(Ordering::Acquire) {
+        return Err(SpawnError::Incomplete);
+    }
+    CROSS_MAY_ENTER.store(false, Ordering::Release);
+    if GATE_NEXT_CROSS.swap(true, Ordering::AcqRel) {
+        CROSS_MAY_ENTER.store(true, Ordering::Release);
+        return Err(SpawnError::Incomplete);
+    }
+    let spawned = spawn("user-wake", 9, BEHAVE);
+    if spawned.is_err() {
+        GATE_NEXT_CROSS.store(false, Ordering::Release);
+        CROSS_MAY_ENTER.store(true, Ordering::Release);
+    }
+    spawned
+}
+
+/// Whether the gated child has registered and stopped being runnable.
+#[cfg(feature = "selftest")]
+pub(crate) fn gated_cross_is_waiting() -> bool {
+    !CROSS_GATE.is_idle()
+}
+
+/// Let the gated child enter ring 3 and report how many threads were released.
+#[cfg(feature = "selftest")]
+pub(crate) fn release_gated_cross() -> usize {
+    CROSS_MAY_ENTER.store(true, Ordering::Release);
+    CROSS_GATE.wake_all()
+}
+
 /// A sixth, which jumps into the kernel's user-copy window from ring 3.
 ///
 /// The argument *is* the address: the program jumps to anything it is given in
@@ -1615,3 +1671,15 @@ const DUPLICATE: u64 = 3;
 /// The argument that makes it submit a Timer and enter `RingWait`.
 #[cfg(feature = "selftest")]
 const WAIT: u64 = 4;
+
+/// The next child reaching [`cross`] must wait for the machine check.
+#[cfg(feature = "selftest")]
+static GATE_NEXT_CROSS: AtomicBool = AtomicBool::new(false);
+
+/// The condition paired with [`CROSS_GATE`].
+#[cfg(feature = "selftest")]
+static CROSS_MAY_ENTER: AtomicBool = AtomicBool::new(true);
+
+/// Stops one real child before its first user instruction.
+#[cfg(feature = "selftest")]
+static CROSS_GATE: WaitQueue = WaitQueue::new();
