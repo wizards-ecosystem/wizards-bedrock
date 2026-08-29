@@ -66,6 +66,21 @@ impl Step {
         }
     }
 
+    pub(crate) const fn evidence_key(self) -> &'static str {
+        match self {
+            Self::Format => "result.gate.fmt-check",
+            Self::Clippy => "result.gate.clippy",
+            Self::ApiAudit => "result.gate.api-audit",
+            Self::Documentation => "result.gate.doc",
+            Self::HostTests => "result.gate.test",
+            Self::Vendor => "result.gate.verify-vendor",
+            Self::SelfTest(Profile::Release) => "result.gate.test-boot-release",
+            Self::SelfTest(Profile::Dev) => "result.gate.test-boot-debug",
+            Self::ShippedBoot => "result.gate.boot-check-release",
+            Self::DegradedBoot => "result.gate.degraded-check-release",
+        }
+    }
+
     const fn purpose(self) -> &'static str {
         match self {
             Self::Format => "refuse unformatted source",
@@ -93,7 +108,7 @@ impl Registry {
         self.cargo_passes
     }
 
-    fn steps(&self) -> &'static [Step] {
+    pub(crate) const fn steps(&self) -> &'static [Step] {
         self.steps
     }
 

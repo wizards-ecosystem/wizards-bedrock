@@ -34,6 +34,10 @@ CHECK TASKS:
     verify-vendor     check vendored binaries against their CHECKSUMS files
     ci                run the registered local gate shown below
 
+QUALIFICATION TASKS:
+    evidence          run CI, reproduce the release twice and write its evidence
+    verify-evidence   verify the evidence bundle without network access
+
 ";
 
 const HELP_AFTER_REGISTRY: &str = "\
@@ -113,6 +117,10 @@ pub enum Task {
     Mutate,
     /// Everything CI runs.
     Ci,
+    /// Produce a reproducible release evidence bundle.
+    Evidence,
+    /// Verify a release evidence bundle without network access.
+    VerifyEvidence,
     /// Remove build output.
     Clean(CleanScope),
 }
@@ -203,6 +211,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         "model-check" => Ok(Task::ModelCheck),
         "mutate" => Ok(Task::Mutate),
         "ci" => Ok(Task::Ci),
+        "evidence" => Ok(Task::Evidence),
+        "verify-evidence" => Ok(Task::VerifyEvidence),
         "clean" => Ok(Task::Clean(if all {
             CleanScope::Everything
         } else {

@@ -51,6 +51,14 @@ const CODE_FIRMWARE: &str = "edk2-x86_64-code.fd";
 /// QEMU packaging, not a mistake.
 const VARS_FIRMWARE: &str = "edk2-i386-vars.fd";
 
+/// Resolved emulator and firmware inputs used by every QEMU runner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Installation {
+    pub(crate) emulator: PathBuf,
+    pub(crate) code_firmware: PathBuf,
+    pub(crate) vars_firmware: PathBuf,
+}
+
 /// Append the platform's executable suffix to `stem`.
 pub fn exe_name(stem: &str) -> String {
     format!("{stem}{}", std::env::consts::EXE_SUFFIX)
@@ -107,27 +115,39 @@ fn firmware(qemu_dir: &Path, name: &str) -> Result<PathBuf> {
         })
 }
 
+/// Resolve the exact emulator and pristine firmware inputs a boot will use.
+pub(crate) fn installation() -> Result<Installation> {
+    let directory = locate()?;
+    Ok(Installation {
+        emulator: directory.join(exe_name("qemu-system-x86_64")),
+        code_firmware: firmware(&directory, CODE_FIRMWARE)?,
+        vars_firmware: firmware(&directory, VARS_FIRMWARE)?,
+    })
+}
+
 /// Boot `image` in QEMU, forwarding `extra` arguments verbatim.
 pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
-    let qemu_dir = locate()?;
-    let code = firmware(&qemu_dir, CODE_FIRMWARE)?;
+    let installation = installation()?;
 
     // The variable store must be writable, and starting from the pristine
     // template every run keeps boots reproducible.
-    let vars_template = firmware(&qemu_dir, VARS_FIRMWARE)?;
     let vars = paths.efi_vars();
-    std::fs::copy(&vars_template, &vars)
-        .with_context(|| format!("copying {} to {}", vars_template.display(), vars.display()))?;
+    std::fs::copy(&installation.vars_firmware, &vars).with_context(|| {
+        format!(
+            "copying {} to {}",
+            installation.vars_firmware.display(),
+            vars.display()
+        )
+    })?;
 
-    let emulator = qemu_dir.join(exe_name("qemu-system-x86_64"));
     println!("[xtask] launching QEMU (serial on stdio, close the window to exit)");
 
-    let status = Command::new(&emulator)
+    let status = Command::new(&installation.emulator)
         .args(MACHINE)
         .args(["-serial", "stdio"])
         .args(drive(&format!(
             "if=pflash,format=raw,readonly=on,file={}",
-            code.display()
+            installation.code_firmware.display()
         )))
         .args(drive(&format!(
             "if=pflash,format=raw,file={}",
@@ -137,7 +157,7 @@ pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
         .args(storage(paths.root())?)
         .args(extra)
         .status()
-        .with_context(|| format!("could not launch {}", emulator.display()))?;
+        .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
 
     // A non-zero status here usually means the user closed the window, which is
     // how you quit QEMU — reporting it as a build failure would be a lie.
@@ -210,24 +230,35 @@ const NVME_BYTES: u64 =
 ///
 /// If the file cannot be written, or the corpus cannot be built.
 pub fn nvme_image(root: &Path) -> Result<std::path::PathBuf> {
-    let backing = root.join("target").join("nvme.img");
-    let sized = std::fs::metadata(&backing).is_ok_and(|found| found.len() == NVME_BYTES);
-    if !sized {
-        // Written whole rather than sized and left sparse: the first blocks
-        // carry a signature the block-layer checks read, and a FAT32 volume
-        // follows at `NVME_VOLUME_SECTOR`.
-        let mut content = vec![0u8; NVME_BYTES as usize];
-        for lba in 0..NVME_SIGNED_BLOCKS {
-            let at = lba as usize * NVME_BLOCK_BYTES;
-            content[at..at + 8].copy_from_slice(&nvme_signature(lba).to_le_bytes());
-        }
-        let volume = crate::image::corpus::build().context("building the corpus volume")?;
-        let at = NVME_VOLUME_SECTOR as usize * NVME_BLOCK_BYTES;
-        content[at..at + volume.len()].copy_from_slice(&volume);
+    let backing = nvme_path(root);
+    std::fs::create_dir_all(backing.parent().context("NVMe image has no parent")?)
+        .with_context(|| format!("creating the directory for {}", backing.display()))?;
+    // Written whole rather than sized and left sparse: the first blocks carry
+    // a signature the block-layer checks read, and a FAT32 volume follows at
+    // `NVME_VOLUME_SECTOR`.
+    let mut content = vec![0u8; NVME_BYTES as usize];
+    for lba in 0..NVME_SIGNED_BLOCKS {
+        let at = lba as usize * NVME_BLOCK_BYTES;
+        content[at..at + 8].copy_from_slice(&nvme_signature(lba).to_le_bytes());
+    }
+    let volume = crate::image::corpus::build().context("building the corpus volume")?;
+    let at = NVME_VOLUME_SECTOR as usize * NVME_BLOCK_BYTES;
+    content[at..at + volume.len()].copy_from_slice(&volume);
+
+    let current = std::fs::read(&backing).unwrap_or_default();
+    if !namespace_is_exact(&current, &content) {
         std::fs::write(&backing, &content)
             .with_context(|| format!("writing {}", backing.display()))?;
     }
     Ok(backing)
+}
+
+pub(crate) fn nvme_path(root: &Path) -> PathBuf {
+    root.join("target").join("nvme.img")
+}
+
+fn namespace_is_exact(current: &[u8], expected: &[u8]) -> bool {
+    current == expected
 }
 
 /// A storage controller for QEMU to find, and the file behind it.
@@ -594,12 +625,15 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
 /// Boot `image` headless and preserve a valid red or panic outcome for a
 /// mutation caller.
 pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<SelftestOutcome> {
-    let qemu_dir = locate()?;
-    let code = firmware(&qemu_dir, CODE_FIRMWARE)?;
-    let vars_template = firmware(&qemu_dir, VARS_FIRMWARE)?;
+    let installation = installation()?;
     let vars = paths.efi_vars();
-    std::fs::copy(&vars_template, &vars)
-        .with_context(|| format!("copying {} to {}", vars_template.display(), vars.display()))?;
+    std::fs::copy(&installation.vars_firmware, &vars).with_context(|| {
+        format!(
+            "copying {} to {}",
+            installation.vars_firmware.display(),
+            vars.display()
+        )
+    })?;
 
     let listener =
         TcpListener::bind(("127.0.0.1", 0)).context("binding the QMP loopback listener")?;
@@ -621,10 +655,9 @@ pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Resul
             .port()
     };
 
-    let emulator = qemu_dir.join(exe_name("qemu-system-x86_64"));
     println!("[xtask] booting the self-test kernel");
 
-    let mut child = Command::new(&emulator)
+    let mut child = Command::new(&installation.emulator)
         .args(MACHINE)
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
         .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
@@ -635,7 +668,7 @@ pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Resul
         ])
         .args(drive(&format!(
             "if=pflash,format=raw,readonly=on,file={}",
-            code.display()
+            installation.code_firmware.display()
         )))
         .args(drive(&format!(
             "if=pflash,format=raw,file={}",
@@ -645,7 +678,7 @@ pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Resul
         .args(storage(paths.root())?)
         .stdout(Stdio::piped())
         .spawn()
-        .with_context(|| format!("could not launch {}", emulator.display()))?;
+        .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
 
     let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
     let markers_seen = Arc::new(AtomicUsize::new(0));
@@ -897,12 +930,15 @@ fn await_keyboard_irq(
 /// covers what the shipped kernel does afterwards. The verdict here is what
 /// the serial log says: the settled marker, and no panic.
 pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
-    let qemu_dir = locate()?;
-    let code = firmware(&qemu_dir, CODE_FIRMWARE)?;
-    let vars_template = firmware(&qemu_dir, VARS_FIRMWARE)?;
+    let installation = installation()?;
     let vars = paths.efi_vars();
-    std::fs::copy(&vars_template, &vars)
-        .with_context(|| format!("copying {} to {}", vars_template.display(), vars.display()))?;
+    std::fs::copy(&installation.vars_firmware, &vars).with_context(|| {
+        format!(
+            "copying {} to {}",
+            installation.vars_firmware.display(),
+            vars.display()
+        )
+    })?;
 
     let listener =
         TcpListener::bind(("127.0.0.1", 0)).context("binding the shipped QMP listener")?;
@@ -921,10 +957,9 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
             .port()
     };
 
-    let emulator = qemu_dir.join(exe_name("qemu-system-x86_64"));
     println!("[xtask] booting the shipped kernel");
 
-    let mut child = Command::new(&emulator)
+    let mut child = Command::new(&installation.emulator)
         .args(MACHINE)
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
         .args(["-qmp", &qmp_endpoint])
@@ -934,7 +969,7 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
         ])
         .args(drive(&format!(
             "if=pflash,format=raw,readonly=on,file={}",
-            code.display()
+            installation.code_firmware.display()
         )))
         .args(drive(&format!(
             "if=pflash,format=raw,file={}",
@@ -944,7 +979,7 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
         .args(storage(paths.root())?)
         .stdout(Stdio::piped())
         .spawn()
-        .with_context(|| format!("could not launch {}", emulator.display()))?;
+        .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
 
     let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
     let settled = Arc::new(AtomicBool::new(false));
@@ -1044,23 +1079,25 @@ pub const DEGRADED_USER_MARKER: &str = "user: no program: no calibrated clock; r
 /// exercises the namespaces which need neither facility, and still reaches
 /// its steady state rather than triple-faulting on a missing register.
 pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
-    let qemu_dir = locate()?;
-    let code = firmware(&qemu_dir, CODE_FIRMWARE)?;
-    let vars_template = firmware(&qemu_dir, VARS_FIRMWARE)?;
+    let installation = installation()?;
     let vars = paths.efi_vars();
-    std::fs::copy(&vars_template, &vars)
-        .with_context(|| format!("copying {} to {}", vars_template.display(), vars.display()))?;
+    std::fs::copy(&installation.vars_firmware, &vars).with_context(|| {
+        format!(
+            "copying {} to {}",
+            installation.vars_firmware.display(),
+            vars.display()
+        )
+    })?;
 
-    let emulator = qemu_dir.join(exe_name("qemu-system-x86_64"));
     println!("[xtask] booting a kernel with no PCI configuration or x2apic");
 
-    let mut child = Command::new(&emulator)
+    let mut child = Command::new(&installation.emulator)
         .args(MACHINE)
         .args(DEGRADED_CPU)
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
         .args(drive(&format!(
             "if=pflash,format=raw,readonly=on,file={}",
-            code.display()
+            installation.code_firmware.display()
         )))
         .args(drive(&format!(
             "if=pflash,format=raw,file={}",
@@ -1070,7 +1107,7 @@ pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Resu
         .args(storage(paths.root())?)
         .stdout(Stdio::piped())
         .spawn()
-        .with_context(|| format!("could not launch {}", emulator.display()))?;
+        .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
 
     let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
     let settled = Arc::new(AtomicBool::new(false));
@@ -1239,6 +1276,13 @@ mod tests {
             drive("format=raw,file=disk.img"),
             ["-drive", "format=raw,file=disk.img"]
         );
+    }
+
+    #[test]
+    fn a_same_sized_namespace_with_different_bytes_is_not_reused() {
+        assert!(namespace_is_exact(b"wizard", b"wizard"));
+        assert!(!namespace_is_exact(b"wizard", b"wIzard"));
+        assert!(!namespace_is_exact(b"wizard", b"wizard!"));
     }
 
     fn passing_verdict() -> SelftestVerdict {

@@ -125,7 +125,11 @@ const SELFTEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// verdict; this boots the image that goes on the disk.
 pub fn boot_check(paths: &Paths, profile: Profile) -> Result<()> {
     let image = image::build(paths, profile, image::Kernel::Shipped)?;
-    qemu::run_boot_check(paths, &image, BOOT_SETTLE)
+    boot_shipped_image(paths, &image)
+}
+
+pub(crate) fn boot_shipped_image(paths: &Paths, image: &std::path::Path) -> Result<()> {
+    qemu::run_boot_check(paths, image, BOOT_SETTLE)
 }
 
 /// Boot without PCI configuration or x2APIC and require both refusals.

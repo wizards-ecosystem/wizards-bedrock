@@ -105,6 +105,14 @@ under `target/mutate/`, with its own build directory. An interrupted sweep
 resumes at its active mutation after restoring that copy; it never repairs or
 rewrites the checkout or Git index (D-208).
 
+`cargo xtask evidence` requires a clean `HEAD`, runs the complete gate, builds
+the shipped release in two fresh target directories, requires byte-identical
+kernel and image artifacts, and boots the exact bundled image. It writes the
+deterministic bundle under `target/evidence/`; `cargo xtask verify-evidence`
+then rechecks its source identity, installed tool and firmware identities,
+vendored and machine inputs, artifact hashes, reproducibility result and boot
+result without network access.
+
 `test` runs the host suite; `test-boot` boots a kernel built with the
 `selftest` feature headless in QEMU, injects a keystroke over QMP when the
 kernel asks for one (D-38), and reads the verdict from the exit code, which

@@ -16,6 +16,7 @@ pub mod cargo;
 pub mod cli;
 pub mod decisions;
 pub mod elf;
+mod evidence;
 mod gate;
 pub mod image;
 pub mod machine;
@@ -73,6 +74,8 @@ pub fn run(task: Task) -> Result<()> {
         Task::ModelCheck => model::check(&paths),
         Task::Mutate => mutate::run(&paths),
         Task::Ci => tasks::ci(&paths),
+        Task::Evidence => evidence::create(&paths),
+        Task::VerifyEvidence => evidence::verify(&paths),
         Task::Clean(scope) => tasks::clean(&paths, scope),
     }
 }

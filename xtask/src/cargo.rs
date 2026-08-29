@@ -72,13 +72,7 @@ pub fn package_args(packages: &[&str]) -> Vec<String> {
 pub fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -> Result<PathBuf> {
     println!("[xtask] building kernel ({})", profile.directory());
 
-    let mut args = vec!["build".to_string()];
-    args.extend(package_args(&[paths::KERNEL_PACKAGE]));
-    args.extend(["--target".to_string(), paths::KERNEL_TARGET.to_string()]);
-    args.extend(profile.flags().iter().map(|flag| (*flag).to_string()));
-    if !features.is_empty() {
-        args.extend(["--features".to_string(), features.join(",")]);
-    }
+    let args = kernel_build_args(profile, features);
     run(paths, "kernel build", &args)?;
 
     let elf = paths.kernel_elf(profile);
@@ -93,6 +87,17 @@ pub fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -> Resul
     // checked against what it produced, every time.
     crate::elf::verify_file(&elf)?;
     Ok(elf)
+}
+
+fn kernel_build_args(profile: Profile, features: &[&str]) -> Vec<String> {
+    let mut args = vec!["build".to_string(), "--locked".to_string()];
+    args.extend(package_args(&[paths::KERNEL_PACKAGE]));
+    args.extend(["--target".to_string(), paths::KERNEL_TARGET.to_string()]);
+    args.extend(profile.flags().iter().map(|flag| (*flag).to_string()));
+    if !features.is_empty() {
+        args.extend(["--features".to_string(), features.join(",")]);
+    }
+    args
 }
 
 #[cfg(test)]
@@ -110,6 +115,19 @@ mod tests {
             package_args(&["wost", "wizard-kernel"]),
             ["--package", "wost", "--package", "wizard-kernel"]
         );
+    }
+
+    #[test]
+    fn kernel_builds_are_locked_to_the_recorded_dependencies() {
+        for args in [
+            kernel_build_args(Profile::Dev, &[]),
+            kernel_build_args(Profile::Release, &[paths::SELFTEST_FEATURE]),
+        ] {
+            assert_eq!(
+                args.iter().filter(|arg| arg.as_str() == "--locked").count(),
+                1
+            );
+        }
     }
 
     #[test]

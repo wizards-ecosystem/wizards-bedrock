@@ -960,7 +960,7 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 212 |
-| Mutations | 204 registered; 64 in the last recorded full sweep, with 140 later entries broken individually |
+| Mutations | 213 registered; 64 in the last recorded full sweep, with 149 later entries broken individually |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
 | Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-215 |
 

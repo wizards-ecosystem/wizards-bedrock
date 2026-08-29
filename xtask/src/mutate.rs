@@ -2316,6 +2316,96 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "mutate::tests::every_host_library_has_a_persistent_source_mutation",
         },
     },
+    Mutation {
+        file: "xtask/src/cargo.rs",
+        find: "    let mut args = vec![\"build\".to_string(), \"--locked\".to_string()];",
+        replace: "    let mut args = vec![\"build\".to_string()];",
+        breaks: "a release build may resolve dependencies outside Cargo.lock",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cargo::tests::kernel_builds_are_locked_to_the_recorded_dependencies",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "    current == expected",
+        replace: "    current.len() == expected.len()",
+        breaks: "a stale same-sized namespace becomes an unrecorded boot input",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::a_same_sized_namespace_with_different_bytes_is_not_reused",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "            self.fields.insert(key.clone(), value).is_none(),",
+        replace: "            self.fields.insert(key.clone(), value).is_none() || true,",
+        breaks: "a later evidence field silently replaces an earlier claim",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::a_manifest_rejects_duplicate_keys",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "        actual == *expected,",
+        replace: "        actual != *expected,",
+        breaks: "missing and unknown evidence fields are accepted",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::a_manifest_schema_is_exact",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "    first.bytes == second.bytes && first.sha256 == second.sha256",
+        replace: "    first.bytes == second.bytes || first.sha256 == second.sha256",
+        breaks: "equal-sized release artifacts are mistaken for equal bytes",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::equal_lengths_do_not_make_artifacts_identical",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "            record.get(key)? == PASS,",
+        replace: "            record.get(key)? == PASS || true,",
+        breaks: "a failed qualification result verifies as a pass",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::every_recorded_result_must_pass",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "    status.trim().is_empty()",
+        replace: "    true",
+        breaks: "modified and untracked source can claim a clean identity",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::a_dirty_source_cannot_be_called_clean",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "        for (key, value) in &self.fields {",
+        replace: "        for (key, value) in self.fields.iter().rev() {",
+        breaks: "the same evidence fields render in a different byte order",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::rendering_is_sorted_and_round_trips",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "            record.get(&format!(\"{}.sha256\", spec.prefix))? == digest.sha256,",
+        replace: "            record.get(&format!(\"{}.sha256\", spec.prefix))? == digest.sha256 || true,",
+        breaks: "bundled bytes can differ from the digest the manifest records",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::artifact_bytes_must_match_the_manifest",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
