@@ -498,6 +498,15 @@ static FILE_WORK: FileWorkQueue = FileWorkQueue::new();
 /// Set only after the runtime worker has a runnable scheduler slot.
 static WORKER_READY: AtomicBool = AtomicBool::new(false);
 
+/// One request per program moved into the zombie table.
+static REAP_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(feature = "selftest")]
+static REFUSE_WORKER: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "selftest")]
+static WORKER_REAPS: AtomicUsize = AtomicUsize::new(0);
+
 #[cfg(feature = "selftest")]
 static WORK_PAUSED: AtomicBool = AtomicBool::new(false);
 
@@ -869,7 +878,7 @@ impl Queue {
             at: bounds.0,
             wanted,
         };
-        if !WORKER_READY.load(Ordering::Acquire) {
+        if !worker_is_ready() {
             return Some(refuse(token, STATUS_NO_ROOM));
         }
         let Some((pending, id)) = self.defer_read(token, request) else {
@@ -1504,25 +1513,60 @@ impl Drop for Queue {
     }
 }
 
-/// Give deferred file service its one runtime owner.
+/// Give deferred file service and process reclamation one runtime owner.
 pub(crate) fn start_worker() {
-    match crate::thread::spawn("file-worker", work_forever) {
+    match crate::thread::spawn("service-worker", work_forever) {
         Ok(_) => {
             WORKER_READY.store(true, Ordering::Release);
-            crate::info!("storage: file worker ready with {WORK_DEPTH} slots");
+            crate::info!("kernel: service worker ready; file queue has {WORK_DEPTH} slots");
         }
-        Err(reason) => crate::warn!("storage: no file worker: {reason}; reads are unavailable"),
+        Err(reason) => crate::warn!(
+            "kernel: no service worker: {reason}; reads and user launch are unavailable"
+        ),
     }
+}
+
+/// Whether deferred service and process reclamation can make progress.
+pub(crate) fn worker_is_ready() -> bool {
+    let ready = WORKER_READY.load(Ordering::Acquire);
+    #[cfg(feature = "selftest")]
+    let ready = ready && !REFUSE_WORKER.load(Ordering::Acquire);
+    ready
+}
+
+/// Run a check through the production missing-worker predicate.
+#[cfg(feature = "selftest")]
+pub(crate) fn without_worker_for_test<T>(check: impl FnOnce() -> T) -> T {
+    let refused = REFUSE_WORKER.swap(true, Ordering::AcqRel);
+    let result = check();
+    REFUSE_WORKER.store(refused, Ordering::Release);
+    result
+}
+
+/// Wake the service worker after ownership reaches the zombie table.
+pub(crate) fn request_reap() {
+    REAP_REQUESTS.fetch_add(1, Ordering::Release);
+    FILE_WORK.waiters.wake_all();
 }
 
 /// Drain bounded work, sleeping without a tick while nothing is queued.
 fn work_forever() {
     let mut context = crate::thread::ThreadContext::require();
+    let mut handled_reaps = 0usize;
     loop {
         #[cfg(feature = "selftest")]
         if WORK_PAUSED.load(Ordering::Acquire) {
             crate::thread::yield_now(&mut context);
             continue;
+        }
+
+        let requested = REAP_REQUESTS.load(Ordering::Acquire);
+        if handled_reaps != requested {
+            handled_reaps = handled_reaps.wrapping_add(1);
+            if crate::user::collect().is_some() {
+                #[cfg(feature = "selftest")]
+                WORKER_REAPS.fetch_add(1, Ordering::AcqRel);
+            }
         }
         if let Some(work) = FILE_WORK.take() {
             service(work);
@@ -1530,6 +1574,7 @@ fn work_forever() {
         }
         FILE_WORK.waiters.wait_unless(&mut context, || {
             FILE_WORK.queued.load(Ordering::Acquire) > 0
+                || REAP_REQUESTS.load(Ordering::Acquire) != handled_reaps
         });
     }
 }
@@ -1576,6 +1621,12 @@ pub(crate) fn queued_work_for_test() -> usize {
 #[cfg(feature = "selftest")]
 pub(crate) fn worker_runs_for_test() -> usize {
     WORK_RUNS.load(Ordering::Acquire)
+}
+
+/// Programs reclaimed by the service worker.
+#[cfg(feature = "selftest")]
+pub(crate) fn worker_reaps_for_test() -> usize {
+    WORKER_REAPS.load(Ordering::Acquire)
 }
 
 /// Rings whose storage is still live.

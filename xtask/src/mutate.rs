@@ -1680,6 +1680,20 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a refused idle spawn leaves its reservation permanently burned",
         reddens: Caught::Check("a failed idle start can be retried exactly once"),
     },
+    Mutation {
+        file: "kernel/src/user.rs",
+        find: "    if !crate::queue::worker_is_ready() {\n        return Err(SpawnError::NoServiceWorker);\n    }",
+        replace: "    if false && !crate::queue::worker_is_ready() {\n        return Err(SpawnError::NoServiceWorker);\n    }",
+        breaks: "ring three opens without a thread able to reclaim it",
+        reddens: Caught::Check("a busy machine reaps a program without another spawn"),
+    },
+    Mutation {
+        file: "kernel/src/user.rs",
+        find: "    if stored {\n        crate::queue::request_reap();\n    }",
+        replace: "    let _ = stored;",
+        breaks: "retirement leaves the service worker asleep beside a zombie",
+        reddens: Caught::Check("a busy machine reaps a program without another spawn"),
+    },
 ];
 
 /// Apply each mutation, run its exact machine or host witness, and require red.

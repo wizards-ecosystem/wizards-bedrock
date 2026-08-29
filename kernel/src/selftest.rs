@@ -3040,10 +3040,11 @@ fn a_refused_settlement_retains_every_owner() -> bool {
         return false;
     }
     ring.refuse_next_post_for_test();
-    if !runs_until(2000, || thread::retirements() > retirements_before) || !user::has_zombies() {
-        return false;
-    }
-    let first_refused = user::collect().is_none()
+    queue::pause_worker_for_test(true);
+    let retired =
+        runs_until(2000, || thread::retirements() > retirements_before) && user::has_zombies();
+    let first_refused = retired
+        && user::collect().is_none()
         && user::has_zombies()
         && user::refused_ring_reclaims() == refusals_before + 1
         && ring.in_flight() == 1
@@ -3055,6 +3056,7 @@ fn a_refused_settlement_retains_every_owner() -> bool {
         && ring.read_completion(0).status == queue::STATUS_CANCELLED
         && ring.is_quiet()
         && ring.outstanding() == 0;
+    queue::pause_worker_for_test(false);
 
     cancel_refused
         && cancel_retried
@@ -4307,9 +4309,10 @@ fn a_dead_program_gives_its_memory_back() -> bool {
     // when the machine has nothing better to do; here the check asks
     // directly, because waiting for idle in a busy self-test is waiting for
     // an event that may not come.
-    let collected = user::collect().is_some_and(|result| result.table_refusal.is_none());
+    let collected_directly = user::collect().is_some_and(|result| result.table_refusal.is_none());
     let (pages_after, tables_after) = user::reclaimed();
     let gave_back = pages_after > pages_before && tables_after > tables_before;
+    let collected = collected_directly || (gave_back && !user::has_zombies());
 
     // The allocator agrees. Not exactly equal: the program's *stack* is the
     // kernel's arena, which is mapped once at boot and not per thread, and
@@ -6989,6 +6992,60 @@ fn a_failed_idle_start_can_be_retried_exactly_once() -> bool {
     exact
 }
 
+/// A runnable service worker reclaims a zombie even while idle cannot run.
+fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
+    while user::collect().is_some() {}
+
+    let gate_resources = spawn_resources();
+    let crossings = trap::last_syscall().count;
+    let attempt = queue::without_worker_for_test(user::run);
+    let denied = matches!(&attempt, Err(user::SpawnError::NoServiceWorker));
+    if let Ok(spawned) = attempt {
+        let slot = spawned.slot;
+        drop(spawned);
+        let _ = runs_until(2000, || task::address_space_of(slot).is_none());
+        let _ = runs_until(2000, || !user::has_zombies());
+    }
+    let fail_closed =
+        denied && trap::last_syscall().count == crossings && spawn_resources() == gate_resources;
+    if !fail_closed {
+        return false;
+    }
+
+    let resources = spawn_resources();
+    let reclaimed = user::reclaimed();
+    let reaps = queue::worker_reaps_for_test();
+    let retirements = thread::retirements();
+    let idle_halts = thread::idle_halts();
+
+    STOP_SPINNING.store(0, Ordering::Release);
+    LIGHT_SPINS.store(0, Ordering::Release);
+    let busy = thread::spawn("reap-pressure", light_spinner).is_ok();
+    let spawned = user::run_for_bootstrap();
+    let launched = spawned.is_ok();
+    drop(spawned);
+
+    let retired = launched && runs_until(2000, || thread::retirements() > retirements);
+    let progressed = retired
+        && runs_until(2000, || {
+            let now = user::reclaimed();
+            queue::worker_reaps_for_test() > reaps
+                && now.0 > reclaimed.0
+                && now.1 > reclaimed.1
+                && !user::has_zombies()
+        });
+    let idle_stayed_out = thread::idle_halts() == idle_halts;
+
+    STOP_SPINNING.store(1, Ordering::Release);
+    let settled = yields_until(|| thread::free_slots() == resources.thread_slots);
+
+    busy && progressed
+        && idle_stayed_out
+        && LIGHT_SPINS.load(Ordering::Relaxed) > 0
+        && settled
+        && spawn_resources() == resources
+}
+
 /// The idle thread runs when nothing else can, and never when something can.
 ///
 /// Both halves, because either alone is satisfied by a bug: an idle thread
@@ -7105,7 +7162,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 209;
+const EXPECTED_CHECKS: usize = 210;
 
 impl Report {
     const fn new() -> Self {
@@ -7855,6 +7912,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the idle thread runs only when nothing else can",
         the_idle_thread_runs_only_when_nothing_else_can(),
+    );
+    report.check(
+        "a busy machine reaps a program without another spawn",
+        a_busy_machine_reaps_a_program_without_another_spawn(),
     );
     report.check(
         "the polled keyboard fallback runs its rounds, sleeps and stops",

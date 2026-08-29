@@ -17,10 +17,10 @@ admission reasons.
 ## What completion means
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
-are **not closed**. The current image has 209 QEMU machine checks. The current
-mutation registry has 140 entries, but the last recorded complete sweep covered
-64; the seventy-six later mutations were broken individually. The current
-209-check image has not completed its human VMware round. The compiler gate in
+are **not closed**. The current image has 210 QEMU machine checks. The current
+mutation registry has 142 entries, but the last recorded complete sweep covered
+64; the seventy-eight later mutations were broken individually. The current
+210-check image has not completed its human VMware round. The compiler gate in
 `015-wizzy-userland.md` is also **CLOSED**.
 
 The kernel is ready for the first real Wizzy integration only when:
@@ -64,9 +64,9 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The register contains 140 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 140 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
+| PW-001 | REQUIRED | P0 | The register contains 142 mutations, but only the former 64-entry sweep has a complete recorded result | Run `cargo xtask mutate` from a clean tree on the closing commit; preserve per-mutation causality | All 142 named mutations are caught by the check each names; record commit, result and duration; tree is byte-for-byte restored |
 | PW-002 | REQUIRED | P0 | The ring model is a phase-close gate outside CI | Re-run `cargo xtask model-check` on the closing commit | Record TLC/Java versions, generated and distinct states, depth, zero errors and exact commit |
-| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 209-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=209 failed=0` transcript, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
+| PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current 210-check image | Boot the current self-test image in VMware and perform every human keyboard round | A dated `passed=210 failed=0` transcript, including WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, user launch, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Boot the release/shipped image in VMware after PW-003 | It reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
 | PW-005 | REQUIRED | P1 | The ordinary gate must describe the same commit as the exceptional evidence | Run `cargo xtask ci` after every register-closing change and once after the evidence-only close | Release/debug self-tests, shipped liveness and degraded boot all pass on the recorded commit |
 | PW-006 | REQUIRED | P1 | D-181 and D-182 were post-audit corrections, and this audit found deeper safe/device boundaries | Re-attack hostile inputs, cleanup paths, safe `wost` callers and release-only invariant failures after the P0/P1 fixes | Phase-close ADR links the audit, every break-test, full evidence manifest and remaining trigger-only rows; no historical evidence is invented |
@@ -113,7 +113,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-304 | VERIFY | P1 | ACPI retains only the first I/O APIC, so a valid GSI owned by a later controller cannot be routed | Represent all bounded MADT I/O APICs and select by GSI range | Host table corpus plus machine routing proof covers multiple controllers, overlap/malformed ranges and fallback |
 | PW-305 | READY | P2 | XSAVE bounds are checked, but restore correctness observes XMM0 only, not every enabled state component | Add independent enabled-state coverage feasible on QEMU/VMware and explicitly bound what cannot yet be generated | Values in each claimed component survive switches; compacted and standard forms are both exercised; mutations omit one component |
 | PW-306 | DONE | P1 | The idle-start latch was set before spawn succeeded, so a transient full table prevented idle from ever being retried | D-202 reserves a three-state idle attempt, rolls back every spawn refusal, and classifies the slot before making it runnable | 2026-08-28 release QEMU filled every spawnable slot, refused idle creation without consuming its retry, freed the fillers and created exactly one idle thread despite two retries; burning the reservation reddened only `a failed idle start can be retried exactly once` with 208/209 |
-| PW-307 | READY | P1 | A zombie progresses only at idle or a later spawn and is bounded rather than deterministically reaped | Give cleanup a bounded progress trigger without reclaiming on the retiring stack | A busy machine that neither idles nor spawns still reaches a steady resource baseline; race/death checks retain safe ordering |
+| PW-307 | DONE | P1 | A zombie progressed only at idle or a later spawn and was bounded rather than deterministically reaped | D-203 makes retirement wake the mandatory service worker, which alternates bounded reclamation with file work and gates ring-3 launch on its readiness | 2026-08-28 release QEMU kept normal work runnable while the worker reclaimed a retired program without another spawn, direct collection or idle halt and restored the exact resource ledger; missing-worker and missing-wake mutations each reddened only that check with 209/210 |
 
 ## Hostile boundary, concurrency and accounting
 
@@ -234,7 +234,7 @@ PW-514 includes these exact stale-current-facing corrections still to make:
 ## Recommended execution order
 
 1. Verify PW-201 on VMware before trusting a polished-kernel claim; PW-100,
-   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200, PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-300, PW-302 and PW-306 are closed by D-185 through D-202.
+   PW-101, PW-102, PW-103, PW-104, PW-105, PW-106, PW-107, PW-109, PW-200, PW-202, PW-203, PW-204, PW-205, PW-206, PW-207, PW-208, PW-209, PW-300, PW-302, PW-306 and PW-307 are closed by D-185 through D-203.
 2. Make spawn, teardown, degraded boot/time and hostile-input paths fail-atomic
    (the remaining P1 rows).
 3. Harden the verification runner first (PW-500 through PW-509), so later

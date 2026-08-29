@@ -715,6 +715,8 @@ pub(crate) enum SpawnError {
     NoExecuteProtection,
     /// No calibrated clock can preempt or complete a timer.
     NoClock,
+    /// No kernel service thread can reclaim the process after exit.
+    NoServiceWorker,
     /// The kernel itself is still running on an unguarded boot stack.
     UnguardedBootStack,
     /// No address space could be built for it.
@@ -747,6 +749,7 @@ impl fmt::Display for SpawnError {
         match self {
             Self::NoExecuteProtection => f.write_str("no execute protection; ring 3 is closed"),
             Self::NoClock => f.write_str("no calibrated clock; ring 3 is closed"),
+            Self::NoServiceWorker => f.write_str("no service worker; ring 3 is closed"),
             Self::UnguardedBootStack => {
                 f.write_str("the boot thread has no guarded stack; ring 3 is closed")
             }
@@ -808,6 +811,9 @@ fn spawn_transaction(
     }
     if !crate::time::is_calibrated() {
         return Err(SpawnError::NoClock);
+    }
+    if !crate::queue::worker_is_ready() {
+        return Err(SpawnError::NoServiceWorker);
     }
     let space = AddressSpace::for_user().map_err(SpawnError::NoSpace)?;
     let mut construction = ProcessConstruction::new(space);
@@ -1080,6 +1086,7 @@ pub(crate) fn last_rites_of(slot: usize) -> Option<LastRites> {
 /// between two arrays does none of those.
 pub(crate) fn orphan(slot: usize) {
     let taken = BOOTSTRAPS.lock_leaf().get_mut(slot).and_then(Option::take);
+    let mut stored = false;
     if let Some(bootstrap) = taken {
         // The record first, while there is still something to read.
         let rites = LastRites {
@@ -1094,12 +1101,16 @@ pub(crate) fn orphan(slot: usize) {
         }
         if let Some(room) = ZOMBIES.lock_leaf().get_mut(slot) {
             *room = Some(bootstrap);
+            stored = true;
         }
     }
     // Cleared, so a slot reused by a later program never finds the previous
     // one's entry point (D-117).
     if let Some(room) = LAUNCHES.lock_leaf().get_mut(slot) {
         *room = None;
+    }
+    if stored {
+        crate::queue::request_reap();
     }
 }
 

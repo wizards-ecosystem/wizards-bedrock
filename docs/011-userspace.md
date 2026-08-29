@@ -944,9 +944,9 @@ Nothing here is a surprise; each is named in the ADR that created it.
   kernel range-checks the base against `USER_END`: a program asking to point
   `fs:` at kernel memory has no reason it could be given.
 - ~~Nothing is reclaimed.~~ **Closed by D-117.** A retired program's resources
-  become a zombie and are collected by the idle thread — which *is* "the
-  machine has nothing better to do" — or by the next spawn, on a machine busy
-  enough never to idle. An address space now remembers its own page tables so
+  become a zombie; D-203 gives deterministic progress by waking the mandatory
+  service worker, while idle and the next spawn remain opportunistic fallback
+  collectors. An address space now remembers its own page tables so
   it can give them back, `bind` borrows rather than consumes so the space
   survives the thread, and the check runs forty programs through sixteen slots
   with the frame count steady. The program's *stack* is still the boot-time
