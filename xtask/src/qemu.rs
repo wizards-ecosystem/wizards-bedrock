@@ -157,6 +157,112 @@ pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
     Ok(())
 }
 
+/// One paused, private QEMU machine owned by a debugger invocation.
+pub(crate) struct DebugMachine {
+    child: Option<Child>,
+    endpoint: String,
+    _vars: RunVars,
+}
+
+impl DebugMachine {
+    /// Start the machine and return the dynamically allocated GDB endpoint.
+    pub(crate) fn start(paths: &Paths, image: &Path) -> Result<Self> {
+        let installation = installation()?;
+        let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
+        let monitor_listener = control_listener("debug monitor")?;
+        let monitor_endpoint = control_endpoint(&monitor_listener, MONITOR_CLIENT_SUFFIX)?;
+
+        let mut child = Command::new(&installation.emulator)
+            .args(MACHINE)
+            .args(["-S", "-display", "none", "-serial", "null", "-no-reboot"])
+            .args(["-monitor", &monitor_endpoint])
+            .args(drive_file(
+                "if=pflash,format=raw,readonly=on",
+                &installation.code_firmware,
+            ))
+            .args(drive_file("if=pflash,format=raw", vars.path()))
+            .args(snapshot_drive_file("format=raw", image))
+            .args(storage(paths.root())?)
+            .spawn()
+            .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
+
+        let endpoint = (|| -> Result<String> {
+            let deadline = Instant::now() + DEBUG_CONTROL_TIMEOUT;
+            let mut monitor = Monitor::accept(&monitor_listener, deadline)
+                .context("accepting the paused machine's monitor")?;
+            monitor
+                .command("gdbserver tcp:127.0.0.1:0\n")
+                .context("starting QEMU's dynamic GDB server")?;
+            let report = monitor
+                .command("info chardev\n")
+                .context("querying QEMU's dynamic GDB endpoint")?;
+            parse_debug_endpoint(&report)
+        })();
+
+        match endpoint {
+            Ok(endpoint) => Ok(Self {
+                child: Some(child),
+                endpoint,
+                _vars: vars,
+            }),
+            Err(error) => {
+                let cleanup = stop_qemu(&mut child);
+                match cleanup {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => {
+                        Err(anyhow!("{error:#}; QEMU cleanup also failed: {cleanup:#}"))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Loopback address for GDB's `target remote` command.
+    pub(crate) fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    /// Stop and reap the machine before its private state is removed.
+    pub(crate) fn stop(&mut self) -> Result<()> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(());
+        };
+        stop_qemu(child)?;
+        self.child = None;
+        Ok(())
+    }
+}
+
+impl Drop for DebugMachine {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = stop_qemu(child);
+        }
+    }
+}
+
+const DEBUG_CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+const DEBUG_ENDPOINT_PREFIX: &str = "tcp:127.0.0.1:";
+
+fn parse_debug_endpoint(report: &str) -> Result<String> {
+    let line = report
+        .lines()
+        .find(|line| line.trim_start().starts_with("gdb:"))
+        .context("QEMU reported no GDB chardev")?;
+    let tail = line
+        .split_once(DEBUG_ENDPOINT_PREFIX)
+        .map(|(_, tail)| tail)
+        .context("QEMU's GDB chardev is not bound to IPv4 loopback")?;
+    let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+    let port = digits
+        .parse::<u16>()
+        .context("QEMU reported an invalid GDB port")?;
+    if port == 0 {
+        bail!("QEMU did not allocate a GDB port");
+    }
+    Ok(format!("127.0.0.1:{port}"))
+}
+
 fn drive_file(options: &str, path: &Path) -> [OsString; 2] {
     let escaped = path.to_string_lossy().replace(',', ",,");
     [
@@ -1568,6 +1674,21 @@ mod tests {
             control_endpoint(&controls.monitor, MONITOR_CLIENT_SUFFIX).unwrap(),
             format!("tcp:{address},server=off")
         );
+    }
+
+    #[test]
+    fn the_debug_endpoint_is_allocated_and_loopback_only() {
+        let report = "#chr072: filename=gdb\ngdb: filename=disconnected:tcp:127.0.0.1:56552,server=on\n(qemu)";
+        assert_eq!(parse_debug_endpoint(report).unwrap(), "127.0.0.1:56552");
+
+        for refused in [
+            "serial0: filename=null",
+            "gdb: filename=disconnected:tcp:0.0.0.0:56552,server=on",
+            "gdb: filename=disconnected:tcp:127.0.0.1:0,server=on",
+            "gdb: filename=disconnected:tcp:127.0.0.1:not-a-port,server=on",
+        ] {
+            assert!(parse_debug_endpoint(refused).is_err(), "accepted {refused}");
+        }
     }
 
     #[test]

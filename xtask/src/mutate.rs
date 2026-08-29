@@ -2988,6 +2988,56 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "qemu::tests::the_c_header_and_the_kernel_agree_about_the_abi",
         },
     },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "    if port == 0 {",
+        replace: "    if false && port == 0 {",
+        breaks: "the debugger accepts QEMU's unallocated port-zero placeholder",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::the_debug_endpoint_is_allocated_and_loopback_only",
+        },
+    },
+    Mutation {
+        file: "xtask/src/debugger.rs",
+        find: "    if identity != GDB_IDENTITY {",
+        replace: "    if false && identity != GDB_IDENTITY {",
+        breaks: "an unreviewed debugger identity becomes part of the supported setup",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "debugger::tests::only_the_reviewed_native_gdb_identity_is_accepted",
+        },
+    },
+    Mutation {
+        file: "xtask/src/debugger.rs",
+        find: "        format!(\"hbreak {ENTRY_SYMBOL}\"),",
+        replace: "        format!(\"break {ENTRY_SYMBOL}\"),",
+        breaks: "the debugger tries to write a software breakpoint before the kernel is mapped",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "debugger::tests::the_debugger_commands_are_entry_first_and_the_proof_is_bounded",
+        },
+    },
+    Mutation {
+        file: "xtask/src/debugger.rs",
+        find: "    if !frame.contains(\"wizard_kernel::kmain\") || !frame.contains(\"wost/src/boot/mod.rs\") {",
+        replace: "    if !frame.contains(\"wizard_kernel::kmain\") && !frame.contains(\"wost/src/boot/mod.rs\") {",
+        breaks: "a backtrace may omit either the entry symbol or its source location",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "debugger::tests::the_debugger_proof_requires_the_entry_marker_symbol_and_source",
+        },
+    },
+    Mutation {
+        file: "xtask/src/cli.rs",
+        find: "        \"debug\" => Ok(Task::Debug(if check {",
+        replace: "        \"debug-disabled\" => Ok(Task::Debug(if check {",
+        breaks: "the documented native debugger command is not runnable",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::every_documented_xtask_invocation_parses",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

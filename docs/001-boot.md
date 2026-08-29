@@ -198,9 +198,9 @@ visible.
 
 ## Open items
 
-- GDB stub debugging (`-s -S`) — wire a `gdb` xtask once we have a
-  debugger story on Windows (gdb isn't installed natively; candidates:
-  lldb, gdb-multiarch via a future decision)
+- ~~GDB stub debugging (`-s -S`)~~ — resolved by D-231: the pinned native
+  WinLibs GDB owns a private paused QEMU run, discovers its dynamic loopback
+  endpoint and has both interactive and bounded-proof `xtask` modes.
 - Limine crate 0.6.x when its nightly requirement lands on stable, or if
   we move to nightly for other reasons
 - ~~Grow `kernel/src/selftest.rs` as Phase 2 lands~~ — done: the phase closed

@@ -52,6 +52,20 @@ cargo xtask help     # every task, including the check tasks below
 QEMU is found at `C:\Program Files\qemu` or on `PATH`; `QEMU_DIR` or `QEMU`
 override that.
 
+Kernel debugging additionally uses the pinned native GDB from WinLibs. The
+batch command proves a clean setup without leaving a VM running; the ordinary
+command opens an interactive prompt at the kernel's `kmain` entry, and quitting
+GDB terminates its private QEMU machine.
+
+```
+winget install --id BrechtSanders.WinLibs.POSIX.UCRT --version 16.1.0-14.0.0-r4 --exact
+cargo xtask debug --check
+cargo xtask debug
+```
+
+Open a fresh terminal after the WinGet install, or set `GDB` to the exact
+`gdb.exe`. The accepted debugger identity is GDB 17.2 from WinLibs r4 (D-231).
+
 ## Development
 
 ```
@@ -95,11 +109,12 @@ Ordered `cargo xtask ci` stages:
 processor with no x2APIC. It requires both refusals, the hardware-free tmpfs and
 devfs surveys, and a steady state rather than a triple fault.
 
-Four tasks are deliberately **not** in `ci`: `model-check` needs TLC and Java,
-`vmware` needs VMware Workstation to boot the result, `mutate` needs one QEMU
-boot per known defect, and `baseline` needs six QEMU boots for descriptive
-measurements rather than correctness. A gate step that fails for want of an
-exceptional tool or a long qualification teaches people to skip the gate.
+Five tasks are deliberately **not** in `ci`: `debug` needs the pinned native
+GDB and is normally interactive, `model-check` needs TLC and Java, `vmware`
+needs VMware Workstation to boot the result, `mutate` needs one QEMU boot per
+known defect, and `baseline` needs six QEMU boots for descriptive measurements
+rather than correctness. A gate step that fails for want of an exceptional
+tool or a long qualification teaches people to skip the gate.
 `model-check` prints the exact resolved Java identity before invoking it;
 `vmware` prints the resolved `vmrun` identity and a fully quoted launch command
 when Workstation is installed, or names that dependency as unavailable without

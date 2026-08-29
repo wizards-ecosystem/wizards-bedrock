@@ -17,6 +17,7 @@ pub mod cargo;
 pub mod cli;
 #[cfg(test)]
 mod contracts;
+mod debugger;
 pub mod decisions;
 pub mod elf;
 mod evidence;
@@ -84,6 +85,7 @@ pub fn run(task: Task) -> Result<()> {
         Task::UpdateSbom => supply_chain::update_spdx(&paths),
         Task::ModelCheck => model::check(&paths),
         Task::Baseline => baseline::check(&paths),
+        Task::Debug(mode) => debugger::run(&paths, mode),
         Task::Mutate => mutate::run(&paths),
         Task::Ci => tasks::ci(&paths),
         Task::Evidence => evidence::create(&paths),

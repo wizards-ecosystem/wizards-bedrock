@@ -39,12 +39,13 @@ QUALIFICATION TASKS:
     evidence          run CI, reproduce the release twice and write its evidence
     verify-evidence   verify the evidence bundle without network access
     baseline          repeat debug/release foundation measurements in QEMU
+    debug             open the debug kernel at kmain in native GDB
 
 ";
 
 const HELP_AFTER_REGISTRY: &str = "\
-NOT IN CI (each needs a tool this project cannot vendor into a Rust build,
-and a gate step that fails for want of one teaches people to skip the gate):
+NOT IN CI (exceptional dependency, interaction, or runtime):
+    debug --check     as above (needs the pinned native GDB)
     model-check       run TLC over the ring models (needs java)
     vmware            as above (needs VMware Workstation to boot the result)
     mutate            break the kernel on purpose, once per known defect, and
@@ -57,7 +58,7 @@ HOUSEKEEPING:
 OPTIONS:
     --release         build optimised (default)
     --debug           build unoptimised
-    --check           fmt only: fail instead of rewriting
+    --check           fmt: do not rewrite; debug: run the bounded setup proof
     --all             clean only: also remove the generated vm/ directory
     --message-format=<FMT>
                       check only: forwarded to cargo
@@ -122,6 +123,8 @@ pub enum Task {
     ModelCheck,
     /// Repeat the fixed-QEMU foundation performance and resource baseline.
     Baseline,
+    /// Open a private paused machine in the supported native debugger.
+    Debug(DebugMode),
     /// Break the kernel on purpose and require the checks to notice.
     Mutate,
     /// Everything CI runs.
@@ -141,6 +144,16 @@ pub enum FmtMode {
     #[default]
     Write,
     /// Leave files alone and fail if any is unformatted.
+    Check,
+}
+
+/// Whether the debugger stays interactive or proves the setup and exits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DebugMode {
+    /// Leave GDB at the kernel entry until the user quits it.
+    #[default]
+    Interactive,
+    /// Hit the entry, require a symbolized backtrace and exit within a deadline.
     Check,
 }
 
@@ -221,6 +234,11 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         "update-sbom" => Ok(Task::UpdateSbom),
         "model-check" => Ok(Task::ModelCheck),
         "baseline" => Ok(Task::Baseline),
+        "debug" => Ok(Task::Debug(if check {
+            DebugMode::Check
+        } else {
+            DebugMode::Interactive
+        })),
         "mutate" => Ok(Task::Mutate),
         "ci" => Ok(Task::Ci),
         "evidence" => Ok(Task::Evidence),
@@ -306,6 +324,14 @@ mod tests {
             Task::Fmt(FmtMode::Check)
         );
         assert_eq!(parse_args(&["fmt"]).unwrap(), Task::Fmt(FmtMode::Write));
+        assert_eq!(
+            parse_args(&["debug", "--check"]).unwrap(),
+            Task::Debug(DebugMode::Check)
+        );
+        assert_eq!(
+            parse_args(&["debug"]).unwrap(),
+            Task::Debug(DebugMode::Interactive)
+        );
         assert_eq!(
             parse_args(&["clean", "--all"]).unwrap(),
             Task::Clean(CleanScope::Everything)
