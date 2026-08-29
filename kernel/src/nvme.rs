@@ -29,6 +29,8 @@ use nvme::{
     Capabilities, Capacity, Command, Completion, DmaState, NAMESPACE_IDENTIFY_BYTES, Namespace,
     NamespaceError, PollLimit, ReadTransfer, TransferError, configuration, register, status,
 };
+#[cfg(feature = "selftest")]
+use wost::arch::current::cpu;
 use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
 use wost::mm::{self, DmaSegment};
 use wost::sync::ThreadLock;
@@ -498,6 +500,30 @@ impl Controller {
         let buffer_bytes = into.len().ok_or(BringUpError::NotReady)?;
         let request = self.validate_read(lba, blocks, buffer_bytes)?;
         self.submit_read(request, into)
+    }
+
+    /// Measure one read which fills the retained DMA buffer.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn measure_buffered_read(&mut self, into: &mut DmaSegment) -> Option<(u64, u64)> {
+        let buffer_bytes = into.len()?;
+        let block_bytes = u64::from(self.block_bytes);
+        if block_bytes == 0 {
+            return None;
+        }
+        let blocks = u32::try_from(
+            (buffer_bytes / block_bytes)
+                .min(self.blocks)
+                .min(u64::from(nvme::MAX_TRANSFER_BLOCKS)),
+        )
+        .ok()?;
+        if blocks == 0 {
+            return None;
+        }
+        let bytes = u64::from(blocks).checked_mul(block_bytes)?;
+        let started = cpu::timestamp();
+        self.read_blocks(0, blocks, into).ok()?;
+        let ticks = cpu::timestamp().checked_sub(started)?;
+        (ticks > 0).then_some((bytes, ticks))
     }
 
     /// Bind raw caller arguments to this namespace before submission.

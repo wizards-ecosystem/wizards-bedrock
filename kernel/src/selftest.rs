@@ -17,7 +17,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::Write;
 use core::hint::spin_loop;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use handle_space::Rights;
 use stack_layout::StackLayout;
@@ -4533,6 +4533,67 @@ fn a_program_drives_its_own_ring() -> bool {
     one_served && asked && answered && exited
 }
 
+/// One real userspace Echo produces a nonzero round-trip measurement.
+fn a_ring_enter_round_trip_is_measurable() -> bool {
+    let faults_before = trap::last_user_fault().count;
+    let Ok(spawned) = user::run_measuring() else {
+        return false;
+    };
+    let Some(rites) = last_rites_for(&spawned, 2_000) else {
+        return false;
+    };
+    let ticks = rites.submitted.offset;
+    let complete = rites.served == 1
+        && rites.submitted.opcode == queue::Opcode::Echo
+        && rites.completed.token == rites.submitted.token
+        && rites.completed.status == queue::STATUS_OK
+        && rites.completed.value == rites.submitted.argument
+        && trap::last_user_fault().count == faults_before;
+    if complete && ticks > 0 {
+        RING_ENTER_TICKS.store(ticks, Ordering::Relaxed);
+        true
+    } else {
+        false
+    }
+}
+
+static RING_ENTER_TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// One real NVMe command fills the driver's whole retained DMA buffer.
+fn a_full_buffer_nvme_read_is_measurable() -> bool {
+    let Some((bytes, ticks)) =
+        nvme::with_controller(|controller, buffer| controller.measure_buffered_read(buffer))
+            .flatten()
+    else {
+        return false;
+    };
+    STORAGE_BYTES.store(bytes, Ordering::Relaxed);
+    STORAGE_TICKS.store(ticks, Ordering::Relaxed);
+    bytes == PAGE_SIZE && ticks > 0
+}
+
+static STORAGE_BYTES: AtomicU64 = AtomicU64::new(0);
+static STORAGE_TICKS: AtomicU64 = AtomicU64::new(0);
+static SELFTEST_STARTED_NS: AtomicU64 = AtomicU64::new(0);
+
+fn report_baseline() {
+    let resources = spawn_resources();
+    info!(
+        "selftest: baseline v1 boot_ns={} frames_free={} heap_slab={} heap_large={} heap_live={} handles_committed={} handles_live={} trap_ticks={} storage_bytes={} storage_ticks={} counter_hz={}",
+        SELFTEST_STARTED_NS.load(Ordering::Relaxed),
+        resources.frames,
+        resources.heap.slab_frames,
+        resources.heap.large_frames,
+        resources.heap.live,
+        resources.arena.0,
+        resources.arena.1,
+        RING_ENTER_TICKS.load(Ordering::Relaxed),
+        STORAGE_BYTES.load(Ordering::Relaxed),
+        STORAGE_TICKS.load(Ordering::Relaxed),
+        time::counter_hz()
+    );
+}
+
 /// A program duplicates its bootstrap handle through a real ring-3 trap.
 ///
 /// This is the allocation edge D-182 closes. Kernel-thread queue checks cannot
@@ -7348,7 +7409,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
-const EXPECTED_CHECKS: usize = 213;
+const EXPECTED_CHECKS: usize = 215;
 
 impl Report {
     const fn new() -> Self {
@@ -7378,6 +7439,7 @@ impl Report {
 
 /// Run every check and hand the verdict to the harness.
 pub(crate) fn run(serial: Result<(), UartError>) {
+    SELFTEST_STARTED_NS.store(time::now_ns(), Ordering::Relaxed);
     let mut report = Report::new();
     let geometry = dev::console_geometry();
 
@@ -7779,6 +7841,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a program drives its own ring",
         a_program_drives_its_own_ring(),
+    );
+    report.check(
+        "a ring enter round trip is measurable",
+        a_ring_enter_round_trip_is_measurable(),
     );
     report.check(
         "a program duplicates its bootstrap handle",
@@ -8298,11 +8364,18 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_scroll_leaves_no_cursor_behind(),
     );
 
+    report.check(
+        "a full-buffer nvme read is measurable",
+        a_full_buffer_nvme_read_is_measurable(),
+    );
+
     // Last of all: the timeout proof resets the only storage controller.
     report.check(
         "an nvme timeout quiesces before dma memory returns",
         an_nvme_timeout_quiesces_before_dma_memory_returns(),
     );
+
+    report_baseline();
 
     let checked = report.passed + report.failed;
     let passed = report.failed == 0 && checked == EXPECTED_CHECKS && EXPECTED_CHECKS > 0;

@@ -95,15 +95,22 @@ Ordered `cargo xtask ci` stages:
 processor with no x2APIC. It requires both refusals, the hardware-free tmpfs and
 devfs surveys, and a steady state rather than a triple fault.
 
-Three tasks are deliberately **not** in `ci`, each because it needs a tool this
-project cannot vendor into a Rust build: `model-check` (TLC, needs Java),
-`vmware` (needs VMware Workstation to boot the result), and `mutate` (one QEMU
-boot per known defect, which is minutes rather than seconds). A gate step that
-fails for want of a tool teaches people to skip the gate. `model-check` prints
-the exact resolved Java identity before invoking it; `vmware` prints the
-resolved `vmrun` identity and a fully quoted launch command when Workstation is
-installed, or names that dependency as unavailable without blocking VM
-generation (D-218).
+Four tasks are deliberately **not** in `ci`: `model-check` needs TLC and Java,
+`vmware` needs VMware Workstation to boot the result, `mutate` needs one QEMU
+boot per known defect, and `baseline` needs six QEMU boots for descriptive
+measurements rather than correctness. A gate step that fails for want of an
+exceptional tool or a long qualification teaches people to skip the gate.
+`model-check` prints the exact resolved Java identity before invoking it;
+`vmware` prints the resolved `vmrun` identity and a fully quoted launch command
+when Workstation is installed, or names that dependency as unavailable without
+blocking VM generation (D-218).
+
+`cargo xtask baseline` builds the fixed-QEMU self-test image once in release
+and debug modes, then boots each three times. It requires a clean ordinary
+self-test verdict while enforcing reviewed bands for image size, unsafe count,
+boot time, retained frame/heap/handle state, one real ring-3 trap round trip and
+one full-buffer NVMe read. The reported variance is a regression alarm for this
+emulated development machine, not a hardware benchmark or ABI promise (D-230).
 
 `mutate` requires a clean `HEAD` and writes only to a locked, journalled copy
 under `target/mutate/`, with its own build directory. An interrupted sweep

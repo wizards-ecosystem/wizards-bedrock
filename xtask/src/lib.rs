@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod baseline;
 pub mod boundary;
 pub mod cargo;
 pub mod cli;
@@ -82,6 +83,7 @@ pub fn run(task: Task) -> Result<()> {
         Task::SupplyChain => supply_chain::verify(&paths),
         Task::UpdateSbom => supply_chain::update_spdx(&paths),
         Task::ModelCheck => model::check(&paths),
+        Task::Baseline => baseline::check(&paths),
         Task::Mutate => mutate::run(&paths),
         Task::Ci => tasks::ci(&paths),
         Task::Evidence => evidence::create(&paths),

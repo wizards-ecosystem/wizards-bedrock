@@ -2308,8 +2308,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Machine checks | 213 |",
-        replace: "| Machine checks | 212 |",
+        find: "| Machine checks | 215 |",
+        replace: "| Machine checks | 214 |",
         breaks: "the current documentation count disagrees with the machine oracle",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -2932,6 +2932,60 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::HostTest {
             package: "xtask",
             name: "model::tests::a_missing_model_checker_points_to_its_vendoring_instructions",
+        },
+    },
+    Mutation {
+        file: "kernel/src/user.rs",
+        find: "    spawn(\"user-baseline\", 8, MEASURE)",
+        replace: "    spawn(\"user-baseline\", 8, 0)",
+        breaks: "the ring boundary baseline never enables its timestamp witness",
+        reddens: Caught::Check("a ring enter round trip is measurable"),
+    },
+    Mutation {
+        file: "kernel/src/nvme.rs",
+        find: "        self.read_blocks(0, blocks, into).ok()?;",
+        replace: "        self.read_blocks(self.blocks, blocks, into).ok()?;",
+        breaks: "the storage baseline never submits inside the namespace",
+        reddens: Caught::Check("a full-buffer nvme read is measurable"),
+    },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "        if fields.next().is_some() {\n            bail!(\"trailing fields in foundation baseline\");\n        }",
+        replace: "        if false && fields.next().is_some() {\n            bail!(\"trailing fields in foundation baseline\");\n        }",
+        breaks: "a performance record can append unversioned fields",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::baseline_record_is_versioned_ordered_and_unique",
+        },
+    },
+    Mutation {
+        file: "xtask/src/baseline.rs",
+        find: "        if value >= self.minimum && value <= self.maximum {",
+        replace: "        if value >= self.minimum || value <= self.maximum {",
+        breaks: "a performance threshold has no lower or upper side",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "baseline::tests::baseline_math_and_bands_are_two_sided",
+        },
+    },
+    Mutation {
+        file: "xtask/src/cli.rs",
+        find: "        \"baseline\" => Ok(Task::Baseline),",
+        replace: "        \"baseline-disabled\" => Ok(Task::Baseline),",
+        breaks: "the documented foundation baseline command is not runnable",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::every_documented_xtask_invocation_parses",
+        },
+    },
+    Mutation {
+        file: "xtask/src/image/program.rs",
+        find: "    code.extend_from_slice(&[0x41, 0xB8, 1, 0, 0, 0]); // mov r8d, 1",
+        replace: "    code.extend_from_slice(&[0x41, 0xB8, 0, 0, 0, 0]); // mov r8d, 0",
+        breaks: "the measured ring behaviour never arms its timestamp path",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::the_c_header_and_the_kernel_agree_about_the_abi",
         },
     },
 ];

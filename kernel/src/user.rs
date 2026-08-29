@@ -1595,6 +1595,12 @@ pub(crate) fn run_for_bootstrap() -> Result<Spawned, SpawnError> {
     spawn("user-bootstrap", 3, BEHAVE)
 }
 
+/// A child which measures one real Echo call across the ring-3 gate.
+#[cfg(feature = "selftest")]
+pub(crate) fn run_measuring() -> Result<Spawned, SpawnError> {
+    spawn("user-baseline", 8, MEASURE)
+}
+
 /// A seventh, which duplicates its bootstrap channel through its own ring.
 #[cfg(feature = "selftest")]
 pub(crate) fn run_duplicating() -> Result<Spawned, SpawnError> {
@@ -1671,6 +1677,10 @@ const DUPLICATE: u64 = 3;
 /// The argument that makes it submit a Timer and enter `RingWait`.
 #[cfg(feature = "selftest")]
 const WAIT: u64 = 4;
+
+/// The argument that brackets Echo's RingEnter with timestamp reads.
+#[cfg(feature = "selftest")]
+const MEASURE: u64 = 5;
 
 /// The next child reaching [`cross`] must wait for the machine check.
 #[cfg(feature = "selftest")]

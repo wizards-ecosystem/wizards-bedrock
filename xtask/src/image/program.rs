@@ -17,7 +17,7 @@ use elf64::{HEADER_BYTES, PROGRAM_HEADER_BYTES};
 /// Where the program is linked, and where the kernel maps it.
 pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 
-/// The program: validate its entry block, then choose one of six behaviours.
+/// The program: validate its entry block, then choose one of seven behaviours.
 ///
 /// ```text
 ///   59                       pop rcx                     ; entry ABI version
@@ -34,7 +34,8 @@ pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 ///   31 c0                    xor eax, eax
 ///   cd 80                    int 0x80
 /// ring-kind:
-///   ...                      zero selects Echo; three Duplicate; four Timer
+///   ...                      zero selects Echo; three Duplicate; four Timer;
+///                            five times Echo across the real trap boundary
 /// ring:
 ///   9c                       pushfq
 ///   48 81 0c 24 00 00 04 00  or qword ptr [rsp], 0x40000 ; set AC, bit 18
@@ -66,9 +67,10 @@ pub const LOAD_ADDRESS: u64 = 0x0000_4000_0000_0000;
 ///   eb fe                    jmp .
 /// ```
 ///
-/// Six behaviours from one image, chosen by the versioned entry block the
+/// Seven behaviours from one image, chosen by the versioned entry block the
 /// kernel writes with `copy_to_user`: Echo, Duplicate, Timer plus RingWait, a
-/// jump into the kernel half, an unserved call, and a deliberate fault.
+/// measured Echo, a jump into the kernel half, an unserved call, and a
+/// deliberate fault.
 /// Duplicate is the first to
 /// consume the numeric bootstrap handle and proves that a trap-served
 /// authority result reaches its prepaid arena slot without allocating
@@ -152,6 +154,7 @@ fn code() -> Vec<u8> {
 
     let choose_ring_kind = code.len();
     patch(&mut code, not_probing, choose_ring_kind);
+    code.extend_from_slice(&[0x45, 0x31, 0xC0]); // xor r8d, r8d
     code.extend_from_slice(&[0x48, 0x85, 0xC0]); // test rax, rax
     let not_echoing = branch(&mut code, 0x75); // jne duplicate selector
     code.extend_from_slice(&[0x31, 0xFF]); // xor edi, edi
@@ -168,10 +171,18 @@ fn code() -> Vec<u8> {
     let choose_timer = code.len();
     patch(&mut code, not_duplicating, choose_timer);
     code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x04]); // cmp rax, 4
-    let unknown_behaviour = branch(&mut code, 0x75); // jne die
+    let not_waiting = branch(&mut code, 0x75); // jne benchmark selector
     code.extend_from_slice(&[0xBF]); // mov edi, 2
     code.extend_from_slice(&2u32.to_le_bytes());
     let waiting = branch(&mut code, 0xEB); // jmp ring
+
+    let choose_benchmark = code.len();
+    patch(&mut code, not_waiting, choose_benchmark);
+    code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x05]); // cmp rax, 5
+    let unknown_behaviour = branch(&mut code, 0x75); // jne die
+    code.extend_from_slice(&[0x31, 0xFF]); // xor edi, edi
+    code.extend_from_slice(&[0x41, 0xB8, 1, 0, 0, 0]); // mov r8d, 1
+    let benchmarking = branch(&mut code, 0xEB); // jmp ring
 
     let early_die = code.len();
     patch(&mut code, wrong_version, early_die);
@@ -183,6 +194,7 @@ fn code() -> Vec<u8> {
     patch(&mut code, echoing, ring);
     patch(&mut code, duplicating, ring);
     patch(&mut code, waiting, ring);
+    patch(&mut code, benchmarking, ring);
     code.extend_from_slice(&[0x9C]); // pushfq
     code.extend_from_slice(&[0x48, 0x81, 0x0C, 0x24, 0x00, 0x00, 0x04, 0x00]);
     code.extend_from_slice(&[0x9D]); // popfq
@@ -243,7 +255,17 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&[0xC7, 0x43, SUBMISSION_TAIL_AT]);
     code.extend_from_slice(&1u32.to_le_bytes());
 
+    // The fifth behaviour brackets the actual user/kernel round trip. `r10d`
+    // is restored by the trap frame; subtraction in 32 bits preserves a short
+    // interval even when the low half of TSC wraps.
+    code.extend_from_slice(&[0x45, 0x85, 0xC0]); // test r8d, r8d
+    let ordinary_ring_enter = branch(&mut code, 0x74); // jz ring enter
+    code.extend_from_slice(&[0x0F, 0xAE, 0xE8, 0x0F, 0x31]); // lfence; rdtsc
+    code.extend_from_slice(&[0x41, 0x89, 0xC2]); // mov r10d, eax
+
     // Ring the doorbell.
+    let ring_enter = code.len();
+    patch(&mut code, ordinary_ring_enter, ring_enter);
     code.extend_from_slice(&[0xB8]); // mov eax, imm32
     code.extend_from_slice(&RING_ENTER.to_le_bytes());
     code.extend_from_slice(&[0xCD, 0x80]); // int 0x80
@@ -263,9 +285,18 @@ fn code() -> Vec<u8> {
     code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x01]); // cmp rax, 1
     let served = branch(&mut code, 0x75); // jne die
 
+    code.extend_from_slice(&[0x45, 0x85, 0xC0]); // test r8d, r8d
+    let not_benchmarking = branch(&mut code, 0x74); // jz timer decision
+    code.extend_from_slice(&[0x0F, 0xAE, 0xE8, 0x0F, 0x31]); // lfence; rdtsc
+    code.extend_from_slice(&[0x44, 0x29, 0xD0]); // sub eax, r10d
+    code.extend_from_slice(&[0x89, 0x83]); // mov dword [rbx+disp32], eax
+    code.extend_from_slice(&(SUBMISSIONS_AT + 16).to_le_bytes());
+
     // Acquire the kernel's publication before reading its completion. A plain
     // aligned `mov` is an acquire load on x86-64; the ABI still requires the
     // portable Wizzy runtime to express the operation as acquire (D-221).
+    let acquire_completion = code.len();
+    patch(&mut code, not_benchmarking, acquire_completion);
     code.extend_from_slice(&[0x8B, 0x43, COMPLETION_TAIL_AT]);
     code.extend_from_slice(&[0x83, 0xF8, 0x01]); // cmp eax, 1
     let completion_published = branch(&mut code, 0x75); // jne die
@@ -522,8 +553,8 @@ mod tests {
             ],
             "pop rcx; cmp rcx, 1; jne die; pop rax; pop rsi; test rax, rax"
         );
-        // Six behaviours: Echo, Duplicate, Timer+Wait, an unserved call, a
-        // deliberate fault, and a jump to a supplied kernel-half address.
+        // Seven behaviours: Echo, Duplicate, Timer+Wait, measured Echo, an
+        // unserved call, a deliberate fault, and a supplied kernel-half jump.
         assert_eq!(code[12], 0x78, "js leap");
         assert!(
             code.windows(4)
@@ -539,6 +570,11 @@ mod tests {
             code.windows(4)
                 .any(|bytes| bytes == [0x48, 0x83, 0xF8, 0x04]),
             "cmp rax, 4"
+        );
+        assert!(
+            code.windows(4)
+                .any(|bytes| bytes == [0x48, 0x83, 0xF8, 0x05]),
+            "cmp rax, 5"
         );
         // And the leap itself, which is what makes the argument an address.
         assert!(code.windows(2).any(|pair| pair == [0xFF, 0xE0]), "jmp rax");
@@ -594,6 +630,23 @@ mod tests {
             code.windows(11)
                 .any(|bytes| { bytes == [0x48, 0xC7, 0x83, 0x18, 0x10, 0, 0, 0, 1, 0, 0] }),
             "mov qword [rbx+0x1018], READ"
+        );
+        assert!(
+            code.windows(6)
+                .any(|bytes| bytes == [0x41, 0xB8, 1, 0, 0, 0]),
+            "mov r8d, measured"
+        );
+        assert_eq!(
+            code.windows(5)
+                .filter(|bytes| *bytes == [0x0F, 0xAE, 0xE8, 0x0F, 0x31])
+                .count(),
+            2,
+            "two fenced timestamp reads bracket RingEnter"
+        );
+        assert!(
+            code.windows(6)
+                .any(|bytes| bytes == [0x89, 0x83, 0x10, 0x10, 0, 0]),
+            "mov dword [rbx+0x1010], eax"
         );
         assert!(
             code.windows(7)

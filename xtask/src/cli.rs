@@ -38,6 +38,7 @@ CHECK TASKS:
 QUALIFICATION TASKS:
     evidence          run CI, reproduce the release twice and write its evidence
     verify-evidence   verify the evidence bundle without network access
+    baseline          repeat debug/release foundation measurements in QEMU
 
 ";
 
@@ -119,6 +120,8 @@ pub enum Task {
     UpdateSbom,
     /// Check the queue protocol's TLA+ model.
     ModelCheck,
+    /// Repeat the fixed-QEMU foundation performance and resource baseline.
+    Baseline,
     /// Break the kernel on purpose and require the checks to notice.
     Mutate,
     /// Everything CI runs.
@@ -217,6 +220,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         "verify-vendor" => Ok(Task::VerifyVendor),
         "update-sbom" => Ok(Task::UpdateSbom),
         "model-check" => Ok(Task::ModelCheck),
+        "baseline" => Ok(Task::Baseline),
         "mutate" => Ok(Task::Mutate),
         "ci" => Ok(Task::Ci),
         "evidence" => Ok(Task::Evidence),

@@ -384,7 +384,10 @@ const SELFTEST_VERDICT_VERSION: &str = "v1";
 /// is a thing you do inside a fix and the table is a different file. This line
 /// and its twin in `kernel/src/selftest.rs` are the two you have to touch
 /// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 213;
+const EXPECTED_SELFTEST_CHECKS: usize = 215;
+
+/// Prefix of the strict performance/resource record emitted by self-test.
+const BASELINE_PREFIX: &str = "selftest: baseline ";
 
 /// The worker has submitted an NVMe command but remains preemptible.
 const STORAGE_DELAY_MARKER: &str = "selftest: awaiting storage-delay keystroke";
@@ -451,9 +454,26 @@ struct SelftestVerdict {
     expected: usize,
 }
 
+/// One guest-side foundation measurement from a clean self-test boot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PerformanceSample {
+    pub(crate) boot_ns: u64,
+    pub(crate) frames_free: u64,
+    pub(crate) heap_slab: u64,
+    pub(crate) heap_large: u64,
+    pub(crate) heap_live: u64,
+    pub(crate) handles_committed: u64,
+    pub(crate) handles_live: u64,
+    pub(crate) trap_ticks: u64,
+    pub(crate) storage_bytes: u64,
+    pub(crate) storage_ticks: u64,
+    pub(crate) counter_hz: u64,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 struct SerialObservation {
     verdict: Option<SelftestVerdict>,
+    baseline: Option<PerformanceSample>,
     /// Names of the checks that reported `FAILED`, in the order printed.
     ///
     /// Recorded so a failure can say *which* check went red rather than only
@@ -542,6 +562,42 @@ fn parse_verdict_count(field: Option<&str>, name: &str) -> Result<usize> {
         .context("invalid self-test verdict count")
 }
 
+fn parse_baseline_value(field: Option<&str>, name: &str) -> Result<u64> {
+    field
+        .and_then(|field| field.strip_prefix(name))
+        .with_context(|| format!("missing baseline field {name}"))?
+        .parse()
+        .with_context(|| format!("invalid baseline field {name}"))
+}
+
+fn parse_performance_sample(line: &str) -> Option<Result<PerformanceSample>> {
+    let start = line.find(BASELINE_PREFIX)?;
+    let mut fields = line[start + BASELINE_PREFIX.len()..].split_whitespace();
+    let parsed = (|| {
+        if fields.next() != Some("v1") {
+            bail!("unsupported foundation baseline version");
+        }
+        let sample = PerformanceSample {
+            boot_ns: parse_baseline_value(fields.next(), "boot_ns=")?,
+            frames_free: parse_baseline_value(fields.next(), "frames_free=")?,
+            heap_slab: parse_baseline_value(fields.next(), "heap_slab=")?,
+            heap_large: parse_baseline_value(fields.next(), "heap_large=")?,
+            heap_live: parse_baseline_value(fields.next(), "heap_live=")?,
+            handles_committed: parse_baseline_value(fields.next(), "handles_committed=")?,
+            handles_live: parse_baseline_value(fields.next(), "handles_live=")?,
+            trap_ticks: parse_baseline_value(fields.next(), "trap_ticks=")?,
+            storage_bytes: parse_baseline_value(fields.next(), "storage_bytes=")?,
+            storage_ticks: parse_baseline_value(fields.next(), "storage_ticks=")?,
+            counter_hz: parse_baseline_value(fields.next(), "counter_hz=")?,
+        };
+        if fields.next().is_some() {
+            bail!("trailing fields in foundation baseline");
+        }
+        Ok(sample)
+    })();
+    Some(parsed)
+}
+
 fn observe_selftest_line(observation: &mut SerialObservation, line: &str) -> Result<()> {
     if let Some(panic) = &mut observation.panic {
         panic.push('\n');
@@ -554,6 +610,13 @@ fn observe_selftest_line(observation: &mut SerialObservation, line: &str) -> Res
     }
     if let Some(name) = parse_failed_check(line) {
         observation.failed.push(name.to_string());
+        return Ok(());
+    }
+    if let Some(sample) = parse_performance_sample(line) {
+        let sample = sample?;
+        if observation.baseline.replace(sample).is_some() {
+            bail!("the self-test kernel printed more than one foundation baseline");
+        }
         return Ok(());
     }
     let Some(verdict) = parse_selftest_verdict(line) else {
@@ -759,6 +822,26 @@ pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()
 /// Boot `image` headless and preserve a valid red or panic outcome for a
 /// mutation caller.
 pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<SelftestOutcome> {
+    observe_selftest_run(paths, image, timeout, true).map(|(outcome, _)| outcome)
+}
+
+/// Boot a self-test image and require its one versioned baseline record.
+pub(crate) fn measure_performance(
+    paths: &Paths,
+    image: &Path,
+    timeout: Duration,
+) -> Result<PerformanceSample> {
+    let (outcome, baseline) = observe_selftest_run(paths, image, timeout, false)?;
+    require_selftest(outcome)?;
+    baseline.context("a clean self-test boot emitted no foundation baseline")
+}
+
+fn observe_selftest_run(
+    paths: &Paths,
+    image: &Path,
+    timeout: Duration,
+    echo_serial: bool,
+) -> Result<(SelftestOutcome, Option<PerformanceSample>)> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
     let ControlSockets { qmp, monitor } = ControlSockets::bind()?;
@@ -793,6 +876,7 @@ pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Resul
         Arc::clone(&markers_seen),
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
+        echo_serial,
     );
     let deadline = Instant::now() + timeout;
     let injection_cancelled = Arc::new(AtomicBool::new(false));
@@ -812,7 +896,8 @@ pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Resul
             stop_qemu(&mut child)?;
             let observation = finish_selftest_serial(forwarder)?;
             finish_injector(injector, &injection_cancelled)?;
-            return correlate_selftest(None, observation);
+            let baseline = observation.baseline;
+            return correlate_selftest(None, observation).map(|outcome| (outcome, baseline));
         }
         if serial_failed.load(Ordering::Acquire) {
             stop_qemu(&mut child)?;
@@ -837,7 +922,8 @@ pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Resul
     let observation = finish_selftest_serial(forwarder)?;
     finish_injector(injector, &injection_cancelled)?;
 
-    correlate_selftest(status.code(), observation)
+    let baseline = observation.baseline;
+    correlate_selftest(status.code(), observation).map(|outcome| (outcome, baseline))
 }
 
 fn require_selftest(outcome: SelftestOutcome) -> Result<()> {
@@ -862,6 +948,7 @@ fn forward_serial(
     markers_seen: Arc<AtomicUsize>,
     panicked: Arc<AtomicBool>,
     serial_failed: Arc<AtomicBool>,
+    echo: bool,
 ) -> JoinHandle<Result<SerialObservation>> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
@@ -879,15 +966,17 @@ fn forward_serial(
             if read == 0 {
                 return Ok(observation);
             }
-            // One print per line, so a message from another thread cannot
-            // land between a dying kernel's last words and their newline.
             let text = String::from_utf8_lossy(&line);
-            if text.ends_with('\n') {
-                print!("{text}");
-            } else {
-                println!("{text}");
+            if echo {
+                // One print per line, so a message from another thread cannot
+                // land between a dying kernel's last words and their newline.
+                if text.ends_with('\n') {
+                    print!("{text}");
+                } else {
+                    println!("{text}");
+                }
+                let _ = std::io::stdout().flush();
             }
-            let _ = std::io::stdout().flush();
             if text.contains(STORAGE_DELAY_MARKER)
                 || text.contains(READY_MARKER)
                 || text.contains(TRANSLATED_MARKER)
@@ -1617,6 +1706,42 @@ mod tests {
         );
     }
 
+    fn baseline_line() -> &'static str {
+        "[info ] selftest: baseline v1 boot_ns=11 frames_free=12 heap_slab=13 heap_large=14 heap_live=15 handles_committed=16 handles_live=17 trap_ticks=18 storage_bytes=4096 storage_ticks=19 counter_hz=20\r\n"
+    }
+
+    #[test]
+    fn baseline_record_is_versioned_ordered_and_unique() {
+        assert_eq!(
+            parse_performance_sample(baseline_line()).unwrap().unwrap(),
+            PerformanceSample {
+                boot_ns: 11,
+                frames_free: 12,
+                heap_slab: 13,
+                heap_large: 14,
+                heap_live: 15,
+                handles_committed: 16,
+                handles_live: 17,
+                trap_ticks: 18,
+                storage_bytes: 4096,
+                storage_ticks: 19,
+                counter_hz: 20,
+            }
+        );
+        for line in [
+            baseline_line().replace("v1", "v2"),
+            baseline_line().replace("boot_ns=11 frames_free=12", "frames_free=12 boot_ns=11"),
+            baseline_line().replace(" counter_hz=20", ""),
+            format!("{} trailing=true", baseline_line().trim_end()),
+        ] {
+            assert!(parse_performance_sample(&line).unwrap().is_err(), "{line}");
+        }
+
+        let mut observation = SerialObservation::default();
+        observe_selftest_line(&mut observation, baseline_line()).unwrap();
+        assert!(observe_selftest_line(&mut observation, baseline_line()).is_err());
+    }
+
     #[test]
     fn a_panic_outcome_carries_its_exact_serial_transcript() {
         let line = "[error] KERNEL PANIC on thread 'boot': panicked at source\r";
@@ -1639,6 +1764,7 @@ mod tests {
                 failed: 1,
                 expected: EXPECTED_SELFTEST_CHECKS,
             }),
+            baseline: None,
             failed: Vec::new(),
             panic: None,
         };
@@ -1674,6 +1800,7 @@ mod tests {
         let observation = SerialObservation {
             failed: Vec::new(),
             verdict: Some(passing_verdict()),
+            baseline: None,
             panic: None,
         };
         assert!(correlate_selftest(Some(SELFTEST_PASSED), observation).is_ok());
@@ -1681,6 +1808,7 @@ mod tests {
         let observation = SerialObservation {
             failed: Vec::new(),
             verdict: Some(passing_verdict()),
+            baseline: None,
             panic: None,
         };
         let error = correlate_selftest(Some(SELFTEST_FAILED), observation).unwrap_err();
@@ -1698,6 +1826,7 @@ mod tests {
                     failed: 0,
                     expected: EXPECTED_SELFTEST_CHECKS,
                 }),
+                baseline: None,
                 panic: None,
             };
             let error = correlate_selftest(Some(SELFTEST_PASSED), observation).unwrap_err();
@@ -1714,6 +1843,7 @@ mod tests {
                 passed: EXPECTED_SELFTEST_CHECKS - 1,
                 ..passing_verdict()
             }),
+            baseline: None,
             panic: None,
         };
         let error = correlate_selftest(Some(SELFTEST_PASSED), observation).unwrap_err();
@@ -1728,6 +1858,7 @@ mod tests {
                 status: VerdictStatus::Fail,
                 ..passing_verdict()
             }),
+            baseline: None,
             panic: None,
         };
         let error = correlate_selftest(Some(SELFTEST_FAILED), observation).unwrap_err();
@@ -3247,6 +3378,13 @@ mod tests {
         reads32: Vec<u32>,
         reads64: Vec<u32>,
         eax_imm8_comparisons: Vec<u8>,
+        r8d_immediates: Vec<u32>,
+        writes32_from_eax: Vec<u32>,
+        fenced_timestamp_reads: usize,
+        r8d_zeroes: usize,
+        r8d_zero_tests: usize,
+        r10d_timestamp_captures: usize,
+        timestamp_subtractions: usize,
         ecx_zero_tests: usize,
         rcx_zero_tests: usize,
         ecx_esi_comparisons: usize,
@@ -3273,6 +3411,13 @@ mod tests {
             reads32: Vec::new(),
             reads64: Vec::new(),
             eax_imm8_comparisons: Vec::new(),
+            r8d_immediates: Vec::new(),
+            writes32_from_eax: Vec::new(),
+            fenced_timestamp_reads: 0,
+            r8d_zeroes: 0,
+            r8d_zero_tests: 0,
+            r10d_timestamp_captures: 0,
+            timestamp_subtractions: 0,
             ecx_zero_tests: 0,
             rcx_zero_tests: 0,
             ecx_esi_comparisons: 0,
@@ -3345,6 +3490,9 @@ mod tests {
             } else if rest.starts_with(&[0x89, 0xB3]) {
                 operands.writes32_from_esi.push(immediate32(2));
                 6
+            } else if rest.starts_with(&[0x89, 0x83]) {
+                operands.writes32_from_eax.push(immediate32(2));
+                6
             } else if rest.starts_with(&[0x48, 0x81, 0x0C, 0x24]) {
                 8
             } else if rest.starts_with(&[0x48, 0x8B, 0x8B]) {
@@ -3373,6 +3521,9 @@ mod tests {
             } else if rest.starts_with(&[0xB8]) {
                 operands.eax_immediates.push(immediate32(1));
                 5
+            } else if rest.starts_with(&[0x41, 0xB8]) {
+                operands.r8d_immediates.push(immediate32(2));
+                6
             } else if rest.starts_with(&[0xBF]) {
                 5
             } else if rest.starts_with(&[0x48, 0x83, 0xF8]) {
@@ -3391,6 +3542,21 @@ mod tests {
                 3
             } else if rest.starts_with(&[0x48, 0x85, 0xC0]) || rest.starts_with(&[0x48, 0x39, 0xD1])
             {
+                3
+            } else if rest.starts_with(&[0x45, 0x31, 0xC0]) {
+                operands.r8d_zeroes += 1;
+                3
+            } else if rest.starts_with(&[0x45, 0x85, 0xC0]) {
+                operands.r8d_zero_tests += 1;
+                3
+            } else if rest.starts_with(&[0x0F, 0xAE, 0xE8, 0x0F, 0x31]) {
+                operands.fenced_timestamp_reads += 1;
+                5
+            } else if rest.starts_with(&[0x41, 0x89, 0xC2]) {
+                operands.r10d_timestamp_captures += 1;
+                3
+            } else if rest.starts_with(&[0x44, 0x29, 0xD0]) {
+                operands.timestamp_subtractions += 1;
                 3
             } else if rest.starts_with(&[0x31, 0xC0])
                 || rest.starts_with(&[0x31, 0xFF])
@@ -4866,6 +5032,36 @@ const LIVE: u32 = 7;
             operands.writes32_from_esi,
             [entries_at + submission_layout["HANDLE"] as u32],
             "the emitted program does not submit the bootstrap handle from its entry block"
+        );
+        assert_eq!(
+            operands.r8d_zeroes, 1,
+            "the emitted program does not default to ordinary ring service"
+        );
+        assert_eq!(
+            operands.r8d_immediates,
+            [1],
+            "the measured behaviour does not arm its timestamp path"
+        );
+        assert_eq!(
+            operands.r8d_zero_tests, 2,
+            "the measurement selector does not guard both timestamp reads"
+        );
+        assert_eq!(
+            operands.fenced_timestamp_reads, 2,
+            "the real RingEnter is not bracketed by two fenced timestamp reads"
+        );
+        assert_eq!(
+            operands.r10d_timestamp_captures, 1,
+            "the first timestamp is not retained across RingEnter"
+        );
+        assert_eq!(
+            operands.timestamp_subtractions, 1,
+            "the second timestamp is not reduced to the round-trip delta"
+        );
+        assert_eq!(
+            operands.writes32_from_eax,
+            [entries_at + submission_layout["OFFSET"] as u32],
+            "the measured delta does not use the consumed submission's offset field"
         );
         let duplicate_rights = u32::try_from(declared_macros["WIZ_RIGHT_READ"])
             .expect("Channel READ fits in the emitted imm32");
