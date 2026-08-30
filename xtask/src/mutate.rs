@@ -1511,6 +1511,36 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "vmware::tests::the_vmx_boots_efi_and_logs_serial_to_a_file",
         },
     },
+    Mutation {
+        file: "libs/memory-map/src/lib.rs",
+        find: "                reach = Some(reach.map_or(region.end(), |far: u64| far.max(region.end())));",
+        replace: "                reach = Some(reach.unwrap_or(region.end()));",
+        breaks: "coverage advances by every region holding the cursor, not the first listed",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::overlapping_regions_answer_the_same_in_either_order",
+        },
+    },
+    Mutation {
+        file: "libs/memory-map/src/lib.rs",
+        find: "                (region.end() >= end && self.covers_memory(base, end)).then_some(base)",
+        replace: "                (region.end() >= end).then_some(base)",
+        breaks: "a named memory run is one the coverage contract also calls memory",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::a_named_memory_run_is_memory_by_the_other_contract",
+        },
+    },
+    Mutation {
+        file: "libs/memory-map/src/lib.rs",
+        find: "            .fold(0u64, |total, region| total.saturating_add(region.len))",
+        replace: "            .map(|region| region.len)\n            .sum()",
+        breaks: "the allocatable total saturates rather than wrapping past the space",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::an_allocatable_total_saturates_rather_than_wrapping",
+        },
+    },
     // Treat an unverified stop as a verified one. A fake device completes
     // later, after the allocator would already have been allowed to reuse the
     // command's memory.

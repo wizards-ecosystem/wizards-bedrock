@@ -118,6 +118,19 @@ pub struct MemoryRegion {
     pub kind: MemoryKind,
 }
 
+impl MemoryRegion {
+    /// One past the last physical byte, saturating rather than wrapping.
+    ///
+    /// Saturating is the safe direction for a bound: a region whose length
+    /// carries it past the address space ends at the end of it rather than
+    /// wrapping to somewhere low, which would make it appear to contain an
+    /// address it does not describe.
+    #[must_use]
+    pub const fn end(self) -> u64 {
+        self.base.saturating_add(self.len)
+    }
+}
+
 /// Why no complete bounded map could be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -162,6 +175,14 @@ pub struct MemoryMap {
 
 impl MemoryMap {
     /// Copy a complete region stream or refuse it whole.
+    ///
+    /// **Overlap is permitted and is not assumed away.** Nothing here requires
+    /// the regions to be disjoint or sorted, and the queries below are written
+    /// so that neither matters: a cursor is described by every region holding
+    /// it, and a kind that is not admitted refuses the range wherever it
+    /// overlaps. Limine happens to promise that usable entries overlap nothing,
+    /// but that promise is the bootloader's and this crate does not depend on
+    /// it (D-242).
     ///
     /// # Errors
     ///
@@ -226,41 +247,64 @@ impl MemoryMap {
     ///
     /// Callers use this rather than assuming a conventional low page exists,
     /// which keeps machine checks meaningful across firmware layouts (D-177).
+    ///
+    /// The run it names is one [`covers_memory`](Self::covers_memory) agrees
+    /// is memory. Filtering to direct-mapped regions was not enough on its own:
+    /// a reserved region overlapping the one chosen made the two answers
+    /// contradict, and a caller acting on this one would map a device hole
+    /// (D-242).
     pub fn first_memory_run(&self, len: u64) -> Option<u64> {
         self.regions()
             .filter(|region| region.kind.is_direct_mapped())
             .find_map(|region| {
-                let end = region.base.checked_add(region.len)?;
                 let base = region
                     .base
                     .max(PAGE_SIZE)
                     .checked_next_multiple_of(PAGE_SIZE)?;
-                (end.checked_sub(base)? >= len).then_some(base)
+                let end = base.checked_add(len)?;
+                (region.end() >= end && self.covers_memory(base, end)).then_some(base)
             })
     }
 
     fn covered_by(&self, start: u64, end: u64, allowed: impl Fn(MemoryKind) -> bool) -> bool {
         let mut cursor = start;
         while cursor < end {
-            let Some(region) = self.regions().find(|region| {
-                region.base <= cursor && cursor < region.base.saturating_add(region.len)
-            }) else {
+            // Every region holding the cursor, not the first one listed. Taking
+            // the first made both the verdict and the stride a function of
+            // input order, under a doc saying order is not assumed — so two
+            // regions sharing a base gave opposite answers when swapped, and
+            // `first_memory_run` could name a base this denied was memory
+            // (D-242).
+            let mut reach = None;
+            for region in self
+                .regions()
+                .filter(|region| region.base <= cursor && cursor < region.end())
+            {
+                // A reserved claim wins wherever it overlaps. The distinction
+                // exists to keep a cacheable alias off device registers, and
+                // the safe direction under a contradiction is to refuse.
+                if !allowed(region.kind) {
+                    return false;
+                }
+                reach = Some(reach.map_or(region.end(), |far: u64| far.max(region.end())));
+            }
+            let Some(reach) = reach else {
                 return false;
             };
-            if !allowed(region.kind) {
-                return false;
-            }
-            cursor = region.base.saturating_add(region.len);
+            cursor = reach;
         }
         true
     }
 
     /// Total bytes the frame allocator may hand out.
+    ///
+    /// Saturating, because a wrapped total is a wrong number handed to a frame
+    /// allocator — and a bare `sum` over lengths this crate does not bound
+    /// panics under the debug gate and wraps in release (D-242).
     pub fn allocatable_bytes(&self) -> u64 {
         self.regions()
             .filter(|region| region.kind.is_allocatable())
-            .map(|region| region.len)
-            .sum()
+            .fold(0u64, |total, region| total.saturating_add(region.len))
     }
 }
 
@@ -283,6 +327,97 @@ mod tests {
             len: PAGE_SIZE,
             kind: MemoryKind::Reserved,
         })
+    }
+
+    /// Two regions at one base answer the same whichever order they arrive in.
+    ///
+    /// Transcribed from `covers`'s own words — "Input order is not assumed" —
+    /// which was false: `covered_by` took the first region listed that held the
+    /// cursor, so swapping two overlapping regions swapped both the verdict and
+    /// the distance the walk advanced (D-242).
+    #[test]
+    fn overlapping_regions_answer_the_same_in_either_order() {
+        let usable = MemoryRegion {
+            base: 0,
+            len: PAGE_SIZE * 3,
+            kind: MemoryKind::Usable,
+        };
+        let reserved = MemoryRegion {
+            base: 0,
+            len: PAGE_SIZE * 2,
+            kind: MemoryKind::Reserved,
+        };
+        let forward = MemoryMap::try_from_regions([reserved, usable].into_iter()).expect("map");
+        let reversed = MemoryMap::try_from_regions([usable, reserved].into_iter()).expect("map");
+
+        for (start, end) in [(0, 1), (0, PAGE_SIZE), (PAGE_SIZE, PAGE_SIZE * 3)] {
+            assert_eq!(
+                forward.covers(start, end),
+                reversed.covers(start, end),
+                "covers({start:#x}, {end:#x}) depends on region order"
+            );
+            assert_eq!(
+                forward.covers_memory(start, end),
+                reversed.covers_memory(start, end),
+                "covers_memory({start:#x}, {end:#x}) depends on region order"
+            );
+        }
+        // And a reserved claim wins where it overlaps: the distinction exists
+        // to keep a cacheable alias off device registers, so a contradiction
+        // resolves to refusal rather than to whichever region was listed first.
+        assert!(!forward.covers_memory(0, 1));
+        assert!(forward.covers(0, 1));
+    }
+
+    /// A run this names is one `covers_memory` agrees is memory.
+    ///
+    /// The two contracts are about the same address and disagreed: the filter
+    /// picked from a direct-mapped region while the walk landed in a reserved
+    /// one overlapping it, and D-177 says callers act on this answer (D-242).
+    #[test]
+    fn a_named_memory_run_is_memory_by_the_other_contract() {
+        let usable = MemoryRegion {
+            base: 0,
+            len: PAGE_SIZE * 3,
+            kind: MemoryKind::Usable,
+        };
+        let reserved = MemoryRegion {
+            base: 0,
+            len: PAGE_SIZE * 2,
+            kind: MemoryKind::Reserved,
+        };
+        let map = MemoryMap::try_from_regions([reserved, usable].into_iter()).expect("map");
+
+        for len in [1, PAGE_SIZE, PAGE_SIZE * 2] {
+            if let Some(base) = map.first_memory_run(len) {
+                let end = base.checked_add(len).expect("a run inside the space");
+                assert!(
+                    map.covers_memory(base, end),
+                    "first_memory_run({len:#x}) named {base:#x}, which covers_memory denies"
+                );
+            }
+        }
+    }
+
+    /// A total handed to a frame allocator saturates rather than wrapping.
+    ///
+    /// "Total bytes the frame allocator may hand out" is a claim about a
+    /// number, and a bare `sum` over lengths this crate never bounds panics
+    /// under the debug gate and wraps under release (D-242).
+    #[test]
+    fn an_allocatable_total_saturates_rather_than_wrapping() {
+        let huge = MemoryRegion {
+            base: 0,
+            len: u64::MAX - PAGE_SIZE,
+            kind: MemoryKind::Usable,
+        };
+        let more = MemoryRegion {
+            base: u64::MAX - PAGE_SIZE,
+            len: PAGE_SIZE * 4,
+            kind: MemoryKind::Usable,
+        };
+        let map = MemoryMap::try_from_regions([huge, more].into_iter()).expect("map");
+        assert_eq!(map.allocatable_bytes(), u64::MAX);
     }
 
     #[test]
