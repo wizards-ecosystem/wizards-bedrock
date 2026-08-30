@@ -182,7 +182,7 @@ impl MemoryMap {
     /// it, and a kind that is not admitted refuses the range wherever it
     /// overlaps. Limine happens to promise that usable entries overlap nothing,
     /// but that promise is the bootloader's and this crate does not depend on
-    /// it (D-242).
+    /// it (D-241).
     ///
     /// # Errors
     ///
@@ -252,7 +252,7 @@ impl MemoryMap {
     /// is memory. Filtering to direct-mapped regions was not enough on its own:
     /// a reserved region overlapping the one chosen made the two answers
     /// contradict, and a caller acting on this one would map a device hole
-    /// (D-242).
+    /// (D-241).
     pub fn first_memory_run(&self, len: u64) -> Option<u64> {
         self.regions()
             .filter(|region| region.kind.is_direct_mapped())
@@ -274,7 +274,7 @@ impl MemoryMap {
             // input order, under a doc saying order is not assumed — so two
             // regions sharing a base gave opposite answers when swapped, and
             // `first_memory_run` could name a base this denied was memory
-            // (D-242).
+            // (D-241).
             let mut reach = None;
             for region in self
                 .regions()
@@ -300,7 +300,7 @@ impl MemoryMap {
     ///
     /// Saturating, because a wrapped total is a wrong number handed to a frame
     /// allocator — and a bare `sum` over lengths this crate does not bound
-    /// panics under the debug gate and wraps in release (D-242).
+    /// panics under the debug gate and wraps in release (D-241).
     pub fn allocatable_bytes(&self) -> u64 {
         self.regions()
             .filter(|region| region.kind.is_allocatable())
@@ -334,7 +334,7 @@ mod tests {
     /// Transcribed from `covers`'s own words — "Input order is not assumed" —
     /// which was false: `covered_by` took the first region listed that held the
     /// cursor, so swapping two overlapping regions swapped both the verdict and
-    /// the distance the walk advanced (D-242).
+    /// the distance the walk advanced (D-241).
     #[test]
     fn overlapping_regions_answer_the_same_in_either_order() {
         let usable = MemoryRegion {
@@ -347,8 +347,8 @@ mod tests {
             len: PAGE_SIZE * 2,
             kind: MemoryKind::Reserved,
         };
-        let forward = MemoryMap::try_from_regions([reserved, usable].into_iter()).expect("map");
-        let reversed = MemoryMap::try_from_regions([usable, reserved].into_iter()).expect("map");
+        let forward = MemoryMap::try_from_regions([reserved, usable]).expect("map");
+        let reversed = MemoryMap::try_from_regions([usable, reserved]).expect("map");
 
         for (start, end) in [(0, 1), (0, PAGE_SIZE), (PAGE_SIZE, PAGE_SIZE * 3)] {
             assert_eq!(
@@ -373,7 +373,7 @@ mod tests {
     ///
     /// The two contracts are about the same address and disagreed: the filter
     /// picked from a direct-mapped region while the walk landed in a reserved
-    /// one overlapping it, and D-177 says callers act on this answer (D-242).
+    /// one overlapping it, and D-177 says callers act on this answer (D-241).
     #[test]
     fn a_named_memory_run_is_memory_by_the_other_contract() {
         let usable = MemoryRegion {
@@ -386,7 +386,7 @@ mod tests {
             len: PAGE_SIZE * 2,
             kind: MemoryKind::Reserved,
         };
-        let map = MemoryMap::try_from_regions([reserved, usable].into_iter()).expect("map");
+        let map = MemoryMap::try_from_regions([reserved, usable]).expect("map");
 
         for len in [1, PAGE_SIZE, PAGE_SIZE * 2] {
             if let Some(base) = map.first_memory_run(len) {
@@ -403,7 +403,7 @@ mod tests {
     ///
     /// "Total bytes the frame allocator may hand out" is a claim about a
     /// number, and a bare `sum` over lengths this crate never bounds panics
-    /// under the debug gate and wraps under release (D-242).
+    /// under the debug gate and wraps under release (D-241).
     #[test]
     fn an_allocatable_total_saturates_rather_than_wrapping() {
         let huge = MemoryRegion {
@@ -416,7 +416,7 @@ mod tests {
             len: PAGE_SIZE * 4,
             kind: MemoryKind::Usable,
         };
-        let map = MemoryMap::try_from_regions([huge, more].into_iter()).expect("map");
+        let map = MemoryMap::try_from_regions([huge, more]).expect("map");
         assert_eq!(map.allocatable_bytes(), u64::MAX);
     }
 

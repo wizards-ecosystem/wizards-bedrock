@@ -15612,7 +15612,7 @@ not claimed as evidence.
 No unsafe operation or wire ABI changed, and the machine-check count is
 unchanged at 215.
 
-## D-242 A described region is described by every region that holds it — Status: Accepted (2026-08-29), amends D-177 and D-224; advances PW-006
+## D-241 A described region is described by every region that holds it — Status: Accepted (2026-08-29), amends D-177 and D-224; advances PW-006
 
 **Context.** `libs/memory-map`'s `covers` says, in its own words, "Input order is
 not assumed, so each bounded step searches the complete map." It searched the

@@ -7414,6 +7414,7 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
+const EXPECTED_CHECKS: usize = 215;
 
 /// Put a keystroke round in front of the person at the machine, not only in
 /// the transcript.
@@ -7434,8 +7435,6 @@ fn awaiting(marker: &str, press: &str) {
         console.write_line("");
     });
 }
-
-const EXPECTED_CHECKS: usize = 215;
 
 impl Report {
     const fn new() -> Self {

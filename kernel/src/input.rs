@@ -18,6 +18,7 @@
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use ps2_keys::{Arriving, Decoder, Key, KeyEvent, KeyState, SetProbe, Shift, us};
+#[cfg(feature = "selftest")]
 use timebase::PollLimit;
 use wost::arch::current::interrupt;
 use wost::sync::{Once, SpinLock};
