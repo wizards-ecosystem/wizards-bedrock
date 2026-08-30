@@ -105,6 +105,10 @@ dependencies = [
 [[package]]
 name = "frame-space"
 version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.1",
+ "proptest",
+]
 
 [[package]]
 name = "fscommon"
@@ -178,6 +182,10 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 [[package]]
 name = "memory-map"
 version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.1",
+ "proptest",
+]
 
 [[package]]
 name = "mmio-range"
@@ -220,6 +228,10 @@ checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 [[package]]
 name = "path-walk"
 version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.1",
+ "proptest",
+]
 
 [[package]]
 name = "pci-config"
@@ -238,6 +250,10 @@ version = "0.1.0"
 [[package]]
 name = "port-space"
 version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.1",
+ "proptest",
+]
 
 [[package]]
 name = "ppv-lite86"
@@ -477,6 +493,10 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 [[package]]
 name = "stack-layout"
 version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.1",
+ "proptest",
+]
 
 [[package]]
 name = "syn"

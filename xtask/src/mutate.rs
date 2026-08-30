@@ -3223,6 +3223,29 @@ pub const MUTATIONS: &[Mutation] = &[
             name: "vmware::tests::a_generated_vm_starts_with_a_fresh_serial_transcript",
         },
     },
+    // The property tier's own falsifiability (D-242). Both witnesses are
+    // generated-input checks, so the defect has to survive every case rather
+    // than only the one a unit test names.
+    Mutation {
+        file: "libs/path-walk/src/lib.rs",
+        find: "        if component == b\".\" {",
+        replace: "        if false && component == b\".\" {",
+        breaks: "a bare dot is a no-op rather than a component the walker descends into",
+        reddens: Caught::HostTest {
+            package: "path-walk",
+            name: "no_split_output_can_name_an_ancestor",
+        },
+    },
+    Mutation {
+        file: "libs/stack-layout/src/lib.rs",
+        find: "    if left_len == 0 || right_len == 0 {",
+        replace: "    if left_len == 0 {",
+        breaks: "an empty range on either side touches nothing, not merely the left",
+        reddens: Caught::HostTest {
+            package: "stack-layout",
+            name: "an_empty_range_touches_nothing",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
