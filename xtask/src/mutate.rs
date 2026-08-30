@@ -1450,6 +1450,67 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "the decoder is re-derived when translation changes",
         reddens: Caught::Check("a translated keystroke decodes to the same key"),
     },
+    // The numbering the stream proved, decided and then not adopted. Caught
+    // only because the round is seeded against the stream first: without that
+    // this mutation is invisible on QEMU for the reason the comment above
+    // gives, which is how the defect it restores reached a real machine.
+    Mutation {
+        file: "kernel/src/input.rs",
+        find: "        if translated != self.decoder.reads_translated() {",
+        replace: "        if false && translated != self.decoder.reads_translated() {",
+        breaks: "the numbering the stream proved is the one the decoder adopts",
+        reddens: Caught::Check("the keyboard's numbering and the decoder's are the same"),
+    },
+    Mutation {
+        file: "libs/ps2-keys/src/arriving.rs",
+        find: "const BREAK: u8 = 0xF0;",
+        replace: "const BREAK: u8 = 0xF1;",
+        breaks: "set 2's break prefix is the byte set 2 actually sends",
+        reddens: Caught::HostTest {
+            package: "ps2-keys",
+            name: "arriving::tests::one_keystroke_from_either_machine_decides_it",
+        },
+    },
+    Mutation {
+        file: "libs/ps2-keys/src/arriving.rs",
+        find: "const SET_2_HIGHEST_MAKE: u8 = 0x83;",
+        replace: "const SET_2_HIGHEST_MAKE: u8 = 0x7F;",
+        breaks: "the probe's bounds are the two tables', not numbers beside them",
+        reddens: Caught::HostTest {
+            package: "ps2-keys",
+            name: "arriving::tests::the_two_tables_still_bound_this_probe",
+        },
+    },
+    Mutation {
+        file: "libs/ps2-keys/src/arriving.rs",
+        find: "const AMBIGUOUS: [u8; 2] = [0xAA, 0xAB];",
+        replace: "const AMBIGUOUS: [u8; 2] = [0xAA, 0xAA];",
+        breaks: "a reply in the stream cannot answer what the stream is asked",
+        reddens: Caught::HostTest {
+            package: "ps2-keys",
+            name: "arriving::tests::an_identity_reply_in_the_stream_decides_nothing",
+        },
+    },
+    Mutation {
+        file: "kernel/src/input.rs",
+        find: "pub(crate) const HUMAN_WAIT_MS: u64 = 45_000;",
+        replace: "pub(crate) const HUMAN_WAIT_MS: u64 = 90_000;",
+        breaks: "three unanswered keystroke rounds end as a red check, not a hang",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::the_human_wait_fits_the_harness_patience",
+        },
+    },
+    Mutation {
+        file: "xtask/templates/wizard-os.vmx.in",
+        find: "nvme0.present = \"TRUE\"\nnvme1.present = \"TRUE\"",
+        replace: "nvme0.present = \"TRUE\"\nnvme0:0.present = \"TRUE\"\nnvme1.present = \"TRUE\"",
+        breaks: "the VMware machine offers a candidate worth retiring",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::the_vmx_boots_efi_and_logs_serial_to_a_file",
+        },
+    },
     // Treat an unverified stop as a verified one. A fake device completes
     // later, after the allocator would already have been allowed to reuse the
     // command's memory.
@@ -1634,32 +1695,32 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
-        file: "libs/nvme/src/lib.rs",
+        file: "libs/timebase/src/lib.rs",
         find: "            Some(now) => Self::Deadline(now.saturating_add(timeout_ms.saturating_mul(1_000_000))),",
         replace: "            Some(_) => Self::Attempts(fallback_attempts),",
-        breaks: "a calibrated nvme poll is bounded by real time rather than iteration rate",
+        breaks: "a calibrated poll is bounded by real time rather than iteration rate",
         reddens: Caught::HostTest {
-            package: "nvme",
+            package: "timebase",
             name: "tests::a_monotonic_poll_limit_expires_by_time_not_iteration_rate",
         },
     },
     Mutation {
-        file: "libs/nvme/src/lib.rs",
+        file: "libs/timebase/src/lib.rs",
         find: "            Self::Attempts(remaining) if *remaining > 0 => {",
         replace: "            Self::Attempts(remaining) if *remaining > 1 => {",
-        breaks: "a clockless nvme poll spends exactly its declared fallback attempts",
+        breaks: "a clockless poll spends exactly its declared fallback attempts",
         reddens: Caught::HostTest {
-            package: "nvme",
+            package: "timebase",
             name: "tests::a_clockless_poll_limit_permits_its_exact_fallback_count",
         },
     },
     Mutation {
-        file: "libs/nvme/src/lib.rs",
+        file: "libs/timebase/src/lib.rs",
         find: "            Some(now) => Self::Deadline(now.saturating_add(timeout_ms.saturating_mul(1_000_000))),",
         replace: "            Some(now) => Self::Deadline(now.wrapping_add(timeout_ms.saturating_mul(1_000_000))),",
-        breaks: "an nvme deadline saturates instead of wrapping into the past",
+        breaks: "a poll deadline saturates instead of wrapping into the past",
         reddens: Caught::HostTest {
-            package: "nvme",
+            package: "timebase",
             name: "tests::a_deadline_saturates_instead_of_wrapping_into_the_past",
         },
     },

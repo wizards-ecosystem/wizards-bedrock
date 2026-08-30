@@ -1808,8 +1808,13 @@ fn a_delayed_read_preserves_interrupts_and_exact_teardown() -> bool {
     let expiries = time::expiries();
     let interrupts = input::interrupt_count();
     // Kept in step with STORAGE_DELAY_MARKER in `xtask/src/qemu.rs`.
-    info!("selftest: awaiting storage-delay keystroke");
-    let progressed = runs_until(1_000, || {
+    awaiting(
+        "selftest: awaiting storage-delay keystroke",
+        "  PRESS  c   to continue the storage round",
+    );
+    // The human's window, not a machine's: this samples for interrupt progress
+    // after the prompt, so a second was long enough only for QMP.
+    let progressed = runs_until(input::HUMAN_WAIT_MS, || {
         time::expiries() > expiries && input::interrupt_count() > interrupts
     });
     let mut context = context();
@@ -7409,6 +7414,27 @@ const VERDICT_VERSION: usize = 1;
 /// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
 /// to touch either way, so the reminder lives on them rather than in a resolve
 /// to be more careful.
+
+/// Put a keystroke round in front of the person at the machine, not only in
+/// the transcript.
+///
+/// `log` writes to the serial port alone, on the reasoning that diagnostics
+/// must not scroll the banner away — so every prompt in this file was
+/// invisible to the human D-18 requires, who was being asked to press a key at
+/// a moment nothing on their screen marked. The serial line is unchanged: it
+/// is what the harness matches and what the transcript records. The screen
+/// gets the instruction, in the register `panic` already uses for the other
+/// thing a person has to be told (D-240).
+#[cfg(feature = "selftest")]
+fn awaiting(marker: &str, press: &str) {
+    info!("{marker}");
+    dev::with_console(|console| {
+        console.write_line("");
+        console.write_line(press);
+        console.write_line("");
+    });
+}
+
 const EXPECTED_CHECKS: usize = 215;
 
 impl Report {
@@ -8223,17 +8249,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     // **The set query is only readable when nothing rewrites it.** Behind a
     // translating controller this reply is translated like every other, so
     // asserting it would be asserting a fact about the controller's rewriting
-    // rather than about the keyboard — VMware answers `0x41` here. What is a
-    // claim on every machine is that the numbering arriving and the numbering
-    // the decoder reads are the same one (D-178, D-179).
+    // rather than about the keyboard — VMware answers `0x41` to this too, and
+    // `(0xAB, 0x41)` to the identity beside it, while delivering set 2. Both
+    // probes are diagnostics now; the claim they used to carry has moved to
+    // where a byte has actually arrived (D-178, D-179, D-239).
     let set = input::scancode_set();
     if !translated && set != Some(2) {
         warn!("keyboard: reports scancode set {set:?}, not 2");
     }
-    report.check(
-        "the keyboard's numbering and the decoder's are the same",
-        input::decoder_reads_what_arrives() && (translated || set == Some(2)),
-    );
 
     // Set up before the marker, collected after it: the reader has to be
     // blocked before the harness presses anything, or what wakes it is a
@@ -8247,7 +8270,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     // it appears — kept in step with READY_MARKER in `xtask/src/qemu.rs`.
     // Nothing may talk to the keyboard between the marker and the wait, or
     // the injected bytes could interleave with a command's replies.
-    info!("selftest: awaiting injected keystroke");
+    awaiting(
+        "selftest: awaiting injected keystroke",
+        "  PRESS  a  then BACKSPACE  then ENTER",
+    );
     report.check(
         "an injected keystroke arrives, and its release follows",
         input::await_key(ps2_keys::Key::A),
@@ -8299,10 +8325,17 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "a translating controller rewrites the identity too",
         input::identity() == Some(TRANSLATED_MF2),
     );
+    // Seeded against the stream on purpose: from here the round can only
+    // succeed by reading the bytes, which is what VMware forces and what no
+    // machine the gate can reach would otherwise exercise (D-239).
+    input::assume_wrong_numbering();
     // Kept in step with TRANSLATED_MARKER in `xtask/src/qemu.rs`, and subject
     // to the same rule as the first: nothing may talk to the keyboard between
     // the marker and the wait.
-    info!("selftest: awaiting translated keystroke");
+    awaiting(
+        "selftest: awaiting translated keystroke",
+        "  PRESS  b   for the last round",
+    );
     // `B`, not `A`: the first round pressed `A`, and a wait that a stale event
     // can satisfy is a wait that never reads the table it is about. This check
     // was green with set 1's code for `A` deliberately wrong until the key
@@ -8311,14 +8344,23 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "a translated keystroke decodes to the same key",
         input::await_key(ps2_keys::Key::B),
     );
-    // Turned back off, and the decoder re-derived from what the machine
-    // actually does rather than from what was written — which on a machine
-    // that translates regardless leaves the translated decoder in place, and
-    // is the whole of D-178's rule as a check.
+    // The claim that used to sit beside the identity probe, moved to the one
+    // place a byte has provably arrived. Asked here it is an observation; asked
+    // there it re-derived the identity and compared it with the decoder the
+    // identity had configured, so it agreed on every machine and was green
+    // while VMware's set 2 was being read as set 1 (D-239).
+    report.check(
+        "the keyboard's numbering and the decoder's are the same",
+        input::decoder_reads_what_arrives(),
+    );
+    // Turned back off, and the question re-opened rather than re-answered from
+    // the bit that was written — which on a machine that translates regardless
+    // is the difference between reading its bytes and reading its claims. What
+    // settles it is the next byte only one set could have sent (D-178, D-239).
     let restored = input::set_translation(false);
     report.check(
         "the decoder reads the set that arrives, not the bit that was written",
-        restored && input::decoder_reads_what_arrives(),
+        restored && input::rereads_the_stream(),
     );
 
     // Last of the timed checks, because it scrolls the console to the bottom

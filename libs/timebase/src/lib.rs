@@ -230,6 +230,31 @@ impl Timebase {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_monotonic_poll_limit_expires_by_time_not_iteration_rate() {
+        let mut limit = PollLimit::after_ms(Some(1_000_000_000), 500, 1);
+        for _ in 0..10_000 {
+            assert!(limit.permit(Some(1_499_999_999)));
+        }
+        assert!(!limit.permit(Some(1_500_000_000)));
+        assert!(!limit.permit(None), "a vanished clock fails closed");
+    }
+
+    #[test]
+    fn a_clockless_poll_limit_permits_its_exact_fallback_count() {
+        let mut limit = PollLimit::after_ms(None, u64::MAX, 3);
+        assert!(limit.permit(None));
+        assert!(limit.permit(Some(u64::MAX)));
+        assert!(limit.permit(None));
+        assert!(!limit.permit(None));
+    }
+
+    #[test]
+    fn a_deadline_saturates_instead_of_wrapping_into_the_past() {
+        let mut limit = PollLimit::after_ms(Some(u64::MAX - 1), u64::MAX, 0);
+        assert!(limit.permit(Some(u64::MAX - 1)));
+        assert!(!limit.permit(Some(u64::MAX)));
+    }
     use super::*;
 
     /// Rates worth believing from a real machine: the 8254's crystal at the
@@ -687,5 +712,50 @@ mod published_tests {
         assert_eq!(wrapped, 0);
         assert!(Seq::is_stable(wrapped));
         assert!(!Seq::agrees(last_even, wrapped));
+    }
+}
+
+/// A hardware poll bounded either by monotonic time or by boot-time attempts.
+///
+/// The mode is chosen once. After calibration, code generation and processor
+/// speed cannot change the real duration; before calibration, a caller still
+/// has a finite, explicit fallback rather than an accidental endless wait
+/// (D-200).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PollLimit {
+    /// Stop at this monotonic nanosecond.
+    Deadline(u64),
+    /// Permit exactly this many more hardware reads.
+    Attempts(u32),
+}
+
+impl PollLimit {
+    /// Choose a monotonic deadline when `now_ns` exists, or `fallback_attempts`
+    /// while the boot clock is unavailable.
+    pub const fn after_ms(now_ns: Option<u64>, timeout_ms: u64, fallback_attempts: u32) -> Self {
+        match now_ns {
+            Some(now) => Self::Deadline(now.saturating_add(timeout_ms.saturating_mul(1_000_000))),
+            None => Self::Attempts(fallback_attempts),
+        }
+    }
+
+    /// Whether one more hardware read is permitted at `now_ns`.
+    ///
+    /// A monotonic limit does not spend attempts: any number of fast polls
+    /// sees the same real deadline. An attempt limit ignores a clock which
+    /// appears later, so boot behaviour cannot change mode halfway through a
+    /// transaction.
+    pub const fn permit(&mut self, now_ns: Option<u64>) -> bool {
+        match self {
+            Self::Deadline(deadline) => match now_ns {
+                Some(now) => now < *deadline,
+                None => false,
+            },
+            Self::Attempts(remaining) if *remaining > 0 => {
+                *remaining -= 1;
+                true
+            }
+            Self::Attempts(_) => false,
+        }
     }
 }

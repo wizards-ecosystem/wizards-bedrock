@@ -35,6 +35,7 @@
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
 )]
 
+mod arriving;
 mod decode;
 mod event;
 mod key;
@@ -43,6 +44,7 @@ mod shift;
 mod table;
 pub mod us;
 
+pub use arriving::{Arriving, SetProbe};
 pub use decode::Decoder;
 pub use event::{KeyEvent, KeyState};
 pub use key::Key;

@@ -17,7 +17,8 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ps2_keys::{Decoder, Key, KeyEvent, KeyState, Shift, us};
+use ps2_keys::{Arriving, Decoder, Key, KeyEvent, KeyState, SetProbe, Shift, us};
+use timebase::PollLimit;
 use wost::arch::current::interrupt;
 use wost::sync::{Once, SpinLock};
 
@@ -29,8 +30,41 @@ use crate::{info, warn};
 struct Keyboard {
     controller: Controller,
     decoder: Decoder,
+    /// Whether the stream has said which numbering it is in.
+    ///
+    /// False until a byte only one set can produce arrives. Every probe the
+    /// controller answers has been observed to lie in one direction or the
+    /// other, so the bytes are the arbiter and `held` is what waiting for
+    /// them costs (D-239).
+    settled: bool,
+    /// What the deciding byte proved, kept so a check can compare the
+    /// decoder against the evidence rather than against the probe that
+    /// configured it.
+    evidence: Option<Arriving>,
+    /// Bytes seen before the numbering was known, replayed once it is.
+    ///
+    /// A keystroke decides within three bytes and set 2's longest sequence
+    /// within five, so this is a keystroke's worth and then some. Decoding a
+    /// held byte under the wrong numbering would name a different key, which
+    /// is the whole defect.
+    held: [u8; HELD_BYTES],
+    held_len: usize,
+    held_at: usize,
     shift: Shift,
 }
+
+/// Bytes held while the numbering is still undecided.
+const HELD_BYTES: usize = 16;
+
+/// How long a round waits for the person D-18 requires to press a key.
+///
+/// Forty-five seconds, sized for someone reading an instruction off a screen
+/// — not for QMP, which was the only caller the old ten-second bound had in
+/// mind. Every human round shares it, because a prompt that waits one length
+/// and a measurement that samples another is how a round comes to be
+/// unanswerable in two independent ways (D-240).
+#[cfg(feature = "selftest")]
+pub(crate) const HUMAN_WAIT_MS: u64 = 45_000;
 
 impl Keyboard {
     /// Pull bytes until one completes an event, the buffer runs dry, or the
@@ -44,13 +78,67 @@ impl Keyboard {
         const BYTE_BUDGET: u32 = 16;
 
         for _ in 0..BYTE_BUDGET {
-            let byte = self.controller.poll_byte()?;
+            let byte = self.next_byte()?;
             if let Some(event) = self.decoder.feed(byte) {
                 self.shift.observe(event);
                 return Some(event);
             }
         }
         None
+    }
+
+    /// The next byte to decode, under the numbering the stream proved.
+    ///
+    /// Held bytes first, then the controller. Nothing is ever dropped and
+    /// nothing is latched: until a byte answers the question, bytes wait; when
+    /// one does, what waited is replayed under the numbering it proved.
+    fn next_byte(&mut self) -> Option<u8> {
+        loop {
+            // Holding ends when a byte has answered, or when a keystroke's
+            // worth of them has not: those go through under the opening guess
+            // rather than being held for ever, and the next batch asks again.
+            // Nothing is dropped and nothing is concluded from silence.
+            let holding = !self.settled && self.held_len < HELD_BYTES;
+            if !holding && self.held_at < self.held_len {
+                let byte = self.held[self.held_at];
+                self.held_at += 1;
+                if self.held_at == self.held_len {
+                    self.held_at = 0;
+                    self.held_len = 0;
+                }
+                return Some(byte);
+            }
+            let byte = self.controller.poll_byte()?;
+            if self.settled && self.held_len == 0 {
+                return Some(byte);
+            }
+            self.held[self.held_len] = byte;
+            self.held_len += 1;
+            self.adopt(SetProbe::observe(byte));
+        }
+    }
+
+    /// Adopt what the stream proved, and say whether it proved anything.
+    ///
+    /// Replaying what was held under the numbering it decided on is what keeps
+    /// the keystroke that answered the question from being the one keystroke
+    /// decoded wrongly.
+    fn adopt(&mut self, arriving: Arriving) -> bool {
+        let translated = match arriving {
+            Arriving::Undecided => return false,
+            Arriving::Set1 => true,
+            Arriving::Set2 => false,
+        };
+        if translated != self.decoder.reads_translated() {
+            self.decoder = if translated {
+                Decoder::translated()
+            } else {
+                Decoder::new()
+            };
+        }
+        self.evidence = Some(arriving);
+        self.settled = true;
+        true
     }
 }
 
@@ -78,9 +166,11 @@ const BATCH: usize = 8;
 pub(crate) fn init() {
     match Controller::new() {
         Ok(controller) => {
-            // The decoder follows the controller rather than the other way
-            // round: what arrives is set 1 wherever translation is on, and the
-            // line says which so a machine that surprises us says so (D-179).
+            // The identity is where this starts and no longer where it ends.
+            // It is right on one real machine and wrong on another, as is the
+            // configuration byte, in opposite directions — so this is the
+            // opening guess and the first byte only one set could have sent
+            // replaces it (D-178, D-179, D-239).
             let translated = controller.is_translated();
             let decoder = if translated {
                 Decoder::translated()
@@ -90,10 +180,15 @@ pub(crate) fn init() {
             *KEYBOARD.lock_leaf() = Some(Keyboard {
                 controller,
                 decoder,
+                settled: false,
+                evidence: None,
+                held: [0; HELD_BYTES],
+                held_len: 0,
+                held_at: 0,
                 shift: Shift::new(),
             });
             let set = if translated { 1 } else { 2 };
-            info!("keyboard: up, reading scancode set {set}");
+            info!("keyboard: up, set {set} until an arriving byte says otherwise");
         }
         Err(reason) => warn!("keyboard: {reason}; running without input"),
     }
@@ -365,11 +460,17 @@ fn decoder_for(controller: &mut Controller) -> Decoder {
     }
 }
 
-/// Turn the controller's translation on or off, and swap the decoder with it.
+/// Turn the controller's translation on or off, and re-open the question of
+/// what arrives.
 ///
 /// The pair moves together or the driver decodes the wrong set — which is the
 /// bug this whole path exists for, so the self-test cannot be trusted to do
 /// the two steps in the right order by hand (D-179).
+///
+/// The identity supplies the opening guess and no longer the answer: writing
+/// the bit does not make a controller honest, and neither does asking it
+/// afterwards. What settles it is the next byte only one set could have sent
+/// (D-239).
 #[cfg(feature = "selftest")]
 pub(crate) fn set_translation(on: bool) -> bool {
     let mut guard = KEYBOARD.lock_leaf();
@@ -377,28 +478,70 @@ pub(crate) fn set_translation(on: bool) -> bool {
         return false;
     };
     let stuck = keyboard.controller.set_translation(on);
-    // The decoder follows the *identity*, never the bit that was written: a
-    // controller reporting the bit clear while translating is the machine this
-    // whole path exists for, and writing the bit does not make it honest
-    // (D-178, D-179).
     keyboard.decoder = decoder_for(&mut keyboard.controller);
+    keyboard.settled = false;
+    keyboard.evidence = None;
+    keyboard.held_len = 0;
+    keyboard.held_at = 0;
     stuck
 }
 
-/// Whether the decoder in place reads the set the identity says arrives.
+/// Seed the numbering the *other* way and let the stream put it right.
 ///
-/// The rule as a check: on a controller that answers `0xF2` truthfully and its
-/// configuration byte falsely, only one of the two can be followed, and this
-/// is the assertion that it is the right one.
+/// The controlled form of the state VMware left the driver in: a numbering
+/// already concluded, and wrong. `settled` on purpose — a guess still open
+/// to the stream is the easy case, and the round would pass without the
+/// correction ever being exercised. Every machine the gate can reach answers
+/// its probes honestly, so without this the correction is dead code no check
+/// could redden, which is the shape D-28 exists to refuse (D-239).
 #[cfg(feature = "selftest")]
-pub(crate) fn decoder_reads_what_arrives() -> bool {
+pub(crate) fn assume_wrong_numbering() {
     let mut guard = KEYBOARD.lock_leaf();
     let Some(keyboard) = guard.as_mut() else {
+        return;
+    };
+    keyboard.decoder = if keyboard.decoder.reads_translated() {
+        Decoder::new()
+    } else {
+        Decoder::translated()
+    };
+    keyboard.settled = false;
+    keyboard.evidence = None;
+    keyboard.held_len = 0;
+    keyboard.held_at = 0;
+}
+
+/// Whether the driver is waiting on the stream rather than standing on a
+/// numbering it inferred from a command.
+#[cfg(feature = "selftest")]
+pub(crate) fn rereads_the_stream() -> bool {
+    KEYBOARD
+        .lock_leaf()
+        .as_ref()
+        .is_some_and(|keyboard| !keyboard.settled && keyboard.evidence.is_none())
+}
+
+/// Whether the decoder in place reads the set the arriving bytes proved.
+///
+/// **This asked the identity, and the identity is what configured the
+/// decoder.** It re-derived one value from the source the other came from and
+/// compared them, so it agreed on every machine and could not fail — while
+/// the decoder it certified was reading VMware's set 2 as set 1. The evidence
+/// here is a byte only one set could have sent (D-239).
+///
+/// `None` evidence is not a pass: a keyboard that has delivered nothing has
+/// proved nothing, and this is called where keystrokes have already arrived.
+#[cfg(feature = "selftest")]
+pub(crate) fn decoder_reads_what_arrives() -> bool {
+    let guard = KEYBOARD.lock_leaf();
+    let Some(keyboard) = guard.as_ref() else {
         return false;
     };
-    let translated =
-        keyboard.controller.identity() == Some(crate::arch::current::i8042::TRANSLATED_MF2);
-    keyboard.decoder.reads_translated() == translated
+    match keyboard.evidence {
+        Some(Arriving::Set1) => keyboard.decoder.reads_translated(),
+        Some(Arriving::Set2) => !keyboard.decoder.reads_translated(),
+        Some(Arriving::Undecided) | None => false,
+    }
 }
 
 /// The two bytes the keyboard identifies itself with.
@@ -428,24 +571,22 @@ pub(crate) fn identity() -> Option<(u8, u8)> {
 /// of its own.
 #[cfg(feature = "selftest")]
 pub(crate) fn await_key(key: Key) -> bool {
-    /// Ten seconds — generous, because injection crosses a process, a socket,
-    /// and an emulated bus.
-    const WAIT_MS: u64 = 10_000;
-    /// Events one pass may pull before yielding the guard. Two batches' worth,
     /// so an honest burst is never split, and finite whatever the controller
     /// does.
     const DRAIN_PER_PASS: usize = 2 * BATCH;
-    /// Each spin is a lock and a status read — bus transactions — so this is
-    /// seconds' worth: the bound a dead clock falls back on.
+    /// The bound a dead clock falls back on, and only then.
+    ///
+    /// Spent per iteration it was the *real* bound: two million locks and
+    /// status reads take a fraction of a second on a 3.4 GHz machine, so the
+    /// forty-five second deadline above was never once consulted and a person
+    /// had no time at all to press a key. `PollLimit` is the rule D-200 wrote
+    /// for NVMe's polls and the one this doc already claimed — a monotonic
+    /// limit does not spend attempts (D-240).
     const WAIT_SPINS: u32 = 2_000_000;
 
-    let deadline = crate::time::uptime_ms() + WAIT_MS;
+    let mut patience = PollLimit::after_ms(clock_ms(), HUMAN_WAIT_MS, WAIT_SPINS);
     let mut pressed = false;
-    for _ in 0..WAIT_SPINS {
-        if crate::time::uptime_ms() > deadline {
-            return false;
-        }
-
+    while patience.permit(clock_ms()) {
         // Where the line is routed, the handler is the only reader: polling
         // here would race it for the byte and could report success on a
         // keystroke the interrupt path never saw, which is the one thing this
@@ -573,4 +714,14 @@ pub(crate) fn enable_interrupts() -> bool {
     guard
         .as_mut()
         .is_some_and(|keyboard| keyboard.controller.enable_interrupt())
+}
+
+/// Milliseconds of monotonic uptime, only once calibration has made them mean
+/// something.
+///
+/// `None` is what makes [`PollLimit`] fall back to counting attempts, which is
+/// the whole of the distinction D-200 drew and D-240 brought here.
+#[cfg(feature = "selftest")]
+fn clock_ms() -> Option<u64> {
+    crate::time::is_calibrated().then(crate::time::uptime_ms)
 }

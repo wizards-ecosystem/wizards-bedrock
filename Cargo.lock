@@ -201,6 +201,9 @@ dependencies = [
 [[package]]
 name = "nvme"
 version = "0.1.0"
+dependencies = [
+ "timebase",
+]
 
 [[package]]
 name = "once_cell"

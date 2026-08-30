@@ -31,9 +31,16 @@ pciBridge7.functions = "8"
 # one controller with a published specification that this project's two boot
 # targets share — and a VM without one tests half of that, which is what the
 # first VMware boot to run the checks discovered (D-176).
+#
+# Two of them, and the first deliberately namespace-less, because `a later nvme
+# controller survives an earlier failure` asks whether discovery retires a
+# useless candidate and goes on to its sibling. QEMU has been shaped this way
+# since D-199; this machine was not, so the one check that needs a second
+# controller could never pass here however the human answered (D-240).
 nvme0.present = "TRUE"
-nvme0:0.present = "TRUE"
-nvme0:0.fileName = "{{NVME_VMDK_NAME}}"
+nvme1.present = "TRUE"
+nvme1:0.present = "TRUE"
+nvme1:0.fileName = "{{NVME_VMDK_NAME}}"
 serial0.present = "TRUE"
 serial0.fileType = "file"
 serial0.fileName = "{{SERIAL_LOG}}"

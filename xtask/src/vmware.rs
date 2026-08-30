@@ -338,9 +338,18 @@ mod tests {
         // The storage controller Phase 6 drives. A VM without one runs the
         // checks and fails ten of them, which is what the first VMware boot to
         // run any checks discovered (D-176).
+        //
+        // Two, and the first with no namespace attached: the discovery check
+        // asks whether a useless candidate is retired in favour of its
+        // sibling, and a machine with one controller cannot answer however the
+        // human at it presses (D-240).
         assert!(vmx.contains(r#"nvme0.present = "TRUE""#));
-        assert!(vmx.contains(r#"nvme0:0.fileName = "wizard-nvm.vmdk""#));
-        // A PCIe-only controller in a machine with no root ports is refused
+        assert!(
+            !vmx.contains(r#"nvme0:0.present"#),
+            "the first controller must have no namespace to retire"
+        );
+        assert!(vmx.contains(r#"nvme1.present = "TRUE""#));
+        assert!(vmx.contains(r#"nvme1:0.fileName = "wizard-nvm.vmdk""#));
         // before the guest gets a chance to look for it (D-176).
         assert!(vmx.contains(r#"pciBridge4.virtualDev = "pcieRootPort""#));
     }

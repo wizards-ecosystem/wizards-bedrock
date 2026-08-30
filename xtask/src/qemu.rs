@@ -1365,7 +1365,11 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
 }
 
 /// How long to allow for a cold start before the marker must have appeared.
-const BOOT_TIMEOUT: Duration = Duration::from_secs(45);
+///
+/// Three human keystroke rounds fit inside it with room to spare, so a round
+/// nobody answers ends as the kernel's own red check rather than as this
+/// killing the machine — the verdict stays the kernel's (D-240).
+const BOOT_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// A processor with no x2APIC or optional SMEP/SMAP/UMIP hardening.
 ///
@@ -1561,6 +1565,37 @@ fn finish_boot_serial(forwarder: JoinHandle<Result<()>>) -> Result<()> {
 }
 #[cfg(test)]
 mod tests {
+
+    /// Three unanswered keystroke rounds still end as a red check, not a hang.
+    ///
+    /// The kernel's wait and the harness's patience are two numbers in two
+    /// crates with one relationship, and the wait was raised for the human
+    /// D-18 requires. If it ever grows past what this allows, an unanswered
+    /// round stops being the kernel's verdict and becomes a killed emulator,
+    /// which reports the same thing for a different reason (D-240).
+    #[test]
+    fn the_human_wait_fits_the_harness_patience() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root")
+            .to_path_buf();
+        let input = std::fs::read_to_string(root.join("kernel/src/input.rs")).expect("input.rs");
+        let wait_ms: u64 = input
+            .lines()
+            .find_map(|line| {
+                line.trim()
+                    .strip_prefix("pub(crate) const HUMAN_WAIT_MS: u64 = ")
+            })
+            .and_then(|value| value.trim_end_matches(';').replace('_', "").parse().ok())
+            .expect("no HUMAN_WAIT_MS in input.rs");
+
+        const ROUNDS: u64 = 3;
+        let unanswered = Duration::from_millis(wait_ms * ROUNDS);
+        assert!(
+            unanswered < BOOT_TIMEOUT,
+            "{ROUNDS} rounds of {wait_ms}ms exceed the {BOOT_TIMEOUT:?} boot timeout"
+        );
+    }
     use super::*;
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
