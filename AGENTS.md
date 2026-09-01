@@ -13,8 +13,10 @@ is Wizzy. `docs/015-wizzy-userland.md` is canonical and its compiler-readiness
 gate is currently **CLOSED**. While closed, do not start Phase 7 product work or
 build a Rust fallback userland. Work is in scope only when it is kernel
 correctness, a language-neutral prerequisite with a concrete future Wizzy
-caller, integration specification/scaffolding for the compiler artifact, or
-work in `wizards-ink` that advances the gate.
+caller, or specification and validation of the versioned compiler handoff.
+Consumer scaffolding remains stopped until PW-601's pinned-artifact trigger;
+WZ-001 through WZ-004 are externally owned `wizards-ink` blockers, not OS-repo
+implementation work.
 
 D-184 makes [docs/016-pre-wizzy-foundation.md](docs/016-pre-wizzy-foundation.md)
 the sole finite OS-side backlog while that gate is closed. Every new item needs

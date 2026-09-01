@@ -52,17 +52,19 @@ all of these:
 While the state is **CLOSED**, Phase 7 product implementation is stopped. A
 Wizard's OS change may proceed only when it closes Rust-kernel or hardware
 correctness, supplies a language-neutral platform prerequisite with a concrete
-future Wizzy caller, specifies or checks the versioned repository handoff, or
-is build scaffolding needed to consume the compiler's artifact. Otherwise it
-waits or belongs in `wizards-ink`. In particular, no Rust fallback `init`,
-shell, native service or first-party tool is built in parallel.
+future Wizzy caller, or specifies or checks the versioned repository handoff.
+Consumer scaffolding starts only when PW-601's pinned artifact/runtime draft
+trigger fires. Otherwise the OS change waits; compiler/runtime work belongs to
+the externally owned WZ-001 through WZ-004 gate. In particular, no Rust
+fallback `init`, shell, native service or first-party tool is built in parallel.
 
 ## What "native" means
 
 Native describes the **platform contract**, not the instruction generator.
 A native Wizzy program:
 
-- receives authority through the bootstrap channel and handle table;
+- receives authority through the versioned bootstrap-channel protocol and
+  handle table that slice 3 will add;
 - submits native operations and correlates their completions directly;
 - names files from directory capabilities, never an ambient root;
 - uses the global monotonic time page exactly as D-152 defines it;

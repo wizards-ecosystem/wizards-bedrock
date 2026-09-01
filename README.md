@@ -8,8 +8,9 @@ CoW checksummed filesystem (WizFS), WebAssembly + `wasip1` as first-class
 apps (D-72). D-183 fixes the language boundary: the kernel remains Rust, and
 every feasible first-party target-side non-kernel component is written in
 Wizzy once its compiler-readiness gate opens. Phase 7 product userland stops at
-that gate; boundary probes, ABI/platform preparation, and a narrow audited
-runtime shim may make it ready. Host tooling, third-party libraries and ports,
+that gate; the OS may specify and validate the route-neutral handoff, while the
+separable runtime remains owned and gated by `wizards-ink` and the OS adapter
+remains post-gate integration. Host tooling, third-party libraries and ports,
 and compatibility runtimes keep their appropriate languages.
 The finite work still permitted before that gate is the D-184
 [pre-Wizzy foundation register](docs/016-pre-wizzy-foundation.md); it separates
