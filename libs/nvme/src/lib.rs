@@ -607,7 +607,7 @@ impl Command {
         }
         let mut command = Self::empty(admin::IDENTIFY, id)
             .with_namespace(namespace)
-            .with_buffers(address, 0);
+            .with_buffer(address);
         command.words[10] = 0;
         Some(command)
     }
@@ -628,11 +628,10 @@ impl Command {
         self
     }
 
-    const fn with_buffers(mut self, prp1: u64, prp2: u64) -> Self {
+    // Every transfer is one contiguous extent, so PRP2 stays the zero `empty` wrote.
+    const fn with_buffer(mut self, prp1: u64) -> Self {
         self.words[6] = prp1 as u32;
         self.words[7] = (prp1 >> 32) as u32;
-        self.words[8] = prp2 as u32;
-        self.words[9] = (prp2 >> 32) as u32;
         self
     }
 
@@ -655,7 +654,7 @@ impl Command {
         if queue == 0 || !Self::contiguous_extent(address, capacity.completion_bytes(), page_size) {
             return None;
         }
-        let mut command = Self::empty(admin::CREATE_COMPLETION_QUEUE, id).with_buffers(address, 0);
+        let mut command = Self::empty(admin::CREATE_COMPLETION_QUEUE, id).with_buffer(address);
         command.words[10] = (capacity.as_zero_based() << 16) | queue as u32;
         command.words[11] = 1;
         Some(command)
@@ -676,7 +675,7 @@ impl Command {
         {
             return None;
         }
-        let mut command = Self::empty(admin::CREATE_SUBMISSION_QUEUE, id).with_buffers(address, 0);
+        let mut command = Self::empty(admin::CREATE_SUBMISSION_QUEUE, id).with_buffer(address);
         command.words[10] = (capacity.as_zero_based() << 16) | queue as u32;
         command.words[11] = ((completion_queue as u32) << 16) | 1;
         Some(command)
@@ -699,7 +698,7 @@ impl Command {
         let lba = transfer.lba();
         let mut command = Self::empty(nvm::READ, id)
             .with_namespace(namespace)
-            .with_buffers(address, 0);
+            .with_buffer(address);
         command.words[10] = lba as u32;
         command.words[11] = (lba >> 32) as u32;
         command.words[12] = transfer.zero_based_blocks() as u32;

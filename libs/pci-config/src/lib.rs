@@ -4338,9 +4338,11 @@ mod tests {
             .claim(command_address(1), HeaderType::from_bits(0))
             .expect("second function");
         let mut fake = FakeConfig::device();
+        fake.bars = [0x8000_0000, 0x9000_0000, 0, 0, 0, 0];
+        fake.masks = [0xFFFF_C000, 0xFFFF_F000, 0, 0, 0, 0];
         let (bars, mut state) = probe_claimed_bars(&mut functions, &first, &mut fake);
-        let bar = bind_memory_bar(&mut functions, &first, &bars, 0).expect("BAR0 authority");
-        assert_eq!(bar.index(), 0);
+        let bar = bind_memory_bar(&mut functions, &first, &bars, 1).expect("BAR1 authority");
+        assert_eq!(bar.index(), 1);
 
         let foreign = enable_memory_bar(&mut functions, &second, &bar, &mut state, |_, _| Some(0))
             .expect_err("a lease the authority was not bound to is refused on its own");

@@ -73,9 +73,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn x2apic_keeps_an_enable_bit_that_is_already_set() {
+    fn x2apic_keeps_every_bit_that_is_already_set() {
         let promoted = Base::from_bits(TYPICAL).x2apic();
         assert_eq!(promoted.bits() & TYPICAL, TYPICAL, "no bit is cleared");
+        let again = Base::from_bits(TYPICAL | X2APIC).x2apic();
+        assert_eq!(again.bits(), TYPICAL | X2APIC, "the door is idempotent");
     }
 
     /// What a bootstrap processor with an enabled xAPIC at the architectural
