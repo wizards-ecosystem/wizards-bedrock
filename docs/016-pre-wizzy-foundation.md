@@ -38,6 +38,54 @@ The OS-side foundation closes only when:
 3. every admitted P0 safe-boundary/device defect is closed.
 
 That closes the kernel foundation; it does not authorize Wizzy work here.
+
+## Status at the 2026-09-06 handoff
+
+`main` is a clean baseline: every commit from `e4e269a` onward passed the
+local gate or a stage-equivalent re-run, and the tree carries no uncommitted
+work. The day's work, in the order it landed:
+
+- `e4e269a` integrated the adversarial repair series (D-243 through D-291)
+  with D-292 (optimized orchestrator profile), D-293 (every `wost` static lock
+  reclaimed by the panic path, under a source contract), D-294 (registry
+  rebound once per audit round), D-295 (`Type::from` calls resolved by the
+  callee type's one audited implementation) and D-296 (three accessors nothing
+  called are gone). Gate run 4 passed on it and closed PW-121, PW-525,
+  PW-532, PW-533 and PW-544.
+- `c2c39c7` fixed the advisory qualification's expectation of the tool
+  (D-297); the real `cargo xtask qualify-advisory` then passed and PW-028
+  records it. `cargo xtask model-check` passed on `d87f632` and closed
+  PW-002.
+- `c17dabd` and `46ff365` closed what `cargo-mutants` found across the 26
+  host libraries; D-246 carries the complete grade and every adjudication.
+
+What remains, and exactly how to run it:
+
+1. **PW-001, the registry sweep.** `cargo xtask mutate` from a clean
+   checkout. It journals every outcome and resumes after interruption, and
+   about 209 of the 1,357 mutations boot QEMU, so plan for most of a day and
+   do not run anything CPU-heavy beside it. Its pass closes the 35 `READY`
+   rows that wait only on retained-mutation reds (PW-029, PW-117 to PW-133,
+   PW-206, PW-212, PW-213, PW-309, PW-518 to PW-526, PW-535 to PW-543 and
+   PW-011).
+2. **PW-025, the `xtask` grade.** The 26 libraries are graded and
+   adjudicated; `xtask` itself has about 3,460 mutants that each rebuild and
+   run its 622-test suite, roughly a day at four jobs:
+   `cargo mutants -p xtask --output <dir> --jobs 4 --timeout-multiplier 3 --no-shuffle`.
+   Adjudicate its misses the way D-246 records for the libraries, then append
+   the totals there.
+3. **VMware.** PW-003, PW-004, PW-201, PW-301, PW-305 and the hardware half of
+   PW-534 need Isaac's boots: `cargo xtask vmware` and `cargo xtask vmware
+   --shipped`, then `cargo xtask qualify-vmware` on each fresh transcript.
+4. **Evidence and phase close.** With the sweep, both VMware qualifications
+   and the advisory and model records present, `cargo xtask evidence` and
+   `cargo xtask verify-evidence` close PW-009 and the bundle clause of
+   PW-028; PW-006 then writes the phase-close ADR against that one commit,
+   and PW-005 is the final `cargo xtask ci` on it. PW-026 is the external
+   Codex Security scan and PW-010 the census synchronization that the
+   phase-close ADR binds.
+
+The compiler gate stays **CLOSED**; nothing above touches it.
 WZ-001 through WZ-004 are externally owned compiler-gate blockers in
 `wizards-ink`. Only after they pass together at one reachable revision may a
 separate gate-opening ADR record the pins, commands, hashes, runtime seam and
@@ -97,7 +145,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | PW-022 | DONE | P0 | A retained HostTest used an unbounded child capture, timeout could be misclassified as caught, and partial capture reservation could leak its first stream/directory | Give each exact host-test child a caller deadline plus bounded post-kill poll and capture cap, classify every control failure as inconclusive, and roll back each partially reserved stream | Parked/noisy/delayed-exit and injected second-stream fixtures return within the additive bounds without residue or a forged red; timeout-as-caught, skipped reap and skipped reservation mutations fail exact witnesses, with delegated process-tree containment remaining PW-013's limit |
 | PW-023 | DONE | P1 | Authoritative boot-image construction truncated `target/wizard-os.img` directly, trusted redirected target ancestry, and could lose the prior complete image on a late publication failure | Build through a same-directory `create_new` stage, sync and validate it, retain rollback authority, and publish only beneath the exact real target without writing the old inode | Link/redirect sentinels stay byte-identical, construction and late-publication failures preserve the prior complete image, and direct-write, parent and rollback mutations red their named host witnesses; concurrent same-authority pathname replacement remains the explicit no-directory-handle race |
 | PW-024 | DONE | P0 | Mutation snapshot/workspace copy creates nested parents before proving containment, restore compares bytes before validating the path, and source replacement unlinks the old authority before a fallible rename; a link can create outside directories or falsely accept external state, while publication failure can strand the workspace source | Validate every destination component beneath the exact canonical root before side effects or equality, and retain the old direct source as rollback authority until the replacement is published and validated | Redirect fixtures leave outside state unchanged and unaccepted, an injected late publication refusal restores the exact old source without staging residue, normal nested files round-trip, and independent confinement, fast-path and rollback mutations red their named host witnesses; concurrent same-authority replacement remains the explicit no-directory-handle race |
-| PW-025 | REQUIRED | P1 | The project-authored mutation registry and its checks can share blind spots, while the only recorded cargo-mutants attempt is a stale blocked research result | Freeze one clean commit and run unmodified cargo-mutants 27.1.0 over every host-testable workspace package in isolated work and target directories; archive exact commands and machine-readable results, then adjudicate every miss, timeout and unviable mutant | Record commit, version, package coverage and per-package/overall totals; zero unadjudicated misses, timeouts or build failures; every actionable survivor receives a test/fix and the complete current-source grade is rerun; D-246 records the factual grade |
+| PW-025 | REQUIRED | P1 | The project-authored mutation registry and its checks can share blind spots; before 2026-09-06 the only recorded cargo-mutants attempt was a stale blocked research result | The 26 host libraries are graded: cargo-mutants 27.1.0 ran unmodified per package in isolated work, target and output directories on 95c88f2, then completely again on c17dabd and 46ff365 after every actionable miss got a test or simplification; `xtask` (about 3,460 mutants, each rebuilding its 622-test suite) still needs the same grade, then D-246 gains its totals | The final grade on 46ff365 tested 3,422 mutants: 3,072 caught, 90 missed, 248 unviable, 12 timeouts, every miss an adjudicated equivalent and no unadjudicated timeout, unviable mutant or build failure; D-246 records every gap, fix and equivalence argument, and the machine-readable outcomes and commands sit under `target/qualification/cargo-mutants/<commit>/`; close on the `xtask` grade |
 | PW-026 | REQUIRED | P1 | The accumulated kernel and qualification changes have no current variance-reducing multi-pass Codex Security result bound to the closing source; a 2026-09-05 launch stopped before creating a scan because this host supplied no managed filesystem permission profile | Freeze one clean final commit; under a managed read-only permission profile run the authorized repository-wide pre-Wizzy Codex Security deep scan, validate and fix every reportable in-scope finding, then complete the canonical rerun | Record exact commit, scope, workflow and canonical artifact identity; zero undisposed validated P0/P1 findings; every fix has regression proof; any accepted deferral has explicit rationale and a register row; the phase-close ADR links the final report |
 | PW-027 | DONE | P1 | D-141's stopped condition fired when D-182 added trap-served authority-producing Duplicate, but the retained arena check explicitly does not reproduce a two-caller interleaving | D-255 records that `Arena::claim` selects and fills through one `&mut Arena` under the sole global guard, so no split scheduling window exists | Removing the install from `Arena::claim` makes `filling the arena never repeats a slot` reuse the same index and generation; the retained mutation and restored 247-check release boot pass |
 | PW-028 | REQUIRED | P1 | D-274 implements D-220's bounded, source-bound advisory qualification, but no fresh RustSec execution or replayable closing bundle exists for the current source; its first real run failed because `cargo-audit` 0.22.2 names the database commit only when it fetches, so the pinned `--no-fetch` report D-274 required to name the revision carries null identity | D-297 records the population run as the tool's attestation of the fetched revision and binds the pinned verdict by the checkout identity proven around it; on the clean closing commit run `cargo xtask qualify-advisory` with the resolved `cargo-audit` 0.22.2, then create and independently verify the evidence bundle without changing source or qualification bytes | 2026-09-06 `cargo xtask qualify-advisory` passed on commit c2c39c7 with `cargo-audit-audit 0.22.2` against RustSec revision 5a0ebedf (1,239 advisories, updated 2026-09-02): both transcripts record zero vulnerabilities and no warnings for the exact `Cargo.lock` under the empty-ignore policy, and the record binds tool, database identity, UTC observation and both canonical transcripts; the closing evidence bundle still waits on the VMware and mutation qualifications |
