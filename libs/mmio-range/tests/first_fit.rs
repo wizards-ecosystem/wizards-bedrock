@@ -51,3 +51,16 @@ fn every_small_first_fit_matches_a_bytewise_oracle() {
 
     assert_eq!(checked, 175_232);
 }
+
+#[test]
+fn a_zero_length_or_unaligned_request_is_refused_before_any_search() {
+    let window = AddressRange::new(0, 64).expect("window");
+    let occupied: [Option<AddressRange>; 0] = [];
+    assert_eq!(first_fit_by(window, 0, 8, &occupied, |range| *range), None);
+    assert_eq!(first_fit_by(window, 8, 0, &occupied, |range| *range), None);
+    assert_eq!(first_fit_by(window, 8, 3, &occupied, |range| *range), None);
+    assert_eq!(
+        first_fit_by(window, 8, 8, &occupied, |range| *range),
+        Some(0)
+    );
+}

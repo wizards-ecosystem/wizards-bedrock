@@ -510,6 +510,7 @@ impl FramebufferLayout {
             return None;
         }
 
+        let stride_words = self.pitch / WORD_SIZE;
         let rows = rows
             .min(self.height.saturating_sub(from_y))
             .min(self.height.saturating_sub(to_y));
@@ -519,25 +520,17 @@ impl FramebufferLayout {
                 destination_word: 0,
                 destination_offset: 0,
                 row_words: self.width,
-                stride_words: self.pitch / WORD_SIZE,
+                stride_words,
                 pitch: self.pitch,
                 remaining: 0,
             });
         }
 
-        let stride_words = self.pitch / WORD_SIZE;
+        // Rows are clipped to the height and the constructor keeps every row
+        // inside `pitch × height`, so no plan can leave the span.
         let source_word = from_y.checked_mul(stride_words)?;
         let destination_word = to_y.checked_mul(stride_words)?;
         let destination_offset = to_y.checked_mul(self.pitch)?;
-        let last_source = source_word.checked_add((rows - 1).checked_mul(stride_words)?)?;
-        let last_destination =
-            destination_word.checked_add((rows - 1).checked_mul(stride_words)?)?;
-        let span_words = self.span / WORD_SIZE;
-        if last_source.checked_add(self.width)? > span_words
-            || last_destination.checked_add(self.width)? > span_words
-        {
-            return None;
-        }
 
         Some(RowCopyPlan {
             source_word,

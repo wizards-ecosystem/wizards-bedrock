@@ -72,6 +72,12 @@ impl Base {
 mod tests {
     use super::*;
 
+    #[test]
+    fn x2apic_keeps_an_enable_bit_that_is_already_set() {
+        let promoted = Base::from_bits(TYPICAL).x2apic();
+        assert_eq!(promoted.bits() & TYPICAL, TYPICAL, "no bit is cleared");
+    }
+
     /// What a bootstrap processor with an enabled xAPIC at the architectural
     /// default address reports.
     const TYPICAL: u64 = 0xFEE0_0900;

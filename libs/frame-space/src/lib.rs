@@ -596,6 +596,20 @@ mod tests {
     }
 
     #[test]
+    fn a_run_that_leaves_the_space_reports_the_ceiling_before_any_frame() {
+        let mut space = Small::new();
+        space.insert(0, FRAME_SIZE * 8);
+        let run = space.allocate_contiguous(4, 1).expect("eight are free");
+        space.free(run + 1).expect("one frame inside the run");
+
+        assert_eq!(
+            space.free_contiguous(run, Small::FRAME_COUNT + 1),
+            Err(FreeError::NotManaged(Small::FRAME_COUNT))
+        );
+        assert!(!space.is_free(run), "a refused release changes nothing");
+    }
+
+    #[test]
     fn a_release_range_that_wraps_is_refused() {
         let mut space = Small::new();
         space.insert(FRAME_SIZE, FRAME_SIZE);

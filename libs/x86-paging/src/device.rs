@@ -141,6 +141,34 @@ mod tests {
     }
 
     #[test]
+    fn a_checked_range_reports_its_first_register_byte() {
+        let range = DeviceRange::new(0xFEE0_0010, 8, width(40)).unwrap();
+        assert_eq!(range.physical(), 0xFEE0_0010);
+        assert_eq!(range.page_start(), 0xFEE0_0000);
+        assert_eq!(range.page_end(), 0xFEE0_1000);
+    }
+
+    #[test]
+    fn every_range_error_names_its_position() {
+        for (error, expected) in [
+            (DeviceRangeError::Empty, "empty"),
+            (DeviceRangeError::Unaligned(0xFEE0_0001), "0xfee00001"),
+            (DeviceRangeError::Overflow, "overflow"),
+            (
+                DeviceRangeError::OutsideWidth {
+                    bits: 36,
+                    page_start: 0x10_0000_0000,
+                    page_end: 0x10_0000_1000,
+                },
+                "36",
+            ),
+        ] {
+            let text = error.to_string();
+            assert!(text.contains(expected), "{error:?} rendered as {text:?}");
+        }
+    }
+
+    #[test]
     fn each_runtime_width_accepts_its_last_page_and_refuses_the_next() {
         for bits in [36, 40, 46, 52] {
             let limit = 1_u64 << bits;

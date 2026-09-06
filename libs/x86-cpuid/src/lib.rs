@@ -388,6 +388,21 @@ mod tests {
                 | if selection & 4 != 0 { 1 << 11 } else { 0 };
             assert_eq!(additions.apply(FIRMWARE), expected);
         }
+
+        const HELD: u64 = (1 << 20) | (1 << 21) | (1 << 11);
+        let repeated = Cr4Additions::none()
+            .with_smep()
+            .with_smep()
+            .with_smap()
+            .with_smap()
+            .with_umip()
+            .with_umip();
+        assert_eq!(repeated.apply(0), HELD, "each door is idempotent");
+        assert_eq!(
+            repeated.apply(HELD),
+            HELD,
+            "applying never clears a held bit"
+        );
     }
 
     #[test]

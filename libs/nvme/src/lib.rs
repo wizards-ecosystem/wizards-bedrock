@@ -1800,6 +1800,50 @@ mod tests {
     }
 
     #[test]
+    fn queue_commands_encode_every_dword_field_where_the_specification_puts_it() {
+        const PAGE: u64 = 4096;
+        const HIGH: u64 = 0x1_2345_6000;
+        let capacity = Capacity::new(256).expect("a queue capacity");
+
+        let completion = Command::create_completion_queue(11, 3, capacity, HIGH, PAGE)
+            .expect("a completion queue above 4 GiB");
+        let bytes = completion.to_bytes();
+        assert_eq!(
+            &bytes[24..32],
+            &HIGH.to_le_bytes(),
+            "PRP1 carries both halves"
+        );
+        assert_eq!(
+            &bytes[40..44],
+            &((255u32 << 16) | 3).to_le_bytes(),
+            "QSIZE | QID"
+        );
+        assert_eq!(&bytes[44..48], &1u32.to_le_bytes(), "physically contiguous");
+
+        let submission = Command::create_submission_queue(12, 5, 3, capacity, HIGH, PAGE)
+            .expect("a submission queue bound to its completion queue");
+        let bytes = submission.to_bytes();
+        assert_eq!(&bytes[24..32], &HIGH.to_le_bytes());
+        assert_eq!(
+            &bytes[40..44],
+            &((255u32 << 16) | 5).to_le_bytes(),
+            "QSIZE | QID"
+        );
+        assert_eq!(
+            &bytes[44..48],
+            &((3u32 << 16) | 1).to_le_bytes(),
+            "CQID | PC"
+        );
+
+        let queues = Command::number_of_queues(0x1234, 3, 5).expect("three and five queues");
+        assert_eq!(
+            &queues.to_bytes()[44..48],
+            &((4u32 << 16) | 2).to_le_bytes(),
+            "NCQR | NSQR, zero based"
+        );
+    }
+
+    #[test]
     fn queue_commands_bind_the_complete_contiguous_extent() {
         const PAGE: u64 = 4096;
         const WRAPPING_PAGE: u64 = u64::MAX - (PAGE - 1);

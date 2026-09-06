@@ -544,6 +544,44 @@ mod tests {
     }
 
     #[test]
+    fn a_layout_reports_its_bytes_and_every_error_names_its_word() {
+        let layout = SharedLayout::new(16, [4, 12]).expect("two disjoint words");
+        assert_eq!(layout.bytes(), 16);
+
+        for (error, expected) in [
+            (SharedLayoutError::Empty, "empty"),
+            (SharedLayoutError::PublicationRangeOverflow(7), "7"),
+            (SharedLayoutError::PublicationOutOfBounds(16), "16"),
+            (SharedLayoutError::PublicationMisaligned(3), "3"),
+            (
+                SharedLayoutError::PublicationOverlap {
+                    first: 4,
+                    second: 6,
+                },
+                "6",
+            ),
+        ] {
+            let text = error.to_string();
+            assert!(text.contains(expected), "{error:?} rendered as {text:?}");
+        }
+    }
+
+    #[test]
+    fn claiming_exactly_the_posted_head_reaps_everything() {
+        let mut queues = Queues::new(capacity(4), capacity(8)).expect("a usable pair");
+        queues.completion.head = 10;
+        queues.completion.tail = 13;
+
+        assert_eq!(
+            queues.reap_up_to(13),
+            3,
+            "the posted head itself is reapable"
+        );
+        assert_eq!(queues.completion.head(), 13);
+        assert_eq!(queues.reap_up_to(13), 0, "nothing remains");
+    }
+
+    #[test]
     fn malformed_publication_partitions_are_refused_exactly() {
         assert_eq!(SharedLayout::<0>::new(0, []), Err(SharedLayoutError::Empty));
         assert_eq!(

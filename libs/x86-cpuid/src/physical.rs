@@ -43,6 +43,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_decoded_width_reports_its_bits() {
+        for bits in [32_u8, 36, 40, 46, 52] {
+            let width =
+                PhysicalAddressWidth::from_leaf(ADDRESS_SIZE_LEAF, u32::from(bits)).unwrap();
+            assert_eq!(width.bits(), bits);
+        }
+    }
+
+    #[test]
     fn every_reported_byte_is_either_supported_or_refused() {
         for bits in u8::MIN..=u8::MAX {
             let decoded = PhysicalAddressWidth::from_leaf(ADDRESS_SIZE_LEAF, u32::from(bits));

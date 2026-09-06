@@ -223,6 +223,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_lifecycle_error_renders_text() {
+        for text in [
+            BeginError::InProgress.to_string(),
+            BeginError::Ready.to_string(),
+            BeginError::Poisoned.to_string(),
+            ProgressError::InterruptsEnabled.to_string(),
+            ProgressError::OutOfOrder.to_string(),
+            ProgressError::Incomplete.to_string(),
+            ProgressError::Settled.to_string(),
+        ] {
+            assert!(text.contains("local apic"), "{text:?}");
+        }
+    }
+
+    #[test]
     fn every_stored_state_round_trips() {
         for state in [
             Lifecycle::Cold,

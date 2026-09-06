@@ -4313,6 +4313,156 @@ mod tests {
     }
 
     #[test]
+    fn every_error_text_names_its_condition() {
+        for (text, expected) in [
+            (FunctionClaimError::Taken.to_string(), "claimed"),
+            (FunctionReleaseError::Active.to_string(), "sublease"),
+            (BarAuthorityError::Busy.to_string(), "mapping authority"),
+            (BarIdentityError::Changed.to_string(), "changed"),
+            (
+                BarEnableError::Identity(BarIdentityError::Access).to_string(),
+                "unreadable",
+            ),
+        ] {
+            assert!(text.contains(expected), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_bar_authority_names_its_index_and_refuses_foreign_or_forged_identities() {
+        let mut functions = FunctionClaims::<2>::new();
+        let first = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("first function");
+        let second = functions
+            .claim(command_address(1), HeaderType::from_bits(0))
+            .expect("second function");
+        let mut fake = FakeConfig::device();
+        let (bars, mut state) = probe_claimed_bars(&mut functions, &first, &mut fake);
+        let bar = bind_memory_bar(&mut functions, &first, &bars, 0).expect("BAR0 authority");
+        assert_eq!(bar.index(), 0);
+
+        let foreign = enable_memory_bar(&mut functions, &second, &bar, &mut state, |_, _| Some(0))
+            .expect_err("a lease the authority was not bound to is refused on its own");
+        assert_eq!(foreign, BarEnableError::Identity(BarIdentityError::Stale));
+
+        let unmapped = BarAuthority {
+            function: bar.function,
+            index: 2,
+            window: bar.window,
+        };
+        let stale = enable_memory_bar(&mut functions, &first, &unmapped, &mut state, |_, _| {
+            Some(0)
+        })
+        .expect_err("an index the registry never mapped is stale");
+        assert_eq!(stale, BarEnableError::Identity(BarIdentityError::Stale));
+        let refused = release_memory_bar(&mut functions, unmapped)
+            .expect_err("an index the registry never mapped cannot be released");
+        assert_eq!(refused.to_string(), BarAuthorityError::Stale.to_string());
+
+        release_memory_bar(&mut functions, bar).expect("the real authority returns");
+        let held = release_function(&mut functions, first)
+            .expect_err("a function with a live probe sublease stays claimed");
+        assert!(held.to_string().contains("sublease"), "{held}");
+        release_function(&mut functions, second).expect("an idle function releases");
+    }
+
+    #[test]
+    fn enabling_memory_decode_keeps_a_firmware_enabled_bit_and_refuses_a_retired_phase() {
+        let mut functions = FunctionClaims::<1>::new();
+        let function = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("function authority");
+        let mut fake = FakeConfig::device();
+        let (bars, mut state) = probe_claimed_bars(&mut functions, &function, &mut fake);
+        let bar = bind_memory_bar(&mut functions, &function, &bars, 0).expect("BAR0 authority");
+
+        // The second admission finds decode already enabled and must keep it.
+        for admission in 0..2 {
+            let _ = enable_memory_bar(&mut functions, &function, &bar, &mut state, |_, event| {
+                match event {
+                    BarEnableAccess::ReadBar(index) => Some(fake.bars[index]),
+                    BarEnableAccess::Command(access) => fake_command_access(&mut fake, access),
+                }
+            });
+            assert_ne!(
+                fake.command & command::MEMORY_SPACE,
+                0,
+                "admission {admission} keeps decode"
+            );
+            assert_eq!(
+                fake.command & command::BUS_MASTER,
+                0,
+                "admission {admission}"
+            );
+        }
+
+        state.phase = CommandPhase::Restoring(fake.command);
+        let stale =
+            enable_memory_bar(
+                &mut functions,
+                &function,
+                &bar,
+                &mut state,
+                |_, event| match event {
+                    BarEnableAccess::ReadBar(index) => Some(fake.bars[index]),
+                    BarEnableAccess::Command(access) => fake_command_access(&mut fake, access),
+                },
+            )
+            .expect_err("a command transaction outside its installed phase is stale");
+        assert_eq!(stale, BarEnableError::Command(EnableError::Stale));
+    }
+
+    #[test]
+    fn a_command_readback_that_differs_after_restoration_is_reported() {
+        fn claimed() -> (FunctionClaims<1>, FunctionAuthority) {
+            let mut functions = FunctionClaims::<1>::new();
+            let authority = functions
+                .claim(command_address(0), HeaderType::from_bits(0))
+                .expect("function authority");
+            (functions, authority)
+        }
+        fn position(fake: &FakeConfig, want: impl Fn(&ProbeAccess) -> bool, last: bool) -> usize {
+            let events = fake.events();
+            let matches = |event: &Option<ProbeAccess>| event.as_ref().is_some_and(&want);
+            let found = if last {
+                events.iter().rposition(matches)
+            } else {
+                events.iter().position(matches)
+            };
+            found.expect("the rehearsal performed the access")
+        }
+
+        let (mut rehearsal, rehearsed) = claimed();
+        let mut clean = FakeConfig::device();
+        let _ = probe_claimed_bars(&mut rehearsal, &rehearsed, &mut clean);
+        let first_bar_write = position(
+            &clean,
+            |event| matches!(event, ProbeAccess::WriteBar(..)),
+            false,
+        );
+
+        let (mut rehearsal, rehearsed) = claimed();
+        let mut failing = FakeConfig::device();
+        failing.fail_at = Some(first_bar_write);
+        let _ = super::probe_bars(&mut rehearsal, &rehearsed, |_, event| failing.access(event))
+            .expect_err("the refused BAR write fails the probe");
+        let restore_write = position(
+            &failing,
+            |event| matches!(event, ProbeAccess::WriteCommand(_)),
+            true,
+        );
+
+        let (mut functions, authority) = claimed();
+        let mut fake = FakeConfig::device();
+        fake.fail_at = Some(first_bar_write);
+        fake.ignore_write_at = Some(restore_write);
+        let failure = super::probe_bars(&mut functions, &authority, |_, event| fake.access(event))
+            .expect_err("the device ignored the command restore after a failed probe");
+        assert_eq!(failure.reason(), &ProbeError::RestoreChanged);
+    }
+
+    #[test]
     fn a_bar_mapping_authority_is_linear_and_bound_to_its_probe_function() {
         let mut functions = FunctionClaims::<2>::new();
         let first = functions

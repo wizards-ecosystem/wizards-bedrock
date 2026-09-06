@@ -571,10 +571,6 @@ const fn decode_slot(slot: &[u8; ENTRY_BYTES]) -> Slot {
             index += 1;
         }
     }
-    if (len == 1 && name[0] == b'.') || (len == 2 && name[0] == b'.' && name[1] == b'.') {
-        return Slot::Skip;
-    }
-
     let high = u16::from_le_bytes([slot[20], slot[21]]) as u32;
     if high & 0xF000 != 0 {
         return Slot::Skip;
@@ -1798,6 +1794,32 @@ mod tests {
             panic!("a usable entry");
         };
         assert_eq!(leading_extension.name(), b"LEAD.X");
+    }
+
+    #[test]
+    fn a_full_eight_three_name_unpacks_under_any_attribute_byte() {
+        let mut slot = [0u8; ENTRY_BYTES];
+        slot[0..11].copy_from_slice(b"FILENAMEEXT");
+        slot[11] = attribute::READ_ONLY;
+        let Slot::Entry(entry) = decode_slot(&slot) else {
+            panic!("a usable entry");
+        };
+        assert_eq!(entry.name(), b"FILENAME.EXT");
+
+        let mut bad_extension = [0u8; ENTRY_BYTES];
+        bad_extension[0..11].copy_from_slice(b"FILE    T*X");
+        bad_extension[11] = attribute::READ_ONLY;
+        assert_eq!(decode_slot(&bad_extension), Slot::Skip);
+    }
+
+    #[test]
+    fn dot_entries_are_skipped_as_invalid_short_names() {
+        for name in [b".          ", b"..         "] {
+            let mut slot = [0u8; ENTRY_BYTES];
+            slot[0..11].copy_from_slice(name);
+            slot[11] = attribute::DIRECTORY;
+            assert_eq!(decode_slot(&slot), Slot::Skip);
+        }
     }
 
     #[test]
