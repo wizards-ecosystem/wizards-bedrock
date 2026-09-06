@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/os-header.png" alt="The Wizard's OS" width="100%">
+</p>
+
 # The Wizard's OS 🧙
 
 A from-scratch operating system: Rust kernel, x86_64, UEFI, booted by
@@ -45,7 +49,7 @@ after installing rustup so `cargo` is on PATH; the pinned toolchain and
 cargo xtask build              # compile the kernel (x86_64-unknown-none)
 cargo xtask image              # build target/wizard-os.img — bootable UEFI disk image
 cargo xtask run                # boot it in QEMU (serial output on stdio)
-cargo xtask vmware             # generate the self-test VM in vm/
+cargo xtask vmware             # generate the self-test VM in vm/self-test/
 cargo xtask vmware --shipped   # generate the user-facing VM in vm/shipped/
 cargo xtask help               # every task, including the check tasks below
 ```
@@ -74,10 +78,12 @@ Open a fresh terminal after the WinGet install, or set `GDB` to the exact
 cargo xtask ci       # run the complete local gate below
 ```
 
-`ci` is the only gate — there is no hosted CI (D-26). `cargo xtask help` lists
-every task and renders this same registry. The marked section is checked byte
-for byte against the registry that execution iterates, so changing a Cargo
-graph or gate stage requires a reviewable documentation change (D-212).
+`ci` is the ordinary local source gate; there is no hosted CI (D-26). Phase
+close additionally requires the exceptional qualifications listed below.
+`cargo xtask help` lists every task and renders this same registry. The marked
+section is checked byte for byte against the registry that execution iterates,
+so changing a Cargo graph or gate stage requires a reviewable documentation
+change (D-212).
 
 <!-- CI-REGISTRY:START -->
 Cargo graphs used by each Cargo-driven gate stage:
@@ -111,18 +117,25 @@ Ordered `cargo xtask ci` stages:
 processor with no x2APIC. It requires both refusals, the hardware-free tmpfs and
 devfs surveys, and a steady state rather than a triple fault.
 
-Five tasks are deliberately **not** in `ci`: `debug` needs the pinned native
+Seven tasks are deliberately **not** in `ci`: `debug` needs the pinned native
 GDB and is normally interactive, `model-check` needs TLC and Java, `vmware`
-needs VMware Workstation to boot the result, `mutate` needs one QEMU boot per
-known defect, and `baseline` needs six QEMU boots for descriptive measurements
-rather than correctness. A gate step that fails for want of an exceptional
-tool or a long qualification teaches people to skip the gate.
+needs VMware Workstation to boot the result, `qualify-vmware` validates the
+fresh transcript after that human boot, `mutate` needs one QEMU boot per known
+defect, `baseline` needs six QEMU boots for descriptive measurements, and
+`qualify-advisory` needs `cargo-audit` plus fresh RustSec data. A gate step that
+fails for want of an exceptional tool or a long qualification teaches people
+to skip the gate.
 `model-check` prints the exact resolved Java identity before invoking it;
 `vmware` prints the image kind, exact byte length and SHA-256 digest, resolved
 `vmrun` identity and a fully quoted launch command when Workstation is
 installed, or names that dependency as unavailable without blocking VM
 generation. Self-test and shipped generation use separate machine state and
 start with separate empty serial transcripts (D-218, D-235).
+After booting each generated machine and completing its human input rounds, run
+`cargo xtask qualify-vmware` for self-test and
+`cargo xtask qualify-vmware --shipped` for the shipped image. Qualification
+validates and preserves each
+fresh transcript; generation alone is not phase-close execution evidence.
 
 `cargo xtask baseline` builds the fixed-QEMU self-test image once in release
 and debug modes, then boots each three times. It requires a clean ordinary
@@ -143,10 +156,12 @@ deterministic bundle under `target/evidence/`; `cargo xtask verify-evidence`
 then rechecks its source identity, installed tool and firmware identities,
 vendored and machine inputs, artifact hashes, reproducibility result and boot
 result without network access. The QEMU hardware ABI is pinned to
-`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v2 always carries
-Java and VMware state, version and executable digest fields—even when either
-tool is unavailable—so verification reports the exact missing or changed
-qualification dependency rather than changing schema (D-218).
+`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v5 requires
+source-bound records for the current mutation sweep, the fresh RustSec review,
+all model runs and both generated-and-booted VMware selectors, plus fixed-shape
+Java and VMware tool identities. Verification therefore rejects an
+unavailable, stale, omitted or changed phase-close qualification rather than
+changing schema (D-218, D-244).
 
 `test` runs the host suite; `test-boot` boots a kernel built with the
 `selftest` feature headless in QEMU, injects a keystroke over QMP when the
@@ -155,12 +170,12 @@ is how anything needing a real machine gets tested (D-28). `doc` exists to
 make the rustdoc link lints fire — nothing else in the gate runs rustdoc, so
 without it a doc link can rot unnoticed (D-22).
 
-`api-audit` uses stable rustc's resolved deprecation diagnostics across every
-registered Cargo graph to require a real caller for each public `libs/` and
-`wost` item declaration or enum variant. It distinguishes same-name items and
-does not treat re-exports or documentation as callers; fields remain outside
-the claim because rustc does not diagnose every live destructuring pattern
-(D-213).
+`api-audit` builds every registered target graph offline and requires an exact
+compiler-resolved caller for each public `libs/` and `wost` item or enum
+variant. Caller evidence is bound to its package, target, source origin and
+compiler inputs; an unclassified source shape fails closed. Re-exports and
+documentation do not count, and fields remain outside the claim because stable
+rustc does not diagnose every live destructuring pattern (D-213, D-275).
 
 Every Cargo-driven check runs over every graph in the registry above. A Cargo
 feature is a different crate graph, and linting only one of them is how two
@@ -183,6 +198,11 @@ nightly). Bare cargo commands are therefore scoped to the host half by
 | `cargo kclippy` | the same for clippy |
 | `cargo kbuild` | a release kernel build |
 
+`cargo xtask` is an alias as well. It runs the orchestrator under the optimized
+`xtask` profile, so the tool hashes and parses the tree at full speed while
+every graph it audits, every host test and the mutation workspace keep the
+plain `dev` profile (D-292).
+
 **Never set the `RUSTFLAGS` environment variable here.** It replaces the
 `[target.x86_64-unknown-none]` rustflags in `.cargo/config.toml`, and the
 kernel would link without `code-model=kernel` — a broken higher-half image
@@ -201,6 +221,7 @@ libs/       shared no_std crates: pure logic, host-testable (including
             memory-map, frame-space, ring-proto, and architecture encodings)
 xtask/      build orchestrator: pure-Rust disk imaging, QEMU/VMware runners
 boot/       limine.conf + vendored Limine UEFI binary (digest-pinned)
+handoff/    synthetic route-neutral envelope/payload fixtures, not Wizzy source
 docs/       design docs (design-first: docs before code)
 userland/   native ABI header + the uncompiled mlibc pressure test from Phase 5
 ports/      (future) recipes for mlibc, CPython, links, NetSurf

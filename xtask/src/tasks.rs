@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 
 use crate::cargo::{self, Profile};
 use crate::cli::{CleanScope, FmtMode};
@@ -134,8 +134,26 @@ pub(crate) fn boot_shipped_image(paths: &Paths, image: &std::path::Path) -> Resu
 
 /// Boot without PCI configuration or x2APIC and require both refusals.
 pub fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
+    match observe_degraded_boot(paths, profile)? {
+        qemu::DegradedOutcome::Settled => {
+            println!(
+                "[xtask] degraded kernel keeps optional protection fallback diagnostic-only and settles"
+            );
+            Ok(())
+        }
+        qemu::DegradedOutcome::Panicked { transcript, .. } => {
+            anyhow::bail!("the degraded kernel panicked during the settle window: {transcript}")
+        }
+    }
+}
+
+/// Boot a degraded kernel while preserving a valid terminal panic.
+pub(crate) fn observe_degraded_boot(
+    paths: &Paths,
+    profile: Profile,
+) -> Result<qemu::DegradedOutcome> {
     let image = image::build_degraded_for_run(paths, profile)?;
-    qemu::run_degraded_check(paths, image.path(), BOOT_SETTLE)
+    qemu::observe_degraded(paths, image.path(), BOOT_SETTLE)
 }
 
 /// Seconds of running after the kernel says it has settled, so one that dies
@@ -171,13 +189,44 @@ pub fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
     cargo::run(paths, "clean", ["clean"])?;
     if scope == CleanScope::Everything {
         let vm_dir = paths.vm_dir();
-        if vm_dir.exists() {
-            std::fs::remove_dir_all(&vm_dir)
-                .with_context(|| format!("removing {}", vm_dir.display()))?;
+        if remove_vm_directory(paths.root(), &vm_dir)? {
             println!("[xtask] removed {}", vm_dir.display());
         }
     }
     Ok(())
+}
+
+fn remove_vm_directory(root: &std::path::Path, directory: &std::path::Path) -> Result<bool> {
+    match std::fs::symlink_metadata(directory) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("inspecting {}", directory.display()));
+        }
+    }
+    let canonical_directory = validated_vm_cleanup_directory(root, directory)?;
+    ensure!(
+        validated_vm_cleanup_directory(root, directory)? == canonical_directory,
+        "VMware cleanup path changed before recursive deletion"
+    );
+    std::fs::remove_dir_all(&canonical_directory)
+        .with_context(|| format!("removing {}", canonical_directory.display()))?;
+    Ok(true)
+}
+
+fn validated_vm_cleanup_directory(
+    root: &std::path::Path,
+    directory: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    ensure!(
+        directory == root.join("vm"),
+        "VMware cleanup target is not the exact allowlisted repository child"
+    );
+    let canonical_directory = crate::mutation_workspace::canonical_existing_real_directory(
+        directory,
+        "VMware cleanup directory",
+    )?;
+    Ok(canonical_directory)
 }
 
 /// Run `subcommand` over every registered Cargo graph.
@@ -232,6 +281,39 @@ fn pass_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static NEXT_CLEAN_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    #[cfg(unix)]
+    fn create_directory_symlink(target: &std::path::Path, link: &std::path::Path) {
+        std::os::unix::fs::symlink(target, link).expect("creating cleanup directory symlink");
+    }
+
+    #[cfg(windows)]
+    fn create_directory_symlink(target: &std::path::Path, link: &std::path::Path) {
+        std::os::windows::fs::symlink_dir(target, link)
+            .expect("creating cleanup directory symlink");
+    }
+
+    #[cfg(unix)]
+    fn remove_directory_symlink(path: &std::path::Path) {
+        std::fs::remove_file(path).expect("removing cleanup directory symlink");
+    }
+
+    #[cfg(windows)]
+    fn remove_directory_symlink(path: &std::path::Path) {
+        std::fs::remove_dir(path).expect("removing cleanup directory symlink");
+    }
+
+    fn clean_fixture(label: &str) -> std::path::PathBuf {
+        let nonce = NEXT_CLEAN_FIXTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let fixture = std::env::temp_dir().join(format!(
+            "wizard-clean-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&fixture).expect("cleanup fixture");
+        fixture
+    }
 
     const PIXEL: &[&str] = &["pixel"];
 
@@ -313,9 +395,8 @@ mod tests {
         assert_eq!(args, ["doc", "--package", "pixel"]);
     }
 
-    /// The hole this table closes: the gate used to lint the kernel only with
-    /// the self-test feature on, so the configuration that ships was never
-    /// linted at all, and two `dead_code` warnings rode a release image out.
+    /// Both shipped and self-test feature graphs must be linted because one
+    /// graph can hide dead code in the other.
     #[test]
     fn the_gate_covers_every_kernel_feature_graph_it_boots() {
         let kernel: Vec<Option<&str>> = gate::REGISTRY
@@ -379,5 +460,45 @@ mod tests {
                 pass.label()
             );
         }
+    }
+
+    #[test]
+    fn recursive_vm_cleanup_is_confined_to_one_real_repository_child() {
+        let fixture = clean_fixture("confined");
+        let repository = fixture.join("repository");
+        std::fs::create_dir_all(repository.join("vm")).unwrap();
+        let outside = repository.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        let sentinel = outside.join("sentinel");
+        std::fs::write(&sentinel, b"outside authority").unwrap();
+
+        assert!(remove_vm_directory(&repository, &outside).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
+        assert!(remove_vm_directory(&repository, &repository.join("vm")).unwrap());
+        assert!(!repository.join("vm").exists());
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn recursive_vm_cleanup_refuses_redirected_paths_without_touching_the_target() {
+        let fixture = clean_fixture("redirected");
+        let repository = fixture.join("repository");
+        let redirected = repository.join("redirected");
+        std::fs::create_dir_all(&redirected).unwrap();
+        let sentinel = redirected.join("sentinel");
+        std::fs::write(&sentinel, b"outside authority").unwrap();
+        create_directory_symlink(&redirected, &repository.join("vm"));
+
+        assert!(remove_vm_directory(&repository, &repository.join("vm")).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
+        remove_directory_symlink(&repository.join("vm"));
+        std::fs::create_dir(repository.join("vm")).unwrap();
+
+        let linked_repository = fixture.join("repository-link");
+        create_directory_symlink(&repository, &linked_repository);
+        assert!(remove_vm_directory(&linked_repository, &linked_repository.join("vm")).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
+        remove_directory_symlink(&linked_repository);
+        std::fs::remove_dir_all(fixture).unwrap();
     }
 }

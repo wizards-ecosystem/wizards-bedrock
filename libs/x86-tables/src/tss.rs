@@ -43,16 +43,6 @@ impl TaskState {
         self.privilege_stacks[level] = top;
     }
 
-    /// The stack for ring `level`.
-    ///
-    /// # Panics
-    ///
-    /// As [`set_privilege_stack`](Self::set_privilege_stack).
-    pub const fn privilege_stack(&self, level: usize) -> u64 {
-        assert!(level < PRIVILEGE_STACKS, "there are three privilege stacks");
-        self.privilege_stacks[level]
-    }
-
     /// Byte offset of privilege-stack entry `level` inside the segment.
     ///
     /// Exists for the same reason the interrupt-stack one does: a targeted
@@ -124,24 +114,6 @@ impl TaskState {
         );
         self.interrupt_stacks[index - 1] = top;
     }
-
-    /// The stack interrupt stack table entry `index` names, or zero if unset.
-    ///
-    /// # Panics
-    ///
-    /// Panics unless `index` is between 1 and 7.
-    pub const fn interrupt_stack(&self, index: usize) -> u64 {
-        assert!(
-            index.wrapping_sub(1) < INTERRUPT_STACKS,
-            "the interrupt stack table is indexed from 1 and has seven entries"
-        );
-        self.interrupt_stacks[index - 1]
-    }
-
-    /// Offset at which the I/O permission bitmap would begin.
-    pub const fn iomap_base(&self) -> u16 {
-        self.iomap_base
-    }
 }
 
 impl Default for TaskState {
@@ -182,7 +154,19 @@ mod tests {
 
     #[test]
     fn an_empty_segment_puts_its_bitmap_past_its_own_limit() {
-        assert_eq!(TaskState::new().iomap_base(), 104);
+        let iomap_base = TaskState::new().iomap_base;
+        assert_eq!(iomap_base, 104);
+    }
+
+    #[test]
+    fn debug_reports_the_mutable_state() {
+        let mut task_state = TaskState::new();
+        task_state.set_interrupt_stack(2, 0x1234);
+
+        assert_eq!(
+            format!("{task_state:?}"),
+            "TaskState { interrupt_stacks: [0, 4660, 0, 0, 0, 0, 0], iomap_base: 104, .. }"
+        );
     }
 
     #[test]
@@ -191,12 +175,8 @@ mod tests {
         task_state.set_interrupt_stack(1, 0xDEAD_0000);
         task_state.set_interrupt_stack(7, 0xBEEF_0000);
 
-        assert_eq!(task_state.interrupt_stack(1), 0xDEAD_0000);
-        assert_eq!(task_state.interrupt_stack(7), 0xBEEF_0000);
-        assert_eq!(task_state.interrupt_stack(2), 0);
-
         let stacks = task_state.interrupt_stacks;
-        assert_eq!(stacks[0], 0xDEAD_0000);
+        assert_eq!(stacks, [0xDEAD_0000, 0, 0, 0, 0, 0, 0xBEEF_0000]);
     }
 
     #[test]
@@ -211,17 +191,6 @@ mod tests {
         TaskState::new().set_interrupt_stack(8, 0x1000);
     }
 
-    /// The interrupt-stack entries sit where the architecture puts them.
-    ///
-    /// Intel SDM Vol. 3A figure 8-11: `IST1` begins at offset 0x24 and each
-    /// entry is eight bytes. The transcribed number is checked against the
-    /// **compiler's** view of the layout via `offset_of!`, so a reordered or
-    /// re-`repr`'d field disagrees with the manual instead of agreeing with
-    /// whatever the struct happens to be.
-    ///
-    /// An earlier version wrote the value into a zeroed array at the offset it
-    /// was testing and read it back from the same place — an identity that
-    /// would have passed under any layout at all (D-95).
     #[test]
     fn interrupt_stacks_sit_where_the_manual_says() {
         assert_eq!(TaskState::interrupt_stack_offset(1), 0x24);
@@ -241,25 +210,11 @@ mod tests {
         }
     }
 
-    /// The offset a targeted store uses is four-mod-eight.
-    ///
-    /// Not a curiosity: it is why `wost` pads its task-state segment. An
-    /// eight-byte store to `IST1` in a segment on an eight-byte boundary would
-    /// be misaligned, and the padding is what makes it sound (D-95). If the
-    /// architecture's offset ever stopped being four-mod-eight the padding
-    /// would be wrong, so the fact is pinned here.
     #[test]
     fn the_interrupt_stack_offset_is_four_modulo_eight() {
         assert_eq!(TaskState::interrupt_stack_offset(1) % 8, 4);
     }
 
-    /// The privilege stacks sit where the architecture puts them, and `RSP0`
-    /// is eight-byte aligned once the segment is placed four-mod-eight.
-    ///
-    /// `RSP0` is at offset 4 (SDM Vol. 3A figure 8-11), which is four-mod-eight
-    /// exactly as `IST1` is — so the same padding that makes one store sound
-    /// makes the other one sound too, and both facts are pinned here rather
-    /// than in the crate that depends on them (D-96).
     #[test]
     fn the_privilege_stacks_sit_where_the_manual_says() {
         assert_eq!(TaskState::privilege_stack_offset(0), 4);
@@ -286,12 +241,12 @@ mod tests {
         let mut task_state = TaskState::new();
         task_state.set_privilege_stack(0, 0x1111_0000);
         task_state.set_privilege_stack(2, 0x3333_0000);
-        assert_eq!(task_state.privilege_stack(0), 0x1111_0000);
-        assert_eq!(task_state.privilege_stack(1), 0, "a neighbour was written");
-        assert_eq!(task_state.privilege_stack(2), 0x3333_0000);
+        let privilege_stacks = task_state.privilege_stacks;
+        assert_eq!(privilege_stacks, [0x1111_0000, 0, 0x3333_0000]);
 
         // And they do not overlap the interrupt stacks.
-        assert_eq!(task_state.interrupt_stack(1), 0);
+        let interrupt_stacks = task_state.interrupt_stacks;
+        assert_eq!(interrupt_stacks[0], 0);
     }
 
     /// There is no stack for ring 3, because the CPU never switches to it.

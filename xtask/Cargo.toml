@@ -22,6 +22,7 @@ anyhow.workspace = true
 fat32.workspace = true
 fatfs.workspace = true
 fscommon.workspace = true
+panic-record.workspace = true
 proc-macro2.workspace = true
 syn.workspace = true
 wizzy-handoff.workspace = true

@@ -180,10 +180,8 @@ int sys_seek(int fd, off_t offset, int whence, off_t *new_offset) {
 	return WIZ_ENOSYS;
 }
 
-// sys_close. BODY=STUB; REMAINDER=PARTIAL.
+// sys_close. BODY=STUB; REMAINDER=MISSING.
 int sys_close(int fd) {
-	// HandleTable::close exists, but dropping the last reference can deallocate.
-	// A user close therefore needs a trap-safe deferred/reclamation route.
 	(void)fd;
 	return WIZ_ENOSYS;
 }

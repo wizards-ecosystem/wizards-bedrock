@@ -1,12 +1,8 @@
 //! The kernel's output devices.
 //!
-//! Both live here as locked singletons so the panic handler can reach them from
-//! any context without threading them through every call site.
-//!
-//! Their locks keep interrupts on (D-63): writing a line can cost a scroll,
-//! and no interrupt should wait tens of milliseconds behind one. The price is
-//! that no trap handler may write to either device, which was already the
-//! rule (D-31) and is now a lock that panics rather than a comment.
+//! Locked singletons keep the panic path independent of call-site plumbing.
+//! Their locks keep interrupts on because framebuffer scrolling can be slow;
+//! trap handlers therefore use only the non-blocking accessors (D-31, D-63).
 
 use wost::boot::Framebuffer;
 use wost::sync::{SpinLock, ThreadLock};
@@ -104,15 +100,11 @@ pub(crate) fn console_probe(x: usize, y: usize) -> Option<(u32, u32, usize)> {
 
 /// Give the console's framebuffer a shadow in RAM.
 ///
-/// Separate from [`init_console`] because the console comes up during the boot
-/// handoff and the heap does not exist until `mem::init` has run. Reports what
-/// happened rather than returning it: there is exactly one caller and nothing
-/// it could do differently.
+/// Separate from [`init_console`] because the heap does not yet exist when the
+/// boot handoff installs the console.
 pub(crate) fn attach_back_buffer() {
-    // Reported after the guard is gone. Logging takes `UART`'s `ThreadLock`,
-    // and doing that under `CONSOLE`'s would establish a `CONSOLE → UART`
-    // order that nothing else in the kernel knows about — a lock order acquired
-    // by accident is the one that closes a cycle later (D-105).
+    // Logging takes UART's lock, so report only after releasing CONSOLE and
+    // avoid adding an otherwise-unchecked CONSOLE → UART order (D-105).
     let attached = {
         let mut guard = CONSOLE.lock();
         let Some(console) = guard.as_mut() else {
@@ -144,15 +136,13 @@ pub(crate) fn console_has_back_buffer() -> bool {
 /// kernel and the boot-time checks read routing back out of it.
 static IO_APIC: SpinLock<Option<IoApic>> = SpinLock::new(None);
 
-/// Keep the controller the keyboard was just routed through, and the global
-/// system interrupt it was routed on.
+/// Keep the controller the keyboard was just routed through.
 ///
-/// The interrupt number is kept because the boot-time check needs the line
-/// the kernel actually chose: firmware may map any legacy IRQ to any global
-/// system interrupt, and a check that assumed the identity would be reading
-/// somebody else's entry.
-pub(crate) fn keep_io_apic(io_apic: IoApic, gsi: u32) {
+/// Self-test also retains the chosen GSI so readback follows firmware routing
+/// rather than assuming the legacy identity.
+pub(crate) fn keep_io_apic(io_apic: IoApic, #[cfg(feature = "selftest")] gsi: u32) {
     *IO_APIC.lock_leaf() = Some(io_apic);
+    #[cfg(feature = "selftest")]
     KEYBOARD_GSI.store(gsi, core::sync::atomic::Ordering::Release);
 }
 
@@ -163,18 +153,13 @@ pub(crate) fn keyboard_gsi() -> u32 {
 }
 
 /// Set by [`keep_io_apic`]; meaningless unless there is an I/O APIC.
+#[cfg(feature = "selftest")]
 static KEYBOARD_GSI: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// How the I/O APIC routes one global system interrupt.
 ///
-/// A value rather than a closure. `with_io_apic` used to hand a caller `&mut
-/// IoApic` under a leaf guard, whose whole obligation is that *nothing is
-/// called while it is live* — and a closure is a call by construction. The
-/// obligation was on the caller and nothing checked it (D-105, D-121).
-///
-/// `None` where there is no I/O APIC, or where it does not route `gsi`. The
-/// two are the same answer to the question a caller is asking, which is "what
-/// happens to this line".
+/// Returns a value instead of letting a closure escape under a leaf guard.
+/// `None` means either no controller or no route for `gsi` (D-105, D-121).
 #[cfg(feature = "selftest")]
 pub(crate) fn routing_of(gsi: u32) -> Option<Routing> {
     let mut guard = IO_APIC.lock_leaf();
@@ -182,9 +167,12 @@ pub(crate) fn routing_of(gsi: u32) -> Option<Routing> {
     if !io_apic.handles(gsi) {
         return None;
     }
+    let (low, high) = io_apic.entry_of(gsi).ok()?;
     Some(Routing {
-        masked: io_apic.is_masked(gsi).ok()?,
-        vector: io_apic.vector_of(gsi).ok()?,
+        masked: low & (1 << 16) != 0,
+        vector: low as u8,
+        low,
+        high,
     })
 }
 
@@ -196,6 +184,10 @@ pub(crate) struct Routing {
     pub(crate) masked: bool,
     /// The vector it is delivered on.
     pub(crate) vector: u8,
+    /// Complete low redirection word read from hardware.
+    pub(crate) low: u32,
+    /// Complete high redirection word read from hardware.
+    pub(crate) high: u32,
 }
 
 /// The lowest line the I/O APIC routes, if there is one.

@@ -1,37 +1,9 @@
-//! The index arithmetic of a submission/completion ring, and the admission
-//! control that makes overflow impossible.
+//! Submission/completion ring arithmetic and overflow-safe admission.
 //!
-//! D-79 settled the shape; this is the half that is arithmetic, so it is here
-//! where `cargo test` can reach it (D-41) and where D-84 puts it under
-//! property and concurrency testing before the kernel has a ring at all.
-//!
-//! Three rules from D-79 are structural rather than advisory, and this crate
-//! is where they are made unbreakable:
-//!
-//! - **Overflow is impossible by construction, not by mitigation.** A
-//!   submission reserves its completion slot *before* it is accepted, which is
-//!   Windows RIO's model. io_uring's `CQ_NODROP` instead took an unbounded
-//!   kernel-memory liability for a misbehaving application. A ring that cannot
-//!   admit work it has nowhere to report is a ring that cannot drop a
-//!   completion.
-//! - **The completion queue is a power of two and at least twice the
-//!   submission queue.** Windows requires it; the reason is that a submission
-//!   may complete more than once in flight terms while the ring is being
-//!   drained, and the slack is what keeps admission from stalling on a
-//!   consumer that is merely slow.
-//! - **Counters are free-running and the index is a mask of them.** Head and
-//!   tail count *operations*, not slots, so full and empty are different
-//!   states rather than the same `head == tail`. That removes the sacrificial
-//!   slot and, more importantly, makes every comparison a wrapping subtraction
-//!   whose result is a count — which is the form that stays correct across the
-//!   wrap at `u32::MAX`.
-//!
-//! Nothing here reads shared memory. A ring's real head and tail live in pages
-//! userspace can write at any moment, so the kernel acquire-loads an atomic
-//! index, volatile-copies an entry once and validates that copy (D-79, D-221,
-//! CVE-2025-39816). Keeping that boundary outside this crate is deliberate —
-//! it means no function here can be handed a value it did not already have to
-//! trust.
+//! Each accepted submission reserves a completion. The completion queue is a
+//! power of two and at least twice the submission queue, while free-running
+//! counters distinguish full from empty across wrap (D-79). This crate accepts
+//! copied values, never references to user-writable shared memory (D-221).
 //!
 //! # Examples
 //!
@@ -59,12 +31,148 @@
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
 )]
 
+use core::mem::{align_of, size_of};
+
 /// The version every ring structure carries.
 ///
-/// IoRing's improvement over io_uring, adopted by D-06: a shared structure
-/// with no version field can only be extended by guessing. Bumped when the
-/// layout changes in any way a reader could notice.
+/// Bumped whenever a reader-visible layout changes.
 pub const VERSION: u32 = 1;
+
+/// Bytes in one shared-memory publication word.
+pub const PUBLICATION_WORD_BYTES: usize = size_of::<u32>();
+
+/// Why a shared-ring layout cannot partition one allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedLayoutError {
+    /// An allocation with no bytes cannot hold a ring.
+    Empty,
+    /// The publication word's end could not be represented.
+    PublicationRangeOverflow(usize),
+    /// The publication word leaves the shared allocation.
+    PublicationOutOfBounds(usize),
+    /// The publication word is not naturally aligned.
+    PublicationMisaligned(usize),
+    /// Two publication words name at least one common byte.
+    PublicationOverlap {
+        /// The earlier word in the supplied layout.
+        first: usize,
+        /// The overlapping word.
+        second: usize,
+    },
+}
+
+impl core::fmt::Display for SharedLayoutError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::Empty => core::fmt::Write::write_str(f, "a shared-ring layout cannot be empty"),
+            Self::PublicationRangeOverflow(at) => {
+                write!(f, "the publication word at {at} overflows")
+            }
+            Self::PublicationOutOfBounds(at) => {
+                write!(f, "the publication word at {at} leaves the allocation")
+            }
+            Self::PublicationMisaligned(at) => {
+                write!(f, "the publication word at {at} is misaligned")
+            }
+            Self::PublicationOverlap { first, second } => {
+                write!(f, "publication words at {first} and {second} overlap")
+            }
+        }
+    }
+}
+
+impl core::error::Error for SharedLayoutError {}
+
+/// A complete payload/publication partition of one shared ring allocation.
+///
+/// The listed naturally aligned words are the only offsets usable for
+/// synchronized publication. Every other byte is payload; a payload range
+/// intersecting any listed word is refused whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedLayout<const WORDS: usize> {
+    bytes: usize,
+    publication_words: [usize; WORDS],
+}
+
+impl<const WORDS: usize> SharedLayout<WORDS> {
+    /// Validate the allocation length and every publication word.
+    pub const fn new(
+        bytes: usize,
+        publication_words: [usize; WORDS],
+    ) -> Result<Self, SharedLayoutError> {
+        if bytes == 0 {
+            return Err(SharedLayoutError::Empty);
+        }
+
+        let mut index = 0;
+        while index < WORDS {
+            let at = publication_words[index];
+            let Some(end) = at.checked_add(PUBLICATION_WORD_BYTES) else {
+                return Err(SharedLayoutError::PublicationRangeOverflow(at));
+            };
+            if end > bytes {
+                return Err(SharedLayoutError::PublicationOutOfBounds(at));
+            }
+            if !at.is_multiple_of(align_of::<u32>()) {
+                return Err(SharedLayoutError::PublicationMisaligned(at));
+            }
+
+            let mut earlier = 0;
+            while earlier < index {
+                let first = publication_words[earlier];
+                let first_end = first + PUBLICATION_WORD_BYTES;
+                if at < first_end && first < end {
+                    return Err(SharedLayoutError::PublicationOverlap { first, second: at });
+                }
+                earlier += 1;
+            }
+            index += 1;
+        }
+
+        Ok(Self {
+            bytes,
+            publication_words,
+        })
+    }
+
+    /// Bytes in the partitioned allocation.
+    pub const fn bytes(self) -> usize {
+        self.bytes
+    }
+
+    /// Whether `at` is one exact admitted publication word.
+    pub const fn contains_publication_word(self, at: usize) -> bool {
+        let mut index = 0;
+        while index < WORDS {
+            if self.publication_words[index] == at {
+                return true;
+            }
+            index += 1;
+        }
+        false
+    }
+
+    /// Whether every byte of `[at, at + len)` belongs to payload.
+    pub const fn contains_payload(self, at: usize, len: usize) -> bool {
+        let Some(end) = at.checked_add(len) else {
+            return false;
+        };
+        if end > self.bytes {
+            return false;
+        }
+
+        let mut index = 0;
+        while index < WORDS {
+            let word = self.publication_words[index];
+            let word_end = word + PUBLICATION_WORD_BYTES;
+            if at < word_end && word < end {
+                return false;
+            }
+            index += 1;
+        }
+        true
+    }
+}
 
 /// Why a ring could not be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,12 +214,8 @@ impl Capacity {
     ///
     /// [`CapacityError::NotAPowerOfTwo`] for zero or a non-power of two.
     ///
-    /// [`CapacityError::TooLarge`] is **unreachable from here** and kept as a
-    /// guard for a wider index type: the largest power of two a `u32` holds is
-    /// `1 << 31`, which is [`MAX`](Self::MAX) exactly, so the power-of-two
-    /// refusal above already excludes everything the size check would. Said
-    /// here because a doc that lists a reachable error the caller must handle
-    /// is a claim (D-105).
+    /// [`CapacityError::TooLarge`] guards a wider future index type; no `u32`
+    /// power of two exceeds [`MAX`](Self::MAX).
     pub const fn new(entries: u32) -> Result<Self, CapacityError> {
         if entries == 0 || !entries.is_power_of_two() {
             return Err(CapacityError::NotAPowerOfTwo(entries));
@@ -153,12 +257,8 @@ impl Ring {
 
     /// A ring whose counters came from somewhere else, if they are consistent.
     ///
-    /// The validation half of read-once-then-validate (D-79). The head and
-    /// tail of a real ring live in memory userspace can write, so a kernel
-    /// that has copied them out must still establish that they mean something
-    /// before using them: `tail - head` greater than the capacity is not a
-    /// large ring, it is a lie, and treating it as a count is how a shared-ring
-    /// kernel writes outside its own buffer.
+    /// This is the validation half of read-once-then-validate: occupancy greater
+    /// than capacity is refused before indexing (D-79).
     ///
     /// # Errors
     ///
@@ -182,11 +282,6 @@ impl Ring {
     /// is numerically below `head` and the ring is not empty at all.
     pub const fn occupied(&self) -> u32 {
         self.tail.wrapping_sub(self.head)
-    }
-
-    /// How many more entries would fit.
-    pub const fn vacant(&self) -> u32 {
-        self.capacity.entries() - self.occupied()
     }
 
     /// Whether it holds nothing.
@@ -239,8 +334,6 @@ impl Ring {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PairError {
-    /// One of the two capacities was not usable.
-    Capacity(CapacityError),
     /// The completion queue is smaller than twice the submission queue.
     CompletionTooSmall {
         /// Entries the submission queue was asked for.
@@ -250,16 +343,9 @@ pub enum PairError {
     },
 }
 
-impl From<CapacityError> for PairError {
-    fn from(error: CapacityError) -> Self {
-        Self::Capacity(error)
-    }
-}
-
 impl core::fmt::Display for PairError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match *self {
-            Self::Capacity(error) => write!(f, "{error}"),
             Self::CompletionTooSmall {
                 submission,
                 completion,
@@ -275,17 +361,12 @@ impl core::error::Error for PairError {}
 
 /// A submission queue and the completion queue it reports into.
 ///
-/// The whole point of the pair being one type: an operation is admitted only
-/// when there is somewhere to report it, so **a completion can never be
-/// dropped for want of room**. That is Windows RIO's reservation model rather
-/// than io_uring's overflow list, and the difference is that overflow here is
-/// unrepresentable rather than handled.
+/// Admission reserves report capacity, making completion overflow
+/// unrepresentable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Queues {
     submission: Ring,
     completion: Ring,
-    /// Operations admitted and not yet reported. Each holds a completion slot
-    /// that nothing else may take.
     reserved: u32,
 }
 
@@ -294,13 +375,11 @@ impl Queues {
     ///
     /// # Errors
     ///
-    /// [`PairError::Capacity`] for a bad capacity, and
-    /// [`PairError::CompletionTooSmall`] otherwise.
+    /// [`PairError::CompletionTooSmall`] when the completion ring cannot hold
+    /// reservations for twice the submission ring.
     pub const fn new(submission: Capacity, completion: Capacity) -> Result<Self, PairError> {
-        // Widened, because doubling `Capacity::MAX` does not fit in a `u32` —
-        // the comment that used to be here said it could not overflow, and the
-        // test for the largest submission queue is what said otherwise. A
-        // division on the completion side would have rounded instead.
+        // Widening preserves the exact comparison when twice `Capacity::MAX`
+        // no longer fits in `u32`; division on the completion side would round.
         if (completion.entries() as u64) < (submission.entries() as u64) * 2 {
             return Err(PairError::CompletionTooSmall {
                 submission: submission.entries(),
@@ -321,12 +400,8 @@ impl Queues {
     /// where a ring that would otherwise have to drop a completion instead
     /// declines the work.
     pub const fn submit(&mut self) -> Option<usize> {
-        // Both halves, and the second is the one an interleaving test found
-        // missing: a completion already posted and not yet reaped occupies a
-        // slot just as firmly as a reservation does. Counting only
-        // reservations admitted work into a queue that was already full, and
-        // the dropped completion this model exists to make impossible would
-        // have happened anyway.
+        // Posted and reserved completions both own slots; ignoring either can
+        // admit work with nowhere to report its result.
         if self.reserved + self.completion.occupied() >= self.completion.capacity().entries() {
             return None;
         }
@@ -362,9 +437,8 @@ impl Queues {
                 self.reserved -= 1;
                 Some(slot)
             }
-            // Unreachable while the reservation invariant holds, and returning
-            // rather than panicking so a caller that broke it is told instead
-            // of killing the machine.
+            // Unreachable while the reservation invariant holds; a return
+            // tells the caller that broke it instead of killing the machine.
             None => None,
         }
     }
@@ -372,6 +446,22 @@ impl Queues {
     /// Hand the oldest completion to whoever is reading them.
     pub const fn reap(&mut self) -> Option<usize> {
         self.completion.consume()
+    }
+
+    /// Reap only a forward head within the completions actually posted.
+    pub const fn reap_up_to(&mut self, claimed_head: u32) -> u32 {
+        let asked = claimed_head.wrapping_sub(self.completion.head());
+        if asked > self.completion.occupied() {
+            return 0;
+        }
+        let mut reaped = 0;
+        while reaped < asked {
+            if self.completion.consume().is_none() {
+                return reaped;
+            }
+            reaped += 1;
+        }
+        reaped
     }
 
     /// Operations admitted and not yet reported.
@@ -391,11 +481,7 @@ impl Queues {
 
     /// Whether the reservation invariant still holds.
     ///
-    /// Every outstanding operation owns a completion slot, and the slots
-    /// already filled are owned by operations that have reported. So the two
-    /// together can never exceed the completion queue — if they do, a
-    /// completion is going to be dropped, which this design says cannot
-    /// happen.
+    /// Outstanding and posted completions together must fit the completion queue.
     pub const fn is_consistent(&self) -> bool {
         (self.reserved as u64) + (self.completion.occupied() as u64)
             <= self.completion.capacity().entries() as u64
@@ -410,32 +496,93 @@ mod tests {
         Capacity::new(entries).expect("a usable capacity")
     }
 
-    /// Only powers of two, and not more than half the counter range.
-    /// The wire version is a number, not a name for itself.
-    ///
-    /// `VERSION` appeared on both sides of every comparison — the kernel
-    /// writes it into the header and the checks compare the header against it
-    /// — so `= 7` survived the whole workspace. The header is a shared
-    /// structure a program reads, which is what a version field is *for*
-    /// (D-148).
+    /// Pin the externally visible version independently of its users (D-148).
     #[test]
     fn the_wire_version_is_one() {
         assert_eq!(VERSION, 1, "the ring layout has not changed");
     }
 
-    /// The consistency oracle can say no.
-    ///
-    /// `is_consistent` is asserted *true* at every call site and six machine
-    /// checks use it as their oracle — including the one that catches a lying
-    /// completion head. `{ true }` survived the suite (D-148).
+    #[test]
+    fn publication_words_exhaust_every_small_offset() {
+        for bytes in 1..=16 {
+            for at in 0..=20 {
+                let admitted = SharedLayout::new(bytes, [at]);
+                let expected = at % align_of::<u32>() == 0
+                    && at
+                        .checked_add(PUBLICATION_WORD_BYTES)
+                        .is_some_and(|end| end <= bytes);
+                assert_eq!(admitted.is_ok(), expected, "bytes {bytes}, word {at}");
+            }
+        }
+    }
+
+    #[test]
+    fn payload_exhausts_touching_overlapping_and_outside_ranges() {
+        const BYTES: usize = 16;
+        let layout = SharedLayout::new(BYTES, [4, 12]).expect("two disjoint words");
+
+        for at in 0..=BYTES + 2 {
+            for len in 0..=BYTES + 2 {
+                let expected = at.checked_add(len).is_some_and(|end| {
+                    end <= BYTES
+                        && ![(4, 8), (12, 16)]
+                            .into_iter()
+                            .any(|(word, word_end)| at < word_end && word < end)
+                });
+                assert_eq!(
+                    layout.contains_payload(at, len),
+                    expected,
+                    "payload {at}..+{len}"
+                );
+            }
+        }
+
+        assert!(layout.contains_payload(0, 4), "left touching range");
+        assert!(layout.contains_payload(8, 4), "range between words");
+        assert!(!layout.contains_payload(3, 2), "one-byte overlap");
+        assert!(!layout.contains_payload(15, 1), "last-byte overlap");
+    }
+
+    #[test]
+    fn malformed_publication_partitions_are_refused_exactly() {
+        assert_eq!(SharedLayout::<0>::new(0, []), Err(SharedLayoutError::Empty));
+        assert_eq!(
+            SharedLayout::new(16, [usize::MAX]),
+            Err(SharedLayoutError::PublicationRangeOverflow(usize::MAX))
+        );
+        assert_eq!(
+            SharedLayout::new(16, [16]),
+            Err(SharedLayoutError::PublicationOutOfBounds(16))
+        );
+        assert_eq!(
+            SharedLayout::new(16, [2]),
+            Err(SharedLayoutError::PublicationMisaligned(2))
+        );
+        assert_eq!(
+            SharedLayout::new(16, [4, 4]),
+            Err(SharedLayoutError::PublicationOverlap {
+                first: 4,
+                second: 4,
+            })
+        );
+        let layout = SharedLayout::new(16, [4]).expect("one word");
+        assert!(!layout.contains_payload(usize::MAX, 2));
+        assert!(layout.contains_publication_word(4));
+        assert!(!layout.contains_publication_word(8));
+    }
+
     #[test]
     fn the_consistency_oracle_refuses_an_over_reserved_ring() {
         let queues = Queues::new(capacity(4), capacity(8)).expect("a usable pair");
         assert!(queues.is_consistent(), "a fresh pair is consistent");
 
-        // Submit until the submission ring is full, checking the invariant at
-        // every step: each `submit` takes a completion slot as well, which is
-        // the reservation the oracle is about.
+        let mut impossible = queues;
+        impossible.reserved = 9;
+        assert!(
+            !impossible.is_consistent(),
+            "nine reservations cannot fit in eight completion slots"
+        );
+
         let mut busy = Queues::new(capacity(4), capacity(8)).expect("a usable pair");
         let mut admitted = 0;
         while busy.submit().is_some() {
@@ -451,6 +598,26 @@ mod tests {
     }
 
     #[test]
+    fn completion_heads_move_only_forward_inside_the_posted_window() {
+        let mut queues = Queues::new(capacity(4), capacity(8)).expect("a usable pair");
+        queues.completion.head = 10;
+        queues.completion.tail = 12;
+
+        assert_eq!(queues.reap_up_to(9), 0, "a head just behind is stale");
+        assert_eq!(queues.completion.head(), 10);
+        assert_eq!(queues.reap_up_to(100), 0, "a far head is not a large reap");
+        assert_eq!(queues.completion.head(), 10);
+        assert_eq!(queues.reap_up_to(11), 1);
+        assert_eq!(queues.completion.head(), 11);
+
+        queues.completion.head = u32::MAX;
+        queues.completion.tail = 1;
+        assert_eq!(queues.reap_up_to(0), 1, "one forward step crosses wrap");
+        assert_eq!(queues.completion.head(), 0);
+        assert_eq!(queues.completion.occupied(), 1);
+    }
+
+    #[test]
     fn a_capacity_is_a_power_of_two_that_leaves_room_to_count() {
         for good in [1, 2, 4, 8, 1024, Capacity::MAX] {
             assert!(Capacity::new(good).is_ok(), "{good} was refused");
@@ -462,13 +629,37 @@ mod tests {
                 "{bad} was accepted"
             );
         }
-        // A power of two above half the range still cannot be counted.
         assert_eq!(
             Capacity::new(Capacity::MAX),
             Ok(Capacity(Capacity::MAX)),
             "the largest usable ring was refused"
         );
         assert_eq!(Capacity::MAX.checked_mul(2), None, "MAX must be 2^31");
+    }
+
+    #[test]
+    fn capacity_errors_name_the_refused_value_and_rule() {
+        let power = CapacityError::NotAPowerOfTwo(3).to_string();
+        assert!(
+            power.contains('3') && power.contains("power of two"),
+            "{power}"
+        );
+
+        let size = CapacityError::TooLarge(17).to_string();
+        assert!(size.contains("17") && size.contains("more than"), "{size}");
+    }
+
+    #[test]
+    fn pair_errors_name_both_capacities_and_the_rule() {
+        let error = PairError::CompletionTooSmall {
+            submission: 4,
+            completion: 7,
+        }
+        .to_string();
+        assert!(
+            error.contains('4') && error.contains('7') && error.contains("twice"),
+            "{error}"
+        );
     }
 
     /// **Full and empty are different states**, which is the whole reason the
@@ -493,7 +684,6 @@ mod tests {
         assert_eq!(ring.produce(), None);
     }
 
-    /// Every slot is handed out once per lap, in order, and the lap repeats.
     #[test]
     fn slots_are_handed_out_in_order_and_repeat() {
         let mut ring = Ring::new(capacity(4));
@@ -507,18 +697,20 @@ mod tests {
         assert_eq!(ring.produce(), Some(0), "the next lap did not start over");
     }
 
-    /// **The wrap at `u32::MAX` is where a comparison would be wrong and a
-    /// wrapping subtraction is right.**
-    ///
-    /// Driven right through the boundary: at the moment the tail wraps past
-    /// zero it is numerically *below* the head, and a ring that asked
-    /// `tail > head` would call a busy ring empty.
+    #[test]
+    fn counter_accessors_report_counts_not_masked_slots() {
+        let mut ring = Ring::adopt(capacity(8), 41, 44).expect("three occupied entries");
+        assert_eq!(ring.head(), 41);
+        assert_eq!(ring.tail(), 44);
+        assert_eq!(ring.produce(), Some(4));
+        assert_eq!(ring.tail(), 45);
+    }
+
     #[test]
     fn the_counters_survive_the_wrap() {
         let capacity = capacity(8);
         let mut ring = Ring::adopt(capacity, u32::MAX - 3, u32::MAX - 3).expect("consistent");
 
-        // Fill it, which takes the tail through zero.
         for _ in 0..8 {
             assert!(ring.produce().is_some());
         }
@@ -529,32 +721,23 @@ mod tests {
         );
         assert_eq!(ring.occupied(), 8);
 
-        // And drains cleanly, in the same slot order as any other lap.
-        // Worked out by hand rather than from the code: the head starts at
+        // Independent arithmetic: the head starts at
         // `u32::MAX - 3`, which is `0xFFFF_FFFC`, and `0xFFFF_FFFC & 7` is 4.
         let slots: Vec<usize> = (0..8).filter_map(|_| ring.consume()).collect();
         assert_eq!(slots, [4, 5, 6, 7, 0, 1, 2, 3]);
         assert!(ring.is_empty());
     }
 
-    /// Counters that describe more entries than the ring holds are refused.
-    ///
-    /// The validation half of read-once-then-validate: a real head and tail
-    /// live where userspace can write them, so "more outstanding than the ring
-    /// can hold" is a lie to reject rather than a number to trust.
     #[test]
     fn impossible_counters_are_refused() {
         let capacity = capacity(4);
         assert!(Ring::adopt(capacity, 0, 4).is_some());
         assert_eq!(Ring::adopt(capacity, 0, 5), None);
         assert_eq!(Ring::adopt(capacity, 0, u32::MAX), None);
-        // A wrapped-but-legal pair is still accepted.
         assert!(Ring::adopt(capacity, u32::MAX, 2).is_some());
-        // A wrapped-and-impossible one is not.
         assert_eq!(Ring::adopt(capacity, u32::MAX, 10), None);
     }
 
-    /// The completion queue must be at least twice the submission queue.
     #[test]
     fn a_completion_queue_is_at_least_twice_the_submission_queue() {
         assert!(Queues::new(capacity(4), capacity(8)).is_ok());
@@ -566,24 +749,14 @@ mod tests {
                 completion: 4
             })
         );
-        // And the largest submission queue cannot be paired at all, because
-        // twice it does not exist. Better a refusal than an overflow that
-        // makes an undersized pair look acceptable.
+        // Widening must make twice the largest capacity a refusal, not wrap it.
         assert!(Queues::new(capacity(Capacity::MAX), capacity(Capacity::MAX)).is_err());
     }
 
-    /// **A completion can never be dropped**, which is the reservation model's
-    /// whole claim.
-    ///
-    /// Driven to the limit: admit until refused, complete everything, and at
-    /// no point may the reservation invariant break. io_uring's answer to this
-    /// situation was an overflow list and an unbounded kernel-memory
-    /// liability; here the work is declined instead.
     #[test]
     fn admission_stops_before_a_completion_could_be_dropped() {
         let mut queues = Queues::new(capacity(4), capacity(8)).expect("a valid pair");
 
-        // Fill the submission queue.
         for _ in 0..4 {
             assert!(queues.submit().is_some());
             assert!(queues.is_consistent());
@@ -591,7 +764,6 @@ mod tests {
         assert_eq!(queues.submit(), None, "admitted past the submission queue");
         assert_eq!(queues.outstanding(), 4);
 
-        // Drain them into flight; the reservations are still held.
         for _ in 0..4 {
             assert!(queues.take().is_some());
         }
@@ -601,8 +773,6 @@ mod tests {
             "taking work released a reservation"
         );
 
-        // Four more can be admitted, and that exhausts the completion queue's
-        // eight slots — not the submission queue's four.
         for _ in 0..4 {
             assert!(queues.submit().is_some());
             assert!(queues.is_consistent());
@@ -617,7 +787,6 @@ mod tests {
             "admitted a ninth operation with eight completion slots reserved"
         );
 
-        // Every one of them reports, and none is refused for want of room.
         for _ in 0..8 {
             assert!(queues.complete().is_some(), "a completion was dropped");
             assert!(queues.is_consistent());
@@ -626,18 +795,13 @@ mod tests {
         assert_eq!(queues.complete(), None, "reported more than was admitted");
     }
 
-    /// The invariant holds under any interleaving of the four operations.
-    ///
-    /// A small deterministic sweep rather than a proof — D-84 puts the real
-    /// one in TLA+ and under `shuttle`. What this catches is an ordering the
-    /// hand-written test above never tries.
     #[test]
     fn the_reservation_invariant_holds_under_interleaving() {
         let mut queues = Queues::new(capacity(2), capacity(4)).expect("a valid pair");
         let mut admitted = 0u32;
         let mut reported = 0u32;
 
-        // A fixed pseudo-random walk: cheap, reproducible, and no dependency.
+        // A fixed walk makes failures reproducible without another dependency.
         let mut state = 0x2545_F491u32;
         for _ in 0..10_000 {
             state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
@@ -675,12 +839,6 @@ mod tests {
         assert!(reported > 100, "the walk never exercised completion");
     }
 
-    /// Completing without an outstanding operation is refused, not counted.
-    ///
-    /// The reservation is what proves there is room, so a completion with no
-    /// reservation behind it is a caller bug — and turning it into a returned
-    /// `None` rather than a slot is what stops it becoming a dropped
-    /// completion for something else.
     #[test]
     fn a_completion_with_no_reservation_is_refused() {
         let mut queues = Queues::new(capacity(2), capacity(4)).expect("a valid pair");
@@ -691,9 +849,8 @@ mod tests {
 
     #[test]
     fn every_power_of_two_a_u32_holds_is_accepted() {
-        // The claim behind `TooLarge`'s unreachability, checked rather than
-        // reasoned: nothing a `u32` can hold survives the power-of-two
-        // refusal and then exceeds `MAX` (D-105).
+        // Checked rather than reasoned: nothing a `u32` holds survives the
+        // power-of-two refusal and then exceeds `MAX` (D-105).
         for shift in 0..u32::BITS {
             let entries = 1u32 << shift;
             assert!(Capacity::new(entries).is_ok(), "{entries} was refused");

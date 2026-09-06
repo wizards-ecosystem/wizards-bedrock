@@ -1,16 +1,11 @@
 //! PS/2 keyboard scancode set 2 decoding.
 //!
-//! A keyboard speaks in bytes: make codes, `F0` break prefixes, `E0`
-//! extended prefixes, one eight-byte monster for Pause, and protocol replies
-//! that can arrive interleaved with any of them. Turning that stream into
-//! key events is arithmetic over bytes with no hardware behind it, so it
-//! lives here and is unit-tested on the host; the kernel's driver feeds it
-//! what the controller delivers and does nothing else.
+//! Byte-stream decoding has no hardware dependency, so it is host-tested here;
+//! the kernel driver only feeds controller bytes into it.
 //!
 //! Wire protocol is separate from layout policy: [`Decoder`] produces
 //! [`KeyEvent`]s naming physical keys, and the [`us`] module turns events
-//! into characters for one layout — a second layout is a sibling module, not
-//! a decoder change.
+//! into characters for one layout.
 //!
 //! # Examples
 //!

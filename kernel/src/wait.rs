@@ -54,21 +54,17 @@ impl WaitQueue {
     /// **Register first, then check.** The other order loses wakeups, and the
     /// loss is permanent: a waiter that reads its condition, is preempted, and
     /// is signalled before it registers, blocks on a queue nothing will wake
-    /// again. `Event::wait` had exactly that shape, and the claim that a
-    /// sticky signal rescued it was wrong — the state can only be re-read
-    /// *after* a block returns, and it returns only on a wake (D-95).
+    /// again (D-95).
     ///
     /// The whole of registration and the re-check happens with the interrupt
-    /// flag clear, which on one CPU is what makes them one step. `002` lists
-    /// the same pattern as owed before this phase for the SMP case, where the
-    /// flag excludes nothing and a full barrier on both sides is what closes
-    /// it (D-70 rule 6).
+    /// flag clear, which on one CPU makes them one step. Under SMP the flag
+    /// excludes nothing; full barriers on both sides must replace it (D-70).
     ///
     /// `ready` runs with interrupts off and a queue lock held, so it must read
     /// state and nothing else.
     pub(crate) fn wait_unless(&self, context: &mut ThreadContext, ready: impl Fn() -> bool) {
         let slot = thread::current_slot();
-        let saved = wost::arch::current::interrupt::disable();
+        let mut saved = wost::arch::current::interrupt::disable();
 
         let registered = {
             let mut waiters = self.waiters.lock(context);
@@ -83,11 +79,9 @@ impl WaitQueue {
         };
 
         if registered {
-            thread::block(context);
-            // Woken, or returned without ever leaving the CPU because there
-            // was nobody to hand it to. Either way this thread is no longer
-            // waiting here, and a bit left set would name it in someone else's
-            // wake.
+            thread::block(context, &mut saved);
+            // Woken, or never left the CPU; either way a bit left set would
+            // name this thread in someone else's wake.
             let mut waiters = self.waiters.lock(context);
             *waiters &= !(1 << slot);
         }

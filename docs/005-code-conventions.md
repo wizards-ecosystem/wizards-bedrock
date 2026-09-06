@@ -272,15 +272,14 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   adding a graph to `xtask/src/gate.rs`; D-212 makes the same registry drive
   execution, help and README, while D-22 records what missing the shipped graph
   once cost.
-- **Public foundation APIs need a compiler-resolved caller.** `cargo xtask
-  api-audit` inventories public item declarations and enum variants in
-  `libs/` and `wost`, then compiles every registered graph with unique
-  deprecation markers to recover semantic uses (D-213). Re-exports expose an
-  item but do not make it live, documentation is not a code caller, and host
-  tests are legitimate callers because the host graph is built with all
-  targets. The audit deliberately does not claim struct or variant fields:
-  stable rustc omits deprecation diagnostics for some live destructuring
-  patterns. Field necessity remains part of semantic API review.
+- **Public foundation APIs need an exact compiler-resolved caller.** `cargo
+  xtask api-audit` inventories public item declarations and enum variants in
+  `libs/` and `wost`; re-exports and documentation are not callers. Structured
+  compiler evidence must bind the exact Cargo graph and source span, and every
+  route the audit cannot classify fails closed. Fields remain outside the claim
+  because stable rustc omits some live destructuring diagnostics. The
+  [development guide](../README.md#development) records the operational model;
+  D-213 and D-275 record its decisions and trust limits.
 - Anything the linker produces is checked rather than trusted:
   `xtask/src/elf.rs` reads the linked kernel back after every build and
   requires the properties `kernel/linker.ld` is written to produce (D-40).

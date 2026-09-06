@@ -130,9 +130,9 @@ pub enum ColourChannel {
 impl fmt::Display for ColourChannel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Red => f.write_str("red"),
-            Self::Green => f.write_str("green"),
-            Self::Blue => f.write_str("blue"),
+            Self::Red => core::fmt::Write::write_str(f, "red"),
+            Self::Green => core::fmt::Write::write_str(f, "green"),
+            Self::Blue => core::fmt::Write::write_str(f, "blue"),
         }
     }
 }
@@ -271,6 +271,94 @@ pub struct FramebufferLayout {
     span: usize,
 }
 
+/// Checked visible-row copies within a framebuffer shadow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowCopyPlan {
+    source_word: usize,
+    destination_word: usize,
+    destination_offset: usize,
+    row_words: usize,
+    stride_words: usize,
+    pitch: usize,
+    remaining: usize,
+}
+
+/// One checked visible-row copy within a framebuffer shadow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowCopySpan {
+    source_start: usize,
+    source_end: usize,
+    destination_start: usize,
+    destination_end: usize,
+    destination_offset: usize,
+}
+
+impl RowCopySpan {
+    /// Borrow the source words after checking the complete shadow bound.
+    ///
+    /// Returns `None` when `shadow` is shorter than the layout that produced
+    /// this span.
+    pub fn source(self, shadow: &[u32]) -> Option<&[u32]> {
+        if !self.fits(shadow.len()) {
+            return None;
+        }
+        shadow.get(self.source_start..self.source_end)
+    }
+
+    /// Copy this row after checking the complete shadow bound.
+    ///
+    /// Returns `None` without changing `shadow` when it is shorter than the
+    /// layout that produced this span.
+    pub fn copy_within(self, shadow: &mut [u32]) -> Option<()> {
+        if !self.fits(shadow.len()) {
+            return None;
+        }
+        shadow.copy_within(self.source_start..self.source_end, self.destination_start);
+        Some(())
+    }
+
+    /// Byte offset where the copied row begins in device memory.
+    pub const fn destination_offset(self) -> usize {
+        self.destination_offset
+    }
+
+    const fn fits(self, len: usize) -> bool {
+        self.source_end <= len && self.destination_end <= len
+    }
+}
+
+impl Iterator for RowCopyPlan {
+    type Item = RowCopySpan;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+
+        let span = RowCopySpan {
+            source_start: self.source_word,
+            source_end: self.source_word + self.row_words,
+            destination_start: self.destination_word,
+            destination_end: self.destination_word + self.row_words,
+            destination_offset: self.destination_offset,
+        };
+        self.remaining -= 1;
+        if self.remaining != 0 {
+            self.source_word += self.stride_words;
+            self.destination_word += self.stride_words;
+            self.destination_offset += self.pitch;
+        }
+        Some(span)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for RowCopyPlan {}
+impl core::iter::FusedIterator for RowCopyPlan {}
+
 /// Why framebuffer geometry is not safe for 32-bit pixel accesses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -305,16 +393,20 @@ pub enum FramebufferLayoutError {
 impl fmt::Display for FramebufferLayoutError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::ZeroWidth => f.write_str("framebuffer width is zero"),
-            Self::ZeroHeight => f.write_str("framebuffer height is zero"),
-            Self::ZeroBytesPerPixel => f.write_str("framebuffer bytes per pixel is zero"),
+            Self::ZeroWidth => core::fmt::Write::write_str(f, "framebuffer width is zero"),
+            Self::ZeroHeight => core::fmt::Write::write_str(f, "framebuffer height is zero"),
+            Self::ZeroBytesPerPixel => {
+                core::fmt::Write::write_str(f, "framebuffer bytes per pixel is zero")
+            }
             Self::UnsupportedBytesPerPixel(bytes) => {
                 write!(
                     f,
                     "framebuffer uses {bytes} bytes per pixel, expected {WORD_SIZE}"
                 )
             }
-            Self::RowBytesOverflow => f.write_str("visible row byte count overflows"),
+            Self::RowBytesOverflow => {
+                core::fmt::Write::write_str(f, "visible row byte count overflows")
+            }
             Self::PitchTooSmall { row_bytes, pitch } => {
                 write!(f, "row needs {row_bytes} bytes but pitch is {pitch}")
             }
@@ -330,8 +422,10 @@ impl fmt::Display for FramebufferLayoutError {
                     "framebuffer pitch {pitch} is not {WORD_SIZE}-byte aligned"
                 )
             }
-            Self::SpanOverflow => f.write_str("framebuffer span overflows"),
-            Self::AddressRangeOverflow => f.write_str("framebuffer address range overflows"),
+            Self::SpanOverflow => core::fmt::Write::write_str(f, "framebuffer span overflows"),
+            Self::AddressRangeOverflow => {
+                core::fmt::Write::write_str(f, "framebuffer address range overflows")
+            }
         }
     }
 }
@@ -394,26 +488,6 @@ impl FramebufferLayout {
         })
     }
 
-    /// Visible pixels in one row.
-    pub const fn width(self) -> usize {
-        self.width
-    }
-
-    /// Visible rows in the framebuffer.
-    pub const fn height(self) -> usize {
-        self.height
-    }
-
-    /// Bytes from the start of one row to the next.
-    pub const fn pitch(self) -> usize {
-        self.pitch
-    }
-
-    /// Bytes occupied by one pixel.
-    pub const fn bytes_per_pixel(self) -> usize {
-        self.bytes_per_pixel
-    }
-
     /// Bytes covered by the complete framebuffer mapping.
     pub const fn span(self) -> usize {
         self.span
@@ -425,6 +499,55 @@ impl FramebufferLayout {
             return None;
         }
         offset(x, y, self.pitch, self.bytes_per_pixel)
+    }
+
+    /// Plan an upward copy of visible rows, clipped to this framebuffer.
+    ///
+    /// Padding determines row starts but is not copied. Returns `None` when
+    /// `to_y` is below `from_y`; overlapping copies are safe in yielded order.
+    pub fn copy_rows_up(self, from_y: usize, to_y: usize, rows: usize) -> Option<RowCopyPlan> {
+        if to_y > from_y {
+            return None;
+        }
+
+        let rows = rows
+            .min(self.height.saturating_sub(from_y))
+            .min(self.height.saturating_sub(to_y));
+        if rows == 0 {
+            return Some(RowCopyPlan {
+                source_word: 0,
+                destination_word: 0,
+                destination_offset: 0,
+                row_words: self.width,
+                stride_words: self.pitch / WORD_SIZE,
+                pitch: self.pitch,
+                remaining: 0,
+            });
+        }
+
+        let stride_words = self.pitch / WORD_SIZE;
+        let source_word = from_y.checked_mul(stride_words)?;
+        let destination_word = to_y.checked_mul(stride_words)?;
+        let destination_offset = to_y.checked_mul(self.pitch)?;
+        let last_source = source_word.checked_add((rows - 1).checked_mul(stride_words)?)?;
+        let last_destination =
+            destination_word.checked_add((rows - 1).checked_mul(stride_words)?)?;
+        let span_words = self.span / WORD_SIZE;
+        if last_source.checked_add(self.width)? > span_words
+            || last_destination.checked_add(self.width)? > span_words
+        {
+            return None;
+        }
+
+        Some(RowCopyPlan {
+            source_word,
+            destination_word,
+            destination_offset,
+            row_words: self.width,
+            stride_words,
+            pitch: self.pitch,
+            remaining: rows,
+        })
     }
 }
 
@@ -502,6 +625,119 @@ mod tests {
     }
 
     #[test]
+    fn row_copy_uses_padded_starts_without_publishing_padding() {
+        let layout = FramebufferLayout::new(0x1000, 3, 4, 20, 4).expect("padded layout");
+        let mut shadow: Vec<u32> = (0..20).collect();
+        let original = shadow.clone();
+        let mut offsets = Vec::new();
+
+        for (row, span) in layout
+            .copy_rows_up(1, 0, usize::MAX)
+            .expect("upward copy")
+            .enumerate()
+        {
+            offsets.push(span.destination_offset());
+            let source = (row + 1) * 5;
+            assert_eq!(
+                span.source(&shadow).expect("complete shadow"),
+                &original[source..source + 3],
+                "published words differ from the source row"
+            );
+            span.copy_within(&mut shadow).expect("complete shadow");
+        }
+
+        assert_eq!(offsets, [0, 20, 40]);
+        for row in 0..3 {
+            let destination = row * 5;
+            let source = (row + 1) * 5;
+            assert_eq!(
+                &shadow[destination..destination + 3],
+                &original[source..source + 3]
+            );
+            assert_eq!(
+                &shadow[destination + 3..destination + 5],
+                &original[destination + 3..destination + 5],
+                "row padding changed"
+            );
+        }
+    }
+
+    #[test]
+    fn every_small_row_copy_stays_within_its_padded_layout() {
+        for width in 1..=4 {
+            for padding in 0..=3 {
+                let stride = width + padding;
+                for height in 1..=5 {
+                    let layout = FramebufferLayout::new(0, width, height, stride * 4, 4)
+                        .expect("small layout");
+                    for from_y in 0..=height + 1 {
+                        for to_y in 0..=height + 1 {
+                            for rows in 0..=height + 1 {
+                                let Some(plan) = layout.copy_rows_up(from_y, to_y, rows) else {
+                                    assert!(to_y > from_y);
+                                    continue;
+                                };
+                                let expected_rows = rows
+                                    .min(height.saturating_sub(from_y))
+                                    .min(height.saturating_sub(to_y));
+                                assert_eq!(plan.len(), expected_rows);
+
+                                let mut shadow: Vec<u32> =
+                                    (0..stride * height).map(|word| word as u32).collect();
+                                let original = shadow.clone();
+                                for (row, span) in plan.enumerate() {
+                                    let source = (from_y + row) * stride;
+                                    assert_eq!(
+                                        span.source(&shadow).expect("complete shadow"),
+                                        &original[source..source + width]
+                                    );
+                                    assert_eq!(
+                                        span.destination_offset(),
+                                        (to_y + row) * stride * 4
+                                    );
+                                    span.copy_within(&mut shadow).expect("complete shadow");
+                                }
+
+                                for row in 0..height {
+                                    let padding = row * stride + width..(row + 1) * stride;
+                                    assert_eq!(&shadow[padding.clone()], &original[padding]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn row_copy_refuses_downward_and_extreme_empty_ranges() {
+        let layout = FramebufferLayout::new(0, 2, 4, 16, 4).expect("padded layout");
+        assert!(layout.copy_rows_up(0, 1, 1).is_none());
+        assert_eq!(
+            layout
+                .copy_rows_up(usize::MAX, 0, usize::MAX)
+                .expect("out-of-range copy is empty")
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn row_copy_refuses_a_short_shadow_without_side_effects() {
+        let layout = FramebufferLayout::new(0, 2, 4, 16, 4).expect("padded layout");
+        let mut plan = layout.copy_rows_up(3, 2, usize::MAX).expect("clipped copy");
+        assert_eq!(plan.len(), 1);
+        let span = core::iter::Iterator::next(&mut plan).expect("one row");
+        let mut short = [0_u32; 13];
+        let before = short;
+        assert_eq!(span.source(&short), None);
+        assert_eq!(span.copy_within(&mut short), None);
+        assert_eq!(short, before, "refusal changed a partial shadow");
+        assert_eq!(core::iter::Iterator::next(&mut plan), None);
+    }
+
+    #[test]
     fn from_hex_splits_the_channels() {
         assert_eq!(
             Rgb::from_hex(0x0B_10_21),
@@ -527,6 +763,91 @@ mod tests {
         let colour = Rgb::from_hex(0xAA_BB_CC);
         assert_eq!(rgb888().pack(colour), 0xAA_BB_CC);
         assert_eq!(bgr888().pack(colour), 0xCC_BB_AA);
+    }
+
+    #[test]
+    fn diagnostic_messages_keep_their_channel_geometry_and_values() {
+        for (channel, expected) in [
+            (ColourChannel::Red, "red"),
+            (ColourChannel::Green, "green"),
+            (ColourChannel::Blue, "blue"),
+        ] {
+            assert_eq!(channel.to_string(), expected);
+        }
+
+        let format_errors = [
+            (
+                PixelFormatError::EmptyChannel(ColourChannel::Red),
+                "red channel has no bits",
+            ),
+            (
+                PixelFormatError::ChannelOutOfRange {
+                    channel: ColourChannel::Green,
+                    shift: 31,
+                    size: 2,
+                },
+                "green channel at bit 31 with width 2 leaves a 32-bit pixel",
+            ),
+            (
+                PixelFormatError::OverlappingChannels {
+                    first: ColourChannel::Red,
+                    second: ColourChannel::Blue,
+                },
+                "red and blue channels overlap",
+            ),
+        ];
+        for (error, expected) in format_errors {
+            assert_eq!(error.to_string(), expected);
+        }
+
+        let layout_errors = [
+            (
+                FramebufferLayoutError::ZeroWidth,
+                "framebuffer width is zero",
+            ),
+            (
+                FramebufferLayoutError::ZeroHeight,
+                "framebuffer height is zero",
+            ),
+            (
+                FramebufferLayoutError::ZeroBytesPerPixel,
+                "framebuffer bytes per pixel is zero",
+            ),
+            (
+                FramebufferLayoutError::UnsupportedBytesPerPixel(8),
+                "framebuffer uses 8 bytes per pixel, expected 4",
+            ),
+            (
+                FramebufferLayoutError::RowBytesOverflow,
+                "visible row byte count overflows",
+            ),
+            (
+                FramebufferLayoutError::PitchTooSmall {
+                    row_bytes: 16,
+                    pitch: 12,
+                },
+                "row needs 16 bytes but pitch is 12",
+            ),
+            (
+                FramebufferLayoutError::MisalignedBase(0x1002),
+                "framebuffer base 0x1002 is not 4-byte aligned",
+            ),
+            (
+                FramebufferLayoutError::MisalignedPitch(6),
+                "framebuffer pitch 6 is not 4-byte aligned",
+            ),
+            (
+                FramebufferLayoutError::SpanOverflow,
+                "framebuffer span overflows",
+            ),
+            (
+                FramebufferLayoutError::AddressRangeOverflow,
+                "framebuffer address range overflows",
+            ),
+        ];
+        for (error, expected) in layout_errors {
+            assert_eq!(error.to_string(), expected);
+        }
     }
 
     #[test]
@@ -633,6 +954,17 @@ mod tests {
                 Err(PixelFormatError::OverlappingChannels { first, second })
             );
         }
+    }
+
+    #[test]
+    fn a_one_bit_channel_overlap_is_still_an_overlap() {
+        assert_eq!(
+            PixelFormat::new(Channel::new(0, 8), Channel::new(7, 8), Channel::new(16, 8),),
+            Err(PixelFormatError::OverlappingChannels {
+                first: ColourChannel::Red,
+                second: ColourChannel::Green,
+            })
+        );
     }
 
     /// The 30-bit-colour layout real displays report — ten bits a channel in a
@@ -754,10 +1086,10 @@ mod tests {
     #[test]
     fn checked_layout_preserves_geometry_and_bounds_offsets() {
         let layout = layout();
-        assert_eq!(layout.width(), 1280);
-        assert_eq!(layout.height(), 720);
-        assert_eq!(layout.pitch(), 5120);
-        assert_eq!(layout.bytes_per_pixel(), 4);
+        assert_eq!(layout.width, 1280);
+        assert_eq!(layout.height, 720);
+        assert_eq!(layout.pitch, 5120);
+        assert_eq!(layout.bytes_per_pixel, 4);
         assert_eq!(layout.span(), 5120 * 720);
         assert_eq!(layout.offset(1279, 719), Some(719 * 5120 + 1279 * 4));
         assert_eq!(layout.offset(1280, 0), None);
@@ -817,12 +1149,9 @@ mod tests {
 
     /// The modulus is four, not merely even.
     ///
-    /// The witnesses were both odd, so the checks passed identically as
-    /// `is_multiple_of(2)` — under which a base of 2 constructs and every row
-    /// after the first starts two bytes out of alignment. `write_u32` then
-    /// refuses each one, and `wost/src/boot/mod.rs` discards that result: a
-    /// blank framebuffer with no diagnostic, on the only output a kernel has
-    /// (D-105).
+    /// Include an even value not divisible by four so a weaker modulus cannot
+    /// satisfy the check. Otherwise later rows are misaligned and `write_u32`
+    /// refuses the kernel's only output (D-105).
     #[test]
     fn a_misaligned_mapping_base_is_refused() {
         assert_eq!(
@@ -901,10 +1230,8 @@ mod tests {
     /// A channel that exactly fills the word is accepted, and one bit more is
     /// refused — at *both* copies of the bound.
     ///
-    /// `channel_mask` duplicates `encode`'s `size > u32::BITS - shift`, and
-    /// only `encode`'s copy had the boundary pair. Widening `channel_mask`'s
-    /// to `>=` left every test green while refusing a legal RGBx8888 report —
-    /// a kernel with no console, gate green (D-105).
+    /// Exercise the boundary in both `channel_mask` and `encode` so the
+    /// duplicated checks cannot drift while refusing legal RGBx8888 (D-105).
     #[test]
     fn a_channel_that_exactly_fills_the_word_is_accepted_by_both_copies() {
         // 24 + 8 == 32: the top channel of a standard RGBx8888 report.

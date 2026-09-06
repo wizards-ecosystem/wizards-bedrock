@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+# PW-526's retained authorization mutation shrinks to the first in-range hole.
+cc cb25a0d132a965e4dc2a3713242bcfc1017b2027e14415ac432337d37feae02b # shrinks to (class, frame) = (InRangeUnmanaged, 16)

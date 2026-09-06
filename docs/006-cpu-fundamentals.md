@@ -90,7 +90,7 @@ Loading the GDT does not change `CS`: the selector cached in the CPU stays
 whatever Limine left. We reload it with a far return — push the new selector,
 push a label address, `retfq` — and then load `SS`, `DS`, `ES` with the data
 selector. `SS` matters even in 64-bit mode: `iretq` pops it on every return
-from an exception.
+that changes privilege.
 
 ### TSS
 
@@ -136,28 +136,36 @@ loop rather than by 256 hand-written names. That the stride assumption holds is
 not left to inspection: the table is bracketed by two symbols and `init`
 asserts the span is exactly `256 × 16` bytes.
 
-The common tail pushes the fifteen general-purpose registers, clears `DF` (the
-System V ABI requires it and an interrupt does not), points `RDI` at the saved
-frame, explicitly aligns the stack, and calls the dispatcher. On return it
-restores the saved stack pointer, pops, drops the vector and error code, and
-`iretq`s. Interrupt entry does not promise the interrupted stack's alignment,
-and a same-privilege entry saves five architectural words on this machine; the
-live probe and compile-time offsets therefore both cover the full 22-word
-frame rather than relying on a convenient caller.
+The common tail clears `DF` (the System V ABI requires it and an interrupt does
+not), saves `RAX`, installs the kernel data selector in live `SS`, pushes the
+other fourteen general-purpose registers, points `RDI` at the saved frame,
+explicitly aligns the stack, and calls the dispatcher. Privilege-changing
+entry nulls live `SS`; restoring it before Rust matters because dispatch may
+switch kernel contexts before the original `iretq` (D-289). The CPU-pushed
+user `SS:RSP` remains intact. On return the tail restores the saved stack
+pointer, pops, drops the vector and error code, and `iretq`s. Interrupt entry
+does not promise the interrupted stack's alignment, and a same-privilege entry
+saves five architectural words on this machine; the live probe and
+compile-time offsets therefore both cover the full 22-word frame rather than
+relying on a convenient caller.
 
 `TrapFrame` is `#[repr(C)]` in the order the pushes leave in memory, which is
 the reverse of the order they are written. It is the only place in the kernel
 where a struct definition and an assembly listing have to agree, so the
 selftest checks the agreement on the machine rather than by eye.
+It also observes live kernel `SS` on the first ring-3 call independently from
+the saved user stack selector and repeats the frame check after scheduling
+(D-289).
 
-**Not saved:** floating-point and SSE state. `x86_64-unknown-none` builds with
-`+soft-float` and no SSE, so the kernel cannot disturb it. That changes when
-ring 3 exists and the scheduler switches user threads (Phase 4/5), which is
-where `XSAVE` belongs.
+**At this Phase 2 checkpoint, not saved:** floating-point and SSE state.
+`x86_64-unknown-none` uses `+soft-float`, so the kernel cannot disturb it. D-108
+later added eager per-thread `XSAVEC`/`XSAVE` and `XRSTOR` when ring 3 made the
+deferred obligation real.
 
-**Not done:** `swapgs`. There is no user mode to come from, so the `GS` base is
-uninteresting; the check "did we come from ring 3" that guards it belongs with
-the code that first makes ring 3 reachable.
+**Still not done:** `swapgs`. Ring 3 enters through D-96's interrupt gate, which
+loads `RSP0` without a GS-based per-CPU accessor. D-118 therefore leaves GS-base
+switching with the SMP phase or a measured `syscall` fast path that gives it a
+real caller.
 
 ### What a fault does
 
@@ -283,7 +291,7 @@ local vector table entry packs a vector and a mask — is arithmetic with no
 hardware behind it, so by the same rule that produced `x86-tables` it is
 `libs/x86-apic` (`base`, `command`, `local_vector`, `register`, `spurious`,
 `version`), unit-tested on the host. `wost` encodes with it and does nothing
-but write the result.
+but transport the result and validate the register observations.
 
 The kernel gains `arch/x86_64/vector.rs`: which vector carries what. That is
 policy, not mechanism, so `apic::init` takes the two vectors it needs as an
@@ -357,17 +365,19 @@ In order, because the order is the design:
    mode; a single write setting both bits raises a general protection fault.
    Each is read back rather than assumed, because a disabled APIC stays
    disabled until reset on some processors and the write is simply ignored.
-3. Read the version register. A version below `0x10` means nothing is
-   answering as an APIC, which is the one failure the previous steps cannot
-   detect.
+3. Read the version register. A version below `0x10` means no integrated APIC
+   is answering before configuration begins.
 4. Task priority to zero — accept every priority class. Firmware may not have
    left it there.
 5. Mask LINT0, LINT1 and the timer.
 6. Give the error line a real vector, and clear whatever the firmware
    accumulated in the error-status register so the next reading is ours.
 7. **Last**, write the spurious-interrupt register, whose bit 8 software-enables
-   the whole controller. Nothing it is capable of delivering can arrive before
-   this, so everything above happens against a controller that is off.
+   the whole controller, and require the exact value to read back before
+   publishing its vectors or readiness. An ignored final write therefore
+   poisons the transaction instead of advertising a disabled controller.
+   Nothing it is capable of delivering can arrive before this, so everything
+   above happens against a controller that is off.
 
 The interrupt flag is not set here. That is a separate step with a separate
 precondition, which is the next section.

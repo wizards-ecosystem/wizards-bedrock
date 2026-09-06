@@ -58,11 +58,14 @@ its search order) and loads the kernel per `path: boot():/boot/wizard-kernel.elf
 
 - **QEMU** (`cargo xtask run`): q35 machine, EDK2 firmware from the QEMU
   install (copied into `target/` as pflash code+vars), serial → stdio.
-- **VMware** (`cargo xtask vmware`): generates the self-test machine in `vm/`
+- **VMware** (`cargo xtask vmware`): generates the self-test machine in
+  `vm/self-test/`
   with a flat-VMDK descriptor over a copy of the raw image and a
-  `firmware = "efi"` VMX; serial → a fresh `vm/serial.log`. The separate
-  `cargo xtask vmware --shipped` machine lives in `vm/shipped/`. Each command
-  prints the exact image digest and quoted `vmrun` invocation (D-235).
+  `firmware = "efi"` VMX. The separate
+  `cargo xtask vmware --shipped` machine lives in `vm/shipped/`. Serial goes
+  to the generation-specific path each command prints. Each command
+  prints the exact image digest and quoted `vmrun` invocation; D-244 binds its
+  later execution observation.
 
 ## Verified
 
@@ -169,15 +172,16 @@ Both are brought up before the Limine base revision is checked, so a machine
 with neither a serial cable nor a supported bootloader still shows why it
 stopped. A framebuffer that is not direct RGB, not 32bpp, or not 4-byte aligned
 in address and pitch is refused with a typed reason rather than drawn on: the
-alternative failure mode is every access being rejected and the screen simply
-staying blank.
+alternative failure mode is every access being rejected. Once that geometry
+has constructed the exact MMIO lease, an access refusal is an internal
+contradiction and fails stopped before the shadow can claim a device write
+which did not happen (D-249).
 
 ## Known limitations
 
 This began as the Phase-1 close-out snapshot. Struck entries were retired by
-later phases; unstruck entries remain current limitations. The wording below is
-kept with each entry so the original debt and its eventual resolution stay
-visible.
+later phases; unstruck entries describe current facts, not automatically live
+work. `016-pre-wizzy-foundation.md` is the sole current backlog.
 
 - ~~**`wost::sync::SpinLock` does not touch the interrupt flag.**~~ Fixed in
   Phase 2 slice 2, in `SpinLock` rather than at the call sites, as this entry
@@ -190,20 +194,22 @@ visible.
   write and read instead of the device, so a scroll no longer touches uncached
   memory at all. That also made the mapping safe to mark write-combining
   (D-50), where reads would have been worse still.
-- **Logging level is a compile-time constant** (`MAX_LEVEL` in
-  `kernel/src/log.rs`). No runtime control and no per-module filtering until
-  there is somewhere to configure it from.
+- **Runtime logging control is deliberately absent.** `MAX_LEVEL` in
+  `kernel/src/log.rs` remains a compile-time constant. PW-705 stops runtime or
+  per-module controls until a concrete configuration source exists.
 - **The kernel image is not relocatable.** `linker.ld` hardcodes
   `0xffffffff80000000`, which is what blocks turning on `kaslr: yes` in
-  `boot/limine.conf` (`002-architecture.md`, security baseline).
+  `boot/limine.conf`. KASLR remains later Phase-12 work, not a pre-Wizzy
+  foundation item (`002-architecture.md`, security baseline).
 
-## Open items
+## Resolved and trigger-only items
 
 - ~~GDB stub debugging (`-s -S`)~~ — resolved by D-231: the pinned native
   WinLibs GDB owns a private paused QEMU run, discovers its dynamic loopback
   endpoint and has both interactive and bounded-proof `xtask` modes.
-- Limine crate 0.6.x when its nightly requirement lands on stable, or if
-  we move to nightly for other reasons
+- **Limine 0.6.x is a stopped PW-705 trigger, not open work.** Re-evaluate the
+  pinned crate only when stable support or a concrete handoff need forces it;
+  a newer dependency version alone is not a trigger.
 - ~~Grow `kernel/src/selftest.rs` as Phase 2 lands~~ — done: the phase closed
   at 34 checks, every new one broken once to prove it can go red, and the
   harness itself grew a hand — it can press a key (D-38). Those are historical

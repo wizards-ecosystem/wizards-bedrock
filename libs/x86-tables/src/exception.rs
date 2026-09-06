@@ -80,9 +80,8 @@ mod tests {
 
     /// The named constants are the vectors `name` answers for.
     ///
-    /// `name(14)` was spelled as a literal on both sides, so `PAGE_FAULT`
-    /// itself was read by nothing and could have named any vector. `COUNT` was
-    /// satisfied by any value at or above 31 (D-148).
+    /// Index with each named constant so a literal-only lookup cannot leave the
+    /// constant itself unchecked; pin `COUNT` at its exact boundary (D-148).
     #[test]
     fn the_named_vectors_are_the_ones_the_table_names() {
         // SDM Vol. 3A table 6-1, transcribed. Each constant is used to *index*
@@ -133,6 +132,48 @@ mod tests {
         assert_eq!(name(9), None, "coprocessor segment overrun is reserved");
         assert_eq!(name(15), None, "vector 15 is reserved");
         assert_eq!(name(COUNT), None, "the first interrupt is not an exception");
+    }
+
+    #[test]
+    fn every_exception_name_matches_the_architecture() {
+        let expected = [
+            Some("divide error"),
+            Some("debug"),
+            Some("non-maskable interrupt"),
+            Some("breakpoint"),
+            Some("overflow"),
+            Some("bound range exceeded"),
+            Some("invalid opcode"),
+            Some("device not available"),
+            Some("double fault"),
+            None,
+            Some("invalid task state segment"),
+            Some("segment not present"),
+            Some("stack segment fault"),
+            Some("general protection fault"),
+            Some("page fault"),
+            None,
+            Some("x87 floating point error"),
+            Some("alignment check"),
+            Some("machine check"),
+            Some("simd floating point error"),
+            Some("virtualisation exception"),
+            Some("control protection exception"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("hypervisor injection exception"),
+            Some("vmm communication exception"),
+            Some("security exception"),
+            None,
+        ];
+
+        for (vector, expected_name) in expected.into_iter().enumerate() {
+            assert_eq!(name(vector as u8), expected_name, "vector {vector}");
+        }
     }
 
     /// A fault report that cannot name the vector it is reporting is the least

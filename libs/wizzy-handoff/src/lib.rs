@@ -45,7 +45,10 @@
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
 )]
 
-use core::fmt;
+use core::{
+    fmt,
+    net::{Ipv4Addr, Ipv6Addr},
+};
 
 /// Version header accepted by this parser.
 pub const FORMAT: &str = "wizard-wizzy-handoff-v1";
@@ -96,7 +99,7 @@ pub struct ArtifactIdentity<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
-    /// The record contains a carriage return rather than canonical LF endings.
+    /// The record does not use canonical LF endings, including the terminal LF.
     NonCanonicalLineEnding,
     /// The envelope version is absent or unsupported.
     UnsupportedFormat,
@@ -118,17 +121,20 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::NonCanonicalLineEnding => "handoff record does not use canonical LF endings",
-            Self::UnsupportedFormat => "handoff record format is unsupported",
-            Self::MissingField => "handoff record is missing a required field",
-            Self::InvalidLine => "handoff record contains an invalid line",
-            Self::UnknownField => "handoff record contains an unknown field",
-            Self::NonCanonicalFields => "handoff fields are duplicated or out of order",
-            Self::InvalidValue => "handoff record contains an invalid value",
-            Self::VersionMismatch => "handoff target or ABI version is unsupported",
-            Self::ArtifactMismatch => "artifact bytes do not match the handoff record",
-        })
+        core::fmt::Write::write_str(
+            f,
+            match self {
+                Self::NonCanonicalLineEnding => "handoff record does not use canonical LF endings",
+                Self::UnsupportedFormat => "handoff record format is unsupported",
+                Self::MissingField => "handoff record is missing a required field",
+                Self::InvalidLine => "handoff record contains an invalid line",
+                Self::UnknownField => "handoff record contains an unknown field",
+                Self::NonCanonicalFields => "handoff fields are duplicated or out of order",
+                Self::InvalidValue => "handoff record contains an invalid value",
+                Self::VersionMismatch => "handoff target or ABI version is unsupported",
+                Self::ArtifactMismatch => "artifact bytes do not match the handoff record",
+            },
+        )
     }
 }
 
@@ -178,11 +184,11 @@ pub fn verify(
 }
 
 fn parse(manifest: &str) -> Result<Record<'_>, Error> {
-    if manifest.contains('\r') {
+    if manifest.contains('\r') || !manifest.ends_with('\n') {
         return Err(Error::NonCanonicalLineEnding);
     }
     let mut lines = manifest.lines();
-    if lines.next() != Some(FORMAT) {
+    if core::iter::Iterator::next(&mut lines) != Some(FORMAT) {
         return Err(Error::UnsupportedFormat);
     }
 
@@ -200,7 +206,7 @@ fn parse(manifest: &str) -> Result<Record<'_>, Error> {
     let source_revision = field(&mut lines, FIELDS[10])?;
     let runtime_abi = field(&mut lines, FIELDS[11])?;
     let target_id = field(&mut lines, FIELDS[12])?;
-    let extra = lines.next();
+    let extra = core::iter::Iterator::next(&mut lines);
     if !no_extra_fields(extra) {
         let known = extra
             .and_then(|line| line.split_once('='))
@@ -230,7 +236,7 @@ fn parse(manifest: &str) -> Result<Record<'_>, Error> {
 }
 
 fn field<'a>(lines: &mut core::str::Lines<'a>, expected: &str) -> Result<&'a str, Error> {
-    let line = lines.next().ok_or(Error::MissingField)?;
+    let line = core::iter::Iterator::next(lines).ok_or(Error::MissingField)?;
     let (key, value) = line.split_once('=').ok_or(Error::InvalidLine)?;
     if key != expected {
         return if FIELDS.contains(&key) {
@@ -252,11 +258,7 @@ fn record_values_are_canonical(record: &Record<'_>) -> bool {
         && token(record.effects_abi)
         && sha256(record.artifact_sha256)
         && effects(record.effects_required)
-        && record.repository.starts_with("https://")
-        && record
-            .repository
-            .bytes()
-            .all(|byte| byte.is_ascii_graphic())
+        && repository(record.repository)
         && git_revision(record.source_revision)
         && git_revision(record.compiler_revision)
         && git_revision(record.runtime_revision)
@@ -276,15 +278,18 @@ fn identity_matches(record: &Record<'_>, artifact: ArtifactIdentity<'_>) -> bool
 }
 
 fn canonical_decimal(value: &str) -> Option<u64> {
-    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) {
+    if value.is_empty()
+        || value.starts_with('0')
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return None;
     }
-    value.parse::<u64>().ok().filter(|value| *value != 0)
+    <u64 as core::str::FromStr>::from_str(value).ok()
 }
 
 fn token(value: &str) -> bool {
     let mut bytes = value.bytes();
-    let Some(first) = bytes.next() else {
+    let Some(first) = core::iter::Iterator::next(&mut bytes) else {
         return false;
     };
     first.is_ascii_lowercase()
@@ -309,6 +314,74 @@ fn effects(value: &str) -> bool {
         previous = Some(effect);
     }
     true
+}
+
+fn repository(value: &str) -> bool {
+    if !value.bytes().all(|byte| byte.is_ascii_graphic()) {
+        return false;
+    }
+    let Some(location) = value.strip_prefix("https://") else {
+        return false;
+    };
+    let authority_end = location
+        .bytes()
+        .position(|byte| matches!(byte, b'/' | b'?' | b'#'))
+        .unwrap_or(location.len());
+    repository_authority(&location[..authority_end])
+}
+
+fn repository_authority(authority: &str) -> bool {
+    if let Some(literal) = authority.strip_prefix('[') {
+        let Some(close) = literal.find(']') else {
+            return false;
+        };
+        let host = &literal[..close];
+        let suffix = &literal[close + 1..];
+        return <Ipv6Addr as core::str::FromStr>::from_str(host).is_ok()
+            && (suffix.is_empty() || suffix.strip_prefix(':').is_some_and(repository_port));
+    }
+
+    if authority.contains(['[', ']']) {
+        return false;
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    !host.contains(':') && repository_host(host) && port.is_none_or(repository_port)
+}
+
+fn repository_host(host: &str) -> bool {
+    if host.len() > 253 {
+        return false;
+    }
+    if host
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return <Ipv4Addr as core::str::FromStr>::from_str(host).is_ok();
+    }
+    host.split('.').all(|label| {
+        label.len() <= 63
+            && label
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    })
+}
+
+fn repository_port(port: &str) -> bool {
+    !port.is_empty()
+        && !port.starts_with('0')
+        && port.bytes().all(|byte| byte.is_ascii_digit())
+        && <u16 as core::str::FromStr>::from_str(port).is_ok_and(|port| port != 0)
 }
 
 fn git_revision(value: &str) -> bool {
@@ -361,6 +434,20 @@ mod tests {
     #[test]
     fn a_canonical_record_is_accepted() {
         assert_eq!(verify(MANIFEST, VERSIONS, IDENTITY), Ok(()));
+    }
+
+    #[test]
+    fn a_canonical_record_has_exactly_one_terminal_lf() {
+        let missing = MANIFEST
+            .strip_suffix('\n')
+            .expect("the fixture has a terminal LF");
+        let extra = format!("{MANIFEST}\n");
+
+        assert_eq!(
+            verify(missing, VERSIONS, IDENTITY),
+            Err(Error::NonCanonicalLineEnding)
+        );
+        assert!(verify(&extra, VERSIONS, IDENTITY).is_err());
     }
 
     #[test]
@@ -445,6 +532,85 @@ mod tests {
     }
 
     #[test]
+    fn repository_provenance_requires_a_host_bearing_https_authority() {
+        for repository in [
+            "https://",
+            "https:///wizzy",
+            "https://?source=wizzy",
+            "https://#wizzy",
+            "https://@/wizzy",
+            "https://user@example.invalid/wizzy",
+            "https://:443/wizzy",
+            "https://example.invalid:/wizzy",
+            "https://example.invalid:0/wizzy",
+            "https://example.invalid:0443/wizzy",
+            "https://example.invalid:65536/wizzy",
+            "https://example.invalid:not-a-port/wizzy",
+            "https://[::1/wizzy",
+            "https://::1]/wizzy",
+            "https://[]/wizzy",
+            "https://[example.invalid]/wizzy",
+            "https://[::1]extra/wizzy",
+            "https://example..invalid/wizzy",
+            "https://-example.invalid/wizzy",
+            "https://example_.invalid/wizzy",
+            "https://exam_ple.invalid/wizzy",
+            "https://999.999.999.999/wizzy",
+        ] {
+            let malformed =
+                MANIFEST.replacen("https://example.invalid/wizzy-fixture", repository, 1);
+            assert_eq!(
+                verify(&malformed, VERSIONS, IDENTITY),
+                Err(Error::InvalidValue),
+                "accepted {repository}"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_provenance_accepts_each_supported_host_form() {
+        for repository in [
+            "https://example.invalid/wizzy",
+            "https://example.invalid:443/wizzy",
+            "https://127.0.0.1/wizzy",
+            "https://[2001:db8::1]/wizzy",
+            "https://[2001:db8::1]:443/wizzy",
+        ] {
+            let manifest =
+                MANIFEST.replacen("https://example.invalid/wizzy-fixture", repository, 1);
+            assert_eq!(
+                verify(&manifest, VERSIONS, IDENTITY),
+                Ok(()),
+                "refused {repository}"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_host_length_boundary_is_exact() {
+        let label = "a".repeat(63);
+        let accepted_host = format!("{label}.{label}.{label}.{}", "a".repeat(61));
+        let refused_host = format!("{label}.{label}.{label}.{}", "a".repeat(62));
+        assert_eq!(accepted_host.len(), 253);
+        assert_eq!(refused_host.len(), 254);
+
+        for (host, expected) in [
+            (accepted_host, Ok(())),
+            (refused_host, Err(Error::InvalidValue)),
+        ] {
+            let repository = format!("https://{host}/wizzy");
+            let manifest =
+                MANIFEST.replacen("https://example.invalid/wizzy-fixture", &repository, 1);
+            assert_eq!(
+                verify(&manifest, VERSIONS, IDENTITY),
+                expected,
+                "host length {}",
+                host.len()
+            );
+        }
+    }
+
+    #[test]
     fn artifact_length_and_digest_identify_the_same_bytes() {
         let wrong_length = ArtifactIdentity {
             bytes: IDENTITY.bytes + 1,
@@ -462,5 +628,70 @@ mod tests {
             verify(MANIFEST, VERSIONS, wrong_digest),
             Err(Error::ArtifactMismatch)
         );
+    }
+
+    #[test]
+    fn errors_name_the_refused_record_property() {
+        let cases = [
+            (
+                Error::NonCanonicalLineEnding,
+                "handoff record does not use canonical LF endings",
+            ),
+            (
+                Error::UnsupportedFormat,
+                "handoff record format is unsupported",
+            ),
+            (
+                Error::MissingField,
+                "handoff record is missing a required field",
+            ),
+            (
+                Error::InvalidLine,
+                "handoff record contains an invalid line",
+            ),
+            (
+                Error::UnknownField,
+                "handoff record contains an unknown field",
+            ),
+            (
+                Error::NonCanonicalFields,
+                "handoff fields are duplicated or out of order",
+            ),
+            (
+                Error::InvalidValue,
+                "handoff record contains an invalid value",
+            ),
+            (
+                Error::VersionMismatch,
+                "handoff target or ABI version is unsupported",
+            ),
+            (
+                Error::ArtifactMismatch,
+                "artifact bytes do not match the handoff record",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn decimals_tokens_and_revisions_enforce_each_canonical_boundary() {
+        assert_eq!(canonical_decimal("17"), Some(17));
+        for invalid in ["", "0", "00", "07", "-1", "+1", "1_0"] {
+            assert_eq!(canonical_decimal(invalid), None, "accepted {invalid:?}");
+        }
+
+        for valid in ["a", "artifact.v1", "effect-name_2"] {
+            assert!(token(valid), "refused {valid:?}");
+        }
+        for invalid in ["", "A", ".artifact", "artifact-", "artifact!v1"] {
+            assert!(!token(invalid), "accepted {invalid:?}");
+        }
+
+        assert!(git_revision("0123456789abcdef0123456789abcdef01234567"));
+        assert!(!git_revision("gggggggggggggggggggggggggggggggggggggggg"));
+        assert!(!git_revision("0123456789abcdef"));
     }
 }

@@ -76,43 +76,14 @@ impl<'ast> Visit<'ast> for UnsafeFacts {
 
 /// Lines of `unsafe` `wost` may hold.
 ///
-/// 360 lines, measured 2026-08-25 during the Phase 0–5 audit. It was 343 at
-/// the Phase 5 close; the seventeen added are D-120's fixup recovery, D-123's
-/// four soundness fixes, the two pointer reads behind the leaf-nesting check's
-/// reporting (D-126), and the four constructions behind `claim_pair` and
-/// `claim_block_pair` — two `Port::new` and two `PortBlock::new`, each sound
-/// for the reason the single-port doors are, over one all-or-none reservation
-/// instead of two (D-138) — and three MSR writes that shut `syscall` and
-/// `sysenter` and re-open one for the check that watches them shut (D-139),
-/// and the one `save` behind the probe that proves a save fits its area
-/// (D-144). D-185 added two read/write operations at the shared-mapping
-/// lifetime and transaction preflight boundaries.
-/// D-186 added one call into the fixed write-protection fault probe.
-/// D-199 added three lines to consume a unique MMIO capability, inspect its
-/// exact leaves and construct its time-bounded register region.
-/// D-206 removed the two unused dynamic-port read/write operations.
-/// D-221 added two volatile shared-payload operations around the atomic ring
-/// publication boundary.
-/// D-228 added ten lines to drive and read x87, SSE and AVX as one complete
-/// extended-state switch witness.
-///
-/// Phase 5 added the most unsafe of any phase so far — ring 3, the extended
-/// state, the address space that grows — which is why this is where the number
-/// gets a budget rather than a note.
-///
-/// **The numbers in this comment are checked**, not merely written down: a
-/// stale count in the one comment whose whole job is to be a count was what
-/// the sweep found here (D-124).
+/// The measurement and per-file audit records below are executable evidence;
+/// change history belongs in the decision log (D-124).
 pub const BUDGET: usize = 380;
 
 /// What the crate measured when [`BUDGET`] was last reviewed.
 ///
-/// The budget is a ceiling and says nothing about where the number actually
-/// is. A ceiling of 380 is satisfied at 354 and at 200, and only one of those
-/// is the truth — so the measurement is recorded beside it and checked, which
-/// makes drift toward the ceiling visible rather than something a reader
-/// infers from a comment that may be a phase out of date.
-pub const MEASURED: usize = 380;
+/// Kept separately because a ceiling cannot reveal drift below it.
+pub const MEASURED: usize = 377;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///
@@ -132,17 +103,13 @@ pub fn measure(directory: &Path) -> Result<(usize, usize)> {
     Ok((lines, blocks))
 }
 
-/// Every `.rs` file under `directory`, recursively.
 fn sources(directory: &Path) -> Result<Vec<std::path::PathBuf>> {
     let mut found = Vec::new();
     let mut pending = vec![directory.to_path_buf()];
     while let Some(next) = pending.pop() {
-        for entry in std::fs::read_dir(&next)
-            .with_context(|| format!("listing {}", next.display()))?
-            .flatten()
-        {
+        for entry in crate::paths::directory_entries(&next)? {
             let path = entry.path();
-            if path.is_dir() {
+            if entry.is_dir() {
                 pending.push(path);
             } else if path.extension().is_some_and(|extension| extension == "rs") {
                 found.push(path);
@@ -153,7 +120,6 @@ fn sources(directory: &Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(found)
 }
 
-/// Lines spanned by unsafe block expressions in one Rust source.
 fn count(text: &str) -> Result<(usize, usize)> {
     let syntax = syn::parse_file(text).context("parsing Rust source")?;
     let mut facts = UnsafeFacts::default();
@@ -174,79 +140,85 @@ mod tests {
             "wost/src/arch/x86_64/apic.rs",
             3,
             0,
-            "e27f1fe75e0e801281415c7943b87c7bc24c61ff0a92b50f00d493d5c3f59238",
+            "ae200c78f53516107fca20219b73a7dce4962213476ff85841b8c865f11305b8",
         ),
         (
             "wost/src/arch/x86_64/cpu.rs",
             21,
             2,
-            "1a318a8a0066d2a802f46539c9d8deafc4e5a921986de8de6765d82eaaeda70b",
+            "e243e50835d0b49fa75b366d6254c7372ef9b0f24d497c9a5afc363c2c1471b2",
         ),
         (
             "wost/src/arch/x86_64/interrupt.rs",
-            20,
+            22,
             1,
-            "ad6203b4ad4418c3541037af167d85ecdd0f6c7372074cff15a73d2246207900",
+            "12d87e92c36a33e038d108cb6f00ea8210003aab55fce18c056141de6d03a5e7",
         ),
         (
             "wost/src/arch/x86_64/msr.rs",
             2,
             1,
-            "84db1467d56a638c35b858dd8c63742e5cf50dee1c26e2a4b5f1d667cb05d11f",
+            "e1f019c6f2a2b6df61070d201c08f578a4fc02af943cdfed68a480687bfbddfb",
         ),
         (
             "wost/src/arch/x86_64/paging.rs",
-            24,
+            11,
             0,
-            "99ebc503ea354c5966fd08f1652a1320e233f06b9af85163614bcdcb8fafb4e4",
+            "bc3fc75e61de9b9feefc0b848a2b020828ca6be952282d4bcbde7e71b3c293fa",
         ),
         (
             "wost/src/arch/x86_64/percpu.rs",
             2,
             0,
-            "bd26af12aa55f2ceff430383663543d3dc5dd6cbe5f2d5ba809d5424599b6e9d",
+            "4cf6b632b37b1be9af9c66a885a9b7e40650a494a69a075ac5e00f4b265d916c",
         ),
         (
             "wost/src/arch/x86_64/port.rs",
             16,
             10,
-            "c779d323e49685e9119d2a0b8ff358d8f83ed4debf114c5a2ec51a48b172e2f6",
+            "918184f055be60e5c615aa677a82135bbb10e53a4ef8d7e9e147fb79ddbb4dc0",
         ),
         (
             "wost/src/arch/x86_64/segment.rs",
-            15,
+            12,
             0,
-            "b3345cf8fd6b970e6e5f210aa37a4b0a3b9cfae35f6f174ee08a42cade363927",
+            "e8cbf708c1591491c2c3ac638be2a4809b7a084c76d077d4538f0c917193779e",
+        ),
+        (
+            "wost/src/arch/x86_64/shared_memory.rs",
+            2,
+            2,
+            "6143ca421ca29d7c048b84661bdd13768bd3a0d5c40d4746c2831e500304a8d0",
         ),
         (
             "wost/src/arch/x86_64/task.rs",
-            20,
-            4,
-            "0d88186a4e74c3e19f3e3cc42795def90040f4076f9b504fe3aac4bc3522f24a",
+            14,
+            3,
+            "4cb31e68175ef216f0b8dceb1c761445decb79960bb4e4a925536a2ae5081ae1",
         ),
         (
             "wost/src/arch/x86_64/usercopy.rs",
             5,
             1,
-            "eaa21a6e89da38b48ce5430372dd8da8dfb35af8c697c3239c2690da7461d87d",
+            "8aa48581c0a0c3c929b63982c6b53d8d11f6044d902142624f966110766a65d5",
         ),
         (
             "wost/src/arch/x86_64/xstate.rs",
             9,
             3,
-            "b2d50d6b4bdcff34ff628cc720d212db55a9f6966742a179ae9aba0f2910e9df",
+            "5d360ea2c8fd1276816d2bbc282f4550126f36050c3f001d181748948a105495",
         ),
         (
             "wost/src/boot/limine_glue.rs",
             3,
             0,
-            "3602d77654140ed3f8dbfb2cfe37919b405750d6a7348ef0f8c15e590fab41c4",
+            "1c2e8d9218d0d70befd4402a5440372ef39af823e1c5c83da4e6e4b19451d470",
         ),
         (
             "wost/src/boot/mod.rs",
             0,
             1,
-            "250ad7c8df1c5d987f935c6408a531f5bc14af4ecc6c186a9682339e41321d58",
+            "b31351b0f3cc42a6bb2a6444dcb11f7d3687c819130dd3722f1eb9eff8441964",
         ),
         (
             "wost/src/cell.rs",
@@ -256,27 +228,27 @@ mod tests {
         ),
         (
             "wost/src/mm/heap.rs",
-            7,
+            6,
             5,
-            "c6c9e484c519d2f67bbfbe421baa705fc6429314173d4766704490cbcc73c26e",
+            "306112aa957d6bb5e374897a6fd938fcaef7e96952db942acc716c5ebfc05eff",
         ),
         (
             "wost/src/mm/mod.rs",
-            13,
-            2,
-            "7a20c2a3a1fa6566e21381483e946e8f0235d11b9e41a58fbe00fdcb87ea7850",
+            15,
+            3,
+            "be2098dea762d3ff1b0dd5cc3785cfa8b183c1d901fdd990817935b0d57ddc91",
         ),
         (
             "wost/src/mmio.rs",
-            6,
-            3,
-            "47e6af301af29669ed3a8f30fe80413e81576370757c15ea5a2e29f0db96a205",
+            2,
+            2,
+            "982617ae9b24dd72bfeeca53ce86e76546b4ee3edc827bd43db5cdc51018a99b",
         ),
         (
             "wost/src/sync.rs",
             4,
             4,
-            "d7af9374912fe0dc9157f55b6ae6eafc322c79158cba87f52df1e8bad2051d49",
+            "feda23d612ceb63311ffbe033360da789f2c7a319c5537c6edb1f6431b9058c5",
         ),
     ];
 
@@ -326,14 +298,10 @@ mod tests {
         assert_eq!(count("unsafe fn f() { one() }").expect("syntax"), (0, 0));
         assert_eq!(count("unsafe impl Send for T {}").expect("syntax"), (0, 0));
         assert_eq!(count("// unsafe { not_code() }").expect("syntax"), (0, 0));
-        // Nesting is one block, and its lines are all of them.
         assert_eq!(body("unsafe {\n    if x {\n        y\n    }\n}").0, 5);
-        // Two blocks are two.
         assert_eq!(body("unsafe { a }\nunsafe { b }"), (2, 2));
     }
 
-    /// Every unsafe source and the safe wrappers beside it were read at this
-    /// exact revision.
     #[test]
     fn every_unsafe_source_has_one_reviewed_fingerprint() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -361,13 +329,6 @@ mod tests {
         }
     }
 
-    /// The number a reviewer would have to read is inside its budget.
-    ///
-    /// Absolute lines and never a ratio (`010` §1): a percentage falls when
-    /// safe code is added, which is not a safety improvement. Raising
-    /// [`BUDGET`] is a reviewable line in a commit, which is the mechanism —
-    /// so this failing is the point at which someone has to say out loud that
-    /// the crate grew.
     #[test]
     fn the_unsafe_in_wost_is_inside_its_budget() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -379,12 +340,9 @@ mod tests {
             lines <= BUDGET,
             "{lines} lines of unsafe in {blocks} blocks, over the budget of {BUDGET}"
         );
-        // And it is not zero, which would mean the scan stopped working.
+        // A near-zero result means the scanner stopped reaching the TCB.
         assert!(lines > 100, "only {lines} lines found; the scan is broken");
 
-        // And it is where the comment on [`BUDGET`] says it is. A ceiling
-        // alone leaves the true number free to drift up to it unremarked,
-        // which is how the doc came to state a count two phases old (D-124).
         assert_eq!(
             lines, MEASURED,
             "wost holds {lines} lines of unsafe, not the {MEASURED} recorded beside the budget;              update MEASURED and say in the commit what changed"
@@ -403,7 +361,6 @@ mod tests {
         assert_eq!((lines, blocks), (0, 0), "kernel/ grew an unsafe block");
     }
 
-    /// Safe kernel modules cannot borrow the running page tables wholesale.
     #[test]
     fn the_running_space_has_no_broad_safe_borrow() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -421,18 +378,8 @@ mod tests {
         );
     }
 
-    /// And every `libs/` crate, which carry `#![forbid(unsafe_code)]`.
-    /// Every `libs/` crate still forbids unsafe, and `kernel/` still denies it.
-    ///
-    /// The counter beside this measures **blocks**, deliberately — `unsafe fn`
-    /// and `unsafe impl` are declarations, not operations, and the budget is
-    /// about operations. But that leaves the crate boundary itself unchecked:
-    /// a `libs/` crate that dropped `#![forbid(unsafe_code)]` and grew an
-    /// `unsafe fn` has zero blocks and passes, and the boundary is D-13's
-    /// whole claim (D-147).
-    ///
-    /// Checked as text, because the attribute is the thing being asserted and
-    /// a build that compiles proves only that nothing violated it *yet*.
+    /// Check the declarations because counting blocks cannot see an unused
+    /// `unsafe fn` or `unsafe impl` (D-147).
     #[test]
     fn the_crate_boundary_is_still_declared() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -440,9 +387,11 @@ mod tests {
             .expect("xtask sits below the workspace root");
 
         let mut crates = 0;
-        for entry in std::fs::read_dir(root.join("libs")).expect("libs") {
-            let path = entry.expect("a libs entry").path();
-            if !path.is_dir() {
+        for entry in crate::paths::directory_entries(&root.join("libs"))
+            .expect("complete libs directory listing")
+        {
+            let path = entry.path();
+            if !entry.is_dir() {
                 continue;
             }
             let lib = path.join("src").join("lib.rs");
@@ -468,8 +417,6 @@ mod tests {
             "kernel/ does not deny unsafe"
         );
 
-        // And `wost` is the one that lifts it, which is what makes the other
-        // two mean something.
         let wost = std::fs::read_to_string(root.join("wost/src/lib.rs")).expect("wost lib.rs");
         assert!(
             wost.contains("#![allow(unsafe_code)]"),

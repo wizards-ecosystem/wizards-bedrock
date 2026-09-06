@@ -17,18 +17,19 @@ const LONG_CONTENT: &[u8] = b"long-name fragments precede this alias\n";
 const NESTED_CONTENT: &[u8] = b"nested through a foreign directory\n";
 
 fn header<'a>(lines: &mut impl Iterator<Item = &'a str>, expected: &str) -> Result<&'a str> {
-    let line = lines
-        .next()
-        .with_context(|| format!("missing {expected} header"))?;
+    let line =
+        core::iter::Iterator::next(lines).with_context(|| format!("missing {expected} header"))?;
     let mut fields = line.split(' ');
     ensure!(
-        fields.next() == Some(expected),
+        core::iter::Iterator::next(&mut fields) == Some(expected),
         "expected {expected} header"
     );
-    let value = fields
-        .next()
+    let value = core::iter::Iterator::next(&mut fields)
         .with_context(|| format!("missing {expected} value"))?;
-    ensure!(fields.next().is_none(), "extra field in {expected} header");
+    ensure!(
+        core::iter::Iterator::next(&mut fields).is_none(),
+        "extra field in {expected} header"
+    );
     Ok(value)
 }
 
@@ -42,13 +43,14 @@ const fn nibble(byte: u8) -> Option<u8> {
 
 fn expand(source: &str) -> Result<Vec<u8>> {
     let mut lines = source.lines();
-    ensure!(lines.next() == Some(MAGIC), "wrong sparse-envelope version");
+    ensure!(
+        core::iter::Iterator::next(&mut lines) == Some(MAGIC),
+        "wrong sparse-envelope version"
+    );
 
-    let bytes: usize = header(&mut lines, "bytes")?
-        .parse()
+    let bytes = <usize as core::str::FromStr>::from_str(header(&mut lines, "bytes")?)
         .context("parsing expanded byte length")?;
-    let sector_bytes: usize = header(&mut lines, "sector-bytes")?
-        .parse()
+    let sector_bytes = <usize as core::str::FromStr>::from_str(header(&mut lines, "sector-bytes")?)
         .context("parsing sector byte length")?;
     let expected_digest = header(&mut lines, "sha256")?;
 
@@ -73,17 +75,16 @@ fn expand(source: &str) -> Result<Vec<u8>> {
         let line_number = line_index + 5;
         let mut fields = line.split(' ');
         ensure!(
-            fields.next() == Some("sector"),
+            core::iter::Iterator::next(&mut fields) == Some("sector"),
             "line {line_number} is not a sector record"
         );
-        let index: usize = fields
-            .next()
-            .context("missing sector index")?
-            .parse()
-            .with_context(|| format!("parsing sector index on line {line_number}"))?;
-        let encoded = fields.next().context("missing encoded sector")?;
+        let index = <usize as core::str::FromStr>::from_str(
+            core::iter::Iterator::next(&mut fields).context("missing sector index")?,
+        )
+        .with_context(|| format!("parsing sector index on line {line_number}"))?;
+        let encoded = core::iter::Iterator::next(&mut fields).context("missing encoded sector")?;
         ensure!(
-            fields.next().is_none(),
+            core::iter::Iterator::next(&mut fields).is_none(),
             "extra field on sector line {line_number}"
         );
         ensure!(index < sectors, "sector {index} is outside the image");
@@ -201,16 +202,22 @@ fn reader_view(image: &[u8]) -> Result<View> {
         .map_err(|error| anyhow!("mounting with libs/fat32: {error:?}"))?;
     let root = volume.bpb().root_cluster();
     let mut inventory = Vec::new();
-    volume
-        .walk_directory(root, |entry| {
+    let mut cursor = fat32::DirectoryCursor::new(root);
+    loop {
+        let chunk = volume
+            .directory_chunk(&mut cursor)
+            .map_err(|error| anyhow!("walking the foreign root with libs/fat32: {error:?}"))?;
+        for entry in chunk.entries() {
             inventory.push(InventoryEntry {
                 name: String::from_utf8_lossy(entry.name()).into_owned(),
                 directory: entry.is_directory(),
                 bytes: entry.size,
             });
-            true
-        })
-        .map_err(|error| anyhow!("walking the foreign root with libs/fat32: {error:?}"))?;
+        }
+        if cursor.is_done() {
+            break;
+        }
+    }
     inventory.sort();
 
     let fragmented_entry = volume

@@ -76,7 +76,9 @@ pub enum PicError {
 impl fmt::Display for PicError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PortsUnavailable => f.write_str("their ports are already claimed"),
+            Self::PortsUnavailable => {
+                core::fmt::Write::write_str(f, "their ports are already claimed")
+            }
         }
     }
 }
@@ -87,47 +89,21 @@ impl core::error::Error for PicError {}
 ///
 /// Does nothing after the first successful call.
 ///
-/// **The ports are claimed with no lock of ours held.** This used to take
-/// `CONTROLLERS`' guard first and claim inside it, and `port::claim_block`
-/// takes `CLAIMED`'s — two leaf locks nested, which is exactly what `lock_leaf`
-/// forbids, and an order `CONTROLLERS → CLAIMED` that nothing else in the
-/// kernel knew about. A lock order acquired by accident is the one that closes
-/// a cycle later (D-105, D-121).
+/// Claims both port blocks before taking `CONTROLLERS`, preserving leaf-lock
+/// order and all-or-none port ownership (D-105, D-121, D-138).
 pub fn silence() -> Result<(), PicError> {
     if CONTROLLERS.lock_leaf().is_some() {
         return Ok(());
     }
 
-    // Claimed here, between the two guards rather than under either.
-    //
-    // **Two callers can still get a wrong answer, and the recheck below does
-    // not fix it** — an earlier comment here said it did. Interleave two: B
-    // reads `CONTROLLERS` as `None` and drops the guard; A claims both blocks;
-    // B's claims both fail; B takes the guard and finds it *still* `None`,
-    // because A is queued behind B on that same guard; B reports
-    // `PortsUnavailable` for a PIC that is about to be silenced correctly. The
-    // recheck only closes the window once A has stored, and nothing makes it
-    // have done.
-    //
-    // Left as it is, deliberately. This runs once, at boot, from one caller,
-    // and the flag is set between the two guards — so it is a preemption away
-    // rather than SMP-only, and it is still not reachable. Making it race-free
-    // buys a code path nothing on this machine can exercise, for a hazard that
-    // arrives with the second CPU, and belongs with D-56's per-CPU work. The
-    // structural half of that is paid — the counters live in `arch::percpu`
-    // since D-154 — but this race needs an actual second processor to be
-    // reachable, so it waits for Phase 12 (D-129).
-    //
-    // **Both or neither.** A claim is permanent, so taking `PRIMARY` and then
-    // failing on `SECONDARY` stranded the first and no later caller could ever
-    // silence the PIC. `?`-chaining had the same outcome and `.zip()` reached
-    // it more reliably; one all-or-none reservation is what removes it (D-138).
+    // The sole compiled caller runs before scheduling. The second state check
+    // still resolves an attempt whose port claim lost just before publication.
     let claims = port::claim_block_pair::<2, 2>(PRIMARY, SECONDARY);
 
     let mut controllers = CONTROLLERS.lock_leaf();
     if controllers.is_some() {
-        // Someone else finished between the two guards. Whatever this claimed
-        // is dropped here, which returns nothing — see above.
+        // A successful pair cannot reach this branch: the published owner
+        // already holds the same permanent claims.
         return Ok(());
     }
     let (primary, secondary) = claims.ok_or(PicError::PortsUnavailable)?;
@@ -140,7 +116,7 @@ pub fn silence() -> Result<(), PicError> {
 }
 
 /// Whether [`silence`] has run to completion.
-pub fn is_silenced() -> bool {
+pub(super) fn is_silenced() -> bool {
     CONTROLLERS.lock_leaf().is_some()
 }
 
@@ -149,12 +125,13 @@ pub fn is_silenced() -> bool {
 ///
 /// Read back rather than remembered: the point of asking is to find out whether
 /// the write landed.
+#[cfg(feature = "selftest")]
 pub fn masks() -> Option<(u8, u8)> {
     let mut controllers = CONTROLLERS.lock_leaf();
     let pair = controllers.as_mut()?;
     Some((
-        pair.primary.read(register::DATA),
-        pair.secondary.read(register::DATA),
+        PortBlock::read(&mut pair.primary, register::DATA),
+        PortBlock::read(&mut pair.secondary, register::DATA),
     ))
 }
 
@@ -196,16 +173,16 @@ impl Pair {
                 initialise::CASCADE_IDENTITY,
             ),
         ] {
-            controller.write(register::COMMAND, initialise::BEGIN);
-            controller.write(register::DATA, vectors);
-            controller.write(register::DATA, cascade);
-            controller.write(register::DATA, initialise::MODE_8086);
+            PortBlock::write(controller, register::COMMAND, initialise::BEGIN);
+            PortBlock::write(controller, register::DATA, vectors);
+            PortBlock::write(controller, register::DATA, cascade);
+            PortBlock::write(controller, register::DATA, initialise::MODE_8086);
         }
     }
 
     /// Disconnect every input line on both controllers.
     fn mask_all(&mut self) {
-        self.primary.write(register::DATA, MASK_ALL);
-        self.secondary.write(register::DATA, MASK_ALL);
+        PortBlock::write(&mut self.primary, register::DATA, MASK_ALL);
+        PortBlock::write(&mut self.secondary, register::DATA, MASK_ALL);
     }
 }

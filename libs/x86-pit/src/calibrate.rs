@@ -96,6 +96,49 @@ const fn rounded_numerator(counted: u64, denominator: u64) -> Option<u64> {
 mod tests {
     use super::*;
 
+    fn watchdog_spec(
+        apic_remaining: u32,
+        tsc_ticks: u64,
+        pit_ticks: u16,
+        expected_pit_ticks: u16,
+        expected_tsc_hz: u64,
+    ) -> WatchdogVerdict {
+        if apic_remaining != 0 {
+            return WatchdogVerdict::Inconclusive;
+        }
+        if expected_pit_ticks == 0 {
+            return WatchdogVerdict::Inconclusive;
+        }
+        if expected_tsc_hz == 0 {
+            return WatchdogVerdict::Inconclusive;
+        }
+
+        let expected = u128::from(expected_pit_ticks);
+        let tolerance = (expected / 64).max(1);
+        let pit = u128::from(pit_ticks);
+        let latest = expected + 1_193_182_u128 / 100;
+        let latest_tsc = u128::from(expected_tsc_hz) * latest / 1_193_182;
+        if u128::from(tsc_ticks) > latest_tsc {
+            return WatchdogVerdict::Inconclusive;
+        }
+        if pit > expected + tolerance {
+            return WatchdogVerdict::Inconclusive;
+        }
+        if pit + tolerance < expected {
+            return WatchdogVerdict::Disagreed;
+        }
+
+        let numerator = u128::from(tsc_ticks) * 1_193_182 + pit / 2;
+        let observed: u128 = numerator.checked_div(pit).unwrap_or_default();
+        let expected_hz = u128::from(expected_tsc_hz);
+        let difference = observed.max(expected_hz) - observed.min(expected_hz);
+        if difference <= expected_hz / 64 {
+            WatchdogVerdict::Stable
+        } else {
+            WatchdogVerdict::Disagreed
+        }
+    }
+
     /// A count that is an exact multiple of the window makes the ratio exact:
     /// ten cycles per crystal tick is ten times the crystal.
     #[test]
@@ -112,12 +155,9 @@ mod tests {
 
     /// Inputs at the top of the space must answer, not overflow.
     ///
-    /// The *product*'s `checked_mul` is what these two lines exercise. The
-    /// rounding addend's `checked_add` is unreachable and the doc used to
-    /// claim it was covered: `u64::MAX mod CRYSTAL_HZ` is 958_759 and the
-    /// largest addend is `u16::MAX / 2`, so the sum never wraps — mutating it
-    /// to `wrapping_add` survived all eighteen tests (D-105). Stated rather
-    /// than tested, because the input that would reach it does not exist.
+    /// These lines exercise the product's `checked_mul`. No input reaches a
+    /// wrapping rounding addend: `u64::MAX mod CRYSTAL_HZ` is 958_759 and the
+    /// largest addend is `u16::MAX / 2` (D-105).
     #[test]
     fn the_product_at_the_top_of_the_space_cannot_overflow() {
         let largest_counted = u64::MAX / CRYSTAL_HZ as u64;
@@ -224,5 +264,50 @@ mod tests {
             WatchdogVerdict::Inconclusive,
             "a pending older interrupt does not belong to the newly armed timer"
         );
+    }
+
+    #[test]
+    fn watchdog_boundaries_match_the_independent_specification() {
+        for apic_remaining in [0, 1] {
+            for expected in [0, 1, 63, 64, 65, 127, 128, 129, 1_000, 23_863, u16::MAX] {
+                for expected_hz in [0, 1, 63, 64, 65, 1_193_182, 3_200_000_000] {
+                    let tolerance = (u64::from(expected) / 64).max(1);
+                    let mut pit_samples = vec![0, 1, expected, u16::MAX];
+                    for pit in [
+                        u64::from(expected).saturating_sub(tolerance + 1),
+                        u64::from(expected).saturating_sub(tolerance),
+                        u64::from(expected).saturating_add(tolerance),
+                        u64::from(expected).saturating_add(tolerance + 1),
+                    ] {
+                        if let Ok(pit) = u16::try_from(pit) {
+                            pit_samples.push(pit);
+                        }
+                    }
+                    pit_samples.sort_unstable();
+                    pit_samples.dedup();
+
+                    let latest = u128::from(expected) + 1_193_182_u128 / 100;
+                    let latest_tsc = u128::from(expected_hz) * latest / 1_193_182;
+                    for pit in pit_samples {
+                        let ideal_tsc =
+                            (u128::from(expected_hz) * u128::from(pit) + 1_193_182 / 2) / 1_193_182;
+                        let mut tsc_samples = vec![0, 1, ideal_tsc, latest_tsc];
+                        tsc_samples.push(latest_tsc.saturating_sub(1));
+                        tsc_samples.push(latest_tsc + 1);
+                        tsc_samples.sort_unstable();
+                        tsc_samples.dedup();
+
+                        for tsc in tsc_samples {
+                            let tsc = u64::try_from(tsc).unwrap();
+                            assert_eq!(
+                                watchdog_verdict(apic_remaining, tsc, pit, expected, expected_hz,),
+                                watchdog_spec(apic_remaining, tsc, pit, expected, expected_hz,),
+                                "apic={apic_remaining} tsc={tsc} pit={pit} expected={expected} hz={expected_hz}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

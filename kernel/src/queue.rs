@@ -1,9 +1,7 @@
 //! The async submission/completion ring, kernel side.
 //!
-//! D-79 settled the shape, D-112 checked the protocol against every reachable
-//! state before this file existed, and `libs/ring-proto` holds the arithmetic
-//! under proptest. What is here is the part neither of those can be: the
-//! boundary with pages ring 3 can rewrite at any moment.
+//! `libs/ring-proto` proves the state arithmetic; this module owns the boundary
+//! with pages ring 3 may rewrite at any moment (D-79, D-112).
 //!
 //! **The rule that shapes every function below: acquire the peer's publication,
 //! copy out exactly once, then validate the copy.** CVE-2025-39816 is literally
@@ -16,20 +14,21 @@
 //! (D-113, D-221).
 //!
 //! **The pages are the kernel's**, mapped into the process rather than donated
-//! to it: `map_shared` writes no `OWNED` bit, so the space can never hand
+//! to it: `map_shared_ring` writes no `OWNED` bit, so the space cannot hand
 //! these frames back to the allocator, and the ring holds the run for its own
 //! life. That is the arrangement D-79 asked for — kernel-allocated ring pages,
 //! single-owner rings — and it is why a program cannot free the memory the
 //! kernel is about to write a completion into.
 
 use alloc::sync::Arc;
+use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use handle_space::Rights;
-use ring_proto::{Capacity, Queues};
+use ring_proto::{Capacity, Queues, SharedLayout};
 use wost::arch::current::interrupt::TrapFrame;
 use wost::arch::current::paging::{AddressSpace, MapError};
-use wost::mm::{self, Shared, USegment};
+use wost::mm::{self, SharedRing, USegment};
 use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
@@ -39,21 +38,15 @@ use crate::wait::WaitQueue;
 /// Bytes of shared page: the header and indices, the entries, and a data area.
 const SHARED_BYTES: u64 = 3 * PAGE_SIZE;
 
+const PUBLICATION_WORDS: usize = 4;
+
+type RingPages = SharedRing<PUBLICATION_WORDS>;
+
 /// Where the data area begins.
 ///
-/// **A provided buffer, and the ring owns it.** `012` §8 warns that
-/// `-ENOBUFS` at completion is the same late-failure shape D-151 refused for
-/// handles, and the usual answer is to validate a caller's pointer at
-/// submission. This kernel does something simpler and stronger: the buffer is
-/// *part of the ring*, so it is always mapped, always the right size, and its
-/// bounds are arithmetic rather than a walk of the caller's page tables. There
-/// is no user pointer to check, no SMAP window to open and no fault to recover
-/// (D-173).
-///
-/// The cost is a copy: a read goes device → kernel frame → here, where a
-/// caller's own buffer could have been the DMA target. Zero-copy needs the
-/// memory-object work of a later phase, and paying one copy for a boundary
-/// with no pointer in it is the right trade until then.
+/// Ring ownership keeps completion from discovering a late-invalid user
+/// buffer and avoids a user-copy fault window (D-173). Reads pay one copy
+/// because the current ABI exposes no memory-object authority for zero-copy.
 const DATA_AT: usize = 2 * PAGE_SIZE as usize;
 
 /// Bytes of data area.
@@ -65,17 +58,6 @@ const ENTRIES_AT: usize = PAGE_SIZE as usize;
 /// Where the completion entries begin, after every submission entry.
 const COMPLETIONS_AT: usize = ENTRIES_AT + SUBMISSIONS as usize * SUBMISSION_BYTES;
 
-/// Bytes in one submission entry.
-///
-/// **Thirty-two, widened in slice 9 from sixteen.** A read needs a handle, an
-/// offset, a buffer and a length, which is more than one eight-byte argument
-/// holds — and D-149 put the ABI slices first precisely so that the caller
-/// which freezes the shape arrives *after* it can be changed. This is that
-/// caller, and this is that change.
-///
-/// The opcode surface stays minimal on purpose: io_uring's exploit record is a
-/// warning about surface growth, and Google's kernelCTF disables it outright
-/// (`002`).
 const SUBMISSION_BYTES: usize = 32;
 
 /// Bytes in one completion entry.
@@ -141,11 +123,8 @@ pub(crate) enum Opcode {
     Uptime,
     /// Duplicate a handle this program holds, narrowing its rights.
     ///
-    /// The first operation whose completion carries **authority** rather than
-    /// bytes, which is what D-151 said the ring was missing and what makes it
-    /// a peer of the channel path rather than a side door around it. `handle`
-    /// names the source and `argument` carries the rights the program is
-    /// willing to hold.
+    /// The operation whose completion carries authority. `handle` names the
+    /// source and `argument` carries the rights the program will retain.
     Duplicate,
     /// Complete once `argument` nanoseconds have passed.
     ///
@@ -225,7 +204,7 @@ impl Submission {
     /// `Duplicate` and `Cancel`-by-handle: the handle goes in the field made
     /// for it rather than packed into the argument, which is what the widened
     /// entry bought (D-173).
-    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    #[cfg(feature = "selftest")]
     pub(crate) const fn about(opcode: Opcode, token: u32, handle: u32, argument: u64) -> Self {
         Self {
             opcode,
@@ -244,7 +223,7 @@ impl Submission {
     /// site, because a zero handle is a *value* — writing it out invites a
     /// reader to think it matters, and the next person to add a field would
     /// have to touch every one of them (D-173).
-    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    #[cfg(feature = "selftest")]
     pub(crate) const fn simple(opcode: Opcode, token: u32, argument: u64) -> Self {
         Self {
             opcode,
@@ -274,9 +253,8 @@ pub(crate) const STATUS_OK: u32 = 0;
 pub(crate) const STATUS_UNKNOWN_OPCODE: u32 = 1;
 /// The table has no room for the handle this operation would produce.
 ///
-/// Reported at **submission**, which is the point: a program told now can
-/// close something and ask again, where a program told at completion has
-/// already been charged for work it cannot receive (D-151).
+/// Reported at submission, before work is accepted that cannot return its
+/// result (D-151).
 pub(crate) const STATUS_NO_HANDLE_SLOT: u32 = 2;
 /// The handle named is not one this program holds.
 pub(crate) const STATUS_BAD_HANDLE: u32 = 3;
@@ -327,7 +305,7 @@ struct Snapshot {
 /// Its completion slot is **already reserved** — taken when the operation was
 /// admitted — so the completion below can never fail to find room. That is
 /// what makes deferring safe rather than merely convenient.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Pending {
     /// Private identity, so a stale worker cannot act on a reused slot.
     id: u64,
@@ -340,7 +318,7 @@ struct Pending {
 }
 
 /// Why an admitted operation is still live.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingKind {
     /// Waiting for the monotonic clock.
     Timer { deadline_ns: u64 },
@@ -372,7 +350,7 @@ impl PendingKind {
 }
 
 /// Everything the worker needs after admission has dropped caller authority.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ReadRequest {
     file: crate::vfs::File,
     offset: u32,
@@ -391,29 +369,55 @@ enum ReadState {
 #[derive(Debug)]
 struct PendingTable {
     slots: [Option<Pending>; SUBMISSIONS as usize],
-    next_id: u64,
+    next_id: Option<NonZeroU64>,
 }
 
 impl PendingTable {
     const fn new() -> Self {
         Self {
             slots: [None; SUBMISSIONS as usize],
-            next_id: 1,
+            next_id: Some(NonZeroU64::MIN),
         }
     }
 
-    fn insert(&mut self, token: u32, kind: PendingKind) -> Option<(usize, u64)> {
+    fn insert(&mut self, token: u32, kind: PendingKind) -> Option<(usize, Pending)> {
         let index = self.slots.iter().position(Option::is_none)?;
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1).max(1);
-        self.slots[index] = Some(Pending {
-            id,
+        let id = self.next_id?;
+        self.next_id = id.get().checked_add(1).and_then(NonZeroU64::new);
+        let entry = Pending {
+            id: id.get(),
             token,
             kind,
             settling: false,
-        });
-        Some((index, id))
+        };
+        self.slots[index] = Some(entry);
+        Some((index, entry))
     }
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn pending_identity_exhaustion_is_terminal_for_test() -> bool {
+    let mut pending = PendingTable::new();
+    pending.next_id = NonZeroU64::new(u64::MAX - 1);
+    let kind = PendingKind::Timer { deadline_ns: 1 };
+
+    let first = pending
+        .insert(1, kind)
+        .is_some_and(|(index, entry)| index == 0 && entry.id == u64::MAX - 1);
+    pending.slots[0] = None;
+    let last = pending
+        .insert(2, kind)
+        .is_some_and(|(index, entry)| index == 0 && entry.id == u64::MAX);
+    pending.slots[0] = None;
+    let stopped = pending.insert(3, kind).is_none()
+        && pending.next_id.is_none()
+        && pending.slots.iter().all(Option::is_none);
+
+    first
+        && last
+        && stopped
+        && work_state_round_trip_is_exact_for_test()
+        && reap_request_accounting_is_exact_for_test()
 }
 
 /// Global file-work admission. One worker makes controller ownership and
@@ -424,7 +428,12 @@ const WORK_DEPTH: usize = 8;
 struct Work {
     ring: Arc<Queue>,
     pending: usize,
-    id: u64,
+    expected: Pending,
+}
+
+#[derive(Debug)]
+struct RunningRead {
+    work: Work,
 }
 
 #[derive(Debug)]
@@ -446,23 +455,50 @@ impl WorkState {
     }
 
     fn push(&mut self, work: Work) -> Result<(), Work> {
+        self.assert_invariants();
         if self.len == WORK_DEPTH {
             return Err(work);
         }
+        assert!(
+            self.slots[self.tail].is_none(),
+            "file work tail points at an occupied slot"
+        );
         self.slots[self.tail] = Some(work);
         self.tail = (self.tail + 1) % WORK_DEPTH;
         self.len += 1;
+        self.assert_invariants();
         Ok(())
     }
 
     fn pop(&mut self) -> Option<Work> {
+        self.assert_invariants();
         if self.len == 0 {
             return None;
         }
-        let work = self.slots[self.head].take();
+        let Some(work) = self.slots[self.head].take() else {
+            panic!("file work head points at an empty slot");
+        };
         self.head = (self.head + 1) % WORK_DEPTH;
         self.len -= 1;
-        work
+        self.assert_invariants();
+        Some(work)
+    }
+
+    fn assert_invariants(&self) {
+        assert!(
+            self.is_consistent(),
+            "file work queue state is inconsistent"
+        );
+    }
+
+    fn is_consistent(&self) -> bool {
+        if self.head >= WORK_DEPTH || self.tail >= WORK_DEPTH || self.len > WORK_DEPTH {
+            return false;
+        }
+        self.tail == (self.head + self.len) % WORK_DEPTH
+            && (0..WORK_DEPTH).all(|offset| {
+                self.slots[(self.head + offset) % WORK_DEPTH].is_some() == (offset < self.len)
+            })
     }
 }
 
@@ -483,15 +519,19 @@ impl FileWorkQueue {
     }
 
     fn submit(&self, work: Work) -> Result<(), Work> {
-        self.state.lock_leaf().push(work)?;
-        self.queued.fetch_add(1, Ordering::Release);
+        let mut state = self.state.lock_leaf();
+        state.push(work)?;
+        self.queued.store(state.len, Ordering::Release);
+        drop(state);
         self.waiters.wake_all();
         Ok(())
     }
 
     fn take(&self) -> Option<Work> {
-        let work = self.state.lock_leaf().pop()?;
-        self.queued.fetch_sub(1, Ordering::AcqRel);
+        let mut state = self.state.lock_leaf();
+        let work = state.pop()?;
+        self.queued.store(state.len, Ordering::Release);
+        drop(state);
         Some(work)
     }
 }
@@ -504,6 +544,22 @@ static WORKER_READY: AtomicBool = AtomicBool::new(false);
 /// One request per program moved into the zombie table.
 static REAP_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 
+fn add_reap_request(requests: &AtomicUsize) -> bool {
+    requests
+        .fetch_update(Ordering::Release, Ordering::Relaxed, |pending| {
+            pending.checked_add(1)
+        })
+        .is_ok()
+}
+
+fn take_reap_request(requests: &AtomicUsize) -> bool {
+    requests
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+            pending.checked_sub(1)
+        })
+        .is_ok()
+}
+
 #[cfg(feature = "selftest")]
 static REFUSE_WORKER: AtomicBool = AtomicBool::new(false);
 
@@ -511,7 +567,13 @@ static REFUSE_WORKER: AtomicBool = AtomicBool::new(false);
 static WORKER_REAPS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(feature = "selftest")]
+static WORKER_RETAINED: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(feature = "selftest")]
 static WORK_PAUSED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "selftest")]
+static WORKER_IS_PAUSED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "selftest")]
 static WORK_RUNS: AtomicUsize = AtomicUsize::new(0);
@@ -520,7 +582,7 @@ static WORK_RUNS: AtomicUsize = AtomicUsize::new(0);
 #[derive(Debug)]
 struct SharedQueue {
     /// The shared pages. The kernel's, for the ring's whole life.
-    pages: Shared,
+    pages: RingPages,
     /// The kernel's own protocol state, which userspace cannot reach.
     protocol: Queues,
 }
@@ -542,20 +604,106 @@ pub(crate) struct Queue {
     /// operation occupies a submission's worth of the ring's admission until
     /// it completes, so a table any larger could never be filled.
     pending: SpinLock<PendingTable>,
-    /// Completions posted since the ring was made.
+    /// Completion generation sampled by production waiters.
     ///
-    /// Kernel-side and monotonic, so a check can ask whether work was actually
-    /// done without reading a number ring 3 can write (D-115's lesson applied
-    /// where the answer matters most: the program's own tally is in the page).
+    /// Kernel ownership prevents ring 3 from forging the edge that closes the
+    /// wait queue's check-before-sleep window.
     served: AtomicUsize,
     /// Terminal completions refused before changing accounting.
+    #[cfg(feature = "selftest")]
     settlement_refusals: AtomicUsize,
     /// Make one terminal post see the missing-reservation path.
     #[cfg(feature = "selftest")]
     refuse_next_post: AtomicBool,
 }
 
+#[cfg(feature = "selftest")]
 static LIVE_QUEUES: AtomicUsize = AtomicUsize::new(0);
+
+impl Work {
+    fn remove_queued_read(self) {
+        let mut pending = self.ring.pending.lock_leaf();
+        let Some(current) = pending.slots.get(self.pending).copied().flatten() else {
+            panic!("refused file work lost its pending entry");
+        };
+        assert!(
+            !self.expected.settling
+                && matches!(
+                    self.expected.kind,
+                    PendingKind::Read {
+                        state: ReadState::Queued,
+                        ..
+                    }
+                )
+                && current == self.expected,
+            "refused file work no longer owns its queued read"
+        );
+        pending.slots[self.pending] = None;
+    }
+
+    fn begin_read(mut self) -> Option<RunningRead> {
+        let expected = {
+            let mut pending = self.ring.pending.lock_leaf();
+            let entry = pending.slots.get_mut(self.pending)?.as_mut()?;
+            if *entry != self.expected {
+                return None;
+            }
+            let PendingKind::Read { state, .. } = &mut entry.kind else {
+                return None;
+            };
+            if *state != ReadState::Queued {
+                return None;
+            }
+            *state = ReadState::Running;
+            *entry
+        };
+        self.expected = expected;
+        Some(RunningRead { work: self })
+    }
+}
+
+impl RunningRead {
+    fn request(&self) -> ReadRequest {
+        let PendingKind::Read {
+            request,
+            state: ReadState::Running,
+        } = self.work.expected.kind
+        else {
+            unreachable!("running file work was made without a running read");
+        };
+        request
+    }
+
+    fn finish(self, status: u32, value: u64) -> Result<(), Self> {
+        let entry = {
+            let mut pending = self.work.ring.pending.lock_leaf();
+            let Some(entry) = pending
+                .slots
+                .get_mut(self.work.pending)
+                .and_then(Option::as_mut)
+            else {
+                panic!("running file work lost its pending entry");
+            };
+            assert!(
+                !entry.settling && *entry == self.work.expected,
+                "running file work no longer owns its read"
+            );
+            entry.settling = true;
+            *entry
+        };
+
+        if !self
+            .work
+            .ring
+            .settle_pending(self.work.pending, entry, status, value)
+        {
+            return Err(self);
+        }
+        self.work.ring.served.fetch_add(1, Ordering::Release);
+        self.work.ring.waiters.wake_all();
+        Ok(())
+    }
+}
 
 impl Queue {
     /// Build a ring and its pages, ready to be mapped.
@@ -568,10 +716,19 @@ impl Queue {
         if !run.zero() {
             return None;
         }
-        // Pinned for sharing, which is one-way: these frames can never also be
-        // mapped as owned, so no unmap can return them while the program still
-        // reaches them (D-115).
-        let mut shared: Shared = USegment::from(run).share();
+        // Pinned for sharing, one-way: these frames can never be mapped as
+        // owned, so no unmap returns them while the program reaches them (D-115).
+        let layout = SharedLayout::new(
+            SHARED_BYTES as usize,
+            [
+                header::SUBMISSION_HEAD,
+                header::SUBMISSION_TAIL,
+                header::COMPLETION_HEAD,
+                header::COMPLETION_TAIL,
+            ],
+        )
+        .ok()?;
+        let mut shared = USegment::from(run).share().into_ring(layout).ok()?;
 
         // The header is written before the pages are ever mapped, so a
         // program never sees a ring whose shape it cannot read.
@@ -583,6 +740,7 @@ impl Queue {
         let completion = Capacity::new(COMPLETIONS).ok()?;
         let state = Queues::new(submission, completion).ok()?;
 
+        #[cfg(feature = "selftest")]
         LIVE_QUEUES.fetch_add(1, Ordering::AcqRel);
         Some(Arc::new(Self {
             ring: SpinLock::new(SharedQueue {
@@ -592,6 +750,7 @@ impl Queue {
             waiters: WaitQueue::new(),
             pending: SpinLock::new(PendingTable::new()),
             served: AtomicUsize::new(0),
+            #[cfg(feature = "selftest")]
             settlement_refusals: AtomicUsize::new(0),
             #[cfg(feature = "selftest")]
             refuse_next_post: AtomicBool::new(false),
@@ -605,15 +764,15 @@ impl Queue {
     ///
     /// # Errors
     ///
-    /// As [`AddressSpace::map_shared`].
+    /// As [`AddressSpace::map_shared_ring`].
     /// `&mut self`, so the run is reached through `get_mut` rather than
-    /// through a guard: `map_shared` allocates page-table frames, and holding
+    /// through a guard: mapping allocates page-table frames, and holding
     /// a leaf guard across an allocation is what `lock_leaf` forbids (D-85).
-    /// Copying the address out instead would hand `map_shared` a bare number
+    /// Copying the address out instead would hand the mapper a bare number
     /// where the type is the evidence, which is the hole D-115 closed one
     /// function away.
     pub(crate) fn install(&mut self, space: &mut AddressSpace, at: u64) -> Result<(), MapError> {
-        space.map_shared(
+        space.map_shared_ring(
             at,
             &self.ring.get_mut().pages,
             Flags::WRITABLE.union(Flags::NO_EXECUTE),
@@ -622,13 +781,8 @@ impl Queue {
 
     /// Serve every submission userspace has posted, and report how many.
     ///
-    /// **Admission happens here**, when the doorbell rings — not before. A
-    /// program writes an entry and moves its tail; nothing tells the kernel
-    /// until it is asked, and it is the asking that reserves. Reserving in a
-    /// separate earlier call was the first design and it could not work: the
-    /// kernel's own ring never learned about entries the program had written,
-    /// so a program that did exactly what the ABI describes was served
-    /// nothing (D-116).
+    /// **Admission happens here**, when the doorbell rings, because writing an
+    /// entry and moving its tail does not otherwise notify the kernel (D-116).
     ///
     /// The reservation is still taken **before** the operation is accepted,
     /// which is the whole of D-79 and what the model checks (D-112): a
@@ -644,24 +798,15 @@ impl Queue {
         let mut served = 0;
 
         while let Some(submission) = self.take(&snapshot) {
-            // `None` is an operation that has been admitted and will complete
-            // later. Its reservation stays held — that is the difference
-            // between deferring an operation and dropping one.
+            // `None` is an admitted operation that completes later; its held
+            // reservation is what distinguishes deferring from dropping.
             let Some(completion) = self.admit(submission, table) else {
                 continue;
             };
-            if !self.post(completion) {
-                // Unreachable: admission reserved this slot before the
-                // operation was accepted, which is the whole of D-79's design,
-                // and D-112's model says no reachable state loses one. If it
-                // ever is reached the operation has been consumed with no
-                // completion — so the reservation is held for ever, the ring
-                // admits nothing more, and the program waits on something that
-                // will not come. Loud in a debug build rather than a silent
-                // wedge nobody can diagnose (D-115).
-                debug_assert!(false, "a reserved completion slot was not there");
-                break;
-            }
+            // Admission reserved this slot, so a failure is the model's
+            // invariant breaking; a silent wedge is made terminal (D-79, D-206).
+            let posted = self.post(completion);
+            assert!(posted, "a reserved completion slot was not there");
             served += 1;
         }
 
@@ -672,14 +817,11 @@ impl Queue {
         served
     }
 
-    /// Completions posted since this ring was made.
+    /// Current completion generation.
     ///
-    /// The observation point for the check that a *program* drove this ring:
-    /// the tally is kernel-side, so unlike the header page's numbers it is not
-    /// something ring 3 can write to make the answer it wants (D-115, D-116).
-    ///
-    /// The `fetch_add` that feeds it is unconditional, so the shipped kernel
-    /// and the checked one run the same code; only the reading is gated.
+    /// Production waiters sample this before sleeping and recheck it in their
+    /// wake condition, so a completion between those operations is not lost.
+    /// Self-tests observe that same synchronization state (D-115, D-116).
     pub(crate) fn served_count(&self) -> usize {
         self.served.load(Ordering::Acquire)
     }
@@ -735,7 +877,7 @@ impl Queue {
             }
             Opcode::Cancel => self.cancel(submission),
             Opcode::OpenAt => self.open_at(submission, table),
-            Opcode::Read => return self.read(submission, table),
+            Opcode::Read => return Self::read(self, submission, table),
             Opcode::Unknown(_) => refuse(token, STATUS_UNKNOWN_OPCODE),
         })
     }
@@ -744,11 +886,9 @@ impl Queue {
     ///
     /// Three things happen in an order that is the whole point. The **slot is
     /// promised first**, so a full table is reported at submission rather than
-    /// discovered at completion. The rights are then **attenuated on arrival**
-    /// by `install`, so the ring narrows exactly as a channel does and cannot
-    /// be the widening path around D-110. And every refusal below drops the
-    /// reservation, which gives the promise back — not because each path
-    /// remembers to, but because the type's destructor does (D-163).
+    /// discovered at completion. `install` then attenuates the rights on
+    /// arrival. Every refusal drops the reservation and returns the promise
+    /// through the type's destructor (D-163).
     fn duplicate(&self, submission: Submission, table: &Arc<HandleTable>) -> Completion {
         let token = submission.token;
         let named = submission.handle;
@@ -756,11 +896,8 @@ impl Queue {
             return refuse(token, STATUS_NO_HANDLE_SLOT);
         };
 
-        // `try_from`, not `as`. A cast would drop the high half of a word ring
-        // 3 wrote, so `0xFFFF_FFFF_0000_0003` would be read as `DUPLICATE |
-        // TRANSFER` instead of being refused — and refusing a rights word that
-        // holds bits this kernel does not define is the entire reason
-        // `from_bits` returns an `Option` (D-174).
+        // `try_from`, not `as`: a cast would drop the high half of a word
+        // ring 3 wrote and admit undefined rights bits (D-174).
         let Some(declared) = u32::try_from(submission.argument)
             .ok()
             .and_then(Rights::from_bits)
@@ -771,14 +908,13 @@ impl Queue {
         let Ok((object, held)) = table.resolve(named) else {
             return refuse(token, STATUS_BAD_HANDLE);
         };
-        // The same gate `HandleTable::duplicate` applies, restated here rather
-        // than reached through it: that path inserts as well, and this one has
-        // a promise to spend instead.
+        // The gate `HandleTable::duplicate` applies, restated because that
+        // path inserts and this one spends a promise instead.
         if !held.contains(Rights::DUPLICATE) {
             return refuse(token, STATUS_DENIED);
         }
 
-        match table.install(reservation, object, held, declared) {
+        match reservation.install(object, held, declared) {
             Ok(handle) => Completion {
                 token,
                 status: STATUS_OK,
@@ -788,24 +924,8 @@ impl Queue {
         }
     }
 
-    /// Resolve a path from a directory handle and hand back what it names.
-    ///
-    /// The operation this phase was for. Three things happen in the order that
-    /// matters: the **slot is promised first**, so a full table is reported at
-    /// submission; the path is read from the ring's own data area, so there is
-    /// no caller pointer to validate; and the rights on what comes back are
-    /// **derived from the directory's**, never asked for.
-    ///
-    /// The derivation never widens a universal right as `012` §4 requires:
-    ///
-    /// - A directory preserves its parent's same-type rights unchanged; a
-    ///   caller may subsequently Duplicate to narrow them.
-    /// - A file preserves only universal rights the directory held and gains
-    ///   `READ` because `TRAVERSE` authorized reaching its bytes. It never gets
-    ///   `WRITE`, because there is no write path and a right that grants
-    ///   nothing is a syscall name in disguise (D-78).
-    /// - A device is refused. What a program will hold for one is slice 4's
-    ///   `Device` capability, and putting it in a table is Phase 7's (D-172).
+    /// Resolve through a directory without widening its authority.
+    /// The output slot is reserved before any work that would owe a result.
     fn open_at(&self, submission: Submission, table: &Arc<HandleTable>) -> Completion {
         let token = submission.token;
 
@@ -842,7 +962,7 @@ impl Queue {
             crate::vfs::Node::Device(_) => return refuse(token, STATUS_DENIED),
         };
 
-        match table.install(reservation, produced, offered, offered) {
+        match reservation.install(produced, offered, offered) {
             Ok(handle) => Completion {
                 token,
                 status: STATUS_OK,
@@ -875,20 +995,15 @@ impl Queue {
             return Some(refuse(token, STATUS_DENIED));
         }
 
-        // The destination, bounded before anything is read: a length that ran
-        // past the data area would be the kernel writing outside the pages it
-        // shares, which is the one thing this arrangement exists to make
-        // arithmetic rather than a walk.
+        // Bounded before anything is read: a length past the data area would
+        // be the kernel writing outside the pages it shares.
         let Some(bounds) = data_bounds(submission.argument, submission.length) else {
             return Some(refuse(token, STATUS_BAD_BUFFER));
         };
 
         let wanted = (bounds.1).min(MAX_READ);
-        // An offset past every file this kernel can hold reads nothing, which
-        // is what an offset past the end reads everywhere else here. A cast
-        // would instead wrap it to somewhere *inside* the file — so a program
-        // asking for byte four billion and one would be handed byte one
-        // (D-174).
+        // An offset past every possible file reads nothing; a cast would wrap
+        // it to somewhere inside the file (D-174).
         let offset = u32::try_from(submission.offset).unwrap_or(u32::MAX);
         let request = ReadRequest {
             file,
@@ -899,16 +1014,16 @@ impl Queue {
         if !worker_is_ready() {
             return Some(refuse(token, STATUS_NO_ROOM));
         }
-        let Some((pending, id)) = self.defer_read(token, request) else {
+        let Some((pending, expected)) = self.defer_read(token, request) else {
             return Some(refuse(token, STATUS_NO_ROOM));
         };
         let work = Work {
             ring: Arc::clone(self),
             pending,
-            id,
+            expected,
         };
-        if FILE_WORK.submit(work).is_err() {
-            self.remove_queued_read(pending, id);
+        if let Err(work) = FILE_WORK.submit(work) {
+            work.remove_queued_read();
             return Some(refuse(token, STATUS_NO_ROOM));
         }
         None
@@ -923,7 +1038,7 @@ impl Queue {
         self.ring
             .lock_leaf()
             .pages
-            .read_volatile_at(DATA_AT + at, &mut into[..len])
+            .read_payload_at(DATA_AT + at, &mut into[..len])
             .then_some(len)
     }
 
@@ -932,7 +1047,7 @@ impl Queue {
         self.ring
             .lock_leaf()
             .pages
-            .write_volatile_at(DATA_AT + at, bytes)
+            .write_payload_at(DATA_AT + at, bytes)
     }
 
     /// Record an operation as in flight, and say when it comes due.
@@ -948,85 +1063,16 @@ impl Queue {
     }
 
     /// Record a read before offering it to the global worker.
-    fn defer_read(&self, token: u32, request: ReadRequest) -> Option<(usize, u64)> {
-        self.pending.lock_leaf().insert(
+    fn defer_read(&self, token: u32, request: ReadRequest) -> Option<(usize, Pending)> {
+        let mut pending = self.pending.lock_leaf();
+        let (index, expected) = pending.insert(
             token,
             PendingKind::Read {
                 request,
                 state: ReadState::Queued,
             },
-        )
-    }
-
-    /// Roll back a read which the bounded global queue refused.
-    fn remove_queued_read(&self, index: usize, id: u64) {
-        let mut pending = self.pending.lock_leaf();
-        if pending
-            .slots
-            .get(index)
-            .copied()
-            .flatten()
-            .is_some_and(|entry| {
-                entry.id == id
-                    && matches!(
-                        entry.kind,
-                        PendingKind::Read {
-                            state: ReadState::Queued,
-                            ..
-                        }
-                    )
-            })
-        {
-            pending.slots[index] = None;
-        }
-    }
-
-    /// Transfer one still-queued read to the worker.
-    fn begin_read(&self, index: usize, id: u64) -> Option<ReadRequest> {
-        let mut pending = self.pending.lock_leaf();
-        let entry = pending.slots.get_mut(index)?.as_mut()?;
-        if entry.id != id || entry.settling {
-            return None;
-        }
-        let PendingKind::Read { request, state } = &mut entry.kind else {
-            return None;
-        };
-        if *state != ReadState::Queued {
-            return None;
-        }
-        *state = ReadState::Running;
-        Some(*request)
-    }
-
-    /// Post the terminal result of the exact read the worker owns.
-    fn finish_read(&self, index: usize, id: u64, status: u32, value: u64) -> bool {
-        let entry = {
-            let mut pending = self.pending.lock_leaf();
-            let Some(entry) = pending.slots.get_mut(index).and_then(Option::as_mut) else {
-                return true;
-            };
-            if entry.id != id
-                || entry.settling
-                || !matches!(
-                    entry.kind,
-                    PendingKind::Read {
-                        state: ReadState::Running,
-                        ..
-                    }
-                )
-            {
-                return true;
-            }
-            entry.settling = true;
-            *entry
-        };
-
-        if !self.settle_pending(index, entry, status, value) {
-            return false;
-        }
-        self.served.fetch_add(1, Ordering::Release);
-        self.waiters.wake_all();
-        true
+        )?;
+        Some((index, expected))
     }
 
     /// Mark one matching operation as being terminally reported.
@@ -1056,6 +1102,13 @@ impl Queue {
             value,
         });
         let mut pending = self.pending.lock_leaf();
+        let Some(current) = pending.slots.get(index).copied().flatten() else {
+            panic!("terminal work lost its pending entry");
+        };
+        assert!(
+            entry.settling && current == entry,
+            "terminal work no longer owns its pending entry"
+        );
         if posted {
             pending.slots[index] = None;
         } else {
@@ -1063,6 +1116,7 @@ impl Queue {
                 settling: false,
                 ..entry
             });
+            #[cfg(feature = "selftest")]
             self.settlement_refusals.fetch_add(1, Ordering::AcqRel);
         }
         posted
@@ -1074,10 +1128,8 @@ impl Queue {
     /// [`STATUS_CANCELLED`]. This function's own completion is separate and is
     /// posted by [`serve`](Self::serve), against its own reservation.
     fn cancel(&self, submission: Submission) -> Completion {
-        // A token is a `u32`, so a word that does not fit is not a token and
-        // names no operation. Truncating would have `0x1_0000_DEAD` cancel
-        // `0xDEAD`, which is a program ending an operation it did not name
-        // (D-174).
+        // A word that does not fit a `u32` is not a token; truncating would
+        // let a program end an operation it did not name (D-174).
         let Ok(target) = u32::try_from(submission.argument) else {
             return refuse(submission.token, STATUS_NOT_FOUND);
         };
@@ -1135,25 +1187,9 @@ impl Queue {
 
     /// End every operation still in flight, and report how many.
     ///
-    /// **The teardown path**, and D-153 as `012` §10 amends it: *exit is a
-    /// wait, not a signal.* io_uring cancelled out of line for six years and
-    /// the symptom was mount points staying busy after the process had exited.
-    /// So this does not mark anything abandoned and leave: it ends each
-    /// operation and posts the completion it was owed, into pages the zombie
-    /// still holds. It stops if a terminal post refuses; the caller observes
-    /// that through [`is_quiet`](Self::is_quiet) and retains the owner for a
-    /// later retry (D-192).
-    ///
-    /// The completions go into a ring nobody will read, and that is not waste.
-    /// Posting them is what spends the reservations, and a reservation that is
-    /// never spent is a ring whose accounting says work is outstanding for
-    /// ever — which is invisible until something asks, and slice 5's device
-    /// will ask.
-    ///
-    /// A queued read is cancelled here; a running read is deliberately left
-    /// owned by its `Arc<Queue>` until the worker posts its one terminal
-    /// completion. The caller retains the zombie until
-    /// [`is_quiet`](Self::is_quiet) becomes true (D-200).
+    /// A terminal post may refuse without losing its pending entry. The caller
+    /// retains the owner and retries until [`is_quiet`](Self::is_quiet) permits
+    /// release.
     pub(crate) fn abandon(&self) -> usize {
         let mut ended = 0;
         while let Some((index, entry)) = self.begin_settlement(|entry| entry.kind.is_cancellable())
@@ -1197,7 +1233,7 @@ impl Queue {
         let before = self.served_count();
         let due = self.expire(crate::time::now_ns());
         if due > 0 || self.is_quiet() {
-            return due;
+            return self.served_since(before);
         }
 
         self.waiters
@@ -1205,7 +1241,21 @@ impl Queue {
                 self.served_count() != before
             });
         self.expire(crate::time::now_ns());
+        self.served_since(before)
+    }
+
+    fn served_since(&self, before: usize) -> usize {
         self.served_count().wrapping_sub(before)
+    }
+
+    #[cfg(feature = "selftest")]
+    pub(crate) fn quiet_completion_is_counted_for_test(&self) -> bool {
+        if !self.is_quiet() {
+            return false;
+        }
+        let before = self.served_count();
+        self.served.fetch_add(1, Ordering::Release);
+        self.is_quiet() && self.served_since(before) == 1
     }
 
     /// Wait for this ring's next completion through the production wait queue.
@@ -1258,10 +1308,8 @@ impl Queue {
         let mut bytes = [0u8; SUBMISSION_BYTES];
         {
             let mut ring = self.ring.lock_leaf();
-            // The tail is userspace's number, so it bounds nothing on its own:
-            // what it says is how many operations userspace *claims* to have
-            // written, and a tail that ran away would otherwise walk the kernel
-            // through slots nothing was written into.
+            // The tail is userspace's claim, so it bounds nothing on its own;
+            // a runaway tail would walk the kernel through unwritten slots.
             let published = snapshot
                 .submission_tail
                 .wrapping_sub(ring.protocol.submissions().head());
@@ -1270,35 +1318,26 @@ impl Queue {
             }
             // The reservation, taken before the operation is accepted.
             ring.protocol.submit()?;
-            // Unreachable: `submit` has just produced into this ring, so there
-            // is something to consume. Loud in a debug build for the reason
-            // D-115 gave `serve`'s twin two functions down — every path past
-            // this point spends the reservation, and a `None` here holds it
-            // for ever. The ring then admits nothing more and the program waits
-            // on a completion that will not come: a permanent wedge, which is
-            // worse than a panic because nothing can diagnose it (D-133).
-            let slot = match ring.protocol.take() {
-                Some(slot) => slot,
-                None => {
-                    debug_assert!(false, "a submission was reserved and then was not there");
-                    return None;
-                }
-            };
+            // `submit` just produced this slot; losing it would strand the
+            // reservation, so the contradiction is terminal in every build (D-206).
+            let taken = ring.protocol.take();
+            assert!(
+                taken.is_some(),
+                "a submission was reserved and then was not there"
+            );
+            let slot = taken?;
 
             let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
-            // Unreachable for the same reason and with the same cost: `slot`
-            // is below `SUBMISSIONS` and the entries are a page in, so the
-            // range is inside the shared run by construction. This one has
-            // *consumed* the submission as well as reserved, so it loses the
-            // operation too.
-            if !ring.pages.read_volatile_at(at, &mut bytes) {
-                debug_assert!(false, "a submission slot was outside the shared pages");
+            // Unreachable by construction, and terminal for the same reason:
+            // this one has consumed the submission, so it loses the operation too.
+            let in_bounds = ring.pages.read_payload_at(at, &mut bytes);
+            assert!(in_bounds, "a submission slot was outside the shared pages");
+            if !in_bounds {
                 return None;
             }
 
-            // The head userspace reads is published after the entry has been
-            // copied out, so a program that watches it cannot see the kernel
-            // release a slot it is still reading.
+            // The head is published after the copy, so a program cannot see
+            // the kernel release a slot it is still reading.
             let head = ring.protocol.submissions().head();
             publish_index(&ring.pages, header::SUBMISSION_HEAD, head);
         }
@@ -1339,9 +1378,8 @@ impl Queue {
         write_entry_u32(&mut bytes, completion::STATUS, completion.status);
         write_entry_u64(&mut bytes, completion::VALUE, completion.value);
 
-        // One bounded guard makes every kernel completion path one logical
-        // producer. With separate state and page locks, CPU 2 could advance
-        // to tail 2 and publish it before CPU 1 had written slot 0 (D-221).
+        // One guard makes every completion path one logical producer; with
+        // separate locks a later tail could publish before an earlier slot (D-221).
         let mut ring = self.ring.lock_leaf();
         let Some(slot) = ring.protocol.complete() else {
             return false;
@@ -1350,13 +1388,11 @@ impl Queue {
 
         let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;
         assert!(
-            ring.pages.write_volatile_at(at, &bytes),
+            ring.pages.write_payload_at(at, &bytes),
             "an internal completion slot was outside the ring pages"
         );
-        // The entry is in the page before the tail says so: a program that
-        // sees the tail move and reads the slot finds what was written, not
-        // what was there before — and `complete` already advanced the tail, so
-        // this publishes a value taken before the write and stored after it.
+        // The entry is in the page before the tail says so; `complete`
+        // advanced the tail before the write, and it is published after it.
         publish_index(&ring.pages, header::COMPLETION_TAIL, tail);
         true
     }
@@ -1369,22 +1405,7 @@ impl Queue {
     pub(crate) fn reap_up_to(&self, claimed_head: u32) -> usize {
         let mut ring = self.ring.lock_leaf();
 
-        // Bounded before it drives anything, exactly as the submission tail is
-        // (D-79's copy-out-then-*validate*). A head further ahead than there
-        // are completions posted is not a large reap, it is a lie — and
-        // honouring it reaps entries the program never read, which defeats
-        // the one claim the completion queue exists to make. The loop's own
-        // termination is not a bound: `reap` would happily drain all of them
-        // (D-115).
-        let posted = ring.protocol.completions().occupied();
-        let asked = claimed_head.wrapping_sub(ring.protocol.completions().head());
-        let allowed = asked.min(posted);
-
-        let mut reaped = 0;
-        while reaped < allowed && ring.protocol.reap().is_some() {
-            reaped += 1;
-        }
-        reaped as usize
+        ring.protocol.reap_up_to(claimed_head) as usize
     }
 
     /// What userspace last said it had reaped.
@@ -1393,13 +1414,13 @@ impl Queue {
     }
 
     /// Operations admitted and not yet reported.
-    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    #[cfg(feature = "selftest")]
     pub(crate) fn outstanding(&self) -> u32 {
         self.ring.lock_leaf().protocol.outstanding()
     }
 
     /// Whether the accounting still says a completion cannot be dropped.
-    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    #[cfg(feature = "selftest")]
     pub(crate) fn is_consistent(&self) -> bool {
         self.ring.lock_leaf().protocol.is_consistent()
     }
@@ -1423,9 +1444,8 @@ impl Queue {
     /// the page is the boundary and the function call is not.
     #[cfg(feature = "selftest")]
     pub(crate) fn post_submission_for_test(&self, slot: usize, submission: Submission) {
-        // Exhaustive on purpose, and the compiler is what keeps it so: an
-        // opcode added to `decode` and forgotten here is a build failure
-        // rather than a check that silently exercises `Unknown` (D-161).
+        // Exhaustive on purpose: an opcode added to `decode` and forgotten
+        // here is a build failure, not a check exercising `Unknown` (D-161).
         let opcode = match submission.opcode {
             Opcode::Echo => 1,
             Opcode::Uptime => 2,
@@ -1444,7 +1464,10 @@ impl Queue {
         write_entry_u64(&mut bytes, submission::OFFSET, submission.offset);
         write_entry_u64(&mut bytes, submission::ARGUMENT, submission.argument);
         let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
-        self.ring.lock_leaf().pages.write_volatile_at(at, &bytes);
+        assert!(
+            self.ring.lock_leaf().pages.write_payload_at(at, &bytes),
+            "a self-test submission slot was outside the shared pages"
+        );
     }
 
     /// Move the submission tail as a program would.
@@ -1464,10 +1487,14 @@ impl Queue {
     /// So a check can show that a hostile rewrite *landed* — without it, a
     /// check comparing only the completion is comparing two places the rewrite
     /// never touched, which is true whatever the kernel does (D-115).
+    #[cfg(feature = "selftest")]
     pub(crate) fn read_submission(&self, slot: usize) -> Submission {
         let mut bytes = [0u8; SUBMISSION_BYTES];
         let at = ENTRIES_AT + slot * SUBMISSION_BYTES;
-        self.ring.lock_leaf().pages.read_volatile_at(at, &mut bytes);
+        assert!(
+            self.ring.lock_leaf().pages.read_payload_at(at, &mut bytes),
+            "a self-test submission slot was outside the shared pages"
+        );
         Submission {
             opcode: Opcode::decode(read_entry_u32(&bytes, submission::OPCODE)),
             token: read_entry_u32(&bytes, submission::TOKEN),
@@ -1490,7 +1517,7 @@ impl Queue {
         self.ring
             .lock_leaf()
             .pages
-            .read_volatile_at(DATA_AT + at, into)
+            .read_payload_at(DATA_AT + at, into)
     }
 
     /// A submission that names a handle, an offset, a buffer and a length.
@@ -1517,10 +1544,14 @@ impl Queue {
     }
 
     /// Read a completion back out of the shared page as a program would.
+    #[cfg(feature = "selftest")]
     pub(crate) fn read_completion(&self, slot: usize) -> Completion {
         let mut bytes = [0u8; COMPLETION_BYTES];
         let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;
-        self.ring.lock_leaf().pages.read_volatile_at(at, &mut bytes);
+        assert!(
+            self.ring.lock_leaf().pages.read_payload_at(at, &mut bytes),
+            "a self-test completion slot was outside the shared pages"
+        );
         Completion {
             token: read_entry_u32(&bytes, completion::TOKEN),
             status: read_entry_u32(&bytes, completion::STATUS),
@@ -1563,10 +1594,96 @@ impl Queue {
     }
 }
 
+#[cfg(feature = "selftest")]
 impl Drop for Queue {
     fn drop(&mut self) {
         LIVE_QUEUES.fetch_sub(1, Ordering::AcqRel);
     }
+}
+
+#[cfg(feature = "selftest")]
+fn work_state_round_trip_is_exact_for_test() -> bool {
+    let Some(ring) = Queue::new() else {
+        return false;
+    };
+    let work = |id| Work {
+        ring: Arc::clone(&ring),
+        pending: 0,
+        expected: Pending {
+            id,
+            token: 0,
+            kind: PendingKind::Read {
+                request: ReadRequest {
+                    file: crate::vfs::File::Tmp { at: 0, len: 0 },
+                    offset: 0,
+                    at: 0,
+                    wanted: 0,
+                },
+                state: ReadState::Queued,
+            },
+            settling: false,
+        },
+    };
+    let mut state = WorkState::new();
+
+    for id in 1..=WORK_DEPTH as u64 {
+        if state.push(work(id)).is_err() {
+            return false;
+        }
+    }
+    let refused = match state.push(work(WORK_DEPTH as u64 + 1)) {
+        Ok(()) => false,
+        Err(work) => work.expected.id == WORK_DEPTH as u64 + 1,
+    };
+    for id in 1..=WORK_DEPTH as u64 / 2 {
+        if state.pop().is_none_or(|work| work.expected.id != id) {
+            return false;
+        }
+    }
+    for id in WORK_DEPTH as u64 + 1..=WORK_DEPTH as u64 + WORK_DEPTH as u64 / 2 {
+        if state.push(work(id)).is_err() {
+            return false;
+        }
+    }
+    let exact = (WORK_DEPTH as u64 / 2 + 1..=WORK_DEPTH as u64 + WORK_DEPTH as u64 / 2)
+        .all(|id| state.pop().is_some_and(|work| work.expected.id == id));
+
+    let mut bad_bounds = WorkState::new();
+    bad_bounds.head = WORK_DEPTH;
+    let mut bad_tail = WorkState::new();
+    bad_tail.tail = WORK_DEPTH;
+    let mut bad_length = WorkState::new();
+    bad_length.len = WORK_DEPTH + 1;
+    let mut bad_window = WorkState::new();
+    bad_window.tail = 1;
+    bad_window.len = 1;
+
+    refused
+        && exact
+        && state.pop().is_none()
+        && state.is_consistent()
+        && !bad_bounds.is_consistent()
+        && !bad_tail.is_consistent()
+        && !bad_length.is_consistent()
+        && !bad_window.is_consistent()
+}
+
+#[cfg(feature = "selftest")]
+fn reap_request_accounting_is_exact_for_test() -> bool {
+    let requests = AtomicUsize::new(0);
+    let added = add_reap_request(&requests)
+        && add_reap_request(&requests)
+        && requests.load(Ordering::Acquire) == 2;
+    let drained = take_reap_request(&requests)
+        && requests.load(Ordering::Acquire) == 1
+        && take_reap_request(&requests)
+        && requests.load(Ordering::Acquire) == 0
+        && !take_reap_request(&requests);
+
+    let exhausted = AtomicUsize::new(usize::MAX);
+    let stopped = !add_reap_request(&exhausted) && exhausted.load(Ordering::Acquire) == usize::MAX;
+
+    added && drained && stopped
 }
 
 /// Give deferred file service and process reclamation one runtime owner.
@@ -1601,51 +1718,77 @@ pub(crate) fn without_worker_for_test<T>(check: impl FnOnce() -> T) -> T {
 
 /// Wake the service worker after ownership reaches the zombie table.
 pub(crate) fn request_reap() {
-    REAP_REQUESTS.fetch_add(1, Ordering::Release);
+    assert!(
+        add_reap_request(&REAP_REQUESTS),
+        "process reap request accounting overflowed"
+    );
     FILE_WORK.waiters.wake_all();
+}
+
+fn collect_requested_reap() -> bool {
+    match crate::user::collect() {
+        crate::user::CollectOutcome::Empty => false,
+        crate::user::CollectOutcome::Retained => {
+            #[cfg(feature = "selftest")]
+            WORKER_RETAINED.fetch_add(1, Ordering::AcqRel);
+            true
+        }
+        crate::user::CollectOutcome::Reclaimed(_) => {
+            #[cfg(feature = "selftest")]
+            WORKER_REAPS.fetch_add(1, Ordering::AcqRel);
+            false
+        }
+    }
 }
 
 /// Drain bounded work, sleeping without a tick while nothing is queued.
 fn work_forever() {
     let mut context = crate::thread::ThreadContext::require();
-    let mut handled_reaps = 0usize;
+    let mut retry_reap = false;
     loop {
         #[cfg(feature = "selftest")]
         if WORK_PAUSED.load(Ordering::Acquire) {
+            WORKER_IS_PAUSED.store(true, Ordering::Release);
             crate::thread::yield_now(&mut context);
             continue;
         }
+        #[cfg(feature = "selftest")]
+        WORKER_IS_PAUSED.store(false, Ordering::Release);
 
-        let requested = REAP_REQUESTS.load(Ordering::Acquire);
-        if handled_reaps != requested {
-            handled_reaps = handled_reaps.wrapping_add(1);
-            if crate::user::collect().is_some() {
-                #[cfg(feature = "selftest")]
-                WORKER_REAPS.fetch_add(1, Ordering::AcqRel);
+        if retry_reap {
+            if crate::time::is_calibrated() {
+                crate::thread::sleep_ms(&mut context, 1);
+            } else {
+                crate::thread::yield_now(&mut context);
             }
+        }
+        if retry_reap || take_reap_request(&REAP_REQUESTS) {
+            retry_reap = collect_requested_reap();
         }
         if let Some(work) = FILE_WORK.take() {
             service(work);
             continue;
         }
         FILE_WORK.waiters.wait_unless(&mut context, || {
-            FILE_WORK.queued.load(Ordering::Acquire) > 0
-                || REAP_REQUESTS.load(Ordering::Acquire) != handled_reaps
+            retry_reap
+                || FILE_WORK.queued.load(Ordering::Acquire) > 0
+                || REAP_REQUESTS.load(Ordering::Acquire) > 0
         });
     }
 }
 
 /// Execute one read outside the syscall handler and every spin lock.
 fn service(work: Work) {
-    let Some(request) = work.ring.begin_read(work.pending, work.id) else {
+    let Some(mut running) = work.begin_read() else {
         return;
     };
+    let request = running.request();
     #[cfg(feature = "selftest")]
     WORK_RUNS.fetch_add(1, Ordering::AcqRel);
     let mut scratch = [0u8; MAX_READ];
     let (status, value) =
         match crate::vfs::read(request.file, request.offset, &mut scratch[..request.wanted]) {
-            Ok(read) if work.ring.write_data(request.at, &scratch[..read]) => {
+            Ok(read) if running.work.ring.write_data(request.at, &scratch[..read]) => {
                 (STATUS_OK, read as u64)
             }
             Ok(_) => (STATUS_BAD_BUFFER, 0),
@@ -1653,18 +1796,33 @@ fn service(work: Work) {
             Err(_) => (STATUS_NO_ENTRY, 0),
         };
 
-    // Admission reserved the completion before the work existed. The only
-    // refusal is the self-test injection for D-192, which is transient; keep
-    // ownership here until the promised terminal record has been posted.
-    while !work.ring.finish_read(work.pending, work.id, status, value) {
-        core::hint::spin_loop();
+    // Admission reserved the completion; the only refusal is D-192's
+    // transient self-test injection, so keep ownership until it posts.
+    loop {
+        match running.finish(status, value) {
+            Ok(()) => break,
+            Err(retry) => {
+                running = retry;
+                core::hint::spin_loop();
+            }
+        }
     }
 }
 
 /// Stop or resume work before it leaves the bounded queue.
 #[cfg(feature = "selftest")]
 pub(crate) fn pause_worker_for_test(paused: bool) {
+    WORKER_IS_PAUSED.store(false, Ordering::Release);
     WORK_PAUSED.store(paused, Ordering::Release);
+    if paused {
+        FILE_WORK.waiters.wake_all();
+    }
+}
+
+/// Whether the service worker has reached its requested pause barrier.
+#[cfg(feature = "selftest")]
+pub(crate) fn worker_is_paused_for_test() -> bool {
+    WORKER_IS_PAUSED.load(Ordering::Acquire)
 }
 
 /// Work items which still occupy global admission slots.
@@ -1685,19 +1843,17 @@ pub(crate) fn worker_reaps_for_test() -> usize {
     WORKER_REAPS.load(Ordering::Acquire)
 }
 
+#[cfg(feature = "selftest")]
+pub(crate) fn worker_retained_for_test() -> usize {
+    WORKER_RETAINED.load(Ordering::Acquire)
+}
+
 /// Rings whose storage is still live.
 #[cfg(feature = "selftest")]
 pub(crate) fn live_for_test() -> usize {
     LIVE_QUEUES.load(Ordering::Acquire)
 }
 
-/// A completion that carries a refusal and no result.
-///
-/// Every refusal in this file goes through it, so a refusal that forgot to
-/// zero its value could not be written. D-79's rule — one terminal completion,
-/// always — is expressed by `admit` returning one on every path that is not a
-/// deferral, and by a deferral holding the reservation that guarantees a later
-/// one.
 /// The longest path an `OpenAt` may name.
 ///
 /// Bounded because the buffer is on this stack, and bounded *here* rather than
@@ -1727,6 +1883,9 @@ fn data_bounds(offset: u64, length: u32) -> Option<(usize, usize)> {
     (end <= DATA_BYTES).then_some((at, len))
 }
 
+/// A completion that carries a refusal and no result.
+///
+/// Every refusal goes through it, so one cannot forget to zero its value.
 fn refuse(token: u32, status: u32) -> Completion {
     Completion {
         token,
@@ -1737,33 +1896,36 @@ fn refuse(token: u32, status: u32) -> Completion {
 
 /// Read one immutable little-endian `u32` out of the shared pages.
 #[cfg(feature = "selftest")]
-fn read_u32_volatile(shared: &Shared, at: usize) -> u32 {
+fn read_u32_volatile(shared: &RingPages, at: usize) -> u32 {
     let mut bytes = [0u8; 4];
-    shared.read_volatile_at(at, &mut bytes);
+    assert!(
+        shared.read_payload_at(at, &mut bytes),
+        "an internal ring header field was outside the shared pages"
+    );
     u32::from_le_bytes(bytes)
 }
 
 /// Write one immutable little-endian `u32` into the shared pages.
-fn write_u32_volatile(shared: &mut Shared, at: usize, value: u32) {
-    shared.write_volatile_at(at, &value.to_le_bytes());
+fn write_u32_volatile(shared: &mut RingPages, at: usize, value: u32) {
+    assert!(
+        shared.write_payload_at(at, &value.to_le_bytes()),
+        "an internal ring header field was outside the shared pages"
+    );
 }
 
 /// Acquire one peer-owned queue index.
-fn load_index(shared: &Shared, at: usize) -> u32 {
-    let value = shared.load_acquire_u32(at);
-    debug_assert!(
-        value.is_some(),
-        "a ring index was out of bounds or misaligned"
-    );
-    value.unwrap_or(0)
+fn load_index(shared: &RingPages, at: usize) -> u32 {
+    let Some(value) = shared.load_acquire_u32(at) else {
+        panic!("a ring index was out of bounds or misaligned");
+    };
+    value
 }
 
 /// Release-publish one locally owned queue index.
-fn publish_index(shared: &Shared, at: usize, value: u32) {
-    assert!(
-        shared.store_release_u32(at, value),
-        "a ring index was out of bounds or misaligned"
-    );
+fn publish_index(shared: &RingPages, at: usize, value: u32) {
+    if !shared.store_release_u32(at, value) {
+        panic!("a ring index was out of bounds or misaligned");
+    }
 }
 
 fn read_entry_u32(bytes: &[u8], at: usize) -> u32 {

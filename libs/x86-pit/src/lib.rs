@@ -82,8 +82,8 @@ mod tests {
 
     /// The status byte's null-count flag is bit 6.
     ///
-    /// Asserted by no test at all; `1 << 7` survived the suite, and it gates
-    /// the baseline read the whole calibration rests on (D-105).
+    /// A literal anchor protects the baseline read that calibration depends on
+    /// (D-105).
     #[test]
     fn the_null_count_flag_is_bit_six() {
         // 8254 datasheet, read-back status: bit 7 output, bit 6 null count.

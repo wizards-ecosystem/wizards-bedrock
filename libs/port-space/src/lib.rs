@@ -91,13 +91,8 @@ impl PortSpace {
     /// lease can return its unique spans through
     /// [`release_all`](Self::release_all), but that does not help a caller
     /// which takes one fixed span and fails on the second: the first is
-    /// stranded for the boot.
-    ///
-    /// Two callers once had exactly that shape. `i8042::Controller::new`
-    /// chained `DATA` and `CONTROL`, so a refused `CONTROL` foreclosed the
-    /// keyboard; `pic::silence` chained its two blocks. D-138 moved both to
-    /// this all-or-none operation because the registry lock is the only place
-    /// the complete question can be answered.
+    /// stranded for the boot. Only the registry lock can answer the complete
+    /// all-or-none question (D-138).
     ///
     /// False, and nothing recorded, if *any* span is unavailable — checked
     /// against the others in the same call, so two overlapping spans in one
@@ -108,9 +103,8 @@ impl PortSpace {
             return false;
         }
 
-        // Every span resolved before any is written, and each checked against
-        // the ones before it — `span` only sees what is already *recorded*, so
-        // two requests for the same port in one call would both pass it.
+        // Every span is resolved before any is written and checked against
+        // its predecessors: `span` sees only what is recorded.
         let mut resolved = [const { None }; MAX_SPANS];
         let Some(room) = resolved.get_mut(..spans.len()) else {
             return false;
@@ -302,6 +296,9 @@ mod tests {
 
         // Adjacent but disjoint is fine — the boundary is exclusive.
         assert!(space.reserve_all(&[(0x60, 2), (0x62, 2)]));
+
+        let mut reversed = PortSpace::new();
+        assert!(reversed.reserve_all(&[(0x62, 2), (0x60, 2)]));
     }
 
     /// An empty request and one past the ceiling are both refused.
@@ -454,9 +451,8 @@ mod tests {
                 let mut copy = space;
                 assert_eq!(copy.reserve(start, len), expected, "{len} at {start:#x}");
 
-                // The oracle: a span is available exactly when it touches no
-                // reserved port, worked out with `Range` rather than with the
-                // bitmap this is testing.
+                // The oracle uses `Range`, not the bitmap under test: a span
+                // is available exactly when it touches no reserved port.
                 let end = start + len;
                 let overlaps = (start..end).any(|port| taken.contains(&port));
                 assert_eq!(expected, !overlaps, "{len} at {start:#x}");
@@ -522,9 +518,8 @@ mod tests {
     /// The I/O space is sixteen bits, from the architecture rather than from
     /// itself.
     ///
-    /// Every ceiling is spelled `PORT_COUNT` and every test port is a literal
-    /// below it, so halving the constant survived the suite — x86's I/O space
-    /// being 65,536 ports appeared nowhere (D-124).
+    /// Literal upper-bound witnesses keep `PORT_COUNT` from serving as its own
+    /// oracle (D-124).
     #[test]
     fn the_io_space_is_sixteen_bits() {
         assert_eq!(PORT_COUNT, 65_536);

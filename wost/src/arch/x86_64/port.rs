@@ -19,6 +19,8 @@
 
 use core::arch::asm;
 use core::marker::PhantomData;
+#[cfg(feature = "selftest")]
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use port_space::PortSpace;
 
@@ -28,6 +30,9 @@ use crate::sync::SpinLock;
 /// Which ports are spoken for. Fixed claims are permanent; only unique dynamic
 /// span capabilities can return a transient lease.
 static CLAIMED: SpinLock<PortSpace> = SpinLock::new(PortSpace::new());
+
+#[cfg(feature = "selftest")]
+static REFUSE_SPAN_RELEASE: AtomicBool = AtomicBool::new(false);
 
 /// Record `len` ports from `number` as claimed, all or nothing.
 fn reserve(number: u16, len: usize) -> bool {
@@ -113,18 +118,26 @@ pub fn claim_spans<const N: usize>(spans: &[(u16, usize)]) -> Option<[Option<Por
 /// values returned by [`claim_spans`]. Consuming the whole array prevents a
 /// stale safe access handle from surviving a successful release (D-199).
 ///
-/// An empty array succeeds without touching the registry. False means the
-/// bookkeeping did not match the capabilities; every requested port remains
-/// reserved and the consumed handles are gone.
-#[must_use = "a refused release leaves every requested port reserved"]
-pub fn release_spans<const N: usize>(spans: [Option<PortSpan>; N]) -> bool {
+/// An empty array succeeds without touching the registry. A refusal returns
+/// the unchanged capabilities for an exact retry.
+pub fn release_spans<const N: usize>(
+    spans: [Option<PortSpan>; N],
+) -> Result<(), SpanReleaseFailure<N>> {
+    #[cfg(feature = "selftest")]
+    if REFUSE_SPAN_RELEASE.swap(false, Ordering::AcqRel) {
+        return Err(SpanReleaseFailure { spans });
+    }
     let mut requested = [(0usize, 0usize); N];
     let mut count = 0;
     for span in spans.iter().flatten() {
         requested[count] = (span.base as usize, span.len);
         count += 1;
     }
-    count == 0 || CLAIMED.lock_leaf().release_all(&requested[..count])
+    if count == 0 || CLAIMED.lock_leaf().release_all(&requested[..count]) {
+        Ok(())
+    } else {
+        Err(SpanReleaseFailure { spans })
+    }
 }
 
 /// A claimed run of ports of a length read from the machine.
@@ -137,6 +150,19 @@ pub fn release_spans<const N: usize>(spans: [Option<PortSpan>; N]) -> bool {
 pub struct PortSpan {
     base: u16,
     len: usize,
+}
+
+/// A refused all-or-none span return with every capability unchanged.
+#[derive(Debug)]
+pub struct SpanReleaseFailure<const N: usize> {
+    /// The exact spans still reserved in the registry.
+    pub spans: [Option<PortSpan>; N],
+}
+
+/// Refuse the next dynamic span release before the registry changes.
+#[cfg(feature = "selftest")]
+pub fn refuse_span_release_for_test() {
+    REFUSE_SPAN_RELEASE.store(true, Ordering::Release);
 }
 
 /// Claim exclusive access to the `N` consecutive ports starting at `base`.
@@ -308,14 +334,14 @@ impl<T: PortValue> Port<T> {
     pub fn read(&mut self) -> T {
         // SAFETY: constructing this `Port` asserted exclusive entitlement to
         // `self.number`, and `&mut self` rules out a concurrent access.
-        unsafe { T::port_read(self.number) }
+        unsafe { <T as PortValue>::port_read(self.number) }
     }
 
     /// Write one value to the port.
     pub fn write(&mut self, value: T) {
         // SAFETY: constructing this `Port` asserted exclusive entitlement to
         // `self.number`, and `&mut self` rules out a concurrent access.
-        unsafe { T::port_write(self.number, value) };
+        unsafe { <T as PortValue>::port_write(self.number, value) };
     }
 }
 
@@ -362,7 +388,7 @@ impl<const N: usize> PortBlock<N> {
         // SAFETY: `port_for` confirmed the whole access lies inside the block
         // this handle exclusively owns, and `&mut self` rules out a concurrent
         // access.
-        unsafe { T::port_read(self.port_for::<T>(offset)) }
+        unsafe { <T as PortValue>::port_read(self.port_for::<T>(offset)) }
     }
 
     /// Write register `offset`.
@@ -374,7 +400,7 @@ impl<const N: usize> PortBlock<N> {
         // SAFETY: `port_for` confirmed the whole access lies inside the block
         // this handle exclusively owns, and `&mut self` rules out a concurrent
         // access.
-        unsafe { T::port_write(self.port_for::<T>(offset), value) };
+        unsafe { <T as PortValue>::port_write(self.port_for::<T>(offset), value) };
     }
 
     /// The port a `T`-wide access at `offset` starts on, having confirmed that

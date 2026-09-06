@@ -15,14 +15,14 @@ pub(crate) struct Palette {
     pub(crate) foreground: Rgb,
 }
 
-/// Parchment gold on deep midnight blue.
+/// Soft white on charcoal, matching the product identity.
 pub(crate) const NORMAL: Palette = Palette {
-    background: Rgb::from_hex(0x0B_10_21),
-    foreground: Rgb::from_hex(0xE8_D5_A3),
+    background: Rgb::from_hex(0x23_25_22),
+    foreground: Rgb::from_hex(0xF7_F6_F2),
 };
 
-/// The same text on dried blood, for the panic screen.
+/// The same text on oxblood, for the panic screen.
 pub(crate) const PANIC: Palette = Palette {
-    background: Rgb::from_hex(0x3A_08_0C),
+    background: Rgb::from_hex(0x5F_1D_29),
     foreground: NORMAL.foreground,
 };

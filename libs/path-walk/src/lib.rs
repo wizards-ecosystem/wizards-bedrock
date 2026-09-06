@@ -103,20 +103,17 @@ pub fn split<'a>(path: &'a [u8], into: &mut [&'a [u8]]) -> Result<usize, PathErr
 
     let mut depth: usize = 0;
     let mut start = 0;
-    let mut index = 0;
 
     // One past the end on purpose, so the last component is closed by the loop
     // rather than by a copy of the body after it.
-    while index <= path.len() {
+    for index in 0..=path.len() {
         let at_end = index == path.len();
         if !at_end && path[index] != SEPARATOR {
-            index += 1;
             continue;
         }
 
         let component = &path[start..index];
         start = index + 1;
-        index += 1;
 
         // `a//b` is `a/b`. Empty components are how a trailing separator and a
         // doubled one both arrive, and neither names anything.
@@ -127,10 +124,8 @@ pub fn split<'a>(path: &'a [u8], into: &mut [&'a [u8]]) -> Result<usize, PathErr
             continue;
         }
         if component == b".." {
-            // **The whole of the crate.** Popping here means the output can
-            // never contain `..`, so the walker above cannot be asked to
-            // ascend — and underflow is a refusal rather than a clamp, because
-            // clamping would silently answer a different question.
+            // Popping here means the output never contains `..`; underflow is
+            // a refusal, because clamping would answer a different question.
             depth = depth.checked_sub(1).ok_or(PathError::Escapes)?;
             continue;
         }
@@ -155,24 +150,13 @@ pub fn split<'a>(path: &'a [u8], into: &mut [&'a [u8]]) -> Result<usize, PathErr
 ///
 /// A separator cannot — the splitter has already removed them — and neither can
 /// a NUL, which is how a name crosses into C and back with its tail cut off.
-pub const fn is_a_name(component: &[u8]) -> bool {
-    let mut index = 0;
-    while index < component.len() {
-        if component[index] == 0 || component[index] == SEPARATOR {
+fn is_a_name(component: &[u8]) -> bool {
+    for &byte in component {
+        if byte == 0 || byte == SEPARATOR {
             return false;
         }
-        index += 1;
     }
     true
-}
-
-/// Whether `path` could name anything at all, without splitting it.
-///
-/// For a caller that wants to refuse early — the answer is the same as
-/// [`split`]'s, and this exists so that refusing does not need a component
-/// buffer.
-pub const fn is_relative(path: &[u8]) -> bool {
-    !path.is_empty() && path[0] != SEPARATOR
 }
 
 #[cfg(test)]
@@ -293,9 +277,6 @@ mod tests {
                 "{absolute:?}"
             );
         }
-        assert!(!is_relative(b"/a"));
-        assert!(!is_relative(b""));
-        assert!(is_relative(b"a/b"));
     }
 
     /// An empty path names nothing and says so.
@@ -380,9 +361,8 @@ mod tests {
                                 assert_ne!(*part, b".".as_slice(), "{path:?}");
                                 assert!(!part.is_empty(), "{path:?}");
                             }
-                            // Never more components than the path had
-                            // separators plus one, which bounds a walk by the
-                            // input rather than by the buffer.
+                            // Never more components than separators plus one,
+                            // so the input bounds the walk rather than the buffer.
                             assert!(count <= 3, "{path:?} produced {count}");
                         }
                     }

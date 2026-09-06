@@ -449,7 +449,8 @@ seventy-nine.
 **What the phase left open at this close**, besides D-76's residue: a timed
 wait and a wait on multiple queues; unguarded boot and double-fault stacks; and
 the weight plumbing beyond `spawn_weighted`, which waited for a caller with an
-opinion. Later work paid the timed wait in D-164 and guarded the double-fault
-and boot stacks in D-89 and D-92 respectively. The multi-queue wait remains
-uncalled; the historical close is not a claim that those paid debts are open
-now.
+opinion. D-248 later removed that uncalled production seam; weight injection is
+self-test-only until policy has a real owner. Later work paid the timed wait in
+D-164 and guarded the double-fault and boot stacks in D-89 and D-92
+respectively. The multi-queue wait remains uncalled; the historical close is
+not a claim that those paid debts are open now.

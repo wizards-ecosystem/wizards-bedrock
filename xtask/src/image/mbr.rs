@@ -96,10 +96,8 @@ pub fn record(partitions: &[PartitionEntry]) -> [u8; RECORD_SIZE] {
 
 /// Write `record` over sector zero of `disk`, leaving everything after it alone.
 pub fn write<D: Write + Seek>(disk: &mut D, record: &[u8; RECORD_SIZE]) -> Result<()> {
-    disk.seek(SeekFrom::Start(0))
-        .context("seeking to the master boot record")?;
-    disk.write_all(record)
-        .context("writing the master boot record")
+    Seek::seek(disk, SeekFrom::Start(0)).context("seeking to the master boot record")?;
+    Write::write_all(disk, record).context("writing the master boot record")
 }
 
 #[cfg(test)]

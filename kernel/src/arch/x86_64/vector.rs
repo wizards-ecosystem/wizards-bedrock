@@ -1,45 +1,42 @@
-//! Which interrupt vector carries what.
-//!
-//! Vectors 0–31 belong to the architecture and are named in
-//! `x86_tables::exception`. The kernel owns the rest, and this module is the
-//! whole of that decision — one place to look for a collision, and one place
-//! that grows when a device wants a line.
-//!
-//! The two the local APIC needs for itself are the highest two, so that device
-//! vectors can be handed out upward from 32 without ever meeting them.
+//! The kernel's complete interrupt-vector assignment.
 
 use wost::arch::current::apic::Vectors;
+use x86_apic::vector::{Assignment, InterruptVector};
+
+const SOURCES: [InterruptVector; 6] = match Assignment::new([0xff, 0xfe, 0x40, 0x41, 0x80, 0x42]) {
+    Some(assignment) => assignment.into_array(),
+    None => panic!("kernel interrupt-vector assignment is invalid"),
+};
 
 /// Delivered when the local APIC has committed to delivering something and then
 /// found it had nothing to say.
 ///
 /// The low four bits are all set because the earliest APICs hardwire them, so
 /// any other value would silently become this one anyway.
-pub(crate) const SPURIOUS: u8 = 0xFF;
+pub(crate) const SPURIOUS: InterruptVector = SOURCES[0];
 
 /// Delivered when the local APIC records an error against itself.
-pub(crate) const ERROR: u8 = 0xFE;
+pub(crate) const ERROR: InterruptVector = SOURCES[1];
 
 /// The kernel sends this to itself.
 ///
-/// It exists to make the interrupt path testable end to end — controller
-/// configured, gate reached, frame saved, interrupt dismissed — which is
-/// otherwise unobservable until there is a device generating interrupts. It is
-/// also the mechanism a second CPU will be asked to do work through, so it is
-/// not going away when the timer arrives.
-pub(crate) const PING: u8 = 0x40;
+/// This makes controller configuration, gate entry, frame preservation and
+/// dismissal observable without relying on device traffic.
+pub(crate) const PING: InterruptVector = SOURCES[2];
 
 /// The local APIC timer's expiry.
 ///
-/// Beside [`PING`] rather than down at 32: vectors 0x20–0x2F are where slice 2
-/// remapped the legacy controllers, and staying clear of them keeps a leaked
-/// legacy interrupt panicking as unexpected instead of masquerading as ours.
-pub(crate) const TIMER: u8 = 0x41;
+/// Keeping this clear of the legacy controller range at 0x20–0x2F makes a
+/// leaked legacy interrupt unexpected instead of letting it masquerade as a
+/// timer expiry.
+pub(crate) const TIMER: InterruptVector = SOURCES[3];
 
 /// What the local APIC is told to use for itself.
 pub(crate) const LOCAL_APIC: Vectors = Vectors {
     spurious: SPURIOUS,
     error: ERROR,
+    self_interrupt: PING,
+    timer: TIMER,
 };
 
 /// The kernel's entry from ring 3.
@@ -48,11 +45,11 @@ pub(crate) const LOCAL_APIC: Vectors = Vectors {
 /// range, clear of anything the local APIC or the I/O APIC delivers, and
 /// recognisable in a disassembly. The only gate in the table ring 3 may reach
 /// (D-96).
-pub(crate) const SYSCALL: u8 = 0x80;
+pub(crate) const SYSCALL: InterruptVector = SOURCES[4];
 
 /// The keyboard controller's line, routed through the I/O APIC.
 ///
-/// Beside [`TIMER`] and for the same reason: clear of 0x20–0x2F, where slice 2
-/// of Phase 2 remapped the legacy controllers, so a leaked legacy interrupt
-/// still panics as unexpected instead of arriving here as a keystroke.
-pub(crate) const KEYBOARD: u8 = 0x42;
+/// Keeping this clear of the legacy controller range at 0x20–0x2F makes a
+/// leaked legacy interrupt unexpected instead of letting it masquerade as a
+/// keystroke.
+pub(crate) const KEYBOARD: InterruptVector = SOURCES[5];

@@ -104,16 +104,6 @@ impl Entity {
         self.vruntime
     }
 
-    /// Where its current slice ends, in virtual time.
-    pub const fn deadline(&self) -> u64 {
-        self.deadline
-    }
-
-    /// Its weight relative to [`BASE_WEIGHT`].
-    pub const fn weight(&self) -> u32 {
-        self.weight
-    }
-
     /// Convert without discarding wraps, for distances that must stay ordered.
     const fn virtual_units_wide(&self, real: u64) -> u128 {
         // Widened so that a large charge at a small weight cannot overflow
@@ -212,7 +202,7 @@ impl Entity {
 /// still averages correctly.
 pub fn average_vruntime<'a>(entities: impl IntoIterator<Item = &'a Entity>) -> Option<u64> {
     let mut entities = entities.into_iter();
-    let first = entities.next()?;
+    let first = core::iter::Iterator::next(&mut entities)?;
     let origin = first.vruntime;
 
     let (mut weighted, mut weight) = (0i128, 0i128);
@@ -276,14 +266,12 @@ mod tests {
             "a fresh slice has all of itself left"
         );
 
-        // Exactly on the deadline: the boundary the old tests reached.
         entity.charge(SLICE);
         assert!(entity.slice_is_spent());
         assert_eq!(entity.remaining_slice(), 0, "spent exactly is spent");
 
-        // And **past** it, which is where the wrap lives. A tick of overrun is
-        // ordinary: a thread is charged when it is descheduled, not when its
-        // deadline passes.
+        // And past it, where the wrap lives: a thread is charged when it is
+        // descheduled, not when its deadline passes, so overrun is ordinary.
         entity.charge(SLICE / 2);
         assert!(entity.slice_is_spent(), "still spent after overrunning");
         assert_eq!(
@@ -333,7 +321,7 @@ mod tests {
     fn a_gigantic_weight_still_pays() {
         let mut entity = Entity::new(u32::MAX);
         entity.charge(1);
-        assert_eq!(entity.weight(), MAX_WEIGHT);
+        assert_eq!(entity.weight, MAX_WEIGHT);
         assert_eq!(entity.vruntime(), 1, "the clock must never stand still");
     }
 
@@ -366,7 +354,7 @@ mod tests {
     fn a_zero_weight_is_taken_as_one() {
         let mut entity = Entity::new(0);
         entity.charge(1);
-        assert_eq!(entity.weight(), 1);
+        assert_eq!(entity.weight, 1);
         assert_eq!(entity.vruntime(), RESOLUTION * u64::from(BASE_WEIGHT));
     }
 
@@ -420,6 +408,19 @@ mod tests {
         assert_eq!(pick(core::iter::empty::<(usize, &Entity)>(), 0), None);
     }
 
+    #[test]
+    fn a_later_candidate_cannot_replace_an_earlier_deadline() {
+        let mut earliest = at(0, BASE_WEIGHT);
+        earliest.renew_deadline(10);
+        let mut latest = at(0, BASE_WEIGHT);
+        latest.renew_deadline(30);
+        let mut middle = at(0, BASE_WEIGHT);
+        middle.renew_deadline(20);
+
+        let queue = [earliest, latest, middle];
+        assert_eq!(pick(queue.iter().enumerate(), 0), Some(0));
+    }
+
     /// The property the kernel's fallback path exists to catch if it ever
     /// fails: whatever the queue, someone is eligible.
     #[test]
@@ -465,7 +466,7 @@ mod tests {
         let mut fresh = Entity::new(BASE_WEIGHT);
         fresh.place(AVERAGE, 0, SLICE);
         assert_eq!(fresh.vruntime(), AVERAGE);
-        assert_eq!(fresh.deadline(), AVERAGE + slice_v);
+        assert_eq!(fresh.deadline, AVERAGE + slice_v);
     }
 
     /// What a tickless kernel asks before it arms anything: the answer must
@@ -503,9 +504,8 @@ mod tests {
     fn a_slice_of_nanoseconds_survives_the_round_trip() {
         const NANOSECONDS: u64 = 3_000_000;
 
-        // Up to `MAX_WEIGHT`, which is where the doc's one-unit claim is
-        // made — the sweep used to stop at 64 times the base, a factor of
-        // sixteen short of the bound it was testing (D-124).
+        // Include `MAX_WEIGHT`, where the documented one-unit bound is made
+        // (D-124).
         for weight in [1, BASE_WEIGHT, 64 * BASE_WEIGHT, MAX_WEIGHT] {
             let mut entity = Entity::new(weight);
             entity.place(0, 0, NANOSECONDS);
@@ -538,7 +538,7 @@ mod tests {
         let mut entity = Entity::new(MAX_WEIGHT);
         entity.renew_deadline(u64::MAX);
 
-        assert_eq!(entity.deadline(), MAX_ORDERED_DELTA);
+        assert_eq!(entity.deadline, MAX_ORDERED_DELTA);
         assert!(!entity.slice_is_spent());
         assert_eq!(entity.remaining_slice(), MAX_ORDERED_DELTA);
     }
@@ -602,10 +602,8 @@ mod tests {
 
     #[test]
     fn a_huge_charge_still_moves_the_clock() {
-        // At weight one the virtual value of 2^44 real units is exactly 2^64,
-        // which narrowing to `u64` turns into zero: the thread ran and its
-        // clock did not move, so it stays eligible for ever and starves
-        // everyone else (D-105).
+        // At weight one, 2^44 real units is exactly 2^64 virtual, which a `u64`
+        // narrows to zero: a thread whose clock never moves starves the rest (D-105).
         let mut entity = Entity::new(1);
         let before = entity.vruntime();
         entity.charge(1 << 44);
@@ -633,11 +631,8 @@ mod tests {
     /// The two scale constants, transcribed, and the round trip exercised at
     /// the weight the doc bounds it at.
     ///
-    /// Every other test spells its weights as multiples of `BASE_WEIGHT` and
-    /// its expectations in terms of `RESOLUTION`, so both cancel identically
-    /// — halving either survived the suite. And the round-trip sweep stopped
-    /// at 64 times the base, a factor of sixteen short of `MAX_WEIGHT`, which
-    /// is where the doc says the one-unit bound holds (D-124).
+    /// Other tests let `BASE_WEIGHT` and `RESOLUTION` cancel, so literal anchors
+    /// and a `MAX_WEIGHT` round trip independently check both scales (D-124).
     #[test]
     fn the_scale_constants_are_what_the_doc_says() {
         assert_eq!(BASE_WEIGHT, 1024);

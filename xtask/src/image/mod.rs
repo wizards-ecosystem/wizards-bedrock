@@ -17,7 +17,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use fatfs::{FatType, FileSystem, FsOptions, ReadWriteSeek};
 use fscommon::{BufStream, StreamSlice};
 
@@ -73,19 +73,16 @@ pub(crate) struct RunImage {
 
 impl RunImage {
     fn reserve(target: &Path) -> Result<(Self, File)> {
-        let directory = target.join(paths::QEMU_RUN_DIRECTORY);
-        std::fs::create_dir_all(&directory)
-            .with_context(|| format!("creating {}", directory.display()))?;
+        let directory = qemu_run_directory(target)?;
 
         for _ in 0..1024 {
             let sequence = NEXT_RUN_IMAGE.fetch_add(1, Ordering::Relaxed);
             let path = directory.join(format!("wizard-os-{}-{sequence}.img", std::process::id()));
-            match OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
+            let mut options = OpenOptions::new();
+            OpenOptions::read(&mut options, true);
+            OpenOptions::write(&mut options, true);
+            OpenOptions::create_new(&mut options, true);
+            match OpenOptions::open(&options, &path) {
                 Ok(file) => return Ok((Self { path }, file)),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => {
@@ -108,6 +105,14 @@ impl Drop for RunImage {
 }
 
 static NEXT_RUN_IMAGE: AtomicU64 = AtomicU64::new(0);
+static NEXT_IMAGE_STAGE: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn qemu_run_directory(target: &Path) -> Result<PathBuf> {
+    crate::mutation_workspace::prepare_real_directory_tree(
+        &target.join(paths::QEMU_RUN_DIRECTORY),
+        "QEMU private run directory",
+    )
+}
 
 /// Compile `kernel` into an image that one QEMU process owns and removes.
 pub(crate) fn build_for_run(paths: &Paths, profile: Profile, kernel: Kernel) -> Result<RunImage> {
@@ -133,19 +138,95 @@ fn build_with_features(
     let kernel = kernel_bytes(paths, profile, wanted, features)?;
     let image = paths.image();
 
-    std::fs::create_dir_all(paths.target_dir())
-        .with_context(|| format!("creating {}", paths.target_dir().display()))?;
     println!("[xtask] creating disk image {}", image.display());
-
-    let mut disk = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&image)
-        .with_context(|| format!("creating {}", image.display()))?;
-    assemble(paths, wanted, &kernel, &image, &mut disk)?;
+    publish_image(paths.target_dir(), &image, |staging, disk| {
+        assemble(paths, wanted, &kernel, staging, disk)
+    })?;
     Ok(image)
+}
+
+fn publish_image(
+    parent: &Path,
+    destination: &Path,
+    build: impl FnOnce(&Path, &mut File) -> Result<()>,
+) -> Result<()> {
+    ensure!(
+        destination == parent.join(paths::IMAGE_NAME),
+        "boot image is not the exact configured target child"
+    );
+    let canonical_parent = crate::mutation_workspace::prepare_real_directory_tree(
+        parent,
+        "boot-image target directory",
+    )?;
+    let published_path = canonical_parent.join(paths::IMAGE_NAME);
+    crate::mutation_workspace::require_direct_file_if_present(
+        &canonical_parent,
+        &published_path,
+        "existing boot image",
+    )?;
+
+    let sequence = NEXT_IMAGE_STAGE.fetch_add(1, Ordering::Relaxed);
+    let staging = canonical_parent.join(format!(
+        ".{}-{}-{sequence}.incomplete",
+        paths::IMAGE_NAME,
+        std::process::id()
+    ));
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        OpenOptions::read(&mut options, true);
+        OpenOptions::write(&mut options, true);
+        OpenOptions::create_new(&mut options, true);
+        let mut disk = OpenOptions::open(&options, &staging)
+            .with_context(|| format!("creating boot-image stage {}", staging.display()))?;
+        build(&staging, &mut disk)?;
+        disk.sync_all()
+            .with_context(|| format!("syncing boot-image stage {}", staging.display()))?;
+        drop(disk);
+
+        crate::mutation_workspace::require_direct_file(
+            &canonical_parent,
+            &staging,
+            "boot-image stage",
+        )?;
+        ensure!(
+            crate::mutation_workspace::canonical_existing_real_directory(
+                parent,
+                "boot-image target directory",
+            )? == canonical_parent,
+            "boot-image target directory changed before publication"
+        );
+        let staged = crate::sha256::digest_reader(
+            File::open(&staging)
+                .with_context(|| format!("opening boot-image stage {}", staging.display()))?,
+        )
+        .with_context(|| format!("hashing boot-image stage {}", staging.display()))?;
+
+        crate::mutation_workspace::publish_staged_file(
+            &canonical_parent,
+            &staging,
+            &published_path,
+            "boot image",
+            |published| {
+                let digest =
+                    crate::sha256::digest_reader(File::open(published).with_context(|| {
+                        format!("opening boot image {}", destination.display())
+                    })?)
+                    .with_context(|| format!("hashing boot image {}", destination.display()))?;
+                ensure!(
+                    digest == staged,
+                    "published boot image differs from its complete stage"
+                );
+                Ok(())
+            },
+        )?;
+        Ok(())
+    })();
+    crate::mutation_workspace::finish_staged_operation(
+        &canonical_parent,
+        &staging,
+        "boot-image stage",
+        result,
+    )
 }
 
 fn build_for_run_with_features(
@@ -255,13 +336,53 @@ fn read_kernel<D: ReadWriteSeek>(disk: &mut D, partition: mbr::PartitionEntry) -
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, Write};
     use std::sync::Arc;
 
     use super::*;
 
     const TEST_IMAGE_BYTES: usize = 8 * 1024 * 1024;
     static NEXT_TEST_TARGET: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(unix)]
+    fn create_directory_symlink(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("creating image directory symlink");
+    }
+
+    #[cfg(windows)]
+    fn create_directory_symlink(target: &Path, link: &Path) {
+        std::os::windows::fs::symlink_dir(target, link).expect("creating image directory symlink");
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("creating image file symlink");
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(target: &Path, link: &Path) {
+        std::os::windows::fs::symlink_file(target, link).expect("creating image file symlink");
+    }
+
+    #[cfg(unix)]
+    fn remove_directory_symlink(path: &Path) {
+        std::fs::remove_file(path).expect("removing image directory symlink");
+    }
+
+    #[cfg(windows)]
+    fn remove_directory_symlink(path: &Path) {
+        std::fs::remove_dir(path).expect("removing image directory symlink");
+    }
+
+    fn test_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "wizard-image-{label}-{}-{}",
+            std::process::id(),
+            NEXT_TEST_TARGET.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).expect("image test root");
+        root
+    }
 
     #[test]
     fn two_qemu_images_are_private_and_removed() {
@@ -295,6 +416,120 @@ mod tests {
         assert!(!first_path.exists());
         assert!(!second_path.exists());
         let _ = std::fs::remove_dir_all(target.as_ref());
+    }
+
+    #[test]
+    fn private_qemu_images_refuse_a_redirected_run_root_before_writing() {
+        let root = test_root("redirected-run");
+        let target = root.join("target");
+        let outside = root.join("outside");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("sentinel"), b"outside authority").unwrap();
+        let run_root = target.join(paths::QEMU_RUN_DIRECTORY);
+        create_directory_symlink(&outside, &run_root);
+
+        assert!(RunImage::reserve(&target).is_err());
+        assert_eq!(
+            crate::paths::directory_entries(&outside).unwrap().len(),
+            1,
+            "private image creation escaped its configured target"
+        );
+        assert_eq!(
+            std::fs::read(outside.join("sentinel")).unwrap(),
+            b"outside authority"
+        );
+        remove_directory_symlink(&run_root);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn authoritative_images_refuse_a_redirected_target_before_writing() {
+        let root = test_root("publication-parent-link");
+        let target = root.join("target");
+        let outside = root.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("sentinel"), b"outside authority").unwrap();
+        create_directory_symlink(&outside, &target);
+        let image = target.join(paths::IMAGE_NAME);
+        let builder_ran = std::cell::Cell::new(false);
+
+        assert!(
+            publish_image(&target, &image, |_path, file| {
+                builder_ran.set(true);
+                file.write_all(b"forged image")
+                    .context("writing forged image")
+            })
+            .is_err()
+        );
+        assert!(!builder_ran.get(), "boot-image staging escaped its target");
+        assert_eq!(crate::paths::directory_entries(&outside).unwrap().len(), 1);
+        assert_eq!(
+            std::fs::read(outside.join("sentinel")).unwrap(),
+            b"outside authority"
+        );
+        remove_directory_symlink(&target);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn authoritative_image_publication_never_writes_through_an_external_link() {
+        let root = test_root("publication-link");
+        let target = root.join("target");
+        let outside = root.join("outside");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let sentinel = outside.join("sentinel");
+        let image = target.join(paths::IMAGE_NAME);
+        std::fs::write(&sentinel, b"outside authority").unwrap();
+
+        std::fs::hard_link(&sentinel, &image).unwrap();
+        publish_image(&target, &image, |_path, file| {
+            file.write_all(b"complete image")
+                .context("writing image fixture")
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
+        assert_eq!(std::fs::read(&image).unwrap(), b"complete image");
+
+        std::fs::remove_file(&image).unwrap();
+        create_file_symlink(&sentinel, &image);
+        assert!(
+            publish_image(&target, &image, |_path, file| {
+                file.write_all(b"forged").context("writing forged fixture")
+            })
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
+        std::fs::remove_file(&image).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_authoritative_image_stage_preserves_the_complete_image() {
+        let root = test_root("publication-failure");
+        let target = root.join("target");
+        std::fs::create_dir(&target).unwrap();
+        let image = target.join(paths::IMAGE_NAME);
+        publish_image(&target, &image, |_path, file| {
+            file.write_all(b"old complete image")?;
+            Ok(())
+        })
+        .unwrap();
+
+        let error = publish_image(&target, &image, |_path, file| {
+            file.write_all(b"partial")?;
+            bail!("injected image construction failure")
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected image construction failure")
+        );
+        assert_eq!(std::fs::read(&image).unwrap(), b"old complete image");
+        assert_eq!(crate::paths::directory_entries(&target).unwrap().len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn image_with(kernel: &[u8]) -> (Cursor<Vec<u8>>, mbr::PartitionEntry) {

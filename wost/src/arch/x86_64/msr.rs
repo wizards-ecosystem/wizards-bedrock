@@ -2,8 +2,8 @@
 //!
 //! Reading one is harmless; writing one can switch paging modes, relocate the
 //! interrupt controller, or turn off features the compiler assumed were there.
-//! So the read is an ordinary call and the write carries a contract, discharged
-//! by the two modules that use it — each of which names exactly one register.
+//! Reads are ordinary calls; writes carry the register-specific contract that
+//! each architecture caller must discharge.
 
 use core::arch::asm;
 

@@ -1,11 +1,5 @@
 //! The time page: what a program reads instead of calling.
 //!
-//! D-152 settled the shape and D-149 puts it in this phase, before a
-//! filesystem exists to want it, because a call that becomes a load later is
-//! two doors to one operation for ever. Under D-114's former taxonomy
-//! `sys_clock_get` was OWED over `libs/timebase`; D-166 made the monotonic
-//! success path a load, while D-181 records the reader and fallback as PARTIAL.
-//!
 //! **Two regions, and the split is the point.** The constants — version, page
 //! size, counter rate — have no sequence counter, because there is nothing to
 //! tear: they are written once, before the page is mapped
@@ -19,19 +13,15 @@
 //! consecutive conclusive disagreements freeze public time and publish
 //! `MODE_NONE` through this page's sequence protocol (D-225). Suspend and NTP
 //! adjustment remain unsupported rather than pretending continuity.
-//!
-//! **The revocation gate is why the Uptime fallback stays.** `mode` is the
-//! reader's permission to use the page at all. A kernel that learns its counter
-//! is not to be trusted sets it to zero, and every reader must stop using the
-//! page. Ring Uptime keeps the kernel route available. The current C
-//! pressure-test reader explicitly returns ENOSYS until a shared,
-//! token-correlating ring client exists (D-181).
 
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicU32, Ordering, fence};
+
+#[cfg(feature = "selftest")]
+use core::sync::atomic::AtomicUsize;
 
 use timebase::{Seq, Timebase};
 use wost::arch::current::paging::{AddressSpace, MapError};
-use wost::mm::{self, Shared, USegment};
+use wost::mm::{self, SharedBytes, USegment};
 use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
@@ -96,7 +86,7 @@ mod clock {
 ///
 /// Global rather than per-process (D-152): every program reads the same clock,
 /// and a page each would be a page each to keep in step.
-static PAGE: SpinLock<Option<Shared>> = SpinLock::new(None);
+static PAGE: SpinLock<Option<SharedBytes>> = SpinLock::new(None);
 
 /// The mode the page must show when an installation temporarily returns it.
 ///
@@ -107,35 +97,18 @@ static DESIRED_MODE: AtomicU32 = AtomicU32::new(MODE_NONE);
 
 /// Times the sequence counter was left odd with interrupts on.
 ///
-/// D-152 makes "the writer is not preemptible" a **precondition, not a
-/// comment**: Linux tolerates a naive reader spin only because its update runs
-/// with interrupts off, and a writer preempted mid-update leaves every reader
-/// spinning for a scheduling quantum.
-///
-/// What is measured is the **window**, not the call. A kernel thread may
-/// perfectly well call [`publish`] with interrupts on — the self-test does —
-/// and nothing is wrong with that, because the guard clears the flag before
-/// the counter goes odd and restores it after it goes even again. Counting the
-/// call instead measured a property that was never the requirement, and the
-/// first check written against it failed for being true (D-166).
-///
-/// So this should never move, and it can: a `SpinLock` that stopped clearing
-/// the flag, or a second publisher that wrote the region without one, would be
-/// caught the first time it ran.
+/// The measured publication window, not the caller's entry state, must exclude
+/// preemption so a writer cannot strand readers on an odd sequence value
+/// (D-152, D-166).
+#[cfg(feature = "selftest")]
 static WINDOW_LEFT_PREEMPTIBLE: AtomicUsize = AtomicUsize::new(0);
 
 /// Updates that never marked their window open.
 ///
-/// The odd value is what tells a concurrent reader to try again, and on one
-/// CPU **nobody can see it**: the guard clears the interrupt flag, so no other
-/// context runs between the two increments, and a writer that skipped the odd
-/// write entirely left every check on this page green (D-166).
-///
-/// It is one of the properties that genuinely wants a second CPU, and the
-/// answer here is the one D-154 takes elsewhere: build the seam now and check
-/// what can be checked. The writer reads its own marker back and counts a
-/// failure, so a writer that stops announcing itself is caught by the only
-/// observer that exists.
+/// The writer reads its own odd marker because interrupt exclusion leaves no
+/// concurrent observer on one CPU; a second CPU is required for independent
+/// observation (D-154, D-166).
+#[cfg(feature = "selftest")]
 static WINDOW_NEVER_OPENED: AtomicUsize = AtomicUsize::new(0);
 
 /// Build the page and write its constants. Once, at boot.
@@ -150,7 +123,7 @@ pub(crate) fn init(counter_hz: u64) -> bool {
     if !run.zero() {
         return false;
     }
-    let mut shared: Shared = USegment::from(run).share();
+    let mut shared = USegment::from(run).share().into_bytes();
 
     write_u32(&mut shared, constants::VERSION, VERSION);
     write_u32(&mut shared, constants::PAGE_BYTES, PAGE_SIZE as u32);
@@ -166,38 +139,37 @@ pub(crate) fn init(counter_hz: u64) -> bool {
 /// conversion below, and [`MODE_NONE`] tells every reader to ask instead. Both
 /// go through the same sequence-counter protocol, because a revocation a
 /// reader half-sees is worse than one it does not see at all.
-pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "a deferred publication must be observed"]
+pub(crate) enum Publication {
+    Published,
+    Deferred,
+}
+
+pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> Publication {
     DESIRED_MODE.store(mode, Ordering::Release);
     let mut guard = PAGE.lock_leaf();
-    // Inside the guard, which is the whole point: this asks whether the
-    // *window* below can be preempted, and the guard is what closes it. Not a
-    // refusal — a stale page for a reason the caller cannot act on is worse
-    // than a counted surprise.
+    // Inside the guard, because the question is whether the window below can
+    // be preempted; counted rather than refused, which the caller cannot act on.
+    #[cfg(feature = "selftest")]
     if wost::arch::current::interrupt::are_enabled() {
         WINDOW_LEFT_PREEMPTIBLE.fetch_add(1, Ordering::Relaxed);
     }
 
     let Some(page) = guard.as_mut() else {
-        return false;
+        return Publication::Deferred;
     };
 
-    let mut header = [0u8; 4];
-    if !page.read_volatile_at(CLOCK_AT + clock::SEQ, &mut header) {
-        return false;
-    }
-    let seq = u32::from_le_bytes(header);
+    let seq = read_u32(page, CLOCK_AT + clock::SEQ);
 
     // Odd, and every reader now knows to try again.
     write_u32(page, CLOCK_AT + clock::SEQ, Seq::begin(seq));
-    // Read straight back, because on one CPU this is the only witness there
-    // will ever be. See `WINDOW_NEVER_OPENED`.
+    #[cfg(feature = "selftest")]
     if Seq::is_stable(read_u32(page, CLOCK_AT + clock::SEQ)) {
         WINDOW_NEVER_OPENED.fetch_add(1, Ordering::Relaxed);
     }
-    // The first of Linux's two barriers. On x86 stores do not pass stores, so
-    // this is a compiler barrier and no instruction — which is exactly what
-    // `smp_wmb()` is there. Writing it out means the aarch64 port does not
-    // have to rediscover that it is not free everywhere.
+    // The first of Linux's two barriers: on x86 a compiler barrier and no
+    // instruction, written out so another port does not rediscover it.
     fence(Ordering::Release);
 
     write_u32(page, CLOCK_AT + clock::MODE, mode);
@@ -210,7 +182,7 @@ pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> bool {
     fence(Ordering::Release);
     // Even again, and what was written between the two is what a reader keeps.
     write_u32(page, CLOCK_AT + clock::SEQ, Seq::end(Seq::begin(seq)));
-    true
+    Publication::Published
 }
 
 /// Map the page into `space`, read-only.
@@ -225,15 +197,8 @@ pub(crate) fn publish(mode: u32, origin: u64, conversion: Timebase) -> bool {
 /// machine that ran out of memory before its first program; otherwise whatever
 /// [`AddressSpace::map_shared`] refused.
 pub(crate) fn install(space: &mut AddressSpace) -> Result<(), TimePageError> {
-    // Taken out of the lock and put back, rather than mapped under the guard.
-    // `map_shared` allocates page-table frames, and holding a leaf guard
-    // across an allocation is what `lock_leaf` forbids (D-85). Copying the
-    // address out instead would hand on a bare number where the type is the
-    // evidence (D-115), so the run itself moves.
-    //
-    // The window is real. A publication landing while the page is out records
-    // its desired mode, and returning the owner applies a deferred revocation.
-    // A stale conversion is harmless only while the clock remains trusted.
+    // Moved out because mapping may allocate under the leaf; a publication
+    // during the gap records a mode that restore applies (D-85, D-115).
     let taken = PAGE.lock_leaf().take();
     let Some(shared) = taken else {
         return Err(TimePageError::Absent);
@@ -244,10 +209,13 @@ pub(crate) fn install(space: &mut AddressSpace) -> Result<(), TimePageError> {
     result.map_err(TimePageError::Map)
 }
 
-fn restore(shared: Shared) {
+fn restore(shared: SharedBytes) {
     *PAGE.lock_leaf() = Some(shared);
     if DESIRED_MODE.load(Ordering::Acquire) == MODE_NONE {
-        publish(MODE_NONE, 0, Timebase::UNCALIBRATED);
+        let publication = publish(MODE_NONE, 0, Timebase::UNCALIBRATED);
+        if publication != Publication::Published {
+            panic!("a restored time page refused its deferred publication");
+        }
     }
 }
 
@@ -275,7 +243,7 @@ pub(crate) enum TimePageError {
 impl core::fmt::Display for TimePageError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Absent => f.write_str("no time page was built"),
+            Self::Absent => core::fmt::Write::write_str(f, "no time page was built"),
             Self::Map(error) => write!(f, "{error}"),
         }
     }
@@ -309,7 +277,7 @@ pub(crate) fn read() -> Option<Reading> {
             conversion: Timebase::from_parts(
                 read_u64(page, CLOCK_AT + clock::MULTIPLIER),
                 read_u32(page, CLOCK_AT + clock::SHIFT),
-            ),
+            )?,
             seq: before,
         };
 
@@ -394,23 +362,33 @@ pub(crate) fn is_published() -> bool {
     PAGE.lock_leaf().is_some()
 }
 
-fn write_u32(page: &mut Shared, at: usize, value: u32) {
-    page.write_volatile_at(at, &value.to_le_bytes());
+fn write_u32(page: &mut SharedBytes, at: usize, value: u32) {
+    assert!(
+        page.write_volatile_at(at, &value.to_le_bytes()),
+        "an internal time-page field was outside the shared page"
+    );
 }
 
-fn write_u64(page: &mut Shared, at: usize, value: u64) {
-    page.write_volatile_at(at, &value.to_le_bytes());
+fn write_u64(page: &mut SharedBytes, at: usize, value: u64) {
+    assert!(
+        page.write_volatile_at(at, &value.to_le_bytes()),
+        "an internal time-page field was outside the shared page"
+    );
 }
 
-fn read_u32(page: &Shared, at: usize) -> u32 {
+fn read_u32(page: &SharedBytes, at: usize) -> u32 {
     let mut bytes = [0u8; 4];
-    page.read_volatile_at(at, &mut bytes);
+    if !page.read_volatile_at(at, &mut bytes) {
+        panic!("an internal time-page field was outside the shared page");
+    }
     u32::from_le_bytes(bytes)
 }
 
 #[cfg(feature = "selftest")]
-fn read_u64(page: &Shared, at: usize) -> u64 {
+fn read_u64(page: &SharedBytes, at: usize) -> u64 {
     let mut bytes = [0u8; 8];
-    page.read_volatile_at(at, &mut bytes);
+    if !page.read_volatile_at(at, &mut bytes) {
+        panic!("an internal time-page field was outside the shared page");
+    }
     u64::from_le_bytes(bytes)
 }

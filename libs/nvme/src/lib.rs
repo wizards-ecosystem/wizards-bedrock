@@ -28,12 +28,12 @@
 //! ```
 //! use nvme::{Capacity, register};
 //!
-//! // A controller reporting MQES = 63 has queues of 64 entries...
-//! let cap = Capacity::from_mqes(63).expect("a real queue size");
+//! // A controller reporting MQES = 63 leads the driver to admit 64 entries.
+//! let cap = Capacity::new(64).expect("a real queue size");
 //! assert_eq!(cap.entries(), 64);
 //!
-//! // ...and can have 63 commands outstanding, never 64.
-//! assert_eq!(cap.outstanding_limit(), 63);
+//! // It can have 63 commands outstanding, never 64.
+//! assert_eq!(cap.as_zero_based(), 63);
 //!
 //! assert_eq!(register::CAP, 0x00);
 //! ```
@@ -81,102 +81,106 @@ const LBA_FORMATS_OFFSET: usize = 128;
 const LBA_FORMAT_BYTES: usize = 4;
 const MAX_LBA_FORMATS: u8 = 16;
 const SUPPORTED_BLOCK_SHIFT: u8 = 9;
+const IDENTIFY_TRANSFER_BYTES: u64 = 4096;
 
 /// Identify Namespace prefix through all sixteen negotiated LBA formats.
 pub const NAMESPACE_IDENTIFY_BYTES: usize =
     LBA_FORMATS_OFFSET + MAX_LBA_FORMATS as usize * LBA_FORMAT_BYTES;
 
-/// Whether memory named by the current command may return to its allocator.
+/// Publication state for the controller's sole outstanding command.
 ///
-/// A completion restores ordinary ownership. An uncompleted command does not:
-/// only a verified controller stop makes its memory recyclable, and a failed
-/// stop makes the retained state permanent even if a late completion appears.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// This type records only events which a hardware-free caller can prove. A
+/// matching completion returns to idle, while [`DmaState::close`] permanently
+/// closes publication. Whether a stopped device makes memory recyclable is a
+/// hardware authority and remains at the register-observation boundary.
+#[derive(Debug, PartialEq, Eq)]
 pub struct DmaState {
     state: DmaOwnership,
+}
+
+/// Proof that a prepared DMA command has become device-owned.
+///
+/// Only [`DmaState::publish_with`] can mint this proof, after changing the
+/// reservation to the in-flight state. An MMIO adapter consumes it while
+/// ringing the matching submission doorbell.
+#[derive(Debug)]
+pub struct DmaPublication<'a> {
+    _state: &'a DmaState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DmaOwnership {
     Idle,
+    Reserved,
     InFlight,
-    Quiesced,
-    Retained,
+    Closed,
 }
 
 impl DmaState {
     /// No command has made memory device-owned yet.
-    pub const fn new() -> Self {
+    pub const fn idle() -> Self {
         Self {
             state: DmaOwnership::Idle,
         }
     }
 
-    /// Record publication of one command.
+    /// Reserve the sole command slot before preparing its queue entry.
     ///
-    /// False after another command was published or the controller was
-    /// stopped, so the state cannot silently forget an older DMA owner.
-    pub fn begin(&mut self) -> bool {
+    /// False while another reservation or command exists, or after controller
+    /// shutdown made the ownership decision terminal.
+    pub fn reserve(&mut self) -> bool {
         if self.state != DmaOwnership::Idle {
             return false;
         }
-        self.state = DmaOwnership::InFlight;
+        self.state = DmaOwnership::Reserved;
         true
     }
 
-    /// Record the matching completion, if a command is still in flight.
-    pub fn complete(&mut self) {
-        if self.state == DmaOwnership::InFlight {
-            self.state = DmaOwnership::Idle;
+    /// Cancel a reservation that was never published to the controller.
+    ///
+    /// False unless a caller had successfully reserved the one in-flight
+    /// slot. Once a doorbell has been rung, only completion or quiescence may
+    /// return ownership instead.
+    pub fn cancel_unpublished(&mut self) -> bool {
+        if self.state != DmaOwnership::Reserved {
+            return false;
         }
+        self.state = DmaOwnership::Idle;
+        true
     }
 
-    /// End access by stopping the controller, or retain every reachable run.
-    pub fn quiesce(&mut self, verified: bool) {
-        if matches!(self.state, DmaOwnership::Quiesced | DmaOwnership::Retained) {
-            return;
+    /// Make a prepared command device-owned before invoking its handoff.
+    ///
+    /// The callback is the only publication window: it receives an opaque
+    /// proof after ownership changed, so an MMIO adapter can require that
+    /// proof instead of relying on a separately maintained source-order
+    /// convention.
+    pub fn publish_with<T>(&mut self, handoff: impl FnOnce(DmaPublication<'_>) -> T) -> Option<T> {
+        if self.state != DmaOwnership::Reserved {
+            return None;
         }
-        self.state = if verified {
-            DmaOwnership::Quiesced
-        } else {
-            DmaOwnership::Retained
-        };
+        self.state = DmaOwnership::InFlight;
+        Some(handoff(DmaPublication { _state: self }))
     }
 
-    /// Whether another command may be published.
-    pub const fn may_submit(self) -> bool {
-        matches!(self.state, DmaOwnership::Idle)
+    /// Record the matching completion of a published command.
+    #[must_use]
+    pub fn complete(&mut self) -> bool {
+        if self.state != DmaOwnership::InFlight {
+            return false;
+        }
+        self.state = DmaOwnership::Idle;
+        true
     }
 
-    /// Whether every device access has been settled.
-    pub const fn is_settled(self) -> bool {
-        matches!(self.state, DmaOwnership::Quiesced | DmaOwnership::Retained)
-    }
-
-    /// Whether a controller stop was observed rather than assumed.
-    pub const fn is_quiesced(self) -> bool {
-        matches!(self.state, DmaOwnership::Quiesced)
+    /// Permanently refuse another publication on this controller.
+    pub fn close(&mut self) {
+        self.state = DmaOwnership::Closed;
     }
 
     /// Whether a submitted command still lacks a matching completion.
-    pub const fn is_in_flight(self) -> bool {
+    pub const fn is_in_flight(&self) -> bool {
         matches!(self.state, DmaOwnership::InFlight)
-    }
-
-    /// Whether memory reachable by this controller must never be recycled.
-    pub const fn must_retain(self) -> bool {
-        matches!(self.state, DmaOwnership::Retained)
-    }
-
-    /// Whether DMA memory can be recycled now.
-    pub const fn may_recycle(self) -> bool {
-        matches!(self.state, DmaOwnership::Idle | DmaOwnership::Quiesced)
-    }
-}
-
-impl Default for DmaState {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -220,6 +224,157 @@ pub mod status {
     pub const FATAL: u32 = 1 << 1;
 }
 
+/// Register values that describe a controller unable to execute DMA.
+///
+/// This value classifies bits; it does not prove where they were observed.
+/// Hardware authority must also retain the exact register mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisabledRegisters {
+    cc: u32,
+    csts: u32,
+}
+
+impl DisabledRegisters {
+    /// Classify freshly read `CC` and `CSTS` values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControllerStateError::Active`] when either `CC.EN` or
+    /// `CSTS.RDY` remains set.
+    pub const fn from_bits(cc: u32, csts: u32) -> Result<Self, ControllerStateError> {
+        if cc & configuration::ENABLE != 0 || csts & status::READY != 0 {
+            return Err(ControllerStateError::Active { cc, csts });
+        }
+        Ok(Self { cc, csts })
+    }
+
+    /// The exact `CC` and `CSTS` values that passed classification.
+    pub const fn bits(self) -> (u32, u32) {
+        (self.cc, self.csts)
+    }
+}
+
+/// Why controller register values cannot authorize DMA admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ControllerStateError {
+    /// The controller remains enabled or ready.
+    Active {
+        /// Observed `CC` value.
+        cc: u32,
+        /// Observed `CSTS` value.
+        csts: u32,
+    },
+}
+
+impl core::fmt::Display for ControllerStateError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::Active { cc, csts } => {
+                write!(
+                    formatter,
+                    "controller is active (cc={cc:#010x}, csts={csts:#010x})"
+                )
+            }
+        }
+    }
+}
+
+impl core::error::Error for ControllerStateError {}
+
+/// Exclusive register ownership while controller quiescence is unverified.
+///
+/// Each fallible access consumes and returns this value, so an error cannot
+/// discard the authority needed to retry or quarantine the controller.
+#[derive(Debug)]
+#[must_use = "unverified controller ownership must be advanced or retained"]
+pub struct ControllerPreparation<T> {
+    owner: T,
+}
+
+/// Register ownership paired with a fresh disabled-controller observation.
+#[derive(Debug)]
+#[must_use = "disabled controller ownership must be retired or advanced"]
+pub struct DisabledPreparation<T> {
+    owner: T,
+    _observed: DisabledRegisters,
+}
+
+/// A refused preparation step with the unchanged ownership state.
+#[derive(Debug)]
+#[must_use = "a refused preparation step returns its cleanup authority"]
+pub struct PreparationFailure<P, E> {
+    preparation: P,
+    reason: E,
+}
+
+impl<T> ControllerPreparation<T> {
+    /// Begin preparation with one exclusive register owner.
+    pub const fn new(owner: T) -> Self {
+        Self { owner }
+    }
+
+    /// Attempt one register operation without losing ownership on refusal.
+    pub fn access<U, E>(
+        mut self,
+        operation: impl FnOnce(&mut T) -> Result<U, E>,
+    ) -> Result<(Self, U), PreparationFailure<Self, E>> {
+        match operation(&mut self.owner) {
+            Ok(value) => Ok((self, value)),
+            Err(reason) => Err(PreparationFailure {
+                preparation: self,
+                reason,
+            }),
+        }
+    }
+
+    /// Bind the owner to freshly classified disabled register values.
+    pub fn prove_disabled(
+        self,
+        cc: u32,
+        csts: u32,
+    ) -> Result<DisabledPreparation<T>, PreparationFailure<Self, ControllerStateError>> {
+        match DisabledRegisters::from_bits(cc, csts) {
+            Ok(observed) => Ok(DisabledPreparation {
+                owner: self.owner,
+                _observed: observed,
+            }),
+            Err(reason) => Err(PreparationFailure {
+                preparation: self,
+                reason,
+            }),
+        }
+    }
+}
+
+impl<T> DisabledPreparation<T> {
+    /// Attempt one disabled-controller access with exact retirement fallback.
+    pub fn access<U, E>(
+        mut self,
+        operation: impl FnOnce(&mut T) -> Result<U, E>,
+    ) -> Result<(Self, U), PreparationFailure<Self, E>> {
+        match operation(&mut self.owner) {
+            Ok(value) => Ok((self, value)),
+            Err(reason) => Err(PreparationFailure {
+                preparation: self,
+                reason,
+            }),
+        }
+    }
+
+    /// Recover the register owner after disabled state has been proven.
+    pub fn into_owner(self) -> T {
+        self.owner
+    }
+}
+
+impl<P, E> PreparationFailure<P, E> {
+    /// Recover the refusal and unchanged preparation authority.
+    pub fn into_parts(self) -> (E, P) {
+        (self.reason, self.preparation)
+    }
+}
+
 /// What `CAP` says, decoded.
 ///
 /// **Read, never assumed.** Every field here changes what a correct driver
@@ -243,15 +398,6 @@ impl Capabilities {
         (self.bits as u32 & 0xFFFF) + 1
     }
 
-    /// `CQR`: whether queues must be physically contiguous.
-    ///
-    /// This driver only builds contiguous queues, so a controller that
-    /// requires them is satisfied and one that does not is unaffected. It is
-    /// read so that the *next* driver, which might not, has the answer.
-    pub const fn requires_contiguous_queues(self) -> bool {
-        self.bits & (1 << 16) != 0
-    }
-
     /// `TO`: the timeout, in units of 500 milliseconds.
     ///
     /// How long the controller may take to become ready. A driver that waits
@@ -261,7 +407,7 @@ impl Capabilities {
     }
 
     /// `DSTRD`: the doorbell stride, as `log2(bytes) - 2`.
-    pub const fn doorbell_stride(self) -> u32 {
+    const fn doorbell_stride(self) -> u32 {
         ((self.bits >> 32) & 0xF) as u32
     }
 
@@ -276,12 +422,12 @@ impl Capabilities {
 
     /// `MPSMIN`: the smallest page size the controller supports, as
     /// `log2(size) - 12`.
-    pub const fn min_page_shift(self) -> u32 {
+    const fn min_page_shift(self) -> u32 {
         (((self.bits >> 48) & 0xF) as u32) + 12
     }
 
     /// `MPSMAX`: the largest, likewise.
-    pub const fn max_page_shift(self) -> u32 {
+    const fn max_page_shift(self) -> u32 {
         (((self.bits >> 52) & 0xF) as u32) + 12
     }
 
@@ -332,14 +478,6 @@ impl Capacity {
         Some(Self { entries })
     }
 
-    /// Build a capacity from what `CAP.MQES` reported, which is one less.
-    pub const fn from_mqes(mqes: u32) -> Option<Self> {
-        match mqes.checked_add(1) {
-            Some(entries) => Self::new(entries),
-            None => None,
-        }
-    }
-
     /// Entries in the queue.
     pub const fn entries(self) -> u32 {
         self.entries
@@ -347,13 +485,6 @@ impl Capacity {
 
     /// What goes in `AQA`, and in the create-queue command: one less.
     pub const fn as_zero_based(self) -> u32 {
-        self.entries - 1
-    }
-
-    /// Commands that may be outstanding at once.
-    ///
-    /// **One less than the entries**, always. This is the whole of the rule.
-    pub const fn outstanding_limit(self) -> u32 {
         self.entries - 1
     }
 
@@ -368,11 +499,14 @@ impl Capacity {
     }
 
     /// The index after `index`, wrapping.
-    pub const fn next(self, index: u32) -> u32 {
+    pub const fn next(self, index: u32) -> Option<u32> {
+        if index >= self.entries {
+            return None;
+        }
         if index + 1 == self.entries {
-            0
+            Some(0)
         } else {
-            index + 1
+            Some(index + 1)
         }
     }
 
@@ -380,18 +514,24 @@ impl Capacity {
     ///
     /// The `size - 1` rule applied: the tail may advance to one short of the
     /// head and no further, because equal means empty.
-    pub const fn has_room(self, head: u32, tail: u32) -> bool {
-        self.next(tail) != head
-    }
-
-    /// How many entries are occupied.
-    pub const fn occupied(self, head: u32, tail: u32) -> u32 {
-        if tail >= head {
-            tail - head
-        } else {
-            self.entries - head + tail
+    pub const fn has_room(self, head: u32, tail: u32) -> Option<bool> {
+        if head >= self.entries {
+            return None;
+        }
+        match Self::next(self, tail) {
+            Some(next) => Some(next != head),
+            None => None,
         }
     }
+}
+
+/// Which half of a queue's doorbell pair an operation addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Doorbell {
+    /// Publish a new submission tail.
+    Submission,
+    /// Publish a consumed completion head.
+    Completion,
 }
 
 /// Where a queue's doorbell lives, relative to the register file.
@@ -407,67 +547,88 @@ impl Capacity {
 /// # Examples
 ///
 /// ```
-/// use nvme::{Capabilities, doorbell};
+/// use nvme::{Capabilities, Doorbell, doorbell};
 ///
 /// // A controller with the usual stride of zero: four bytes apart.
 /// let cap = Capabilities::from_bits(0);
-/// assert_eq!(doorbell(cap, 0, false), Some(0x1000)); // admin submission
-/// assert_eq!(doorbell(cap, 0, true), Some(0x1004));  // admin completion
-/// assert_eq!(doorbell(cap, 1, false), Some(0x1008)); // i/o submission
+/// assert_eq!(doorbell(cap, 0, Doorbell::Submission), Some(0x1000));
+/// assert_eq!(doorbell(cap, 0, Doorbell::Completion), Some(0x1004));
+/// assert_eq!(doorbell(cap, 1, Doorbell::Submission), Some(0x1008));
 /// ```
-pub const fn doorbell(cap: Capabilities, queue: u16, completion: bool) -> Option<usize> {
-    let index = (queue as usize) * 2 + if completion { 1 } else { 0 };
+pub const fn doorbell(cap: Capabilities, queue: u16, doorbell: Doorbell) -> Option<usize> {
+    let pair_offset = match doorbell {
+        Doorbell::Submission => 0,
+        Doorbell::Completion => 1,
+    };
+    let index = (queue as usize) * 2 + pair_offset;
     match index.checked_mul(cap.doorbell_bytes()) {
         Some(offset) => offset.checked_add(register::DOORBELLS),
         None => None,
     }
 }
 
-/// Admin command opcodes this driver uses.
-pub mod admin {
-    /// Create an I/O submission queue.
-    pub const CREATE_SUBMISSION_QUEUE: u8 = 0x01;
-    /// Create an I/O completion queue.
-    pub const CREATE_COMPLETION_QUEUE: u8 = 0x05;
-    /// Identify.
-    pub const IDENTIFY: u8 = 0x06;
+mod admin {
+    pub(super) const CREATE_SUBMISSION_QUEUE: u8 = 0x01;
+    pub(super) const CREATE_COMPLETION_QUEUE: u8 = 0x05;
+    pub(super) const IDENTIFY: u8 = 0x06;
+    pub(super) const SET_FEATURES: u8 = 0x09;
 }
 
-/// NVM command opcodes this driver uses.
-pub mod nvm {
-    /// Read.
-    pub const READ: u8 = 0x02;
+mod feature {
+    pub(super) const NUMBER_OF_QUEUES: u32 = 0x07;
 }
 
-/// One submission entry, built field by field.
-///
-/// Sixty-four bytes, and the layout is the specification's. Built through this
-/// type rather than by writing offsets at the call site, so that a field that
-/// moved would move once.
+mod nvm {
+    pub(super) const READ: u8 = 0x02;
+}
+
+/// One validated, sixty-four-byte submission entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Command {
     words: [u32; SUBMISSION_ENTRY_BYTES / 4],
 }
 
 impl Command {
-    /// An empty command with an opcode and an identifier.
-    ///
-    /// The identifier is what a completion is matched by — **not** the slot,
-    /// because a controller may complete out of order and does.
-    pub const fn new(opcode: u8, id: u16) -> Self {
+    const fn empty(opcode: u8, id: u16) -> Self {
         let mut words = [0u32; SUBMISSION_ENTRY_BYTES / 4];
         words[0] = opcode as u32 | ((id as u32) << 16);
         Self { words }
     }
 
-    /// Set the namespace this command is about.
-    pub const fn namespace(mut self, nsid: u32) -> Self {
+    /// Identify one namespace into one controller page.
+    pub const fn identify_namespace(
+        id: u16,
+        namespace: u32,
+        address: u64,
+        page_size: u64,
+    ) -> Option<Self> {
+        if namespace == 0 || !Self::contiguous_extent(address, IDENTIFY_TRANSFER_BYTES, page_size) {
+            return None;
+        }
+        let mut command = Self::empty(admin::IDENTIFY, id)
+            .with_namespace(namespace)
+            .with_buffers(address, 0);
+        command.words[10] = 0;
+        Some(command)
+    }
+
+    /// Request exact nonzero I/O submission and completion queue counts.
+    pub const fn number_of_queues(id: u16, submission: u16, completion: u16) -> Option<Self> {
+        if submission == 0 || completion == 0 {
+            return None;
+        }
+        let mut command = Self::empty(admin::SET_FEATURES, id);
+        command.words[10] = feature::NUMBER_OF_QUEUES;
+        command.words[11] = ((completion as u32 - 1) << 16) | (submission as u32 - 1);
+        Some(command)
+    }
+
+    const fn with_namespace(mut self, nsid: u32) -> Self {
         self.words[1] = nsid;
         self
     }
 
-    /// Set the two physical region pointers.
-    pub const fn buffers(mut self, prp1: u64, prp2: u64) -> Self {
+    const fn with_buffers(mut self, prp1: u64, prp2: u64) -> Self {
         self.words[6] = prp1 as u32;
         self.words[7] = (prp1 >> 32) as u32;
         self.words[8] = prp2 as u32;
@@ -475,17 +636,74 @@ impl Command {
         self
     }
 
-    /// Set one of the six command-specific dwords, `cdw10` through `cdw15`.
-    ///
-    /// # Panics
-    ///
-    /// If `which` is not in `10..=15`, which is a caller naming a dword that
-    /// is not command-specific.
-    #[must_use]
-    pub const fn dword(mut self, which: usize, value: u32) -> Self {
-        assert!(which >= 10 && which <= 15, "cdw10 through cdw15 only");
-        self.words[which] = value;
-        self
+    const fn contiguous_extent(address: u64, len: u64, page_size: u64) -> bool {
+        page_size >= 4096
+            && page_size.is_power_of_two()
+            && address.is_multiple_of(page_size)
+            && len != 0
+            && address.checked_add(len).is_some()
+    }
+
+    /// Create one physically contiguous polling completion queue.
+    pub const fn create_completion_queue(
+        id: u16,
+        queue: u16,
+        capacity: Capacity,
+        address: u64,
+        page_size: u64,
+    ) -> Option<Self> {
+        if queue == 0 || !Self::contiguous_extent(address, capacity.completion_bytes(), page_size) {
+            return None;
+        }
+        let mut command = Self::empty(admin::CREATE_COMPLETION_QUEUE, id).with_buffers(address, 0);
+        command.words[10] = (capacity.as_zero_based() << 16) | queue as u32;
+        command.words[11] = 1;
+        Some(command)
+    }
+
+    /// Create one physically contiguous submission queue bound to its completion queue.
+    pub const fn create_submission_queue(
+        id: u16,
+        queue: u16,
+        completion_queue: u16,
+        capacity: Capacity,
+        address: u64,
+        page_size: u64,
+    ) -> Option<Self> {
+        if queue == 0
+            || completion_queue == 0
+            || !Self::contiguous_extent(address, capacity.submission_bytes(), page_size)
+        {
+            return None;
+        }
+        let mut command = Self::empty(admin::CREATE_SUBMISSION_QUEUE, id).with_buffers(address, 0);
+        command.words[10] = (capacity.as_zero_based() << 16) | queue as u32;
+        command.words[11] = ((completion_queue as u32) << 16) | 1;
+        Some(command)
+    }
+
+    /// Read a validated namespace extent into one aligned controller page.
+    pub const fn read(
+        id: u16,
+        namespace: u32,
+        address: u64,
+        page_size: u64,
+        transfer: ReadTransfer,
+    ) -> Option<Self> {
+        if namespace == 0
+            || transfer.bytes() > page_size
+            || !Self::contiguous_extent(address, transfer.bytes(), page_size)
+        {
+            return None;
+        }
+        let lba = transfer.lba();
+        let mut command = Self::empty(nvm::READ, id)
+            .with_namespace(namespace)
+            .with_buffers(address, 0);
+        command.words[10] = lba as u32;
+        command.words[11] = (lba >> 32) as u32;
+        command.words[12] = transfer.zero_based_blocks() as u32;
+        Some(command)
     }
 
     /// The command's identifier.
@@ -493,22 +711,15 @@ impl Command {
         (self.words[0] >> 16) as u16
     }
 
-    /// The command's opcode.
-    pub const fn opcode(self) -> u8 {
-        self.words[0] as u8
-    }
-
     /// The sixty-four bytes to write into the queue.
     pub fn to_bytes(self) -> [u8; SUBMISSION_ENTRY_BYTES] {
         let mut bytes = [0u8; SUBMISSION_ENTRY_BYTES];
-        let mut index = 0;
-        while index < self.words.len() {
-            let word = self.words[index].to_le_bytes();
+        for (index, value) in self.words.into_iter().enumerate() {
+            let word = value.to_le_bytes();
             bytes[index * 4] = word[0];
             bytes[index * 4 + 1] = word[1];
             bytes[index * 4 + 2] = word[2];
             bytes[index * 4 + 3] = word[3];
-            index += 1;
         }
         bytes
     }
@@ -545,6 +756,24 @@ impl Completion {
             phase: (dword3 >> 16) & 1 != 0,
             status: (dword3 >> 17) as u16,
         }
+    }
+
+    /// Whether this completion proves the expected command was consumed.
+    ///
+    /// This driver publishes only one command at a time, so the controller's
+    /// submission head must equal the tail published for that command. Queue
+    /// identity and command identity are part of the same provenance check.
+    pub const fn matches_submission(
+        self,
+        queue: u16,
+        command: u16,
+        published_tail: u32,
+        capacity: Capacity,
+    ) -> bool {
+        self.submission_queue == queue
+            && self.id == command
+            && (self.submission_head as u32) < capacity.entries()
+            && self.submission_head as u32 == published_tail
     }
 
     /// Whether the command succeeded.
@@ -589,7 +818,7 @@ pub enum NamespaceError {
 impl core::fmt::Display for NamespaceError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Empty => f.write_str("the namespace has no logical blocks"),
+            Self::Empty => core::fmt::Write::write_str(f, "the namespace has no logical blocks"),
             Self::TooManyFormats(formats) => {
                 write!(f, "the namespace reports {formats} lba formats")
             }
@@ -713,18 +942,24 @@ pub enum TransferError {
     LengthOverflow,
     /// The DMA allocation is shorter than the command's byte extent.
     BufferTooSmall,
+    /// The transfer exceeds the controller limit proved during discovery.
+    ControllerLimit,
 }
 
 impl core::fmt::Display for TransferError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(match self {
-            Self::Empty => "the transfer contains no logical blocks",
-            Self::TooManyBlocks => "the transfer does not fit the nlb field",
-            Self::BlockSize => "the logical-block size is zero",
-            Self::OutsideNamespace => "the transfer crosses the namespace boundary",
-            Self::LengthOverflow => "the transfer byte length overflows",
-            Self::BufferTooSmall => "the dma buffer is shorter than the transfer",
-        })
+        core::fmt::Write::write_str(
+            f,
+            match self {
+                Self::Empty => "the transfer contains no logical blocks",
+                Self::TooManyBlocks => "the transfer does not fit the nlb field",
+                Self::BlockSize => "the logical-block size is zero",
+                Self::OutsideNamespace => "the transfer crosses the namespace boundary",
+                Self::LengthOverflow => "the transfer byte length overflows",
+                Self::BufferTooSmall => "the dma buffer is shorter than the transfer",
+                Self::ControllerLimit => "the transfer exceeds the proved controller limit",
+            },
+        )
     }
 }
 
@@ -768,6 +1003,14 @@ impl ReadTransfer {
         Ok(Self { lba, blocks, bytes })
     }
 
+    /// Bind this request to a byte limit proved for the controller.
+    pub const fn within_limit(self, limit: u64) -> Result<Self, TransferError> {
+        if self.bytes > limit {
+            return Err(TransferError::ControllerLimit);
+        }
+        Ok(self)
+    }
+
     /// First logical block in the transfer.
     pub const fn lba(self) -> u64 {
         self.lba
@@ -784,127 +1027,147 @@ impl ReadTransfer {
     }
 }
 
-/// Where the data for a transfer lives, as the controller wants it told.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Regions {
-    /// The first pointer: the start of the buffer, page offset included.
-    pub prp1: u64,
-    /// The second: zero, one more page, or the address of a list.
-    pub prp2: u64,
-    /// How many entries a list at `prp2` must hold. Zero when `prp2` is not a
-    /// list.
-    pub list_entries: usize,
-}
-
-/// Build the physical region pointers for a transfer.
-///
-/// The rules from Base 2.2 §4.1, and each one is a way to get it wrong:
-///
-/// - `PRP1` carries the **offset within the page**; every later pointer must be
-///   page-aligned.
-/// - If what remains after the first page's tail is nothing, `PRP2` is zero.
-/// - If it is one page or less, `PRP2` is that page — **not** a list of one.
-/// - Otherwise `PRP2` is the address of a list, and the list's entries are the
-///   pages after the first.
-///
-/// # Errors
-///
-/// `None` if the buffer is empty, if the transfer would run past the end of the
-/// address space, or if a list would be needed and `list` is `None`.
-///
-/// # Examples
-///
-/// ```
-/// use nvme::regions;
-///
-/// // Half a page from the start of one: it all fits in PRP1.
-/// let one = regions(0x1000, 2048, 4096, None).expect("a valid transfer");
-/// assert_eq!((one.prp1, one.prp2, one.list_entries), (0x1000, 0, 0));
-///
-/// // Straddling into a second page: PRP2 is that page, not a list.
-/// let two = regions(0x1800, 4096, 4096, None).expect("a valid transfer");
-/// assert_eq!((two.prp1, two.prp2, two.list_entries), (0x1800, 0x2000, 0));
-/// ```
-pub const fn regions(
-    address: u64,
-    length: u64,
-    page_size: u64,
-    list: Option<u64>,
-) -> Option<Regions> {
-    if length == 0 || page_size == 0 || !page_size.is_power_of_two() {
-        return None;
-    }
-    let Some(end) = address.checked_add(length) else {
-        return None;
-    };
-
-    let offset = address & (page_size - 1);
-    let first = page_size - offset;
-    if length <= first {
-        return Some(Regions {
-            prp1: address,
-            prp2: 0,
-            list_entries: 0,
-        });
-    }
-
-    let second = address + first;
-    let remaining = length - first;
-    if remaining <= page_size {
-        return Some(Regions {
-            prp1: address,
-            prp2: second,
-            list_entries: 0,
-        });
-    }
-
-    // Every page from the second to the last, which is what a list holds.
-    let last = end - 1;
-    let pages = ((last / page_size) - (second / page_size) + 1) as usize;
-    match list {
-        Some(at) => Some(Regions {
-            prp1: address,
-            prp2: at,
-            list_entries: pages,
-        }),
-        None => None,
-    }
-}
-
-/// The physical address a PRP list's `index`th entry names.
-///
-/// The pages after the first, in order. Separate from [`regions`] because the
-/// list is written into memory the caller owns and this is the arithmetic for
-/// filling it.
-///
-/// # Errors
-///
-/// `None` past the end of the transfer.
-pub const fn list_entry(address: u64, length: u64, page_size: u64, index: usize) -> Option<u64> {
-    if length == 0 || page_size == 0 || !page_size.is_power_of_two() {
-        return None;
-    }
-    let offset = address & (page_size - 1);
-    let first = page_size - offset;
-    if length <= first {
-        return None;
-    }
-    let second = address + first;
-    let Some(page) = (index as u64).checked_mul(page_size) else {
-        return None;
-    };
-    let Some(at) = second.checked_add(page) else {
-        return None;
-    };
-    if at >= address + length {
-        return None;
-    }
-    Some(at)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_disabled_and_not_ready_registers_pass_dma_classification() {
+        const OTHER_CC: u32 = 0xa5a5_5a00;
+        const OTHER_CSTS: u32 = 0x5a5a_a5a0;
+
+        for enabled in [false, true] {
+            for ready in [false, true] {
+                let cc = OTHER_CC | (u32::from(enabled) * configuration::ENABLE);
+                let csts = OTHER_CSTS | (u32::from(ready) * status::READY);
+                let classified = DisabledRegisters::from_bits(cc, csts);
+                if enabled || ready {
+                    assert_eq!(classified, Err(ControllerStateError::Active { cc, csts }));
+                } else {
+                    assert_eq!(classified.map(DisabledRegisters::bits), Ok((cc, csts)));
+                }
+            }
+        }
+        assert_eq!(
+            ControllerStateError::Active { cc: 1, csts: 0 }.to_string(),
+            "controller is active (cc=0x00000001, csts=0x00000000)"
+        );
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct PreparationOwner {
+        identity: u64,
+        accesses: usize,
+    }
+
+    fn refuse_unverified_access(
+        identity: u64,
+        refused: usize,
+        accesses: usize,
+    ) -> Result<
+        ControllerPreparation<PreparationOwner>,
+        PreparationFailure<ControllerPreparation<PreparationOwner>, usize>,
+    > {
+        let mut preparation = ControllerPreparation::new(PreparationOwner {
+            identity,
+            accesses: 0,
+        });
+        for access in 0..accesses {
+            let (returned, ()) = preparation.access(|owner| {
+                owner.accesses += 1;
+                if access == refused {
+                    Err(access)
+                } else {
+                    Ok(())
+                }
+            })?;
+            preparation = returned;
+        }
+        Ok(preparation)
+    }
+
+    #[test]
+    fn every_unverified_preparation_access_failure_preserves_its_quarantine_owner() {
+        const ACCESSES: usize = 6;
+
+        for refused in 0..ACCESSES {
+            let identity = 0xcafe_0000 + refused as u64;
+            let failure = refuse_unverified_access(identity, refused, ACCESSES)
+                .expect_err("the selected preparation access must refuse");
+            let (reason, preparation) = failure.into_parts();
+            let (preparation, recovered) = preparation
+                .access(|owner| Ok::<_, core::convert::Infallible>(owner.identity))
+                .expect("the returned owner remains usable");
+            let owner = preparation
+                .prove_disabled(0, 0)
+                .expect("the recovered owner accepts a valid disabled proof")
+                .into_owner();
+
+            assert_eq!(reason, refused);
+            assert_eq!(recovered, identity);
+            assert_eq!(owner.identity, identity);
+            assert_eq!(owner.accesses, refused + 1);
+        }
+
+        let identity = 0xcafe_ffff;
+        let failure = ControllerPreparation::new(PreparationOwner {
+            identity,
+            accesses: 0,
+        })
+        .prove_disabled(configuration::ENABLE, 0)
+        .expect_err("an active controller cannot release its preparation owner");
+        let (reason, preparation) = failure.into_parts();
+        let (_, recovered) = preparation
+            .access(|owner| Ok::<_, core::convert::Infallible>(owner.identity))
+            .expect("a refused disabled proof returns the owner for quarantine");
+        assert_eq!(
+            reason,
+            ControllerStateError::Active {
+                cc: configuration::ENABLE,
+                csts: 0,
+            }
+        );
+        assert_eq!(recovered, identity);
+    }
+
+    #[test]
+    fn every_disabled_preparation_access_failure_returns_the_exact_retirement_owner() {
+        const ACCESSES: usize = 5;
+
+        for refused in 0..ACCESSES {
+            let identity = 0xd15a_0000 + refused as u64;
+            let mut preparation = ControllerPreparation::new(PreparationOwner {
+                identity,
+                accesses: 0,
+            })
+            .prove_disabled(0, 0)
+            .expect("zeroed controller state is disabled");
+            let mut failure = None;
+            for access in 0..ACCESSES {
+                match preparation.access(|owner| {
+                    owner.accesses += 1;
+                    if access == refused {
+                        Err(access)
+                    } else {
+                        Ok(())
+                    }
+                }) {
+                    Ok((returned, ())) => preparation = returned,
+                    Err(refused) => {
+                        failure = Some(refused);
+                        break;
+                    }
+                }
+            }
+            let failure = failure.expect("the selected disabled access must refuse");
+            let (reason, preparation) = failure.into_parts();
+            let owner = preparation.into_owner();
+
+            assert_eq!(reason, refused);
+            assert_eq!(owner.identity, identity);
+            assert_eq!(owner.accesses, refused + 1);
+        }
+    }
 
     fn identify(blocks: u64) -> [u8; NAMESPACE_IDENTIFY_BYTES] {
         let mut bytes = [0u8; NAMESPACE_IDENTIFY_BYTES];
@@ -917,61 +1180,71 @@ mod tests {
         bytes
     }
 
-    struct DelayedDevice {
-        answered: bool,
-        stopped: bool,
-    }
-
-    impl DelayedDevice {
-        fn poll(&self, state: &mut DmaState) {
-            if self.answered {
-                state.complete();
-            }
-        }
-
-        fn stop(&self, state: &mut DmaState) {
-            state.quiesce(self.stopped);
-        }
-    }
-
-    /// A late device can never make memory recyclable after stop was unproven.
     #[test]
-    fn delayed_completion_cannot_recycle_unquiesced_dma_memory() {
-        let mut uncertain = DmaState::new();
-        assert!(uncertain.begin());
-        let mut device = DelayedDevice {
-            answered: false,
-            stopped: false,
-        };
-        device.poll(&mut uncertain);
-        assert!(!uncertain.may_recycle());
-        device.stop(&mut uncertain);
-        assert!(uncertain.must_retain());
-        assert!(!uncertain.may_recycle());
+    fn fixed_wire_sizes_and_bit_positions_match_the_nvme_format() {
+        assert_eq!(SUBMISSION_ENTRY_BYTES, 64);
+        assert_eq!(COMPLETION_ENTRY_BYTES, 16);
+        assert_eq!(IOSQES, 6);
+        assert_eq!(IOCQES, 4);
+        assert_eq!(MAX_TRANSFER_BLOCKS, 65_536);
+        assert_eq!(NAMESPACE_IDENTIFY_BYTES, 192);
+        assert_eq!(status::READY, 1);
+        assert_eq!(status::FATAL, 2);
+    }
 
-        device.answered = true;
-        device.poll(&mut uncertain);
-        assert!(
-            uncertain.must_retain(),
-            "a late completion cannot undo retention"
-        );
-        assert!(!uncertain.may_recycle());
+    #[test]
+    fn every_dma_state_reports_one_consistent_ownership_answer() {
+        let cases = [
+            (DmaOwnership::Idle, false, false),
+            (DmaOwnership::Reserved, false, false),
+            (DmaOwnership::InFlight, false, true),
+            (DmaOwnership::Closed, true, false),
+        ];
 
-        let mut stopped = DmaState::new();
-        assert!(stopped.begin());
-        DelayedDevice {
-            answered: false,
-            stopped: true,
+        for (state, closed, in_flight) in cases {
+            let state = DmaState { state };
+            assert_eq!(matches!(state.state, DmaOwnership::Closed), closed);
+            assert_eq!(state.is_in_flight(), in_flight);
         }
-        .stop(&mut stopped);
-        assert!(stopped.is_quiesced());
-        assert!(stopped.may_recycle());
+    }
 
-        let mut completed = DmaState::new();
-        assert!(completed.begin());
-        completed.complete();
-        assert!(completed.may_submit());
-        assert!(completed.may_recycle());
+    #[test]
+    fn publication_closes_the_unpublished_cancellation_door() {
+        let mut state = DmaState::idle();
+        assert!(!state.cancel_unpublished());
+        assert_eq!(state.publish_with(|_| ()), None);
+        assert!(state.reserve());
+        assert!(state.cancel_unpublished());
+        assert!(state.reserve(), "cancellation restored the idle state");
+        assert!(!state.complete());
+        assert_eq!(
+            state.publish_with(|publication| publication._state.is_in_flight()),
+            Some(true)
+        );
+        assert!(!state.cancel_unpublished());
+        assert_eq!(state.publish_with(|_| ()), None);
+        assert!(state.complete());
+        assert!(state.reserve(), "completion restored the idle state");
+    }
+
+    #[test]
+    fn closed_dma_state_cannot_publish_or_complete() {
+        for mut state in [
+            DmaState::idle(),
+            DmaState {
+                state: DmaOwnership::Reserved,
+            },
+            DmaState {
+                state: DmaOwnership::InFlight,
+            },
+        ] {
+            state.close();
+            assert!(matches!(state.state, DmaOwnership::Closed));
+            assert!(!state.reserve());
+            assert!(!state.cancel_unpublished());
+            assert_eq!(state.publish_with(|_| ()), None);
+            assert!(!state.complete());
+        }
     }
 
     /// A queue holds one fewer command than it has entries.
@@ -985,7 +1258,6 @@ mod tests {
         for entries in [2u32, 3, 8, 64, 1024, 65536] {
             let capacity = Capacity::new(entries).expect("a real queue size");
             assert_eq!(capacity.entries(), entries);
-            assert_eq!(capacity.outstanding_limit(), entries - 1);
             assert_eq!(capacity.as_zero_based(), entries - 1);
         }
     }
@@ -1000,8 +1272,8 @@ mod tests {
 
         for head in 0..4 {
             for tail in 0..4 {
-                let room = capacity.has_room(head, tail);
-                let would_wrap_onto_the_head = capacity.next(tail) == head;
+                let room = capacity.has_room(head, tail).expect("valid indices");
+                let would_wrap_onto_the_head = Capacity::next(capacity, tail) == Some(head);
                 assert_eq!(room, !would_wrap_onto_the_head, "head {head}, tail {tail}");
             }
         }
@@ -1009,43 +1281,42 @@ mod tests {
         // And the count that follows from it: three, never four.
         let mut tail = 0;
         let mut admitted = 0;
-        while capacity.has_room(0, tail) {
-            tail = capacity.next(tail);
+        for _ in 0..capacity.entries() {
+            if capacity.has_room(0, tail) != Some(true) {
+                break;
+            }
+            tail = Capacity::next(capacity, tail).expect("valid tail");
             admitted += 1;
         }
-        assert_eq!(admitted, capacity.outstanding_limit());
+        assert_eq!(admitted, capacity.entries() - 1);
         assert_eq!(admitted, 3);
     }
 
-    /// A queue's occupancy is the distance from head to tail, wrapping.
     #[test]
-    fn occupancy_wraps_with_the_queue() {
-        let capacity = Capacity::new(8).expect("eight entries");
-        assert_eq!(capacity.occupied(0, 0), 0);
-        assert_eq!(capacity.occupied(0, 5), 5);
-        assert_eq!(capacity.occupied(5, 0), 3);
-        assert_eq!(capacity.occupied(6, 4), 6);
-        assert_eq!(
-            capacity.occupied(1, 0),
-            7,
-            "the full queue is size minus one"
-        );
+    fn queue_positions_refuse_every_value_outside_the_capacity() {
+        let capacity = Capacity::new(4).expect("four entries");
+        for index in 0..4 {
+            assert_eq!(Capacity::next(capacity, index), Some((index + 1) % 4));
+            assert!(capacity.has_room(index, index).is_some());
+        }
+        for invalid in [4, 5, u32::MAX] {
+            assert_eq!(Capacity::next(capacity, invalid), None);
+            assert_eq!(capacity.has_room(invalid, 0), None);
+            assert_eq!(capacity.has_room(0, invalid), None);
+        }
     }
 
-    /// `MQES` is one less than the size, which is the specification's own
-    /// off-by-one and the first place to get it wrong.
     #[test]
-    fn the_reported_maximum_is_one_less_than_the_size() {
-        assert_eq!(Capacity::from_mqes(1).expect("two entries").entries(), 2);
-        assert_eq!(Capacity::from_mqes(63).expect("sixty-four").entries(), 64);
+    fn queue_indices_and_storage_bytes_are_exact() {
+        let capacity = Capacity::new(4).expect("four entries");
+        assert_eq!(capacity.submission_bytes(), 256);
+        assert_eq!(capacity.completion_bytes(), 64);
         assert_eq!(
-            Capacity::from_mqes(65535).expect("the largest").entries(),
-            65536
+            (0..4)
+                .map(|index| Capacity::next(capacity, index))
+                .collect::<Vec<_>>(),
+            [Some(1), Some(2), Some(3), Some(0)]
         );
-        // A controller reporting zero has queues of one entry, which hold
-        // nothing: refused rather than accepted and hung on.
-        assert!(Capacity::from_mqes(0).is_none());
-        assert!(Capacity::from_mqes(u32::MAX).is_none());
     }
 
     /// Every capability field is read from its own bits.
@@ -1055,10 +1326,7 @@ mod tests {
     /// driver does.
     #[test]
     fn every_capability_field_is_read_from_its_own_bits() {
-        // MQES 0x00FF, CQR set, TO 0x0A, DSTRD 0x3, NVM command set,
-        // MPSMIN 1, MPSMAX 5.
         let bits = 0x0000_0000_0000_00FFu64
-            | (1 << 16)
             | (0x0A << 24)
             | (0x3 << 32)
             | (1 << 37)
@@ -1067,7 +1335,6 @@ mod tests {
         let cap = Capabilities::from_bits(bits);
 
         assert_eq!(cap.max_queue_entries(), 256);
-        assert!(cap.requires_contiguous_queues());
         assert_eq!(cap.timeout_ms(), 5_000);
         assert_eq!(cap.doorbell_stride(), 3);
         assert_eq!(cap.doorbell_bytes(), 32);
@@ -1075,9 +1342,8 @@ mod tests {
         assert_eq!(cap.min_page_shift(), 13);
         assert_eq!(cap.max_page_shift(), 17);
 
-        // A page size outside the reported range is refused, which is what
-        // stops a driver programming `CC.MPS` with something the controller
-        // will not accept and then waiting for a ready bit that never comes.
+        // Refused outside the reported range, or `CC.MPS` would hold a value
+        // the controller rejects and the ready bit would never come.
         assert!(!cap.supports_page_size(4096), "below MPSMIN");
         assert!(cap.supports_page_size(8192));
         assert!(cap.supports_page_size(1 << 17));
@@ -1095,7 +1361,7 @@ mod tests {
         assert!(!cap.supports_nvm_command_set());
         assert_eq!(cap.timeout_ms(), 0);
         assert_eq!(cap.max_queue_entries(), 1);
-        assert!(Capacity::from_mqes(0).is_none());
+        assert!(Capacity::new(cap.max_queue_entries()).is_none());
     }
 
     /// Doorbells alternate, and the stride is the controller's.
@@ -1106,30 +1372,28 @@ mod tests {
     #[test]
     fn doorbells_alternate_and_use_the_controllers_stride() {
         let narrow = Capabilities::from_bits(0);
-        assert_eq!(doorbell(narrow, 0, false), Some(0x1000));
-        assert_eq!(doorbell(narrow, 0, true), Some(0x1004));
-        assert_eq!(doorbell(narrow, 1, false), Some(0x1008));
-        assert_eq!(doorbell(narrow, 1, true), Some(0x100C));
+        assert_eq!(doorbell(narrow, 0, Doorbell::Submission), Some(0x1000));
+        assert_eq!(doorbell(narrow, 0, Doorbell::Completion), Some(0x1004));
+        assert_eq!(doorbell(narrow, 1, Doorbell::Submission), Some(0x1008));
+        assert_eq!(doorbell(narrow, 1, Doorbell::Completion), Some(0x100C));
 
         // Stride 2: sixteen bytes apart, so the I/O submission doorbell is at
         // 0x1020 and a driver assuming four would write the admin pair.
         let wide = Capabilities::from_bits(2 << 32);
         assert_eq!(wide.doorbell_bytes(), 16);
-        assert_eq!(doorbell(wide, 0, false), Some(0x1000));
-        assert_eq!(doorbell(wide, 1, false), Some(0x1020));
-        assert_eq!(doorbell(wide, 1, true), Some(0x1030));
+        assert_eq!(doorbell(wide, 0, Doorbell::Submission), Some(0x1000));
+        assert_eq!(doorbell(wide, 1, Doorbell::Submission), Some(0x1020));
+        assert_eq!(doorbell(wide, 1, Doorbell::Completion), Some(0x1030));
     }
 
     /// A command puts every field where the specification says.
     #[test]
     fn a_command_puts_every_field_where_the_specification_says() {
-        let command = Command::new(nvm::READ, 0xABCD)
-            .namespace(1)
-            .buffers(0x1122_3344_5566_7788, 0x99AA_BBCC_DDEE_FF00)
-            .dword(10, 0x0000_0064)
-            .dword(12, 0x0000_0007);
+        const LBA: u64 = 0x8877_6655_0000_0064;
+        let transfer = ReadTransfer::new(LBA, 8, LBA + 8, 512, 4096).expect("valid transfer");
+        let command =
+            Command::read(0xABCD, 1, 0x1122_3344_5566_7000, 4096, transfer).expect("valid read");
 
-        assert_eq!(command.opcode(), 0x02);
         assert_eq!(command.id(), 0xABCD);
 
         let bytes = command.to_bytes();
@@ -1139,13 +1403,21 @@ mod tests {
         // NSID.
         assert_eq!(&bytes[4..8], &1u32.to_le_bytes());
         // PRP1 at 24, PRP2 at 32 — the two most consequential offsets here.
-        assert_eq!(&bytes[24..32], &0x1122_3344_5566_7788u64.to_le_bytes());
-        assert_eq!(&bytes[32..40], &0x99AA_BBCC_DDEE_FF00u64.to_le_bytes());
-        // CDW10 at 40 and CDW12 at 48.
-        assert_eq!(&bytes[40..44], &0x64u32.to_le_bytes());
+        assert_eq!(&bytes[24..32], &0x1122_3344_5566_7000u64.to_le_bytes());
+        assert_eq!(&bytes[32..40], &0u64.to_le_bytes());
+        assert_eq!(&bytes[40..48], &LBA.to_le_bytes());
         assert_eq!(&bytes[48..52], &7u32.to_le_bytes());
-        // And CDW11, which was not set, is zero rather than borrowed.
-        assert_eq!(&bytes[44..48], &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn queue_negotiation_requests_and_proves_both_queue_domains() {
+        let command = Command::number_of_queues(0x1234, 1, 1).expect("one queue pair");
+        let bytes = command.to_bytes();
+        assert_eq!(&bytes[0..4], &[admin::SET_FEATURES, 0, 0x34, 0x12]);
+        assert_eq!(&bytes[40..44], &feature::NUMBER_OF_QUEUES.to_le_bytes());
+        assert_eq!(&bytes[44..48], &0u32.to_le_bytes());
+        assert!(Command::number_of_queues(1, 0, 1).is_none());
+        assert!(Command::number_of_queues(1, 1, 0).is_none());
     }
 
     /// A completion is decoded field by field, and the phase tag is one bit.
@@ -1178,6 +1450,111 @@ mod tests {
         assert!(clean.phase);
         assert_eq!(clean.status, 0);
         assert!(clean.is_success());
+
+        let empty = Completion::from_bytes([0; COMPLETION_ENTRY_BYTES]);
+        assert!(!empty.phase);
+        assert_eq!(empty.status, 0);
+    }
+
+    #[test]
+    fn completion_provenance_binds_queue_command_and_submission_head() {
+        let capacity = Capacity::new(8).expect("queue capacity");
+        let completion = Completion {
+            result: 0,
+            submission_head: 3,
+            submission_queue: 1,
+            id: 0x1234,
+            phase: true,
+            status: 0,
+        };
+
+        assert!(completion.matches_submission(1, 0x1234, 3, capacity));
+        assert!(!completion.matches_submission(0, 0x1234, 3, capacity));
+        assert!(!completion.matches_submission(1, 0x1235, 3, capacity));
+        assert!(!completion.matches_submission(1, 0x1234, 2, capacity));
+
+        let outside = Completion {
+            submission_head: 8,
+            ..completion
+        };
+        assert!(!outside.matches_submission(1, 0x1234, 8, capacity));
+    }
+
+    #[test]
+    fn namespace_errors_name_the_refused_geometry() {
+        let cases = [
+            (NamespaceError::Empty, "the namespace has no logical blocks"),
+            (
+                NamespaceError::TooManyFormats(17),
+                "the namespace reports 17 lba formats",
+            ),
+            (
+                NamespaceError::FormatOutsideList {
+                    selected: 3,
+                    formats: 2,
+                },
+                "lba format 3 is outside the 2 reported formats",
+            ),
+            (
+                NamespaceError::ReservedFormatBits(0x80),
+                "formatted lba size has reserved bits 0x80",
+            ),
+            (
+                NamespaceError::ReservedLbaFormatBits(0xfc),
+                "the selected lba format has reserved bits 0xfc",
+            ),
+            (
+                NamespaceError::Metadata(8),
+                "the selected lba format has 8 metadata bytes",
+            ),
+            (
+                NamespaceError::Protection(3),
+                "the namespace enables protection settings 0x03",
+            ),
+            (
+                NamespaceError::BlockSize(12),
+                "the selected lba data size exponent is 12",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn transfer_errors_name_the_refused_extent() {
+        let cases = [
+            (
+                TransferError::Empty,
+                "the transfer contains no logical blocks",
+            ),
+            (
+                TransferError::TooManyBlocks,
+                "the transfer does not fit the nlb field",
+            ),
+            (TransferError::BlockSize, "the logical-block size is zero"),
+            (
+                TransferError::OutsideNamespace,
+                "the transfer crosses the namespace boundary",
+            ),
+            (
+                TransferError::LengthOverflow,
+                "the transfer byte length overflows",
+            ),
+            (
+                TransferError::BufferTooSmall,
+                "the dma buffer is shorter than the transfer",
+            ),
+            (
+                TransferError::ControllerLimit,
+                "the transfer exceeds the proved controller limit",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
     }
 
     /// A zero-sized namespace has no valid LBA, while both extent ends survive.
@@ -1377,78 +1754,72 @@ mod tests {
         assert_eq!(exact.bytes(), 1024);
     }
 
-    /// A transfer inside one page needs one pointer.
     #[test]
-    fn a_transfer_inside_one_page_needs_one_pointer() {
-        for (address, length) in [
-            (0x1000u64, 4096u64),
-            (0x1000, 1),
-            (0x1FFF, 1),
-            (0x1800, 2048),
-        ] {
-            let built = regions(address, length, 4096, None).expect("a valid transfer");
-            assert_eq!(built.prp1, address, "PRP1 carries the offset");
-            assert_eq!(built.prp2, 0);
-            assert_eq!(built.list_entries, 0);
-        }
+    fn an_unidentified_controller_is_bounded_to_one_page() {
+        let exact = ReadTransfer::new(0, 8, 32, 512, 4096).expect("one page");
+        assert_eq!(exact.within_limit(4096), Ok(exact));
+
+        let over = ReadTransfer::new(0, 9, 32, 512, 4608).expect("encodable transfer");
+        assert_eq!(over.within_limit(4096), Err(TransferError::ControllerLimit));
     }
 
-    /// A transfer over two pages needs two pointers and no list.
-    ///
-    /// The case a driver most often gets wrong by reaching for a list: the
-    /// specification says `PRP2` *is* the second page when there is only one
-    /// more, and a list of one is not the same thing.
     #[test]
-    fn a_transfer_over_two_pages_needs_no_list() {
-        let built = regions(0x1800, 4096, 4096, None).expect("a valid transfer");
-        assert_eq!(built.prp1, 0x1800);
-        assert_eq!(built.prp2, 0x2000, "the next page, not a list");
-        assert_eq!(built.list_entries, 0);
+    fn identify_binds_one_complete_aligned_page() {
+        const PAGE: u64 = 4096;
+        const LAST_VALID_PAGE: u64 = u64::MAX - (2 * PAGE - 1);
+        const WRAPPING_PAGE: u64 = u64::MAX - (PAGE - 1);
 
-        // Exactly two pages from an aligned start is the boundary: the second
-        // page is `PRP2` and there is still no list.
-        let aligned = regions(0x1000, 8192, 4096, None).expect("a valid transfer");
-        assert_eq!(aligned.prp2, 0x2000);
-        assert_eq!(aligned.list_entries, 0);
+        let command = Command::identify_namespace(7, 1, LAST_VALID_PAGE, PAGE)
+            .expect("the last non-wrapping page");
+        let bytes = command.to_bytes();
+        assert_eq!(&bytes[24..32], &LAST_VALID_PAGE.to_le_bytes());
+        assert_eq!(&bytes[32..40], &0u64.to_le_bytes());
 
-        // One byte more needs a list, and refuses without somewhere to put it.
-        assert!(regions(0x1000, 8193, 4096, None).is_none());
+        assert!(Command::identify_namespace(7, 0, 0x1000, PAGE).is_none());
+        assert!(Command::identify_namespace(7, 1, 0x1001, PAGE).is_none());
+        assert!(Command::identify_namespace(7, 1, 0x1000, 2048).is_none());
+        assert!(Command::identify_namespace(7, 1, 0x2000, 5000).is_none());
+        assert!(Command::identify_namespace(7, 1, WRAPPING_PAGE, PAGE).is_none());
     }
 
-    /// A longer transfer names a list, and the list holds the pages after the
-    /// first.
     #[test]
-    fn a_longer_transfer_names_a_list_of_the_pages_after_the_first() {
-        let built = regions(0x1800, 16384, 4096, Some(0x9000)).expect("a valid transfer");
-        assert_eq!(built.prp1, 0x1800);
-        assert_eq!(built.prp2, 0x9000, "the list");
-        // 2048 in the first page, then 0x2000, 0x3000, 0x4000, 0x5000.
-        assert_eq!(built.list_entries, 4);
+    fn read_binds_its_validated_extent_to_one_page() {
+        const PAGE: u64 = 4096;
+        const LAST_VALID_PAGE: u64 = u64::MAX - (2 * PAGE - 1);
+        const WRAPPING_PAGE: u64 = u64::MAX - (PAGE - 1);
+        let exact = ReadTransfer::new(0, 8, 32, 512, PAGE).expect("one-page transfer");
+        let too_large = ReadTransfer::new(0, 9, 32, 512, PAGE + 512).expect("encodable transfer");
 
-        for (index, expected) in [(0, 0x2000u64), (1, 0x3000), (2, 0x4000), (3, 0x5000)] {
-            assert_eq!(
-                list_entry(0x1800, 16384, 4096, index),
-                Some(expected),
-                "entry {index}"
-            );
-        }
-        // And nothing past the end.
-        assert_eq!(list_entry(0x1800, 16384, 4096, 4), None);
+        assert!(Command::read(9, 1, LAST_VALID_PAGE, PAGE, exact).is_some());
+        assert!(Command::read(9, 0, 0x1000, PAGE, exact).is_none());
+        assert!(Command::read(9, 1, 0x1001, PAGE, exact).is_none());
+        assert!(Command::read(9, 1, 0x1000, 2048, exact).is_none());
+        assert!(Command::read(9, 1, 0x2000, 5000, exact).is_none());
+        assert!(Command::read(9, 1, WRAPPING_PAGE, PAGE, exact).is_none());
+        assert!(Command::read(9, 1, 0x1000, PAGE, too_large).is_none());
     }
 
-    /// A transfer that cannot be described is refused rather than truncated.
     #[test]
-    fn a_transfer_that_cannot_be_described_is_refused() {
-        assert!(regions(0x1000, 0, 4096, None).is_none(), "empty");
-        assert!(regions(0x1000, 4096, 0, None).is_none(), "no page size");
+    fn queue_commands_bind_the_complete_contiguous_extent() {
+        const PAGE: u64 = 4096;
+        const WRAPPING_PAGE: u64 = u64::MAX - (PAGE - 1);
+        let capacity = Capacity::new(256).expect("a queue capacity");
+
+        let completion = Command::create_completion_queue(11, 1, capacity, 0x1000, PAGE)
+            .expect("a complete completion queue");
+        let submission = Command::create_submission_queue(12, 1, 1, capacity, 0x2000, PAGE)
+            .expect("a complete submission queue");
+        assert_eq!(&completion.to_bytes()[24..32], &0x1000u64.to_le_bytes());
+        assert_eq!(&submission.to_bytes()[24..32], &0x2000u64.to_le_bytes());
+
+        assert!(Command::create_completion_queue(11, 0, capacity, 0x1000, PAGE).is_none());
+        assert!(Command::create_completion_queue(11, 1, capacity, 0x1001, PAGE).is_none());
+        assert!(Command::create_completion_queue(11, 1, capacity, WRAPPING_PAGE, PAGE).is_none());
+        assert!(Command::create_submission_queue(12, 0, 1, capacity, 0x2000, PAGE).is_none());
+        assert!(Command::create_submission_queue(12, 1, 0, capacity, 0x2000, PAGE).is_none());
+        assert!(Command::create_submission_queue(12, 1, 1, capacity, 0x2001, PAGE).is_none());
         assert!(
-            regions(0x1000, 4096, 5000, None).is_none(),
-            "not a power of two"
-        );
-        assert!(regions(u64::MAX, 2, 4096, None).is_none(), "past the end");
-        assert!(
-            list_entry(0x1000, 1024, 4096, 0).is_none(),
-            "no second page"
+            Command::create_submission_queue(12, 1, 1, capacity, WRAPPING_PAGE, PAGE).is_none()
         );
     }
 }

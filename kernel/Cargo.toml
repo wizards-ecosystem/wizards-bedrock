@@ -13,7 +13,7 @@ workspace = true
 [features]
 # Compiles the boot-time self-checks and the QEMU exit device into the kernel.
 # Enabled only by `cargo xtask test-boot`; never in a shipped image.
-selftest = ["wost/selftest"]
+selftest = ["wost/selftest", "dep:slab-layout", "slab-layout/selftest"]
 # Makes the production PCI claim refuse for the degraded boot witness.
 # Enabled only by `cargo xtask degraded-check`; never in a shipped image.
 refuse-pci = []
@@ -26,6 +26,7 @@ elf64.workspace = true
 fat32.workspace = true
 handle-space.workspace = true
 nvme.workspace = true
+panic-record.workspace = true
 path-walk.workspace = true
 pci-config.workspace = true
 ps2-keys.workspace = true
@@ -33,6 +34,7 @@ stack-layout.workspace = true
 timebase.workspace = true
 trap-cause.workspace = true
 ring-proto.workspace = true
+slab-layout = { workspace = true, optional = true }
 x86-paging.workspace = true
 wost = { path = "../wost" }
 x86-apic.workspace = true

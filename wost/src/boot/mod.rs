@@ -10,14 +10,21 @@ mod limine_glue;
 use core::fmt;
 
 pub use limine_glue::enter;
-pub use memory_map::{MemoryKind, MemoryMap, MemoryMapError, MemoryRegion};
+pub use memory_map::{DirectMapCache, MemoryKind, MemoryMap, MemoryMapError, MemoryRegion};
 use pixel::FramebufferLayout;
 pub use pixel::{FramebufferLayoutError, PixelFormat, PixelFormatError, Rgb};
 
-use crate::mmio::MmioRegion;
+use crate::mmio::{MmioError, MmioRegion};
 
 /// Bytes in one framebuffer word — the only access width the region supports.
 const WORD: usize = size_of::<u32>();
+
+fn framebuffer_access<T>(result: Result<T, MmioError>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => panic!("validated framebuffer access left its mapping: {error}"),
+    }
+}
 
 /// Geometry and pixel layout of a linear framebuffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +51,8 @@ pub struct FramebufferInfo {
 /// reading a screen's worth of it to move rows up costs far more than the same
 /// bytes in ordinary RAM — and it is the precondition for ever marking the
 /// mapping write-combining, where reads are worse still (D-48).
+/// A checked MMIO refusal after construction is internal geometry corruption
+/// and fails stopped before the shadow can diverge from the device (D-249).
 #[derive(Debug)]
 pub struct Framebuffer {
     region: MmioRegion,
@@ -83,6 +92,7 @@ impl Framebuffer {
     ///
     /// The shadow starts as a copy of what is on screen, so attaching it
     /// mid-boot does not lose the lines already printed.
+    #[must_use = "a refused framebuffer shadow was not attached"]
     pub fn attach_back_buffer(&mut self) -> bool {
         if !self.back.is_empty() {
             return true;
@@ -92,24 +102,27 @@ impl Framebuffer {
         if self.back.try_reserve_exact(words).is_err() {
             return false;
         }
-        // The one read of device memory this design permits, paid once so that
-        // no scroll ever pays it again.
-        self.back
-            .extend((0..words).map(|word| self.region.read_u32(word * WORD).unwrap_or(0)));
+        for word in 0..words {
+            let value = framebuffer_access(MmioRegion::read_u32(&self.region, word * WORD));
+            self.back.push(value);
+        }
         true
     }
 
     /// Where the pixels are reachable.
+    #[cfg(feature = "selftest")]
     pub fn address(&self) -> u64 {
         self.region.base_address() as u64
     }
 
     /// Bytes the mapping covers, which every pixel offset must land inside.
+    #[cfg(feature = "selftest")]
     pub fn mapped_bytes(&self) -> usize {
         self.layout.span()
     }
 
     /// Whether writes are being shadowed.
+    #[cfg(feature = "selftest")]
     pub fn has_back_buffer(&self) -> bool {
         !self.back.is_empty()
     }
@@ -121,28 +134,40 @@ impl Framebuffer {
 
     /// Record a word in the shadow, if there is one.
     fn shadow(&mut self, offset: usize, value: u32) {
-        if let Some(word) = self.back.get_mut(offset / WORD) {
-            *word = value;
+        if self.back.is_empty() {
+            return;
         }
+        let word = self
+            .back
+            .get_mut(offset / WORD)
+            .unwrap_or_else(|| panic!("framebuffer shadow is shorter than its validated mapping"));
+        *word = value;
     }
 
     /// The word at `offset`, from the shadow if there is one and from the
     /// device otherwise.
-    fn word_at(&self, offset: usize) -> Option<u32> {
-        match self.back.get(offset / WORD) {
-            Some(word) => Some(*word),
-            None => self.region.read_u32(offset).ok(),
+    fn word_at(&self, offset: usize) -> u32 {
+        if self.back.is_empty() {
+            framebuffer_access(MmioRegion::read_u32(&self.region, offset))
+        } else {
+            *self.back.get(offset / WORD).unwrap_or_else(|| {
+                panic!("framebuffer shadow is shorter than its validated mapping")
+            })
         }
+    }
+
+    fn write_word(&mut self, offset: usize, value: u32) {
+        framebuffer_access(MmioRegion::write_u32(&mut self.region, offset, value));
+        self.shadow(offset, value);
     }
 
     /// The pixel at (`x`, `y`), or `None` outside the visible area.
     ///
-    /// Read from the shadow where there is one, so this costs no uncached
-    /// device read — which is what makes it usable from a check at all. It
-    /// exists for one: the console's cursor is a mark on the framebuffer, and
-    /// until D-137 nothing could ask whether a stray one had been left behind.
+    /// Read from the shadow to avoid an uncached device read and make stray
+    /// cursor marks observable (D-137).
+    #[cfg(feature = "selftest")]
     pub fn pixel_at(&self, x: usize, y: usize) -> Option<u32> {
-        self.word_at(self.layout.offset(x, y)?)
+        Some(self.word_at(self.layout.offset(x, y)?))
     }
 
     /// Set the pixel at (`x`, `y`), ignoring coordinates outside the visible
@@ -156,8 +181,7 @@ impl Framebuffer {
             return;
         };
         let word = self.info.format.pack(colour);
-        let _ = self.region.write_u32(offset, word);
-        self.shadow(offset, word);
+        self.write_word(offset, word);
     }
 
     /// Paint every visible pixel one colour.
@@ -172,7 +196,7 @@ impl Framebuffer {
             let Some(start) = self.layout.offset(0, row) else {
                 continue;
             };
-            let _ = self.region.fill_u32(start, self.info.width, word);
+            framebuffer_access(self.region.fill_u32(start, self.info.width, word));
             for column in 0..self.info.width {
                 self.shadow(start + column * WORD, word);
             }
@@ -190,7 +214,23 @@ impl Framebuffer {
     /// Panics if `to_y > from_y`. Source and destination may overlap, but only
     /// upward: copying down would read rows this call had already overwritten.
     pub fn copy_rows(&mut self, from_y: usize, to_y: usize, rows: usize) {
-        assert!(to_y <= from_y, "copy_rows moves rows upward only");
+        let Some(plan) = self.layout.copy_rows_up(from_y, to_y, rows) else {
+            panic!("copy_rows moves rows upward only");
+        };
+        let rows = plan.len();
+        if !self.back.is_empty() && rows != 0 {
+            for span in plan {
+                let destination = span.destination_offset();
+                let Some(values) = span.source(&self.back) else {
+                    panic!("framebuffer shadow is shorter than its validated mapping");
+                };
+                framebuffer_access(self.region.write_u32_slice(destination, values));
+                if span.copy_within(&mut self.back).is_none() {
+                    panic!("framebuffer shadow is shorter than its validated mapping");
+                }
+            }
+            return;
+        }
 
         let width = self.info.width;
         for row in 0..rows {
@@ -209,10 +249,8 @@ impl Framebuffer {
                 };
                 // From the shadow where there is one. Reading device memory to
                 // scroll is what this exists to stop.
-                if let Some(word) = self.word_at(from) {
-                    let _ = self.region.write_u32(to, word);
-                    self.shadow(to, word);
-                }
+                let word = self.word_at(from);
+                self.write_word(to, word);
             }
         }
     }
@@ -239,9 +277,15 @@ pub enum FramebufferError {
 impl fmt::Display for FramebufferError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoResponse => f.write_str("bootloader ignored the framebuffer request"),
-            Self::NoFramebuffer => f.write_str("bootloader listed no framebuffers"),
-            Self::UnsupportedMemoryModel => f.write_str("framebuffer is not direct RGB"),
+            Self::NoResponse => {
+                core::fmt::Write::write_str(f, "bootloader ignored the framebuffer request")
+            }
+            Self::NoFramebuffer => {
+                core::fmt::Write::write_str(f, "bootloader listed no framebuffers")
+            }
+            Self::UnsupportedMemoryModel => {
+                core::fmt::Write::write_str(f, "framebuffer is not direct RGB")
+            }
             Self::UnsupportedBpp(bpp) => write!(f, "unsupported depth: {bpp} bits per pixel"),
             Self::InvalidGeometry(reason) => write!(f, "invalid framebuffer geometry: {reason}"),
             Self::InvalidPixelFormat(reason) => write!(f, "invalid framebuffer format: {reason}"),
@@ -346,10 +390,8 @@ pub struct Sections {
 /// failure mode to want — the alternative is a kernel that maps its own text
 /// writable because a symbol silently resolved to zero.
 pub fn sections() -> Sections {
-    // These are linker-defined symbols with no storage of their own. Only
-    // their addresses are ever taken — never their contents — which is what
-    // makes `u8` the conventional and harmless declared type, and what makes
-    // `&raw const` safe where a read would not be.
+    // Linker symbols with no storage: only their addresses are taken, which
+    // is what makes `u8` harmless and `&raw const` safe where a read is not.
     unsafe extern "C" {
         static __text_start: u8;
         static __text_end: u8;
@@ -413,8 +455,8 @@ pub enum HandoffError {
 impl fmt::Display for HandoffError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoResponse => f.write_str("bootloader ignored the request"),
-            Self::Empty => f.write_str("bootloader answered with nothing"),
+            Self::NoResponse => core::fmt::Write::write_str(f, "bootloader ignored the request"),
+            Self::Empty => core::fmt::Write::write_str(f, "bootloader answered with nothing"),
             Self::MemoryMap(reason) => write!(f, "invalid memory map: {reason}"),
         }
     }
@@ -451,15 +493,9 @@ pub mod __macro {
 /// `#![deny(unsafe_code)]`; they cover `wost`-authored code that merely expands
 /// there, which is why that crate uses `deny` rather than `forbid`.
 ///
-/// **`allow` and not `expect`, and the reason is a limit of the tool rather
-/// than a choice.** D-131 converted every other suppression in this crate so
-/// that one which stopped being needed would fail the build. These ten cannot
-/// be: `unfulfilled_lint_expectations` does not fire for an attribute inside a
-/// macro expansion. It was measured rather than assumed — an
-/// `#[expect(non_snake_case)]` added here, which nothing could possibly
-/// fulfil, is reported by nothing. So an `expect` here would read as checked
-/// and be exactly as unfalsifiable as the `allow` it replaced, which is worse
-/// than the `allow` (D-131).
+/// **`allow`, not `expect`:** `unfulfilled_lint_expectations` does not fire for
+/// attributes inside a macro expansion, so `expect` would falsely appear
+/// checked (D-131).
 #[macro_export]
 macro_rules! entry {
     ($path:path) => {

@@ -4,12 +4,20 @@
 //! its digest is what makes "update the bootloader" a reviewable change rather
 //! than an opaque one.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::fs::File;
+use std::io::Read;
+use std::path::{Component, Path};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 
 use crate::paths::Paths;
 use crate::sha256;
+
+pub(crate) const MAX_LISTING_BYTES: u64 = 1024 * 1024;
+const MAX_DIRECTORY_ENTRIES: usize = 256;
+pub(crate) const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DIRECTORY_PAYLOAD_BYTES: u64 = 256 * 1024 * 1024;
 
 /// One line of a `sha256sum`-style checksum file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,27 +33,46 @@ pub struct Entry {
 /// Accepts both the text (`digest  name`) and binary (`digest *name`) forms,
 /// ignoring blank lines and `#` comments.
 pub fn parse(listing: &str) -> Result<Vec<Entry>> {
-    listing
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(|line| {
-            let (digest, name) = line
-                .split_once(char::is_whitespace)
-                .with_context(|| format!("checksum line has no file name: {line}"))?;
-            if digest.len() != 64 || !digest.chars().all(|c| c.is_ascii_hexdigit()) {
-                bail!("not a sha256 digest: {digest}");
-            }
-            let name = name.trim_start().trim_start_matches('*');
-            if name.is_empty() {
-                bail!("checksum line has no file name: {line}");
-            }
-            Ok(Entry {
-                digest: digest.to_ascii_lowercase(),
-                name: name.to_string(),
-            })
-        })
-        .collect()
+    let mut entries = Vec::new();
+    let mut names = BTreeSet::new();
+    for line in listing.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (digest, name) = line
+            .split_once(char::is_whitespace)
+            .with_context(|| format!("checksum line has no file name: {line}"))?;
+        if digest.len() != 64 || !digest.chars().all(|c| c.is_ascii_hexdigit()) {
+            bail!("not a sha256 digest: {digest}");
+        }
+        let name = name.trim_start().trim_start_matches('*');
+        if name.is_empty() {
+            bail!("checksum line has no file name: {line}");
+        }
+        let mut components = Path::new(name).components();
+        ensure!(
+            matches!(
+                core::iter::Iterator::next(&mut components),
+                Some(Component::Normal(_))
+            ) && core::iter::Iterator::next(&mut components).is_none()
+                && !name.contains(['/', '\\'])
+                && !name.chars().any(char::is_control),
+            "checksum file name is not one direct regular-file name: {name}"
+        );
+        ensure!(
+            names.insert(name.to_string()),
+            "checksum listing repeats file name `{name}`"
+        );
+        ensure!(
+            entries.len() < MAX_DIRECTORY_ENTRIES,
+            "checksum listing has more than {MAX_DIRECTORY_ENTRIES} entries"
+        );
+        entries.push(Entry {
+            digest: digest.to_ascii_lowercase(),
+            name: name.to_string(),
+        });
+    }
+    Ok(entries)
 }
 
 /// Files a vendored directory carries as its own paperwork rather than as
@@ -75,15 +102,56 @@ where
 /// Check every file beside `listing`: each entry against its recorded digest,
 /// and the directory against the listing.
 pub fn verify_listing(listing: &Path) -> Result<usize> {
-    let text = std::fs::read_to_string(listing)
-        .with_context(|| format!("reading {}", listing.display()))?;
-    let entries = parse(&text).with_context(|| format!("parsing {}", listing.display()))?;
     let dir = listing.parent().unwrap_or(Path::new("."));
+    crate::mutation_workspace::canonical_existing_real_directory(dir, "vendor directory")?;
+    crate::mutation_workspace::require_direct_file(dir, listing, "vendor checksum listing")?;
+    let text = read_listing(listing)?;
+    let entries = parse(&text).with_context(|| format!("parsing {}", listing.display()))?;
 
+    let mut measured = Vec::with_capacity(entries.len());
+    let mut total = 0u64;
     for entry in &entries {
         let file = dir.join(&entry.name);
-        let bytes = std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
-        let actual = sha256::hex(&sha256::digest(&bytes));
+        crate::mutation_workspace::require_direct_file(dir, &file, "vendored payload")?;
+        let length = File::open(&file)
+            .with_context(|| format!("opening {}", file.display()))?
+            .metadata()
+            .with_context(|| format!("measuring {}", file.display()))?
+            .len();
+        ensure!(
+            length <= MAX_PAYLOAD_BYTES,
+            "{} is {length} bytes, exceeding the {MAX_PAYLOAD_BYTES}-byte vendored-payload limit",
+            file.display()
+        );
+        total = total
+            .checked_add(length)
+            .context("vendored payload length overflowed")?;
+        ensure!(
+            total <= MAX_DIRECTORY_PAYLOAD_BYTES,
+            "{} contains {total} payload bytes, exceeding its {MAX_DIRECTORY_PAYLOAD_BYTES}-byte limit",
+            dir.display()
+        );
+        measured.push((entry, file, length));
+    }
+
+    for (entry, file, length) in measured {
+        crate::mutation_workspace::require_direct_file(dir, &file, "vendored payload")?;
+        let input = File::open(&file).with_context(|| format!("opening {}", file.display()))?;
+        let (bytes, digest) = sha256::digest_reader(input.take(length + 1))
+            .with_context(|| format!("hashing {}", file.display()))?;
+        crate::mutation_workspace::require_direct_file(dir, &file, "vendored payload")?;
+        ensure!(
+            bytes == length
+                && File::open(&file)
+                    .with_context(|| format!("reopening {}", file.display()))?
+                    .metadata()
+                    .with_context(|| format!("remeasuring {}", file.display()))?
+                    .len()
+                    == length,
+            "{} changed length while it was hashed",
+            file.display()
+        );
+        let actual = sha256::hex(&digest);
         if actual != entry.digest {
             bail!(
                 "{} does not match its recorded digest\n  recorded: {}\n  actual:   {}",
@@ -94,11 +162,21 @@ pub fn verify_listing(listing: &Path) -> Result<usize> {
         }
     }
 
-    let present = std::fs::read_dir(dir)
-        .with_context(|| format!("listing {}", dir.display()))?
-        .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
-        .collect::<std::io::Result<Vec<String>>>()
-        .with_context(|| format!("listing {}", dir.display()))?;
+    let mut present = Vec::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("listing {}", dir.display()))? {
+        let entry = entry.with_context(|| format!("reading an entry in {}", dir.display()))?;
+        ensure!(
+            present.len() < MAX_DIRECTORY_ENTRIES,
+            "{} has more than {MAX_DIRECTORY_ENTRIES} entries",
+            dir.display()
+        );
+        present.push(
+            entry
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow::anyhow!("{} has a non-UTF-8 entry", dir.display()))?,
+        );
+    }
 
     let extra = unaccounted(present.iter().map(String::as_str), &entries);
     if !extra.is_empty() {
@@ -110,6 +188,52 @@ pub fn verify_listing(listing: &Path) -> Result<usize> {
         );
     }
     Ok(entries.len())
+}
+
+pub(crate) fn read_listing(path: &Path) -> Result<String> {
+    read_listing_with(path, || Ok(()))
+}
+
+fn read_listing_with<F>(path: &Path, after_measurement: F) -> Result<String>
+where
+    F: FnOnce() -> Result<()>,
+{
+    let parent = path.parent().unwrap_or(Path::new("."));
+    crate::mutation_workspace::canonical_existing_real_directory(parent, "vendor directory")?;
+    crate::mutation_workspace::require_direct_file(parent, path, "vendor checksum listing")?;
+    let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let initial = file
+        .metadata()
+        .with_context(|| format!("measuring {}", path.display()))?
+        .len();
+    ensure!(
+        initial <= MAX_LISTING_BYTES,
+        "{} is {initial} bytes, exceeding the {MAX_LISTING_BYTES}-byte checksum-listing limit",
+        path.display()
+    );
+    after_measurement()?;
+    let capacity =
+        usize::try_from(initial).context("checksum listing length does not fit usize")?;
+    let mut bytes = Vec::with_capacity(capacity);
+    (&mut file)
+        .take(MAX_LISTING_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {}", path.display()))?;
+    ensure!(
+        bytes.len() as u64 <= MAX_LISTING_BYTES,
+        "{} grew beyond the {MAX_LISTING_BYTES}-byte checksum-listing limit",
+        path.display()
+    );
+    ensure!(
+        file.metadata()
+            .with_context(|| format!("remeasuring {}", path.display()))?
+            .len()
+            == bytes.len() as u64,
+        "{} changed length while it was read",
+        path.display()
+    );
+    crate::mutation_workspace::require_direct_file(parent, path, "vendor checksum listing")?;
+    String::from_utf8(bytes).with_context(|| format!("{} is not UTF-8", path.display()))
 }
 
 /// Verify everything vendored in the repository.
@@ -165,6 +289,130 @@ mod tests {
     fn rejects_a_line_with_no_file_name() {
         assert!(parse(DIGEST).is_err());
         assert!(parse(&format!("{DIGEST}   ")).is_err());
+    }
+
+    #[test]
+    fn checksum_names_are_unique_direct_children() {
+        assert!(parse(&format!("{DIGEST}  ../outside")).is_err());
+        assert!(parse(&format!("{DIGEST}  nested/payload")).is_err());
+        assert!(parse(&format!("{DIGEST}  nested\\payload")).is_err());
+        assert!(parse(&format!("{DIGEST}  payload\n{DIGEST}  payload\n")).is_err());
+    }
+
+    #[test]
+    fn checksum_entry_count_is_bounded_independently_of_text_size() {
+        let listing: String = (0..=MAX_DIRECTORY_ENTRIES)
+            .map(|index| format!("{DIGEST}  payload-{index}\n"))
+            .collect();
+        let error = parse(&listing).unwrap_err().to_string();
+        assert!(error.contains("more than 256 entries"), "{error}");
+    }
+
+    #[test]
+    fn oversized_checksum_listings_are_refused_before_allocation() {
+        let root = std::env::temp_dir().join(format!(
+            "wizard-vendor-listing-bound-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir(&root).unwrap();
+        let listing = root.join("CHECKSUMS");
+        File::create(&listing)
+            .unwrap()
+            .set_len(MAX_LISTING_BYTES + 1)
+            .unwrap();
+
+        let error = verify_listing(&listing).unwrap_err().to_string();
+        assert!(
+            error.contains("exceeding the 1048576-byte checksum-listing limit"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn checksum_listing_growth_is_refused_after_measurement() {
+        let root = std::env::temp_dir().join(format!(
+            "wizard-vendor-listing-growth-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir(&root).unwrap();
+        let listing = root.join("CHECKSUMS");
+        std::fs::write(&listing, b"x").unwrap();
+        let growing = listing.clone();
+
+        let error = read_listing_with(&listing, move || {
+            let mut options = std::fs::OpenOptions::new();
+            std::fs::OpenOptions::write(&mut options, true);
+            std::fs::OpenOptions::open(&options, growing)?.set_len(MAX_LISTING_BYTES + 1)?;
+            Ok(())
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            error.contains("grew beyond the 1048576-byte checksum-listing limit"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn oversized_vendored_payloads_are_refused_before_hashing() {
+        let root = std::env::temp_dir().join(format!(
+            "wizard-vendor-payload-bound-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir(&root).unwrap();
+        let listing = root.join("CHECKSUMS");
+        std::fs::write(&listing, format!("{DIGEST}  payload\n")).unwrap();
+        File::create(root.join("payload"))
+            .unwrap()
+            .set_len(MAX_PAYLOAD_BYTES + 1)
+            .unwrap();
+
+        let error = verify_listing(&listing).unwrap_err().to_string();
+        assert!(
+            error.contains("exceeding the 67108864-byte vendored-payload limit"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn vendored_directories_have_an_independent_total_payload_bound() {
+        let root =
+            std::env::temp_dir().join(format!("wizard-vendor-total-bound-{}", std::process::id()));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir(&root).unwrap();
+        let mut listing = String::new();
+        for index in 0..5 {
+            let name = format!("payload-{index}");
+            listing.push_str(&format!("{DIGEST}  {name}\n"));
+            File::create(root.join(name))
+                .unwrap()
+                .set_len(MAX_PAYLOAD_BYTES)
+                .unwrap();
+        }
+        let checksum_path = root.join("CHECKSUMS");
+        std::fs::write(&checksum_path, listing).unwrap();
+
+        let error = verify_listing(&checksum_path).unwrap_err().to_string();
+        assert!(
+            error.contains("exceeding its 268435456-byte limit"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn listed(names: &[&str]) -> Vec<Entry> {
@@ -246,12 +494,14 @@ mod tests {
         let mut found = Vec::new();
         let mut pending = vec![root.join("boot"), root.join("tools")];
         while let Some(next) = pending.pop() {
-            let Ok(entries) = std::fs::read_dir(&next) else {
-                continue;
-            };
-            for entry in entries.flatten() {
+            for entry in crate::paths::directory_entries(&next).unwrap_or_else(|reason| {
+                panic!(
+                    "complete directory listing for {}: {reason}",
+                    next.display()
+                )
+            }) {
                 let path = entry.path();
-                if path.is_dir() {
+                if entry.is_dir() {
                     pending.push(path);
                 } else if path.file_name().is_some_and(|name| name == "CHECKSUMS") {
                     found.push(path);

@@ -42,26 +42,40 @@ mod tests {
 
     fn method_at(source: &str, start: usize) -> &str {
         let rest = &source[start..];
-        let end = rest.find("\n    ///").unwrap_or(rest.len());
+        let end = ["\n    ///", "\n///"]
+            .into_iter()
+            .filter_map(|marker| rest.find(marker))
+            .min()
+            .unwrap_or(rest.len());
         &rest[..end]
     }
 
-    fn order(source: &str, name: &str) -> Order {
-        let body = method(source, name);
-        let found: Vec<Order> = [
-            ("Ordering::Relaxed", Order::Relaxed),
-            ("Ordering::Acquire", Order::Acquire),
-            ("Ordering::Release", Order::Release),
-        ]
-        .into_iter()
-        .filter_map(|(spelling, order)| body.contains(spelling).then_some(order))
-        .collect();
-        assert_eq!(
-            found.len(),
-            1,
-            "`{name}` must contain exactly one supported atomic order"
+    fn publication_source() -> String {
+        std::fs::read_to_string(root().join("wost/src/arch/x86_64/shared_memory.rs"))
+            .expect("x86 shared-memory source")
+    }
+
+    fn order(shared: &str, primitive: &str, name: &str) -> Order {
+        let wrapper = method(shared, name);
+        let body = method(primitive, name);
+        let (instruction, order) = match name {
+            "load_acquire_u32" => ("mov {value:e}, dword ptr [{address}]", Order::Acquire),
+            "store_release_u32" => ("mov dword ptr [{address}], {value:e}", Order::Release),
+            _ => panic!("unsupported publication primitive `{name}`"),
+        };
+        assert!(
+            wrapper.contains(&format!("shared_memory::{name}(address")),
+            "`{name}` bypasses the x86 shared-memory primitive"
         );
-        found[0]
+        assert!(
+            body.contains(instruction)
+                && body.contains("options(nostack, preserves_flags)")
+                && !body.contains("nomem")
+                && !body.contains("readonly")
+                && !body.contains("pure"),
+            "`{name}` is not one indivisible x86 access behind a compiler memory barrier"
+        );
+        order
     }
 
     fn position(events: &[Event; 4], wanted: Event) -> usize {
@@ -124,20 +138,22 @@ mod tests {
             .expect("ring protocol source")
     }
 
-    fn shared_impl(source: &str) -> &str {
-        let start = source.find("impl Shared {").expect("Shared implementation");
-        let rest = &source[start..];
-        let end = rest
-            .find("impl From<Segment> for USegment")
-            .expect("end of Shared implementation");
-        &rest[..end]
+    fn between<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+        let rest = source
+            .split_once(start)
+            .unwrap_or_else(|| panic!("missing source marker {start:?}"))
+            .1;
+        rest.split_once(end)
+            .unwrap_or_else(|| panic!("missing source marker {end:?}"))
+            .0
     }
 
     #[test]
     fn release_publication_excludes_an_old_payload() {
         let (shared, queue) = sources();
-        let store = order(&shared, "store_release_u32");
-        let load = order(&shared, "load_acquire_u32");
+        let primitive = publication_source();
+        let store = order(&shared, &primitive, "store_release_u32");
+        let load = order(&shared, &primitive, "load_acquire_u32");
 
         assert!(
             method(&queue, "publish_index").contains("store_release_u32"),
@@ -156,8 +172,9 @@ mod tests {
     #[test]
     fn acquire_consumption_excludes_an_early_payload_read() {
         let (shared, queue) = sources();
-        let store = order(&shared, "store_release_u32");
-        let load = order(&shared, "load_acquire_u32");
+        let primitive = publication_source();
+        let store = order(&shared, &primitive, "store_release_u32");
+        let load = order(&shared, &primitive, "load_acquire_u32");
 
         assert!(
             method(&queue, "load_index").contains("load_acquire_u32"),
@@ -176,21 +193,94 @@ mod tests {
     #[test]
     fn every_shared_payload_copy_is_volatile() {
         let (shared, queue) = sources();
-        assert!(
-            method(&shared, "write_volatile_at").contains("write_volatile(byte)"),
-            "shared payload writes are ordinary memory operations"
+        let byte_write = between(
+            &shared,
+            "fn write_byte_volatile(&self, offset: usize, byte: u8) -> bool",
+            "fn read_byte_volatile(&self, offset: usize) -> Option<u8>",
+        );
+        let byte_read = between(
+            &shared,
+            "fn read_byte_volatile(&self, offset: usize) -> Option<u8>",
+            "fn fill_volatile(&self, byte: u8) -> bool",
+        );
+        let span_write = between(
+            &shared,
+            "fn write_volatile_at(&self, offset: usize, bytes: &[u8])",
+            "fn read_volatile_at(&self, offset: usize, into: &mut [u8])",
+        );
+        let span_read = between(
+            &shared,
+            "fn read_volatile_at(&self, offset: usize, into: &mut [u8])",
+            "#[cfg(feature = \"selftest\")]",
+        );
+        let write = between(
+            &shared,
+            "fn write_shared_volatile",
+            "fn read_shared_volatile",
+        );
+        let read = between(
+            &shared,
+            "fn read_shared_volatile",
+            "impl From<Segment> for USegment",
         );
         assert!(
-            method(&shared, "read_volatile_at").contains("read_volatile()"),
-            "shared payload reads are ordinary memory operations"
-        );
-        let boundary = shared_impl(&shared);
-        assert!(
-            !boundary.contains("pub fn write_at") && !boundary.contains("pub fn read_at"),
-            "Shared still offers an ordinary-copy bypass"
+            byte_write.contains("if offset >= self.len {")
+                && byte_write.contains("return false;")
+                && byte_write.contains("self.base.wrapping_add(offset)")
+                && byte_write.contains("destination.write_volatile(byte)"),
+            "shared payload byte writes are not bounds-checked volatile operations"
         );
         assert!(
-            queue.contains(".write_volatile_at(") && queue.contains(".read_volatile_at("),
+            span_write.contains("AccessRange::repeated(offset, bytes.len(), 1, self.len)")
+                && span_write.contains("self.write_byte_volatile(offset, byte)")
+                && write.contains("DirectSpan::from_shared(allocation)")
+                && write.contains("span.write_volatile_at(offset, bytes)"),
+            "shared payload writes bypass the checked volatile byte primitive"
+        );
+        assert!(
+            byte_read.contains("if offset >= self.len {")
+                && byte_read.contains("return None;")
+                && byte_read.contains("self.base.wrapping_add(offset)")
+                && byte_read.contains("source.read_volatile()"),
+            "shared payload byte reads are not bounds-checked volatile operations"
+        );
+        assert!(
+            span_read.contains("AccessRange::repeated(offset, into.len(), 1, self.len)")
+                && span_read.contains("self.read_byte_volatile(offset)")
+                && read.contains("DirectSpan::from_shared(allocation)")
+                && read.contains("span.read_volatile_at(offset, into)"),
+            "shared payload reads bypass the checked volatile byte primitive"
+        );
+        let raw = between(&shared, "impl Shared {", "impl SharedBytes {");
+        assert!(
+            raw.contains("pub fn into_bytes") && raw.contains("pub fn into_ring"),
+            "raw Shared does not require one consuming partition choice"
+        );
+        assert!(
+            !raw.contains("write_volatile_at")
+                && !raw.contains("read_volatile_at")
+                && !raw.contains("load_acquire_u32")
+                && !raw.contains("store_release_u32"),
+            "raw Shared retains an access door"
+        );
+        assert!(
+            method(&shared, "write_payload_at").contains(
+                "if !self.layout.contains_payload(offset, bytes.len()) {\n            return false;\n        }"
+            ) && method(&shared, "read_payload_at").contains(
+                "if !self.layout.contains_payload(offset, into.len()) {\n            return false;\n        }"
+            ),
+            "a ring payload copy bypasses its checked byte partition"
+        );
+        assert!(
+            method(&shared, "store_release_u32").contains(
+                "if !self.layout.contains_publication_word(offset) {\n            return false;\n        }"
+            ) && method(&shared, "load_acquire_u32").contains(
+                "if !self.layout.contains_publication_word(offset) {\n            return None;\n        }"
+            ),
+            "a ring publication access bypasses its checked partition"
+        );
+        assert!(
+            queue.contains(".write_payload_at(") && queue.contains(".read_payload_at("),
             "the queue does not use the volatile payload boundary"
         );
         assert!(
@@ -200,12 +290,88 @@ mod tests {
     }
 
     #[test]
+    fn publication_words_cross_the_hostile_alias_boundary_without_a_rust_object() {
+        let (shared, _) = sources();
+        let primitive = publication_source();
+        let boundary = between(
+            &shared,
+            "    pub fn load_acquire_u32",
+            "    /// Retain the allocation without exposing its bytes.",
+        );
+        let load = method(&shared, "load_acquire_u32");
+        let store = method(&shared, "store_release_u32");
+        let address = method(&shared, "publication_address");
+
+        assert!(
+            !boundary.contains("AtomicU32")
+                && !boundary.contains("&*")
+                && !boundary.contains("*const")
+                && !boundary.contains("*mut")
+                && !boundary.contains(".read")
+                && !boundary.contains(".write")
+                && !boundary.contains("ptr::read")
+                && !boundary.contains("ptr::write")
+                && !boundary.contains("transmute")
+                && !boundary.contains("read_volatile")
+                && !boundary.contains("write_volatile"),
+            "a publication word became a Rust atomic/reference or a non-atomic volatile access"
+        );
+        assert!(
+            boundary.contains("shared_memory::load_acquire_u32(address)")
+                && boundary.contains("shared_memory::store_release_u32(address, value.to_le())"),
+            "a publication access bypasses the external-memory primitive"
+        );
+        assert!(
+            load.contains(
+                "if !self.layout.contains_publication_word(offset) {\n            return None;\n        }"
+            ) && store.contains(
+                "if !self.layout.contains_publication_word(offset) {\n            return false;\n        }"
+            ),
+            "a publication access bypasses its immutable layout partition"
+        );
+        assert!(
+            address.contains("let end = offset.checked_add(size_of::<u32>())?;")
+                && address.contains(
+                    "if end as u64 > self.len() {\n            return None;\n        }"
+                )
+                && address.contains("direct_pointer(self.address(), self.len())")
+                && address.contains("base.addr().checked_add(offset)")
+                && address.contains(
+                    "if !address.is_multiple_of(align_of::<u32>()) {\n            return None;\n        }"
+                ),
+            "the external-memory primitive lacks a complete bounds/alignment preflight"
+        );
+        assert!(
+            !primitive.contains("AtomicU32")
+                && !primitive.contains("read_volatile")
+                && !primitive.contains("write_volatile")
+                && !primitive.contains("&*")
+                && !primitive.contains("*const")
+                && !primitive.contains("*mut")
+                && !primitive.contains(".read")
+                && !primitive.contains(".write")
+                && !primitive.contains("ptr::read")
+                && !primitive.contains("ptr::write")
+                && !primitive.contains("transmute"),
+            "the x86 publication primitive re-entered Rust's object or volatile model"
+        );
+        assert_eq!(
+            order(&shared, &primitive, "load_acquire_u32"),
+            Order::Acquire
+        );
+        assert_eq!(
+            order(&shared, &primitive, "store_release_u32"),
+            Order::Release
+        );
+    }
+
+    #[test]
     fn kernel_completion_producers_publish_in_tail_order() {
         let (_, queue) = sources();
         let post = method(&queue, "post");
         let complete = post.find("ring.protocol.complete()").expect("CQ advance");
         let payload = post
-            .find("ring.pages.write_volatile_at")
+            .find("ring.pages.write_payload_at")
             .expect("CQ payload");
         let publish = post
             .find("publish_index(&ring.pages, header::COMPLETION_TAIL, tail)")
@@ -249,7 +415,7 @@ mod tests {
             .find("ring.protocol.take()")
             .expect("submission consumption");
         let payload = take
-            .find("ring.pages.read_volatile_at")
+            .find("ring.pages.read_payload_at")
             .expect("submission payload read");
         let publish = take
             .find("publish_index(&ring.pages, header::SUBMISSION_HEAD, head)")

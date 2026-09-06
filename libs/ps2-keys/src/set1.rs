@@ -183,11 +183,8 @@ mod tests {
 
     /// No code names two keys, and no key has two codes.
     ///
-    /// A transcription slip that repeats a number silently shadows the arm
-    /// below it — the match arms are tried in order, so the second `0x1E` in a
-    /// table is unreachable and the key it names is simply gone. The previous
-    /// test would catch that one; this one catches the reverse, a key reachable
-    /// two ways, which nothing else would.
+    /// Repeated codes make a later match arm unreachable; this independent
+    /// direction catches a key reachable through two codes.
     #[test]
     fn no_key_is_named_twice_within_a_table() {
         for table in [

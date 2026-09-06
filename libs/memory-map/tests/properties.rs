@@ -1,21 +1,16 @@
 //! Property tests over the map's stated contracts.
 //!
-//! The unit tests pin the two answers a reader can check by hand. These ask
-//! whether the claims the doc comments make hold over region sets nobody would
-//! think to write — which is how D-241's three contradictions were found, all
-//! of them on regions sharing a base.
+//! Unit tests pin hand-checkable examples; these properties quantify the
+//! documented contracts over arbitrary, overlapping region sets (D-241).
 //!
 //! Every property here cites the sentence it was transcribed from, which is
 //! D-242's admissibility rule: a check whose text could be recovered by reading
 //! the function body would be a restatement of the implementation.
 //!
-//! What is *not* here: anything about whether a real bootloader can produce the
-//! region sets these generate. It cannot — the Limine protocol promises usable
-//! entries overlap nothing, which is why the contradictions were latent rather
-//! than live. This tier checks the crate against its own claims, not against
-//! the one caller that happens to satisfy a stronger precondition.
+//! Limine promises a narrower non-overlapping input, but this tier checks the
+//! crate's public claims rather than one caller's stronger precondition.
 
-use memory_map::{MAX_REGIONS, MemoryKind, MemoryMap, MemoryRegion};
+use memory_map::{DirectMapCache, MAX_REGIONS, MemoryKind, MemoryMap, MemoryRegion};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config, TestRunner};
@@ -51,14 +46,340 @@ fn regions() -> impl Strategy<Value = Vec<MemoryRegion>> {
     prop::collection::vec(region(), 1..24)
 }
 
+fn every_byte_agrees(
+    regions: &[MemoryRegion],
+    start: u64,
+    end: u64,
+    allowed: impl Fn(MemoryKind) -> bool,
+) -> bool {
+    (start..end).all(|byte| {
+        let claims = regions.iter().filter(|region| {
+            let region_end = region
+                .base
+                .checked_add(region.len)
+                .expect("the map accepted this region");
+            region.base <= byte && byte < region_end
+        });
+        let mut described = false;
+        for region in claims {
+            described = true;
+            if !allowed(region.kind) {
+                return false;
+            }
+        }
+        described
+    })
+}
+
+/// A bytewise oracle cannot skip a claim nested between interval endpoints.
+#[test]
+fn coverage_matches_every_byte_claim_in_a_bounded_space() {
+    const LIMIT: u64 = 6;
+    let kinds = [MemoryKind::Usable, MemoryKind::Reserved];
+
+    for first_base in 0..=LIMIT {
+        for first_end in first_base..=LIMIT {
+            for first_kind in kinds {
+                let first = MemoryRegion {
+                    base: first_base,
+                    len: first_end - first_base,
+                    kind: first_kind,
+                };
+                for second_base in 0..=LIMIT {
+                    for second_end in second_base..=LIMIT {
+                        for second_kind in kinds {
+                            let second = MemoryRegion {
+                                base: second_base,
+                                len: second_end - second_base,
+                                kind: second_kind,
+                            };
+                            let regions = [first, second];
+                            let map = MemoryMap::try_from_regions(regions).expect("two regions");
+
+                            for start in 0..=LIMIT {
+                                for end in start..=LIMIT {
+                                    assert_eq!(
+                                        map.covers(start, end),
+                                        every_byte_agrees(&regions, start, end, |_| true),
+                                        "covers({start}, {end}) disagrees for {regions:?}"
+                                    );
+                                    assert_eq!(
+                                        map.covers_memory(start, end),
+                                        every_byte_agrees(&regions, start, end, |kind| {
+                                            kind == MemoryKind::Usable
+                                        }),
+                                        "covers_memory({start}, {end}) disagrees for {regions:?}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn first_run_oracle(regions: &[MemoryRegion], pages: u64, limit: u64) -> Option<u64> {
+    (1..limit).find_map(|candidate| {
+        let end = candidate.checked_add(pages)?;
+        if end > limit {
+            return None;
+        }
+        (candidate..end)
+            .all(|page| {
+                let byte = page * PAGE;
+                let mut described = false;
+                for region in regions {
+                    let region_end = region.base + region.len;
+                    if region.base <= byte && byte < region_end {
+                        described = true;
+                        if !region.kind.is_direct_mapped() {
+                            return false;
+                        }
+                    }
+                }
+                described
+            })
+            .then_some(candidate * PAGE)
+    })
+}
+
+fn frame_is_exclusively_allocatable(regions: &[MemoryRegion], start: u64) -> bool {
+    let end = start + PAGE;
+    let mut boundaries = vec![start, end];
+    for region in regions {
+        let region_end = region.base + region.len;
+        if start < region_end && region.base < end {
+            boundaries.push(region.base.clamp(start, end));
+            boundaries.push(region_end.clamp(start, end));
+        }
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    boundaries.windows(2).all(|window| {
+        let sample = window[0];
+        if sample == window[1] {
+            return true;
+        }
+        let mut described = false;
+        for region in regions {
+            let region_end = region.base + region.len;
+            if region.base <= sample && sample < region_end {
+                described = true;
+                if !region.kind.is_allocatable() {
+                    return false;
+                }
+            }
+        }
+        described
+    })
+}
+
+fn direct_page_policy(regions: &[MemoryRegion], start: u64) -> Option<(DirectMapCache, bool)> {
+    let end = start + PAGE;
+    let mut boundaries = vec![start, end];
+    let mut framebuffer = false;
+    for region in regions {
+        let region_end = region.base + region.len;
+        if region.len != 0 && start < region_end && region.base < end {
+            boundaries.push(region.base.clamp(start, end));
+            boundaries.push(region_end.clamp(start, end));
+            framebuffer |= region.kind == MemoryKind::Framebuffer;
+        }
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    for window in boundaries.windows(2) {
+        let sample = window[0];
+        if sample == window[1] {
+            continue;
+        }
+        let mut described = false;
+        for region in regions {
+            let region_end = region.base + region.len;
+            if region.base <= sample && sample < region_end {
+                described = true;
+                if !region.kind.is_direct_mapped() {
+                    return None;
+                }
+            }
+        }
+        if !described {
+            return None;
+        }
+    }
+
+    Some((
+        if framebuffer {
+            DirectMapCache::Framebuffer
+        } else {
+            DirectMapCache::Normal
+        },
+        frame_is_exclusively_allocatable(regions, start),
+    ))
+}
+
+#[test]
+fn every_small_page_run_is_complete_disjoint_and_order_independent() {
+    const HALF: u64 = PAGE / 2;
+    const ENDPOINTS: u64 = 6;
+    const FRAMES: u64 = ENDPOINTS / 2;
+    let kinds = [
+        MemoryKind::Usable,
+        MemoryKind::Framebuffer,
+        MemoryKind::Reserved,
+    ];
+
+    for first_base in 0..=ENDPOINTS {
+        for first_end in first_base..=ENDPOINTS {
+            for first_kind in kinds {
+                let first = MemoryRegion {
+                    base: first_base * HALF,
+                    len: (first_end - first_base) * HALF,
+                    kind: first_kind,
+                };
+                for second_base in 0..=ENDPOINTS {
+                    for second_end in second_base..=ENDPOINTS {
+                        for second_kind in kinds {
+                            let second = MemoryRegion {
+                                base: second_base * HALF,
+                                len: (second_end - second_base) * HALF,
+                                kind: second_kind,
+                            };
+                            for regions in [[first, second], [second, first]] {
+                                let map = MemoryMap::try_from_regions(regions)
+                                    .expect("two bounded regions");
+                                let runs = map.page_runs().collect::<Vec<_>>();
+                                for pair in runs.windows(2) {
+                                    assert!(
+                                        pair[0].base() + pair[0].bytes() <= pair[1].base(),
+                                        "normalized runs overlap for {regions:?}"
+                                    );
+                                    assert!(
+                                        pair[0].base() + pair[0].bytes() < pair[1].base()
+                                            || pair[0].cache() != pair[1].cache()
+                                            || pair[0].is_allocatable() != pair[1].is_allocatable(),
+                                        "adjacent equal-policy runs were not maximal for {regions:?}"
+                                    );
+                                }
+                                for frame in 0..FRAMES {
+                                    let start = frame * PAGE;
+                                    let emitted = runs.iter().find_map(|run| {
+                                        (run.base() <= start
+                                            && start + PAGE <= run.base() + run.bytes())
+                                        .then_some((run.cache(), run.is_allocatable()))
+                                    });
+                                    assert_eq!(
+                                        emitted,
+                                        direct_page_policy(&regions, start),
+                                        "direct policy disagrees for frame {frame}, {regions:?}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_small_allocatable_run_arbitrates_overlap_and_partial_frames() {
+    const HALF: u64 = PAGE / 2;
+    const ENDPOINTS: u64 = 8;
+    const FRAMES: u64 = ENDPOINTS / 2;
+    let kinds = [MemoryKind::Usable, MemoryKind::Reserved];
+
+    for first_base in 0..=ENDPOINTS {
+        for first_end in first_base..=ENDPOINTS {
+            for first_kind in kinds {
+                let first = MemoryRegion {
+                    base: first_base * HALF,
+                    len: (first_end - first_base) * HALF,
+                    kind: first_kind,
+                };
+                for second_base in 0..=ENDPOINTS {
+                    for second_end in second_base..=ENDPOINTS {
+                        for second_kind in kinds {
+                            let second = MemoryRegion {
+                                base: second_base * HALF,
+                                len: (second_end - second_base) * HALF,
+                                kind: second_kind,
+                            };
+                            for regions in [[first, second], [second, first]] {
+                                let map = MemoryMap::try_from_regions(regions)
+                                    .expect("two bounded regions");
+                                let runs = map.allocatable_runs().collect::<Vec<_>>();
+                                for frame in 0..FRAMES {
+                                    let start = frame * PAGE;
+                                    let emitted = runs.iter().any(|run| {
+                                        run.base() <= start
+                                            && start + PAGE <= run.base() + run.bytes()
+                                    });
+                                    assert_eq!(
+                                        emitted,
+                                        frame_is_exclusively_allocatable(&regions, start),
+                                        "allocator policy disagrees for frame {frame}, {regions:?}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_small_first_memory_run_matches_an_independent_page_oracle() {
+    const LIMIT: u64 = 6;
+    let kinds = [MemoryKind::Usable, MemoryKind::Reserved];
+
+    for first_base in 0..=LIMIT {
+        for first_end in first_base..=LIMIT {
+            for first_kind in kinds {
+                let first = MemoryRegion {
+                    base: first_base * PAGE,
+                    len: (first_end - first_base) * PAGE,
+                    kind: first_kind,
+                };
+                for second_base in 0..=LIMIT {
+                    for second_end in second_base..=LIMIT {
+                        for second_kind in kinds {
+                            let second = MemoryRegion {
+                                base: second_base * PAGE,
+                                len: (second_end - second_base) * PAGE,
+                                kind: second_kind,
+                            };
+                            let regions = [first, second];
+                            let map = MemoryMap::try_from_regions(regions).expect("two regions");
+                            for pages in 1..=3 {
+                                assert_eq!(
+                                    map.first_memory_run(pages * PAGE),
+                                    first_run_oracle(&regions, pages, LIMIT),
+                                    "first run disagrees for {regions:?}, pages={pages}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 proptest! {
     /// A run `first_memory_run` names is page-aligned, nonzero, and memory by
     /// the map's own other answer.
     ///
     /// Transcribed from "Find a page-aligned, nonzero memory run of at least
-    /// `len` bytes". Two contracts about one address must agree; before D-241
-    /// they did not, because the filter chose from a direct-mapped region while
-    /// the walk landed in a reserved one overlapping it.
+    /// `len` bytes". Two contracts about one address must agree even when a
+    /// reserved region overlaps a direct-mapped one (D-241).
     #[test]
     fn a_found_run_is_aligned_nonzero_and_agrees_with_covers_memory(
         regions in regions(),
@@ -117,27 +438,15 @@ proptest! {
         );
     }
 
-    /// The allocatable total saturates rather than wrapping.
-    ///
-    /// Transcribed from "Saturating, because a wrapped total is a wrong number
-    /// handed to a frame allocator". A bare sum panics under the debug gate and
-    /// wraps under release, and lengths this crate does not bound can reach it.
     #[test]
-    fn the_allocatable_total_saturates_rather_than_wrapping(
-        lens in prop::collection::vec(0u64..u64::MAX, 1..8),
+    fn a_region_is_accepted_exactly_when_its_end_is_representable(
+        base in any::<u64>(),
+        len in any::<u64>(),
     ) {
-        let built: Vec<_> = lens
-            .iter()
-            .map(|&len| MemoryRegion { base: 0, len, kind: MemoryKind::Usable })
-            .collect();
-        let Ok(map) = MemoryMap::try_from_regions(built) else {
-            return Ok(());
-        };
-        let expected = lens.iter().fold(0u64, |total, &len| total.saturating_add(len));
+        let region = MemoryRegion { base, len, kind: MemoryKind::Reserved };
         prop_assert_eq!(
-            map.allocatable_bytes(),
-            expected,
-            "the reported total is not the saturating sum of the region lengths"
+            MemoryMap::try_from_regions([region]).is_ok(),
+            base.checked_add(len).is_some()
         );
     }
 

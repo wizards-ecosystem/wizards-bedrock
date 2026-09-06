@@ -2,12 +2,9 @@
 //!
 //! The pattern D-30 and D-43 set and `010` §8 asks for again: the arithmetic
 //! that reads a hardware answer lives where `cargo test` can reach it, and the
-//! privileged crate keeps only the instruction. Here that matters more than
-//! usual, because **these paths cannot be exercised on the development loop at
-//! all** — QEMU's TCG does not emulate `IA32_ARCH_CAPABILITIES`, even when the
-//! CPU model is asked for it, so the branch that enables enhanced IBRS never
-//! runs under the gate. Synthetic capability words are the only way this logic
-//! is ever checked before it meets real hardware.
+//! privileged crate keeps only the instruction. QEMU's TCG does not emulate
+//! `IA32_ARCH_CAPABILITIES`, so synthetic capability words are the only way
+//! the enhanced-IBRS branch is checked before it meets real hardware.
 //!
 //! # Examples
 //!
@@ -21,13 +18,13 @@
 //!
 //! // One that describes nothing is not the same as one that reports danger.
 //! let silent = Speculation::undescribed();
-//! assert!(!silent.is_described());
 //! assert!(!silent.rdcl_no());
 //! ```
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod physical;
 pub mod xstate;
 
 /// `cpuid` leaf 7 subleaf 0, `EDX` bit 29: `IA32_ARCH_CAPABILITIES` exists.
@@ -41,6 +38,126 @@ pub const SPEC_CTRL_MSR: u32 = 0x0000_0048;
 
 /// `IA32_SPEC_CTRL.IBRS`.
 pub const SPEC_CTRL_IBRS: u64 = 1 << 0;
+
+/// A restricted, add-only update to the kernel-managed `CR4` feature bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cr4Additions(u64);
+
+impl Cr4Additions {
+    /// Enable the architectural state-save and SSE operating-system doors.
+    pub const fn extended_state() -> Self {
+        Self((1 << 9) | (1 << 10) | (1 << 18))
+    }
+
+    /// Begin an update with no optional protection enabled.
+    pub const fn none() -> Self {
+        Self(0)
+    }
+
+    /// Add supervisor mode execution prevention.
+    pub const fn with_smep(self) -> Self {
+        Self(self.0 | 1 << 20)
+    }
+
+    /// Add supervisor mode access prevention.
+    pub const fn with_smap(self) -> Self {
+        Self(self.0 | 1 << 21)
+    }
+
+    /// Add user mode instruction prevention.
+    pub const fn with_umip(self) -> Self {
+        Self(self.0 | 1 << 11)
+    }
+
+    /// Apply the update without clearing any register bit.
+    pub const fn apply(self, current: u64) -> u64 {
+        current | self.0
+    }
+}
+
+/// `cpuid` leaf 1, `ECX` bit 31: execution is under a hypervisor.
+const HYPERVISOR_BIT: u32 = 1 << 31;
+
+/// One four-register `cpuid` answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuidLeaf {
+    eax: u32,
+    ebx: u32,
+    ecx: u32,
+    edx: u32,
+}
+
+impl CpuidLeaf {
+    /// Build a leaf from its architectural register order.
+    pub const fn new(eax: u32, ebx: u32, ecx: u32, edx: u32) -> Self {
+        Self { eax, ebx, ecx, edx }
+    }
+}
+
+/// The execution environment relevant to shared kernel mappings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecutionEnvironment {
+    kind: ExecutionEnvironmentKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutionEnvironmentKind {
+    QemuTcg,
+    Other,
+}
+
+impl ExecutionEnvironment {
+    /// Read the hypervisor base leaf only when leaf 1 advertises it.
+    pub fn read(leaf_1_ecx: u32, read_hypervisor_base: impl FnOnce() -> CpuidLeaf) -> Self {
+        if leaf_1_ecx & HYPERVISOR_BIT == 0 {
+            return Self {
+                kind: ExecutionEnvironmentKind::Other,
+            };
+        }
+
+        let leaf = read_hypervisor_base();
+        if leaf
+            == CpuidLeaf::new(
+                0x4000_0001,
+                u32::from_le_bytes(*b"TCGT"),
+                u32::from_le_bytes(*b"CGTC"),
+                u32::from_le_bytes(*b"GTCG"),
+            )
+        {
+            Self {
+                kind: ExecutionEnvironmentKind::QemuTcg,
+            }
+        } else {
+            Self {
+                kind: ExecutionEnvironmentKind::Other,
+            }
+        }
+    }
+}
+
+/// Why a user page table may retain the kernel's mappings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedKernelMappingReason {
+    kind: SharedKernelMappingReasonKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SharedKernelMappingReasonKind {
+    RdclNo,
+    QemuTcg,
+}
+
+impl core::fmt::Display for SharedKernelMappingReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Write::write_str(
+            f,
+            match self.kind {
+                SharedKernelMappingReasonKind::RdclNo => "rdcl_no",
+                SharedKernelMappingReasonKind::QemuTcg => "qemu_tcg",
+            },
+        )
+    }
+}
 
 /// Frequency information reported by the basic `cpuid` leaves.
 ///
@@ -132,16 +249,6 @@ impl Speculation {
         Self::described(read_msr(ARCH_CAPABILITIES_MSR))
     }
 
-    /// Whether the processor reports a capability word at all.
-    pub const fn is_described(&self) -> bool {
-        self.capabilities.is_some()
-    }
-
-    /// The capability word, if there is one.
-    pub const fn bits(&self) -> Option<u64> {
-        self.capabilities
-    }
-
     /// `RDCL_NO` — the processor claims immunity to Meltdown.
     ///
     /// The fact D-81 rests on when it declines KPTI: a mitigation whose cost
@@ -197,10 +304,28 @@ impl Speculation {
     }
 }
 
+/// Return the affirmative proof that permits shared kernel mappings.
+pub const fn shared_kernel_mapping_reason(
+    speculation: &Speculation,
+    execution: ExecutionEnvironment,
+) -> Option<SharedKernelMappingReason> {
+    if speculation.rdcl_no() {
+        return Some(SharedKernelMappingReason {
+            kind: SharedKernelMappingReasonKind::RdclNo,
+        });
+    }
+    match execution.kind {
+        ExecutionEnvironmentKind::QemuTcg => Some(SharedKernelMappingReason {
+            kind: SharedKernelMappingReasonKind::QemuTcg,
+        }),
+        ExecutionEnvironmentKind::Other => None,
+    }
+}
+
 impl core::fmt::Display for Speculation {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let Some(bits) = self.capabilities else {
-            return f.write_str("describes no speculation capabilities");
+            return core::fmt::Write::write_str(f, "describes no speculation capabilities");
         };
         write!(f, "capabilities {bits:#x}")?;
         for (present, name) in [
@@ -221,6 +346,50 @@ impl core::fmt::Display for Speculation {
 mod tests {
     use super::*;
 
+    const QEMU_TCG: ExecutionEnvironment = ExecutionEnvironment {
+        kind: ExecutionEnvironmentKind::QemuTcg,
+    };
+    const OTHER: ExecutionEnvironment = ExecutionEnvironment {
+        kind: ExecutionEnvironmentKind::Other,
+    };
+    const RDCL_NO_REASON: SharedKernelMappingReason = SharedKernelMappingReason {
+        kind: SharedKernelMappingReasonKind::RdclNo,
+    };
+    const QEMU_TCG_REASON: SharedKernelMappingReason = SharedKernelMappingReason {
+        kind: SharedKernelMappingReasonKind::QemuTcg,
+    };
+
+    const fn qemu_tcg_leaf() -> CpuidLeaf {
+        CpuidLeaf::new(0x4000_0001, 0x5447_4354, 0x4354_4743, 0x4743_5447)
+    }
+
+    #[test]
+    fn cr4_updates_are_add_only_and_exact() {
+        const FIRMWARE: u64 = (1 << 17) | (1 << 23) | 1;
+        assert_eq!(
+            Cr4Additions::extended_state().apply(FIRMWARE),
+            FIRMWARE | (1 << 9) | (1 << 10) | (1 << 18)
+        );
+
+        for selection in 0..8 {
+            let mut additions = Cr4Additions::none();
+            if selection & 1 != 0 {
+                additions = additions.with_smep();
+            }
+            if selection & 2 != 0 {
+                additions = additions.with_smap();
+            }
+            if selection & 4 != 0 {
+                additions = additions.with_umip();
+            }
+            let expected = FIRMWARE
+                | if selection & 1 != 0 { 1 << 20 } else { 0 }
+                | if selection & 2 != 0 { 1 << 21 } else { 0 }
+                | if selection & 4 != 0 { 1 << 11 } else { 0 };
+            assert_eq!(additions.apply(FIRMWARE), expected);
+        }
+    }
+
     #[test]
     fn frequency_leaves_keep_exact_and_nominal_evidence_distinct() {
         let hints = FrequencyHints::from_leaves(Some((3, 125, 24_000_000)), Some(0xfeed_0e10));
@@ -237,6 +406,11 @@ mod tests {
             assert_eq!(FrequencyHints::from_leaves(ratio, None).tsc_hz(), None);
         }
         assert_eq!(FrequencyHints::from_leaves(None, Some(0)).base_hz(), None);
+        assert_eq!(
+            FrequencyHints::from_leaves(Some((4, 2, 1)), None).tsc_hz(),
+            Some(1),
+            "the crystal ratio rounds to the nearest hertz"
+        );
     }
 
     /// Saying nothing is not the same as saying safe.
@@ -248,17 +422,90 @@ mod tests {
     #[test]
     fn silence_is_not_safety() {
         let silent = Speculation::undescribed();
-        assert!(!silent.is_described());
-        assert_eq!(silent.bits(), None);
         assert!(!silent.rdcl_no());
         assert!(!silent.enhanced_ibrs());
         assert!(!silent.mds_no());
         assert!(!silent.wants_boot_ibrs());
 
         let zero = Speculation::described(0);
-        assert!(zero.is_described());
         assert!(!zero.rdcl_no());
         assert_ne!(silent, zero, "no word and an all-clear word are different");
+    }
+
+    #[test]
+    fn shared_kernel_mappings_need_rdcl_no_or_exact_qemu_tcg() {
+        for speculation in [
+            Speculation::undescribed(),
+            Speculation::described(0),
+            Speculation::described(0x44),
+        ] {
+            assert_eq!(
+                shared_kernel_mapping_reason(&speculation, OTHER),
+                None,
+                "{speculation} was treated as affirmative RDCL evidence"
+            );
+        }
+
+        for bits in [1, 0x2f, u64::MAX] {
+            assert_eq!(
+                shared_kernel_mapping_reason(&Speculation::described(bits), OTHER),
+                Some(RDCL_NO_REASON)
+            );
+        }
+        assert_eq!(
+            shared_kernel_mapping_reason(&Speculation::undescribed(), QEMU_TCG),
+            Some(QEMU_TCG_REASON)
+        );
+    }
+
+    #[test]
+    fn the_hypervisor_leaf_is_not_read_without_the_feature_bit() {
+        for leaf_1_ecx in [0, 1, !HYPERVISOR_BIT] {
+            assert_eq!(
+                ExecutionEnvironment::read(leaf_1_ecx, || {
+                    panic!("read the hypervisor leaf without its feature bit")
+                }),
+                OTHER
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_exact_qemu_tcg_base_leaf_is_accepted() {
+        for leaf_1_ecx in [HYPERVISOR_BIT, u32::MAX] {
+            assert_eq!(
+                ExecutionEnvironment::read(leaf_1_ecx, qemu_tcg_leaf),
+                QEMU_TCG
+            );
+        }
+
+        let exact = qemu_tcg_leaf();
+        for register in 0..4 {
+            for bit in 0..32 {
+                let mut words = [exact.eax, exact.ebx, exact.ecx, exact.edx];
+                words[register] ^= 1 << bit;
+                let near_miss = CpuidLeaf::new(words[0], words[1], words[2], words[3]);
+                assert_eq!(
+                    ExecutionEnvironment::read(HYPERVISOR_BIT, || near_miss),
+                    OTHER,
+                    "register {register} bit {bit} was ignored"
+                );
+            }
+        }
+
+        let vmware = CpuidLeaf::new(
+            0x4000_0010,
+            u32::from_le_bytes(*b"VMwa"),
+            u32::from_le_bytes(*b"reVM"),
+            u32::from_le_bytes(*b"ware"),
+        );
+        assert_eq!(ExecutionEnvironment::read(HYPERVISOR_BIT, || vmware), OTHER);
+    }
+
+    #[test]
+    fn shared_mapping_reasons_have_stable_policy_names() {
+        assert_eq!(RDCL_NO_REASON.to_string(), "rdcl_no");
+        assert_eq!(QEMU_TCG_REASON.to_string(), "qemu_tcg");
     }
 
     /// Each capability bit is read on its own, and not from its neighbours.
@@ -293,7 +540,7 @@ mod tests {
     #[test]
     fn the_capability_msr_is_not_read_when_absent() {
         let posture = Speculation::read(0, |_| panic!("read the msr without the feature bit"));
-        assert!(!posture.is_described());
+        assert_eq!(posture, Speculation::undescribed());
 
         let posture = Speculation::read(ARCH_CAPABILITIES_BIT, |msr| {
             assert_eq!(msr, ARCH_CAPABILITIES_MSR, "read the wrong msr");
@@ -367,12 +614,19 @@ mod tests {
         // Vol. 2A, CPUID leaf 7 sub-leaf 0: EDX bit 29 says the capability
         // MSR exists.
         assert_eq!(ARCH_CAPABILITIES_BIT, 0x2000_0000);
+        assert_eq!(HYPERVISOR_BIT, 0x8000_0000);
         // IA32_SPEC_CTRL bit 0 is IBRS.
         assert_eq!(SPEC_CTRL_IBRS, 1);
 
         // And the bit is read from the position it names: a word with only
         // bit 29 set describes the capability, and one with bit 28 does not.
-        assert!(Speculation::read(0x2000_0000, |_| 0).is_described());
-        assert!(!Speculation::read(0x1000_0000, |_| 0).is_described());
+        assert_eq!(
+            Speculation::read(0x2000_0000, |_| 0),
+            Speculation::described(0)
+        );
+        assert_eq!(
+            Speculation::read(0x1000_0000, |_| 0),
+            Speculation::undescribed()
+        );
     }
 }

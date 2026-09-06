@@ -72,7 +72,7 @@ run:
 | `sys_read` | STUB | COMPAT | Native Read takes an explicit offset; POSIX read needs shared cursor state |
 | `sys_write` | STUB | MISSING | There is no VFS or ring write path |
 | `sys_seek` | STUB | COMPAT | The native protocol is deliberately cursorless |
-| `sys_close` | STUB | PARTIAL | `HandleTable::close` exists, but releasing the last object reference can deallocate; a trap-safe deferred/reclamation route is still missing |
+| `sys_close` | STUB | MISSING | No close operation exists before the Wizzy caller defines its trap-safe lifetime contract |
 | `sys_open` | STUB | PARTIAL | Read-only OpenAt exists, but no ring-3 bootstrap/channel path can deliver the first directory; compatibility must also supply root/cwd/descriptors and reject mutating modes |
 | `sys_vm_map` | STUB | PARTIAL | Loader primitives exist; allocation and the non-blocking trap/deferred execution contract do not |
 | `sys_vm_unmap` | STUB | PARTIAL | Address-space unmap exists, but a user operation must couple its flush and reclamation obligations to a trap-safe execution route |
@@ -129,9 +129,9 @@ unsolicited-event representation and keep every blocking libc entry point on
 an interruptible ring wait; the one-plane constraint survives, but no wire
 format is claimed before its caller.
 
-**Static-only, or a dynamic linker.** Static-only for now. CPython needs
-`dlopen` and `-export-dynamic`, which is Phase 9's problem; the answer is
-cheaper now because a dynamic linker needs `mmap` with `PROT_EXEC` on a file
+**Static-only, or a dynamic linker.** This historical pressure test assumes
+static linkage. CPython needs `dlopen` and `-export-dynamic`, which is Phase
+9's problem; a dynamic linker also needs `mmap` with `PROT_EXEC` on a file
 mapping. The loader has mapping substrate, but no user mapping/allocation
 contract or file-backed door; the register says PARTIAL. Nothing in the ABI
 forecloses a later static-to-dynamic transition.
@@ -156,13 +156,14 @@ anywhere, which is how a forward reference becomes a dead one:
   scalable. A caller that may name the result has re-introduced the ordering
   the rule deletes. Native duplication exists; chosen-number duplication does
   not.
-- **Inheritance across `exec`.** A spawned process receives exactly one handle
-  — its bootstrap channel. It inherits no table: bootstrap grants arrive
-  through that channel, and later local authority can only be derived through
-  an already-held handle (D-111, D-151, D-163). Inheriting a table by default
-  is the opposite rule, and it is the one that makes POSIX's `CLOEXEC`
-  necessary: a flag that exists to undo a default nobody wanted. There is
-  nothing to undo here.
+- **Inheritance across `exec`.** A spawned process receives exactly one opaque
+  bootstrap identity and inherits no table. D-248 removed the speculative
+  channel transport; the future Wizzy bootstrap caller must define how grants
+  arrive. Later local authority can still only be derived through an
+  already-held handle (D-111, D-151, D-163). Inheriting a table by default is
+  the opposite rule, and it is the one that makes POSIX's `CLOEXEC` necessary:
+  a flag that exists to undo a default nobody wanted. There is nothing to undo
+  here.
 
 ## What remains before this is a port
 

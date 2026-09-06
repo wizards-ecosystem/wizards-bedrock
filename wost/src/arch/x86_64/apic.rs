@@ -1,47 +1,124 @@
 //! The local advanced programmable interrupt controller.
 //!
-//! Every interrupt this kernel will ever take arrives through the local APIC:
-//! its own timer, its error line, the inter-processor interrupts it sends
-//! itself, and eventually everything an I/O APIC routes to it. This module
-//! brings it up, and dismisses what it delivers.
-//!
-//! **x2APIC only.** The controller has two encodings. The older one is a page
-//! of memory-mapped registers at a physical address no bootloader maps and this
-//! kernel cannot map for itself until Phase 3 gives it page tables. The newer
-//! one puts the same registers in model-specific registers, which need no
-//! mapping at all — so a phase about the CPU can bring up the interrupt
-//! controller without first becoming a phase about memory. Every x86_64
-//! processor since 2008 has it; one without is reported, not worked around.
-//!
-//! Module state rather than a handle, for the same reason `segment` and
-//! `interrupt` are: there is exactly one of this hardware per CPU, and
-//! [`end_of_interrupt`] has to be reachable from a trap handler, which is a
-//! bare `fn` with nowhere to keep one.
+//! The x2APIC register encoding needs no mapping. Initialization freezes each
+//! local source's vector, and EOI requires authority read from live ISR state.
 
 use core::fmt;
-use core::sync::atomic::{AtomicBool, Ordering};
-use x86_tables::exception;
-
+#[cfg(feature = "selftest")]
+use core::sync::atomic::AtomicUsize;
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use x86_apic::Register;
 use x86_apic::base::{self, Base};
 use x86_apic::command::Command;
-use x86_apic::local_vector::Entry;
+use x86_apic::in_service::{DismissalOwnership, FrameLiveness};
+use x86_apic::lifecycle::{
+    BeginError, InitStage, InitTransaction, Interrupts, Lifecycle, ProgressError,
+};
+use x86_apic::local_vector::{DeliverableVector, Entry};
 use x86_apic::register;
 use x86_apic::spurious::Spurious;
 use x86_apic::timer::Divide;
+use x86_apic::vector::InterruptVector;
 use x86_apic::version::Version;
 
 use super::cpu;
+use super::interrupt::{self, TrapFrame};
 use super::msr;
 
-/// Whether the register block is reachable — that is, whether the processor is
-/// in x2APIC mode.
-///
-/// Outside that mode every one of these registers raises a general protection
-/// fault on access, so this is not an optimisation: it is what makes
-/// [`end_of_interrupt`] safe to call from a handler that ran before the
-/// controller came up, or on a machine where it never did.
-static REGISTERS_READY: AtomicBool = AtomicBool::new(false);
+/// The initialization state published by this CPU's controller.
+static APIC_STATE: AtomicU8 = AtomicU8::new(Lifecycle::Cold.bits());
+
+#[cfg(feature = "selftest")]
+static INIT_OBSERVATIONS: AtomicU8 = AtomicU8::new(0);
+
+#[cfg(feature = "selftest")]
+static INIT_OBSERVATION_FAILED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "selftest")]
+const PUBLICATION_OBSERVATION: u8 = 1 << InitStage::ALL.len();
+
+#[cfg(feature = "selftest")]
+const ALL_INIT_OBSERVATIONS: u8 = PUBLICATION_OBSERVATION | (PUBLICATION_OBSERVATION - 1);
+
+/// The vector assigned to the self-directed fixed-delivery source.
+static SELF_INTERRUPT_VECTOR: AtomicU8 = AtomicU8::new(0);
+
+/// The vector assigned to the local one-shot timer.
+static TIMER_VECTOR: AtomicU8 = AtomicU8::new(0);
+
+/// The nondeliverable vector which distinguishes a real APIC source.
+static SPURIOUS_VECTOR: AtomicU8 = AtomicU8::new(0);
+
+#[derive(Clone, Copy)]
+struct Controller<'state> {
+    state: &'state AtomicU8,
+    self_interrupt_vector: &'state AtomicU8,
+    timer_vector: &'state AtomicU8,
+    spurious_vector: &'state AtomicU8,
+}
+
+impl Controller<'_> {
+    fn lifecycle(self) -> Lifecycle {
+        lifecycle_at(self.state)
+    }
+
+    fn ready_registers(self) -> Option<Registers> {
+        self.lifecycle().is_ready().then_some(Registers)
+    }
+
+    fn read(self, register: Register) -> u64 {
+        self.ready_registers()
+            .map_or(0, |registers| Registers::read(&registers, register))
+    }
+
+    fn write(self, register: Register, value: u64) {
+        if let Some(registers) = self.ready_registers() {
+            Registers::write(&registers, register, value);
+        }
+    }
+
+    fn is_enabled(self) -> bool {
+        let Some(registers) = self.ready_registers() else {
+            return false;
+        };
+        Spurious::from_bits(Registers::read(&registers, register::SPURIOUS_INTERRUPT_VECTOR) as u32)
+            .is_enabled()
+    }
+
+    fn published_vector(self, source: &AtomicU8) -> Option<InterruptVector> {
+        if !self.is_enabled() {
+            return None;
+        }
+        InterruptVector::new(source.load(Ordering::Relaxed))
+    }
+
+    fn send_self_interrupt(self) -> Result<(), DeliveryError> {
+        let Some(vector) = self.published_vector(self.self_interrupt_vector) else {
+            return Err(DeliveryError::Unavailable);
+        };
+        let Some(spurious) = self.published_vector(self.spurious_vector) else {
+            return Err(DeliveryError::Unavailable);
+        };
+        let Some(vector) = DeliverableVector::configured(vector, spurious) else {
+            return Err(DeliveryError::InvalidConfiguration);
+        };
+        let command = Command::self_interrupt(vector);
+        Controller::write(self, register::COMMAND, command.bits().into());
+        Ok(())
+    }
+}
+
+fn controller() -> Controller<'static> {
+    Controller {
+        state: &APIC_STATE,
+        self_interrupt_vector: &SELF_INTERRUPT_VECTOR,
+        timer_vector: &TIMER_VECTOR,
+        spurious_vector: &SPURIOUS_VECTOR,
+    }
+}
+
+/// Whether one live token already owns the current EOI opportunity.
+static EOI_CLAIMED: AtomicBool = AtomicBool::new(false);
 
 /// Accept every priority class. The APIC will not deliver an interrupt whose
 /// class is at or below the task priority, and this kernel has no priorities to
@@ -52,6 +129,14 @@ const ACCEPT_EVERYTHING: u64 = 0;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ApicError {
+    /// This CPU's APIC was already configured.
+    AlreadyInitialized,
+    /// Another initialization owns the unpublished controller state.
+    InitializationInProgress,
+    /// A previous hardware transition failed after retry became unsafe.
+    Poisoned,
+    /// Initialization lost its internally owned interrupt exclusion.
+    InterruptsEnabled,
     /// `cpuid` reports no local APIC on this processor.
     Absent,
     /// The processor has a local APIC but no x2APIC mode, which is the only
@@ -63,20 +148,40 @@ pub enum ApicError {
     /// The processor accepted the switch to x2APIC mode and then reported
     /// itself not to be in it.
     ModeRefused,
-    /// The registers answer, but not as an APIC.
+    /// The version or final software-enable value is not a usable APIC.
     NotResponding,
 }
 
 impl fmt::Display for ApicError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Absent => f.write_str("this processor reports no local apic"),
-            Self::NoExtendedMode => {
-                f.write_str("this processor has no x2apic mode, and xapic needs page tables")
+            Self::AlreadyInitialized => {
+                core::fmt::Write::write_str(f, "the local apic is already initialized")
             }
-            Self::Disabled => f.write_str("the local apic is disabled and will not re-enable"),
-            Self::ModeRefused => f.write_str("the processor would not enter x2apic mode"),
-            Self::NotResponding => f.write_str("the registers do not answer as an apic"),
+            Self::InitializationInProgress => {
+                core::fmt::Write::write_str(f, "the local apic is already being initialized")
+            }
+            Self::Poisoned => {
+                core::fmt::Write::write_str(f, "the local apic failed during initialization")
+            }
+            Self::InterruptsEnabled => {
+                core::fmt::Write::write_str(f, "local apic initialization lost exclusion")
+            }
+            Self::Absent => core::fmt::Write::write_str(f, "this processor reports no local apic"),
+            Self::NoExtendedMode => core::fmt::Write::write_str(
+                f,
+                "this processor has no x2apic mode, and xapic needs page tables",
+            ),
+            Self::Disabled => {
+                core::fmt::Write::write_str(f, "the local apic is disabled and will not re-enable")
+            }
+            Self::ModeRefused => {
+                core::fmt::Write::write_str(f, "the processor would not enter x2apic mode")
+            }
+            Self::NotResponding => core::fmt::Write::write_str(
+                f,
+                "the registers do not retain a usable apic configuration",
+            ),
         }
     }
 }
@@ -85,16 +190,103 @@ impl core::error::Error for ApicError {}
 
 /// The vectors the local APIC delivers on its own behalf.
 ///
-/// Which vector carries what is the kernel's decision, not this module's, so it
-/// arrives as an argument. Both are validated by the encoding — the spurious
-/// vector's low four bits, and neither being one the APIC refuses.
+/// The complete local-source assignment, frozen by [`init`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vectors {
     /// Delivered when the APIC has committed to delivering something and then
     /// found it had nothing to say. Its low four bits must all be set.
-    pub spurious: u8,
+    pub spurious: InterruptVector,
     /// Delivered when the APIC records an error.
-    pub error: u8,
+    pub error: InterruptVector,
+    /// Delivered by a fixed self-directed interrupt command.
+    pub self_interrupt: InterruptVector,
+    /// Delivered when the local one-shot timer expires.
+    pub timer: InterruptVector,
+}
+
+/// Why a configured APIC source could not deliver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DeliveryError {
+    /// The local APIC has no completed source configuration.
+    Unavailable,
+    /// The source assignment is not a distinct deliverable vector.
+    InvalidConfiguration,
+}
+
+impl fmt::Display for DeliveryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable => {
+                core::fmt::Write::write_str(f, "the local apic source is unavailable")
+            }
+            Self::InvalidConfiguration => {
+                core::fmt::Write::write_str(f, "the local apic source configuration is invalid")
+            }
+        }
+    }
+}
+
+impl core::error::Error for DeliveryError {}
+
+/// Why the local timer could not change state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TimerError {
+    /// The local APIC has no completed timer configuration.
+    Unavailable,
+    /// The countdown did not read back as stopped.
+    StillRunning,
+    /// The timer and spurious source assignments are not distinct.
+    InvalidConfiguration,
+}
+
+impl fmt::Display for TimerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable => {
+                core::fmt::Write::write_str(f, "the local apic timer is unavailable")
+            }
+            Self::StillRunning => {
+                core::fmt::Write::write_str(f, "the local apic timer is still counting")
+            }
+            Self::InvalidConfiguration => {
+                core::fmt::Write::write_str(f, "the local apic timer configuration is invalid")
+            }
+        }
+    }
+}
+
+impl core::error::Error for TimerError {}
+
+/// Proof that the timer count read back as zero.
+#[derive(Debug)]
+pub struct DisarmedTimer {
+    _private: (),
+}
+
+/// Authority to dismiss one exact in-service vector.
+pub struct EoiToken<'frame> {
+    vector: InterruptVector,
+    frame: &'frame TrapFrame,
+    interrupts: Option<interrupt::InterruptState>,
+}
+
+impl fmt::Debug for EoiToken<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EoiToken")
+            .field("vector", &self.vector)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for EoiToken<'_> {
+    fn drop(&mut self) {
+        EOI_CLAIMED.store(false, Ordering::Release);
+        if let Some(interrupts) = self.interrupts.take() {
+            interrupts.restore();
+        }
+    }
 }
 
 /// What the local APIC says about itself once it is on.
@@ -108,11 +300,138 @@ pub struct Local {
     pub is_bootstrap: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InitializationBoundary {
+    Stage(InitStage),
+    Publication,
+}
+
+#[cfg(feature = "selftest")]
+impl InitializationBoundary {
+    const ALL: [Self; 6] = [
+        Self::Stage(InitStage::Mode),
+        Self::Stage(InitStage::Version),
+        Self::Stage(InitStage::MaskSources),
+        Self::Stage(InitStage::ConfigureSources),
+        Self::Stage(InitStage::Identity),
+        Self::Publication,
+    ];
+
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Stage(stage) => 1 << stage_index(stage),
+            Self::Publication => PUBLICATION_OBSERVATION,
+        }
+    }
+}
+
+trait InitializationObserver {
+    fn reached(
+        &mut self,
+        boundary: InitializationBoundary,
+        controller: Controller<'_>,
+    ) -> Result<(), ApicError>;
+}
+
+struct Unobserved;
+
+impl InitializationObserver for Unobserved {
+    fn reached(
+        &mut self,
+        _boundary: InitializationBoundary,
+        _controller: Controller<'_>,
+    ) -> Result<(), ApicError> {
+        Ok(())
+    }
+}
+
+trait InitializationRegisters {
+    fn read(&self, register: Register) -> u64;
+    fn write(&self, register: Register, value: u64);
+}
+
+struct Initialization<'state> {
+    controller: Controller<'state>,
+    transaction: InitTransaction,
+    interrupts: Option<interrupt::InterruptState>,
+}
+
+impl<'state> Initialization<'state> {
+    fn begin(controller: Controller<'state>) -> Result<Self, ApicError> {
+        let interrupts = interrupt::disable();
+        let transaction = match InitTransaction::begin(controller.lifecycle()) {
+            Ok(transaction) => transaction,
+            Err(reason) => {
+                interrupts.restore();
+                return Err(admission_error(reason));
+            }
+        };
+        if let Err(state) = controller.state.compare_exchange(
+            Lifecycle::Cold.bits(),
+            Lifecycle::Initializing.bits(),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            interrupts.restore();
+            return Err(initialization_conflict(state));
+        }
+        Ok(Self {
+            controller,
+            transaction,
+            interrupts: Some(interrupts),
+        })
+    }
+
+    fn enter(&mut self, stage: InitStage) -> Result<(), ApicError> {
+        self.transaction
+            .enter(stage, interrupt_state())
+            .map_err(progress_error)?;
+        #[cfg(feature = "selftest")]
+        if core::ptr::eq(self.controller.state, &APIC_STATE) {
+            record_stage_observation(stage, &self.transaction);
+        }
+        Ok(())
+    }
+
+    fn commit(mut self, configured: Configured) -> Result<Local, ApicError> {
+        let ready = self
+            .transaction
+            .complete(interrupt_state())
+            .map_err(progress_error)?;
+        #[cfg(feature = "selftest")]
+        if core::ptr::eq(self.controller.state, &APIC_STATE) {
+            record_publication_observation(&self.transaction);
+        }
+        self.controller.state.store(ready.bits(), Ordering::Release);
+        if let Some(interrupts) = self.interrupts.take() {
+            interrupts.restore();
+        }
+        Ok(configured.local)
+    }
+}
+
+impl Drop for Initialization<'_> {
+    fn drop(&mut self) {
+        if !self.transaction.lifecycle().is_ready() {
+            self.controller
+                .state
+                .store(self.transaction.refuse().bits(), Ordering::Release);
+        }
+        if let Some(interrupts) = self.interrupts.take() {
+            interrupts.restore();
+        }
+    }
+}
+
+struct Configured {
+    local: Local,
+}
+
 impl fmt::Display for Local {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "x2apic id {} version {:#x}", self.id, self.version)?;
         if self.is_bootstrap {
-            f.write_str(" (bootstrap)")?;
+            core::fmt::Write::write_str(f, " (bootstrap)")?;
         }
         Ok(())
     }
@@ -120,113 +439,226 @@ impl fmt::Display for Local {
 
 /// Bring the local APIC up and start accepting what it delivers.
 ///
-/// The order is the design. Everything the firmware may have programmed is
-/// masked, and the two vectors the APIC needs for itself are installed, before
-/// the write that software-enables it — so the first interrupt it is capable of
-/// delivering arrives at a gate the kernel chose.
+/// Firmware-programmable sources are masked, kernel-owned hardware sources are
+/// configured, and the exact software-enable value is read back before source
+/// identities or readiness become public.
 ///
-/// This does not set the interrupt flag. That is
-/// [`interrupt::enable`](super::interrupt::enable), and it is a separate step
-/// because it has a separate precondition: the legacy controller.
+/// This does not set the interrupt flag; [`interrupt::enable`] has the separate
+/// legacy-controller precondition. Reinitialization is refused so live source
+/// identities cannot change.
 ///
-/// Calling this a second time reconfigures the same hardware to the same state,
-/// which is harmless but pointless; the kernel calls it once.
+/// # Errors
+///
+/// Returns an [`ApicError`] if a cold transaction cannot begin, its internally
+/// owned interrupt exclusion is lost, x2APIC mode cannot be read back, or the
+/// final software-enable value does not stick exactly.
+///
+/// # Panics
+///
+/// Panics before changing hardware if the spurious vector's low four bits are
+/// not all set.
 pub fn init(vectors: Vectors) -> Result<Local, ApicError> {
+    let controller = controller();
+    controller.lifecycle().admit().map_err(admission_error)?;
+    let error = Entry::fixed(vectors.error);
+    let spurious = Spurious::enabled(vectors.spurious);
+
     if !cpu::has_local_apic() {
         return Err(ApicError::Absent);
     }
     if !cpu::has_x2apic() {
         return Err(ApicError::NoExtendedMode);
     }
+    let mut observer = Unobserved;
+    initialize_controller(
+        controller,
+        vectors,
+        error,
+        spurious,
+        enter_extended_mode,
+        &mut observer,
+    )
+}
 
-    let base = enter_extended_mode()?;
-    REGISTERS_READY.store(true, Ordering::Release);
+fn initialize_controller<R: InitializationRegisters>(
+    controller: Controller<'_>,
+    vectors: Vectors,
+    error: Entry,
+    spurious: Spurious,
+    enter_mode: impl FnOnce() -> Result<(Base, R), ApicError>,
+    observer: &mut impl InitializationObserver,
+) -> Result<Local, ApicError> {
+    let mut initialization = Initialization::begin(controller)?;
+    let configured = initialize(
+        &mut initialization,
+        vectors,
+        error,
+        spurious,
+        enter_mode,
+        observer,
+    )?;
+    InitializationObserver::reached(observer, InitializationBoundary::Publication, controller)?;
+    initialization.commit(configured)
+}
 
-    let version = Version::from_bits(read(register::VERSION) as u32);
+fn initialize<R: InitializationRegisters>(
+    initialization: &mut Initialization<'_>,
+    vectors: Vectors,
+    error: Entry,
+    spurious: Spurious,
+    enter_mode: impl FnOnce() -> Result<(Base, R), ApicError>,
+    observer: &mut impl InitializationObserver,
+) -> Result<Configured, ApicError> {
+    initialization.enter(InitStage::Mode)?;
+    let (base, registers) = enter_mode()?;
+    InitializationObserver::reached(
+        observer,
+        InitializationBoundary::Stage(InitStage::Mode),
+        initialization.controller,
+    )?;
+
+    initialization.enter(InitStage::Version)?;
+    let version =
+        Version::from_bits(InitializationRegisters::read(&registers, register::VERSION) as u32);
     if !version.is_integrated() {
-        REGISTERS_READY.store(false, Ordering::Release);
         return Err(ApicError::NotResponding);
     }
+    InitializationObserver::reached(
+        observer,
+        InitializationBoundary::Stage(InitStage::Version),
+        initialization.controller,
+    )?;
 
-    write(register::TASK_PRIORITY, ACCEPT_EVERYTHING);
+    initialization.enter(InitStage::MaskSources)?;
+    InitializationRegisters::write(&registers, register::TASK_PRIORITY, ACCEPT_EVERYTHING);
 
-    // The two local pins are what firmware actually programs: LINT0 as the
-    // legacy controller's output and LINT1 as the non-maskable interrupt.
-    // Masking them is the other half of silencing the 8259s, and masking the
-    // timer covers firmware that left one running.
+    // Firmware programs LINT0 (the 8259 output) and LINT1 (NMI); masking them
+    // finishes silencing the 8259s, and a masked timer covers one left running.
     for entry in [
         register::LVT_LINT0,
         register::LVT_LINT1,
         register::LVT_TIMER,
     ] {
-        write(entry, Entry::MASKED.bits().into());
+        InitializationRegisters::write(&registers, entry, Entry::MASKED.bits().into());
     }
+    InitializationObserver::reached(
+        observer,
+        InitializationBoundary::Stage(InitStage::MaskSources),
+        initialization.controller,
+    )?;
 
-    write(
-        register::LVT_ERROR,
-        Entry::fixed(vectors.error).bits().into(),
-    );
+    initialization.enter(InitStage::ConfigureSources)?;
+    InitializationRegisters::write(&registers, register::LVT_ERROR, error.bits().into());
     // The error register latches on write, so this discards whatever accrued
     // while the APIC belonged to the firmware rather than reporting it as ours.
-    let _ = error_status();
+    InitializationRegisters::write(&registers, register::ERROR_STATUS, 0);
+    let _ = InitializationRegisters::read(&registers, register::ERROR_STATUS);
 
-    write(
+    InitializationRegisters::write(
+        &registers,
         register::SPURIOUS_INTERRUPT_VECTOR,
-        Spurious::enabled(vectors.spurious).bits().into(),
+        spurious.bits().into(),
     );
+    if InitializationRegisters::read(&registers, register::SPURIOUS_INTERRUPT_VECTOR)
+        != u64::from(spurious.bits())
+    {
+        return Err(ApicError::NotResponding);
+    }
 
-    Ok(Local {
-        id: read(register::ID) as u32,
-        version: version.number(),
-        is_bootstrap: base.is_bootstrap(),
+    initialization
+        .controller
+        .self_interrupt_vector
+        .store(vectors.self_interrupt.get(), Ordering::Relaxed);
+    initialization
+        .controller
+        .timer_vector
+        .store(vectors.timer.get(), Ordering::Relaxed);
+    initialization
+        .controller
+        .spurious_vector
+        .store(vectors.spurious.get(), Ordering::Relaxed);
+    InitializationObserver::reached(
+        observer,
+        InitializationBoundary::Stage(InitStage::ConfigureSources),
+        initialization.controller,
+    )?;
+
+    initialization.enter(InitStage::Identity)?;
+    let configured = Configured {
+        local: Local {
+            id: InitializationRegisters::read(&registers, register::ID) as u32,
+            version: version.number(),
+            is_bootstrap: base.is_bootstrap(),
+        },
+    };
+    InitializationObserver::reached(
+        observer,
+        InitializationBoundary::Stage(InitStage::Identity),
+        initialization.controller,
+    )?;
+    Ok(configured)
+}
+
+/// Claim the exact APIC dismissal owned by the innermost live trap.
+pub fn claim_eoi<'frame>(
+    frame: &'frame TrapFrame,
+    vector: InterruptVector,
+) -> Option<EoiToken<'frame>> {
+    if interrupt::are_enabled()
+        || !interrupt::is_live_frame(frame)
+        || frame.vector() != u64::from(vector.get())
+    {
+        return None;
+    }
+    let interrupts = interrupt::disable();
+    if EOI_CLAIMED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        interrupts.restore();
+        return None;
+    }
+    if interrupt::are_enabled() || !interrupt::is_live_frame(frame) || !owns_in_service(vector) {
+        EOI_CLAIMED.store(false, Ordering::Release);
+        interrupts.restore();
+        return None;
+    }
+    Some(EoiToken {
+        vector,
+        frame,
+        interrupts: Some(interrupts),
     })
 }
 
-/// Dismiss the interrupt currently in service.
+/// Dismiss the exact vector represented by `token`.
 ///
-/// Until this is called nothing of the same priority class or lower can be
-/// delivered, so a handler that forgets it takes exactly one interrupt and then
-/// goes quiet for ever. Does nothing before [`init`].
-///
-/// Safe to call from a trap handler, and meant to be: it is one register
-/// written, taking no lock and reading nothing another context could be
-/// part-way through changing.
-pub fn end_of_interrupt() {
+/// A changed target returns the token unchanged and performs no write.
+pub fn end_of_interrupt<'frame>(token: EoiToken<'frame>) -> Result<(), EoiToken<'frame>> {
+    if !x86_apic::in_service::may_complete(
+        interrupt_state(),
+        frame_liveness(token.frame),
+        token.frame.vector(),
+        token.vector,
+        dismissal_ownership(token.vector),
+    ) {
+        return Err(token);
+    }
     write(register::END_OF_INTERRUPT, 0);
+    Ok(())
 }
 
-/// Deliver `vector` to this CPU.
+/// Deliver the configured self-interrupt source to this CPU.
 ///
-/// The interrupt is not taken until the CPU is accepting them: with the flag
-/// clear it stays pending in the APIC and arrives at the `sti`. This is how the
-/// kernel proves its own interrupt path — and, when there is more than one CPU,
-/// how one will ask another to do something.
+/// With the interrupt flag clear, delivery remains pending until `sti`. The
+/// vector is frozen by [`init`] so callers cannot select another local source.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `vector` is below 16, which the APIC would refuse to deliver, or
-/// if the CPU pushes an error code for it.
-///
-/// The second is not a nicety. The entry stubs push a synthetic zero error
-/// code exactly where the CPU does not, so a vector the CPU *would* have
-/// pushed for enters a stub that assumes one is there — and the frame is eight
-/// bytes out for the rest of its life. The tail's `add rsp, 16; iretq` then
-/// pops `CS` as `RIP`, and the ring-3 test reads the wrong slot. An APIC
-/// delivery pushes no error code whatever the vector means, so `self_interrupt`
-/// on 17 was a safe call into that state (D-123).
-pub fn send_self_interrupt(vector: u8) {
-    assert!(
-        !exception::pushes_error_code(vector),
-        "the cpu pushes an error code for this vector, and a delivered          interrupt does not"
-    );
-    // The upper half of the command is the destination, which the self
-    // shorthand makes irrelevant, so it is written as the zeros the
-    // architecture reserves it to be. No wait for delivery afterwards: x2APIC
-    // dropped the delivery-status bit because the write is synchronous.
-    write(
-        register::COMMAND,
-        Command::self_interrupt(vector).bits().into(),
-    );
+/// Returns [`DeliveryError::Unavailable`] before a complete initialization,
+/// or [`DeliveryError::InvalidConfiguration`] if the frozen source assignment
+/// cannot encode a delivery.
+pub fn send_self_interrupt() -> Result<(), DeliveryError> {
+    controller().send_self_interrupt()
 }
 
 /// Set how the bus clock is divided before it drives the timer's countdown.
@@ -238,11 +670,8 @@ pub fn set_timer_divide(divide: Divide) {
 
 /// Start the timer's countdown from `count` without touching its delivery.
 ///
-/// Writing the initial count is what starts the timer; that is the
-/// architecture's rule, not this module's. What the expiry then does is
-/// whatever the entry says: nothing at all while it is masked, as [`init`]
-/// leaves it and as calibration wants it, or one interrupt after
-/// [`set_timer_one_shot`]. Does nothing before [`init`].
+/// The programmed entry determines whether expiry is masked or one-shot.
+/// Does nothing before [`init`].
 ///
 /// # Panics
 ///
@@ -253,34 +682,54 @@ pub fn arm_timer(count: u32) {
     write(register::INITIAL_COUNT, count.into());
 }
 
-/// Stop the countdown.
+/// Stop the countdown and prove the zero readback.
 ///
-/// A zero initial count is how the architecture spells "not counting", and
-/// reading the current count back as zero is how a caller confirms it. An
-/// interrupt the timer has already delivered is not recalled by this; a
-/// handler that finds nothing to do is the cost of the race, and it is
-/// cheaper than the lock that would close it. Does nothing before [`init`].
-pub fn disarm_timer() {
+/// An interrupt already delivered is not recalled.
+///
+/// # Errors
+///
+/// Returns [`TimerError`] if the timer is unavailable or does not stop.
+pub fn disarm_timer() -> Result<DisarmedTimer, TimerError> {
+    let controller = controller();
+    if controller
+        .published_vector(controller.timer_vector)
+        .is_none()
+    {
+        return Err(TimerError::Unavailable);
+    }
     write(register::INITIAL_COUNT, 0);
+    if timer_current_count() != 0 {
+        return Err(TimerError::StillRunning);
+    }
+    Ok(DisarmedTimer { _private: () })
 }
 
-/// Make each expiry deliver `vector` once, and stop.
+/// Make each expiry deliver the configured timer source once, and stop.
 ///
-/// Only the entry: the timer stays as armed or as stopped as it already was,
-/// so a caller unmasking a countdown it has not disarmed will get an
-/// interrupt whenever that countdown happens to reach zero. Arrange to be
-/// disarmed first. Does nothing before [`init`].
+/// The consumed proof requires a successful disarm, and the immediate
+/// readback closes the gap between that proof and the unmasking write.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if `vector` is below 16, which the APIC would refuse, or if the CPU
-/// pushes an error code for it — see [`send_self_interrupt`] (D-123).
-pub fn set_timer_one_shot(vector: u8) {
-    assert!(
-        !exception::pushes_error_code(vector),
-        "the cpu pushes an error code for this vector, and a timer interrupt          does not"
-    );
-    write(register::LVT_TIMER, Entry::one_shot(vector).bits().into());
+/// Returns [`TimerError`] without writing the entry if the source is
+/// unavailable or the countdown is no longer stopped.
+pub fn set_timer_one_shot(_disarmed: DisarmedTimer) -> Result<(), TimerError> {
+    let controller = controller();
+    let Some(vector) = controller.published_vector(controller.timer_vector) else {
+        return Err(TimerError::Unavailable);
+    };
+    let Some(spurious) = controller.published_vector(controller.spurious_vector) else {
+        return Err(TimerError::Unavailable);
+    };
+    let Some(vector) = DeliverableVector::configured(vector, spurious) else {
+        return Err(TimerError::InvalidConfiguration);
+    };
+    let entry = match x86_apic::timer::one_shot_entry(timer_current_count(), vector) {
+        Ok(entry) => entry,
+        Err(x86_apic::timer::OneShotError::Running) => return Err(TimerError::StillRunning),
+    };
+    write(register::LVT_TIMER, entry.bits().into());
+    Ok(())
 }
 
 /// Where the timer's countdown currently stands. Zero before [`init`].
@@ -290,6 +739,7 @@ pub fn timer_current_count() -> u32 {
 
 /// The timer's local vector entry, read back from the hardware rather than
 /// remembered from what was written.
+#[cfg(feature = "selftest")]
 pub fn timer_entry() -> Entry {
     Entry::from_bits(read(register::LVT_TIMER) as u32)
 }
@@ -309,16 +759,436 @@ pub fn error_status() -> u32 {
 ///
 /// What an I/O APIC redirection entry names as an interrupt's destination in
 /// physical mode. Reads as zero before the controller is up — which is also
-/// the boot processor's usual identifier, so a caller that must tell the two
-/// apart asks [`is_enabled`] first.
+/// the boot processor's usual identifier — so this value does not prove
+/// controller readiness.
 pub fn id() -> u32 {
     read(register::ID) as u32
 }
 
 /// Whether the APIC is software-enabled and therefore delivering.
+#[cfg(feature = "selftest")]
 pub fn is_enabled() -> bool {
-    REGISTERS_READY.load(Ordering::Acquire)
-        && Spurious::from_bits(read(register::SPURIOUS_INTERRUPT_VECTOR) as u32).is_enabled()
+    controller().is_enabled()
+}
+
+#[cfg(feature = "selftest")]
+fn lifecycle() -> Lifecycle {
+    controller().lifecycle()
+}
+
+fn lifecycle_at(state: &AtomicU8) -> Lifecycle {
+    let Some(state) = Lifecycle::from_bits(state.load(Ordering::Acquire)) else {
+        panic!("the local APIC lifecycle byte is internal");
+    };
+    state
+}
+
+fn admission_error(reason: BeginError) -> ApicError {
+    match reason {
+        BeginError::InProgress => ApicError::InitializationInProgress,
+        BeginError::Ready => ApicError::AlreadyInitialized,
+        BeginError::Poisoned => ApicError::Poisoned,
+        _ => ApicError::Poisoned,
+    }
+}
+
+fn progress_error(reason: ProgressError) -> ApicError {
+    match reason {
+        ProgressError::InterruptsEnabled => ApicError::InterruptsEnabled,
+        ProgressError::OutOfOrder | ProgressError::Incomplete | ProgressError::Settled => {
+            ApicError::Poisoned
+        }
+        _ => ApicError::Poisoned,
+    }
+}
+
+fn interrupt_state() -> Interrupts {
+    if interrupt::are_enabled() {
+        Interrupts::Enabled
+    } else {
+        Interrupts::Excluded
+    }
+}
+
+fn frame_liveness(frame: &TrapFrame) -> FrameLiveness {
+    if interrupt::is_live_frame(frame) {
+        FrameLiveness::Live
+    } else {
+        FrameLiveness::Stale
+    }
+}
+
+fn dismissal_ownership(vector: InterruptVector) -> DismissalOwnership {
+    if owns_in_service(vector) {
+        DismissalOwnership::Owned
+    } else {
+        DismissalOwnership::Unowned
+    }
+}
+
+#[cfg(feature = "selftest")]
+fn record_stage_observation(stage: InitStage, transaction: &InitTransaction) {
+    let state = lifecycle();
+    let valid = state == Lifecycle::Initializing
+        && transaction.lifecycle() == Lifecycle::Initializing
+        && interrupt_state() == Interrupts::Excluded
+        && state.admit() == Err(BeginError::InProgress);
+    INIT_OBSERVATION_FAILED.fetch_or(!valid, Ordering::Relaxed);
+    INIT_OBSERVATIONS.fetch_or(1 << stage_index(stage), Ordering::Relaxed);
+}
+
+#[cfg(feature = "selftest")]
+fn record_publication_observation(transaction: &InitTransaction) {
+    let state = lifecycle();
+    let valid = state == Lifecycle::Initializing
+        && transaction.lifecycle() == Lifecycle::Ready
+        && interrupt_state() == Interrupts::Excluded
+        && state.admit() == Err(BeginError::InProgress);
+    INIT_OBSERVATION_FAILED.fetch_or(!valid, Ordering::Relaxed);
+    INIT_OBSERVATIONS.fetch_or(PUBLICATION_OBSERVATION, Ordering::Relaxed);
+}
+
+#[cfg(feature = "selftest")]
+const fn stage_index(stage: InitStage) -> u32 {
+    match stage {
+        InitStage::Mode => 0,
+        InitStage::Version => 1,
+        InitStage::MaskSources => 2,
+        InitStage::ConfigureSources => 3,
+        InitStage::Identity => 4,
+    }
+}
+
+/// Whether the real boot transaction hid every partial stage from observers.
+#[cfg(feature = "selftest")]
+pub fn initialization_was_atomic_for_test() -> bool {
+    INIT_OBSERVATIONS.load(Ordering::Acquire) == ALL_INIT_OBSERVATIONS
+        && !INIT_OBSERVATION_FAILED.load(Ordering::Acquire)
+        && lifecycle() == Lifecycle::Ready
+}
+
+/// Results from injecting every late APIC initialization refusal.
+#[cfg(feature = "selftest")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitializationFailureProbe {
+    unavailable_and_terminal: bool,
+    ignored_spurious_write_is_terminal: bool,
+    delivery_waited_for_unwind: bool,
+}
+
+#[cfg(feature = "selftest")]
+impl InitializationFailureProbe {
+    /// Whether every refused stage stayed unpublished and rejected retry.
+    pub const fn unavailable_and_terminal(self) -> bool {
+        self.unavailable_and_terminal
+    }
+
+    /// Whether an ignored software-enable write refused and poisoned setup.
+    pub const fn ignored_spurious_write_is_terminal(self) -> bool {
+        self.ignored_spurious_write_is_terminal
+    }
+
+    /// Whether each pending self-interrupt arrived only after exclusion unwound.
+    pub const fn delivery_waited_for_unwind(self) -> bool {
+        self.delivery_waited_for_unwind
+    }
+}
+
+#[cfg(feature = "selftest")]
+#[derive(Clone, Copy)]
+enum SpuriousWrite {
+    Retain,
+    Ignore,
+}
+
+#[cfg(feature = "selftest")]
+struct FixtureRegisters<'probe> {
+    reads: &'probe AtomicUsize,
+    writes: &'probe AtomicUsize,
+    spurious: &'probe AtomicUsize,
+    spurious_write: SpuriousWrite,
+}
+
+#[cfg(feature = "selftest")]
+impl InitializationRegisters for FixtureRegisters<'_> {
+    fn read(&self, register: Register) -> u64 {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        if register == register::VERSION {
+            0x10
+        } else if register == register::ID {
+            0xA5
+        } else if register == register::SPURIOUS_INTERRUPT_VECTOR {
+            self.spurious.load(Ordering::Relaxed) as u64
+        } else {
+            0
+        }
+    }
+
+    fn write(&self, register: Register, value: u64) {
+        self.writes.fetch_add(1, Ordering::Relaxed);
+        if register == register::SPURIOUS_INTERRUPT_VECTOR
+            && matches!(self.spurious_write, SpuriousWrite::Retain)
+        {
+            self.spurious.store(value as usize, Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(feature = "selftest")]
+struct FailureObserver<'probe, DeliveryCount> {
+    target: InitializationBoundary,
+    mode_entered: &'probe AtomicBool,
+    reads: &'probe AtomicUsize,
+    writes: &'probe AtomicUsize,
+    delivery_count: &'probe mut DeliveryCount,
+    reached: u8,
+    body_completed: bool,
+    gates_held: bool,
+    delivery_excluded: bool,
+    queued_at: Option<usize>,
+}
+
+#[cfg(feature = "selftest")]
+impl<DeliveryCount: FnMut() -> usize> InitializationObserver
+    for FailureObserver<'_, DeliveryCount>
+{
+    fn reached(
+        &mut self,
+        boundary: InitializationBoundary,
+        fixture: Controller<'_>,
+    ) -> Result<(), ApicError> {
+        if boundary != self.target {
+            return Ok(());
+        }
+
+        let (expected_reads, expected_writes) = match boundary {
+            InitializationBoundary::Stage(InitStage::Mode) => (0, 0),
+            InitializationBoundary::Stage(InitStage::Version) => (1, 0),
+            InitializationBoundary::Stage(InitStage::MaskSources) => (1, 4),
+            InitializationBoundary::Stage(InitStage::ConfigureSources) => (3, 7),
+            InitializationBoundary::Stage(InitStage::Identity)
+            | InitializationBoundary::Publication => (4, 7),
+        };
+        self.reached |= boundary.bit();
+        self.body_completed = self.mode_entered.load(Ordering::Acquire)
+            && self.reads.load(Ordering::Acquire) == expected_reads
+            && self.writes.load(Ordering::Acquire) == expected_writes;
+
+        let delivered_before = (self.delivery_count)();
+        let public_gates = !fixture.is_enabled()
+            && fixture.send_self_interrupt() == Err(DeliveryError::Unavailable);
+        let reentry = matches!(
+            Initialization::begin(fixture),
+            Err(ApicError::InitializationInProgress)
+        );
+        let excluded = !interrupt::are_enabled();
+        let queued = controller().send_self_interrupt().is_ok();
+        let stayed_pending = (self.delivery_count)() == delivered_before;
+        self.gates_held = public_gates && reentry;
+        self.delivery_excluded = excluded && queued && stayed_pending;
+        self.queued_at = queued.then_some(delivered_before);
+        Err(ApicError::NotResponding)
+    }
+}
+
+/// Exercise the production APIC transaction with isolated failure state.
+///
+/// Register reads and writes use bounded counters because replaying controller
+/// setup would disturb the live singleton. The transaction owner, stage
+/// runner, public-operation gates, interrupt flag and queued self-IPI are the
+/// production paths; `delivery_count` observes that real interrupt arriving.
+#[cfg(feature = "selftest")]
+pub fn initialization_failures_for_test(
+    vectors: Vectors,
+    mut delivery_count: impl FnMut() -> usize,
+) -> InitializationFailureProbe {
+    const DELIVERY_ATTEMPTS: usize = 1_000_000;
+
+    let live = controller();
+    let mut unavailable_and_terminal = interrupt::are_enabled()
+        && live.published_vector(live.self_interrupt_vector) == Some(vectors.self_interrupt)
+        && live.published_vector(live.timer_vector) == Some(vectors.timer)
+        && live.published_vector(live.spurious_vector) == Some(vectors.spurious);
+    let mut delivery_waited_for_unwind = unavailable_and_terminal;
+    let mut reached = 0u8;
+
+    for target in InitializationBoundary::ALL {
+        let state = AtomicU8::new(Lifecycle::Cold.bits());
+        let self_interrupt_vector = AtomicU8::new(vectors.self_interrupt.get());
+        let timer_vector = AtomicU8::new(vectors.timer.get());
+        let spurious_vector = AtomicU8::new(vectors.spurious.get());
+        let fixture = Controller {
+            state: &state,
+            self_interrupt_vector: &self_interrupt_vector,
+            timer_vector: &timer_vector,
+            spurious_vector: &spurious_vector,
+        };
+        let mode_entered = AtomicBool::new(false);
+        let reads = AtomicUsize::new(0);
+        let writes = AtomicUsize::new(0);
+        let spurious = AtomicUsize::new(0);
+
+        let (outcome, body_completed, gates_held, delivery_excluded, queued_at, observed) = {
+            let mut observer = FailureObserver {
+                target,
+                mode_entered: &mode_entered,
+                reads: &reads,
+                writes: &writes,
+                delivery_count: &mut delivery_count,
+                reached: 0,
+                body_completed: false,
+                gates_held: false,
+                delivery_excluded: false,
+                queued_at: None,
+            };
+            let outcome = initialize_controller(
+                fixture,
+                vectors,
+                Entry::fixed(vectors.error),
+                Spurious::enabled(vectors.spurious),
+                || {
+                    mode_entered.store(true, Ordering::Release);
+                    Ok((
+                        Base::from_bits(0),
+                        FixtureRegisters {
+                            reads: &reads,
+                            writes: &writes,
+                            spurious: &spurious,
+                            spurious_write: SpuriousWrite::Retain,
+                        },
+                    ))
+                },
+                &mut observer,
+            );
+            (
+                outcome,
+                observer.body_completed,
+                observer.gates_held,
+                observer.delivery_excluded,
+                observer.queued_at,
+                observer.reached,
+            )
+        };
+        reached |= observed;
+
+        let poisoned = fixture.lifecycle() == Lifecycle::Poisoned;
+        let unavailable = !fixture.is_enabled()
+            && fixture.send_self_interrupt() == Err(DeliveryError::Unavailable);
+        let retry_refused = matches!(Initialization::begin(fixture), Err(ApicError::Poisoned));
+        unavailable_and_terminal &= outcome == Err(ApicError::NotResponding)
+            && body_completed
+            && gates_held
+            && poisoned
+            && unavailable
+            && retry_refused;
+        delivery_waited_for_unwind &= delivery_excluded;
+
+        let arrived_after_unwind = queued_at.is_some_and(|before| {
+            (0..DELIVERY_ATTEMPTS).any(|_| {
+                core::hint::spin_loop();
+                delivery_count() == before + 1
+            })
+        });
+        delivery_waited_for_unwind &= interrupt::are_enabled() && arrived_after_unwind;
+    }
+
+    unavailable_and_terminal &= reached == ALL_INIT_OBSERVATIONS && live.is_enabled();
+    InitializationFailureProbe {
+        unavailable_and_terminal,
+        ignored_spurious_write_is_terminal: ignored_spurious_write_is_terminal(vectors),
+        delivery_waited_for_unwind,
+    }
+}
+
+#[cfg(feature = "selftest")]
+fn ignored_spurious_write_is_terminal(vectors: Vectors) -> bool {
+    let state = AtomicU8::new(Lifecycle::Cold.bits());
+    let self_interrupt_vector = AtomicU8::new(0);
+    let timer_vector = AtomicU8::new(0);
+    let spurious_vector = AtomicU8::new(0);
+    let fixture = Controller {
+        state: &state,
+        self_interrupt_vector: &self_interrupt_vector,
+        timer_vector: &timer_vector,
+        spurious_vector: &spurious_vector,
+    };
+    let reads = AtomicUsize::new(0);
+    let writes = AtomicUsize::new(0);
+    let spurious = AtomicUsize::new(0);
+    let entry_interrupts = interrupt::are_enabled();
+    let mut observer = Unobserved;
+    let outcome = initialize_controller(
+        fixture,
+        vectors,
+        Entry::fixed(vectors.error),
+        Spurious::enabled(vectors.spurious),
+        || {
+            Ok((
+                Base::from_bits(0),
+                FixtureRegisters {
+                    reads: &reads,
+                    writes: &writes,
+                    spurious: &spurious,
+                    spurious_write: SpuriousWrite::Ignore,
+                },
+            ))
+        },
+        &mut observer,
+    );
+
+    outcome == Err(ApicError::NotResponding)
+        && reads.load(Ordering::Relaxed) == 3
+        && writes.load(Ordering::Relaxed) == 7
+        && spurious.load(Ordering::Relaxed) == 0
+        && fixture.lifecycle() == Lifecycle::Poisoned
+        && self_interrupt_vector.load(Ordering::Relaxed) == 0
+        && timer_vector.load(Ordering::Relaxed) == 0
+        && spurious_vector.load(Ordering::Relaxed) == 0
+        && fixture.send_self_interrupt() == Err(DeliveryError::Unavailable)
+        && matches!(Initialization::begin(fixture), Err(ApicError::Poisoned))
+        && interrupt::are_enabled() == entry_interrupts
+}
+
+fn initialization_conflict(bits: u8) -> ApicError {
+    let Some(state) = Lifecycle::from_bits(bits) else {
+        panic!("the local APIC lifecycle byte is internal");
+    };
+    match state {
+        Lifecycle::Ready => ApicError::AlreadyInitialized,
+        Lifecycle::Initializing | Lifecycle::Cold => ApicError::InitializationInProgress,
+        Lifecycle::Poisoned => ApicError::Poisoned,
+    }
+}
+
+/// Access to registers after x2APIC mode has been read back.
+struct Registers;
+
+impl InitializationRegisters for Registers {
+    fn write(&self, register: Register, value: u64) {
+        Registers::write(self, register, value);
+    }
+
+    fn read(&self, register: Register) -> u64 {
+        Registers::read(self, register)
+    }
+}
+
+impl Registers {
+    fn write(&self, register: Register, value: u64) {
+        // SAFETY: `Registers` is created only after x2APIC mode is read back,
+        // and operations outside initialization obtain it only after the
+        // lifecycle publishes `Ready`. Values come from `x86_apic` encodings,
+        // defined timer counts, or architecturally required zero writes.
+        unsafe { msr::write(register.msr(), value) };
+    }
+
+    fn read(&self, register: Register) -> u64 {
+        msr::read(register.msr())
+    }
+}
+
+fn ready_registers() -> Option<Registers> {
+    controller().ready_registers()
 }
 
 /// Put the APIC into x2APIC mode, and report the register as it now stands.
@@ -326,7 +1196,7 @@ pub fn is_enabled() -> bool {
 /// Two writes, in this order, because the architecture's state machine has no
 /// edge from disabled straight to extended mode: a single write setting both
 /// bits from a disabled APIC raises a general protection fault.
-fn enter_extended_mode() -> Result<Base, ApicError> {
+fn enter_extended_mode() -> Result<(Base, Registers), ApicError> {
     let mut base = Base::from_bits(msr::read(base::MSR));
 
     if !base.is_enabled() {
@@ -356,27 +1226,26 @@ fn enter_extended_mode() -> Result<Base, ApicError> {
         }
     }
 
-    Ok(base)
+    Ok((base, Registers))
 }
 
-/// Write one register, doing nothing outside x2APIC mode.
+/// Write one register, doing nothing before complete publication.
 fn write(register: Register, value: u64) {
-    if !REGISTERS_READY.load(Ordering::Acquire) {
-        return;
-    }
-    // SAFETY: the processor is in x2APIC mode, which is what makes this
-    // register number one it implements — `REGISTERS_READY` says so, and only
-    // `enter_extended_mode` sets it, after reading the mode back. Every value
-    // written comes from an encoding in `x86_apic`, is the timer's initial
-    // count (all thirty-two bits defined), or is the zero the architecture
-    // accepts for the task priority and mandates for the error status.
-    unsafe { msr::write(register.msr(), value) };
+    Controller::write(controller(), register, value);
 }
 
-/// Read one register, answering zero outside x2APIC mode.
+/// Read one register, answering zero before complete publication.
 fn read(register: Register) -> u64 {
-    if !REGISTERS_READY.load(Ordering::Acquire) {
-        return 0;
+    Controller::read(controller(), register)
+}
+
+fn owns_in_service(vector: InterruptVector) -> bool {
+    let Some(access) = ready_registers() else {
+        return false;
+    };
+    let mut registers = [0u32; 8];
+    for (bits, register) in registers.iter_mut().zip(register::IN_SERVICE) {
+        *bits = Registers::read(&access, register) as u32;
     }
-    msr::read(register.msr())
+    x86_apic::in_service::owns(&registers, vector)
 }

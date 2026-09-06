@@ -66,11 +66,8 @@ pub fn char_for(key: Key, shift: Shift) -> Option<char> {
         Key::Space => ' ',
         Key::Enter | Key::KeypadEnter => '\n',
         Key::Tab => '\t',
-        // Backspace is an editing action rather than a character, but ASCII
-        // has one for it and a console knows what to do with it. Returning it
-        // here costs nothing until there is a second key that acts without
-        // typing — at which point those keys want a channel of their own, not
-        // a wider set of control characters.
+        // Backspace is an action, but ASCII has a character for it and a
+        // console knows what to do; a second such key would want its own channel.
         Key::Backspace => '\u{8}',
         Key::Keypad0 => '0',
         Key::Keypad1 => '1',
@@ -113,9 +110,21 @@ mod tests {
 
     #[test]
     fn the_digit_row_shifts_to_symbols() {
-        assert_eq!(char_for(Key::Digit1, Shift::new()), Some('1'));
-        assert_eq!(char_for(Key::Digit1, held()), Some('!'));
-        assert_eq!(char_for(Key::Digit0, held()), Some(')'));
+        for (key, plain, shifted) in [
+            (Key::Digit1, '1', '!'),
+            (Key::Digit2, '2', '@'),
+            (Key::Digit3, '3', '#'),
+            (Key::Digit4, '4', '$'),
+            (Key::Digit5, '5', '%'),
+            (Key::Digit6, '6', '^'),
+            (Key::Digit7, '7', '&'),
+            (Key::Digit8, '8', '*'),
+            (Key::Digit9, '9', '('),
+            (Key::Digit0, '0', ')'),
+        ] {
+            assert_eq!(char_for(key, Shift::new()), Some(plain), "{key:?}");
+            assert_eq!(char_for(key, held()), Some(shifted), "{key:?} shifted");
+        }
     }
 
     #[test]
@@ -190,16 +199,32 @@ mod tests {
 
     #[test]
     fn the_keypad_types_its_digits_regardless_of_shift() {
-        assert_eq!(char_for(Key::Keypad7, Shift::new()), Some('7'));
-        assert_eq!(char_for(Key::Keypad7, held()), Some('7'));
-        assert_eq!(char_for(Key::KeypadDivide, Shift::new()), Some('/'));
+        for (key, character) in [
+            (Key::Keypad0, '0'),
+            (Key::Keypad1, '1'),
+            (Key::Keypad2, '2'),
+            (Key::Keypad3, '3'),
+            (Key::Keypad4, '4'),
+            (Key::Keypad5, '5'),
+            (Key::Keypad6, '6'),
+            (Key::Keypad7, '7'),
+            (Key::Keypad8, '8'),
+            (Key::Keypad9, '9'),
+            (Key::KeypadPeriod, '.'),
+            (Key::KeypadPlus, '+'),
+            (Key::KeypadMinus, '-'),
+            (Key::KeypadMultiply, '*'),
+            (Key::KeypadDivide, '/'),
+        ] {
+            assert_eq!(char_for(key, Shift::new()), Some(character), "{key:?}");
+            assert_eq!(char_for(key, held()), Some(character), "{key:?} shifted");
+        }
     }
 
     #[test]
     fn the_control_characters_a_console_acts_on_are_typed() {
-        // Not printable, but each is an ASCII character whose meaning a console
-        // implements, so the layout returns it rather than making every caller
-        // special-case the key.
+        // Not printable, but each is an ASCII character a console implements,
+        // so callers need no special case.
         assert_eq!(char_for(Key::Enter, Shift::new()), Some('\n'));
         assert_eq!(char_for(Key::KeypadEnter, Shift::new()), Some('\n'));
         assert_eq!(char_for(Key::Tab, Shift::new()), Some('\t'));

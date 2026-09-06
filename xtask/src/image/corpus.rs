@@ -1,23 +1,12 @@
-//! The FAT32 volume the kernel reads, built once and used twice.
+//! Deterministic FAT32 corpus shared by machine and host checks.
 //!
-//! `012` §1 chose FAT32 on the **corpus**, not on the code: `fatfs` is mature,
-//! runs on this machine, and produces byte-identical volumes from run to run
-//! with chrono off. That is what makes an oracle possible — two independent
-//! implementations of one format, and the disagreement between them is the
-//! test.
-//!
-//! The bytes here go two places. They are written into the NVMe backing file
-//! so the kernel can read them off a controller, and they are handed to a host
-//! test that reads them with **both** `fatfs` and `libs/fat32` and compares.
-//! One corpus, so a check that passes on the host is a check about the same
-//! bytes the machine sees (D-170).
-//!
-//! D-207 closes this corpus's former single-writer proof gap with a separately
-//! pinned `dosfstools`/`mtools` image. This local corpus remains because it is
-//! the exact one the kernel boots; the foreign one independently checks the
-//! format assumptions on the host.
+//! The exact bytes embedded in the NVMe namespace are read independently by
+//! `fatfs` and `libs/fat32`; the pinned foreign corpus separately checks the
+//! format assumptions (D-170, D-207).
 
-use std::io::{Cursor, Write};
+#[cfg(test)]
+use std::io::Cursor;
+use std::io::{Read, Seek, Write};
 
 use anyhow::{Context, Result};
 use fatfs::{FatType, FileSystem, FsOptions};
@@ -83,56 +72,38 @@ pub const fn large_byte(index: usize) -> u8 {
 ///
 /// If `fatfs` refuses to format or to write, which on an in-memory volume of
 /// this size means a version change rather than an environment problem.
-pub fn build() -> Result<Vec<u8>> {
+#[cfg(test)]
+fn build() -> Result<Vec<u8>> {
     let mut bytes = vec![0u8; VOLUME_BYTES];
-    {
-        let mut volume = Cursor::new(&mut bytes[..]);
-        esp::format(&mut volume, FatType::Fat32).context("formatting the corpus volume")?;
-    }
-
-    {
-        let volume = Cursor::new(&mut bytes[..]);
-        let filesystem =
-            FileSystem::new(volume, FsOptions::new()).context("opening the corpus volume")?;
-        {
-            let root = filesystem.root_dir();
-
-            esp::write_file(&root, SMALL_NAME, SMALL_CONTENT)?;
-
-            // Created second and removed last, so its slot sits *between* live
-            // entries rather than after them. A reader that stopped at the
-            // first `0xE5` would then lose everything below.
-            esp::write_file(&root, DELETED_NAME, b"not for long\n")?;
-
-            let large: Vec<u8> = (0..LARGE_BYTES).map(large_byte).collect();
-            esp::write_file(&root, LARGE_NAME, &large)?;
-
-            let directory = root
-                .create_dir(DIRECTORY_NAME)
-                .with_context(|| format!("creating /{DIRECTORY_NAME}"))?;
-            esp::write_file(&directory, NESTED_NAME, NESTED_CONTENT)?;
-
-            root.remove(DELETED_NAME)
-                .with_context(|| format!("removing /{DELETED_NAME}"))?;
-        }
-
-        filesystem.unmount().context("unmounting the corpus")?;
-    }
+    populate(Cursor::new(&mut bytes[..]))?;
 
     Ok(bytes)
 }
 
-/// Write the corpus into `at`, so a shell can look at it.
-///
-/// # Errors
-///
-/// As the write.
-pub fn write_to(path: &std::path::Path) -> Result<()> {
-    let bytes = build()?;
-    let mut file =
-        std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
-    file.write_all(&bytes)
-        .with_context(|| format!("writing {}", path.display()))
+pub(crate) fn populate(mut volume: impl Read + Write + Seek) -> Result<()> {
+    esp::format(&mut volume, FatType::Fat32).context("formatting the corpus volume")?;
+    let filesystem =
+        FileSystem::new(volume, FsOptions::new()).context("opening the corpus volume")?;
+    {
+        let root = filesystem.root_dir();
+
+        esp::write_file(&root, SMALL_NAME, SMALL_CONTENT)?;
+        // Removing this only after later live entries exist makes premature
+        // end-of-directory handling observable.
+        esp::write_file(&root, DELETED_NAME, b"not for long\n")?;
+
+        let large: Vec<u8> = (0..LARGE_BYTES).map(large_byte).collect();
+        esp::write_file(&root, LARGE_NAME, &large)?;
+
+        let directory = root
+            .create_dir(DIRECTORY_NAME)
+            .with_context(|| format!("creating /{DIRECTORY_NAME}"))?;
+        esp::write_file(&directory, NESTED_NAME, NESTED_CONTENT)?;
+
+        root.remove(DELETED_NAME)
+            .with_context(|| format!("removing /{DELETED_NAME}"))?;
+    }
+    filesystem.unmount().context("unmounting the corpus")
 }
 
 #[cfg(test)]
@@ -323,17 +294,20 @@ mod tests {
         let root = volume.bpb().root_cluster();
 
         let mut names: Vec<String> = Vec::new();
-        volume
-            .walk_directory(root, |entry| {
+        let mut cursor = fat32::DirectoryCursor::new(root);
+        loop {
+            let chunk = volume.directory_chunk(&mut cursor).expect("walkable");
+            for entry in chunk.entries() {
                 names.push(String::from_utf8_lossy(entry.name()).into_owned());
-                true
-            })
-            .expect("walkable");
+            }
+            if cursor.is_done() {
+                break;
+            }
+        }
         names.sort();
 
-        // Sorted, so the order the walk happens to produce is not the claim.
-        // `GONE.TXT` is deliberately absent and everything after its slot is
-        // deliberately present.
+        // Sorted, so walk order is not the claim: `GONE.TXT` is absent and
+        // everything after its slot is present.
         assert_eq!(names, vec![LARGE_NAME, DIRECTORY_NAME, SMALL_NAME]);
     }
 

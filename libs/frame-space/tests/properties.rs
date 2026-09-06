@@ -16,7 +16,7 @@
 //! policy", so no property asserts which frame comes back, only that whichever
 //! does is free, aligned, and nobody else's.
 
-use frame_space::{FRAME_SIZE, FrameSpace};
+use frame_space::{FRAME_SIZE, FrameSpace, FreeError};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config, TestRunner};
@@ -25,11 +25,56 @@ use proptest::test_runner::{Config, TestRunner};
 /// it, which is where the interesting refusals live.
 const FRAMES: usize = 64;
 
+const LOWER_END: usize = 16;
+const UPPER_START: usize = 32;
+const UPPER_END: usize = 48;
+
 /// A space managing its whole first word of frames.
 fn managed() -> FrameSpace<1> {
     let mut space: FrameSpace<1> = FrameSpace::new();
     space.insert(0, FRAME_SIZE * FRAMES as u64);
     space
+}
+
+/// Two managed islands with a hole inside their physical extent.
+fn gapped() -> FrameSpace<1> {
+    let mut space: FrameSpace<1> = FrameSpace::new();
+    space.insert(0, FRAME_SIZE * LOWER_END as u64);
+    space.insert(
+        FRAME_SIZE * UPPER_START as u64,
+        FRAME_SIZE * (UPPER_END - UPPER_START) as u64,
+    );
+    space
+}
+
+fn allocated_gapped() -> FrameSpace<1> {
+    let mut space = gapped();
+    for _ in 0..FrameSpace::<1>::FRAME_COUNT {
+        if space.allocate().is_none() {
+            return space;
+        }
+    }
+    assert!(
+        space.allocate().is_none(),
+        "allocation did not terminate after the complete frame domain"
+    );
+    space
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameClass {
+    Managed,
+    InRangeUnmanaged,
+    OutOfRange,
+}
+
+fn classified_frame() -> impl Strategy<Value = (FrameClass, usize)> {
+    prop_oneof![
+        prop_oneof![0usize..LOWER_END, UPPER_START..UPPER_END]
+            .prop_map(|frame| (FrameClass::Managed, frame)),
+        (LOWER_END..UPPER_START).prop_map(|frame| (FrameClass::InRangeUnmanaged, frame)),
+        (FRAMES..FRAMES + 64).prop_map(|frame| (FrameClass::OutOfRange, frame)),
+    ]
 }
 
 /// One allocation request: a run length and an alignment worth asking for.
@@ -120,12 +165,38 @@ proptest! {
     }
 
     /// A frame that was never inserted is not ours to free — the other half of
-    /// the two-bitmap claim.
+    /// the two-bitmap claim. A gapped map keeps that case inside the managed
+    /// physical extent, distinct from both owned and out-of-range frames.
     #[test]
-    fn freeing_an_unmanaged_frame_is_refused(frame in FRAMES..FRAMES + 64) {
-        let mut space = managed();
-        prop_assert!(!space.is_managed(frame), "frame {} should be unmanaged", frame);
-        prop_assert!(space.free(frame).is_err(), "an unmanaged frame was freed");
+    fn release_authority_distinguishes_managed_in_range_unmanaged_and_out_of_range(
+        (class, frame) in classified_frame(),
+    ) {
+        let mut space = allocated_gapped();
+        match class {
+            FrameClass::Managed => {
+                prop_assert!(space.is_managed(frame), "frame {} should be managed", frame);
+                prop_assert_eq!(space.free(frame), Ok(()), "managed frame {} refused release", frame);
+            }
+            FrameClass::InRangeUnmanaged => {
+                prop_assert!(frame < FrameSpace::<1>::FRAME_COUNT, "frame {} should be in range", frame);
+                prop_assert!(!space.is_managed(frame), "hole frame {} should be unmanaged", frame);
+                prop_assert_eq!(
+                    space.free(frame),
+                    Err(FreeError::NotManaged(frame)),
+                    "in-range unmanaged frame {} was not refused as foreign",
+                    frame
+                );
+            }
+            FrameClass::OutOfRange => {
+                prop_assert!(frame >= FrameSpace::<1>::FRAME_COUNT, "frame {} should be out of range", frame);
+                prop_assert_eq!(
+                    space.free(frame),
+                    Err(FreeError::NotManaged(frame)),
+                    "out-of-range frame {} was not refused as foreign",
+                    frame
+                );
+            }
+        }
     }
 }
 
@@ -169,4 +240,43 @@ fn the_ledger_properties_reach_granted_allocations() {
         exhausted > 0,
         "the space was never exhausted; refusal is never exercised"
     );
+}
+
+#[test]
+fn the_release_property_reaches_every_frame_class() {
+    const SAMPLES: usize = 4096;
+    let mut runner = TestRunner::new(Config {
+        cases: SAMPLES as u32,
+        ..Config::default()
+    });
+    let mut managed = 0usize;
+    let mut in_range_unmanaged = 0usize;
+    let mut out_of_range = 0usize;
+
+    for _ in 0..SAMPLES {
+        let (class, _) = classified_frame()
+            .new_tree(&mut runner)
+            .expect("a classified frame")
+            .current();
+        match class {
+            FrameClass::Managed => managed += 1,
+            FrameClass::InRangeUnmanaged => in_range_unmanaged += 1,
+            FrameClass::OutOfRange => out_of_range += 1,
+        }
+    }
+
+    println!(
+        "frame-space release classes: {managed} managed, {in_range_unmanaged} \
+         in-range unmanaged, {out_of_range} out-of-range"
+    );
+    for (name, reached) in [
+        ("managed", managed),
+        ("in-range unmanaged", in_range_unmanaged),
+        ("out-of-range", out_of_range),
+    ] {
+        assert!(
+            reached > SAMPLES / 5,
+            "only {reached} of {SAMPLES} frames reached {name}"
+        );
+    }
 }

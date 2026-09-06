@@ -52,11 +52,8 @@ mod protocol {
 /// state; this decoder discards them.
 const FAKE_SHIFTS: [u8; 2] = [0x12, 0x59];
 
-// Both bytes are also absent from `table::extended_key_for`, so today the
-// guard and the table agree and no test can tell which suppressed a fake
-// shift. The guard is what keeps the behaviour if either byte is ever added
-// there — they are real keys in the *base* table, which is exactly why a
-// future edit might (D-124).
+// Both bytes are also absent from `table::extended_key_for`; the guard keeps
+// the behaviour if a future edit adds them there, as base-table keys (D-124).
 
 /// Pause sends this whole sequence on press and nothing on release — the
 /// one key with no break code.
@@ -155,11 +152,8 @@ impl Decoder {
     /// still decodes. Protocol replies are transparent wherever they arrive:
     /// they produce no event and leave an in-flight key sequence intact.
     pub fn feed(&mut self, byte: u8) -> Option<KeyEvent> {
-        // **`0xAA` is not a reply in set 1.** It is `0x2A | 0x80`, the release
-        // of the left shift, and swallowing it would leave shift held down for
-        // ever after the first capital letter. The self-test result it collides
-        // with is read by the reset path directly, before scanning is enabled,
-        // so it never reaches a decoder (D-179).
+        // In set 1 `0xAA` is the left shift's release, not a reply; the reset
+        // path reads the colliding self-test result before scanning (D-179).
         let reply = match self.set {
             Set::Two => protocol::is_reply(byte),
             Set::One => protocol::is_reply(byte) && byte != protocol::SELF_TEST_PASSED,
@@ -211,10 +205,8 @@ impl Decoder {
                     (State::Pause(matched), None)
                 }
             }
-            // Set 1 has no break prefix, so these two cannot be reached from
-            // `transition_set_1` — a decoder never enters them. Resetting is
-            // the same answer the machine gives any byte that fits no
-            // sequence.
+            // Set 1 has no break prefix, so a decoder never enters these two;
+            // resetting is the answer for any byte that fits no sequence.
             State::Break | State::ExtendedBreak => (State::Idle, None),
         }
     }
@@ -299,7 +291,9 @@ mod tests {
     /// Set 1's release is the high bit, and it is not a prefix.
     #[test]
     fn set_1_puts_the_release_in_the_high_bit() {
+        assert!(!Decoder::new().reads_translated());
         let mut decoder = Decoder::translated();
+        assert!(decoder.reads_translated());
         assert_eq!(decoder.feed(0x1E), event(Key::A, KeyState::Pressed));
         assert_eq!(decoder.feed(0x9E), event(Key::A, KeyState::Released));
     }
@@ -425,11 +419,8 @@ mod tests {
 
     #[test]
     fn the_pause_sequence_yields_one_press_and_no_break() {
-        // Transcribed, not `PAUSE_SEQUENCE`. Feeding the constant to a decoder
-        // that compares against the constant is `x[i] == x[i]`, true for any
-        // array of any length — the constant truncated to four bytes passed
-        // all 31 tests, and the decoder then read the trailing `F0 14 F0 77`
-        // as two phantom release events (D-105).
+        // Transcribed, not `PAUSE_SEQUENCE`: a truncated constant compared
+        // against itself passed every test and left phantom releases (D-105).
         const WIRE: [u8; 8] = [0xE1, 0x14, 0x77, 0xE1, 0xF0, 0x14, 0xF0, 0x77];
         assert_eq!(PAUSE_SEQUENCE, WIRE, "the sequence is not the wire form");
 
@@ -479,8 +470,11 @@ mod tests {
             .into_iter()
             .filter_map(|byte| decoder.feed(byte));
 
-        assert_eq!(events.next(), event(Key::PrintScreen, KeyState::Pressed));
-        assert_eq!(events.next(), None);
+        assert_eq!(
+            core::iter::Iterator::next(&mut events),
+            event(Key::PrintScreen, KeyState::Pressed)
+        );
+        assert_eq!(core::iter::Iterator::next(&mut events), None);
     }
 
     /// And its release: the key, then the fake shift's break.
@@ -491,8 +485,11 @@ mod tests {
             .into_iter()
             .filter_map(|byte| decoder.feed(byte));
 
-        assert_eq!(events.next(), event(Key::PrintScreen, KeyState::Released));
-        assert_eq!(events.next(), None);
+        assert_eq!(
+            core::iter::Iterator::next(&mut events),
+            event(Key::PrintScreen, KeyState::Released)
+        );
+        assert_eq!(core::iter::Iterator::next(&mut events), None);
     }
 
     #[test]
@@ -595,11 +592,9 @@ mod tests {
     /// panics nor wedges the machine — a letter still decodes afterwards,
     /// possibly on the second try when the byte itself opened a new prefix.
     ///
-    /// The Pause prefixes are derived from the sequence constant, so every
-    /// intermediate `Pause(n)` state — home of the crate's one indexed
-    /// access — is visited even if the sequence changes. The list once
-    /// skipped three of them by hand-enumeration, which is the mistake this
-    /// construction removes.
+    /// The Pause prefixes are derived from the sequence constant so every
+    /// intermediate `Pause(n)` state — home of the crate's indexed access —
+    /// remains covered when the sequence changes.
     #[test]
     fn no_byte_in_no_state_panics_or_wedges() {
         let other_prefixes: [&[u8]; 4] = [&[], &[0xF0], &[0xE0], &[0xE0, 0xF0]];
@@ -625,18 +620,9 @@ mod tests {
         }
     }
 
-    /// **Both** fake shifts are swallowed, in both directions.
-    ///
-    /// The tests reached `FAKE_SHIFTS` only with `0x12`, so its second element
-    /// was never exercised. Widening this to both did **not** make the
-    /// constant load-bearing, and saying so is the point: `extended_key_for`
-    /// has no arm for either byte, so the guard and the table give the same
-    /// answer and neither can be shown to be the one giving it (D-124).
-    ///
-    /// The test is kept because it pins the *behaviour* — `E0 12` and `E0 59`
-    /// produce nothing, whichever layer decides — and because the guard is
-    /// what survives someone adding those bytes to the extended table, which
-    /// is a plausible edit: they are real keys in the base one.
+    /// Both protocol-only shifts are swallowed in make and break form.
+    /// The extended table also omits them, so this pins wire behavior rather
+    /// than claiming which of the two equivalent refusals supplied it.
     #[test]
     fn both_fake_shifts_are_swallowed() {
         for fake in [0x12u8, 0x59] {

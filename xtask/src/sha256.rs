@@ -20,43 +20,112 @@ const INITIAL_STATE: [u32; 8] = [
 const BLOCK_SIZE: usize = 64;
 
 /// Hash `data`.
+///
+/// # Panics
+///
+/// Panics if the resident input exceeds SHA-256's 64-bit length field.
 pub fn digest(data: &[u8]) -> [u8; 32] {
-    let mut state = INITIAL_STATE;
+    let mut hasher = Hasher::new();
+    let byte_length = data.len() as u128;
+    assert!(
+        byte_length <= u128::from(u64::MAX / 8),
+        "resident SHA-256 input exceeds the algorithm's length field"
+    );
+    hasher.bytes = byte_length as u64;
+    hasher.absorb(data);
+    hasher.finish()
+}
 
-    let mut blocks = data.chunks_exact(BLOCK_SIZE);
-    for block in blocks.by_ref() {
-        compress(
-            &mut state,
-            block.try_into().expect("chunks_exact yields whole blocks"),
-        );
+pub(crate) fn digest_reader(mut reader: impl std::io::Read) -> std::io::Result<(u64, [u8; 32])> {
+    let mut hasher = Hasher::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = std::io::Read::read(&mut reader, &mut buffer)?;
+        if read == 0 {
+            return Ok((hasher.bytes, hasher.finish()));
+        }
+        hasher.update(&buffer[..read])?;
+    }
+}
+
+pub(crate) struct Hasher {
+    state: [u32; 8],
+    buffer: [u8; BLOCK_SIZE],
+    buffered: usize,
+    bytes: u64,
+}
+
+impl Hasher {
+    pub(crate) const fn new() -> Self {
+        Self {
+            state: INITIAL_STATE,
+            buffer: [0; BLOCK_SIZE],
+            buffered: 0,
+            bytes: 0,
+        }
     }
 
-    // Pad with 0x80, then zeroes, then the bit length as a big-endian u64.
-    let mut tail = [0u8; BLOCK_SIZE * 2];
-    let remainder = blocks.remainder();
-    tail[..remainder.len()].copy_from_slice(remainder);
-    tail[remainder.len()] = 0x80;
-
-    let tail_len = if remainder.len() + 9 <= BLOCK_SIZE {
-        BLOCK_SIZE
-    } else {
-        BLOCK_SIZE * 2
-    };
-    let bits = (data.len() as u64) * 8;
-    tail[tail_len - 8..tail_len].copy_from_slice(&bits.to_be_bytes());
-
-    for block in tail[..tail_len].chunks_exact(BLOCK_SIZE) {
-        compress(
-            &mut state,
-            block.try_into().expect("chunks_exact yields whole blocks"),
-        );
+    pub(crate) fn update(&mut self, data: &[u8]) -> std::io::Result<()> {
+        let additional = u64::try_from(data.len()).map_err(|_| input_too_large())?;
+        self.bytes = self
+            .bytes
+            .checked_add(additional)
+            .filter(|bytes| *bytes <= u64::MAX / 8)
+            .ok_or_else(input_too_large)?;
+        self.absorb(data);
+        Ok(())
     }
 
-    let mut out = [0u8; 32];
-    for (chunk, word) in out.chunks_exact_mut(4).zip(state) {
-        chunk.copy_from_slice(&word.to_be_bytes());
+    fn absorb(&mut self, mut data: &[u8]) {
+        if self.buffered != 0 {
+            let copied = (BLOCK_SIZE - self.buffered).min(data.len());
+            self.buffer[self.buffered..self.buffered + copied].copy_from_slice(&data[..copied]);
+            self.buffered += copied;
+            data = &data[copied..];
+            if self.buffered != BLOCK_SIZE {
+                return;
+            }
+            compress(&mut self.state, &self.buffer);
+            self.buffered = 0;
+        }
+
+        let (blocks, remainder) = data.as_chunks::<BLOCK_SIZE>();
+        for block in blocks {
+            compress(&mut self.state, block);
+        }
+        self.buffer[..remainder.len()].copy_from_slice(remainder);
+        self.buffered = remainder.len();
     }
-    out
+
+    pub(crate) fn finish(mut self) -> [u8; 32] {
+        let mut final_block = [0u8; BLOCK_SIZE];
+        final_block[..self.buffered].copy_from_slice(&self.buffer[..self.buffered]);
+        final_block[self.buffered] = 0x80;
+
+        let bits = self.bytes * 8;
+        if self.buffered + 9 <= BLOCK_SIZE {
+            final_block[BLOCK_SIZE - 8..].copy_from_slice(&bits.to_be_bytes());
+            compress(&mut self.state, &final_block);
+        } else {
+            compress(&mut self.state, &final_block);
+            let mut length_block = [0u8; BLOCK_SIZE];
+            length_block[BLOCK_SIZE - 8..].copy_from_slice(&bits.to_be_bytes());
+            compress(&mut self.state, &length_block);
+        }
+
+        let mut out = [0u8; 32];
+        for (chunk, word) in out.chunks_exact_mut(4).zip(self.state) {
+            chunk.copy_from_slice(&word.to_be_bytes());
+        }
+        out
+    }
+}
+
+fn input_too_large() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "input is too large for the SHA-256 length field",
+    )
 }
 
 /// Lowercase hex, the form `sha256sum` prints.
@@ -71,8 +140,8 @@ pub fn hex(digest: &[u8; 32]) -> String {
 
 fn compress(state: &mut [u32; 8], block: &[u8; BLOCK_SIZE]) {
     let mut schedule = [0u32; 64];
-    for (word, chunk) in schedule.iter_mut().zip(block.chunks_exact(4)) {
-        *word = u32::from_be_bytes(chunk.try_into().expect("chunks_exact yields four bytes"));
+    for (word, chunk) in schedule.iter_mut().zip(block.as_chunks::<4>().0) {
+        *word = u32::from_be_bytes(*chunk);
     }
     for index in 16..64 {
         let s0 = rotate(schedule[index - 15], 7, 18, 3);
@@ -164,5 +233,26 @@ mod tests {
         let input = vec![b'x'; 56];
         assert_eq!(hash(&input).len(), 64);
         assert_ne!(hash(&input), hash(&[b'x'; 55]));
+    }
+
+    #[test]
+    fn incremental_hashing_matches_every_adversarial_block_split() {
+        let input: Vec<u8> = (0..=255).cycle().take(1025).collect();
+        let expected = digest(&input);
+        for chunk in [1, 7, 55, 56, 63, 64, 65, 127, 128, 129] {
+            let mut hasher = Hasher::new();
+            for bytes in input.chunks(chunk) {
+                hasher.update(bytes).unwrap();
+            }
+            assert_eq!(hasher.finish(), expected, "chunk size {chunk}");
+        }
+    }
+
+    #[test]
+    fn a_reader_is_hashed_without_changing_length_or_digest() {
+        let input: Vec<u8> = (0..=255).cycle().take(128 * 1024 + 17).collect();
+        let (bytes, streamed) = digest_reader(std::io::Cursor::new(&input)).unwrap();
+        assert_eq!(bytes, input.len() as u64);
+        assert_eq!(streamed, digest(&input));
     }
 }

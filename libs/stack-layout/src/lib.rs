@@ -82,14 +82,6 @@ impl Slot {
     pub const fn stack_top(&self) -> u64 {
         self.stack_base + self.stack_len
     }
-
-    /// Whether a byte range touches any byte of this stack.
-    ///
-    /// An overflowing range is treated as touching: callers use this to
-    /// protect a live mapping, so an invalid request must fail closed.
-    pub const fn stack_overlaps(&self, base: u64, len: u64) -> bool {
-        ranges_overlap(self.stack_base, self.stack_len, base, len)
-    }
 }
 
 /// Whether two half-open byte ranges overlap.
@@ -193,12 +185,9 @@ mod tests {
 
     /// The addresses the layout actually produces, transcribed.
     ///
-    /// `below.stack_top() <= slot.guard_base()` reduces to
-    /// `base + stride·i <= base + stride·i` for every base, stride and slot
-    /// count — true of any implementation of `stride()`, including one that
-    /// overlaps every slot with its neighbour. Nothing in this file held an
-    /// absolute address, so the claim in the module doc — "the proof that no
-    /// two slots touch" — was resting on `X <= X` (D-105).
+    /// Absolute addresses are independent of `stride()`, unlike a relational
+    /// `base + stride·i <= base + stride·i` tautology that also admits
+    /// overlapping slots (D-105).
     #[test]
     fn slots_land_where_the_arithmetic_says() {
         let layout = layout();
@@ -255,19 +244,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stack_overlap_is_half_open_and_fails_closed() {
-        let slot = layout().slot(0).expect("in range");
-
-        assert!(!slot.stack_overlaps(slot.guard_base(), 4096));
-        assert!(!slot.stack_overlaps(slot.stack_top(), 4096));
-        assert!(!slot.stack_overlaps(slot.stack_base(), 0));
-        assert!(slot.stack_overlaps(slot.stack_base(), 4096));
-        assert!(slot.stack_overlaps(slot.stack_base() - 1, 2));
-        assert!(slot.stack_overlaps(slot.stack_top() - 1, 2));
-        assert!(slot.stack_overlaps(u64::MAX - 1, 4));
-    }
-
     /// `end()` and `last.stack_top()` are the same expression written twice,
     /// so the equality between them is `X == X`; the window's length against a
     /// transcribed number is what says the layout is the size it claims
@@ -305,11 +281,9 @@ mod tests {
 
     /// A page is four kilobytes, and a guard smaller than one is refused.
     ///
-    /// `PAGE_SIZE` is used only as an alignment modulus, and every test value
-    /// is a multiple of 4096 — which is also a multiple of 2048, so halving
-    /// the constant accepted everything offered and nothing was offered that
-    /// had to be *rejected*. `wost` maps in 4096 units, so a 2048-byte guard
-    /// is not a guard (D-124).
+    /// Anchor `PAGE_SIZE` and include a 2048-byte rejection because positive
+    /// values aligned to 4096 cannot distinguish a halved modulus. `wost` maps
+    /// in 4096-byte units (D-124).
     #[test]
     fn a_guard_smaller_than_a_page_is_refused() {
         assert_eq!(PAGE_SIZE, 4096);

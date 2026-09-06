@@ -2,8 +2,7 @@
 //!
 //! A 64-bit gate is sixteen bytes that name a handler, the code selector to
 //! enter it with, and optionally one of the seven interrupt stacks in the
-//! task-state segment. The handler address is split across three fields for
-//! reasons that are entirely historical.
+//! task-state segment.
 
 use crate::Selector;
 
@@ -86,10 +85,7 @@ impl Gate {
     /// line is not a service. Exactly one gate is opened this way, and it is
     /// the kernel's entry (D-96).
     ///
-    /// Still an *interrupt* gate rather than a trap gate: the interrupt flag
-    /// is cleared on entry either way here, because a handler that could be
-    /// preempted before it has established a kernel stack discipline is the
-    /// hazard this kernel spent Phase 2 removing.
+    /// An interrupt gate clears IF before kernel stack discipline exists.
     ///
     /// # Panics
     ///
@@ -103,27 +99,6 @@ impl Gate {
     /// The privilege level that may reach this gate with `int`.
     pub const fn privilege(self) -> u8 {
         (self.attributes >> 5) & 0b11
-    }
-
-    /// The handler address, reassembled from its three fields.
-    pub const fn handler_address(self) -> u64 {
-        self.offset_low as u64 | (self.offset_middle as u64) << 16 | (self.offset_high as u64) << 32
-    }
-
-    /// The code selector the handler is entered through.
-    pub const fn selector(self) -> Selector {
-        Selector::from_bits(self.selector)
-    }
-
-    /// Which interrupt stack the handler runs on, or zero for the interrupted
-    /// one.
-    pub const fn interrupt_stack(self) -> u8 {
-        self.interrupt_stack
-    }
-
-    /// Whether the CPU will accept this vector.
-    pub const fn is_present(self) -> bool {
-        self.attributes & 0x80 != 0
     }
 }
 
@@ -145,7 +120,6 @@ mod tests {
         let handler = 0xFFFF_FFFF_8012_3456;
         let gate = Gate::interrupt(handler, KERNEL_CODE, 0);
 
-        assert_eq!(gate.handler_address(), handler);
         assert_eq!(gate.offset_low, 0x3456);
         assert_eq!(gate.offset_middle, 0x8012);
         assert_eq!(gate.offset_high, 0xFFFF_FFFF);
@@ -153,11 +127,12 @@ mod tests {
 
     #[test]
     fn a_gate_records_its_selector_and_stack() {
-        let gate = Gate::interrupt(0x1000, KERNEL_CODE, 1);
-
-        assert_eq!(gate.selector(), KERNEL_CODE);
-        assert_eq!(gate.interrupt_stack(), 1);
-        assert!(gate.is_present());
+        for stack in [0, 1, MAX_INTERRUPT_STACK] {
+            let gate = Gate::interrupt(0x1000, KERNEL_CODE, stack);
+            assert_eq!(gate.selector, KERNEL_CODE.bits());
+            assert_eq!(gate.interrupt_stack, stack);
+            assert_ne!(gate.attributes & 0x80, 0);
+        }
     }
 
     #[test]
@@ -170,7 +145,7 @@ mod tests {
 
     #[test]
     fn a_missing_gate_is_not_present() {
-        assert!(!Gate::MISSING.is_present());
+        assert_eq!(Gate::MISSING.attributes & 0x80, 0);
         assert_eq!(Gate::MISSING, Gate::default());
     }
 
@@ -201,15 +176,14 @@ mod tests {
 
         // Present, DPL 0, 64-bit interrupt gate: `1_00_0_1110`.
         assert_eq!(ordinary.attributes, 0b1000_1110);
-        // Present, DPL 3, still a 64-bit *interrupt* gate — the low nibble is
-        // `0xE` and not `0xF`, which is what keeps it from being a trap gate
-        // and keeps `IF` cleared on entry.
+        // Present, DPL 3, still an interrupt gate: the low nibble `0xE`, not
+        // `0xF`, is what keeps `IF` cleared on entry.
         assert_eq!(callable.attributes, 0b1110_1110);
         assert_eq!(callable.attributes & 0xF, 0xE, "it became a trap gate");
         assert_eq!(callable.privilege(), 3);
         assert_eq!(ordinary.privilege(), 0, "an ordinary gate admits ring 3");
-        assert_eq!(callable.handler_address(), 0xffff_8000_0000_1234);
-        assert!(callable.is_present() && ordinary.is_present());
+        assert_ne!(callable.attributes & 0x80, 0);
+        assert_ne!(ordinary.attributes & 0x80, 0);
     }
 
     /// The bytes the CPU reads are where the manual says they are.
@@ -258,6 +232,6 @@ mod tests {
     #[test]
     fn the_missing_gate_is_not_user_callable() {
         assert_eq!(Gate::MISSING.privilege(), 0);
-        assert!(!Gate::MISSING.is_present());
+        assert_eq!(Gate::MISSING.attributes & 0x80, 0);
     }
 }

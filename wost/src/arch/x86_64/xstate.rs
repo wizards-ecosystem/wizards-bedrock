@@ -1,31 +1,17 @@
-//! Extended processor state: what a thread's floating-point registers are
-//! saved into, and when.
+//! Eager x87, SSE, and AVX state isolation (D-82).
 //!
-//! **Eager, never lazy** (D-82). Lazy save/restore is CVE-2018-3665, and it
-//! buys a saving this kernel has no way to measure. Every switch saves and
-//! restores, and the cost is one pair of instructions on a path that already
-//! writes `CR3` and `RSP0`.
-//!
-//! The arithmetic — which components are present, how large each is, where it
-//! sits in a compacted area — is `x86_cpuid::xstate`'s and is host-tested
-//! against synthetic CPUID snapshots including the APX case that broke Linux's
-//! monotonicity assumption. What is here is the four instructions and the two
-//! control registers.
-//!
-//! Nothing is enabled until every refusal has been made: a failure path that
-//! left SSE legal at CPL 3 with no save in the switch would be worse than
-//! never calling [`init`] at all (D-115).
-//!
-//! `XCR0` is x87, SSE and AVX and nothing else (D-82). A wider mask is a
-//! larger buffer for every thread and state this kernel has no user for; the
-//! bits that would earn their room — CET's shadow-stack pointers — arrive with
-//! CET.
+//! `x86_cpuid::xstate` owns the host-tested layout arithmetic; this module owns
+//! the control registers and save instructions. All fallible validation occurs
+//! before enabling user-visible state (D-115). Lazy switching is excluded by
+//! the CVE-2018-3665 class of register-state disclosure.
 
 use core::arch::asm;
 use core::arch::x86_64::__cpuid_count;
+#[cfg(feature = "selftest")]
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use x86_cpuid::xstate::{self, Component, Layout};
+use x86_cpuid::xstate::{self, Alignment, Component, Layout};
 
 use super::cpu;
 
@@ -69,38 +55,34 @@ pub struct Extended {
 
 /// Turn on extended-state saving, and report what it costs.
 ///
-/// `None` where the processor has no `XSAVE` at all, in which case nothing is
-/// saved and nothing needs to be: without `XSAVE` there is no `XCR0`, the
-/// legacy x87 and SSE state is all there is, and `+soft-float` means the
-/// kernel never touches it — so a thread's registers survive a switch by not
-/// being disturbed.
+/// `None` where the processor has no usable `XSAVE`; user launch then remains
+/// closed because thread switches cannot isolate that register state.
 ///
-/// Safe: every bit written is one `CPUID` reported, and the worst an
-/// unexpected one could do is fault, which is a trap the kernel reports.
+/// Safe: state bits and their instruction features are checked before any
+/// control register is changed.
 pub fn init() -> Option<Extended> {
     let basic = __cpuid_count(1, 0);
     if basic.ecx & XSAVE_SUPPORTED == 0 {
         return None;
     }
 
-    // **Every refusal happens before anything is enabled.** `CPUID.0DH`
-    // reports what the *processor* supports and needs no control bit; only
-    // the instructions do. The first version enabled first and asked
-    // afterwards, so three failure paths left `CR0.EM` clear and
-    // `CR4.OSFXSR` set — SSE legal at CPL 3 — with `FORM` at zero, which
-    // means the switch saves nothing. Two programs would then share the
-    // register file, and the machine would be strictly worse off than if
-    // this function had never been called (D-115).
+    // Preflight before enabling anything, so a refusal cannot leave SSE usable
+    // while the context switch still saves no extended state (D-115).
     let supported = __cpuid_count(XSTATE_LEAF, 0);
     let available = u64::from(supported.eax) | (u64::from(supported.edx) << 32);
-    let mask = available & xstate::PERMITTED;
+    if !xstate::has_permitted_components(available) {
+        return None;
+    }
+    let mask = xstate::PERMITTED;
+    if !xstate::avx_state_has_instruction_support(mask, basic.ecx) {
+        return None;
+    }
     // x87 is mandatory in `XCR0`; a processor reporting otherwise is one this
     // kernel does not understand, and writing the register would fault.
     if mask & xstate::X87 == 0 {
         return None;
     }
 
-    // Sub-leaf 1 reports which save forms exist.
     let forms = __cpuid_count(XSTATE_LEAF, 1);
     let compacted = forms.eax & XSAVEC_SUPPORTED != 0;
 
@@ -108,20 +90,31 @@ pub fn init() -> Option<Extended> {
     if !layout.is_consistent() {
         return None;
     }
-    // The uncompacted form writes every component at its architectural offset,
-    // which is never below the compacted one; `CPUID.0DH.0:EBX` is that size
-    // for the mask this is about to put in `XCR0`. Taking the larger means one
-    // ceiling serves whichever form the processor turns out to have.
-    let bytes = layout.size().max(supported.ebx as usize);
+    let avx = __cpuid_count(XSTATE_LEAF, 2);
+    let standard_bytes = xstate::standard_component_extent(
+        Component::new(
+            avx.eax,
+            if avx.ecx & (1 << 1) != 0 {
+                Alignment::Bytes64
+            } else {
+                Alignment::Natural
+            },
+        ),
+        avx.ebx,
+    )?;
+    let bytes = if compacted {
+        layout.size()
+    } else {
+        standard_bytes
+    };
     if !(xstate::HEADER_BYTES..=CEILING).contains(&bytes) {
         return None;
     }
 
-    // Nothing below can refuse, so from here the machine is committed.
+    // Every fallible preflight precedes the irreversible control-register write.
     cpu::enable_extended_state();
-    // SAFETY: every bit of `mask` was reported available by the leaf above,
-    // and `CR4.OSXSAVE` is set by the line above, which is `XSETBV`'s only
-    // precondition.
+    // SAFETY: every bit was reported available, the layout checked component
+    // dependencies, the feature gate checked AVX, and `CR4.OSXSAVE` is set.
     unsafe { set_extended_control(mask) };
 
     BYTES.store(bytes, Ordering::Release);
@@ -138,7 +131,14 @@ fn describe(index: u32) -> Component {
     // A sub-leaf the processor does not describe answers with zeros, which
     // `Component::new` reads as absent.
     let leaf = __cpuid_count(XSTATE_LEAF, index);
-    Component::new(leaf.eax, leaf.ecx & (1 << 1) != 0)
+    Component::new(
+        leaf.eax,
+        if leaf.ecx & (1 << 1) != 0 {
+            Alignment::Bytes64
+        } else {
+            Alignment::Natural
+        },
+    )
 }
 
 /// Bytes a save area needs, or zero if nothing is saved.
@@ -151,34 +151,46 @@ pub fn is_enabled() -> bool {
     FORM.load(Ordering::Acquire) != 0
 }
 
-/// Whether a save writes only inside the area [`bytes`] asks for.
+/// Whether the configured save machinery and hardware still isolate user state.
+pub fn user_state_is_isolated() -> bool {
+    let isolated = configured_policy_is_live();
+    #[cfg(feature = "selftest")]
+    let isolated = isolated && !REFUSE_USER_STATE_ISOLATION.load(Ordering::Acquire);
+    isolated
+}
+
+fn configured_policy_is_live() -> bool {
+    is_enabled()
+        && cpu::extended_state_is_enabled()
+        && xstate::matches_permitted_configuration(extended_control())
+}
+
+#[cfg(feature = "selftest")]
+static REFUSE_USER_STATE_ISOLATION: AtomicBool = AtomicBool::new(false);
+
+/// Run one check with live user-state isolation withheld.
+#[cfg(feature = "selftest")]
+pub fn without_user_state_isolation_for_test<T>(operation: impl FnOnce() -> T) -> T {
+    let previous = REFUSE_USER_STATE_ISOLATION.swap(true, Ordering::AcqRel);
+    let result = operation();
+    REFUSE_USER_STATE_ISOLATION.store(previous, Ordering::Release);
+    result
+}
+
+/// Whether a save leaves a sentinel immediately beyond [`bytes`] untouched.
 ///
-/// The hazard this exists for: `bytes` is computed for whichever form `init`
-/// chose, and [`save`] dispatches on a separate word. They are stored together
-/// and agree — and nothing checked that they still do. A `FORM` naming the
-/// uncompacted path with a compacted `bytes` writes **past the end of every
-/// save area on the machine**, which is a `ThreadContext`-sized buffer inside
-/// a thread's slot.
-///
-/// Checked by consequence rather than by label: the area is followed by a
-/// sentinel, and the save must not touch it. That catches the disagreement
-/// whichever direction it goes, and would catch a `bytes` that was simply too
-/// small for reasons nobody has thought of yet (D-144).
-///
-/// `false` where extended state is off, since there is nothing to save.
+/// This verifies the independently published save form and size agree (D-144).
+/// Returns `false` when extended state is disabled.
+#[cfg(feature = "selftest")]
 pub fn save_stays_inside_its_area() -> bool {
-    /// Generous beside any `XCR0` this kernel enables — x87, SSE and AVX come
-    /// to well under a kilobyte — and the check refuses rather than overflows
-    /// if that ever stops being true.
     const ROOM: usize = 4096;
-    /// Bytes of sentinel past the area, and the pattern written into them.
     const SENTINEL: usize = 128;
     const MARK: u8 = 0xC3;
 
     #[repr(C, align(64))]
     struct Area([u8; ROOM]);
 
-    if !is_enabled() {
+    if !configured_policy_is_live() {
         return false;
     }
     let bytes = bytes();
@@ -187,9 +199,8 @@ pub fn save_stays_inside_its_area() -> bool {
     }
 
     let mut area = Area([MARK; ROOM]);
-    // `XSAVE` writes only the components whose bits it is given and the header;
-    // the rest of the area is left as it was, so the sentinel is the only part
-    // this reads back.
+    // `XSAVE` writes only the requested components and the header, so the
+    // sentinel beyond them is the only part read back.
     // SAFETY: `area` is 64-byte aligned by its `repr` and at least `bytes`
     // long, checked above — which is exactly `save`'s contract.
     unsafe { save(area.0.as_mut_ptr()) };
@@ -205,7 +216,15 @@ pub fn save_stays_inside_its_area() -> bool {
 ///
 /// `area` must be 64-byte aligned and at least [`bytes`] long, and
 /// writable for that whole span. Nothing else may be reading or writing it.
-pub unsafe fn save(area: *mut u8) {
+///
+/// # Panics
+///
+/// Panics if the live control registers no longer match the sized policy.
+pub(super) unsafe fn save(area: *mut u8) {
+    assert!(
+        configured_policy_is_live(),
+        "extended-state controls diverged from the sized save policy"
+    );
     match FORM.load(Ordering::Acquire) {
         2 => {
             // SAFETY: the caller's, plus `XSAVEC` needs only `CR4.OSXSAVE`,
@@ -240,13 +259,22 @@ pub unsafe fn save(area: *mut u8) {
 ///
 /// # Safety
 ///
-/// `area` must satisfy [`save`]'s requirements and must hold a state [`save`]
-/// wrote. `XRSTOR` reads the header's `XCOMP_BV` to tell the two forms apart,
-/// so one restore serves both.
-pub unsafe fn restore(area: *const u8) {
+/// `area` must satisfy [`save`]'s requirements and hold either a state [`save`]
+/// wrote or [`bytes`] fully zeroed bytes. A zero `XSTATE_BV` and `XCOMP_BV`
+/// encode architectural initial state in standard form; zero reserved header
+/// bytes satisfy `XRSTOR`'s format checks.
+///
+/// # Panics
+///
+/// Panics if the live control registers no longer match the sized policy.
+pub(super) unsafe fn restore(area: *const u8) {
     if FORM.load(Ordering::Acquire) == 0 {
         return;
     }
+    assert!(
+        configured_policy_is_live(),
+        "extended-state controls diverged from the sized restore policy"
+    );
     // SAFETY: the caller's, plus `CR4.OSXSAVE` is set — `init` stored a
     // non-zero form only after setting it.
     unsafe {
@@ -282,6 +310,7 @@ unsafe fn set_extended_control(mask: u64) {
 
 /// Values spanning every extended-state component this kernel enables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(feature = "selftest")]
 pub struct Probe {
     /// One exactly representable value on the x87 register stack.
     pub x87: i64,
@@ -293,16 +322,12 @@ pub struct Probe {
 
 /// Put `probe` in x87, SSE and AVX state.
 ///
-/// These are the only floating-point/vector instructions in the kernel. The
-/// clobbers cannot be declared because `x86_64-unknown-none` is built
-/// `-sse,+soft-float`; no compiled code can hold these registers, which is
-/// also what lets the switch save before changing stacks (D-108, D-228).
-///
-/// Returns `false` unless all three components are live. `CR4.OSFXSR`,
-/// `CR4.OSXSAVE` and `CR0.EM` have their required values whenever [`init`]
-/// publishes that mask, so safe callers cannot reach an undefined instruction.
+/// The soft-float target cannot keep values in these registers, which is why
+/// this test-only clobber cannot collide with compiled code (D-108, D-228).
+/// It refuses unless all three components are live.
+#[cfg(feature = "selftest")]
 pub fn write_probe(probe: Probe) -> bool {
-    if !is_enabled() || extended_control() & xstate::PERMITTED != xstate::PERMITTED {
+    if !configured_policy_is_live() {
         return false;
     }
     let x87 = probe.x87;
@@ -328,8 +353,9 @@ pub fn write_probe(probe: Probe) -> bool {
 ///
 /// The x87 value is popped so repeated probes cannot fill its eight-entry
 /// stack. The SSE and AVX lanes are only read.
+#[cfg(feature = "selftest")]
 pub fn read_probe() -> Option<Probe> {
-    if !is_enabled() || extended_control() & xstate::PERMITTED != xstate::PERMITTED {
+    if !configured_policy_is_live() {
         return None;
     }
     let mut x87 = 0i64;
@@ -357,10 +383,8 @@ pub fn read_probe() -> Option<Probe> {
 /// Zero before [`init`] succeeds, which is also what a processor without
 /// `XSAVE` reports — the two are the same answer for the same reason.
 pub fn extended_control() -> u64 {
-    // Guarded on the *control register*, not on `FORM`. Reading the Rust flag
-    // here made the check that asks about `XCR0` return a constant zero on the
-    // path where it mattered — D-105's `VERW`-arming lesson, in a fresh
-    // instance found by D-115.
+    // `XGETBV` legality comes from live `CR4.OSXSAVE`, not the later `FORM`
+    // publication; consulting `FORM` here would make the read self-referential.
     if !cpu::extended_state_is_enabled() {
         return 0;
     }

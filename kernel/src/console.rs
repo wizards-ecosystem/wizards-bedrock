@@ -68,61 +68,62 @@ impl Console {
         self.framebuffer.address()
     }
 
-    /// Give the framebuffer a shadow in RAM, so scrolling stops reading it.
-    ///
-    /// Called once the heap exists — the console is built long before it.
+    /// Add the shadow that scrolling reads once the heap is available.
+    #[must_use = "a refused console shadow was not attached"]
     pub(crate) fn attach_back_buffer(&mut self) -> bool {
         self.framebuffer.attach_back_buffer()
     }
 
     /// Whether scrolling reads RAM rather than the device.
-    ///
-    /// Read only by the boot-time check, so it exists only where that does.
     #[cfg(feature = "selftest")]
     pub(crate) fn has_back_buffer(&self) -> bool {
         self.framebuffer.has_back_buffer()
     }
 
     /// Where the next character would be drawn.
-    ///
-    /// Read by the boot-time check that the editing keys move the cursor the
-    /// way a person expects — the only property of this console anything
-    /// automated has ever asserted.
     #[cfg(feature = "selftest")]
     pub(crate) const fn cursor(&self) -> (usize, usize) {
         (self.cursor_x, self.cursor_y)
     }
 
-    /// The width of one character cell, so a check can say how far the cursor
-    /// should have moved.
+    /// Dimensions of one character cell.
     #[cfg(feature = "selftest")]
     pub(crate) const fn cell_size(&self) -> (usize, usize) {
         (self.glyph_width, self.line_height)
     }
 
-    /// Geometry of the framebuffer being drawn on.
-    #[cfg(feature = "selftest")]
     /// The colour at (`x`, `y`), for the check that hunts a stray cursor.
     #[cfg(feature = "selftest")]
     pub(crate) fn pixel_at(&self, x: usize, y: usize) -> Option<u32> {
         self.framebuffer.pixel_at(x, y)
     }
 
-    /// The palette's foreground, so a check can recognise a mark.
+    /// Foreground colour for framebuffer checks.
     #[cfg(feature = "selftest")]
     pub(crate) const fn foreground(&self) -> wost::boot::Rgb {
         self.palette.foreground
     }
 
-    /// How tall a glyph cell is, which is the scroll's stride.
+    /// Scroll stride in pixels.
     #[cfg(feature = "selftest")]
     pub(crate) const fn line_height(&self) -> usize {
         self.line_height
     }
 
-    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    /// Geometry of the framebuffer being drawn on.
+    #[cfg(feature = "selftest")]
     pub(crate) const fn geometry(&self) -> FramebufferInfo {
         self.geometry
+    }
+
+    /// Whether one newline would perform a framebuffer scroll.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn next_line_scrolls(&self) -> bool {
+        self.cursor_y
+            .checked_add(self.line_height)
+            .and_then(|next| next.checked_add(self.line_height))
+            .and_then(|bottom| bottom.checked_add(MARGIN))
+            .is_none_or(|bottom| bottom > self.geometry.height)
     }
 
     /// Adopt `palette`, clear the screen, and home the cursor.
@@ -133,31 +134,21 @@ impl Console {
         self.cursor_y = MARGIN;
     }
 
-    /// Write `text` followed by a line break.
-    ///
-    /// The line break is **inside** the cursor bracket. It was outside:
-    /// `write_text` put the cursor back and `newline` then ran with it
-    /// visible, so the scroll it triggers copied the underline up the screen —
-    /// the exact mark `set_cursor`'s doc says this arrangement prevents. Every
-    /// log line goes through here, so it happened on every scroll (D-137).
+    /// Write `text` and its line break with the cursor hidden throughout.
     pub(crate) fn write_line(&mut self, text: &str) {
-        self.set_cursor(false);
+        self.hide_cursor();
         self.put(text);
         self.newline();
-        self.set_cursor(true);
+        self.show_cursor();
     }
 
     fn write_text(&mut self, text: &str) {
-        // The cursor is a mark on the framebuffer like any other, so it is
-        // taken down before the text moves and put back where the text left
-        // off. Without this a scroll would carry a copy of it up the screen.
-        self.set_cursor(false);
+        // Moving visible framebuffer content would copy the cursor mark too.
+        self.hide_cursor();
         self.put(text);
-        self.set_cursor(true);
+        self.show_cursor();
     }
 
-    /// The characters, with no cursor handling — the shared half of the two
-    /// above, so neither can put the cursor back before the other is done.
     fn put(&mut self, text: &str) {
         for character in text.chars() {
             self.write_char(character);
@@ -192,13 +183,6 @@ impl Console {
         self.cursor_x += self.glyph_width;
     }
 
-    /// Move back one cell and blank it.
-    ///
-    /// Stops at the left margin rather than wrapping to the line above: this
-    /// console keeps no record of where the previous line ended, so backing
-    /// onto it would leave the cursor somewhere the text is not. A line editor
-    /// that tracks its own buffer can do better; an echo of raw keystrokes
-    /// cannot, and pretending otherwise would erase the wrong glyph.
     fn erase_previous(&mut self) {
         if self.cursor_x < MARGIN + self.glyph_width {
             return;
@@ -220,18 +204,15 @@ impl Console {
         }
     }
 
-    /// Draw the cursor, or erase it, at its current cell.
-    ///
-    /// An underline rather than a block, so it never hides the character it
-    /// sits on. Drawn only while the console is idle — every write hides it
-    /// first and shows it again afterwards, which is what keeps it from being
-    /// scrolled up the screen as a stray mark.
-    fn set_cursor(&mut self, visible: bool) {
-        let colour = if visible {
-            self.palette.foreground
-        } else {
-            self.palette.background
-        };
+    fn show_cursor(&mut self) {
+        self.paint_cursor(self.palette.foreground);
+    }
+
+    fn hide_cursor(&mut self) {
+        self.paint_cursor(self.palette.background);
+    }
+
+    fn paint_cursor(&mut self, colour: wost::boot::Rgb) {
         let row = self.cursor_y + self.line_height - 1;
         for column in 0..self.glyph_width {
             self.framebuffer

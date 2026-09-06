@@ -14,9 +14,9 @@ gate is currently **CLOSED**. While closed, do not start Phase 7 product work or
 build a Rust fallback userland. Work is in scope only when it is kernel
 correctness, a language-neutral prerequisite with a concrete future Wizzy
 caller, or specification and validation of the versioned compiler handoff.
-Consumer scaffolding remains stopped until PW-601's pinned-artifact trigger;
-WZ-001 through WZ-004 are externally owned `wizards-ink` blockers, not OS-repo
-implementation work.
+Consumer scaffolding remains stopped until PW-601 has both a pinned draft
+artifact and a runtime seam; WZ-001 through WZ-004 are externally owned
+`wizards-ink` blockers, not OS-repo implementation work.
 
 D-184 makes [docs/016-pre-wizzy-foundation.md](docs/016-pre-wizzy-foundation.md)
 the sole finite OS-side backlog while that gate is closed. Every new item needs
@@ -77,12 +77,15 @@ check to go red for each. Add a mutation whenever you add a check — `cargo
 test` verifies every mutation still matches its source, so a rotted one is
 caught in milliseconds even though each machine mutation still costs a boot.
 
-Three tasks are deliberately **not** in `ci`, because each needs a tool this
-project cannot vendor into a Rust build, and a gate step that fails for want of
-one teaches people to skip the gate: `cargo xtask vmware`, `cargo xtask
-model-check` (TLC over `models/`, needs a JVM) and `cargo xtask mutate` (one
-QEMU boot per machine mutation; exact host tests for pure logic). All three are
-run at a phase close and their results recorded.
+Seven supported tasks are deliberately **not** in ordinary `ci`: `debug`,
+`baseline`, `vmware`, `qualify-vmware`, `model-check`, `mutate` and
+`qualify-advisory`. `vmware` generates each selected machine;
+`qualify-vmware` validates its fresh serial transcript after the human boot.
+VMware, model checking, the complete mutation sweep and the fresh RustSec review
+are phase-close qualifications whose records enter offline evidence. They need
+interactive/external tools, current network data or much longer machine runs,
+and putting them in the ordinary gate would make a missing tool look like a
+source failure.
 
 ## Testing, and the rule that matters most
 

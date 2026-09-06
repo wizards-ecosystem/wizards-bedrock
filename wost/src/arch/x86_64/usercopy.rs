@@ -1,23 +1,10 @@
-//! Moving bytes across the privilege boundary.
+//! Privilege-boundary copies under SMAP.
 //!
-//! SMAP makes ring 0 unable to touch ring-3 memory unless it says so, and
-//! `stac`/`clac` are how it says so. D-81 calls this the user-copy ABI, and
-//! that is the right framing: the guard is not a helper the copy functions use,
-//! it is the reason there are copy functions at all. Nothing else in this
-//! kernel may open the window.
-//!
-//! **Range-checked, never `>> 47 == 0`** (D-83). The idiom everyone writes is
-//! correct today and wrong under LAM, under five-level paging, and under
-//! ChkTag, all of which put non-address bits in the top of a pointer. A range
-//! check is the same length and right in every case.
-//!
-//! Every page of the range is walked before a byte moves: present, `USER`, and
-//! writable where the copy writes. A user pointer that names kernel memory, or
-//! nothing, is refused rather than faulted on — a fault here is terminal
-//! (D-31), and "the program passed a bad pointer" is not a reason to stop the
-//! machine.
+//! Only this module opens the access window. It range-checks and walks every
+//! page before copying; only an exact supervisor fault in its assembly copy
+//! interval may resume at the private fixup (D-81, D-83, D-120).
 
-use core::arch::{asm, global_asm};
+use core::arch::asm;
 use core::fmt;
 
 use x86_paging::{Flags, PAGE_SIZE};
@@ -31,18 +18,9 @@ use super::{cpu, interrupt, paging};
 /// range, and a second literal is a way for them to stop being (D-124).
 pub use super::paging::USER_END;
 
-// The copy itself, written out so that the instructions which can fault have
-// addresses this crate knows.
-//
-// A compiler-generated `copy_nonoverlapping` has no stable instruction range,
-// so nothing could say "a fault *here* is recoverable" about one. That is the
-// whole reason this is assembly and not a loop in Rust (D-120).
-//
-// Byte at a time, which is slower than the compiler's copy and is the price.
-// The ranges crossed here are a few bytes to a page; correctness at the
-// boundary is worth more than the difference, and a wider copy would need one
-// fixup per width.
-global_asm!(
+// Explicit assembly gives the faulting instructions a stable recovery range
+// that compiler-generated copying cannot (D-120).
+::core::arch::global_asm!(
     ".globl wost_copy_across",
     "wost_copy_across:",
     // rdi = destination, rsi = source, rdx = length.
@@ -88,40 +66,50 @@ unsafe extern "C" {
     static wost_copy_fixup: u8;
 }
 
+/// The only instruction pointer a recovered user-copy fault may resume at.
+pub(super) struct RecoveryTarget(u64);
+
+impl RecoveryTarget {
+    fn fixup() -> Self {
+        Self(core::ptr::addr_of!(wost_copy_fixup) as u64)
+    }
+
+    pub(super) const fn address(&self) -> u64 {
+        self.0
+    }
+}
+
 /// Resume a faulting user copy at its fixup, if that is what faulted.
 ///
-/// **The premise D-97 states, finally acted on: the program is the untrusted
-/// party.** Every page is walked before a byte moves, so a bad pointer is
-/// refused rather than faulted on — but the walk and the copy are two moments,
-/// and interrupts are on between them. A thread preempted mid-copy whose pages
-/// are then unmapped faults on memory that was there when it looked. Before
-/// D-120 that was terminal: a program could stop the machine by arranging it.
-///
-/// Nothing else is recoverable. The range is two instructions long and is the
-/// only place in this kernel that dereferences a user pointer, so a fault
-/// anywhere else is still a kernel bug and still stops.
-///
-/// `false` if the fault was not in the copy, in which case nothing is changed.
-pub fn recover(frame: &interrupt::TrapFrame) -> bool {
+/// A mapping may disappear between the walk and copy. Nothing outside the
+/// private two-instruction interval is recoverable. `false` leaves the frame
+/// unchanged.
+#[must_use = "a refused user-copy recovery changed no trap frame"]
+pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bool {
     let at = frame.instruction_pointer();
     let start = core::ptr::addr_of!(wost_copy_fault_start) as u64;
     let end = core::ptr::addr_of!(wost_copy_fault_end) as u64;
-    if at < start || at >= end {
+    let attempt = trap_cause::RecoveryAttempt {
+        vector: frame.vector(),
+        frame_error_code: frame.error_code(),
+        code_selector: frame.code_selector(),
+        instruction_pointer: at,
+        page_fault: fault,
+        faulting_address: cpu::faulting_address(),
+    };
+    let rule = trap_cause::RecoveryRule {
+        fault: trap_cause::RecoveryFault::SupervisorData,
+        fault_addresses: 0..USER_END,
+        instruction_addresses: start..end,
+    };
+    if !attempt.is_admitted_by(&rule) {
         return false;
     }
-    let fixup = core::ptr::addr_of!(wost_copy_fixup) as u64;
-    interrupt::resume_at(frame, fixup)
+    interrupt::resume_usercopy(frame, RecoveryTarget::fixup())
 }
 
 /// The instruction range a user copy can fault inside.
-///
-/// Exported for one check, which spawns a ring-3 thread that jumps here. That
-/// fault must retire the program rather than be *recovered*: the recovery arm
-/// runs before the ring-3 test and until D-126 never looked at the saved `CS`,
-/// so a program could aim `RIP` at this range and have the kernel resume it at
-/// the fixup. Knowing the range is not authority — ring 3 cannot execute
-/// kernel memory, which is the point — and a check that hardcoded the address
-/// would be checking a number rather than the window.
+#[cfg(feature = "selftest")]
 pub fn fault_window() -> (u64, u64) {
     (
         core::ptr::addr_of!(wost_copy_fault_start) as u64,
@@ -138,10 +126,7 @@ pub enum UserCopyError {
     /// The range wraps, so it does not describe a span at all.
     Wraps(u64),
     /// The range stopped being mapped between the walk and the copy.
-    ///
-    /// Recovered rather than fatal (D-120): the walk and the copy are two
-    /// moments and interrupts are on between them, so a page can go away in
-    /// the gap. Names how many bytes were left.
+    /// Names how many bytes were left.
     Vanished(usize),
     /// A page of it is not mapped, or not reachable from ring 3.
     Unmapped(u64),
@@ -177,7 +162,7 @@ enum Direction {
 /// The window in which ring-0 code may touch ring-3 memory.
 ///
 /// Scoped, and private, so it cannot be held across anything: the whole of its
-/// life is one `copy_nonoverlapping`. An open window is the CPU agreeing to
+/// life is one `wost_copy_across` invocation. An open window is the CPU agreeing to
 /// dereference whatever a user pointer happens to be, and the shorter it is,
 /// the smaller the class of bugs that can be a privilege escalation rather
 /// than a fault.
@@ -192,16 +177,10 @@ impl Window {
         let opened = cpu::Protections::enabled().smap;
         if opened {
             // SAFETY: `stac` sets a flag permitting ring-0 access to user
-            // pages, and it is only reached where `cpuid` reported SMAP —
-            // without it the instruction does not exist.
-            //
-            // Neither `nomem` nor `preserves_flags`, and both were wrong
-            // before the release build caught it. `stac` changes whether a
-            // later memory access faults, so `nomem` lets the optimiser move
-            // the copy *out* of the window — which it did, and the machine
-            // took a protection violation reading the page it had just been
-            // given permission for. And the flag it sets is `EFLAGS.AC`, so
-            // it preserves nothing (D-97).
+            // pages, and only runs where `cpuid` reported SMAP. It changes
+            // memory-access semantics and `EFLAGS.AC`, so neither `nomem` nor
+            // `preserves_flags` is valid and the copy stays inside the window
+            // (D-97).
             unsafe { asm!("stac", options(nostack)) };
         }
         Self { opened }
@@ -252,13 +231,8 @@ fn admits(address: u64, len: usize, direction: Direction) -> Result<(), UserCopy
 ///
 /// # Errors
 ///
-/// See [`UserCopyError`]. Every page is walked before a byte moves, so a range
-/// that does not check out is refused with nothing copied.
-///
-/// [`UserCopyError::Vanished`] is the exception and the reason this is not
-/// stated as all-or-nothing: the walk and the copy are two moments, so a page
-/// can stop being mapped in the gap. `into` then holds however much was moved
-/// before the fault, and the error names how many bytes were left (D-120).
+/// See [`UserCopyError`]. Validation failures move nothing;
+/// [`UserCopyError::Vanished`] may leave a partial copy.
 pub fn copy_from_user(from: u64, into: &mut [u8]) -> Result<(), UserCopyError> {
     admits(from, into.len(), Direction::FromUser)?;
     if into.is_empty() {
@@ -266,12 +240,9 @@ pub fn copy_from_user(from: u64, into: &mut [u8]) -> Result<(), UserCopyError> {
     }
 
     let window = Window::open();
-    // SAFETY: `admits` walked every page of the range and found it present and
-    // user-accessible in the live tables, `into` is a live slice of at least
-    // this length, and the two cannot overlap — one is user memory and the
-    // other is the kernel's. The window is open for exactly this call, and a
-    // page that goes away in between resumes at the fixup rather than faulting
-    // through (D-120).
+    // SAFETY: `admits` proved every source page live and user-readable; `into`
+    // is a disjoint live kernel slice. The window covers exactly this call, and
+    // the fixup returns a remainder if a source page disappears (D-120).
     let left = unsafe { wost_copy_across(into.as_mut_ptr(), from as *const u8, into.len()) };
     drop(window);
     if left != 0 {
@@ -280,63 +251,38 @@ pub fn copy_from_user(from: u64, into: &mut [u8]) -> Result<(), UserCopyError> {
     Ok(())
 }
 
-/// Copy `len` bytes from user memory at `from`, **without walking the tables**.
+/// Drive one fixed user-copy fault through the private recovery window.
 ///
-/// Range-checked, so it can never touch the kernel's half — but not walked, so
-/// whether the pages are there is discovered by trying. A fault resumes at the
-/// fixup and this reports how many bytes were left (D-120).
-///
-/// **Safe, and the fixup is why.** Dereferencing an arbitrary user address is
-/// memory-safe once a fault in the copy is recoverable: the worst outcome is
-/// a short copy and a number saying so. That is the property an exception
-/// table buys, and it is what Linux's `copy_from_user` has always relied on
-/// rather than pre-walking.
-///
-/// The walked forms are kept because they give a *better answer* — a program
-/// that passed an unmapped pointer learns that, rather than learning that some
-/// bytes did not move — and because a walk is a second line of defence that
-/// costs nothing on the sizes this kernel copies.
-///
-/// # Errors
-///
-/// [`UserCopyError::NotUserMemory`] or [`UserCopyError::Wraps`] for a range
-/// outside ring 3's half, and [`UserCopyError::Vanished`] naming what was left
-/// where a page was not there.
-pub fn copy_from_user_unwalked(from: u64, into: &mut [u8]) -> Result<(), UserCopyError> {
-    let end = from
-        .checked_add(into.len() as u64)
-        .ok_or(UserCopyError::Wraps(from))?;
-    if end > USER_END {
-        return Err(UserCopyError::NotUserMemory(from));
-    }
-    if into.is_empty() {
-        return Ok(());
-    }
+/// `true` means the full probe remained and its private destination did not
+/// change.
+#[cfg(feature = "selftest")]
+pub fn drive_fault_recovery_for_test() -> bool {
+    const HOLE: u64 = 0x0000_6000_0000_0000;
+    const UNCHANGED: [u8; 8] = [0xa5; 8];
 
-    let window = Window::open();
-    // SAFETY: the range is wholly inside ring 3's half, `into` is a live slice
-    // of at least this length, and the two cannot overlap. A page that is not
-    // there faults and resumes at the fixup rather than through this call,
-    // which is what makes the absence of a walk sound.
-    let left = unsafe { wost_copy_across(into.as_mut_ptr(), from as *const u8, into.len()) };
-    drop(window);
-    if left != 0 {
-        return Err(UserCopyError::Vanished(left));
+    let disabled = interrupt::disable();
+    if paging::translate(HOLE).is_some() {
+        disabled.restore();
+        return false;
     }
-    Ok(())
+    let mut scratch = UNCHANGED;
+    let window = Window::open();
+    // SAFETY: `HOLE` is a canonical user address just observed unmapped under
+    // interrupt exclusion. The assembly's exact fault interval resumes at its
+    // fixup, and `scratch` is a live, disjoint destination.
+    let left = unsafe { wost_copy_across(scratch.as_mut_ptr(), HOLE as *const u8, scratch.len()) };
+    drop(window);
+    let exact = left == scratch.len() && scratch == UNCHANGED;
+    disabled.restore();
+    exact
 }
 
 /// Copy `from` into user memory at `onto`.
 ///
 /// # Errors
 ///
-/// See [`UserCopyError`]. Every page is walked before a byte moves — including
-/// that each is writable from ring 3 — so a range that does not check out is
-/// refused with nothing copied.
-///
-/// [`UserCopyError::Vanished`] is the exception, as for [`copy_from_user`]:
-/// the page can go away between the walk and the copy, leaving user memory
-/// partly written and naming how many bytes were left (D-120).
+/// See [`UserCopyError`]. Validation failures move nothing;
+/// [`UserCopyError::Vanished`] may leave a partial copy.
 pub fn copy_to_user(onto: u64, from: &[u8]) -> Result<(), UserCopyError> {
     admits(onto, from.len(), Direction::ToUser)?;
     if from.is_empty() {

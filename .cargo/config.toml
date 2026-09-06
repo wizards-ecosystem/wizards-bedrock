@@ -4,7 +4,7 @@
 # error. Pass lint flags after `--`: cargo kclippy -- -D warnings
 
 [alias]
-xtask = "run --package xtask --"
+xtask = "run --profile xtask --package xtask --"
 
 # The cross-compiled half of the workspace. Bare `cargo check`/`clippy`/`test`
 # cover the host half via `default-members` in Cargo.toml. No --all-targets here:

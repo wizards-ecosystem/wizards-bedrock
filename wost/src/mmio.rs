@@ -60,7 +60,7 @@ impl fmt::Display for MmioError {
 
 impl core::error::Error for MmioError {}
 
-/// A region of device memory, accessed with volatile writes.
+/// A region of device memory, accessed with volatile operations.
 #[derive(Debug)]
 pub struct MmioRegion {
     base: *mut u8,
@@ -68,8 +68,8 @@ pub struct MmioRegion {
 }
 
 // SAFETY: `MmioRegion` is a base pointer plus a length, and the raw pointer
-// keeps it `!Sync`, so accesses cannot race across CPUs. Moving the pair is
-// sound provided the mapping is global, which `new`'s contract requires.
+// keeps it `!Sync`, so accesses cannot race across CPUs. `new` requires the
+// same live mapping in every page-table root that can run.
 unsafe impl Send for MmioRegion {}
 
 impl MmioRegion {
@@ -77,10 +77,10 @@ impl MmioRegion {
     ///
     /// # Safety
     ///
-    /// `base` must be a globally valid, 4-byte-aligned mapping of at least
-    /// `len` bytes that stays live for as long as this region, and no other
-    /// code may access that memory while this region exists.
-    pub const unsafe fn new(base: *mut u8, len: usize) -> Self {
+    /// `base` must name the same live, 4-byte-aligned mapping of at least `len`
+    /// bytes in every page-table root that can run for this region's lifetime,
+    /// and no other code may access that memory while this region exists.
+    pub(crate) const unsafe fn new(base: *mut u8, len: usize) -> Self {
         Self { base, len }
     }
 
@@ -89,38 +89,46 @@ impl MmioRegion {
     /// For a caller that needs to describe the same memory another way — the
     /// framebuffer, which is remapped with a different memory type once the
     /// kernel owns its page tables.
-    pub const fn base_address(&self) -> *mut u8 {
+    #[cfg(feature = "selftest")]
+    pub(crate) const fn base_address(&self) -> *mut u8 {
         self.base
     }
 
     /// Write one 32-bit word at `offset`.
     pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
-        self.check_words(offset, 1)?;
-        // SAFETY: `check_words` confirmed the word is in bounds and 4-byte aligned.
-        unsafe { self.write_word_unchecked(offset, value) };
-        Ok(())
+        self.write_values(offset, core::iter::once(value))
     }
 
     /// Read one 32-bit word at `offset`.
     pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
-        self.check_words(offset, 1)?;
-        // SAFETY: `check_words` confirmed the word is inside the region, so the
-        // result stays within the mapping `new`'s contract promised.
-        let word = unsafe { self.base.add(offset) }.cast::<u32>();
-        // SAFETY: `check_words` confirmed `offset` is 4-byte aligned, so `word` is
-        // aligned, and the mapping is valid for reads.
+        let offset = self.check_words(offset, 1)?.offset();
+        let word = self.base.wrapping_add(offset).cast::<u32>();
+        // SAFETY: `check_words` proved the word is contained and aligned in the
+        // live mapping promised by `new`.
         Ok(unsafe { word.read_volatile() })
     }
 
     /// Write `count` copies of a 32-bit word starting at `offset`.
     pub fn fill_u32(&mut self, offset: usize, count: usize, value: u32) -> Result<(), MmioError> {
-        let span = self.check_words(offset, count)?;
-        let mut cursor = span.offset();
-        for _ in 0..count {
-            // SAFETY: `check_words` confirmed the whole span is in bounds and the
-            // start is 4-byte aligned, so every word within it is too.
-            unsafe { self.write_word_unchecked(cursor, value) };
-            cursor += WORD;
+        self.write_values(offset, core::iter::repeat_n(value, count))
+    }
+
+    /// Write a slice of 32-bit words starting at `offset`.
+    pub fn write_u32_slice(&mut self, offset: usize, values: &[u32]) -> Result<(), MmioError> {
+        self.write_values(offset, values.iter().copied())
+    }
+
+    fn write_values(
+        &mut self,
+        offset: usize,
+        values: impl ExactSizeIterator<Item = u32>,
+    ) -> Result<(), MmioError> {
+        let range = self.check_words(offset, values.len())?;
+        for (cursor, value) in range.offsets().zip(values) {
+            let word = self.base.wrapping_add(cursor).cast::<u32>();
+            // SAFETY: `range` proves each word is aligned and contained by
+            // this unique device mapping.
+            unsafe { word.write_volatile(value) };
         }
         Ok(())
     }
@@ -141,19 +149,6 @@ impl MmioRegion {
             // Overflow and a bad width alike: the request never named a range.
             _ => MmioError::Overflow { offset, count },
         })
-    }
-
-    /// # Safety
-    ///
-    /// `offset` must be 4-byte aligned and `offset + 4` must be within the
-    /// region — that is, [`Self::check_words`] must have accepted it.
-    unsafe fn write_word_unchecked(&mut self, offset: usize, value: u32) {
-        // SAFETY: the caller guarantees `offset` is inside the region, so the
-        // result stays within the mapping `new`'s contract promised.
-        let word = unsafe { self.base.add(offset) }.cast::<u32>();
-        // SAFETY: the caller guarantees `offset` is 4-byte aligned, so `word` is
-        // aligned, and the mapping is valid for writes.
-        unsafe { word.write_volatile(value) };
     }
 }
 

@@ -82,9 +82,8 @@ impl Timebase {
         let denominator = denominator as u128;
         let mut shift = MAX_SHIFT;
         loop {
-            // The half-denominator is what makes the division round to
-            // nearest rather than towards zero, which halves the worst-case
-            // error of every conversion made through it.
+            // The half-denominator rounds to nearest rather than towards
+            // zero, halving the worst-case error of every conversion.
             let multiplier = (((numerator as u128) << shift) + denominator / 2) / denominator;
             if multiplier > 0 && multiplier <= MAX_MULTIPLIER as u128 {
                 return Some(Self {
@@ -99,16 +98,18 @@ impl Timebase {
         }
     }
 
-    /// Rebuild a conversion from a multiplier and a shift.
+    /// Rebuild a conversion from published multiplier and shift fields.
     ///
-    /// For reading one back out of a page rather than computing it: the two
-    /// numbers are the whole of a conversion, and a reader that has them has
-    /// the conversion. Unvalidated on purpose — a multiplier of zero is
-    /// [`UNCALIBRATED`](Self::UNCALIBRATED), which is what a page nobody has
-    /// published yet holds, and that is a state a reader must be able to
-    /// represent rather than one it should refuse to parse.
-    pub const fn from_parts(multiplier: u64, shift: u32) -> Self {
-        Self { multiplier, shift }
+    /// A zero multiplier remains a valid uncalibrated conversion. Other
+    /// fields must fit the representation used by [`to_bits`](Self::to_bits).
+    pub const fn from_parts(multiplier: u64, shift: u32) -> Option<Self> {
+        if multiplier > MAX_MULTIPLIER {
+            return None;
+        }
+        if shift > MAX_SHIFT {
+            return None;
+        }
+        Some(Self { multiplier, shift })
     }
 
     /// The multiplier this conversion applies.
@@ -241,6 +242,16 @@ mod tests {
     }
 
     #[test]
+    fn a_human_wait_uses_the_exact_forty_five_second_nanosecond_boundary() {
+        const START: u64 = 7_000_000_000;
+        const WAIT_MS: u64 = 45_000;
+        let mut limit = PollLimit::after_ms(Some(START), WAIT_MS, 1);
+
+        assert!(limit.permit(Some(START + 44_999_999_999)));
+        assert!(!limit.permit(Some(START + 45_000_000_000)));
+    }
+
+    #[test]
     fn a_clockless_poll_limit_permits_its_exact_fallback_count() {
         let mut limit = PollLimit::after_ms(None, u64::MAX, 3);
         assert!(limit.permit(None));
@@ -284,9 +295,8 @@ mod tests {
     /// distances and requires the closer one.
     #[test]
     fn the_multiplier_is_the_nearest_integer_not_the_ceiling() {
-        // Real frequencies, including ones whose ratios are awkward: a 100 MHz
-        // APIC, an odd TSC, and one deliberately chosen so the exact ratio
-        // falls below the halfway point and nearest differs from ceiling.
+        // Real frequencies with awkward ratios, one chosen so nearest and
+        // ceiling differ.
         for hz in [
             100_000_000u64,
             1_000_000_000,
@@ -450,11 +460,50 @@ mod tests {
         }
     }
 
-    /// `from_bits` is fed whatever a `static` held, which on a kernel that
-    /// has not calibrated yet is zero and in a bug is anything at all. It has
-    /// to answer rather than shift by sixty-four, which is undefined — so the
-    /// worst word there is decodes to the largest shift and multiplier the
-    /// type allows, and converts by them.
+    #[test]
+    fn raw_parts_refuse_a_multiplier_that_cannot_be_published() {
+        assert!(Timebase::from_parts(MAX_MULTIPLIER, MAX_SHIFT).is_some());
+        assert!(Timebase::from_parts(MAX_MULTIPLIER + 1, MAX_SHIFT).is_none());
+        assert!(Timebase::from_parts(u64::MAX, 0).is_none());
+    }
+
+    #[test]
+    fn raw_parts_refuse_a_shift_that_cannot_be_evaluated() {
+        assert!(Timebase::from_parts(MAX_MULTIPLIER, MAX_SHIFT).is_some());
+        assert!(Timebase::from_parts(MAX_MULTIPLIER, MAX_SHIFT + 1).is_none());
+        assert!(Timebase::from_parts(0, u32::MAX).is_none());
+    }
+
+    #[test]
+    fn raw_boundary_fields_round_trip_through_one_word() {
+        for shift in 0..=MAX_SHIFT {
+            for multiplier in [0, 1, MAX_MULTIPLIER / 2, MAX_MULTIPLIER] {
+                let conversion = Timebase::from_parts(multiplier, shift)
+                    .expect("the fields fit the published representation");
+                assert_eq!(Timebase::from_bits(conversion.to_bits()), conversion);
+            }
+        }
+    }
+
+    #[test]
+    fn raw_field_accessors_preserve_nontrivial_values() {
+        let conversion = Timebase::from_parts(0x1234_5678, 37).expect("valid fields");
+        assert_eq!(conversion.multiplier(), 0x1234_5678);
+        assert_eq!(conversion.shift(), 37);
+    }
+
+    #[test]
+    fn published_arithmetic_distinguishes_the_u64_boundary_from_overflow() {
+        let exact = Timebase::from_parts(2, 1).expect("valid fields");
+        assert_eq!(exact.resume(0, 1, u64::MAX), u64::MAX);
+        assert_eq!(exact.advance(0, 1, u64::MAX), (u64::MAX, 1));
+
+        let overflow = Timebase::from_parts(2, 0).expect("valid fields");
+        assert_eq!(overflow.resume(0, 0, u64::MAX), u64::MAX);
+        assert_eq!(overflow.advance(0, 0, u64::MAX), (u64::MAX, 0));
+    }
+
+    /// Arbitrary stored bits must decode without producing an invalid shift.
     #[test]
     fn unpacking_nonsense_still_answers() {
         let nonsense = Timebase::from_bits(u64::MAX);
@@ -467,9 +516,7 @@ mod tests {
         assert_eq!(nonsense.convert(u64::MAX), 8_589_934_589);
     }
 
-    /// The multiplier is the whole precision budget, and the search is what
-    /// spends it: every conversion of a real clock must land in the top half
-    /// of the thirty-two bits available, or a shift was left on the table.
+    /// A real-clock conversion must spend every representable precision bit.
     #[test]
     fn the_search_takes_the_largest_shift_that_fits() {
         for hz in PLAUSIBLE_HZ {
@@ -477,11 +524,8 @@ mod tests {
                 Timebase::nanoseconds(*hz).unwrap(),
                 Timebase::ticks(*hz).unwrap(),
             ] {
-                // The two bounds below are `new`'s own loop conditions
-                // restated — `multiplier <= MAX_MULTIPLIER` is its exit test
-                // and `shift` only ever decrements from `MAX_SHIFT`. Kept as
-                // documentation of the range; the assertion after them is the
-                // one that can fail (D-105).
+                // Only the final assertion tests the search; these two record
+                // representation bounds.
                 assert!(conversion.multiplier <= MAX_MULTIPLIER, "{conversion:?}");
                 assert!(conversion.shift <= MAX_SHIFT, "{conversion:?}");
                 assert!(
@@ -495,23 +539,11 @@ mod tests {
 
 /// The sequence counter of a clock published to readers that cannot lock.
 ///
-/// Linux's seqlock, and D-152 adopts it verbatim including **both** memory
-/// barriers. The protocol is three rules and they are stated here rather than
-/// in each reader:
-///
-/// - **Odd means a write is in progress.** The writer increments before it
-///   touches anything and again after, so a reader that sees an odd value has
-///   caught it mid-update and must try again.
-/// - **A reader compares before with after.** Equal *and* even is the only
-///   combination that means the fields between them were not being rewritten.
-/// - **It wraps, and wrapping is fine.** What matters is whether the value
-///   changed, not how far — `u32` is thirty-five years of updates at a
-///   thousand a second, and equality after a full wrap needs four billion
-///   updates inside one read.
-///
-/// This lives beside the conversion rather than in a crate of its own because
-/// it has exactly one user: the page that publishes this clock. A second user
-/// is the moment it earns a crate (D-41).
+/// This type supplies only wrapping counter arithmetic. Odd marks an active
+/// write; readers accept only matching even observations. The publisher and
+/// reader must supply both memory-ordering barriers; `kernel::timepage` owns
+/// them for the current caller (D-152). Correctness also requires that a full
+/// `u32` counter cycle cannot occur inside one read.
 ///
 /// # Examples
 ///
@@ -617,10 +649,8 @@ mod published_tests {
     /// behind every second and nothing else in this file would notice.
     #[test]
     fn a_thousand_updates_do_not_drift_from_one_conversion() {
-        // Both numbers are chosen so the two answers *can* differ, which took
-        // two attempts: 3.192 GHz is a real processor, but a step of 3_192_000
-        // ticks is exactly a millisecond, so the conversion has no fraction to
-        // lose and dropping the carry left this green (D-155, again).
+        // Chosen so the two answers can differ: a step of exactly one
+        // millisecond has no fraction to lose and left this green (D-155).
         let clock = Timebase::nanoseconds(3_192_000_000).expect("a real rate");
         const STEP: u64 = 1_000_000;
         const UPDATES: u64 = 1_000;

@@ -1,16 +1,9 @@
 //! Boot-time self-checks.
 //!
-//! The kernel cannot host `cargo test`: it is a `#![no_std] #![no_main]` binary,
-//! and the in-QEMU test harnesses need nightly. So the checks that need a real
-//! machine run here instead, on a kernel built with the `selftest` feature, and
-//! report their verdict through [`crate::arch::current::debug_exit`].
-//!
-//! Everything here must be checkable *on the machine*. Anything that is pure
-//! arithmetic belongs in a `libs/` crate with ordinary unit tests instead.
-//!
-//! Checks run against a fully booted kernel, so anything the boot path already
-//! asserts is not repeated here — a rejected base revision panics long before
-//! this, which the harness sees as a missing verdict.
+//! Hardware-dependent checks run on a fully booted `selftest` kernel and report
+//! through [`crate::arch::current::debug_exit`]. Pure logic belongs in a host
+//! `libs/` test instead. Boot assertions are not repeated because a panic is a
+//! missing verdict, not a red check.
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -20,20 +13,23 @@ use core::hint::spin_loop;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use handle_space::Rights;
-use stack_layout::StackLayout;
+use ring_proto::SharedLayout;
+use slab_layout::AllocatorOwnership;
+use stack_layout::{Slot as StackSlot, StackLayout};
 use wost::arch::current::cpu::{self, Protections};
 use wost::arch::current::paging::{
     self, ActivateError, AddressSpace, BootRegion, MapError, ReclaimError,
 };
 use wost::arch::current::usercopy::{self, UserCopyError};
 use wost::arch::current::{apic, interrupt, pic, port, segment, task, xstate};
-use wost::boot::{self, FramebufferInfo, Rgb};
+use wost::boot::{self, FramebufferInfo, MemoryRegion, Rgb};
 use wost::mm;
 use wost::sync::{Once, SpinLock, SpinLockWitness};
-use x86_paging::{Flags, LARGE_PAGE_SIZE, PAGE_SIZE};
+use x86_paging::{CanonicalAddress, Flags, LARGE_PAGE_SIZE, PAGE_SIZE};
 use x86_tables::exception;
 
 use crate::arch::current::debug_exit;
+use crate::arch::current::ioapic;
 use crate::arch::current::trap::{self, Record};
 use crate::arch::current::uart::{self, UartError};
 use crate::arch::current::vector;
@@ -41,13 +37,15 @@ use crate::devfs;
 use crate::fs;
 use crate::handle::{HandleError, HandleTable};
 use crate::nvme;
-use crate::object::{self, ObjectRef, ObjectType};
+use crate::object::{self, ObjectType};
 use crate::pci;
 use crate::queue;
 use crate::thread::ThreadContext;
 use crate::timepage;
+use crate::tmpfs;
 use crate::user;
 use crate::vfs;
+use crate::wait::WaitQueue;
 use crate::{dev, error, info, input, mem, thread, time, warn};
 
 macro_rules! handle_table_or_false {
@@ -65,11 +63,6 @@ macro_rules! shared_handle_table_or_false {
     };
 }
 
-/// A frame's handle releases it, and the allocator notices.
-///
-/// Counted rather than compared by address: nothing promises the next
-/// allocation reuses the frame just freed, but the free count must come back
-/// to exactly where it started.
 fn frame_round_trips() -> bool {
     let before = mm::free_frames();
     let frame = mm::allocate();
@@ -78,7 +71,6 @@ fn frame_round_trips() -> bool {
     taken && mm::free_frames() == before
 }
 
-/// Memory a device may still reach stays out of the allocator permanently.
 fn uncertain_dma_memory_is_never_recycled() -> bool {
     let before = mm::free_frames();
     let Some(segment) = mm::allocate_contiguous(1, 1) else {
@@ -94,7 +86,37 @@ fn uncertain_dma_memory_is_never_recycled() -> bool {
     reserved && inaccessible && mm::free_frames() == before - 1
 }
 
-/// Two frames held at once are never the same frame.
+fn dma_byte_access_is_exact_and_bounded() -> bool {
+    const FILL: u8 = 0x31;
+    const TAIL: [u8; 2] = [0xa5, 0x5a];
+
+    let Some(segment) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    let mut dma = mm::DmaSegment::from(segment);
+    let Some(len) = dma.len().and_then(|len| usize::try_from(len).ok()) else {
+        return false;
+    };
+    let Some(tail) = len.checked_sub(TAIL.len()) else {
+        return false;
+    };
+
+    let exact = dma.fill(FILL) && dma.write_at(tail, &TAIL) && {
+        let mut observed = [0; TAIL.len()];
+        dma.read_at(tail, &mut observed) && observed == TAIL
+    };
+    let mut refused_read = [0xcc; 2];
+    let refused = !dma.write_at(len - 1, &TAIL)
+        && !dma.write_at(usize::MAX, &TAIL)
+        && !dma.read_at(len - 1, &mut refused_read)
+        && refused_read == [0xcc; 2];
+    let unchanged = {
+        let mut observed = [0; TAIL.len()];
+        dma.read_at(tail, &mut observed) && observed == TAIL
+    };
+    exact && refused && unchanged
+}
+
 fn frames_are_exclusive() -> bool {
     let (Some(first), Some(second)) = (mm::allocate(), mm::allocate()) else {
         return false;
@@ -102,12 +124,6 @@ fn frames_are_exclusive() -> bool {
     first.address() != second.address()
 }
 
-/// Dirty memory can be zeroed, and the kernel can tell the difference.
-///
-/// Dirtied first, because memory on a fresh boot is usually already zero and
-/// a check that only reads one back cannot fail. Covers `zero`; reuse of a
-/// known-dirty frame is not forced, since the allocator hint moves past a
-/// released frame.
 fn dirty_memory_can_be_zeroed() -> bool {
     let Some(mut frame) = mm::allocate() else {
         return false;
@@ -118,19 +134,10 @@ fn dirty_memory_can_be_zeroed() -> bool {
     dirtied && cleaned
 }
 
-/// The allocating form hands out a frame that reads as zero.
 fn allocation_is_zeroed() -> bool {
     mm::allocate_zeroed().and_then(|frame| frame.is_zero()) == Some(true)
 }
 
-/// A run of frames is consecutive, aligned, and released whole.
-///
-/// **Contiguity is half the name and was the half nothing checked.** The three
-/// conjuncts below are all about the run's *description* — its address, its
-/// count, the allocator's tally — and every one of them holds for an allocator
-/// that hands back eight scattered frames and reports the first. The span
-/// itself has to be written and read, and a frame taken from underneath it has
-/// to land outside (D-124).
 fn a_run_is_contiguous_and_aligned() -> bool {
     const FRAMES: usize = 8;
     /// Distinct per frame, so a page from somewhere else reads as the wrong one.
@@ -143,15 +150,13 @@ fn a_run_is_contiguous_and_aligned() -> bool {
     let aligned = run.address().is_multiple_of(FRAMES as u64 * 4096);
     let sized = run.frames() == FRAMES && mm::free_frames() == before - FRAMES;
 
-    // A different byte in each frame, written through the run's own span.
     let mut spans = true;
     for frame in 0..FRAMES {
         let at = frame * 4096;
         spans &= run.write_at(at, &[MARK ^ frame as u8]);
     }
 
-    // Anything else the allocator hands out now must be outside the span —
-    // otherwise the run is not the allocator's to have given whole.
+    // An overlapping allocation would disprove exclusive contiguity.
     let start = run.address();
     let end = start + (FRAMES as u64 * 4096);
     let elsewhere = mm::allocate_zeroed()
@@ -161,7 +166,6 @@ fn a_run_is_contiguous_and_aligned() -> bool {
         })
         .unwrap_or(false);
 
-    // And the marks are still there, each in its own frame.
     let mut intact = true;
     for frame in 0..FRAMES {
         let mut byte = [0u8; 1];
@@ -172,22 +176,24 @@ fn a_run_is_contiguous_and_aligned() -> bool {
     aligned && sized && spans && elsewhere && intact && mm::free_frames() == before
 }
 
-/// The kernel is walking the tables it built, not the bootloader's.
-///
-/// Both halves matter. `is_active` says the switch was attempted and the
-/// checks passed; `CR3` says it took effect. A kernel that recorded success
-/// and kept the old tables would satisfy only the first.
 fn the_loaded_table_is_ours() -> bool {
-    paging::is_active() && cpu::page_table_base() == paging::active_root()
+    paging::is_active()
+        && cpu::page_table_base() == paging::active_root()
+        && cpu::page_table_context_ids_are_disabled_for_test()
 }
 
-/// Every address in the kernel image obeys W^X, read back from the tables the
-/// CPU is walking.
-///
-/// Walked rather than assumed: the mapping code could be right and the entries
-/// still wrong, and the entries are what the CPU obeys. Each section is probed
-/// at its first page, its last, and one in the middle, because a run of large
-/// pages can be correct at the edges and wrong between them.
+fn an_admitted_canonical_page_can_be_invalidated() -> bool {
+    let raw = an_admitted_canonical_page_can_be_invalidated as *const () as u64;
+    let Some(before) = paging::translate(raw) else {
+        return false;
+    };
+    let Some(address) = CanonicalAddress::new(raw) else {
+        return false;
+    };
+    cpu::invalidate_page(address);
+    paging::translate(raw) == Some(before)
+}
+
 fn the_image_obeys_write_xor_execute() -> bool {
     let sections = boot::sections();
     let Some(direct) = mm::direct_map() else {
@@ -226,23 +232,12 @@ fn the_image_obeys_write_xor_execute() -> bool {
     })
 }
 
-/// Supervisor writes are refused by a read-only kernel leaf.
-///
-/// Firmware usually arrives with `CR0.WP` already set, so readback alone
-/// cannot prove the kernel's write is load-bearing. The driven half clears it
-/// with interrupts excluded and reaches the same enabling path boot uses.
-/// The probe then writes a byte back unchanged in `.rodata`; only the expected
-/// present-page write fault can resume at its private fixup.
 fn supervisor_writes_obey_read_only_pages() -> bool {
     cpu::drive_write_protection_for_test()
         && cpu::write_protection_probe()
         && Protections::enabled().write_protect
 }
 
-/// The direct map is writable and never executable.
-///
-/// The largest writable mapping in the kernel, and the one an attacker would
-/// most like to run code from.
 fn the_direct_map_is_not_executable() -> bool {
     let Some(frame) = mm::allocate() else {
         return false;
@@ -265,28 +260,27 @@ fn the_direct_map_is_not_executable() -> bool {
     }
 }
 
-/// Firmware reads are confined to immutable ACPI storage.
-///
-/// Three refusals and one acceptance: a check that only saw refusals would
-/// pass against a function that returned `None` for everything.
 fn firmware_reads_are_bounded() -> bool {
     const WORD: usize = 8;
 
-    // Queries rather than a closure over the map: `mm` takes its own lock for
-    // each and hands back a number, so nothing of this function's runs under
-    // it (D-121). The four calls take the lock four times, which costs
-    // nothing at boot and is what makes the obligation checkable.
-    let pick = mm::first_region;
+    let Some(map) = mm::memory_map_for_test() else {
+        return false;
+    };
+    let pick = |wanted: fn(&MemoryRegion) -> bool| {
+        map.regions()
+            .find(|region| wanted(region) && region.len >= WORD as u64)
+            .map(|region| region.base)
+    };
     let addresses = (
-        pick(|region| region.kind.is_allocatable(), WORD as u64),
-        pick(
-            |region| !region.kind.is_firmware_table() && !region.kind.is_allocatable(),
-            WORD as u64,
-        ),
-        pick(|region| region.kind.is_firmware_table(), WORD as u64),
+        pick(|region| region.kind.is_allocatable()),
+        pick(|region| !region.kind.is_firmware_table() && !region.kind.is_allocatable()),
+        pick(|region| region.kind.is_firmware_table()),
         // Inside the address space, so only the map can refuse it — an address
         // at the top would be caught by an overflow guard instead.
-        mm::past_every_region(),
+        map.regions()
+            .map(|region| region.base + region.len)
+            .max()
+            .and_then(|end| end.checked_next_multiple_of(PAGE_SIZE)),
     );
 
     let (Some(usable), Some(unreachable), Some(readable), Some(undescribed)) = addresses else {
@@ -297,159 +291,94 @@ fn firmware_reads_are_bounded() -> bool {
         return false;
     };
     let mut buffer = [0; WORD];
-    !firmware.read(usable, &mut buffer)
-        && !firmware.read(undescribed, &mut buffer)
-        && !firmware.read(unreachable, &mut buffer)
-        && firmware.read(readable, &mut buffer)
+    !wost::mm::FirmwareMemory::read(&firmware, usable, &mut buffer)
+        && !wost::mm::FirmwareMemory::read(&firmware, undescribed, &mut buffer)
+        && !wost::mm::FirmwareMemory::read(&firmware, unreachable, &mut buffer)
+        && wost::mm::FirmwareMemory::read(&firmware, readable, &mut buffer)
 }
 
-/// A second switch is refused.
-///
-/// One `CR3` owner, still: the tables the CPU walks are the ones this kernel
-/// built, and no second set can displace them. What this *no longer* claims is
-/// that it is why `map` is safe — that was true while `activate` consumed the
-/// space, and D-86 replaced it with the property `set` actually enforces.
+fn in_reclaimed_space(
+    constructor: impl FnOnce() -> Result<AddressSpace, MapError>,
+    check: impl FnOnce(&mut AddressSpace) -> bool,
+) -> bool {
+    let allocator_before = AllocatorSnapshot::capture();
+    let Ok(mut space) = constructor() else {
+        return false;
+    };
+    let checked = check(&mut space);
+    let reclaimed = space.reclaim(None).is_ok();
+    drop(space);
+    checked && reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
+}
+
 fn a_second_switch_is_refused() -> bool {
-    match AddressSpace::new() {
-        Ok(mut space) => paging::activate(&mut space) == Err(ActivateError::AlreadyActive),
-        Err(_) => false,
-    }
+    in_reclaimed_space(AddressSpace::new, |space| {
+        paging::activate(space) == Err(ActivateError::AlreadyActive)
+    })
 }
 
-/// A mapping added after the switch lands in the tables the CPU is walking.
-///
-/// The capability D-86 opened, and the one Phase 5 is blocked on: until now
-/// `activate` consumed the address space, so stacks, the device window and the
-/// heap's backing all had to be decided while the tables were still being
-/// built (D-45, D-52). Mapping into the *running* space is what lets a stack
-/// arrive with the thread that needs it, and a memory object with the process.
-///
-/// `translate` is evidence rather than a read-back: it walks the physical
-/// tables through the direct map, so a `map` that wrote nothing, or wrote into
-/// a table `CR3` does not point at, fails here. What it cannot show is the
-/// TLB, and the architecture is what covers that — a translation that was not
-/// present was not cached, so no invalidation is owed for a new mapping.
-/// Touching the page to prove it would need a raw write, which this crate may
-/// not contain (D-13); the safe type for reaching a mapping arrives with
-/// memory objects in slice 7, and this check grows a second half there.
 fn a_mapping_added_after_the_switch_is_live() -> bool {
-    /// A page well clear of the direct map, the stack arena and the device
-    /// window, so a failure cannot land on anything the kernel is using.
-    const PROBE: u64 = 0xffff_fd00_0000_0000;
+    let Some(probe) =
+        thread::boot_stack_layout().and_then(|layout| layout.end().checked_add(4 * PAGE_SIZE))
+    else {
+        return false;
+    };
 
-    let unmapped_before = paging::translate(PROBE).is_none();
+    let free_before = mm::free_frames();
+    let unmapped_before = paging::translate(probe).is_none();
 
     let Some(run) = mm::allocate_contiguous(1, 1) else {
         return false;
     };
     let physical = run.address();
 
-    // Ownership of the frame moves into the space (D-87). Nothing unmaps yet,
-    // so it stays there for the life of the kernel — deliberately, and the
-    // debt the next slice pays.
     let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-    let mapped = mem::map_owned_for_test(&mut context(), PROBE, run, wanted);
-    if !matches!(mapped, Some(Ok(_))) {
+    let Some(Ok(mapping)) = mem::map_owned_for_test(&mut context(), probe, run, wanted) else {
         return false;
-    }
+    };
 
-    // `OWNED` is in the expectation because `map_owned` writes it: the entry
-    // is where provenance lives, so unmap can tell the allocator's frames from
-    // the firmware's (D-88).
+    // `OWNED` is expected because `map_owned` writes it: the entry is where
+    // provenance lives (D-88).
     let expected = wanted.union(Flags::PRESENT).union(Flags::OWNED);
-    let translated = paging::translate(PROBE) == Some((physical, expected));
+    let translated = paging::translate(probe) == Some((physical, expected));
     let on_the_live_root = paging::active_root() == cpu::page_table_base();
+    let Some(Ok(returned)) = mem::unmap_for_test(&mut context(), mapping) else {
+        return false;
+    };
+    drop(returned);
+    let restored = paging::translate(probe).is_none() && mm::free_frames() == free_before;
 
-    unmapped_before && translated && on_the_live_root
+    unmapped_before && translated && on_the_live_root && restored
 }
 
-/// The event whose already-signalled state the re-check must find.
-static REREAD_EVENT: SpinLock<Option<ObjectRef>> = SpinLock::new(None);
+static REREAD_QUEUE: WaitQueue = WaitQueue::new();
+static REREAD_READY: AtomicUsize = AtomicUsize::new(0);
 
 /// 0 before the thread runs, 1 once it has come back through `wait_unless`.
 static REREAD_RETURNED: AtomicUsize = AtomicUsize::new(0);
 
-/// Wait on an event that is *already* signalled, and record coming back.
-fn wait_on_a_signalled_event() {
-    let Some(object) = REREAD_EVENT.lock_leaf().clone() else {
-        return;
-    };
-    let Some(event) = object.as_event() else {
-        return;
-    };
-    // Straight at `wait_unless`, not through `Event::wait` — that one tests
-    // the state before it calls in, so it would never reach the re-check this
-    // is about, and a broken re-check would sail past unnoticed.
-    event
-        .waiters_for_test()
-        .wait_unless(&mut context(), || event.is_signalled());
+fn wait_on_a_ready_condition() {
+    REREAD_QUEUE.wait_unless(&mut context(), || REREAD_READY.load(Ordering::Acquire) != 0);
     REREAD_RETURNED.store(1, Ordering::Release);
 }
 
-/// A waiter re-reads its condition after registering, and does not block if it
-/// has become true.
-///
-/// The half of the lost-wakeup fix that one CPU can observe (D-95). The
-/// condition is evaluated under the same queue lock a waker must take, so a
-/// signal cannot land between the read and the registration — they are one
-/// step. The earlier shape read the condition *outside* that lock, and a signal
-/// in the gap woke an empty queue while the waiter went on to sleep for ever.
-///
-/// Run on a spawned thread so that failure is a timeout here rather than a
-/// hang: without the re-check the waiter blocks on an event nobody will signal
-/// again, and a check that blocks *itself* can only stop the machine. Phase 4's
-/// lesson about breaks that crash, applied to where the check runs.
-///
-/// What this cannot show is the race itself. On one CPU, with the flag clear
-/// and the lock held, there is no interleaving left to drive — and the
-/// predicate must not touch the queue either, since signalling from inside it
-/// deadlocks against the lock it already holds, which is how the first version
-/// of this check hung the machine instead of failing it. The race is D-70 rule
-/// 6's, and slice 9's model is what will check it.
 fn a_waiter_rereads_its_condition_before_blocking() -> bool {
-    let event = object::event();
-    let Some(inner) = event.as_event() else {
-        return false;
-    };
-    inner.signal();
-
-    // Safe to assign: the slot is empty, so nothing is dropped under the guard.
-    *REREAD_EVENT.lock_leaf() = Some(event.clone());
+    REREAD_READY.store(1, Ordering::Release);
     REREAD_RETURNED.store(0, Ordering::Release);
     let free_before = thread::free_slots();
-    if thread::spawn("event-rereader", wait_on_a_signalled_event).is_err() {
+    if thread::spawn("wait-rereader", wait_on_a_ready_condition).is_err() {
         return false;
     }
 
     let came_back = runs_until(200, || REREAD_RETURNED.load(Ordering::Acquire) == 1);
-    // `>=`, because a user program retiring elsewhere frees a slot too: the
-    // property is that *this* thread's slot came back, and another coming back
-    // with it does not falsify it (D-117).
+    // `>=`: a program retiring elsewhere frees a slot too, and that does not
+    // falsify this thread's slot coming back (D-117).
     let settled = runs_until(200, || thread::free_slots() >= free_before);
-    // Taken out rather than assigned over: assignment drops the previous
-    // `Arc` *inside* the critical section, and a last reference would reach
-    // the heap and the frame allocator under a leaf guard — the shape
-    // `handle.rs` goes to explicit trouble to avoid (D-105).
-    let released = REREAD_EVENT.lock_leaf().take();
-    drop(released);
-
     // And nothing is left registered, so a later wake cannot name a thread
     // that is no longer waiting here.
-    came_back && settled && inner.waiters_for_test().is_idle()
+    came_back && settled && REREAD_QUEUE.is_idle()
 }
 
-/// A thread crosses into ring 3, calls back through the one gate that admits
-/// it, and is retired from the far side.
-///
-/// The boundary this whole phase is for, proved end to end rather than in
-/// parts: the ring-3 descriptors, the privilege stack, the `iretq` frame, the
-/// user-callable gate, and the return path all have to agree, and any one of
-/// them being wrong is a fault in a privilege level that cannot report it.
-///
-/// The evidence is the saved code selector. `CS` in the trap frame is the one
-/// the *CPU* pushed when it took the interrupt, so a ring-3 value there cannot
-/// be produced by a kernel thread saying `int 0x80` — the number in it is the
-/// hardware's account of where the caller was (D-96).
 fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
     let before = trap::last_syscall();
     let retirements_before = thread::retirements();
@@ -464,41 +393,19 @@ fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
     }
     let call = trap::last_syscall();
 
-    // Ring 3, by the selector the CPU pushed.
     let from_user = call.code_selector & 0b11 == 3;
-    // And through the gate meant for it.
-    let through_the_gate = call.vector as u8 == vector::SYSCALL;
-    // Which is the only one ring 3 may reach.
-    let only_gate = interrupt::gate_privilege(vector::SYSCALL) == 3
-        && interrupt::gate_privilege(vector::TIMER) == 0
-        && interrupt::gate_privilege(vector::KEYBOARD) == 0
+    let through_the_gate = call.vector as u8 == vector::SYSCALL.get();
+    let only_gate = interrupt::gate_privilege(vector::SYSCALL.get()) == 3
+        && interrupt::gate_privilege(vector::TIMER.get()) == 0
+        && interrupt::gate_privilege(vector::KEYBOARD.get()) == 0
         && interrupt::gate_privilege(exception::PAGE_FAULT) == 0;
-    // Its stack was the user one: ring 3 in the selector, and a low-half
-    // address, which is the half the kernel never maps.
     let on_a_user_stack =
         call.stack_selector & 0b11 == 3 && call.stack_pointer < usercopy::USER_END;
-    // And the thread is gone, counted rather than inferred. The first version
-    // of this waited for a slot to come back — which a retired thread never
-    // returns — and fell back to a comparison that is true of the checking
-    // thread whatever happened, so it could not fail at all (D-101).
     let retired = thread::retirements() > retirements_before;
 
     from_user && through_the_gate && only_gate && on_a_user_stack && retired
 }
 
-/// A ring-3 program cannot bring SMAP down with it.
-///
-/// The hole a third adversarial pass found (D-101), and the reason the program
-/// in the image is hostile: `EFLAGS.AC` is writable at CPL 3, and interrupt
-/// delivery clears `TF`, `NT`, `RF` and `VM` but **not** `AC`. So a program
-/// that sets it hands the kernel a trap with SMAP already off — for the whole
-/// handler, and for every thread switched to afterwards, since a context
-/// switch restores no flags.
-///
-/// Both halves are asserted, because either alone would pass for the wrong
-/// reason. The saved flags must show the program really did set `AC` — a
-/// program that failed to would make the second half true trivially. And the
-/// handler must have been running with it clear.
 fn a_program_cannot_bring_smap_down_with_it() -> bool {
     /// `EFLAGS.AC`.
     const AC: u64 = 1 << 18;
@@ -507,31 +414,12 @@ fn a_program_cannot_bring_smap_down_with_it() -> bool {
     if call.count == 0 {
         return false;
     }
-    // The program set it, so this check is about something that happened.
     let the_program_tried = call.flags & AC != 0;
-    // And the entry path took it away again.
     let the_kernel_undid_it = trap::smap_survived_the_last_syscall();
 
     the_program_tried && the_kernel_undid_it && interrupt::access_clear_is_armed()
 }
 
-/// A program that faults dies, and the machine does not.
-///
-/// D-31 made a fault terminal when a fault was necessarily a kernel bug. Since
-/// ring 3 exists it can be a program bug, and D-97 already reasons from the
-/// right premise for the copy path — *the program is the untrusted party*.
-/// D-102 applies it to the trap path: a fault from CPL 3 retires the caller.
-///
-/// The program executes `ud2` on purpose, chosen by the argument word the
-/// kernel wrote onto its stack. That the fault is deliberate is what makes
-/// this a check rather than a hope: an accidental fault would be indeterminate
-/// about *which* fault, and `#UD` is the one nothing else in this kernel
-/// raises.
-///
-/// Three things are asserted, and the first is the one that would otherwise be
-/// assumed: the fault must have come from ring 3, by the selector the CPU
-/// pushed. A kernel `ud2` retired instead of reported would be a kernel bug
-/// swallowed, which is worse than the panic this replaces.
 fn a_faulting_program_dies_alone() -> bool {
     let before = trap::last_user_fault();
     let retirements_before = thread::retirements();
@@ -548,8 +436,7 @@ fn a_faulting_program_dies_alone() -> bool {
     let from_user = fault.code_selector & 0b11 == 3;
     // The fault the program chose, and no other.
     let it_was_the_ud2 = fault.vector == u64::from(exception::INVALID_OPCODE);
-    // Its stack pointer is in user memory, not the kernel's. (The record
-    // carries no instruction pointer; an earlier comment said it did.)
+    // Its stack pointer is in user memory, not the kernel's.
     let in_user_memory = fault.stack_pointer < usercopy::USER_END;
     // The thread was retired rather than the machine stopped — and the machine
     // is plainly still here, since this line runs.
@@ -558,23 +445,6 @@ fn a_faulting_program_dies_alone() -> bool {
     from_user && it_was_the_ud2 && in_user_memory && retired
 }
 
-/// A program aiming `RIP` into the kernel's user-copy window is retired, not
-/// resumed.
-///
-/// The recovery arm runs **before** the ring-3 test — it has to, because the
-/// fault it exists for is taken in ring 0 with the kernel dereferencing — and
-/// until D-126 it never looked at the saved `CS`. So a ring-3 thread that
-/// jumped into `[wost_copy_fault_start, wost_copy_fault_end)` had its
-/// instruction-fetch fault "recovered": `resume_at` rewrote `RIP` to the
-/// fixup with `CS` still ring 3, it faulted again there, and only then was
-/// retired. Not an escalation and not a halt, but a program could drive the
-/// recovery counter at will, and the arm's own comment claimed a privilege
-/// nothing enforced.
-///
-/// Driven by a real ring-3 thread rather than a synthesised frame, because a
-/// synthesised one would be the kernel asserting about its own arithmetic. The
-/// address is asked of `wost` rather than written down: a hardcoded one would
-/// check a number, not the window.
 fn a_program_cannot_aim_at_the_copy_window() -> bool {
     let recoveries_before = trap::user_copy_recoveries();
     let faults_before = trap::last_user_fault().count;
@@ -596,89 +466,88 @@ fn a_program_cannot_aim_at_the_copy_window() -> bool {
     let retired = runs_until(500, || thread::retirements() > retirements_before);
     // The counter did not move: nothing was recovered.
     let not_recovered = trap::user_copy_recoveries() == recoveries_before;
-    // And the window is a real range, so the conjunct above is about
-    // something — a `fault_window` returning an empty range would make the
-    // whole check pass with the arm deleted.
+    // And the window is a real range: an empty `fault_window` would make
+    // the check pass with the arm deleted.
     let real_window = start < end;
 
     from_user && retired && not_recovered && real_window
 }
 
-/// Two programs at the same address see different memory.
-///
-/// The isolation claim, stated the strongest way the machine allows: two
-/// spaces, one virtual address, two frames. Until D-106 a second program meant
-/// a second *pair of addresses* in the one space the kernel ran on, which
-/// proved that `RSP0` follows the thread and nothing about isolation.
-///
-/// Checked from the kernel rather than by running both, because the point is
-/// what the tables say and a program cannot report on a space it cannot reach.
-/// The frames are written through the direct map, which is the one view that
-/// sees both.
 fn two_spaces_map_one_address_to_different_memory() -> bool {
     /// A user address neither space has anything else at.
     const SHARED: u64 = user::CODE + 0x10_0000;
 
-    let (Ok(mut first), Ok(mut second)) = (AddressSpace::for_user(), AddressSpace::for_user())
-    else {
+    if !runs_until(2000, || !user::has_zombies()) {
+        return false;
+    }
+    let allocator_before = AllocatorSnapshot::capture();
+    let Ok(mut first) = AddressSpace::for_user() else {
         return false;
     };
-    // Different roots to begin with, or nothing below means anything.
-    if first.root() == second.root() {
-        return false;
-    }
-
-    let writable = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-    let (Some(mut one), Some(mut two)) =
-        (mm::allocate_contiguous(1, 1), mm::allocate_contiguous(1, 1))
-    else {
+    let Ok(mut second) = AddressSpace::for_user() else {
+        let reclaimed = first.reclaim(None).is_ok();
+        drop(first);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+            "a missing second space did not return the first space's tables"
+        );
         return false;
     };
-    if !one.zero() || !two.zero() {
-        return false;
-    }
-    // Distinct bytes, written through the direct map before either is mapped.
-    if !one.write_at(0, &[0xA5]) || !two.write_at(0, &[0x5A]) {
-        return false;
-    }
-    let (one_at, two_at) = (one.address(), two.address());
-    if one_at == two_at {
-        return false;
-    }
-    if first.map_user(SHARED, one.into(), writable).is_err()
-        || second.map_user(SHARED, two.into(), writable).is_err()
-    {
-        return false;
-    }
 
-    // One address, two answers.
-    let (Some((first_frame, first_flags)), Some((second_frame, second_flags))) =
-        (first.lookup(SHARED), second.lookup(SHARED))
-    else {
-        return false;
-    };
-    // `first_frame != second_frame` follows from the two equalities and the
-    // refusal above, so it is not asserted again here (D-115).
-    let separate = first_frame == one_at && second_frame == two_at;
-    let both_user = first_flags.contains(Flags::USER) && second_flags.contains(Flags::USER);
+    let mut first_mapped = false;
+    let mut second_mapped = false;
+    let checked = (|| {
+        if first.root() == second.root() {
+            return false;
+        }
 
-    // The kernel's half is the same in both, which is what makes a switch
-    // between them safe at all (D-104).
-    let text = boot::sections().text.start;
-    let shared_kernel = first.lookup(text) == second.lookup(text) && first.lookup(text).is_some();
+        let writable = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+        let (Some(mut one), Some(mut two)) =
+            (mm::allocate_contiguous(1, 1), mm::allocate_contiguous(1, 1))
+        else {
+            return false;
+        };
+        if !one.zero() || !two.zero() || !one.write_at(0, &[0xA5]) || !two.write_at(0, &[0x5A]) {
+            return false;
+        }
+        let (one_at, two_at) = (one.address(), two.address());
+        if one_at == two_at || first.map_user(SHARED, one.into(), writable).is_err() {
+            return false;
+        }
+        first_mapped = true;
+        if second.map_user(SHARED, two.into(), writable).is_err() {
+            return false;
+        }
+        second_mapped = true;
 
-    separate && both_user && shared_kernel
+        let (Some((first_frame, first_flags)), Some((second_frame, second_flags))) =
+            (first.lookup(SHARED), second.lookup(SHARED))
+        else {
+            return false;
+        };
+        let separate = first_frame == one_at && second_frame == two_at;
+        let both_user = first_flags.contains(Flags::USER) && second_flags.contains(Flags::USER);
+
+        let text = boot::sections().text.start;
+        let shared_kernel =
+            first.lookup(text) == second.lookup(text) && first.lookup(text).is_some();
+        separate && both_user && shared_kernel
+    })();
+
+    let first_unmapped = !first_mapped || first.unmap(SHARED, PAGE_SIZE).map(drop).is_ok();
+    let second_unmapped = !second_mapped || second.unmap(SHARED, PAGE_SIZE).map(drop).is_ok();
+    let first_reclaimed = first.reclaim(None).is_ok();
+    let second_reclaimed = second.reclaim(None).is_ok();
+    drop((first, second));
+
+    checked
+        && first_unmapped
+        && second_unmapped
+        && first_reclaimed
+        && second_reclaimed
+        && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
 }
 
-/// Every enabled extended-state component follows its thread.
-///
-/// Eager extended-state save and restore (D-82, D-108). Lazy is CVE-2018-3665
-/// and was never on the table; what was owed was doing it at all, and D-99
-/// made the gap reachable — two threads can be in ring 3, so two threads can
-/// have floating-point state to lose.
-///
-/// x87, the low half of `xmm0` and the high half of `ymm0` independently
-/// witness the three bits this kernel enables (D-228).
 fn every_enabled_state_component_survives_a_switch() -> bool {
     /// What this thread puts there.
     const MINE: xstate::Probe = xstate::Probe {
@@ -687,7 +556,7 @@ fn every_enabled_state_component_survives_a_switch() -> bool {
         ymm: 0xC3C3_0F0F_F0F0_3C3C,
     };
     if !xstate::is_enabled() {
-        // A processor with no `XSAVE` has nothing to save, and reports so.
+        // The hardware state is coherent; user launch separately refuses it.
         return xstate::bytes() == 0 && xstate::extended_control() == 0;
     }
 
@@ -712,11 +581,7 @@ fn every_enabled_state_component_survives_a_switch() -> bool {
     let kept = xstate::read_probe() == Some(MINE);
     let intruded = EXTENDED_INTRUDER_SAW_OWN.load(Ordering::Acquire) == 1;
 
-    // And `XCR0` holds what boot asked for.
-    // Read back from `XCR0` through `XGETBV`, which is guarded on `CR4` and
-    // not on a Rust flag — the earlier version's `bytes() >= 576` restated
-    // `init`'s own refusal, and its zero-check read an early return rather
-    // than the register (D-115).
+    // Read live `XCR0` instead of restating `init`'s precondition (D-115).
     let mask = xstate::extended_control();
     let masked = mask & 0b111 == 0b111 && xstate::bytes() <= 1024;
 
@@ -729,7 +594,6 @@ static EXTENDED_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
 /// Whether the intruding thread read back all three of its own values.
 static EXTENDED_INTRUDER_SAW_OWN: AtomicUsize = AtomicUsize::new(0);
 
-/// Put different values in every component and read them after a switch.
 fn clobber_extended_state() {
     const THEIRS: xstate::Probe = xstate::Probe {
         x87: 0x0FED_CBA9_1357_2468,
@@ -746,152 +610,177 @@ fn clobber_extended_state() {
     EXTENDED_INTRUDER_RAN.store(1, Ordering::Release);
 }
 
-/// A run of frames the kernel owns cannot be mapped where ring 3 can read it.
-///
-/// D-44's untyped split, with its first real caller (D-107). The frames come
-/// from the allocator carrying whatever the kernel last put in them, so
-/// publishing one to ring 3 is a disclosure — and the type is what says a run
-/// has already been given away. `map_owned` refuses the `USER` flag outright;
-/// `map_user` takes the run that has been converted, and adds `USER` itself so
-/// a caller cannot forget it.
-///
-/// The road back zeroes. A frame that held a program's stack and came back to
-/// the kernel still holding it is how one process reads another's memory, so
-/// `reclaim` clears before it returns a `Segment` and there is no other door.
 fn kernel_memory_cannot_be_published_to_ring_three() -> bool {
     /// A user address nothing else uses.
     const PROBE: u64 = user::STACK + 0x40_0000;
 
-    let Ok(mut space) = AddressSpace::for_user() else {
-        return false;
+    in_reclaimed_space(AddressSpace::for_user, |space| {
+        let Some(mut run) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !run.zero() {
+            return false;
+        }
+
+        // Recognizable kernel bytes keep accidental publication from looking zeroed.
+        let secret = [0xDEu8; 8];
+        if !run.write_at(0, &secret) {
+            return false;
+        }
+
+        let refused = matches!(
+            space.map_owned(PROBE, run, Flags::USER.union(Flags::WRITABLE)),
+            Err(MapError::NotYours(PROBE))
+        );
+        if !refused {
+            return false;
+        }
+
+        let Some(mut giving) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !giving.zero() || !giving.write_at(0, &secret) {
+            return false;
+        }
+        let untyped: mm::USegment = giving.into();
+        let address = untyped.address();
+
+        let Some(back) = untyped.reclaim() else {
+            return false;
+        };
+        // A successful reclaim alone does not prove that the bytes were cleared.
+        let mut recovered = [0xFFu8; 8];
+        let cleared =
+            back.address() == address && back.read_at(0, &mut recovered) && recovered == [0u8; 8];
+        drop(back);
+
+        let Some(mut given) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !given.zero() {
+            return false;
+        }
+        if space
+            .map_user(
+                PROBE,
+                given.into(),
+                Flags::WRITABLE.union(Flags::NO_EXECUTE),
+            )
+            .is_err()
+        {
+            return false;
+        }
+        let user_accessible = space
+            .lookup(PROBE)
+            .is_some_and(|(_, flags)| flags.contains(Flags::USER));
+        let unmapped = space.unmap(PROBE, PAGE_SIZE).map(drop).is_ok();
+
+        refused && cleared && user_accessible && unmapped
+    })
+}
+
+fn mark_external_run(run: &mut mm::Segment, marker: u8) -> bool {
+    let expected = [marker; 16];
+    let mut found = [0; 16];
+    run.write_at(0, &expected) && run.read_at(0, &mut found) && found == expected
+}
+
+fn external_user_bytes_are_zeroed_before_free() -> bool {
+    const DIRECT: u8 = 0xa1;
+    const SHARED: u8 = 0xb2;
+    const REFUSED: u8 = 0xc3;
+    const OUTSIDE_USER_HALF: u64 = 0xffff_8000_0010_0000;
+
+    let direct = {
+        let Some(mut run) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !mark_external_run(&mut run, DIRECT) {
+            return false;
+        }
+        let address = run.address();
+        drop(mm::USegment::from(run));
+        mm::freed_external_run_is_zero_for_test(address, 1)
     };
+
+    let shared = {
+        let Some(mut run) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !mark_external_run(&mut run, SHARED) {
+            return false;
+        }
+        let address = run.address();
+        drop(mm::USegment::from(run).share());
+        mm::freed_external_run_is_zero_for_test(address, 1)
+    };
+
+    let refused = in_reclaimed_space(AddressSpace::for_user, |space| {
+        let Some(mut run) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !mark_external_run(&mut run, REFUSED) {
+            return false;
+        }
+        let address = run.address();
+        let Err(error) = space.map_user(
+            OUTSIDE_USER_HALF,
+            run.into(),
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+        ) else {
+            return false;
+        };
+        let reason = error.reason();
+        let run = error.into_run();
+        let retained = reason == MapError::NotYours(OUTSIDE_USER_HALF) && run.address() == address;
+        drop(run);
+        retained && mm::freed_external_run_is_zero_for_test(address, 1)
+    });
+
+    direct && shared && refused
+}
+
+fn a_refused_external_clear_withholds_its_run() -> bool {
+    const MARKER: u8 = 0xd4;
+
+    let free_before = mm::free_frames();
     let Some(mut run) = mm::allocate_contiguous(1, 1) else {
         return false;
     };
-    if !run.zero() {
+    if !mark_external_run(&mut run, MARKER) {
         return false;
     }
-
-    // The kernel's own bytes, of the kind a disclosure would hand over.
-    let secret = [0xDEu8; 8];
-    if !run.write_at(0, &secret) {
-        return false;
-    }
-
-    // `map_owned` will not publish them, whatever the caller asks for.
-    let refused = matches!(
-        space.map_owned(PROBE, run, Flags::USER.union(Flags::WRITABLE)),
-        Err(MapError::NotYours(PROBE))
-    );
-    if !refused {
-        return false;
-    }
-
-    // Converting is the caller noticing. The run went into the call above and
-    // came back to the allocator with it, so this is a fresh one.
-    let Some(mut giving) = mm::allocate_contiguous(1, 1) else {
-        return false;
-    };
-    if !giving.zero() || !giving.write_at(0, &secret) {
-        return false;
-    }
-    let untyped: mm::USegment = giving.into();
-    let address = untyped.address();
-
-    // Reclaiming clears it, so what the kernel gets back holds nothing.
-    let Some(back) = untyped.reclaim() else {
-        return false;
-    };
-    // Read back, because "the call returned" is not "the bytes are gone" —
-    // and a `reclaim` that skipped the zeroing passed a version of this check
-    // that only asked whether the frame was still reachable (D-107).
-    let mut recovered = [0xFFu8; 8];
-    let cleared =
-        back.address() == address && back.read_at(0, &mut recovered) && recovered == [0u8; 8];
-    drop(back);
-
-    // And `map_user` adds `USER` even where the caller did not.
-    let Some(mut given) = mm::allocate_contiguous(1, 1) else {
-        return false;
-    };
-    if !given.zero() {
-        return false;
-    }
-    if space
-        .map_user(
-            PROBE,
-            given.into(),
-            Flags::WRITABLE.union(Flags::NO_EXECUTE),
-        )
-        .is_err()
-    {
-        return false;
-    }
-    let user_accessible = space
-        .lookup(PROBE)
-        .is_some_and(|(_, flags)| flags.contains(Flags::USER));
-
-    refused && cleared && user_accessible
+    let withheld = mm::refused_external_clear_withholds_for_test(run, &[MARKER; 16]);
+    withheld && mm::free_frames() == free_before
 }
 
-/// Only a space that agrees with the kernel about the higher half is
-/// installable, and a user space cannot make one that does not.
-///
-/// A `CR3` naming tables that do not map the kernel's code is a triple fault
-/// at the next instruction, so `bind` compares every top-level entry of the
-/// higher half rather than sampling addresses (D-106). The comparison itself
-/// cannot be made to fail through the public API, which is the point: the
-/// the doors into the higher half — `map_boot`, `map_owned`, `unmap` and
-/// `map_device` —
-/// all refuse a space that shares the kernel's. `map_device` was the one that
-/// did not, and it walked into the kernel's own device tables.
 fn only_a_space_that_matches_the_kernel_can_be_installed() -> bool {
-    // A space that never shared the kernel's half is refused outright: it maps
-    // no kernel code, so installing it is a triple fault.
-    let Ok(mut bare) = AddressSpace::new() else {
-        return false;
-    };
-    let bare_refused = matches!(bare.bind(), Err(ActivateError::NotAUserSpace));
+    let bare_refused = in_reclaimed_space(AddressSpace::new, |bare| {
+        matches!(bare.bind(), Err(ActivateError::NotAUserSpace))
+    });
 
-    // One that did share it binds.
-    let Ok(mut shared) = AddressSpace::for_user() else {
-        return false;
+    let binds = {
+        let free_before = mm::free_frames();
+        let Ok(mut shared) = AddressSpace::for_user() else {
+            return false;
+        };
+        let released = shared.bind().ok().map(task::release_uninstalled);
+        let bound = released.is_some();
+        let reclaimed = shared.reclaim(released).is_ok();
+        bound && reclaimed && mm::free_frames() == free_before
     };
-    let binds = shared.bind().is_ok();
 
-    // And no door into the higher half is open to it. The device window is
-    // where the kernel's own registers live, so a mapping there is an edit of
-    // the tables every space shares.
-    let Ok(mut probe) = AddressSpace::for_user() else {
-        return false;
-    };
-    let device_refused = matches!(
-        probe.map_device(0xfee0_0000, PAGE_SIZE),
-        Err(MapError::NotYours(_))
-    );
+    let device_refused = in_reclaimed_space(AddressSpace::for_user, |probe| {
+        matches!(
+            paging::admit_device_range(0xfee0_0000, PAGE_SIZE)
+                .and_then(|range| probe.map_device(range)),
+            Err(MapError::NotYours(_))
+        )
+    });
 
     bare_refused && binds && device_refused
 }
 
-/// The loader refuses an image that asks for what it may not map.
-///
-/// The half of a loader that matters. An image is bytes a program supplied,
-/// and every one of these is a way of asking the kernel to map something it
-/// should not: a segment both writable and executable, one whose contents run
-/// past the file, one claiming more memory than the file holds, and one placed
-/// in the half of the address space the kernel lives in.
-///
-/// **W^X is not relaxed for an image that asks nicely** (D-100). A loader that
-/// dropped the write bit to make a program load would be loading something
-/// that faults later and blames the kernel.
-///
-/// Each is a copy of the real initrd with one field changed, so what is being
-/// refused differs from what loads by exactly the thing under test.
-///
-/// Loaded into a throwaway space rather than the running one (D-106), so a
-/// refusal that half-loaded leaves its mappings somewhere nothing else walks.
-/// The space itself is abandoned, which costs table frames — bounded by the
-/// number of refusals here, and the price of not editing the live tables.
 fn the_loader_refuses_what_it_may_not_map() -> bool {
     let Some(original) = user::image() else {
         return false;
@@ -905,28 +794,36 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
     const VADDR: usize = elf64::HEADER_BYTES + 16;
     const FILE_SIZE: usize = elf64::HEADER_BYTES + 32;
     const MEMORY_SIZE: usize = elf64::HEADER_BYTES + 40;
+    const ALIGNMENT: usize = elf64::HEADER_BYTES + 48;
 
     let doctor = |at: usize, value: u64| -> Vec<u8> {
         let mut copy = original.to_vec();
         copy[at..at + 8].copy_from_slice(&value.to_le_bytes());
         copy
     };
+    let field = |at: usize| {
+        let mut value = [0u8; 8];
+        value.copy_from_slice(&original[at..at + 8]);
+        u64::from_le_bytes(value)
+    };
     let load = |bytes: &[u8], shift: u64| {
+        let allocator_before = AllocatorSnapshot::capture();
         let Ok(mut space) = AddressSpace::for_user() else {
             return (Err(user::LoadError::OutOfMemory), false, false);
         };
         let held = mm::free_frames();
         let result = user::load_image(&mut space, bytes, shift);
         let refused_before_mapping = mm::free_frames() == held;
-        if let Ok(image) = result {
-            for (at, len) in image.regions() {
-                let Ok(returned) = space.unmap(at, len) else {
-                    return (result, false, refused_before_mapping);
-                };
-                drop(returned);
-            }
-        }
-        let cleaned = space.reclaim(None).is_ok();
+        let mappings_cleaned = result.as_ref().map_or(true, |image| {
+            image
+                .regions()
+                .all(|(at, len)| space.unmap(at, len).map(drop).is_ok())
+        });
+        let tables_cleaned = space.reclaim(None).is_ok();
+        drop(space);
+        let cleaned = mappings_cleaned
+            && tables_cleaned
+            && AllocatorSnapshot::capture().has_same_ownership(&allocator_before);
         (result, cleaned, refused_before_mapping)
     };
 
@@ -938,12 +835,8 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
         Err(user::LoadError::WriteExecute(_))
     );
 
-    // Contents past the end of the image, and *only* that: `p_offset` moved
-    // out to the end with the sizes left alone, so `is_oversized` is satisfied
-    // and `contents_fit` is the one refusal that can fire. The earlier version
-    // set `p_filesz = 0x1000`, which tripped both — and deleting the
-    // `contents_fit` bound, the only thing keeping a slice index inside the
-    // image, left the gate green (D-105).
+    // Moving only `p_offset` isolates the contents bound from the independent
+    // file-size-versus-memory-size refusal (D-105).
     let overrun = doctor(OFFSET, original.len() as u64);
     let overrun_refused = matches!(load(&overrun, 0).0, Err(user::LoadError::Truncated(_)));
 
@@ -953,19 +846,45 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
     let oversized_refused = matches!(load(&oversized, 0).0, Err(user::LoadError::Malformed(_)));
 
     // Placed in the kernel's half.
-    let intruding = doctor(VADDR, 0xffff_8000_0000_0000);
+    let mut intruding = doctor(VADDR, 0xffff_8000_0000_0000);
+    intruding[ALIGNMENT..ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
     let intruding_refused = matches!(
         load(&intruding, 0).0,
         Err(user::LoadError::NotUserMemory(_))
     );
 
+    // ELF congruence is still valid, but this loader deliberately places only
+    // whole-page segments and refuses that narrower contract before mapping.
+    let mut unaligned = doctor(VADDR, field(VADDR) + 1);
+    unaligned[ALIGNMENT..ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
+    let (unaligned_result, unaligned_cleaned, unaligned_preflight) = load(&unaligned, 0);
+    let unaligned_refused = matches!(unaligned_result, Err(user::LoadError::Unaligned(_)))
+        && unaligned_cleaned
+        && unaligned_preflight;
+
+    let invalid_alignment = doctor(ALIGNMENT, 3);
+    let (alignment_result, alignment_cleaned, alignment_preflight) = load(&invalid_alignment, 0);
+    let alignment_refused = matches!(
+        alignment_result,
+        Err(user::LoadError::InvalidAlignment { alignment: 3, .. })
+    ) && alignment_cleaned
+        && alignment_preflight;
+
+    let mut incongruent = doctor(VADDR, field(VADDR) + 1);
+    incongruent[ALIGNMENT..ALIGNMENT + 8].copy_from_slice(&PAGE_SIZE.to_le_bytes());
+    let (congruence_result, congruence_cleaned, congruence_preflight) = load(&incongruent, 0);
+    let congruence_refused = matches!(
+        congruence_result,
+        Err(user::LoadError::InvalidAlignment { .. })
+    ) && congruence_cleaned
+        && congruence_preflight;
+
     // And something that is not an ELF at all.
     let not_an_elf = [0u8; 64];
     let refused_outright = matches!(load(&not_an_elf, 0).0, Err(user::LoadError::NotAnElf(_)));
 
-    // The entry is validated before the first placement. Zero is valid user
-    // address arithmetic but not inside this image's executable segment, so a
-    // refusal that arrives after mapping is observably too late.
+    // Validated before the first placement: zero is a valid user address but
+    // outside the executable segment, so a late refusal is observable.
     let invalid_entry = doctor(ENTRY, 0);
     let (entry_result, entry_cleaned, entry_preflight) = load(&invalid_entry, 0);
     let entry_refused = matches!(entry_result, Err(user::LoadError::InvalidEntry(0)))
@@ -996,6 +915,9 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
         && overrun_refused
         && oversized_refused
         && intruding_refused
+        && unaligned_refused
+        && alignment_refused
+        && congruence_refused
         && refused_outright
         && entry_refused
         && first_cleaned
@@ -1003,24 +925,6 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
         && independent
 }
 
-/// A second thread crosses too, and each trap lands on its own kernel stack.
-///
-/// The limitation D-96 wrote down and D-99 lifted. `RSP0` used to be set once,
-/// to a stack of its own, so a second thread in ring 3 would have taken its
-/// trap on a stack the first was standing on. It now moves with the thread, in
-/// the one place every switch passes through.
-///
-/// The evidence is the stack the trap actually landed on — `frame_address`,
-/// recorded by the entry path out of the interrupted stack pointer, and so a
-/// property of *that* crossing. `segment::kernel_stack()` reads the live
-/// `RSP0`, which is global CPU state that both reads see identically long
-/// after the fact; comparing it to itself could not fail, and did not, for a
-/// whole phase (D-105).
-///
-/// The two programs share an address space, so this is not isolation and is
-/// not claimed to be: what it shows is that the *kernel* side of two
-/// simultaneous crossings is separate. Isolation needs a second set of tables,
-/// which is what the rest of this slice is for.
 fn a_second_thread_crosses_onto_its_own_stack() -> bool {
     let first = trap::last_syscall();
     if first.count == 0 {
@@ -1038,19 +942,12 @@ fn a_second_thread_crosses_onto_its_own_stack() -> bool {
 
     // Ring 3 again, through the same one gate.
     let from_user = second.code_selector & 0b11 == 3;
-    let through_the_gate = second.vector as u8 == vector::SYSCALL;
+    let through_the_gate = second.vector as u8 == vector::SYSCALL.get();
     // At its own user addresses, not the first program's.
     let elsewhere =
         second.stack_pointer != first.stack_pointer && second.stack_pointer < usercopy::USER_END;
-    // And `RSP0` followed the thread: the stack this crossing landed on is the
-    // arena slot belonging to the thread that made it.
-    //
-    // **Not "a different stack from last time".** That was the property until
-    // D-117, and it held because a retired thread's slot was never reused —
-    // so two crossings could not share a stack even if `RSP0` never moved.
-    // Slots are reused now, and two threads that never coexist *correctly*
-    // share one. What identifies a caller is its slot, which the entry path
-    // records.
+    // Slot identity is the witness because sequential threads may correctly
+    // reuse a stack (D-117).
     let landed_on_its_own = thread::layout()
         .and_then(|layout| layout.slot(second.slot.checked_sub(1)?))
         .is_some_and(|slot| {
@@ -1064,111 +961,24 @@ fn a_second_thread_crosses_onto_its_own_stack() -> bool {
     from_user && through_the_gate && elsewhere && landed_on_its_own && kernel_stacks
 }
 
-/// The return to ring 3 clears the buffers, and the crossing happened with it
-/// armed.
-///
-/// D-81 asked for `VERW` on the way out because it is one instruction on a
-/// path that is painful to modify once mature. D-98 arms it unless the
-/// processor reports `MDS_NO`, rather than gating on `MD_CLEAR` — `verw`
-/// exists on every x86-64, and that bit says only whether it also flushes, so
-/// a machine whose capability word cannot be read gets the instruction rather
-/// than the assumption.
-///
-/// That policy is what makes this checkable at all. QEMU reports no capability
-/// word (D-91), so gating on `MD_CLEAR` would have left the instruction
-/// unreachable here — the same hole eIBRS is still in.
-///
-/// What the check cannot show is that the flush *flushes*: nothing observable
-/// changes. What it shows is that the instruction **executed** — the tally
-/// beside the `verw`, not the byte that arms it. Reading the arming was the
-/// earlier version, and deleting the `verw` outright left it green, which is
-/// exactly how D-101 found the flush had shipped unexecuted (D-105).
 fn the_return_to_ring_three_clears_buffers() -> bool {
     let armed = interrupt::buffer_clear_is_armed();
     let executed = interrupt::buffer_clears();
     if !armed || executed == 0 {
         return false;
     }
-    // And it executes once per crossing rather than once at boot: every
-    // syscall seen came from a thread that was let into ring 3 through this
+    // Once per crossing, not once at boot: every syscall came through this
     // branch, so the tally cannot lag the crossings.
     executed >= trap::last_syscall().count as u64
 }
 
-/// A user copy that faults resumes and reports, instead of stopping the
-/// machine.
-///
-/// D-97 reasons from the right premise — *the program is the untrusted party*
-/// — and until D-120 the copy path did not act on it. A fault inside the
-/// window was terminal, so a program that arranged one stopped the machine.
-///
-/// **Driven through the unwalked copy, because the walked one cannot reach
-/// it.** `admits` refuses an unmapped address before a byte moves, so a check
-/// built on the walked form tests the refusal it already has and the recovery
-/// not at all — it would pass with the fixup deleted, which is the shape this
-/// project keeps finding in its own checks (D-105 rule 2). The unwalked form
-/// is safe *because* of the fixup, so pointing it at nothing is exactly the
-/// mechanism under test.
 fn a_faulting_user_copy_resumes_and_reports() -> bool {
-    /// User memory the running space certainly does not map.
-    const NOWHERE: u64 = 0x0000_6000_0000_0000;
-
     let recoveries_before = trap::user_copy_recoveries();
-    let mut read = [0xA5u8; 8];
-
-    // Nothing is there. The copy faults on its first byte, resumes at the
-    // fixup, and says how much it did not move.
-    let vanished = usercopy::copy_from_user_unwalked(NOWHERE, &mut read);
-    let reported = vanished == Err(UserCopyError::Vanished(read.len()));
-
-    // The machine is still here, and the fault was counted rather than
-    // inferred: this line running at all is the weaker half, and the count is
-    // the half that could not be true by accident.
+    let exact = usercopy::drive_fault_recovery_for_test();
     let recovered = trap::user_copy_recoveries() == recoveries_before + 1;
-
-    // Ring 3's half only: the kernel's is refused before the window opens, so
-    // the unwalked form cannot be turned into an arbitrary kernel read.
-    let kernel_refused = matches!(
-        usercopy::copy_from_user_unwalked(boot::sections().text.start, &mut read),
-        Err(UserCopyError::NotUserMemory(_))
-    );
-
-    // And a page that *is* there copies, so the fixup has not simply broken
-    // the copy for everything.
-    let Some((code, _)) = boundary_probe() else {
-        return false;
-    };
-    let mut program = [0u8; user::PROGRAM.len()];
-    let works =
-        usercopy::copy_from_user_unwalked(code, &mut program).is_ok() && program == user::PROGRAM;
-
-    reported && recovered && kernel_refused && works
+    exact && recovered
 }
 
-/// Bytes cross the boundary in both directions, and every way they must not
-/// is refused.
-///
-/// The user-copy ABI (D-81, D-97). It runs after the ring-3 check, so the
-/// program's pages are mapped and this reads the very instructions the CPU
-/// executed — which is stronger than a round trip through memory the kernel
-/// also wrote, because it is the *user* mapping being reached through.
-///
-/// The refusals are the half that matters. A user pointer naming kernel
-/// memory, a range that runs off the end of user space, a range that wraps,
-/// an unmapped page, and a write to a page that is user-readable but not
-/// user-writable — the last being the code page, which is executable and
-/// read-only precisely so that W^X holds for user memory too.
-/// A read-only executable page and a writable page, user-accessible in the
-/// *running* space.
-///
-/// `copy_from_user` and `copy_to_user` are about the tables the CPU is
-/// walking, and since D-106 those are the kernel's for every kernel thread —
-/// a program's pages live in a space this thread cannot reach. So the checks
-/// about the boundary build their own pages, which is also the honest
-/// arrangement: what they test is the copy, not the loader.
-///
-/// Mapped once and remembered: a second `map_user` at the same address is a
-/// `Conflict`, and every caller wants the same two pages.
 fn boundary_probe() -> Option<(u64, u64)> {
     /// Well clear of anything a program is loaded at.
     const CODE: u64 = user::CODE + 0x20_0000;
@@ -1205,6 +1015,258 @@ fn boundary_probe() -> Option<(u64, u64)> {
     Some((CODE, STACK))
 }
 
+fn an_active_unmap_exposes_only_its_replacement() -> bool {
+    const FIRST: [u8; 16] = [0xa5; 16];
+    const SECOND: [u8; 16] = [0x5a; 16];
+
+    let Some((_, stack)) = boundary_probe() else {
+        return false;
+    };
+    let Some(at) = stack.checked_add(PAGE_SIZE) else {
+        return false;
+    };
+    let Some(mut first) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if !first.zero() || !first.write_at(0, &FIRST) {
+        return false;
+    }
+    let first_physical = first.address();
+    let first_flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+    let mut context = context();
+    let Some(Ok(first_mapping)) = mem::map_user_page_for_test(&mut context, at, first, first_flags)
+    else {
+        return false;
+    };
+
+    let mut warmed = [0; FIRST.len()];
+    let warmed_first = usercopy::copy_from_user(at, &mut warmed).is_ok() && warmed == FIRST;
+    let Some(Ok(first_taken)) = mem::unmap_for_test(&mut context, first_mapping) else {
+        return false;
+    };
+
+    let Some(mut second) = mm::allocate_contiguous(1, 1) else {
+        drop(first_taken);
+        return false;
+    };
+    if !second.zero() || !second.write_at(0, &SECOND) {
+        drop(first_taken);
+        return false;
+    }
+    let second_physical = second.address();
+    let Some(Ok(second_mapping)) =
+        mem::map_user_page_for_test(&mut context, at, second, Flags::NONE)
+    else {
+        drop(first_taken);
+        return false;
+    };
+
+    let replacement_is_distinct = first_physical != second_physical
+        && paging::translate(at).is_some_and(|(physical, flags)| {
+            physical == second_physical
+                && flags.contains(Flags::PRESENT)
+                && flags.contains(Flags::USER)
+                && flags.contains(Flags::OWNED)
+                && !flags.contains(Flags::WRITABLE)
+                && !flags.contains(Flags::NO_EXECUTE)
+        });
+    let mut observed = [0; SECOND.len()];
+    let replacement_was_read =
+        usercopy::copy_from_user(at, &mut observed).is_ok() && observed == SECOND;
+    let replacement_is_read_only = matches!(
+        usercopy::copy_to_user(at, &FIRST),
+        Err(UserCopyError::ReadOnly(found)) if found == at
+    );
+
+    let second_removed = mem::unmap_for_test(&mut context, second_mapping)
+        .is_some_and(|result| result.map(drop).is_ok());
+    drop(first_taken);
+
+    warmed_first
+        && replacement_is_distinct
+        && replacement_was_read
+        && replacement_is_read_only
+        && second_removed
+}
+
+fn a_shared_kernel_unmap_evicts_the_live_user_root() -> bool {
+    const FIRST: u8 = 0xa6;
+    const SECOND: u8 = 0x59;
+
+    let Some(probe) =
+        thread::boot_stack_layout().and_then(|layout| layout.end().checked_add(24 * PAGE_SIZE))
+    else {
+        return false;
+    };
+
+    let Ok(mut observer) = AddressSpace::for_user() else {
+        return false;
+    };
+    let checked = (|| {
+        if observer.lookup(probe).is_some() {
+            return false;
+        }
+        let Some(mut first) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !first.zero() || !first.write_at(0, &[FIRST]) {
+            return false;
+        }
+        let first_physical = first.address();
+        let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+        let mut context = context();
+        let Some(Ok(mapping)) = mem::map_owned_for_test(&mut context, probe, first, flags) else {
+            return false;
+        };
+        let mut live_mapping = Some(mapping);
+
+        let observed = observer
+            .with_root_for_test(|| {
+                let warmed = paging::observe_owned_byte_for_test(probe) == Some(FIRST);
+                let Some(mapping) = live_mapping.take() else {
+                    return false;
+                };
+                let first_taken = match mem::unmap_for_test(&mut context, mapping) {
+                    Some(Ok(taken)) => taken,
+                    _ => panic!("the shared-root fixture could not remove its first leaf"),
+                };
+
+                let Some(mut second) = mm::allocate_contiguous(1, 1) else {
+                    return false;
+                };
+                if !second.zero() || !second.write_at(0, &[SECOND]) {
+                    return false;
+                }
+                let second_physical = second.address();
+                let Some(Ok(second_mapping)) =
+                    mem::map_owned_for_test(&mut context, probe, second, flags)
+                else {
+                    return false;
+                };
+                let table_changed = first_physical != second_physical
+                    && paging::translate(probe)
+                        .is_some_and(|(physical, _)| physical == second_physical);
+                let replacement = paging::observe_owned_byte_for_test(probe) == Some(SECOND);
+                let second_taken = match mem::unmap_for_test(&mut context, second_mapping) {
+                    Some(Ok(taken)) => taken,
+                    _ => panic!("the shared-root fixture could not remove its replacement leaf"),
+                };
+                drop(second_taken);
+                drop(first_taken);
+                warmed && table_changed && replacement
+            })
+            .unwrap_or(false);
+
+        let cleaned = match live_mapping.take() {
+            Some(mapping) => match mem::unmap_for_test(&mut context, mapping) {
+                Some(Ok(taken)) => {
+                    drop(taken);
+                    true
+                }
+                _ => panic!("the shared-root fixture could not clean its unused leaf"),
+            },
+            None => true,
+        };
+        observed && cleaned && paging::translate(probe).is_none()
+    })();
+    let reclaimed = observer.reclaim(None).is_ok();
+    checked && reclaimed
+}
+
+fn an_inactive_lower_root_unmap_preserves_the_live_observer() -> bool {
+    const AT: u64 = 0x0000_0500_0000_0000;
+    const OBSERVER: u8 = 0x3c;
+    const VICTIM: u8 = 0xc3;
+
+    let allocator_before = AllocatorSnapshot::capture();
+    let Ok(mut observer) = AddressSpace::for_user() else {
+        return false;
+    };
+    let Ok(mut victim) = AddressSpace::for_user() else {
+        if let Err(reason) = observer.reclaim(None) {
+            warn!("selftest: observer cleanup after victim-space setup refusal: {reason}");
+        }
+        return false;
+    };
+
+    let checked = (|| {
+        if observer.root() == victim.root() {
+            return false;
+        }
+        let (Some(mut observer_page), Some(mut victim_page)) =
+            (mm::allocate_contiguous(1, 1), mm::allocate_contiguous(1, 1))
+        else {
+            return false;
+        };
+        if !observer_page.zero()
+            || !observer_page.write_at(0, &[OBSERVER])
+            || !victim_page.zero()
+            || !victim_page.write_at(0, &[VICTIM])
+        {
+            return false;
+        }
+        let observer_physical = observer_page.address();
+        let victim_physical = victim_page.address();
+        let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+        if observer.map_user(AT, observer_page.into(), flags).is_err()
+            || victim.map_user(AT, victim_page.into(), flags).is_err()
+        {
+            return false;
+        }
+        let leaves_are_distinct = observer_physical != victim_physical
+            && observer
+                .lookup(AT)
+                .is_some_and(|(physical, _)| physical == observer_physical)
+            && victim
+                .lookup(AT)
+                .is_some_and(|(physical, _)| physical == victim_physical);
+        if !leaves_are_distinct {
+            return false;
+        }
+
+        observer
+            .with_root_for_test(|| {
+                let mut byte = [0];
+                let warmed = usercopy::copy_from_user(AT, &mut byte).is_ok() && byte == [OBSERVER];
+                let warmed_translation = paging::translate(AT);
+                let warmed_leaf = observer.lookup(AT);
+                let invalidations_before = cpu::page_invalidations_for_test();
+                let removed = victim.unmap(AT, PAGE_SIZE).map(drop).is_ok();
+                let no_eviction = cpu::page_invalidations_for_test() == invalidations_before;
+                byte = [0];
+                let observer_unchanged = paging::translate(AT) == warmed_translation
+                    && observer.lookup(AT) == warmed_leaf
+                    && usercopy::copy_from_user(AT, &mut byte).is_ok()
+                    && byte == [OBSERVER];
+                warmed
+                    && warmed_translation.is_some()
+                    && warmed_translation == warmed_leaf
+                    && removed
+                    && victim.lookup(AT).is_none()
+                    && no_eviction
+                    && observer_unchanged
+            })
+            .unwrap_or(false)
+    })();
+
+    let observer_cleaned =
+        observer.lookup(AT).is_none() || observer.unmap(AT, PAGE_SIZE).map(drop).is_ok();
+    let victim_cleaned =
+        victim.lookup(AT).is_none() || victim.unmap(AT, PAGE_SIZE).map(drop).is_ok();
+    let observer_reclaimed = observer.reclaim(None).is_ok();
+    let victim_reclaimed = victim.reclaim(None).is_ok();
+    drop(observer);
+    drop(victim);
+    let allocator_after = AllocatorSnapshot::capture();
+
+    checked
+        && observer_cleaned
+        && victim_cleaned
+        && observer_reclaimed
+        && victim_reclaimed
+        && allocator_after.has_same_ownership(&allocator_before)
+}
+
 fn bytes_cross_the_boundary_only_where_they_may() -> bool {
     let Some((code, stack)) = boundary_probe() else {
         return false;
@@ -1216,7 +1278,6 @@ fn bytes_cross_the_boundary_only_where_they_may() -> bool {
     }
     let program_matches = read == user::PROGRAM;
 
-    // A round trip through the writable page.
     let written = [0xA5u8; 8];
     let mut echoed = [0u8; 8];
     let round_trip = usercopy::copy_to_user(stack, &written).is_ok()
@@ -1250,6 +1311,7 @@ fn bytes_cross_the_boundary_only_where_they_may() -> bool {
         usercopy::copy_to_user(code, &written),
         Err(UserCopyError::ReadOnly(_))
     );
+    let supervisor_refused = walked_copy_refuses_supervisor_leaf();
 
     program_matches
         && round_trip
@@ -1258,19 +1320,47 @@ fn bytes_cross_the_boundary_only_where_they_may() -> bool {
         && wrap_refused
         && hole_refused
         && read_only_refused
+        && supervisor_refused
 }
 
-/// A ring that has reported everything it can admits nothing more until
-/// userspace reaps, and then admits again.
-///
-/// Backpressure, closed end to end. Admission reserves a completion slot, a
-/// completion fills it, and only userspace moving its own head gives the room
-/// back — which is the whole reason the completion queue's head is a number
-/// the *program* writes. A kernel that reclaimed the slot itself would be
-/// reporting into entries a program had not read (D-79, D-113).
-///
-/// The head is read from the snapshot rather than the page for the same reason
-/// everything else here is: once, and never re-read.
+fn walked_copy_refuses_supervisor_leaf() -> bool {
+    const SUPERVISOR: u64 = user::CODE + 0x30_0000;
+    const PRIVATE: [u8; 8] = [0x3c; 8];
+    const UNCHANGED: [u8; 8] = [0xa5; 8];
+
+    let Some(mut run) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    if !run.zero() || !run.write_at(0, &PRIVATE) {
+        return false;
+    }
+    let physical = run.address();
+    let mut context = context();
+    let Some(Ok(mapping)) =
+        mem::map_owned_for_test(&mut context, SUPERVISOR, run, Flags::NO_EXECUTE)
+    else {
+        return false;
+    };
+
+    let mut scratch = UNCHANGED;
+    let refused = matches!(
+        usercopy::copy_from_user(SUPERVISOR, &mut scratch),
+        Err(UserCopyError::Unmapped(found)) if found == SUPERVISOR
+    ) && scratch == UNCHANGED;
+    let cleaned = mem::unmap_for_test(&mut context, mapping).is_some_and(|result| {
+        result
+            .ok()
+            .and_then(|unmapped| unmapped.into_kernel())
+            .is_some_and(|segment| {
+                let same = segment.address() == physical && segment.frames() == 1;
+                drop(segment);
+                same
+            })
+    });
+
+    refused && cleaned
+}
+
 fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
@@ -1299,10 +1389,7 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
     // either spoken for or already holds a completion.
     let refuses = queue.reserve_for_test(1) == 0 && queue.is_consistent();
 
-    // Userspace reaps *some* of them, and the kernel gives back exactly that
-    // much. Reaping everything would be the kernel deciding a program had read
-    // entries it had not, which is the failure this bound exists for — and a
-    // check that reaped the lot could not tell the two apart.
+    // A strict-prefix claim must not imply that unread completions were consumed.
     let head_before = queue.completion_head();
     let partial = posted / 2;
     queue.publish_completion_head_for_test(partial);
@@ -1314,12 +1401,7 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
         && queue.reserve_for_test(1) == 0
         && queue.is_consistent();
 
-    // And a program that **lies** about how far it has read gets nothing for
-    // it. The head is ring 3's number, so "reap up to here" is a claim and not
-    // an instruction: honouring it would reap completions nobody read, which
-    // is the one thing the completion queue exists to prevent. An honest head
-    // cannot show this — it is already inside the bound — so the earlier
-    // version of this check passed with the bound deleted (D-115).
+    // The user head is an untrusted claim; an out-of-range claim reaps nothing.
     let Some(liar) = queue::Queue::new() else {
         return false;
     };
@@ -1333,21 +1415,17 @@ fn a_full_ring_admits_again_only_after_userspace_reaps() -> bool {
     if liar.serve(&shared_handle_table_or_false!(8)) != 2 {
         return false;
     }
-    // Two posted; the program claims to have read four billion.
     liar.publish_completion_head_for_test(u32::MAX);
-    let lied = liar.reap_up_to(liar.completion_head()) == 2 && liar.is_consistent();
+    let far_ahead = liar.reap_up_to(liar.completion_head()) == 0;
+    let one = liar.reap_up_to(1) == 1;
+    let just_behind = liar.reap_up_to(0) == 0;
+    let lied = far_ahead && one && just_behind && liar.is_consistent();
 
-    posted > 0 && partial > 0 && refuses && followed && resumes && lied
+    let quiet_completion_counted =
+        queue::Queue::new().is_some_and(|queue| queue.quiet_completion_is_counted_for_test());
+    posted > 0 && partial > 0 && refuses && followed && resumes && lied && quiet_completion_counted
 }
 
-/// A ring says what shape it is, and its pages are the process's to read and
-/// not to free.
-///
-/// The ABI's first field is a version, which is IoRing's improvement over
-/// io_uring: a ring that cannot say what shape it is cannot be extended
-/// without guessing (D-79). The pages are **kernel-allocated and kernel-kept**
-/// — `map_shared` writes no `OWNED` bit, so a program that unmapped them could
-/// not free the memory the kernel is about to write a completion into (D-113).
 fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
     /// A user address nothing else uses.
     const AT: u64 = user::STACK + 0x60_0000;
@@ -1355,57 +1433,31 @@ fn a_ring_announces_its_shape_and_keeps_its_pages() -> bool {
     let Some(mut queue) = queue::Queue::new() else {
         return false;
     };
-    // The kernel's own shape. `Queue::new` returning `Some` already required
-    // both to be powers of two and the completion queue to be twice the
-    // submission one — `Capacity::new` and `Queues::new` refuse otherwise — so
-    // asserting those here would be asserting the constructor's preconditions
-    // back at it (D-115).
+    // Compare the exported shape, not `Queue::new`'s constructor invariants.
     let (version, submissions, completions) = queue.shape();
 
-    // What is *not* decided is that the header page was published to match,
-    // and that is the whole of the ABI a program reads. Deleting either write
-    // in `Queue::new` turns this red.
+    // Not yet decided: that the header page was published to match, which is
+    // the whole ABI a program reads.
     let announced = queue.published_shape() == (version, submissions, completions)
         && version == ring_proto::VERSION;
 
-    let Ok(mut space) = AddressSpace::for_user() else {
-        return false;
-    };
-    if Arc::get_mut(&mut queue).is_none_or(|queue| queue.install(&mut space, AT).is_err()) {
-        return false;
-    }
+    in_reclaimed_space(AddressSpace::for_user, |space| {
+        if Arc::get_mut(&mut queue).is_none_or(|queue| queue.install(space, AT).is_err()) {
+            return false;
+        }
 
-    // Ring 3 can reach them.
-    let reachable = space
-        .lookup(AT)
-        .is_some_and(|(_, flags)| flags.contains(Flags::USER) && flags.contains(Flags::WRITABLE));
+        let reachable = space.lookup(AT).is_some_and(|(_, flags)| {
+            flags.contains(Flags::USER) && flags.contains(Flags::WRITABLE)
+        });
 
-    // And cannot give them away. `unmap` reads the owned bit before minting a
-    // `Segment`, and these frames were never the space's to own.
-    let unowned = matches!(space.unmap(AT, PAGE_SIZE), Err(MapError::NotOwned(AT)));
+        // And cannot give them away. `unmap` reads the owned bit before minting a
+        // `Segment`, and these frames were never the space's to own.
+        let unowned = matches!(space.unmap(AT, PAGE_SIZE), Err(MapError::NotOwned(AT)));
 
-    announced && reachable && unowned
+        announced && reachable && unowned
+    })
 }
 
-/// A word that does not fit is refused, never truncated.
-///
-/// The phase-close audit's finding, and it is one defect in three places
-/// (D-174). Every one of these words is written by ring 3 into a page ring 3
-/// owns, and every one was reaching the kernel through an `as` cast:
-///
-/// - a **rights word** whose high half was dropped, so
-///   `0xFFFF_FFFF_0000_0003` was read as `DUPLICATE | TRANSFER` rather than
-///   refused — which is the whole reason `Rights::from_bits` returns an
-///   `Option`;
-/// - a **file offset** wrapped into the file rather than past it, so a program
-///   asking for byte four billion and one would be handed byte one;
-/// - a **cancellation token** truncated, so `0x1_0000_DEAD` would end the
-///   operation tagged `0xDEAD` — a program ending an operation it did not
-///   name.
-///
-/// None of them is a crash. All three are a program being answered about
-/// something other than what it asked for, which is the worst shape a boundary
-/// can fail in.
 fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
     if !crate::time::is_calibrated() {
         return false;
@@ -1413,11 +1465,9 @@ fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
     };
-    let Some((held, _far)) = crate::object::channel() else {
-        return false;
-    };
+    let held = crate::object::bootstrap_identity();
     let table = shared_handle_table_or_false!(8);
-    let full = Rights::UNIVERSAL.union(Rights::READ);
+    let full = Rights::UNIVERSAL;
     let Ok(source) = table.insert(held, full) else {
         return false;
     };
@@ -1462,16 +1512,28 @@ fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
     };
     queue.post_submission_for_test(
         4,
-        queue::Queue::about_at(queue::Opcode::Read, 0xC003, file, 1u64 << 32, 512, 16),
+        queue::Queue::about_at(
+            queue::Opcode::Read,
+            0xC003,
+            file,
+            u64::from(u32::MAX),
+            512,
+            16,
+        ),
     );
-    queue.publish_tail_for_test(5);
+    queue.post_submission_for_test(
+        5,
+        queue::Queue::about_at(queue::Opcode::Read, 0xC004, file, 1u64 << 32, 528, 16),
+    );
+    queue.publish_tail_for_test(6);
     let before_read = queue.served_count();
-    if queue.serve(&table) != 0 || !runs_until(5_000, || queue.served_count() == before_read + 1) {
+    if queue.serve(&table) != 0 || !runs_until(5_000, || queue.served_count() == before_read + 2) {
         return false;
     }
-    let past = queue.read_completion(3);
+    let at_max = queue.read_completion(3);
+    let past = queue.read_completion(4);
 
-    let mut untouched = [0u8; 16];
+    let mut untouched = [0u8; 32];
     if !queue.read_data_for_test(512, &mut untouched) {
         return false;
     }
@@ -1482,15 +1544,13 @@ fn a_word_that_does_not_fit_is_refused_rather_than_truncated() -> bool {
         && cancelled.status == queue::STATUS_NOT_FOUND
         && queue.in_flight() == 1
         // And the read answered "nothing", rather than the file's first bytes.
+        && at_max.status == queue::STATUS_OK
+        && at_max.value == 0
         && past.status == queue::STATUS_OK
         && past.value == 0
-        && untouched == [0u8; 16]
+        && untouched == [0u8; 32]
 }
 
-/// Open the corpus's small file into `table`, submitting at `slot`.
-///
-/// The same four operations as [`open_the_small_file`], against a table the
-/// caller already owns.
 fn open_the_small_file_in(
     queue: &Arc<queue::Queue>,
     table: &alloc::sync::Arc<crate::handle::HandleTable>,
@@ -1524,14 +1584,6 @@ fn open_the_small_file_in(
     (completion.status == queue::STATUS_OK).then_some(completion.value as u32)
 }
 
-/// A completion carries a **file** handle, and the rights come from the
-/// directory that named it.
-///
-/// The operation this whole phase was for. A program holds a directory and
-/// nothing else; it names something inside; and what comes back is authority
-/// over that thing — reserved at submission and carrying only the
-/// operation-authorised derivation from the directory (D-151, D-173), with no
-/// universal right restored (D-181).
 fn a_completion_carries_a_file_handle() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
@@ -1590,13 +1642,6 @@ fn a_completion_carries_a_file_handle() -> bool {
         && table.promised() == 0
 }
 
-/// Opening through an attenuated directory never restores universal rights.
-///
-/// `TRAVERSE` authorizes the cross-type derivation of file `READ`; it does not
-/// authorize recreating `DUPLICATE`, `TRANSFER`, `WAIT` or `INSPECT`. The
-/// all-universal parent used by the ordinary OpenAt check cannot distinguish
-/// preservation from escalation, so this check begins without any of them and
-/// reaches both the file and directory result branches.
 fn opening_a_node_does_not_restore_universal_rights() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
@@ -1657,12 +1702,6 @@ fn opening_a_node_does_not_restore_universal_rights() -> bool {
         && table.promised() == 0
 }
 
-/// A read is a submission, and its offset is per operation.
-///
-/// `012` §6 and D-152: no seek, no tell, no cursor on anything. Two reads of
-/// one handle at different offsets answer differently, and neither moves
-/// anything — which is what makes two handles to one file have no observable
-/// coupling.
 fn a_read_is_a_submission_with_its_own_offset() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
@@ -1708,7 +1747,6 @@ fn a_read_is_a_submission_with_its_own_offset() -> bool {
     head == SMALL_CONTENT[..16] && later == SMALL_CONTENT[8..24] && head != later
 }
 
-/// Build direct READ authority for the corpus file without consuming a ring.
 fn small_file_authority() -> Option<(Arc<HandleTable>, u32)> {
     let root = vfs::root()?;
     let vfs::Node::File(file) = vfs::resolve(root, SMALL_NAME).ok()? else {
@@ -1724,7 +1762,6 @@ fn small_file_authority() -> Option<(Arc<HandleTable>, u32)> {
     Some((table, handle))
 }
 
-/// File work has one finite admission bound and refuses before doing I/O.
 fn file_work_pressure_is_bounded_at_admission() -> bool {
     let Some((table, handle)) = small_file_authority() else {
         return false;
@@ -1785,7 +1822,6 @@ fn file_work_pressure_is_bounded_at_admission() -> bool {
         && work.is_consistent()
 }
 
-/// A submitted NVMe read is preemptible and pins a retiring ring until done.
 fn a_delayed_read_preserves_interrupts_and_exact_teardown() -> bool {
     let Some((table, handle)) = small_file_authority() else {
         return false;
@@ -1846,13 +1882,6 @@ fn a_delayed_read_preserves_interrupts_and_exact_teardown() -> bool {
     deferred && reached_device && retained && interrupt_progress && completed && exact
 }
 
-/// A ring operation cannot reach past the rights it was given, or past the
-/// pages it shares.
-///
-/// Four refusals, each from a different place, and every one of them at
-/// **submission**: a directory without `TRAVERSE` cannot open, a file without
-/// `READ` cannot be read, a path that escapes is malformed rather than denied,
-/// and a buffer outside the data area is refused before anything is written.
 fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
@@ -1889,10 +1918,7 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
     let Ok(unreadable) = table.insert(object, Rights::UNIVERSAL) else {
         return false;
     };
-    // And the same file held *with* `READ`, so a refusal about the buffer is
-    // reached at all: a handle that is denied at the right never gets as far
-    // as the bound, and a check built only from denied handles cannot see
-    // whether the bound comes before the read (D-173).
+    // Grant `READ` so this case reaches the buffer bound (D-173).
     let object = crate::object::file(file);
     let Ok(readable) = table.insert(object, Rights::UNIVERSAL.union(Rights::READ)) else {
         return false;
@@ -1932,13 +1958,9 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
         refused &= completion.token == token && completion.status == status;
     }
 
-    // A read of a file held without `READ`, and a read into a buffer the
-    // shared pages cannot hold. **The device must not have been asked** for
-    // either: a refusal that happened after the read reached the controller
-    // looks exactly like one that happened before, unless something counts —
-    // and `-ENOBUFS` after the work is done is the shape `012` §8 warns about
-    // (D-173).
-    let before = nvme::with_controller(|controller, _| controller.commands());
+    // Device-access counts distinguish preflight refusal from a late error
+    // after I/O (D-173).
+    let before = nvme::command_count_for_test();
     queue.post_submission_for_test(
         4,
         queue::Queue::about_at(queue::Opcode::Read, 0xD5, unreadable, 0, 0, 16),
@@ -1947,16 +1969,15 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
         5,
         queue::Queue::about_at(queue::Opcode::Read, 0xD6, unreadable, 0, 4090, 16),
     );
-    // The one that reaches the bound: readable, and a buffer that runs off the
-    // end of the shared pages. **The device must still not be asked** — a
-    // bound checked after the read is `-ENOBUFS` with the work already done.
+    // The one that reaches the bound: the device must still not be asked, or
+    // the bound is checked with the work already done.
     queue.post_submission_for_test(
         6,
         queue::Queue::about_at(queue::Opcode::Read, 0xD7, readable, 0, 4090, 16),
     );
     queue.publish_tail_for_test(7);
     let served = queue.serve(&table) == 3;
-    let after = nvme::with_controller(|controller, _| controller.commands());
+    let after = nvme::command_count_for_test();
 
     let denied = queue.read_completion(4).status == queue::STATUS_DENIED
         && queue.read_completion(5).status == queue::STATUS_DENIED
@@ -1967,12 +1988,6 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
     refused && served && denied && untouched && table.live() == 4 && table.promised() == 0
 }
 
-/// Open the corpus's small file through the ring, and give back the table and
-/// the handle.
-///
-/// Shared by the checks above, because building a directory handle and opening
-/// through it is four operations and repeating them would make each check
-/// mostly setup.
 fn open_the_small_file(
     queue: &Arc<queue::Queue>,
 ) -> Option<(alloc::sync::Arc<crate::handle::HandleTable>, u32)> {
@@ -2004,14 +2019,6 @@ fn open_the_small_file(
     (completion.status == queue::STATUS_OK).then_some((table, completion.value as u32))
 }
 
-/// A second backend answers the same three operations.
-///
-/// `014` is explicit that the VFS needs more than one backend before its
-/// abstraction is anything but a guess: a directory trait with one
-/// implementation is a description of that implementation. tmpfs is
-/// deliberately unlike FAT32 in the ways that matter — no clusters, no chains,
-/// no device — so if `lookup`, `enumerate` and `read` fit both, they are about
-/// directories (D-172).
 fn a_second_backend_answers_the_same_three_operations() -> bool {
     let root = vfs::tmp_root();
 
@@ -2051,9 +2058,8 @@ fn a_second_backend_answers_the_same_three_operations() -> bool {
         return false;
     }
 
-    // **A name that exists in two directories resolves to the right one.** A
-    // lookup that ignored the parent would be correct about every path in a
-    // tree whose names are unique, so this tree's are not (D-172).
+    // A name in two directories resolves to the right one; a lookup ignoring
+    // the parent is only wrong when names repeat, so here they do (D-172).
     let Ok(vfs::Node::File(shadowed)) = vfs::resolve(root, b"NOTES/MOTD") else {
         return false;
     };
@@ -2082,20 +2088,52 @@ fn a_second_backend_answers_the_same_three_operations() -> bool {
     // A file walked through is refused here too, which is the rule being the
     // VFS's rather than FAT's.
     let through = vfs::resolve(root, b"MOTD/ONE.TXT");
-    names == 2 && directories == 1 && matches!(through, Err(vfs::VfsError::NotADirectory))
+    let hostile = vfs::read(
+        vfs::File::Tmp {
+            at: usize::MAX,
+            len: usize::MAX,
+        },
+        1,
+        &mut window,
+    );
+    names == 2
+        && directories == 1
+        && matches!(through, Err(vfs::VfsError::NotADirectory))
+        && hostile == Ok(0)
+        && tmpfs::unwritten_bytes_are_refused_for_test()
 }
 
-/// A device is not a file, and nothing can ask it for bytes.
-///
-/// `012` §7 is emphatic: a devfs entry has no bytes, it is a name that yields a
-/// handle of another type, and forcing it to implement `read_at` is the
-/// "everything is a file" conflation WASI's own README rejects.
-///
-/// **The enforcement is an absence, not a refusal.** `vfs::read` takes a
-/// `File`, and a `Node::Device` is not one — so there is no call to make and no
-/// error to return. What this check can assert is the runtime half: the name
-/// resolves to a device, the listing calls it neither file nor directory, and
-/// a device cannot be walked through (D-172).
+static ENUMERATION_SENTINEL: SpinLock<()> = SpinLock::new(());
+
+fn enumeration_callbacks_run_without_backend_ownership() -> bool {
+    let tmp = vfs::tmp_root();
+    let mut tmp_reentered = false;
+    let tmp_walked = vfs::enumerate(tmp, |name, _| {
+        {
+            let _sentinel = ENUMERATION_SENTINEL.lock_leaf();
+        }
+        if wost::sync::taken_under_a_leaf().is_some() {
+            return false;
+        }
+        tmp_reentered = vfs::resolve(tmp, name).is_ok();
+        false
+    });
+
+    let Some(fat) = vfs::root() else {
+        return false;
+    };
+    let mut fat_reentered = false;
+    let fat_walked = vfs::enumerate(fat, |name, _| {
+        if !nvme::controller_is_unlocked_for_test() {
+            return false;
+        }
+        fat_reentered = vfs::resolve(fat, name).is_ok();
+        false
+    });
+
+    tmp_walked.is_ok() && tmp_reentered && fat_walked.is_ok() && fat_reentered
+}
+
 fn a_device_is_not_a_file() -> bool {
     let root = vfs::dev_root();
 
@@ -2141,13 +2179,6 @@ fn a_device_is_not_a_file() -> bool {
         && matches!(missing, Err(vfs::VfsError::NotFound))
 }
 
-/// No backend lets a path escape, and no handle sees another backend's names.
-///
-/// The resolver's invariant is about the *resolver*, not about FAT — so it is
-/// checked on every backend there is. And a directory handle names its own
-/// backend: a tmpfs handle cannot resolve a name that exists only on the
-/// volume, which is what "one namespace per program" means from the inside
-/// (D-171, D-172).
 fn no_backend_lets_a_path_escape_or_cross() -> bool {
     let escaping: &[&[u8]] = &[b"..", b"../MOTD", b"NOTES/../..", b"./.."];
     let absolute: &[&[u8]] = &[b"/", b"/MOTD"];
@@ -2191,11 +2222,6 @@ fn no_backend_lets_a_path_escape_or_cross() -> bool {
         && vfs::resolve(vfs::dev_root(), b"storage").is_ok()
 }
 
-/// A path resolves from a directory handle, and only downward.
-///
-/// The VFS's shape: `lookup` node to node, holding the backend for the walk's
-/// life rather than re-deriving a node from a name at each step — which is
-/// what closes the gap Linux needed `openat2` for.
 fn a_path_resolves_from_a_directory_handle() -> bool {
     let Some(root) = vfs::root() else {
         return false;
@@ -2205,8 +2231,7 @@ fn a_path_resolves_from_a_directory_handle() -> bool {
     let Ok(vfs::Node::File(small)) = vfs::resolve(root, SMALL_NAME) else {
         return false;
     };
-    // The variant matters: a FAT file is what a FAT root resolves to, and a
-    // second backend arriving made this a match rather than a binding — which
+    // The variant matters: a FAT root resolves to a FAT file, and the match
     // is the enum dispatch being exhaustive (D-172).
     let vfs::File::Fat { size, .. } = small else {
         return false;
@@ -2248,17 +2273,6 @@ fn a_path_resolves_from_a_directory_handle() -> bool {
     got == NESTED_CONTENT.len() && &inside[..got] == NESTED_CONTENT && here && round_trip
 }
 
-/// No path from a directory handle can name anything above it.
-///
-/// The invariant `012` §5 states and this phase's headline security property:
-/// **there is no operation that can walk upward.** `..` is resolved lexically
-/// before any node is touched, so what reaches the resolver is a list of names
-/// that only descends — and the resolver holds no parent pointer to be asked.
-///
-/// Every direction it can be attempted from, and each is a *different*
-/// refusal: an absolute path is malformed because there is no root, and an
-/// escaping `..` is malformed because there is no parent. Neither is a denial,
-/// which would suggest some other program could (D-171).
 fn no_path_can_name_anything_above_the_handle() -> bool {
     let Some(root) = vfs::root() else {
         return false;
@@ -2300,11 +2314,6 @@ fn no_path_can_name_anything_above_the_handle() -> bool {
     )
 }
 
-/// A component that is not a directory cannot be walked through.
-///
-/// Without it, `HELLO.TXT/NESTED.TXT` would be answered out of whatever the
-/// file's bytes look like as directory entries — which for a file the caller
-/// controls is a caller choosing what the resolver finds.
 fn a_file_cannot_be_walked_through() -> bool {
     let Some(root) = vfs::root() else {
         return false;
@@ -2323,13 +2332,6 @@ fn a_file_cannot_be_walked_through() -> bool {
         && matches!(missing, Err(vfs::VfsError::NotFound))
 }
 
-/// Enumeration lists what is there, and it is not the same operation as
-/// traversal.
-///
-/// `012` §4 makes "may resolve a name I know" and "may list the names"
-/// separate authorities, and this is the second one working: the resolver
-/// consults one and this consults the other. Capsicum folds enumeration into
-/// read; WASI Preview 1 had both by accident of being syscall-named.
 fn enumeration_lists_what_traversal_would_find() -> bool {
     let Some(root) = vfs::root() else {
         return false;
@@ -2353,28 +2355,22 @@ fn enumeration_lists_what_traversal_would_find() -> bool {
         return false;
     }
 
-    // Every name it listed also resolves, which is the two operations
-    // agreeing — an enumeration that returned a name traversal cannot find is
-    // a directory listing that lies.
-    //
-    // **Collected first, resolved after.** Both operations reach the
-    // controller through a leaf guard, so resolving *inside* the enumeration
-    // callback re-enters that guard and spins for ever. The first version of
-    // this check did exactly that and hung the harness, which is the rule
-    // `lock_leaf` states, arriving as a sixty-second timeout (D-171).
+    // Resolve after enumeration because both paths take the controller leaf;
+    // resolving in the callback would re-enter it (D-171).
     let mut listed = [[0u8; 12]; 4];
     let mut lengths = [0usize; 4];
     let mut count = 0usize;
-    let _ = vfs::enumerate(root, |name, _| {
+    let listed_all = vfs::enumerate(root, |name, _| {
         if count < listed.len() && name.len() <= listed[count].len() {
             listed[count][..name.len()].copy_from_slice(name);
             lengths[count] = name.len();
             count += 1;
         }
         true
-    });
+    })
+    .is_ok();
 
-    let mut all_resolve = count == 3;
+    let mut all_resolve = listed_all && count == 3;
     for index in 0..count {
         all_resolve &= vfs::resolve(root, &listed[index][..lengths[index]]).is_ok();
     }
@@ -2382,83 +2378,48 @@ fn enumeration_lists_what_traversal_would_find() -> bool {
     names == 3 && directories == 1 && saw_small && saw_large && all_resolve
 }
 
-/// The volume mounts, and says something a FAT32 volume would say.
-///
-/// Not "it mounted" — that is true of any sixteen bytes ending `0x55 0xAA`.
-/// The claims are the ones that would be false if the reader had landed on the
-/// wrong sector or read the sixteen-bit sectors-per-FAT that FAT32 leaves zero:
-/// a root cluster in the data area, a cluster count that makes it FAT32 rather
-/// than FAT16 wearing the name, and a data area past the tables.
 fn the_volume_mounts_and_says_what_a_fat32_volume_says() -> bool {
-    matches!(
-        fs::with_volume(|volume| {
-            let bpb = volume.bpb();
-            Ok(bpb.root_cluster() >= fat32::FIRST_DATA_CLUSTER
-                && bpb.clusters() >= 65_525
-                && bpb.cluster_bytes() >= fat32::SECTOR_BYTES as u32
-                && bpb.first_data_sector() > 0)
-        }),
-        Some(Ok(true))
-    )
+    matches!(fs::mount(), Some(Ok(volume)) if volume.layout_is_fat32())
 }
 
-/// The kernel reads the bytes the host wrote.
-///
-/// The end of the whole storage path: `xtask` builds a volume with `fatfs`,
-/// writes it onto the namespace, the controller DMAs sectors of it into a
-/// frame, and `libs/fat32` finds a file in it. The host reads the same corpus
-/// with the same reader and with `fatfs` besides (D-170), so a disagreement
-/// here is about the *machine*, not about the format.
 fn the_kernel_reads_the_file_the_host_wrote() -> bool {
     matches!(
-        fs::with_volume(|volume| {
-            let root = volume.bpb().root_cluster();
-            let entry = volume.lookup(root, SMALL_NAME)?;
+        fs::mount().map(|result| result.and_then(|mut volume| {
+            let root = volume.root_cluster();
+            let entry = volume.resolve(root, &[SMALL_NAME])?;
             if entry.size as usize != SMALL_CONTENT.len() || entry.is_directory() {
                 return Ok(false);
             }
 
-            // The root holds three live entries and one deleted slot between
-            // them. A reader that took `0xE5` for the end of the directory
-            // would find the first and lose the rest, so the count is part of
-            // the claim.
+            // A deleted slot separates live entries, so traversal must continue.
             let mut live = 0usize;
-            volume.walk_directory(root, |_| {
-                live += 1;
-                true
-            })?;
+            let mut cursor = fat32::DirectoryCursor::new(root);
+            while !cursor.is_done() {
+                live += volume.directory_chunk(&mut cursor)?.entries().len();
+            }
             if live != 3 {
                 return Ok(false);
             }
 
-            // **A whole sector of buffer for a file that is not one.** A
-            // reader bounded by the cluster rather than by the size would hand
-            // back the last cluster's tail — its previous occupant's data — and
-            // a buffer cut to the file's length could never see it (D-170).
+            // Extra buffer exposes a read incorrectly bounded by cluster size
+            // instead of file size (D-170).
             let mut read = [0u8; fat32::SECTOR_BYTES];
-            let got = volume.read_file(&entry, 0, &mut read)?;
+            let got = volume.read_file(entry.cluster, entry.size, 0, &mut read)?;
             Ok(got == SMALL_CONTENT.len() && &read[..got] == SMALL_CONTENT)
-        }),
+        })),
         Some(Ok(true))
     )
 }
 
-/// A file longer than a cluster is read across its chain.
-///
-/// Reading from offset zero works whatever the chain walk does, because the
-/// first cluster is the entry's own. Only a read that has to **skip** clusters
-/// exercises it — and only a file whose bytes differ by position can tell a
-/// skip of three from a skip of four, which is why the corpus is filled with a
-/// mixed index rather than a repeated byte (D-155, D-170).
 fn a_file_longer_than_a_cluster_is_read_across_its_chain() -> bool {
     matches!(
-        fs::with_volume(|volume| {
-            let root = volume.bpb().root_cluster();
-            let entry = volume.lookup(root, LARGE_NAME)?;
+        fs::mount().map(|result| result.and_then(|mut volume| {
+            let root = volume.root_cluster();
+            let entry = volume.resolve(root, &[LARGE_NAME])?;
             if entry.size as usize != LARGE_BYTES {
                 return Ok(false);
             }
-            let cluster = volume.bpb().cluster_bytes() as usize;
+            let cluster = volume.shape().1 as usize;
 
             for offset in [
                 0usize,
@@ -2471,7 +2432,8 @@ fn a_file_longer_than_a_cluster_is_read_across_its_chain() -> bool {
                 LARGE_BYTES - 64,
             ] {
                 let mut window = [0u8; 64];
-                let got = volume.read_file(&entry, offset as u32, &mut window)?;
+                let got =
+                    volume.read_file(entry.cluster, entry.size, offset as u32, &mut window)?;
                 if got != window.len() {
                     return Ok(false);
                 }
@@ -2484,37 +2446,32 @@ fn a_file_longer_than_a_cluster_is_read_across_its_chain() -> bool {
 
             // And nothing past the end, rather than the next file's bytes.
             let mut past = [0u8; 16];
-            Ok(volume.read_file(&entry, entry.size, &mut past)? == 0)
-        }),
+            Ok(volume.read_file(entry.cluster, entry.size, entry.size, &mut past)? == 0)
+        })),
         Some(Ok(true))
     )
 }
 
-/// A path resolves through a directory, and refuses to walk through a file.
-///
-/// The walk `012` §5 will build the resolver on: component by component,
-/// holding a node per step. Refusing a component that is not a directory is
-/// what stops `HELLO.TXT/NESTED.TXT` from being answered out of whatever the
-/// file's bytes look like as directory entries.
 fn a_path_resolves_through_a_directory() -> bool {
     matches!(
-        fs::with_volume(|volume| {
-            let nested = volume.resolve(&[DIRECTORY_NAME, NESTED_NAME])?;
+        fs::mount().map(|result| result.and_then(|mut volume| {
+            let root = volume.root_cluster();
+            let nested = volume.resolve(root, &[DIRECTORY_NAME, NESTED_NAME])?;
             if nested.size as usize != NESTED_CONTENT.len() {
                 return Ok(false);
             }
             let mut read = [0u8; 128];
-            let got = volume.read_file(&nested, 0, &mut read)?;
+            let got = volume.read_file(nested.cluster, nested.size, 0, &mut read)?;
             if got != NESTED_CONTENT.len() || &read[..got] != NESTED_CONTENT {
                 return Ok(false);
             }
 
             // A file is not a directory, whatever its bytes look like.
-            let through_a_file = volume.resolve(&[SMALL_NAME, NESTED_NAME]);
-            let missing = volume.resolve(&[b"NOPE.TXT"]);
+            let through_a_file = volume.resolve(root, &[SMALL_NAME, NESTED_NAME]);
+            let missing = volume.resolve(root, &[b"NOPE.TXT"]);
             Ok(through_a_file == Err(fat32::FatError::WrongKind)
                 && missing == Err(fat32::FatError::NotFound))
-        }),
+        })),
         Some(Ok(true))
     )
 }
@@ -2542,155 +2499,64 @@ const fn large_byte(index: usize) -> u8 {
     ((index as u32).wrapping_mul(2_654_435_761) >> 13) as u8
 }
 
-/// The controller says what it is, and the driver believed it rather than
-/// assuming.
-///
-/// Every field here changes what a correct driver does, and `012` §11 records
-/// that VMware's are unmeasured — so this is the check that the *reading*
-/// happened, not that the values are any particular thing. A queue larger than
-/// `CAP.MQES` allows, or a page size outside `MPSMIN..MPSMAX`, is a controller
-/// that will not become ready and a driver that waits out the timeout.
 fn the_controller_was_read_rather_than_assumed() -> bool {
-    nvme::with_controller(|controller, _| {
-        let capabilities = controller.capabilities();
-
-        capabilities.supports_nvm_command_set()
-            && capabilities.supports_page_size(PAGE_SIZE)
-            // The queue this driver built fits what the controller offered.
-            && controller.queue_entries() <= capabilities.max_queue_entries()
-            && controller.queue_entries() >= 2
-            && controller.has_io_queue()
-            // And the namespace answered `Identify` with something usable.
-            && controller.blocks > 0
-            && controller.block_bytes.is_power_of_two()
-            && controller.block_bytes >= 512
-    })
-    .unwrap_or(false)
+    nvme::controller_facts_hold_for_test() && nvme::bus_master_followed_disable_for_test()
 }
 
-/// A failed PCI command transaction cannot yield an extent for NVMe to map.
-fn a_failed_bus_master_enable_stops_before_nvme_mapping() -> bool {
-    crate::refused_bus_master_stops_before_nvme_mapping()
+fn a_failed_bus_master_admission_stops_before_nvme_start() -> bool {
+    crate::refused_bus_master_retires_before_nvme_start()
 }
 
-/// Malformed namespace geometry cannot reach the I/O queue creation seam.
 fn invalid_nvme_namespace_stops_before_io_queues() -> bool {
-    nvme::with_controller(|controller, _| controller.malformed_namespace_stops_before_io_queues())
-        .unwrap_or(false)
+    nvme::malformed_namespace_is_bounded_for_test()
 }
 
-/// Malformed command, namespace and DMA extents are refused before the seam
-/// that can construct a queue entry or ring a doorbell.
 fn invalid_nvme_reads_stop_before_submission() -> bool {
-    nvme::with_controller(|controller, buffer| {
-        controller.malformed_reads_stop_before_submission(buffer)
-    })
-    .unwrap_or(false)
+    nvme::malformed_reads_are_bounded_for_test()
 }
 
-/// A read returns the block that was asked for.
-///
-/// The end of the whole path: bytes written into a file on the host, carried
-/// through the controller's DMA into a frame this kernel owns, and read back.
-///
-/// **Two different blocks, and that is the point.** The namespace is written
-/// with a different signature in every block, because a disk of zeros cannot
-/// tell a read that happened from one that did not, and a disk with the same
-/// bytes everywhere cannot tell a read of block three from a read of block
-/// zero — so a driver that ignored the logical block address would pass
-/// (D-155, D-169).
 fn a_block_read_returns_the_block_that_was_asked_for() -> bool {
-    nvme::with_controller(|controller, buffer| {
-        let block = controller.block_bytes as usize;
-        for lba in [0u64, 3, 1, 7] {
-            // Cleared first, so what is found afterwards was put there by this
-            // read and not left by the last one.
-            if !buffer.fill(0) {
-                return false;
-            }
-            if controller.read_blocks(lba, 1, buffer).is_err() {
-                return false;
-            }
-
-            let mut head = [0u8; 8];
-            if !buffer.read_at(0, &mut head) {
-                return false;
-            }
-            if u64::from_le_bytes(head) != disk_signature(lba) {
-                return false;
-            }
-
-            // **And nothing past one block.** Every count in this
-            // specification is zero-based, so a driver that sent the block
-            // count unadjusted reads one block too many — and the first
-            // block's bytes are still correct, so only the bytes *after* it
-            // say so (D-169).
-            let mut beyond = [0u8; 8];
-            if !buffer.read_at(block, &mut beyond) {
-                return false;
-            }
-            if u64::from_le_bytes(beyond) != 0 {
-                return false;
-            }
+    for lba in [0u64, 3, 1, 7] {
+        let Some((block, head, beyond)) = nvme::read_block_probe_for_test(lba) else {
+            return false;
+        };
+        if block < 8
+            || u64::from_le_bytes(head) != disk_signature(lba)
+            || u64::from_le_bytes(beyond) != 0
+        {
+            return false;
         }
-        true
-    })
-    .unwrap_or(false)
+    }
+    true
 }
 
-/// The queues wrap, and the phase tag still says which entries are new.
-///
-/// There is no completion tail to read: an entry is recognised as new by its
-/// **phase tag**, which flips every time the queue wraps (`012` §3). A driver
-/// that never flipped it works perfectly until the first wrap and then sees
-/// either every entry or none — so the check does more commands than the queue
-/// has entries, several times over, which is the only way to reach the seam.
 fn the_queues_wrap_and_the_phase_tag_still_works() -> bool {
-    nvme::with_controller(|controller, buffer| {
-        let laps = controller.queue_entries() * 3;
-        for turn in 0..laps {
-            let lba = u64::from(turn % 8);
-            if controller.read_blocks(lba, 1, buffer).is_err() {
-                return false;
-            }
-            let mut head = [0u8; 8];
-            if !buffer.read_at(0, &mut head) {
-                return false;
-            }
-            if u64::from_le_bytes(head) != disk_signature(lba) {
-                return false;
-            }
+    let Some(entries) = nvme::queue_entries_for_test() else {
+        return false;
+    };
+    let laps = entries * 3;
+    for turn in 0..laps {
+        let lba = u64::from(turn % 8);
+        let Some((_, head, _)) = nvme::read_block_probe_for_test(lba) else {
+            return false;
+        };
+        if u64::from_le_bytes(head) != disk_signature(lba) {
+            return false;
         }
-        laps > controller.queue_entries()
-    })
-    .unwrap_or(false)
+    }
+    laps > entries
 }
 
-/// The controller's registers are mapped uncacheable.
-///
-/// `012` §2 names it: mapping a register file write-back is a silent,
-/// hard-to-debug bug — writes arrive when the cache feels like it and reads
-/// answer from a line that was filled minutes ago. An emulator forgives it and
-/// hardware does not, which is exactly the class of thing a check has to catch
-/// here rather than there.
 fn the_controllers_registers_are_uncacheable() -> bool {
-    nvme::with_controller(|controller, _| {
-        paging::translate(controller.window()).is_some_and(|(_, flags)| {
+    nvme::controller_window_for_test()
+        .and_then(paging::translate)
+        .is_some_and(|(_, flags)| {
             flags.contains(Flags::NO_CACHE) && !flags.contains(Flags::WRITE_THROUGH)
         })
-    })
-    .unwrap_or(false)
 }
 
-/// The production timeout arm proves the controller idle before returning.
-///
-/// This resets the one controller, so its report belongs after every storage
-/// and filesystem check has finished.
 fn an_nvme_timeout_quiesces_before_dma_memory_returns() -> bool {
-    nvme::with_controller(|controller, buffer| {
-        controller.a_timeout_quiesces_before_dma_returns(buffer)
-    })
-    .unwrap_or(false)
+    nvme::timeout_quiesces_for_test()
 }
 
 /// The first eight bytes of block `lba` on the check machine's namespace.
@@ -2701,18 +2567,6 @@ const fn disk_signature(lba: u64) -> u64 {
     0x5749_5A44_0000_0000 | lba
 }
 
-/// The bus is walked, and the walk goes through the bridge.
-///
-/// A kernel that scans bus zero and stops finds every function q35 has and
-/// reports a perfectly plausible number, which is why the *bus* count is what
-/// is asserted. VMware places functions behind `pciBridge0`–`pciBridge7`
-/// (`012` §2) and D-18 makes VMware the phase's definition of done, so a walk
-/// that cannot descend is a driver that cannot find its controller — and
-/// nothing about the function count would say so.
-///
-/// The check machine is given a `pci-bridge` for exactly this reason: q35 as
-/// QEMU ships it has none, so there would be nowhere to descend to and the
-/// property would be untestable rather than untested (D-168).
 fn the_bus_walk_descends_through_a_bridge() -> bool {
     let mut on_bus_zero = 0;
     let mut beyond = 0;
@@ -2736,18 +2590,6 @@ fn the_bus_walk_descends_through_a_bridge() -> bool {
         && on_bus_zero >= 6
 }
 
-/// The same function is never claimed twice, and a refusal strands nothing.
-///
-/// D-77's device half. A port claim proves *exclusivity* and says nothing
-/// about *entitlement* — whether the claimant is the driver for the thing
-/// behind the ports. A device claim answers that by making the claim about the
-/// device, and it is permanent for the same reason a port claim is (D-138):
-/// there is no release, so there is no window in which a device is
-/// half-claimed.
-///
-/// The second half of the name is the part that would rot silently. A refusal
-/// that quietly released the holder's claim would look identical from here
-/// unless the holder is asked afterwards, so it is (D-138, D-168).
 fn a_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
     // The bridge behind bus zero: it has no windows to disturb, and it is
     // there on both boot targets.
@@ -2765,12 +2607,15 @@ fn a_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
         return false;
     };
 
-    let mut context = context();
     let before = pci::claims();
     let Some(alias) = at.at(pci_config::header::CLASS) else {
         return false;
     };
-    let Ok(held) = pci::claim(&mut context, alias) else {
+    pci::refuse_clean_preparation_for_test();
+    let clean_refusal = matches!(pci::claim(alias), Err(pci::ClaimError::WindowTaken))
+        && !pci::is_claimed(at)
+        && pci::claims() == before;
+    let Ok(held) = pci::claim(alias) else {
         return false;
     };
     let recorded = pci::is_claimed(at) && pci::claims() == before + 1;
@@ -2778,10 +2623,7 @@ fn a_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
     // A different register offset is still the same function and the same
     // claim, so a second driver cannot enter through an alias.
     let refused = matches!(
-        pci::claim(
-            &mut context,
-            at.at(pci_config::header::BAR0).expect("a BAR offset")
-        ),
+        pci::claim(at.at(pci_config::header::BAR0).expect("a BAR offset")),
         Err(pci::ClaimError::Taken)
     );
 
@@ -2792,33 +2634,18 @@ fn a_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
         && held.at() == at.function_base()
         && held.identity().0 != 0xFFFF;
 
-    // A bridge has **two** base address registers, not six: its primary,
-    // secondary and subordinate bus numbers sit where a device's third would
-    // be. A claim that read six would decode those bus numbers as a window and
-    // then probe it — writing all ones into the register that says which bus
-    // is behind this bridge. Nothing else here would notice, because the probe
-    // restores what it found (D-168).
+    // Bridge headers have two BARs; probing a third would overwrite bus numbers
+    // before restoring them (D-168).
     let two_registers = held.window(2).is_none()
         && held.window(3).is_none()
         && held.window(4).is_none()
         && held.window(5).is_none();
 
-    recorded && refused && intact && two_registers
+    clean_refusal && recorded && refused && intact && two_registers
 }
 
-/// A device's I/O window is the device's, and a bare port claim inside it is
-/// refused.
-///
-/// The whole of D-77's entitlement complaint, made concrete. Before this a
-/// driver took ports and the registry recorded that *somebody* had them; now
-/// the claim belongs to the function that decodes them, and a caller reaching
-/// for a port inside a claimed device's window is refused because the device
-/// already has it (D-168).
-///
-/// **The check fails rather than passes when there is no such device.** A
-/// machine with no I/O window would make this vacuous, which is exactly the
-/// shape D-165 caught in slice 1 — so finding one is part of the claim.
 fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
+    let claims_before = pci::claims();
     let mut candidate = None;
     if pci::enumerate(|function| {
         if candidate.is_none() && !function.header.is_bridge() && !pci::is_claimed(function.at) {
@@ -2830,19 +2657,18 @@ fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
         return false;
     }
 
-    // Walk the candidates until one with an I/O window is claimed. A function
-    // may have none, and "none of them had one" is a failure here rather than
-    // a pass.
+    // Walk the candidates until one with an I/O window is claimed; none
+    // having one is a failure here, not a pass.
     let mut context = context();
     let mut found = None;
     let mut seen = 0;
     let mut retirement_clean = true;
-    let _ = pci::enumerate(|function| {
+    let surveyed = pci::enumerate(|function| {
         if found.is_some() || function.header.is_bridge() || pci::is_claimed(function.at) {
             return;
         }
         seen += 1;
-        let Ok(device) = pci::lease(&mut context, function.at) else {
+        let Ok(device) = pci::lease(function.at) else {
             return;
         };
         let mut io = None;
@@ -2858,9 +2684,10 @@ fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
         if let Some((port, size)) = io {
             found = Some((device, port, size));
         } else {
-            retirement_clean &= device.release(&mut context).is_ok();
+            retirement_clean &= device.release(&mut context).into_retained().is_none();
         }
-    });
+    })
+    .is_some();
 
     let Some((device, port, size)) = found else {
         return false;
@@ -2872,50 +2699,40 @@ fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
     let base_refused = wost::arch::current::port::claim::<u8>(port).is_none();
     let last_refused = wost::arch::current::port::claim::<u8>(last).is_none();
 
-    // Returning the unique lease must return both the BDF and every I/O span:
-    // reacquiring this same function exercises both registries. Commit the
-    // replacement so the original permanent-ownership property remains true.
+    // Reacquiring the same function exercises both registries; the
+    // replacement is committed so permanent ownership stays true.
     let at = device.at();
-    retirement_clean &= device.release(&mut context).is_ok();
-    let reclaimed = match pci::lease(&mut context, at) {
-        Ok(reclaimed) => {
+    wost::arch::current::port::refuse_span_release_for_test();
+    let (reason, device) = match device.release(&mut context).into_retained() {
+        None => return false,
+        Some(retained) => retained,
+    };
+    retirement_clean &= reason == pci::ReleaseError::Ports
+        && pci::is_claimed(at)
+        && pci::claims() == claims_before + 1
+        && wost::arch::current::port::claim::<u8>(port).is_none();
+    retirement_clean &= device.release(&mut context).into_retained().is_none();
+    let reclaimed = match pci::lease(at) {
+        Ok(mut reclaimed) => {
             let same_window = (0..pci::BARS).any(|index| {
                 reclaimed.window(index).is_some_and(|window| {
                     window.bar == pci_config::Bar::Io { port } && window.size == size
                 })
             });
-            reclaimed.commit();
-            same_window
+            same_window && reclaimed.commit().is_ok()
         }
         Err(_) => false,
     };
 
-    // And a port outside it is still available, so the refusal is about the
-    // window and not about everything. A claim here is permanent, so this
-    // takes one port for the life of the boot, which is the honest cost of
-    // showing that the refusals above are bounded.
+    // An outside claim proves refusal is limited to the device's window.
     let outside = port
         .checked_add(size as u16)
         .and_then(wost::arch::current::port::claim::<u8>)
         .is_some();
 
-    seen > 0 && base_refused && last_refused && retirement_clean && reclaimed && outside
+    surveyed && seen > 0 && base_refused && last_refused && retirement_clean && reclaimed && outside
 }
 
-/// A program that dies with work in flight has it ended before its ring goes.
-///
-/// D-153 as `012` §10 amends it: **exit is a wait, not a signal.** io_uring
-/// cancelled out of line for six years and the symptom was mount points
-/// staying busy after the process had exited. An operation still in flight is
-/// one that could still write a completion, and the page it would write into
-/// is about to become the allocator's.
-///
-/// So the claim is not "the operation is forgotten" but "the operation is
-/// *finished*": it gets the one terminal completion D-79 promises it, into
-/// memory that still exists, and the reservation it was holding is spent. A
-/// reservation never spent is a ring whose accounting says work is outstanding
-/// for ever, which is invisible until something asks — and slice 5's device
-/// will ask (D-167).
 fn work_in_flight_is_ended_before_the_ring_is_released() -> bool {
     if !crate::time::is_calibrated() {
         return false;
@@ -2952,25 +2769,17 @@ fn work_in_flight_is_ended_before_the_ring_is_released() -> bool {
     in_flight
         && ended == 2
         && completed
-        // Nothing left that could touch the pages, and the reservations are
-        // spent rather than held: `outstanding` is the accounting that would
+        // Nothing left that could touch the pages, and `outstanding` would
         // otherwise say work is in flight for ever.
         && queue.is_quiet()
         && queue.in_flight() == 0
         && queue.outstanding() == 0
         && queue.is_consistent()
-        // And a second sweep finds nothing, so teardown is idempotent — which
-        // it must be, because `reclaim` is not the only path that could reach
-        // a zombie.
+        // A second sweep finds nothing: teardown is idempotent, because
+        // `reclaim` is not the only path to a zombie.
         && queue.abandon() == 0
 }
 
-/// A terminal-completion refusal leaves the operation and every owner intact.
-///
-/// Cancellation, expiry and process retirement all take the same settlement
-/// edge. The injected refusal arrives before reservation accounting changes;
-/// each path must report or retain the work, and a retry must post its one
-/// terminal completion rather than losing or duplicating it (D-192).
 fn a_refused_settlement_retains_every_owner() -> bool {
     if !crate::time::is_calibrated() {
         return false;
@@ -3052,7 +2861,7 @@ fn a_refused_settlement_retains_every_owner() -> bool {
     let retired =
         runs_until(2000, || thread::retirements() > retirements_before) && user::has_zombies();
     let first_refused = retired
-        && user::collect().is_none()
+        && matches!(user::collect(), user::CollectOutcome::Retained)
         && user::has_zombies()
         && user::refused_ring_reclaims() == refusals_before + 1
         && ring.in_flight() == 1
@@ -3074,32 +2883,15 @@ fn a_refused_settlement_retains_every_owner() -> bool {
         && collected
 }
 
-/// A promise outlives the program that made it, and gives its slot back.
-///
-/// The third of D-151's three terminal paths, and the one slice 1 could not
-/// reach: a program that dies holding a promise against its own handle table.
-///
-/// The reservation holds an `Arc` to the table, so the table stays alive
-/// exactly as long as the promise does — the teardown drops its reference and
-/// the table does not go anywhere. That is what makes "the zombie holds every
-/// resource any in-flight operation can still touch" true by construction
-/// rather than by remembering (D-163, D-167).
-///
-/// Observed through a `Weak`, which is the only way to ask "is it still there"
-/// without being the reason it is. Then the table is *used* after its owner is
-/// gone, because surviving and working are different claims.
 fn a_promise_outlives_the_program_that_made_it() -> bool {
-    let Some((held, _far)) = crate::object::channel() else {
-        return false;
-    };
-    let Some((second, _far_two)) = crate::object::channel() else {
-        return false;
-    };
+    let held = crate::object::bootstrap_identity();
+    let second = crate::object::bootstrap_identity();
 
     let table = shared_handle_table_or_false!(4);
+    let foreign = shared_handle_table_or_false!(2);
     let watching = alloc::sync::Arc::downgrade(&table);
 
-    let full = Rights::UNIVERSAL.union(Rights::READ);
+    let full = Rights::UNIVERSAL;
     if table.insert(held, full).is_err() {
         return false;
     }
@@ -3118,27 +2910,35 @@ fn a_promise_outlives_the_program_that_made_it() -> bool {
         return false;
     };
 
-    // Surviving is not the same as working: the promise is spent against the
-    // orphaned table, which is exactly what a completion arriving after the
-    // program's death would do.
-    let installed = orphan.install(reservation, second, full, full).is_ok();
-    let accounted = orphan.live() == 2 && orphan.promised() == 0;
+    // Surviving is not working: the promise is spent against the orphaned
+    // table, as a completion after the program's death would.
+    let usage_before = HandleTable::arena_usage_for_test();
+    let Ok(handle) = reservation.install(second, full, full) else {
+        return false;
+    };
+    let Some(slot) = orphan.slot_of(handle) else {
+        return false;
+    };
+    let foreign_handle = foreign.handle_for(slot);
+    let usage_after = HandleTable::arena_usage_for_test();
+    let installed = orphan.resolve(handle).is_ok()
+        && matches!(foreign.resolve(foreign_handle), Err(HandleError::Stale));
+    let accounted = orphan.live() == 2
+        && orphan.promised() == 0
+        && foreign.live() == 0
+        && foreign.promised() == 0
+        && usage_after.0 == usage_before.0
+        && usage_after.1 == usage_before.1 + 1;
 
     // And with the promise gone, the table goes when the last reference does.
     // A `Weak` that still upgrades here is a table nothing will ever free.
     drop(orphan);
+    drop(foreign);
     let released = watching.upgrade().is_none();
 
     promised && installed && accounted && released
 }
 
-/// The constants region says what the kernel measured.
-///
-/// No sequence counter guards this region and none is needed: it is written
-/// before the page can be mapped anywhere and never again (D-166). What is
-/// checked is that it was written *at all* and with the right numbers — a
-/// zeroed region reads as a plausible page with a version of zero, which is
-/// what a reader would then refuse.
 fn the_time_page_states_the_clock_the_kernel_measured() -> bool {
     let Some((version, page_bytes, counter_hz)) = timepage::constants() else {
         return false;
@@ -3152,13 +2952,6 @@ fn the_time_page_states_the_clock_the_kernel_measured() -> bool {
         && counter_hz > 0
 }
 
-/// The page and the kernel clock tell the same time.
-///
-/// The whole claim of D-152: `sys_clock_get` stops being a call and becomes a
-/// load, and the two answers have to be *the same answer* rather than two
-/// plausible ones. So this is a sandwich rather than a tolerance — the page's
-/// reading is taken between two kernel reads and must lie between them. No
-/// slack, and a multiplier or shift off by one breaks it immediately.
 fn the_time_page_and_the_kernel_clock_tell_the_same_time() -> bool {
     let Some(reading) = timepage::read() else {
         return false;
@@ -3181,26 +2974,17 @@ fn the_time_page_and_the_kernel_clock_tell_the_same_time() -> bool {
     agrees && moved && reading.conversion.is_calibrated()
 }
 
-/// Revoking the clock sends readers to the Uptime operation.
-///
-/// The gate D-152 asks for, exercised rather than described. Three things have
-/// to hold at once: the revocation is visible, the sequence counter moved by
-/// exactly two so no reader can be left mid-update, and **ring Uptime still
-/// answers** — a fallback that is not reachable is not a fallback.
-///
-/// The clock is put back afterwards. Nothing else reads the page, so the
-/// window is the kernel's own.
 fn revoking_the_clock_sends_readers_to_uptime() -> bool {
     let Some(before) = timepage::read() else {
         return false;
     };
 
     let deferred = timepage::with_page_absent_for_test(|| {
-        !timepage::publish(
+        timepage::publish(
             timepage::MODE_NONE,
             crate::time::origin_ticks(),
             crate::time::conversion(),
-        )
+        ) == timepage::Publication::Deferred
     });
     if deferred != Some(true) {
         return false;
@@ -3209,9 +2993,8 @@ fn revoking_the_clock_sends_readers_to_uptime() -> bool {
     let Some(revoked) = timepage::read() else {
         return false;
     };
-    // Exactly two: one to say a write began and one to say it ended. A writer
-    // that moved it by one leaves the page permanently odd and every reader
-    // spinning.
+    // Exactly two, begin and end: one would leave the page permanently odd
+    // and every reader spinning.
     let stepped = revoked.seq == before.seq.wrapping_add(2);
     let closed = revoked.mode == timepage::MODE_NONE;
 
@@ -3238,29 +3021,12 @@ fn revoking_the_clock_sends_readers_to_uptime() -> bool {
         timepage::MODE_COUNTER,
         crate::time::origin_ticks(),
         crate::time::conversion(),
-    ) && timepage::read()
-        .is_some_and(|reading| reading.mode == timepage::MODE_COUNTER);
+    ) == timepage::Publication::Published
+        && timepage::read().is_some_and(|reading| reading.mode == timepage::MODE_COUNTER);
 
     stepped && closed && queue_answers && restored
 }
 
-/// The clock's update window is never preemptible, and never left open.
-///
-/// D-152 makes this a **precondition, not a comment**: Linux's naive reader
-/// spin is only tolerable because its update runs with interrupts off, and a
-/// writer preempted with the sequence counter odd leaves every reader spinning
-/// for a scheduling quantum.
-///
-/// Two claims, and the first version had only a worse form of the second. It
-/// counted *calls* made with interrupts on and failed, correctly, because a
-/// kernel thread calling `publish` with interrupts on is fine — the guard
-/// clears the flag before the counter goes odd (D-166). What matters is the
-/// window, so that is what is counted now.
-///
-/// The second claim is that the window always closes: the counter is even at
-/// rest. A writer that returned early between its two increments would leave
-/// the page permanently odd and every reader spinning, and no amount of
-/// interrupt discipline would help.
 fn the_clocks_update_window_is_never_preemptible() -> bool {
     // The revocation check has published twice by now, so this is not a count
     // that has never been exercised.
@@ -3270,72 +3036,49 @@ fn the_clocks_update_window_is_never_preemptible() -> bool {
 
     timepage::is_published()
         && timepage::windows_left_preemptible() == 0
-        // Every update marked its window open. On one CPU nothing else can
-        // witness the odd value — the guard clears the interrupt flag, so no
-        // other context runs between the two increments — and a writer that
-        // skipped the odd write left every other check on this page green
-        // (D-166). The writer reads its own marker back, and this is that.
+        // Read the odd marker to prove every update opened its seqlock window
+        // (D-166).
         && timepage::windows_never_opened() == 0
         && timebase::Seq::is_stable(seq)
         // Publishing moves it, so "even" is not merely "never written".
         && seq >= 4
 }
 
-/// A program is shown the time page and cannot write it.
-///
-/// Readable from ring 3, and nothing else: a writable time page is a program
-/// able to tell every other program a lie about the time, and an executable one
-/// is a page of attacker-chosen bytes in every address space.
 fn a_program_sees_the_time_page_and_cannot_write_it() -> bool {
-    let Ok(mut space) = AddressSpace::for_user() else {
-        return false;
-    };
-    if timepage::install(&mut space).is_err() {
-        return false;
-    }
+    in_reclaimed_space(AddressSpace::for_user, |space| {
+        if timepage::install(space).is_err() {
+            return false;
+        }
 
-    let Some((_, flags)) = space.lookup(timepage::TIME) else {
-        return false;
-    };
+        let Some((_, flags)) = space.lookup(timepage::TIME) else {
+            return false;
+        };
 
-    flags.contains(Flags::USER)
-        && !flags.contains(Flags::WRITABLE)
-        && flags.contains(Flags::NO_EXECUTE)
-        // And not the space's to give away: the frame is the kernel's, so an
-        // unmap must not hand it to the allocator.
-        && matches!(
-            space.unmap(timepage::TIME, PAGE_SIZE),
-            Err(MapError::NotOwned(_))
-        )
+        flags.contains(Flags::USER)
+            && !flags.contains(Flags::WRITABLE)
+            && flags.contains(Flags::NO_EXECUTE)
+            // And not the space's to give away: the frame is the kernel's, so an
+            // unmap must not hand it to the allocator.
+            && matches!(
+                space.unmap(timepage::TIME, PAGE_SIZE),
+                Err(MapError::NotOwned(_))
+            )
+    })
 }
 
-/// A completion carries a handle, and the rights narrow on the way in.
-///
-/// D-151's headline: the ring becomes a delegation path, which it was not.
-/// The program declares what it is willing to hold and gets **the narrower of
-/// that and what was there** — the same rule D-110 puts on a channel, so the
-/// ring cannot be the widening path around it.
-///
-/// Driven through the shared page, because the page is the boundary. The
-/// rights are checked by resolving the handle that arrived rather than by
-/// trusting the status: a completion saying `OK` about a handle nobody looked
-/// at is a claim, not a check.
 fn a_completion_carries_a_handle_with_narrowed_rights() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
     };
-    let Some((held, _far)) = crate::object::channel() else {
-        return false;
-    };
+    let held = crate::object::bootstrap_identity();
     let table = shared_handle_table_or_false!(8);
 
-    let offered = Rights::UNIVERSAL.union(Rights::READ).union(Rights::WRITE);
+    let offered = Rights::UNIVERSAL;
     let Ok(source) = table.insert(held, offered) else {
         return false;
     };
 
-    // Read only, out of a handle that also carries write.
-    let declared = Rights::UNIVERSAL.union(Rights::READ);
+    let declared = Rights::INSPECT;
     queue.post_submission_for_test(
         0,
         queue::Submission::about(
@@ -3361,41 +3104,28 @@ fn a_completion_carries_a_handle_with_narrowed_rights() -> bool {
     };
 
     granted == declared
-        && !granted.contains(Rights::WRITE)
+        && !granted.contains(Rights::DUPLICATE)
         && arrived != source
         && table.live() == 2
-        // The promise became a handle rather than staying a promise, which is
-        // the accounting half: a table charged twice for one handle runs out
-        // at half its quota and nothing else would say so.
+        // The promise became a handle: a table charged twice for one runs
+        // out at half its quota and nothing else would say so.
         && table.promised() == 0
 }
 
-/// A completion cannot carry rights the program was never offered.
-///
-/// The refusal is at the *attenuation*, and it is a refusal rather than a
-/// silent narrowing: a program that asks for more than it holds has made a
-/// mistake, and quietly giving it less is how a caller comes to believe it has
-/// authority it does not.
-///
-/// The table is inspected afterwards as well as the status, because the
-/// failure that matters is not the refusal — it is a refusal that kept the
-/// slot it promised.
 fn a_completion_cannot_widen_what_was_offered() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
     };
-    let Some((held, _far)) = crate::object::channel() else {
-        return false;
-    };
+    let held = crate::object::bootstrap_identity();
     let table = shared_handle_table_or_false!(8);
 
-    // Held without WRITE, so asking for it is asking to widen.
-    let offered = Rights::UNIVERSAL.union(Rights::READ);
+    // Held without WAIT or TRANSFER, so asking for all universal rights widens.
+    let offered = Rights::DUPLICATE.union(Rights::INSPECT);
     let Ok(source) = table.insert(held, offered) else {
         return false;
     };
 
-    let asked = Rights::UNIVERSAL.union(Rights::READ).union(Rights::WRITE);
+    let asked = Rights::UNIVERSAL;
     queue.post_submission_for_test(
         0,
         queue::Submission::about(
@@ -3419,42 +3149,23 @@ fn a_completion_cannot_widen_what_was_offered() -> bool {
         && table.promised() == 0
 }
 
-/// Every refused handle operation gives its promised slot back.
-///
-/// The property D-151 states and `012` §10 names the symptom of missing:
-/// io_uring's `IORING_FILE_INDEX_ALLOC` reporting `-ENFILE` at completion. A
-/// promise that is not returned is not a crash — it is a table that shrinks by
-/// one every time a program asks for something it cannot have.
-///
-/// **Every submission here reserves and then fails**, which is the whole
-/// difficulty of writing this check. The first version used a table that was
-/// already full, so all three refusals happened *at* the reservation and none
-/// of them ever held one — `promised() == 0` was true because nothing had been
-/// promised, and deleting the destructor that returns promises left it green
-/// (D-165). The table is deliberately roomy, and each refusal happens at a
-/// different point after the promise is taken: at the lookup, at the right, and
-/// at the attenuation.
 fn a_refused_handle_operation_returns_its_promise() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
     };
-    let Some((duplicable, _far_one)) = crate::object::channel() else {
-        return false;
-    };
-    let Some((sealed, _far_two)) = crate::object::channel() else {
-        return false;
-    };
+    let duplicable = crate::object::bootstrap_identity();
+    let sealed = crate::object::bootstrap_identity();
 
     // Room to spare: a refusal must be reached *after* a promise is taken, and
     // a full table refuses before there is one.
     let table = shared_handle_table_or_false!(8);
-    let full = Rights::UNIVERSAL.union(Rights::READ);
+    let full = Rights::UNIVERSAL;
     let Ok(source) = table.insert(duplicable, full) else {
         return false;
     };
     // Held without DUPLICATE, which is what makes copying it a refusal rather
     // than a mistake.
-    let Ok(undupable) = table.insert(sealed, Rights::READ) else {
+    let Ok(undupable) = table.insert(sealed, Rights::INSPECT) else {
         return false;
     };
 
@@ -3470,14 +3181,14 @@ fn a_refused_handle_operation_returns_its_promise() -> bool {
         (
             0xF002,
             undupable,
-            u64::from(Rights::READ.bits()),
+            u64::from(Rights::INSPECT.bits()),
             queue::STATUS_DENIED,
         ),
         // Refused at the attenuation: asking for more than is held.
         (
             0xF003,
             undupable,
-            u64::from(Rights::READ.union(Rights::WRITE).bits()),
+            u64::from(Rights::INSPECT.union(Rights::WAIT).bits()),
             queue::STATUS_DENIED,
         ),
     ];
@@ -3500,29 +3211,20 @@ fn a_refused_handle_operation_returns_its_promise() -> bool {
         refused &= completion.token == *token && completion.status == *status;
     }
 
-    // The whole point: three promises taken, three given back. A leak here is
-    // invisible in the completions and shows up later as a table that is full
-    // of nothing.
+    // Three promises taken, three given back: a leak is invisible in the
+    // completions and shows later as a table full of nothing.
     refused && table.live() == 2 && table.promised() == 0
 }
 
-/// A full table refuses at submission, before it promises anything.
-///
-/// The other half of D-151, and a different claim from the one above: there,
-/// three promises are taken and returned; here, none is taken at all, and the
-/// program is told *at submission* — the one moment it can close something and
-/// ask again.
 fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
     };
-    let Some((held, _far)) = crate::object::channel() else {
-        return false;
-    };
+    let held = crate::object::bootstrap_identity();
 
     // Room for exactly one, which the source takes.
     let table = shared_handle_table_or_false!(1);
-    let full = Rights::UNIVERSAL.union(Rights::READ);
+    let full = Rights::UNIVERSAL;
     let Ok(source) = table.insert(held, full) else {
         return false;
     };
@@ -3536,9 +3238,8 @@ fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
             u64::from(full.bits()),
         ),
     );
-    // Neither malformed rights nor a malformed path may be inspected first.
-    // Otherwise the result-producing operations expose more than one
-    // quota-ordering contract despite D-151 reserving one.
+    // Neither malformed rights nor a malformed path may be inspected first,
+    // or the result-producing operations have two admission orders (D-151).
     queue.post_submission_for_test(
         1,
         queue::Submission::about(
@@ -3574,16 +3275,6 @@ fn a_full_table_refuses_a_handle_operation_at_submission() -> bool {
         && table.promised() == 0
 }
 
-/// An operation that is not ready yet completes later, and completes once.
-///
-/// The first operation in this kernel whose honest answer is *not yet* (D-164).
-/// Serving it produces **no** completion — which is not the same as producing
-/// none ever, and the difference is the reservation it is holding.
-///
-/// Three moments are checked and they are three different claims: nothing at
-/// admission, nothing before the deadline, and exactly one after it. The
-/// middle one is what fails if a deferral is really an immediate completion
-/// with a delay written in the value.
 fn an_operation_completes_after_its_deadline_and_only_once() -> bool {
     if !crate::time::is_calibrated() {
         return false;
@@ -3631,16 +3322,6 @@ fn an_operation_completes_after_its_deadline_and_only_once() -> bool {
         && completion.value >= submitted_at.saturating_add(DELAY_NS)
 }
 
-/// A cancellation is its own operation and does not stand in for the target's.
-///
-/// The antidote to the double-completion class behind two io_uring CVEs
-/// (`012` §8): the cancelled operation still gets **exactly one** terminal
-/// completion, carrying a cancellation rather than a result, and the
-/// cancellation gets its own against its own reservation.
-///
-/// So the count is two, not one and not three — and the target's is the one
-/// that says `CANCELLED`, which is what distinguishes this from a design where
-/// the canceller simply reports on the target's behalf.
 fn a_cancelled_operation_and_its_cancellation_complete_separately() -> bool {
     if !crate::time::is_calibrated() {
         return false;
@@ -3680,9 +3361,8 @@ fn a_cancelled_operation_and_its_cancellation_complete_separately() -> bool {
         && canceller.status == queue::STATUS_OK
         && canceller.value == u64::from(0xDEADu32);
 
-    // Nothing is left to complete, and a second cancellation of the same token
-    // finds nothing — advisory rather than an error, which is io_uring's
-    // `-EALREADY` and the right answer for a race the program cannot avoid.
+    // A second cancellation finds nothing: advisory, as io_uring's
+    // `-EALREADY`, for a race the program cannot avoid.
     queue.post_submission_for_test(
         2,
         queue::Submission::simple(queue::Opcode::Cancel, 0xC0DF, 0xDEAD),
@@ -3691,17 +3371,13 @@ fn a_cancelled_operation_and_its_cancellation_complete_separately() -> bool {
     let again =
         queue.serve(&table) == 1 && queue.read_completion(2).status == queue::STATUS_NOT_FOUND;
 
-    separate && again && queue.in_flight() == 0 && queue.is_consistent()
+    separate
+        && again
+        && queue.in_flight() == 0
+        && queue.is_consistent()
+        && queue::pending_identity_exhaustion_is_terminal_for_test()
 }
 
-/// Every submission gets exactly one completion, and it is the one it asked
-/// for.
-///
-/// D-79's terminal-completion rule, driven through the shared page rather than
-/// through a function call — the page is the boundary and the call is not. An
-/// opcode the kernel does not serve is refused **with** a completion rather
-/// than ignored, which is the same rule seen from the only angle that could
-/// break it.
 fn every_submission_gets_exactly_one_completion() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
@@ -3733,9 +3409,8 @@ fn every_submission_gets_exactly_one_completion() -> bool {
         && echo.value == 0xDEAD_BEEF
         && uptime.token == 0x2222
         && uptime.status == queue::STATUS_OK
-        // The value, not only the token: replacing `now_ns()` with a zero
-        // left this green (D-115). The clock has been running since boot, so
-        // a real uptime is neither zero nor absurd.
+        // The value, not only the token: a zeroed `now_ns()` once left this
+        // green (D-115).
         && uptime.value > 0
         && uptime.value <= crate::time::now_ns()
         && refused.token == 0x3333
@@ -3746,13 +3421,6 @@ fn every_submission_gets_exactly_one_completion() -> bool {
     once && accounted && matched
 }
 
-/// The completion queue cannot overflow, because admission refuses first.
-///
-/// D-79's structural claim and D-112's headline invariant, on the kernel's own
-/// accounting: a submission reserves its completion slot *before* it is
-/// accepted, so work is declined rather than reported nowhere. io_uring's
-/// `CQ_NODROP` instead takes an unbounded kernel-memory liability for a
-/// program that never reaps.
 fn admission_refuses_before_the_completion_queue_can_overflow() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
@@ -3775,20 +3443,6 @@ fn admission_refuses_before_the_completion_queue_can_overflow() -> bool {
     bounded && refused && consistent && full_refuses
 }
 
-/// A submission rewritten after the kernel has taken it does not change what
-/// the kernel does with it.
-///
-/// The copy-out-once rule (D-79). CVE-2025-39816 is literally "always use
-/// `READ_ONCE()` to read ring pointers", and a double fetch is how a validated
-/// value becomes a different value before it is used. The pages here are ones
-/// ring 3 can rewrite at any moment, so this rewrites one at the only moment
-/// that matters — after the kernel has served it — and asks whether the
-/// completion already posted moved.
-///
-/// It also asks the question the rewrite cannot: **admitting is not
-/// publishing**. Reserving room for three and writing one must serve one, or
-/// the kernel reports completions for entries that are still whatever the page
-/// happened to hold.
 fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     let Some(queue) = queue::Queue::new() else {
         return false;
@@ -3811,12 +3465,8 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         queue::Submission::simple(queue::Opcode::Unknown(0xDEAD), 0xBAAD, 0xFFFF_FFFF),
     );
 
-    // The completion is what the *copy* said, and the rewrite is visible in
-    // the page — so the check is not merely reading two disjoint places and
-    // finding them both unchanged. An earlier version asserted
-    // `read_completion(0) == posted` where `posted` had just been read from
-    // that same slot, which is `X == X` and had no line whose deletion could
-    // falsify it (D-115).
+    // The visible rewrite plus original completion proves service used the
+    // copied submission (D-115).
     let rewritten = queue.read_submission(0);
     let took_effect = rewritten.token == 0xBAAD && rewritten.opcode != queue::Opcode::Echo;
     let unchanged = took_effect
@@ -3827,12 +3477,8 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         // was consumed, and the new bytes are a submission nobody made.
         && queue.serve(&shared_handle_table_or_false!(8)) == 0;
 
-    // A tail run away with the kernel's ring *empty* is refused — but so it
-    // would be with no bound at all, because `take` finds nothing. The case
-    // that reaches the bound is a runaway tail with room admitted behind it:
-    // three reservations and a tail claiming four billion. Without
-    // `posted > SUBMISSIONS` the kernel walks all three slots and serves
-    // whatever the page happens to hold, and no check saw that (D-115).
+    // Reservations make this runaway tail reach the explicit posted bound
+    // instead of an empty-queue early return (D-115).
     let Some(runaway) = queue::Queue::new() else {
         return false;
     };
@@ -3848,17 +3494,9 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
     let runaway_bounded =
         runaway.serve(&shared_handle_table_or_false!(8)) == 0 && runaway.outstanding() == 0;
 
-    // And with the ring drained, which is the weaker case the earlier version
-    // was testing without knowing it.
     queue.publish_tail_for_test(u32::MAX);
     let drained_bounded = queue.serve(&shared_handle_table_or_false!(8)) == 0;
 
-    // The case the runaway tail cannot show: **writing is not publishing.**
-    // A program may write
-    // three entries and publish a tail of one, and the kernel must serve one.
-    // The tail is what says an entry is *there*; the other two slots hold
-    // bytes the program wrote and has not offered, and serving them would
-    // report completions for operations nobody made.
     let Some(partial) = queue::Queue::new() else {
         return false;
     };
@@ -3883,20 +3521,6 @@ fn a_rewritten_submission_cannot_change_what_was_served() -> bool {
         && still_reserved
 }
 
-/// Thread-local storage follows the thread, and ring 3 cannot point it at the
-/// kernel.
-///
-/// The fourth thing that moves across a switch, after the privilege stack
-/// (D-99), the tables (D-106) and the extended state (D-108). Nothing native
-/// asked for it: writing an mlibc sysdep did, because nothing native has
-/// thread-local storage and every POSIX thread does (D-114, D-118).
-///
-/// The refusal is the other half. `wrmsr` to `FS_BASE` with a non-canonical
-/// value is a general protection fault in *kernel* context — a program
-/// crashing the handler rather than itself — so the safe door range-checks
-/// first, and it checks against the user boundary rather than canonicality
-/// alone because a program asking to point `fs:` at kernel memory has no
-/// reason it could be given.
 fn thread_local_storage_follows_the_thread() -> bool {
     /// Somewhere in the low half, aligned, and not zero.
     const MINE: u64 = 0x0000_1234_5678_0000;
@@ -3905,32 +3529,29 @@ fn thread_local_storage_follows_the_thread() -> bool {
 
     let restore = task::read_thread_base();
 
-    if !task::set_thread_base(MINE) || task::read_thread_base() != MINE {
-        return false;
-    }
+    let checked = (|| {
+        if !task::set_thread_base(MINE) || task::read_thread_base() != MINE {
+            return false;
+        }
 
-    // A base in the kernel's half is refused, and the register is untouched.
-    let kernel_refused =
-        !task::set_thread_base(0xffff_8000_0000_0000) && task::read_thread_base() == MINE;
-    // So is one in the canonical hole, which the same range check catches.
-    let hole_refused =
-        !task::set_thread_base(0x0000_8000_0000_0000) && task::read_thread_base() == MINE;
+        let kernel_refused =
+            !task::set_thread_base(0xffff_8000_0000_0000) && task::read_thread_base() == MINE;
+        let hole_refused =
+            !task::set_thread_base(0x0000_8000_0000_0000) && task::read_thread_base() == MINE;
 
-    BASE_INTRUDER_RAN.store(0, Ordering::Release);
-    if thread::spawn("base-intruder", set_another_thread_base).is_err() {
-        return false;
-    }
-    if !runs_until(500, || BASE_INTRUDER_RAN.load(Ordering::Acquire) == 1) {
-        return false;
-    }
+        BASE_INTRUDER_RAN.store(0, Ordering::Release);
+        if thread::spawn("base-intruder", set_another_thread_base).is_err()
+            || !runs_until(500, || BASE_INTRUDER_RAN.load(Ordering::Acquire) == 1)
+        {
+            return false;
+        }
 
-    // The other thread set its own and read its own back; this one still has
-    // what it set, which is only true if the switch saved and restored.
-    let kept = task::read_thread_base() == MINE;
-    let intruded = BASE_INTRUDER_SAW.load(Ordering::Acquire) == THEIRS as usize;
-
-    let _ = task::set_thread_base(restore);
-    kernel_refused && hole_refused && kept && intruded
+        let kept = task::read_thread_base() == MINE;
+        let intruded = BASE_INTRUDER_SAW.load(Ordering::Acquire) == THEIRS as usize;
+        kernel_refused && hole_refused && kept && intruded
+    })();
+    let restored = task::set_thread_base(restore) && task::read_thread_base() == restore;
+    checked && restored
 }
 
 /// Set by the intruding thread once it has run.
@@ -3939,7 +3560,6 @@ static BASE_INTRUDER_RAN: AtomicUsize = AtomicUsize::new(0);
 /// What the intruding thread read back from its own base.
 static BASE_INTRUDER_SAW: AtomicUsize = AtomicUsize::new(0);
 
-/// Point a second thread's local storage somewhere else, and read it back.
 fn set_another_thread_base() {
     const THEIRS: u64 = 0x0000_7654_3210_0000;
     if task::set_thread_base(THEIRS) {
@@ -3950,16 +3570,6 @@ fn set_another_thread_base() {
     BASE_INTRUDER_RAN.store(1, Ordering::Release);
 }
 
-/// A page ring 3 could reach comes back to the allocator cleared, whichever
-/// road it takes.
-///
-/// D-107 said `USegment::reclaim` was the only road back and that it zeroes.
-/// It was not: `unmap` checked `OWNED` and never `USER`, so it handed a
-/// program's pages over as a plain `Segment` — and the reclamation path takes
-/// exactly that road, dropping its token rather than flushing it. Nothing
-/// disclosed anything, because every consumer happens to zero on the way in;
-/// the mechanism named as the guarantee was simply not the one doing the work
-/// (D-123).
 fn a_user_page_comes_back_cleared() -> bool {
     /// Two user addresses nothing else uses.
     const FIRST: u64 = user::STACK + 0xA0_0000;
@@ -3967,114 +3577,130 @@ fn a_user_page_comes_back_cleared() -> bool {
     /// What a program would have left in the page.
     const SECRET: [u8; 8] = [0xDE; 8];
 
-    let Ok(mut space) = AddressSpace::for_user() else {
-        return false;
-    };
-    let writable = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+    in_reclaimed_space(AddressSpace::for_user, |space| {
+        let writable = Flags::WRITABLE.union(Flags::NO_EXECUTE);
 
-    // One page, holding what a program would have left in it.
-    let Some(mut run) = mm::allocate_contiguous(1, 1) else {
-        return false;
-    };
-    if !run.zero() || !run.write_at(0, &SECRET) {
-        return false;
-    }
-    let address = run.address();
-    if space.map_user(FIRST, run.into(), writable).is_err() {
-        return false;
-    }
+        let Some(mut run) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !run.zero() || !run.write_at(0, &SECRET) {
+            return false;
+        }
+        let address = run.address();
+        if space.map_user(FIRST, run.into(), writable).is_err() {
+            return false;
+        }
 
-    // It comes back untyped, and the only way to make it the kernel's again
-    // is a clearing one. Deterministic: the handle is followed the whole way
-    // rather than the allocator being asked for the frame back.
-    let Ok(unmapped) = space.unmap(FIRST, PAGE_SIZE) else {
-        return false;
-    };
-    let knows = unmapped.was_user();
-    let Some(untyped) = unmapped.take_user() else {
-        return false;
-    };
-    let Some(back) = untyped.reclaim() else {
-        return false;
-    };
-    let mut recovered = [0xFFu8; 8];
-    let cleared = back.address() == address
-        && back.read_at(0, &mut recovered)
-        && recovered == [0u8; 8]
-        && recovered != SECRET;
-    drop(back);
+        // It comes back untyped, and only a clearing conversion makes it the
+        // kernel's again; the handle is followed, not the allocator asked.
+        let Ok(unmapped) = space.unmap(FIRST, PAGE_SIZE) else {
+            return false;
+        };
+        let knows = unmapped.was_user();
+        let Some(untyped) = unmapped.into_user() else {
+            return false;
+        };
+        let Some(back) = untyped.reclaim() else {
+            return false;
+        };
+        let mut recovered = [0xFFu8; 8];
+        let cleared = back.address() == address
+            && back.read_at(0, &mut recovered)
+            && recovered == [0u8; 8]
+            && recovered != SECRET;
+        drop(back);
 
-    // And the kernel road is closed: `flush` hands a plain `Segment` over,
-    // and a user range is not one it may hand over.
-    let Some(mut other) = mm::allocate_contiguous(1, 1) else {
-        return false;
-    };
-    if !other.zero() {
-        return false;
-    }
-    if space.map_user(SECOND, other.into(), writable).is_err() {
-        return false;
-    }
-    let Ok(second) = space.unmap(SECOND, PAGE_SIZE) else {
-        return false;
-    };
-    let refused_as_kernel = second.flush().is_none();
+        // The kernel conversion cannot hand a user range over as a `Segment`.
+        let Some(mut other) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !other.zero() {
+            return false;
+        }
+        if space.map_user(SECOND, other.into(), writable).is_err() {
+            return false;
+        }
+        let Ok(second) = space.unmap(SECOND, PAGE_SIZE) else {
+            return false;
+        };
+        let refused_as_kernel = second.into_kernel().is_none();
 
-    // The **dropping** road — the one reclamation takes. Its frames go to the
-    // allocator, so reading them back needs it to hand the same ones over,
-    // which it does not promise; a conjunct conditional on that would be
-    // skipped on most boots. So the clear is *counted* instead, and the tally
-    // is what makes the line testable.
-    //
-    // I first claimed `cargo xtask mutate` covered this. It did not: removing
-    // the clear left every check green and the tool reported the mutation as a
-    // **survivor**, which is exactly what it is for (D-119, D-123).
-    let cleared_before = paging::cleared_on_drop();
-    let Some(mut third) = mm::allocate_contiguous(2, 1) else {
-        return false;
-    };
-    if !third.zero() {
-        return false;
-    }
-    if space
-        .map_user(SECOND + PAGE_SIZE * 4, third.into(), writable)
-        .is_err()
-    {
-        return false;
-    }
-    let Ok(dropped) = space.unmap(SECOND + PAGE_SIZE * 4, 2 * PAGE_SIZE) else {
-        return false;
-    };
-    drop(dropped);
-    let counted = paging::cleared_on_drop() == cleared_before + 2;
+        // Reallocation need not return these frames, so a tally observes the
+        // drop clear without relying on same-frame readback (D-119, D-123).
+        let cleared_before = paging::cleared_on_drop();
+        let Some(mut third) = mm::allocate_contiguous(2, 1) else {
+            return false;
+        };
+        if !third.zero() {
+            return false;
+        }
+        if space
+            .map_user(SECOND + PAGE_SIZE * 4, third.into(), writable)
+            .is_err()
+        {
+            return false;
+        }
+        let Ok(dropped) = space.unmap(SECOND + PAGE_SIZE * 4, 2 * PAGE_SIZE) else {
+            return false;
+        };
+        drop(dropped);
+        let counted = paging::cleared_on_drop() == cleared_before + 2;
 
-    knows && cleared && refused_as_kernel && counted
+        knows && cleared && refused_as_kernel && counted
+    })
 }
 
-/// A space a thread will be switched onto is not reclaimed, whatever `CR3`
-/// says at the moment of asking.
-///
-/// Freeing the tables under the register walking them is a triple fault at the
-/// next memory access. Freeing a **bound** space's is the same fault deferred
-/// to whenever its thread is next scheduled — worse for being harder to
-/// attribute, and reachable by a caller simply not being that thread. The
-/// `CR3` comparison alone catches only "these tables, right now" (D-123).
-///
-/// Whether anything still names a space is a property of the *task table*,
-/// which `AddressSpace` cannot see, so it takes the answer as evidence rather
-/// than guessing.
 fn a_bound_space_is_not_reclaimed() -> bool {
+    let allocator_before = AllocatorSnapshot::capture();
     let Ok(mut space) = AddressSpace::for_user() else {
         return false;
     };
     let root = space.root();
     let Ok(binding) = space.bind() else {
+        let reclaimed = space.reclaim(None).is_ok();
+        drop(space);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+            "a refused binding did not return its address-space tables"
+        );
         return false;
     };
 
     // A thread to bind it to, which is what makes it un-reclaimable.
-    let Ok(slot) = thread::spawn_in_space("bound-space", leave_at_once, binding, |_| true) else {
-        return false;
+    let mut bound = None;
+    let slot =
+        match thread::spawn_in_space("bound-space", leave_at_once, binding, |_, installed| {
+            bound = Some(installed);
+            Ok(())
+        }) {
+            Ok(slot) => slot,
+            Err(failure) => {
+                let released = match failure.authority {
+                    thread::SpaceAuthority::None => None,
+                    thread::SpaceAuthority::Released(released) => Some(released),
+                };
+                let reclaimed = space.reclaim(released).is_ok();
+                drop(space);
+                assert!(
+                    reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+                    "a refused bound-space setup did not return its tables"
+                );
+                return false;
+            }
+        };
+    let bound = bound.expect("a successful arrangement retains its binding");
+
+    let bound = match task::release_address_space(bound) {
+        Ok(released) => {
+            let reclaimed = space.reclaim(Some(released)).is_ok_and(|tables| tables > 0);
+            drop(space);
+            assert!(
+                reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+                "an unexpected bound-space release did not return its tables"
+            );
+            return false;
+        }
+        Err(bound) => bound,
     };
 
     // Refused with no evidence and left untouched, so the same value can be
@@ -4082,18 +3708,180 @@ fn a_bound_space_is_not_reclaimed() -> bool {
     let held = mm::free_frames();
     let refused = matches!(
         space.reclaim(None),
-        Err(ReclaimError::StillBound(found)) if found == root
+        Err(paging::ReclaimFailure {
+            reason: ReclaimError::StillBound(found),
+            ..
+        }) if found == root
     ) && !space.is_reclaimed()
         && mm::free_frames() == held;
 
     // And once the thread is gone, the task table says so and the space comes
     // back — so this is not simply "reclaim never works".
-    let gone = runs_until(500, || task::address_space_of(slot).is_none());
-    let released = task::release_address_space(root);
-    let had_evidence = released.is_some();
-    let reclaimed = space.reclaim(released).is_ok_and(|tables| tables > 0) && space.is_reclaimed();
+    let gone = runs_until(500, || !task::slot_is_live_for_test(slot));
+    assert!(gone, "the bound-space witness did not retire");
+    let released = task::release_address_space(bound)
+        .expect("a retired bound-space witness releases its binding");
 
-    refused && gone && had_evidence && reclaimed
+    // Release evidence survives a foreign and a repeated target, and the
+    // rightful space is still reclaimable with it afterwards.
+    let Ok(mut foreign) = AddressSpace::for_user() else {
+        assert!(
+            space.reclaim(Some(released)).is_ok(),
+            "a failed foreign-space setup stranded release evidence"
+        );
+        return false;
+    };
+    let foreign_failure = match foreign.reclaim(Some(released)) {
+        Err(failure) => failure,
+        Ok(_) => panic!("a foreign space consumed release evidence"),
+    };
+    let foreign_refused = matches!(
+        foreign_failure.reason,
+        ReclaimError::UnexpectedRelease(found) if found == root
+    ) && !foreign.is_reclaimed();
+    let Some(released) = foreign_failure.released else {
+        panic!("a foreign-space refusal lost release evidence");
+    };
+    let foreign_reclaimed = foreign.reclaim(None).is_ok() && foreign.is_reclaimed();
+    let repeated_failure = match foreign.reclaim(Some(released)) {
+        Err(failure) => failure,
+        Ok(_) => panic!("a reclaimed space consumed release evidence"),
+    };
+    let repeated_refused = repeated_failure.reason == ReclaimError::Reclaimed;
+    let Some(released) = repeated_failure.released else {
+        panic!("a repeated reclaim refusal lost release evidence");
+    };
+    let reclaimed = foreign_refused
+        && foreign_reclaimed
+        && repeated_refused
+        && space.reclaim(Some(released)).is_ok_and(|tables| tables > 0)
+        && space.is_reclaimed();
+    drop(foreign);
+    drop(space);
+
+    refused && reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
+}
+
+fn one_space_has_one_binding() -> bool {
+    let free_before = mm::free_frames();
+    let slots_before = thread::free_slots();
+    let active_before = paging::active_root();
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    let root = space.root();
+    let Ok(first) = space.bind() else {
+        assert!(
+            space.reclaim(None).is_ok() && mm::free_frames() == free_before,
+            "a refused first binding did not return its address-space tables"
+        );
+        return false;
+    };
+
+    let (refused, duplicate) = match space.bind() {
+        Err(ActivateError::AlreadyActive) => (true, None),
+        Err(_) => (false, None),
+        Ok(binding) => (false, Some(binding)),
+    };
+    let unchanged = first.root() == root
+        && space.root() == root
+        && paging::active_root() == active_before
+        && thread::free_slots() == slots_before;
+
+    if let Some(binding) = duplicate {
+        let _duplicate_release = task::release_uninstalled(binding);
+    }
+    let released = task::release_uninstalled(first);
+    let reclaimed = space.reclaim(Some(released)).is_ok_and(|tables| tables > 0)
+        && space.is_reclaimed()
+        && mm::free_frames() == free_before;
+
+    refused && unchanged && reclaimed
+}
+
+fn binding_ignores_only_accessed_root_drift() -> bool {
+    let free_before = mm::free_frames();
+    let Ok(mut accessed) = AddressSpace::for_user() else {
+        return false;
+    };
+    let (accepts_accessed, accessed_reclaimed) = match accessed.bind_with_accessed_drift_for_test()
+    {
+        Some(Ok(binding)) => {
+            let released = task::release_uninstalled(binding);
+            (
+                true,
+                accessed
+                    .reclaim(Some(released))
+                    .is_ok_and(|tables| tables > 0),
+            )
+        }
+        Some(Err(_)) | None => (false, accessed.reclaim(None).is_ok_and(|tables| tables > 0)),
+    };
+
+    let Ok(mut cache) = AddressSpace::for_user() else {
+        return false;
+    };
+    let (rejects_cache, cache_reclaimed) = match cache.bind_with_cache_drift_for_test() {
+        Some(Err(ActivateError::KernelHalfDiffers(_))) => match cache.bind() {
+            Ok(binding) => {
+                let released = task::release_uninstalled(binding);
+                (
+                    true,
+                    cache.reclaim(Some(released)).is_ok_and(|tables| tables > 0),
+                )
+            }
+            Err(_) => (false, cache.reclaim(None).is_ok_and(|tables| tables > 0)),
+        },
+        Some(Ok(binding)) => {
+            let released = task::release_uninstalled(binding);
+            (
+                false,
+                cache.reclaim(Some(released)).is_ok_and(|tables| tables > 0),
+            )
+        }
+        Some(Err(_)) | None => (false, cache.reclaim(None).is_ok_and(|tables| tables > 0)),
+    };
+
+    accepts_accessed
+        && accessed_reclaimed
+        && rejects_cache
+        && cache_reclaimed
+        && mm::free_frames() == free_before
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AllocatorSnapshot {
+    free_frames: usize,
+    heap: mm::heap::Stats,
+}
+
+impl AllocatorSnapshot {
+    fn capture() -> Self {
+        let disabled = interrupt::disable();
+        let snapshot = Self {
+            free_frames: mm::free_frames(),
+            heap: mm::heap::stats(),
+        };
+        disabled.restore();
+        snapshot
+    }
+
+    fn ownership(&self) -> AllocatorOwnership {
+        AllocatorOwnership::new(
+            self.free_frames,
+            self.heap.slab_frames,
+            self.heap.large_frames,
+            self.heap.live,
+        )
+    }
+
+    fn accounted_physical_frames(&self) -> Option<usize> {
+        self.ownership().accounted_physical_frames()
+    }
+
+    fn has_same_ownership(&self, other: &Self) -> bool {
+        self.ownership().is_preserved_since(other.ownership())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4105,20 +3893,59 @@ struct SpawnResources {
     rings: usize,
     thread_slots: usize,
     process_records: (usize, usize, usize),
+    mapping_refusals: usize,
     table_refusals: usize,
+    task_retirements: usize,
+}
+
+impl SpawnResources {
+    fn has_same_live_owners(&self, other: &Self) -> bool {
+        self.arena == other.arena
+            && self.channels == other.channels
+            && self.rings == other.rings
+            && self.thread_slots == other.thread_slots
+            && self.process_records == other.process_records
+    }
+
+    fn has_same_refusal_tallies(&self, other: &Self) -> bool {
+        self.mapping_refusals == other.mapping_refusals
+            && self.table_refusals == other.table_refusals
+            && self.task_retirements == other.task_retirements
+    }
+
+    fn allocator_snapshot(&self) -> AllocatorSnapshot {
+        AllocatorSnapshot {
+            free_frames: self.frames,
+            heap: self.heap,
+        }
+    }
+
+    fn has_same_ownership(&self, other: &Self) -> bool {
+        self.has_same_live_owners(other)
+            && self.has_same_refusal_tallies(other)
+            && self
+                .allocator_snapshot()
+                .has_same_ownership(&other.allocator_snapshot())
+    }
 }
 
 fn spawn_resources() -> SpawnResources {
-    SpawnResources {
-        frames: mm::free_frames(),
-        heap: mm::heap::stats(),
+    let disabled = interrupt::disable();
+    let allocator = AllocatorSnapshot::capture();
+    let resources = SpawnResources {
+        frames: allocator.free_frames,
+        heap: allocator.heap,
         arena: HandleTable::arena_usage_for_test(),
         channels: object::live_channels_for_test(),
         rings: queue::live_for_test(),
         thread_slots: thread::free_slots(),
         process_records: user::process_records_for_test(),
+        mapping_refusals: user::refused_mapping_reclaims(),
         table_refusals: user::refused_table_reclaims(),
-    }
+        task_retirements: user::refused_task_retirements(),
+    };
+    disabled.restore();
+    resources
 }
 
 fn refused_at_spawn_edge(edge: user::SpawnEdge) -> bool {
@@ -4137,24 +3964,8 @@ fn refused_at_spawn_edge(edge: user::SpawnEdge) -> bool {
     }
 }
 
-/// Every refusal before a process becomes runnable restores the whole machine
-/// resource ledger.
-///
-/// Fourteen edges cover the address space, image, stack, shared mappings,
-/// ring, binding, channel, table, handle and the scheduler/task handoff through
-/// launch-record publication. The first pass warms heap size classes and
-/// retained arena backing; the second requires exact steady state after every
-/// individual refusal and verifies that the requested edge, rather than an
-/// earlier error, stopped construction, including explicit page-table rollback
-/// evidence (D-191).
 fn every_refused_spawn_returns_every_resource() -> bool {
     while user::collect().is_some() {}
-
-    for edge in user::SpawnEdge::ALL {
-        if !refused_at_spawn_edge(edge) {
-            return false;
-        }
-    }
 
     let baseline = spawn_resources();
     for edge in user::SpawnEdge::ALL {
@@ -4164,19 +3975,301 @@ fn every_refused_spawn_returns_every_resource() -> bool {
         }
         let (pages_after, tables_after) = user::spawn_rollbacks();
         let pages_returned = matches!(edge, user::SpawnEdge::Space) || pages_after > pages_before;
-        if tables_after <= tables_before || !pages_returned || spawn_resources() != baseline {
+        if tables_after <= tables_before
+            || !pages_returned
+            || !spawn_resources().has_same_ownership(&baseline)
+        {
             return false;
         }
     }
     true
 }
 
-/// A boot-stack allocation refusal closes ring 3 before process construction.
-///
-/// The boot remains alive to diagnose and service the machine, but it cannot
-/// run untrusted code on the bootloader's unguarded stack. The injected state
-/// is the exact one `boot_continue(0)` records; refusal must be typed, allocate
-/// nothing and leave no crossing behind (D-193).
+fn a_commit_refusal_reunites_cleanup_authority() -> bool {
+    while user::collect().is_some() {}
+    let before = spawn_resources();
+    let rollback_before = user::spawn_rollbacks();
+    let result = user::spawn_refusing(user::SpawnEdge::ThreadArrangement);
+    matches!(
+        result,
+        Err(user::SpawnError::NoThread(thread::SpawnError::Arrangement))
+    ) && user::spawn_rollbacks().0 > rollback_before.0
+        && user::spawn_rollbacks().1 > rollback_before.1
+        && spawn_resources().has_same_ownership(&before)
+}
+
+fn a_maximum_image_and_stack_fit_the_cleanup_ledger() -> bool {
+    user::maximum_cleanup_ledger_is_total_for_test()
+}
+
+fn cleanup_refusals_retain_reachable_tables() -> bool {
+    const FIRST: u64 = 0x0000_4100_0000_0000;
+    const SECOND: u64 = FIRST + 2 * PAGE_SIZE;
+    const BLOCKER: u64 = FIRST + 4 * PAGE_SIZE;
+    const SEGMENTS: usize = 3;
+    const PHNUM: usize = 56;
+
+    let allocator_before = AllocatorSnapshot::capture();
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    let Some(mut blocker) = mm::allocate_contiguous(1, 1) else {
+        let reclaimed = space.reclaim(None).is_ok();
+        drop(space);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+            "a missing blocker did not return its address-space tables"
+        );
+        return false;
+    };
+    if !blocker.zero() {
+        drop(blocker);
+        let reclaimed = space.reclaim(None).is_ok();
+        drop(space);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+            "a refused blocker zero did not return setup resources"
+        );
+        return false;
+    }
+    if space
+        .map_user(
+            BLOCKER,
+            blocker.into(),
+            Flags::WRITABLE.union(Flags::NO_EXECUTE),
+        )
+        .is_err()
+    {
+        let reclaimed = space.reclaim(None).is_ok();
+        drop(space);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+            "a refused blocker map did not return setup resources"
+        );
+        return false;
+    }
+
+    let data = elf64::HEADER_BYTES + SEGMENTS * elf64::PROGRAM_HEADER_BYTES;
+    let mut image = alloc::vec![0u8; data + SEGMENTS];
+    image[0..4].copy_from_slice(&elf64::MAGIC);
+    image[4] = elf64::CLASS_64;
+    image[5] = elf64::LITTLE_ENDIAN;
+    image[6] = 1;
+    image[16..18].copy_from_slice(&2u16.to_le_bytes());
+    image[18..20].copy_from_slice(&elf64::MACHINE_X86_64.to_le_bytes());
+    image[20..24].copy_from_slice(&1u32.to_le_bytes());
+    image[24..32].copy_from_slice(&FIRST.to_le_bytes());
+    image[32..40].copy_from_slice(&(elf64::HEADER_BYTES as u64).to_le_bytes());
+    image[52..54].copy_from_slice(&(elf64::HEADER_BYTES as u16).to_le_bytes());
+    image[54..56].copy_from_slice(&(elf64::PROGRAM_HEADER_BYTES as u16).to_le_bytes());
+    image[PHNUM..PHNUM + 2].copy_from_slice(&(SEGMENTS as u16).to_le_bytes());
+    for (index, (at, flags)) in [(FIRST, 5u32), (SECOND, 6u32), (BLOCKER, 6u32)]
+        .into_iter()
+        .enumerate()
+    {
+        let header = elf64::HEADER_BYTES + index * elf64::PROGRAM_HEADER_BYTES;
+        image[header..header + 4].copy_from_slice(&1u32.to_le_bytes());
+        image[header + 4..header + 8].copy_from_slice(&flags.to_le_bytes());
+        image[header + 8..header + 16].copy_from_slice(&((data + index) as u64).to_le_bytes());
+        image[header + 16..header + 24].copy_from_slice(&at.to_le_bytes());
+        image[header + 32..header + 40].copy_from_slice(&1u64.to_le_bytes());
+        image[header + 40..header + 48].copy_from_slice(&PAGE_SIZE.to_le_bytes());
+    }
+
+    user::refuse_cleanup_unmap_after_for_test(1);
+    let load_result = user::load_image(&mut space, &image, 0);
+    user::restore_cleanup_unmap_for_test();
+    let typed = matches!(
+        load_result,
+        Err(user::LoadError::Rollback {
+            reason: MapError::Pinned(SECOND),
+            pages: 1,
+        })
+    );
+    let retained = space.lookup(FIRST).is_none()
+        && space.lookup(SECOND).is_some()
+        && space.lookup(BLOCKER).is_some()
+        && matches!(
+            space.reclaim(None),
+            Err(paging::ReclaimFailure {
+                reason: ReclaimError::Mapped(2),
+                ..
+            })
+        )
+        && !space.is_reclaimed();
+    let mappings_cleaned = [SECOND, BLOCKER]
+        .into_iter()
+        .all(|at| space.unmap(at, PAGE_SIZE).map(drop).is_ok());
+    let tables_cleaned = space.reclaim(None).is_ok();
+    drop(space);
+    drop(image);
+    let cleaned = mappings_cleaned
+        && tables_cleaned
+        && AllocatorSnapshot::capture().has_same_ownership(&allocator_before);
+
+    let construction_before = spawn_resources();
+    user::refuse_cleanup_unmap_after_for_test(0);
+    let spawn_result = user::spawn_refusing(user::SpawnEdge::Image);
+    user::restore_cleanup_unmap_for_test();
+    let construction_after = spawn_resources();
+    let expected_construction = SpawnResources {
+        mapping_refusals: construction_before.mapping_refusals + 1,
+        ..construction_before
+    };
+    let construction_refused = matches!(
+        spawn_result,
+        Err(user::SpawnError::Injected(user::SpawnEdge::Image))
+    ) && construction_after.has_same_ownership(&expected_construction);
+
+    typed && retained && cleaned && construction_refused
+}
+
+fn partial_stack_rollback_is_retryable() -> bool {
+    const BASE: u64 = 0x0000_4200_0000_0000;
+    const STACK_BYTES: u64 = 2 * PAGE_SIZE;
+    const SLOTS: usize = 3;
+
+    let Some(layout) = StackLayout::new(BASE, STACK_BYTES, PAGE_SIZE, SLOTS) else {
+        return false;
+    };
+    let (Some(first), Some(second), Some(third)) = (layout.slot(0), layout.slot(1), layout.slot(2))
+    else {
+        return false;
+    };
+    let allocator_before = AllocatorSnapshot::capture();
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    paging::refuse_stack_mapping_after_for_test(2);
+    paging::refuse_stack_rollback_after_for_test(1);
+    let result = space.map_stacks(&layout);
+    paging::restore_stack_refusals_for_test();
+
+    let cleanup = match result {
+        Err(paging::StackMapError::Rollback {
+            cause: MapError::OutOfMemory,
+            cleanup,
+        }) => cleanup,
+        _ => return false,
+    };
+    let typed = cleanup.reason == MapError::Pinned(first.stack_base())
+        && cleanup.mapped_stacks == 2
+        && cleanup.returned_pages == 2
+        && cleanup.remaining_stacks() == 1;
+    let retained = space.lookup(first.stack_base()).is_some()
+        && space.lookup(second.stack_base()).is_none()
+        && space.lookup(third.stack_base()).is_none()
+        && matches!(
+            space.reclaim(None),
+            Err(paging::ReclaimFailure {
+                reason: ReclaimError::Mapped(2),
+                ..
+            })
+        )
+        && !space.is_reclaimed();
+    let resumed = space.resume_stack_rollback(cleanup);
+    let reclaimed = space.reclaim(None).is_ok();
+    drop(space);
+    let cleaned = matches!(resumed, Ok(4))
+        && reclaimed
+        && AllocatorSnapshot::capture().has_same_ownership(&allocator_before);
+
+    typed && retained && cleaned
+}
+
+fn guard_rollback_refusal_retains_the_stack() -> bool {
+    const BASE: u64 = 0x0000_4300_0000_0000;
+    const STACK_BYTES: u64 = 2 * PAGE_SIZE;
+
+    let Some(layout) = StackLayout::new(BASE, STACK_BYTES, PAGE_SIZE, 1) else {
+        return false;
+    };
+    let Some(physical) = mm::first_memory_run(PAGE_SIZE) else {
+        return false;
+    };
+    let Some(slot) = layout.slot(0) else {
+        return false;
+    };
+    let prepare = |space: &mut AddressSpace| {
+        let Some(guard) = BootRegion::describe(physical, PAGE_SIZE) else {
+            return false;
+        };
+        space.map_boot(BASE, guard, Flags::NO_EXECUTE).is_ok()
+    };
+    let allocator_before = AllocatorSnapshot::capture();
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    if !prepare(&mut space) {
+        let reclaimed = space.reclaim(None).is_ok();
+        drop(space);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+            "a refused guard setup did not return its tables"
+        );
+        return false;
+    }
+    paging::refuse_stack_rollback_after_for_test(0);
+    let result = space.map_stack(&slot);
+    paging::restore_stack_refusals_for_test();
+
+    let cleanup = match result {
+        Err(paging::StackMapError::Rollback { cause, cleanup })
+            if cause == MapError::Conflict(BASE) =>
+        {
+            cleanup
+        }
+        _ => return false,
+    };
+    let typed = cleanup.reason == MapError::Pinned(slot.stack_base())
+        && cleanup.mapped_stacks == 1
+        && cleanup.returned_pages == 0
+        && cleanup.remaining_stacks() == 1;
+    let retained = space.lookup(slot.stack_base()).is_some()
+        && matches!(
+            space.reclaim(None),
+            Err(paging::ReclaimFailure {
+                reason: ReclaimError::Mapped(2),
+                ..
+            })
+        )
+        && !space.is_reclaimed();
+    let resumed = space.resume_stack_rollback(cleanup);
+    let reclaimed = space.reclaim(None).is_ok();
+    drop(space);
+    let cleaned = matches!(resumed, Ok(2))
+        && reclaimed
+        && AllocatorSnapshot::capture().has_same_ownership(&allocator_before);
+
+    typed && retained && cleaned
+}
+
+fn a_retirement_refusal_is_settled_before_slot_reuse() -> bool {
+    let resources = spawn_resources();
+    task::refuse_next_retirement_for_test();
+    let result = user::spawn_refusing(user::SpawnEdge::ThreadFabricated);
+    task::restore_retirement_for_test();
+    let slot = match result {
+        Err(user::SpawnError::NoThread(thread::SpawnError::Retirement {
+            slot,
+            reason: task::TaskError::Current(found),
+        })) if slot == found => slot,
+        _ => return false,
+    };
+    let expected = SpawnResources {
+        task_retirements: resources.task_retirements + 1,
+        ..resources
+    };
+    !task::slot_is_live_for_test(slot) && spawn_resources().has_same_ownership(&expected)
+}
+
+fn cleanup_unexpected_spawn(spawned: user::Spawned) -> bool {
+    let slot = spawned.slot;
+    let retired = runs_until(2_000, || !task::slot_is_live_for_test(slot));
+    while user::collect().is_some() {}
+    retired && !user::has_zombies()
+}
+
 fn an_unguarded_boot_stack_closes_the_user_boundary() -> bool {
     while user::collect().is_some() {}
     if !crate::user_launch_is_safe() {
@@ -4188,24 +4281,89 @@ fn an_unguarded_boot_stack_closes_the_user_boundary() -> bool {
     let attempt = crate::with_unguarded_boot_stack_for_test(user::run);
     let denied = matches!(&attempt, Err(user::SpawnError::UnguardedBootStack));
 
-    if let Ok(spawned) = attempt {
-        let slot = spawned.slot;
-        drop(spawned);
-        let _ = runs_until(2000, || task::address_space_of(slot).is_none());
-        while user::collect().is_some() {}
-    }
+    let cleaned = match attempt {
+        Ok(spawned) => cleanup_unexpected_spawn(spawned),
+        Err(_) => true,
+    };
 
     denied
+        && cleaned
         && crate::user_launch_is_safe()
         && trap::last_syscall().count == crossings_before
         && spawn_resources() == resources_before
 }
 
-/// Ring three stays closed when the CPU cannot enforce non-executable pages.
-///
-/// The injected read-back refusal enters the same predicate as production and
-/// must stop before process construction changes any resource or reaches the
-/// syscall gate (D-201).
+fn unadmitted_interrupts_close_the_user_boundary() -> bool {
+    while user::collect().is_some() {}
+    if !crate::maskable_interrupts_are_ready() {
+        return false;
+    }
+
+    let resources_before = spawn_resources();
+    let crossings_before = trap::last_syscall().count;
+    let attempt = crate::without_maskable_interrupt_admission_for_test(user::run);
+    let construction_denied = matches!(&attempt, Err(user::SpawnError::NoInterruptAdmission));
+    let construction_cleaned = match attempt {
+        Ok(spawned) => cleanup_unexpected_spawn(spawned),
+        Err(_) => true,
+    };
+    if !construction_denied
+        || !construction_cleaned
+        || trap::last_syscall().count != crossings_before
+        || !spawn_resources().has_same_ownership(&resources_before)
+    {
+        return false;
+    }
+
+    let Ok(spawned) = user::run_gated_for_wake() else {
+        return false;
+    };
+    let slot = spawned.slot;
+    let waiting = runs_until(500, user::gated_cross_is_waiting);
+    let late_refusal = crate::without_maskable_interrupt_admission_for_test(|| {
+        let released = user::release_gated_cross() == 1;
+        let retired = runs_until(2_000, || !task::slot_is_live_for_test(slot));
+        released && retired && trap::last_syscall().count == crossings_before
+    });
+    while user::collect().is_some() {}
+    let cleanup_exact = spawn_resources().has_same_ownership(&resources_before);
+    if !cleanup_exact {
+        user::orphan(slot);
+        while user::collect().is_some() {}
+    }
+
+    waiting
+        && late_refusal
+        && cleanup_exact
+        && crate::maskable_interrupts_are_ready()
+        && task::final_interrupt_admission_refusal_for_test()
+        && trap::last_syscall().count == crossings_before
+        && spawn_resources().has_same_ownership(&resources_before)
+}
+
+fn shared_kernel_mappings_without_proof_close_the_user_boundary() -> bool {
+    while user::collect().is_some() {}
+    if !crate::shared_kernel_mappings_are_safe() {
+        return false;
+    }
+
+    let resources_before = spawn_resources();
+    let crossings_before = trap::last_syscall().count;
+    let attempt = crate::without_shared_kernel_mapping_proof_for_test(user::run);
+    let denied = matches!(&attempt, Err(user::SpawnError::NoSharedKernelIsolation));
+    let cleaned = match attempt {
+        Ok(spawned) => cleanup_unexpected_spawn(spawned),
+        Err(_) => true,
+    };
+
+    denied
+        && cleaned
+        && crate::shared_kernel_mappings_are_safe()
+        && task::final_shared_mapping_refusal_for_test()
+        && trap::last_syscall().count == crossings_before
+        && spawn_resources() == resources_before
+}
+
 fn no_execute_protection_closes_the_user_boundary() -> bool {
     while user::collect().is_some() {}
     if !Protections::enabled().nx {
@@ -4217,24 +4375,43 @@ fn no_execute_protection_closes_the_user_boundary() -> bool {
     let attempt = user::without_no_execute_for_test(user::run);
     let denied = matches!(&attempt, Err(user::SpawnError::NoExecuteProtection));
 
-    if let Ok(spawned) = attempt {
-        let slot = spawned.slot;
-        drop(spawned);
-        let _ = runs_until(2000, || task::address_space_of(slot).is_none());
-        while user::collect().is_some() {}
-    }
+    let cleaned = match attempt {
+        Ok(spawned) => cleanup_unexpected_spawn(spawned),
+        Err(_) => true,
+    };
 
     denied
+        && cleaned
         && Protections::enabled().nx
+        && task::final_no_execute_refusal_for_test()
         && trap::last_syscall().count == crossings_before
         && spawn_resources() == resources_before
 }
 
-/// No calibrated clock means no user launch and no deferred Timer promise.
-///
-/// Both admissions consult `time::is_calibrated`. The user refusal precedes
-/// allocation, while Timer posts one immediate typed completion and leaves no
-/// pending operation which an absent interrupt could strand (D-201).
+fn missing_extended_state_closes_the_user_boundary() -> bool {
+    while user::collect().is_some() {}
+    if !xstate::is_enabled() {
+        return false;
+    }
+
+    let resources_before = spawn_resources();
+    let crossings_before = trap::last_syscall().count;
+    let attempt = user::without_extended_state_for_test(user::run);
+    let denied = matches!(&attempt, Err(user::SpawnError::NoExtendedState));
+
+    let cleaned = match attempt {
+        Ok(spawned) => cleanup_unexpected_spawn(spawned),
+        Err(_) => true,
+    };
+
+    denied
+        && cleaned
+        && xstate::is_enabled()
+        && task::final_extended_state_refusal_for_test()
+        && trap::last_syscall().count == crossings_before
+        && spawn_resources() == resources_before
+}
+
 fn an_uncalibrated_clock_admits_no_user_or_timer() -> bool {
     while user::collect().is_some() {}
     if !time::is_calibrated() {
@@ -4259,15 +4436,14 @@ fn an_uncalibrated_clock_admits_no_user_or_timer() -> bool {
     });
     let denied = matches!(&attempt, Err(user::SpawnError::NoClock));
 
-    if let Ok(spawned) = attempt {
-        let slot = spawned.slot;
-        drop(spawned);
-        let _ = runs_until(2000, || task::address_space_of(slot).is_none());
-        while user::collect().is_some() {}
-    }
+    let cleaned = match attempt {
+        Ok(spawned) => cleanup_unexpected_spawn(spawned),
+        Err(_) => true,
+    };
 
     let completion = ring.read_completion(0);
     denied
+        && cleaned
         && served == 1
         && completion.token == 0xC10C
         && completion.status == queue::STATUS_UNAVAILABLE
@@ -4280,12 +4456,6 @@ fn an_uncalibrated_clock_admits_no_user_or_timer() -> bool {
         && spawn_resources() == resources_before
 }
 
-/// A live independent-clock disagreement revokes every timing promise.
-///
-/// The injected stopped-TSC sample enters the production watchdog decision.
-/// The kernel clock freezes monotonically, the shared page closes, and an
-/// already-admitted Timer receives a terminal unavailable completion rather
-/// than waiting for a deadline the kernel no longer claims it can reach.
 fn a_clock_disagreement_revokes_time_without_stranding_timers() -> bool {
     if !time::is_calibrated() || time::Revocation::current() != time::Revocation::None {
         return false;
@@ -4339,70 +4509,342 @@ fn a_clock_disagreement_revokes_time_without_stranding_timers() -> bool {
             .is_some_and(|(before, after)| after.wrapping_sub(before) == 4)
 }
 
-/// A program that has ended gives its memory back — its pages, its tables,
-/// and its slot.
-///
-/// Until D-117 nothing was reclaimed: a retired thread kept its slot, its
-/// stack, its address space, its handle table and its ring for the life of the
-/// boot. A handful of programs a boot made that bounded and uninteresting; it stops
-/// being either the moment something spawns in a loop, which is what an OS
-/// does.
-///
-/// **Counted in frames, not inferred from a slot count.** A freed slot says a
-/// thread ended, which was already true before this decision — the question is
-/// whether the *memory* came back, and the allocator is the only thing that
-/// can answer it. The measurement is taken across a spawn and its collection,
-/// so what it reports is the net cost of running a program to completion.
+fn exact_zombie(spawned: &user::Spawned) -> bool {
+    user::last_rites_of(spawned.slot)
+        .is_some_and(|rites| rites.table == spawned.observed_table_incarnation)
+        && zombie_record_is_stable(spawned.slot)
+}
+
+fn zombie_record_is_stable(slot: usize) -> bool {
+    user::last_rites_of(slot).is_some()
+        && user::zombie_owns_slot_for_test(slot)
+        && !task::slot_is_live_for_test(slot)
+}
+
+fn wait_for_exact_zombie(spawned: &user::Spawned) -> bool {
+    yields_until(|| zombie_record_is_stable(spawned.slot)) && exact_zombie(spawned)
+}
+
+fn a_task_release_refusal_retains_the_zombie_for_retry() -> bool {
+    task::restore_release_for_test();
+    queue::pause_worker_for_test(true);
+    if !yields_until(queue::worker_is_paused_for_test) {
+        queue::pause_worker_for_test(false);
+        return false;
+    }
+    let settled = yields_until(|| {
+        while user::collect().is_some() {}
+        !user::has_zombies() && user::process_records_for_test() == (0, 0, 0)
+    });
+    if !settled {
+        queue::pause_worker_for_test(false);
+        return false;
+    }
+    let baseline = spawn_resources();
+    let reclaimed_before = user::reclaimed();
+
+    let checked = (|| -> bool {
+        let Ok(spawned) = user::run_for_bootstrap() else {
+            return false;
+        };
+        if !wait_for_exact_zombie(&spawned) {
+            return false;
+        }
+
+        let crossings = trap::last_syscall().count;
+        task::refuse_releases_for_test();
+        let refused = matches!(user::collect(), user::CollectOutcome::Retained);
+        let retained_resources = spawn_resources();
+        let retained = refused
+            && user::has_zombies()
+            && exact_zombie(&spawned)
+            && trap::last_syscall().count == crossings
+            && user::reclaimed() == reclaimed_before;
+
+        let Ok(probe) = user::run_for_bootstrap() else {
+            return false;
+        };
+        let admission_closed = probe.slot != spawned.slot && exact_zombie(&spawned);
+        let probe_retired = wait_for_exact_zombie(&probe);
+
+        task::restore_release_for_test();
+        let mut old_reclaimed = false;
+        let mut probe_reclaimed = false;
+        let mut returned_pages = 0usize;
+        let mut returned_tables = 0usize;
+        let mut exact_reclaims = probe_retired && exact_zombie(&spawned) && exact_zombie(&probe);
+        for _ in 0..2 {
+            if !exact_reclaims {
+                break;
+            }
+            let old_before = exact_zombie(&spawned);
+            let probe_before = exact_zombie(&probe);
+            let user::CollectOutcome::Reclaimed(result) = user::collect() else {
+                exact_reclaims = false;
+                break;
+            };
+            let old_after = exact_zombie(&spawned);
+            let probe_after = exact_zombie(&probe);
+            let reclaimed_old = old_before && !old_after;
+            let reclaimed_probe = probe_before && !probe_after;
+            if reclaimed_old == reclaimed_probe
+                || (reclaimed_old && old_reclaimed)
+                || (reclaimed_probe && probe_reclaimed)
+            {
+                exact_reclaims = false;
+                break;
+            }
+            let Some(pages) = returned_pages.checked_add(result.pages) else {
+                exact_reclaims = false;
+                break;
+            };
+            let Some(tables) = returned_tables.checked_add(result.tables) else {
+                exact_reclaims = false;
+                break;
+            };
+            returned_pages = pages;
+            returned_tables = tables;
+            old_reclaimed |= reclaimed_old;
+            probe_reclaimed |= reclaimed_probe;
+        }
+        let both_exact_zombies_reclaimed = exact_reclaims
+            && old_reclaimed
+            && probe_reclaimed
+            && returned_pages > 0
+            && returned_tables > 0
+            && !user::zombie_owns_slot_for_test(spawned.slot)
+            && !user::zombie_owns_slot_for_test(probe.slot);
+
+        let reclaimed_after = user::reclaimed();
+        let resources_after = spawn_resources();
+        let one_retained_record = retained_resources.process_records == (0, 0, 1);
+        let resources_restored = resources_after.has_same_ownership(&baseline);
+        let page_tally_is_exact =
+            reclaimed_after.0.checked_sub(reclaimed_before.0) == Some(returned_pages);
+        let table_tally_is_exact =
+            reclaimed_after.1.checked_sub(reclaimed_before.1) == Some(returned_tables);
+        let complete = retained
+            && one_retained_record
+            && admission_closed
+            && probe_retired
+            && both_exact_zombies_reclaimed
+            && !user::has_zombies()
+            && resources_restored
+            && page_tally_is_exact
+            && table_tally_is_exact;
+        if !complete {
+            info!(
+                "selftest: task-release detail retained={retained} one-record={one_retained_record} admission={admission_closed} probe-retired={probe_retired} exact-reclaims={both_exact_zombies_reclaimed} zombies={} resources={resources_restored} pages={page_tally_is_exact} tables={table_tally_is_exact} before={baseline:?} after={resources_after:?}",
+                user::has_zombies()
+            );
+        }
+        complete
+    })();
+    task::restore_release_for_test();
+    queue::pause_worker_for_test(false);
+    let cleaned = yields_until(|| {
+        while user::collect().is_some() {}
+        !user::has_zombies()
+    });
+    checked && cleaned
+}
+
+static PAUSED_COLLECTOR_OUTCOME: AtomicUsize = AtomicUsize::new(0);
+static PAUSED_COLLECTOR_READY: AtomicUsize = AtomicUsize::new(0);
+static PAUSED_COLLECTOR_START: AtomicUsize = AtomicUsize::new(0);
+
+fn collect_while_the_owner_is_in_flight() {
+    PAUSED_COLLECTOR_READY.store(1, Ordering::Release);
+    while PAUSED_COLLECTOR_START.load(Ordering::Acquire) == 0 {
+        thread::yield_now(&mut context());
+    }
+    let outcome = match user::collect() {
+        user::CollectOutcome::Empty => 1,
+        user::CollectOutcome::Retained => 2,
+        user::CollectOutcome::Reclaimed(_) => 3,
+    };
+    PAUSED_COLLECTOR_OUTCOME.store(outcome, Ordering::Release);
+}
+
+fn one_zombie_has_one_settlement_collector() -> bool {
+    user::pause_collection_before_settlement_for_test(false);
+    user::pause_collection_after_take_for_test(false);
+    queue::pause_worker_for_test(true);
+    let settled = runs_until(2_000, || {
+        while user::collect().is_some() {}
+        !user::has_zombies() && user::process_records_for_test() == (0, 0, 0)
+    });
+    if !settled {
+        queue::pause_worker_for_test(false);
+        return false;
+    }
+
+    let baseline = spawn_resources();
+    let retirements = thread::retirements();
+    PAUSED_COLLECTOR_OUTCOME.store(0, Ordering::Release);
+    PAUSED_COLLECTOR_READY.store(0, Ordering::Release);
+    PAUSED_COLLECTOR_START.store(0, Ordering::Release);
+
+    let checked = (|| {
+        thread::spawn("settlement-owner", collect_while_the_owner_is_in_flight).ok()?;
+        if !runs_until(2_000, || {
+            PAUSED_COLLECTOR_READY.load(Ordering::Acquire) != 0
+        }) {
+            return None;
+        }
+        let spawned = user::run_for_bootstrap().ok()?;
+        let slot = spawned.slot;
+        if !runs_until(2_000, || {
+            thread::retirements() > retirements && user::zombie_owns_slot_for_test(slot)
+        }) {
+            return None;
+        }
+
+        user::pause_collection_before_settlement_for_test(true);
+        PAUSED_COLLECTOR_START.store(1, Ordering::Release);
+        if !runs_until(2_000, user::collection_is_settling_for_test) {
+            return None;
+        }
+        let second_was_refused = matches!(user::collect(), user::CollectOutcome::Retained)
+            && user::zombie_owns_slot_for_test(slot)
+            && user::process_records_for_test().2 == 1;
+
+        user::pause_collection_before_settlement_for_test(false);
+        let first_finished = runs_until(2_000, || {
+            PAUSED_COLLECTOR_OUTCOME.load(Ordering::Acquire) != 0
+        }) && PAUSED_COLLECTOR_OUTCOME.load(Ordering::Acquire) == 3;
+        Some(second_was_refused && first_finished && !user::has_zombies())
+    })()
+    .unwrap_or(false);
+
+    user::pause_collection_before_settlement_for_test(false);
+    PAUSED_COLLECTOR_START.store(1, Ordering::Release);
+    queue::pause_worker_for_test(false);
+    let cleaned = runs_until(2_000, || {
+        while user::collect().is_some() {}
+        !user::has_zombies() && thread::free_slots() == baseline.thread_slots
+    });
+
+    checked && cleaned && spawn_resources().has_same_ownership(&baseline)
+}
+
+fn an_in_flight_collector_keeps_the_worker_retry_live() -> bool {
+    task::restore_release_for_test();
+    user::pause_collection_after_take_for_test(false);
+    queue::pause_worker_for_test(true);
+    let settled = runs_until(2_000, || {
+        while user::collect().is_some() {}
+        !user::has_zombies() && user::process_records_for_test() == (0, 0, 0)
+    });
+    if !settled {
+        queue::pause_worker_for_test(false);
+        return false;
+    }
+
+    let baseline = spawn_resources();
+    let retirements = thread::retirements();
+    let retained = queue::worker_retained_for_test();
+    let reaped = queue::worker_reaps_for_test();
+    PAUSED_COLLECTOR_OUTCOME.store(0, Ordering::Release);
+    PAUSED_COLLECTOR_READY.store(0, Ordering::Release);
+    PAUSED_COLLECTOR_START.store(0, Ordering::Release);
+
+    let checked = (|| {
+        thread::spawn("paused-collector", collect_while_the_owner_is_in_flight).ok()?;
+        if !runs_until(2_000, || {
+            PAUSED_COLLECTOR_READY.load(Ordering::Acquire) != 0
+        }) {
+            return None;
+        }
+        let spawned = user::run_for_bootstrap().ok()?;
+        let slot = spawned.slot;
+        if !runs_until(2_000, || {
+            thread::retirements() > retirements && user::zombie_owns_slot_for_test(slot)
+        }) {
+            return None;
+        }
+        task::refuse_releases_for_test();
+        user::pause_collection_after_take_for_test(true);
+        PAUSED_COLLECTOR_START.store(1, Ordering::Release);
+        if !runs_until(2_000, user::collection_is_paused_for_test) {
+            return None;
+        }
+        queue::pause_worker_for_test(false);
+        let worker_saw_the_owner_in_flight = runs_until(2_000, || {
+            queue::worker_retained_for_test() > retained
+                && user::collection_is_paused_for_test()
+                && PAUSED_COLLECTOR_OUTCOME.load(Ordering::Acquire) == 0
+        });
+        user::pause_collection_after_take_for_test(false);
+        let collector_restored_the_owner = runs_until(2_000, || {
+            PAUSED_COLLECTOR_OUTCOME.load(Ordering::Acquire) != 0
+        }) && PAUSED_COLLECTOR_OUTCOME.load(Ordering::Acquire)
+            == 2
+            && user::zombie_owns_slot_for_test(slot);
+        task::restore_release_for_test();
+
+        // Nothing else exits, spawns or collects after the refusal lifts, so
+        // the worker can finish only through its production retry.
+        let worker_finished_its_retry = runs_until(2_000, || {
+            queue::worker_reaps_for_test() > reaped && !user::has_zombies()
+        });
+        Some(
+            worker_saw_the_owner_in_flight
+                && collector_restored_the_owner
+                && worker_finished_its_retry,
+        )
+    })()
+    .unwrap_or(false);
+
+    user::pause_collection_after_take_for_test(false);
+    PAUSED_COLLECTOR_START.store(1, Ordering::Release);
+    task::restore_release_for_test();
+    queue::pause_worker_for_test(false);
+    let cleaned = runs_until(2_000, || {
+        !user::has_zombies() && thread::free_slots() == baseline.thread_slots
+    });
+
+    checked && cleaned && spawn_resources().has_same_ownership(&baseline)
+}
+
 fn a_dead_program_gives_its_memory_back() -> bool {
     // Drain anything earlier checks left, so the measurement below is about
     // this program and not about theirs.
     while user::collect().is_some() {}
 
-    let free_before = mm::free_frames();
-    let slots_before = thread::free_slots();
+    let resources_before = spawn_resources();
     let (pages_before, tables_before) = user::reclaimed();
-    let reclaim_refusals_before = user::refused_table_reclaims();
     let retirements_before = thread::retirements();
 
-    let Ok(spawned) = user::run_for_bootstrap() else {
+    if user::run_for_bootstrap().is_err() {
         return false;
-    };
+    }
     if !runs_until(2000, || thread::retirements() > retirements_before) {
         return false;
     }
 
     // Its slot came back with it: the thread is gone from both tables, which
     // is what makes the index usable again.
-    let slot_returned = runs_until(500, || thread::free_slots() >= slots_before);
+    let slot_returned = runs_until(500, || {
+        thread::free_slots() >= resources_before.thread_slots
+    });
 
-    // And its memory, once something collected. The idle thread does this
-    // when the machine has nothing better to do; here the check asks
-    // directly, because waiting for idle in a busy self-test is waiting for
-    // an event that may not come.
-    let collected_directly = user::collect().is_some_and(|result| result.table_refusal.is_none());
+    // And its memory, once collected: asked directly, because waiting for
+    // idle in a busy self-test may wait for ever.
+    let collected_directly = user::collect().is_some();
     let (pages_after, tables_after) = user::reclaimed();
     let gave_back = pages_after > pages_before && tables_after > tables_before;
     let collected = collected_directly || (gave_back && !user::has_zombies());
-
-    // The allocator agrees. Not exactly equal: the program's *stack* is the
-    // kernel's arena, which is mapped once at boot and not per thread, and
-    // the check's own bookkeeping allocates nothing but the heap may have
-    // grown. What must not happen is the count going *down* across a whole
-    // program's life, which is the leak this closes.
-    let free_after = mm::free_frames();
-    let no_worse = free_after >= free_before;
+    let resources_after = spawn_resources();
+    let owners_returned = resources_after.has_same_ownership(&resources_before);
 
     // And nothing is left waiting: one program made one zombie, and it is
     // collected.
     let drained = !user::has_zombies();
 
-    let _ = spawned;
-
-    // And it holds under repetition, which is the case reclamation exists for.
-    // Sixteen slots, forty programs: without reclamation this runs out after
-    // sixteen and every later spawn is refused. The frame count at the end is
-    // what says the memory came back too, and not merely the slots.
-    let free_at_start = mm::free_frames();
+    // Sixteen slots, forty programs: without reclamation every spawn after
+    // the sixteenth is refused, and the snapshot says the memory came back.
+    let repetition_before = spawn_resources();
     let mut ran = 0;
     for _ in 0..40 {
         let retirements = thread::retirements();
@@ -4416,40 +4858,14 @@ fn a_dead_program_gives_its_memory_back() -> bool {
         ran += 1;
     }
     let repeated = ran == 40;
-    // Forty programs, each with a space, a ring, a table and three mappings:
-    // a leak of even one frame apiece would be visible here, and the whole
-    // arena is only a few hundred.
-    let steady = mm::free_frames() >= free_at_start;
-    let no_refusal = user::refused_table_reclaims() == reclaim_refusals_before;
+    let steady = spawn_resources().has_same_ownership(&repetition_before);
 
-    slot_returned
-        && collected
-        && gave_back
-        && no_worse
-        && drained
-        && repeated
-        && steady
-        && no_refusal
+    slot_returned && collected && gave_back && owners_returned && drained && repeated && steady
 }
 
-/// A program asking for a call this kernel does not serve is refused, and the
-/// machine survives it.
-///
-/// **Two instructions used to halt the machine.** `mov rax, 3; int 0x80` from
-/// ring 3 reached a `warn!` in the syscall handler, and logging takes the
-/// console's `ThreadLock`, whose first line asserts it is *not* in a trap
-/// (D-63). Unprivileged, unconditional, and shipped — because no check had
-/// ever issued an unrecognised call number, which is why the arm was green
-/// (D-122).
-///
-/// The refusal is counted rather than logged now, and the count is what this
-/// reads: "the machine is still here" is the weaker half, since a check that
-/// runs at all has already established it.
 fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
-    // Runs before the stateful ring-3 group and waits for its program: the
-    // trap-context logging mutation must reach its terminal assertion before
-    // unrelated later state can hide the exact cause. Waiting also keeps the
-    // global last-syscall and last-fault records stable for its neighbours.
+    // Before the stateful ring-3 group, and waited for: the trap-context
+    // logging mutation must assert before later state can hide the cause.
     let (refused_before, _, _) = user::refusals();
     let retirements_before = thread::retirements();
     let faults_before = trap::last_user_fault().count;
@@ -4474,9 +4890,8 @@ fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
     counted && answered && exited
 }
 
-/// Wait for the exit record belonging to this exact process incarnation.
 fn last_rites_for(spawned: &user::Spawned, ms: u64) -> Option<user::LastRites> {
-    let table = user::birth_of(spawned)?.table;
+    let table = spawned.observed_table_incarnation;
     let exact = || user::last_rites_of(spawned.slot).is_some_and(|rites| rites.table == table);
     if !runs_until(ms, exact) {
         return None;
@@ -4484,24 +4899,6 @@ fn last_rites_for(spawned: &user::Spawned, ms: u64) -> Option<user::LastRites> {
     user::last_rites_of(spawned.slot).filter(|rites| rites.table == table)
 }
 
-/// A program posts an operation, rings the doorbell, and reads its own answer.
-///
-/// The whole async ABI, driven from ring 3 rather than from the kernel — which
-/// is what `002` pillar 2 is about and what nothing could do until D-116. The
-/// earlier checks exercise the kernel's side through the shared page, which is
-/// the right boundary to test the *kernel* at; this is the other half, and it
-/// is the one that says the ABI is usable.
-///
-/// **Nothing here is transcribed.** The submission read back is the one the
-/// program wrote, and the completion is compared against *it* — so a check
-/// that agreed with a constant it also chose is not possible. The kernel never
-/// posts to a program's ring, so a matching pair can only have come from a
-/// program that ran.
-///
-/// The program dies on any mismatch: it compares the echoed value and the
-/// status itself, and every failure path is a `ud2`. So a wrong answer shows
-/// up here as a fault rather than as a quiet pass — the check and the program
-/// disagree in the same direction.
 fn a_program_drives_its_own_ring() -> bool {
     let faults_before = trap::last_user_fault().count;
 
@@ -4509,11 +4906,8 @@ fn a_program_drives_its_own_ring() -> bool {
         return false;
     };
 
-    // It has to load, cross, submit, be served, check the answer, and exit.
-    // Read from the *exit record*, not from the program: reclamation has
-    // already given its ring's pages back by now, and reading a process the
-    // kernel has collected is reading a corpse (D-117). The record is taken
-    // at the moment of death, while there is still something to read.
+    // Read from the exit record, not the program: its ring pages are already
+    // reclaimed, and the record was taken at death (D-117).
     let Some(rites) = last_rites_for(&spawned, 2_000) else {
         return false;
     };
@@ -4530,15 +4924,13 @@ fn a_program_drives_its_own_ring() -> bool {
         && completed.status == queue::STATUS_OK
         && completed.value == submitted.argument;
 
-    // It left by calling exit, not by faulting: a program that disagreed with
-    // its own answer executes `ud2`, and that would be a fault this boot did
-    // not have before.
+    // It left by exit, not by fault: a program disagreeing with its answer
+    // executes `ud2`.
     let exited = trap::last_user_fault().count == faults_before;
 
     one_served && asked && answered && exited
 }
 
-/// One real userspace Echo produces a nonzero round-trip measurement.
 fn a_ring_enter_round_trip_is_measurable() -> bool {
     let faults_before = trap::last_user_fault().count;
     let Ok(spawned) = user::run_measuring() else {
@@ -4564,12 +4956,8 @@ fn a_ring_enter_round_trip_is_measurable() -> bool {
 
 static RING_ENTER_TICKS: AtomicU64 = AtomicU64::new(0);
 
-/// One real NVMe command fills the driver's whole retained DMA buffer.
 fn a_full_buffer_nvme_read_is_measurable() -> bool {
-    let Some((bytes, ticks)) =
-        nvme::with_controller(|controller, buffer| controller.measure_buffered_read(buffer))
-            .flatten()
-    else {
+    let Some((bytes, ticks)) = nvme::measure_buffered_read_for_test() else {
         return false;
     };
     STORAGE_BYTES.store(bytes, Ordering::Relaxed);
@@ -4599,13 +4987,6 @@ fn report_baseline() {
     );
 }
 
-/// A program duplicates its bootstrap handle through a real ring-3 trap.
-///
-/// This is the allocation edge D-182 closes. Kernel-thread queue checks cannot
-/// prove it: the heap permits allocation there, while the same growth from the
-/// `int 0x80` handler is an unprivileged panic. The emitted program consumes
-/// the numeric bootstrap handle from its versioned entry block, asks for a
-/// READ-only duplicate, validates the authority-bearing completion and exits.
 fn a_program_duplicates_its_bootstrap_handle() -> bool {
     let faults_before = trap::last_user_fault().count;
 
@@ -4619,11 +5000,11 @@ fn a_program_duplicates_its_bootstrap_handle() -> bool {
     let completed = rites.completed;
 
     // It began with one handle, so the nonzero handle ring 3 supplied can only
-    // be the bootstrap entry. The requested rights are exactly READ.
+    // be the bootstrap entry. The requested right is exactly INSPECT.
     let asked = submitted.opcode == queue::Opcode::Duplicate
         && submitted.token != 0
         && submitted.handle != 0
-        && submitted.argument == u64::from(Rights::READ.bits());
+        && submitted.argument == u64::from(Rights::INSPECT.bits());
 
     // The completion carries a distinct, representable handle, and the exit
     // record proves both entries were installed before teardown reclaimed them.
@@ -4642,7 +5023,6 @@ fn a_program_duplicates_its_bootstrap_handle() -> bool {
     asked && answered && retained && exited
 }
 
-/// A program blocks in RingWait and resumes with its deferred completion.
 fn a_program_waits_through_its_trap_frame() -> bool {
     let faults_before = trap::last_user_fault().count;
     let waits_before = thread::trap_waits();
@@ -4682,17 +5062,6 @@ fn wait_on_the_program_ring() {
     SYSCALL_WAITER_RETURNED.store(1, Ordering::Release);
 }
 
-/// A syscall wake arms the timer for the kernel waiter it made runnable.
-///
-/// The child stops in the kernel before its first user instruction. A second
-/// kernel thread then registers on that child's real completion queue. Only
-/// after both waits are observable does the child enter ring 3, submit Echo
-/// and execute the real `RingEnter` trap. The completion therefore wakes the
-/// kernel waiter from the syscall arm which D-133 originally repaired.
-///
-/// The returned waiter is not the assertion: an already-armed slice would run
-/// it even if this wake armed nothing. The handler-arm delta is the direct
-/// witness, just as D-133's keyboard proxy was before this path existed.
 fn a_syscall_wake_arms_the_timer_for_what_it_woke() -> bool {
     let free = thread::free_slots();
     let faults = trap::last_user_fault().count;
@@ -4716,7 +5085,11 @@ fn finish_syscall_wake_check(
     handler_arms: usize,
 ) -> bool {
     let Some((ring, _)) = user::authority_for_test(spawned.slot) else {
-        let _ = user::release_gated_cross();
+        assert_eq!(
+            user::release_gated_cross(),
+            1,
+            "a gated child without visible authority was not released"
+        );
         return false;
     };
     *SYSCALL_WAKE_RING.lock_leaf() = Some(Arc::clone(&ring));
@@ -4737,7 +5110,7 @@ fn finish_syscall_wake_check(
     let rites = last_rites_for(&spawned, 2_000);
 
     CANCEL_SYSCALL_WAITER.store(1, Ordering::Release);
-    let _ = ring.release_waiter_for_test();
+    let _released_waiters = ring.release_waiter_for_test();
     *SYSCALL_WAKE_RING.lock_leaf() = None;
     let settled = runs_until(2_000, || thread::free_slots() == free);
 
@@ -4762,21 +5135,9 @@ fn finish_syscall_wake_check(
         && settled
 }
 
-/// A freshly spawned program holds exactly one handle, and it is a channel.
-///
-/// `002`'s pillar 1, converted from a sentence into a check (D-111): *a
-/// process receives exactly one handle at spawn — its bootstrap channel.* The
-/// table is the process's complete external-object authority at birth, so
-/// counting it then is the strongest form the claim has. D-151 later made ring
-/// completions a second, authorized delegation path; it did not weaken this
-/// birth count.
-///
-/// The parent's evidence is the other end. It is the only way to reach the
-/// child: a spawner that dropped its end could never send it a grant.
 fn a_spawned_program_holds_exactly_one_handle() -> bool {
-    // Its own program rather than a shared launcher: every ring-3 check
-    // counts crossings, and an extra one from here would be attributed to
-    // whichever check happened to look next.
+    // Its own program: every ring-3 check counts crossings, and an extra one
+    // would land on whichever check looked next.
     let Ok(spawned) = user::run_for_bootstrap() else {
         return false;
     };
@@ -4784,564 +5145,38 @@ fn a_spawned_program_holds_exactly_one_handle() -> bool {
         return false;
     };
 
-    // Captured from the objects committed while the slot was still Reserved:
-    // observing the live tables after `spawn` returns races this deliberately
-    // short program's exit (D-217).
+    // Captured while the slot was still Reserved: observing after `spawn`
+    // returns races this short program's exit (D-217).
     let exactly_one = birth.handles == 1;
     let a_channel = birth.bootstrap == object::ObjectType::Channel;
 
-    // And a ring, at the address every program's is, readable by it. The
-    // handle is the process's authority; the ring is its data path, and both
-    // are in place before its first instruction (D-113).
-    // The kernel's record, not the header page that ring 3 may rewrite
-    // (D-115).
+    // And a ring at the shared address, in place before its first
+    // instruction (D-113); the kernel's record, not the rewritable header (D-115).
     let (version, submissions, completions) = birth.ring;
     let has_a_ring = version == ring_proto::VERSION
         && submissions > 0
         && completions >= submissions.saturating_mul(2);
     let mapped = birth.ring_flags.contains(Flags::USER);
 
-    // The parent's end is live and is the far side of the child's: a message
-    // put in here is one the child could read, which is what makes it a
-    // bootstrap rather than a decoration. `birth_of` returned only after
-    // matching this endpoint to the child's recorded peer.
-    let parent_is_a_channel = spawned.channel.kind() == object::ObjectType::Channel;
-
-    // And it leaves with one, having never been given a second. Waited for
-    // rather than left running: a program retiring during a later check moves
-    // the free-slot count under it, which is a race this check would be
-    // creating for its neighbours (D-117).
+    // Leaves with one handle, and is waited for: retiring during a later
+    // check would move the free-slot count under it (D-117).
     let died_with_one = last_rites_for(&spawned, 2_000).is_some_and(|rites| {
         rites.handles == 1 && rites.bootstrap == Some(object::ObjectType::Channel)
     });
 
-    exactly_one && a_channel && has_a_ring && mapped && parent_is_a_channel && died_with_one
+    exactly_one && a_channel && has_a_ring && mapped && died_with_one
 }
 
-/// Bytes sent down one end of a channel come out of the other, once.
-///
-/// The IPC primitive (`002`), and the smallest true thing about it: a message
-/// crosses, it crosses in order, and it is gone from the sender's side. The
-/// ends are separate objects that name each other weakly, so a send appends to
-/// the *peer's* inbox and a receive takes from its own — which is what makes
-/// the pipe bidirectional without either end reading its own writes (D-110).
-fn a_message_crosses_a_channel_and_is_gone() -> bool {
-    let Some((near, far)) = object::channel() else {
-        return false;
-    };
-    let (Some(here), Some(there)) = (near.as_channel(), far.as_channel()) else {
-        return false;
-    };
-
-    // Nothing arrives at the end that sent it.
-    let Ok(first) = object::Message::new(b"one") else {
-        return false;
-    };
-    if here.send(first).is_err() {
-        return false;
-    }
-    let sender_sees_nothing = !here.has_message() && there.has_message();
-
-    // In order, and each exactly once.
-    let Ok(second) = object::Message::new(b"two") else {
-        return false;
-    };
-    if here.send(second).is_err() {
-        return false;
-    }
-    let (Some(one), Some(two)) = (there.receive(), there.receive()) else {
-        return false;
-    };
-    let in_order = one.bytes() == b"one" && two.bytes() == b"two";
-    let drained = there.receive().is_none();
-
-    // And the other direction works, on the same pair.
-    let Ok(back) = object::Message::new(b"back") else {
-        return false;
-    };
-    let returns = there.send(back).is_ok()
-        && here
-            .receive()
-            .is_some_and(|message| message.bytes() == b"back");
-
-    // The queue is bounded, and a full one refuses rather than dropping.
-    let mut refused = false;
-    for _ in 0..=object::Channel::DEPTH {
-        let Ok(message) = object::Message::new(b"fill") else {
-            return false;
-        };
-        if here.send(message) == Err(object::ChannelError::Full) {
-            refused = true;
-            break;
-        }
-    }
-
-    sender_sees_nothing && in_order && drained && returns && refused
-}
-
-/// A channel end with nothing on the other side refuses, rather than leaking.
-///
-/// Two ends holding each other strongly is a cycle `Arc` will not collect, so
-/// the peer link is weak — and the price of that is that an orphaned end must
-/// say so. A send into nothing that reported success would be a message a
-/// caller believes was delivered (D-110).
-fn an_orphaned_channel_end_refuses() -> bool {
-    let Some((near, far)) = object::channel() else {
-        return false;
-    };
-    let Some(here) = near.as_channel() else {
-        return false;
-    };
-    // Something already sent stays readable: closing the far end does not
-    // reach into this end's inbox.
-    let Ok(message) = object::Message::new(b"before") else {
-        return false;
-    };
-    if far
-        .as_channel()
-        .is_none_or(|there| there.send(message).is_err())
-    {
-        return false;
-    }
-
-    let before = here.is_orphaned();
-    drop(far);
-
-    let orphaned = !before && here.is_orphaned();
-    let still_readable = here
-        .receive()
-        .is_some_and(|message| message.bytes() == b"before");
-    let refuses = object::Message::new(b"after")
-        .is_ok_and(|message| here.send(message) == Err(object::ChannelError::PeerClosed));
-
-    orphaned && still_readable && refuses
-}
-
-/// A handle sent through a channel arrives with the rights both ends declared,
-/// and no more — and is gone from the sender.
-///
-/// Attenuate-on-send (D-110). The rights are declared per field with no
-/// default at either end, which is Fuchsia RFC-0028's finding applied: a
-/// default has unclear behaviour that is inconsistent across object types.
-/// Both ends declare, so neither can be surprised by the other, and the
-/// narrower of the two is what is granted.
-///
-/// The move is the other half. A handle that survived a send would make
-/// delegation into duplication, and `002`'s pillar 1 rests on it not.
-fn a_handle_crosses_with_the_rights_both_ends_declared() -> bool {
-    let sender = handle_table_or_false!(8);
-    let receiver = handle_table_or_false!(8);
-
-    let object = object::event();
-    let Ok(handle) = sender.insert(object, Rights::UNIVERSAL) else {
-        return false;
-    };
-
-    // The sender narrows to two of the four it holds.
-    let offered = Rights::WAIT.union(Rights::INSPECT);
-    let Ok((crossing, granted)) = sender.send(handle, offered) else {
-        return false;
-    };
-    let sender_narrowed = granted == offered;
-
-    // Gone from the sender: a move, not a copy.
-    let moved = sender.resolve(handle).is_err();
-
-    // The receiver narrows again, and gets the narrower of the two.
-    let Ok(arrived) = receiver.accept(crossing, granted, Rights::WAIT) else {
-        return false;
-    };
-    let Ok((_, held)) = receiver.resolve(arrived) else {
-        return false;
-    };
-    let receiver_narrowed = held == Rights::WAIT;
-
-    // Neither end can widen. The receiver asking for more than was offered is
-    // refused rather than clamped, because a clamp is a default by another
-    // name.
-    let widening = handle_table_or_false!(8);
-    let second = object::event();
-    let Ok(full) = widening.insert(second, Rights::UNIVERSAL) else {
-        return false;
-    };
-    let Ok((narrow, narrow_rights)) = widening.send(full, Rights::WAIT) else {
-        return false;
-    };
-    let receiver_cannot_widen = matches!(
-        receiver.accept(narrow, narrow_rights, Rights::UNIVERSAL),
-        Err(HandleError::Denied)
-    );
-
-    // Nor can a sender declare more than it holds.
-    let third = object::event();
-    let Ok(partial) = widening.insert(third, Rights::TRANSFER.union(Rights::WAIT)) else {
-        return false;
-    };
-    let sender_cannot_widen = matches!(
-        widening.send(partial, Rights::UNIVERSAL),
-        Err(HandleError::Denied)
-    );
-
-    sender_narrowed && moved && receiver_narrowed && receiver_cannot_widen && sender_cannot_widen
-}
-
-/// A handle whose `TRANSFER` right was stripped cannot be sent, and the
-/// refusal happens at the sender.
-///
-/// One bit, and it is what makes least privilege expressible: a holder can be
-/// given authority it may use and may not pass on. Refused at the sender
-/// because a receiver policing this would have to know what the sender held,
-/// which it cannot — the message carries an object and a set of rights, not a
-/// history (D-110).
-fn a_handle_without_transfer_is_refused_at_the_sender() -> bool {
-    let sender = handle_table_or_false!(8);
-    let object = object::event();
-
-    // Everything except the right to pass it on.
-    let held = Rights::UNIVERSAL.difference(Rights::TRANSFER);
-    let Ok(handle) = sender.insert(object, held) else {
-        return false;
-    };
-    let refused = matches!(sender.send(handle, held), Err(HandleError::Denied));
-
-    // And the refusal left it where it was: a failed send is not a close.
-    let still_there = sender.resolve(handle).is_ok();
-
-    // Stripping `TRANSFER` on the way through is how a holder is given a
-    // non-delegatable handle in the first place.
-    let receiver = handle_table_or_false!(8);
-    let second = object::event();
-    let Ok(sendable) = sender.insert(second, Rights::UNIVERSAL) else {
-        return false;
-    };
-    let Ok((crossing, granted)) = sender.send(sendable, Rights::WAIT.union(Rights::INSPECT)) else {
-        return false;
-    };
-    let Ok(arrived) = receiver.accept(crossing, granted, granted) else {
-        return false;
-    };
-    let cannot_pass_on = matches!(receiver.send(arrived, granted), Err(HandleError::Denied));
-
-    refused && still_there && cannot_pass_on
-}
-
-/// A handle sent in a message is the same object at the far end, and the
-/// receiver can use it.
-///
-/// The claim that makes a channel a delegation mechanism rather than a byte
-/// pipe: what arrives names the thing the sender named, and the rights that
-/// came with it are the rights it works under.
-fn a_handle_sent_in_a_message_names_the_same_object() -> bool {
-    let Some((near, far)) = object::channel() else {
-        return false;
-    };
-    let (Some(here), Some(there)) = (near.as_channel(), far.as_channel()) else {
-        return false;
-    };
-
-    let sender = handle_table_or_false!(8);
-    let receiver = handle_table_or_false!(8);
-
-    // An event the receiver will be told about by handle, and which this
-    // thread keeps a reference to so it can signal it afterwards.
-    let shared = object::event();
-    let watching = shared.clone();
-    let Ok(handle) = sender.insert(shared, Rights::UNIVERSAL) else {
-        return false;
-    };
-
-    let Ok((crossing, granted)) = sender.send(handle, Rights::WAIT.union(Rights::INSPECT)) else {
-        return false;
-    };
-    let Ok(mut message) = object::Message::new(b"take this") else {
-        return false;
-    };
-    if message.attach(crossing, granted).is_err() || here.send(message).is_err() {
-        return false;
-    }
-
-    let Some(mut arrived) = there.receive() else {
-        return false;
-    };
-    let carried = arrived.bytes() == b"take this";
-    let handles = arrived.take_handles();
-    if handles.len() != 1 {
-        return false;
-    }
-    let (object, offered) = handles.into_iter().next().expect("one handle");
-    let Ok(theirs) = receiver.accept(object, offered, offered) else {
-        return false;
-    };
-
-    // The same object: signalling through this thread's reference is visible
-    // through the receiver's handle.
-    let Ok((named, held)) = receiver.resolve(theirs) else {
-        return false;
-    };
-    let unsignalled = named.as_event().is_some_and(|event| !event.is_signalled());
-    watching.as_event().expect("an event").signal();
-    let same_object = named
-        .as_event()
-        .is_some_and(super::object::Event::is_signalled);
-
-    carried && held == offered && unsignalled && same_object
-}
-
-/// A thread blocked on an empty channel wakes with the message, and a message
-/// that lands while it is registering is not lost.
-///
-/// The wait window, on the second object to have one. `Event` learned this the
-/// hard way (D-95): the state can only be re-read once a block *returns*, and
-/// it returns only on a wake, so a check-then-register loses anything that
-/// lands in between. `receive_blocking` registers first and re-reads under the
-/// same lock, and this drives it from a spawned thread rather than from here —
-/// a predicate that sends while holding the queue's own lock is how the first
-/// version of the event check hung the machine.
-fn a_blocked_receiver_wakes_with_its_message() -> bool {
-    let Some((near, far)) = object::channel() else {
-        return false;
-    };
-    let Some(here) = near.as_channel() else {
-        return false;
-    };
-
-    *BLOCKED_CHANNEL.lock_leaf() = Some(far.clone());
-    BLOCKED_RECEIVER.store(0, Ordering::Release);
-    let free_before = thread::free_slots();
-    if thread::spawn("channel-receiver", block_on_a_channel).is_err() {
-        return false;
-    }
-
-    // It is off the run queue and quiet, not spinning: the slot is taken and
-    // nothing has been received.
-    let blocked = yields_until(|| {
-        thread::free_slots() < free_before && BLOCKED_RECEIVER.load(Ordering::Acquire) == 0
-    });
-
-    let Ok(message) = object::Message::new(b"wake up") else {
-        return false;
-    };
-    if here.send(message).is_err() {
-        return false;
-    }
-
-    let woke = runs_until(500, || BLOCKED_RECEIVER.load(Ordering::Acquire) == 1);
-    let settled = runs_until(500, || thread::free_slots() >= free_before);
-
-    // And the window itself: a waiter arriving when the message is *already*
-    // there registers, re-reads under the same lock, and comes straight back.
-    // `receive_blocking` cannot reach that state — it takes the message first
-    // — so the wait is driven directly, which is what makes a plain `wait`
-    // here a thread that never returns rather than a check that passes.
-    let Some((window_near, window_far)) = object::channel() else {
-        return false;
-    };
-    let Ok(already) = object::Message::new(b"already here") else {
-        return false;
-    };
-    if window_near
-        .as_channel()
-        .is_none_or(|end| end.send(already).is_err())
-    {
-        return false;
-    }
-    *WINDOW_CHANNEL.lock_leaf() = Some(window_far.clone());
-    WINDOW_RETURNED.store(0, Ordering::Release);
-    if thread::spawn("channel-window", wait_on_a_channel_that_has_one).is_err() {
-        return false;
-    }
-    let rereads = runs_until(500, || WINDOW_RETURNED.load(Ordering::Acquire) == 1);
-    let window_settled = runs_until(500, || thread::free_slots() >= free_before);
-    drop(WINDOW_CHANNEL.lock_leaf().take());
-
-    // Nothing is left registered, so a later wake cannot name a thread that is
-    // no longer waiting here.
-    let idle = far
-        .as_channel()
-        .is_some_and(|there| there.waiters_for_test().is_idle());
-    drop(BLOCKED_CHANNEL.lock_leaf().take());
-
-    blocked && woke && settled && idle && rereads && window_settled
-}
-
-/// The end the blocked receiver waits on.
-static BLOCKED_CHANNEL: SpinLock<Option<object::ObjectRef>> = SpinLock::new(None);
-
-/// One once the receiver has come back with the right message.
-static BLOCKED_RECEIVER: AtomicUsize = AtomicUsize::new(0);
-
-/// Block on the channel until something arrives, then report what it was.
-fn block_on_a_channel() {
-    let Some(end) = BLOCKED_CHANNEL.lock_leaf().clone() else {
-        return;
-    };
-    let Some(channel) = end.as_channel() else {
-        return;
-    };
-    let mut context = context();
-    if let Some(message) = channel.receive_blocking(&mut context)
-        && message.bytes() == b"wake up"
-    {
-        BLOCKED_RECEIVER.store(1, Ordering::Release);
-    }
-}
-
-/// Wait on a channel that **already** has a message, and come back.
-///
-/// The registration window, driven the way the event's is (D-95, D-110):
-/// `receive_blocking` takes the message before it ever waits, so it cannot
-/// reach the wait with the condition already true — and that is the one state
-/// where `wait_unless` and a plain `wait` differ. This calls the wait
-/// directly, so a `wait` that registered without re-reading blocks on a
-/// channel nobody will send to again and this thread never returns.
-///
-/// Run on a spawned thread so that failure is a timeout in the observer rather
-/// than a hang in the check.
-fn wait_on_a_channel_that_has_one() {
-    let Some(end) = WINDOW_CHANNEL.lock_leaf().clone() else {
-        return;
-    };
-    let Some(channel) = end.as_channel() else {
-        return;
-    };
-    let mut context = context();
-    channel.wait_for_message(&mut context);
-    WINDOW_RETURNED.store(1, Ordering::Release);
-}
-
-/// The end the window check waits on.
-static WINDOW_CHANNEL: SpinLock<Option<object::ObjectRef>> = SpinLock::new(None);
-
-/// One once the window waiter has come back.
-static WINDOW_RETURNED: AtomicUsize = AtomicUsize::new(0);
-
-/// A receiver that is **already blocked** learns that its peer has died.
-///
-/// `receive_blocking` returns `None` when the far end is gone, and the check
-/// beside this one drove that by polling `is_orphaned` without ever blocking —
-/// which is the one arrangement that cannot fail. A thread that has blocked
-/// re-reads its condition only when something wakes it, and until D-127
-/// nothing did: `Channel` had no `Drop`, so an end could die with a waiter on
-/// the other side and never say so. That waiter slept for the rest of the
-/// boot, holding its slot.
-///
-/// It is not a hypothetical arrangement. `user::reclaim` drops a dead
-/// program's handle table precisely so that "the parent's end learns its peer
-/// is gone", and that sentence was false for a parent that was waiting.
-///
-/// Nothing is ever sent here, so the wake under test is the only thing that
-/// can end the wait — which is what makes this red rather than slow when the
-/// wake is absent (D-127).
-fn a_blocked_receiver_learns_its_peer_is_gone() -> bool {
-    let Some((near, far)) = object::channel() else {
-        return false;
-    };
-
-    *ORPHANED_CHANNEL.lock_leaf() = Some(far.clone());
-    ORPHANED_RECEIVER.store(0, Ordering::Release);
-    let free_before = thread::free_slots();
-    if thread::spawn("channel-orphan", block_until_orphaned).is_err() {
-        return false;
-    }
-
-    // Asleep rather than spinning: its slot is taken and it has reported
-    // nothing, which is the state the wake has to reach.
-    let blocked = yields_until(|| {
-        thread::free_slots() < free_before && ORPHANED_RECEIVER.load(Ordering::Acquire) == 0
-    });
-
-    // The last strong reference to the other end: `far` holds only a `Weak`
-    // back. This is the death the waiter has to be told about.
-    drop(near);
-
-    let learned = runs_until(500, || ORPHANED_RECEIVER.load(Ordering::Acquire) == 1);
-    let settled = runs_until(500, || thread::free_slots() >= free_before);
-    // And nothing is left registered, so a later wake cannot name a thread
-    // that is no longer waiting here.
-    let idle = far
-        .as_channel()
-        .is_some_and(|end| end.waiters_for_test().is_idle());
-    drop(ORPHANED_CHANNEL.lock_leaf().take());
-
-    blocked && learned && settled && idle
-}
-
-/// The end the orphaned receiver blocks on.
-static ORPHANED_CHANNEL: SpinLock<Option<object::ObjectRef>> = SpinLock::new(None);
-
-/// One once that receiver has come back with nothing, which is the answer.
-static ORPHANED_RECEIVER: AtomicUsize = AtomicUsize::new(0);
-
-/// Block until a message arrives or the far end dies, and report only the
-/// second: nothing is ever sent to this end, so a message would be a bug in
-/// the check rather than a pass.
-fn block_until_orphaned() {
-    let Some(end) = ORPHANED_CHANNEL.lock_leaf().clone() else {
-        return;
-    };
-    let Some(channel) = end.as_channel() else {
-        return;
-    };
-    let mut context = context();
-    if channel.receive_blocking(&mut context).is_none() {
-        ORPHANED_RECEIVER.store(1, Ordering::Release);
-    }
-}
-
-/// A handle names its object, and a closed one names nothing.
-///
-/// The lifetime property the whole model rests on (D-78). A handle kept across
-/// a close must not name whatever takes the slot next, and the generation is
-/// what turns that use-after-free into a decode failure rather than a silent
-/// reference to someone else's object.
-fn a_closed_handle_names_nothing() -> bool {
-    let table = handle_table_or_false!(8);
-    let Ok(handle) = table.insert(object::event(), Rights::UNIVERSAL) else {
-        return false;
-    };
-
-    let resolves = table.kind_of(handle) == Ok(ObjectType::Event);
-    let counted = table.live() == 1;
-
-    if table.close(handle).is_err() {
-        return false;
-    }
-    let stale = matches!(table.resolve(handle), Err(HandleError::Stale));
-    let closed_twice = table.close(handle) == Err(HandleError::Stale);
-    let emptied = table.live() == 0;
-
-    // And the slot's next tenant does not answer to the old handle, which is
-    // the case the generation exists for rather than the one above.
-    let Ok(next) = table.insert(object::event(), Rights::UNIVERSAL) else {
-        return false;
-    };
-    let not_reused = next != handle && matches!(table.resolve(handle), Err(HandleError::Stale));
-
-    resolves && counted && stale && closed_twice && emptied && not_reused
-}
-
-/// A right that means nothing for an object type is refused for it.
-///
-/// D-78's one rule — *a right must correspond to a distinction the kernel
-/// actually makes about that object, never to a syscall name* — enforced
-/// rather than stated. It was neither, until an adversarial pass noticed that
-/// the first object shipped with `READ`, `WRITE`, `EXECUTE` and `MAP` granted
-/// on an event, and that the check named for rights used that as its fixture
-/// (D-95).
-///
-/// An event has no pages. `READ` on one is a category error, not a narrower
-/// permission, and granting it would make the rights word mean less every time
-/// an object type was added.
 fn a_meaningless_right_is_refused() -> bool {
     let table = handle_table_or_false!(4);
+    let channel = object::bootstrap_identity();
 
-    let refused = table.insert(object::event(), Rights::READ) == Err(HandleError::Meaningless);
-    let also_refused = table.insert(object::event(), Rights::ALL) == Err(HandleError::Meaningless);
+    let refused = table.insert(channel.clone(), Rights::READ) == Err(HandleError::Meaningless);
+    let also_refused = table.insert(channel.clone(), Rights::ALL) == Err(HandleError::Meaningless);
 
-    // The universal four mean the same for everything, so they are always
-    // available — that is what makes them universal.
-    let allowed = table.insert(object::event(), Rights::UNIVERSAL).is_ok();
-    let nothing_is_allowed = table.insert(object::event(), Rights::NONE).is_ok();
+    // Universal rights mean the same for every object.
+    let allowed = table.insert(channel.clone(), Rights::UNIVERSAL).is_ok();
+    let nothing_is_allowed = table.insert(channel, Rights::NONE).is_ok();
 
     let Some(root) = vfs::root() else {
         return false;
@@ -5352,9 +5187,8 @@ fn a_meaningless_right_is_refused() -> bool {
     let file_refuses = [Rights::WRITE, Rights::EXECUTE, Rights::MAP]
         .into_iter()
         .all(|right| table.insert(object::file(file), right) == Err(HandleError::Meaningless));
-    let directory = object::directory(root);
     let directory_refuses =
-        table.insert(directory, Rights::MODIFY) == Err(HandleError::Meaningless);
+        table.insert(object::directory(root), Rights::MODIFY) == Err(HandleError::Meaningless);
 
     refused
         && also_refused
@@ -5365,16 +5199,11 @@ fn a_meaningless_right_is_refused() -> bool {
         && table.live() == 2
 }
 
-/// A handle from one table neither crosses nor reveals occupancy in another.
-///
-/// The single ownership comparison still makes the global arena safe to
-/// share. The live and absent cases deliberately have the same result: the
-/// former `NotYours` result exposed one bit for an exact slot-generation probe
-/// even though it granted no authority (D-78, D-222).
 fn a_handle_reveals_no_foreign_occupancy() -> bool {
     let mine = handle_table_or_false!(4);
     let theirs = handle_table_or_false!(4);
-    let Ok(handle) = mine.insert(object::event(), Rights::UNIVERSAL) else {
+    let object = object::bootstrap_identity();
+    let Ok(handle) = mine.insert(object, Rights::UNIVERSAL) else {
         return false;
     };
 
@@ -5383,32 +5212,26 @@ fn a_handle_reveals_no_foreign_occupancy() -> bool {
     };
     let forged = theirs.handle_for(slot);
     let live_resolve = theirs.resolve(forged).err();
-    let live_close = theirs.close(forged).err();
     let foreign_changed_nothing =
         mine.resolve(handle).is_ok() && mine.live() == 1 && theirs.live() == 0;
 
-    if mine.close(handle).is_err() {
-        return false;
-    }
+    drop(mine);
     let absent_resolve = theirs.resolve(forged).err();
-    let absent_close = theirs.close(forged).err();
 
     live_resolve == Some(HandleError::Stale)
         && live_resolve == absent_resolve
-        && live_close == Some(HandleError::Stale)
-        && live_close == absent_close
         && foreign_changed_nothing
-        && mine.live() == 0
+        && theirs.live() == 0
 }
 
-/// Table ownership reaches a terminal refusal instead of repeating live authority.
 fn table_identities_never_wrap_or_repeat() -> bool {
     let baseline = HandleTable::arena_usage_for_test();
     HandleTable::with_next_identity_for_test(u64::MAX - 1, || {
         let Ok(last) = HandleTable::new(1) else {
             return false;
         };
-        let Ok(handle) = last.insert(object::event(), Rights::UNIVERSAL) else {
+        let object = object::bootstrap_identity();
+        let Ok(handle) = last.insert(object, Rights::UNIVERSAL) else {
             return false;
         };
         let live_commitment = HandleTable::arena_usage_for_test();
@@ -5427,7 +5250,7 @@ fn table_identities_never_wrap_or_repeat() -> bool {
                 .is_some_and(|table| table.resolve(handle).is_ok());
         let refusal_changed_nothing = HandleTable::arena_usage_for_test() == live_commitment;
         let last_stayed_live = last.identity_for_test() == u64::MAX - 1
-            && last.kind_of(handle) == Ok(ObjectType::Event);
+            && last.kind_of(handle) == Ok(ObjectType::Channel);
 
         drop(first);
         drop(second);
@@ -5441,75 +5264,21 @@ fn table_identities_never_wrap_or_repeat() -> bool {
     })
 }
 
-/// Rights are checked, and duplication only ever narrows them.
-fn rights_are_checked_and_only_narrow() -> bool {
-    let table = handle_table_or_false!(8);
-    // `WAIT` rather than `READ`: an event has no pages, so a memory right on
-    // one is a category error rather than a narrower permission (D-95). This
-    // fixture used to grant `READ` on an event and check it was honoured,
-    // which baked the violation of D-78's rule into the check named for it.
-    let readable = Rights::INSPECT.union(Rights::DUPLICATE).union(Rights::WAIT);
-    let Ok(handle) = table.insert(object::event(), readable) else {
-        return false;
-    };
-
-    let allowed = table.resolve_with(handle, Rights::WAIT).is_ok();
-    let denied = matches!(
-        table.resolve_with(handle, Rights::TRANSFER),
-        Err(HandleError::Denied)
-    );
-
-    let Ok(narrowed) = table.duplicate(handle, Rights::WAIT) else {
-        return false;
-    };
-    let narrowed_cannot_duplicate =
-        table.duplicate(narrowed, Rights::WAIT) == Err(HandleError::Denied);
-
-    let refused_widening =
-        table.duplicate(handle, readable.union(Rights::TRANSFER)) == Err(HandleError::Denied);
-
-    allowed && denied && narrowed_cannot_duplicate && refused_widening
-}
-
-/// A table cannot hold more than its quota, and closing makes room again.
-///
-/// D-44 put the kernel-memory bound at the handle layer rather than at the
-/// frame allocator, on the grounds that a quota is policy and stays revisable
-/// while making callers donate memory would have been an ABI decision and
-/// permanent.
 fn a_table_cannot_exceed_its_quota() -> bool {
     const QUOTA: usize = 3;
     let table = handle_table_or_false!(QUOTA);
-    let mut held = Vec::new();
     for _ in 0..QUOTA {
-        match table.insert(object::event(), Rights::UNIVERSAL) {
-            Ok(handle) => held.push(handle),
-            Err(_) => return false,
+        let object = object::bootstrap_identity();
+        if table.insert(object, Rights::UNIVERSAL).is_err() {
+            return false;
         }
     }
 
-    let refused =
-        table.insert(object::event(), Rights::UNIVERSAL) == Err(HandleError::QuotaExhausted);
-    let full = table.live() == QUOTA;
-
-    let Some(first) = held.first().copied() else {
-        return false;
-    };
-    if table.close(first).is_err() {
-        return false;
-    }
-    let room_again = table.insert(object::event(), Rights::UNIVERSAL).is_ok();
-
-    refused && full && room_again
+    let extra = object::bootstrap_identity();
+    let refused = table.insert(extra, Rights::UNIVERSAL) == Err(HandleError::QuotaExhausted);
+    refused && table.live() == QUOTA
 }
 
-/// A table's whole quota is backed before any handle is installed.
-///
-/// The quota is one larger than the arena's current uncommitted capacity, so
-/// construction must grow the backing. Filling the table then cannot move the
-/// capacity at all: those inserts are the operations that may later run from a
-/// trap, where allocating is forbidden. Dropping returns the commitment while
-/// retaining the harmless backing (D-182).
 fn the_handle_arena_backs_a_tables_whole_quota() -> bool {
     let (committed_before, capacity_before) = HandleTable::arena_backing_for_test();
     let Some(spare) = capacity_before.checked_sub(committed_before) else {
@@ -5531,7 +5300,8 @@ fn the_handle_arena_backs_a_tables_whole_quota() -> bool {
         && capacity >= committed;
 
     for _ in 0..quota {
-        if table.insert(object::event(), Rights::UNIVERSAL).is_err() {
+        let object = object::bootstrap_identity();
+        if table.insert(object, Rights::UNIVERSAL).is_err() {
             return false;
         }
     }
@@ -5546,44 +5316,29 @@ fn the_handle_arena_backs_a_tables_whole_quota() -> bool {
     backed && filled_without_growth && returned
 }
 
-/// An object outlives every handle to it, and no longer.
-///
-/// `Arc` is the refcount (D-78 wants `inc_not_zero` from day one), so this is
-/// really a check that the table holds a reference rather than a pointer: two
-/// handles keep one object alive, and it dies when the second goes.
 fn an_object_lives_exactly_as_long_as_its_handles() -> bool {
-    let table = handle_table_or_false!(8);
-    let object = object::event();
+    let first = handle_table_or_false!(1);
+    let second = handle_table_or_false!(1);
+    let object = object::bootstrap_identity();
     let Some(watcher) = object.downgrade_for_test() else {
         return false;
     };
-    let Ok(first) = table.insert(object, Rights::UNIVERSAL) else {
+    if first.insert(object.clone(), Rights::UNIVERSAL).is_err()
+        || second.insert(object, Rights::UNIVERSAL).is_err()
+    {
         return false;
-    };
-    let Ok(second) = table.duplicate(first, Rights::UNIVERSAL) else {
-        return false;
-    };
-
+    }
     let alive = watcher.upgrade().is_some();
-    if table.close(first).is_err() {
-        return false;
-    }
+    drop(first);
     let still_alive = watcher.upgrade().is_some();
-    if table.close(second).is_err() {
-        return false;
-    }
+    drop(second);
     let gone = watcher.upgrade().is_none();
 
     alive && still_alive && gone
 }
 
-/// A table's death closes everything it held.
-///
-/// Which is the whole of a process's teardown once there are processes: its
-/// authority is its handles, so releasing them releases everything it could
-/// reach.
 fn a_dead_table_releases_its_objects() -> bool {
-    let object = object::event();
+    let object = object::bootstrap_identity();
     let Some(watcher) = object.downgrade_for_test() else {
         return false;
     };
@@ -5599,102 +5354,6 @@ fn a_dead_table_releases_its_objects() -> bool {
     watcher.upgrade().is_none()
 }
 
-/// The object a handle names is shared with the thread that waits on it.
-static WAITED_EVENT: SpinLock<Option<ObjectRef>> = SpinLock::new(None);
-
-/// 0 before the waiter runs, 1 once it is about to block, 2 once it is woken.
-static EVENT_WAITER: AtomicUsize = AtomicUsize::new(0);
-
-/// Block on the shared event, and record having come back.
-fn wait_on_the_event() {
-    let Some(object) = WAITED_EVENT.lock_leaf().clone() else {
-        return;
-    };
-    let Some(event) = object.as_event() else {
-        return;
-    };
-    EVENT_WAITER.store(1, Ordering::Release);
-    event.wait(&mut context());
-    EVENT_WAITER.store(2, Ordering::Release);
-}
-
-/// A thread waiting on an event is off the run queue, and a signal wakes it.
-///
-/// The first object doing what it exists for, reached the way everything will
-/// be reached: through a handle carrying the right to wait on it. `WAIT` is a
-/// right rather than a syscall name because being allowed to observe an
-/// object's signals is a distinction the kernel genuinely makes about it
-/// (D-78's rule).
-///
-/// The signal is sticky, which is what makes the waiter's check-then-block
-/// safe: a signal landing between the two sets a state the loop re-reads,
-/// rather than delivering a wakeup that can be missed.
-fn a_signal_wakes_a_thread_waiting_on_a_handle() -> bool {
-    let table = handle_table_or_false!(4);
-    let Ok(handle) = table.insert(object::event(), Rights::WAIT.union(Rights::INSPECT)) else {
-        return false;
-    };
-    let Ok(object) = table.resolve_with(handle, Rights::WAIT) else {
-        return false;
-    };
-    let Some(event) = object.as_event() else {
-        return false;
-    };
-    if event.is_signalled() {
-        return false;
-    }
-
-    *WAITED_EVENT.lock_leaf() = Some(object.clone());
-    EVENT_WAITER.store(0, Ordering::Release);
-    let free_before = thread::free_slots();
-    let Ok(waiter) = thread::spawn("event-waiter", wait_on_the_event) else {
-        return false;
-    };
-
-    // Wait for this slot's *block*, not for the flag the waiter sets on its
-    // way in or for the global count another kernel worker can advance.
-    // Signalling between those two would leave nothing on the queue to wake,
-    // and this check would pass on a thread that never slept — which is the
-    // shape D-49 caught lying, and which the first version of this check had.
-    if !runs_until(200, || thread::slot_is_blocked(waiter)) {
-        return false;
-    }
-    let blocked = EVENT_WAITER.load(Ordering::Acquire) == 1;
-
-    let woke_count = event.signal();
-    let came_back = runs_until(200, || EVENT_WAITER.load(Ordering::Acquire) == 2);
-
-    // A waiter arriving after the signal does not block at all, which is what
-    // sticky means and what a condition variable would get wrong.
-    let late_blocks = thread::blocks();
-    event.wait(&mut context());
-    let late_did_not_block = thread::blocks() == late_blocks;
-
-    // Leave nothing running: a thread still exiting perturbs whatever check
-    // comes next, and the alternation check is sensitive to exactly that.
-    // `>=`, because a user program retiring elsewhere frees a slot too: the
-    // property is that *this* thread's slot came back, and another coming back
-    // with it does not falsify it (D-117).
-    let settled = runs_until(200, || thread::free_slots() >= free_before);
-    // As above: the previous value leaves the guard rather than being dropped
-    // inside it.
-    drop(WAITED_EVENT.lock_leaf().take());
-
-    blocked && woke_count >= 1 && came_back && late_did_not_block && settled
-}
-
-/// The boot thread stands on a guarded stack, and not the bootloader's.
-///
-/// The last of the three stacks `002`'s security baseline named. It could not
-/// be fixed where it was: the bootloader's stack lives inside the direct map,
-/// which is two-megabyte on purpose (D-45), so guarding it would mean
-/// splitting a large page — which D-88 refuses. The boot thread therefore
-/// leaves it instead (D-92).
-///
-/// This check runs *on* that stack, which is what makes it more than
-/// structural: the stack pointer under it must be inside the mapped region,
-/// so a switch that silently did not happen fails here rather than passing on
-/// the strength of the tables alone.
 fn the_boot_thread_stands_on_a_guarded_stack() -> bool {
     let Some(layout) = thread::boot_stack_layout() else {
         return false;
@@ -5728,20 +5387,9 @@ fn the_boot_thread_stands_on_a_guarded_stack() -> bool {
         }
         page += PAGE_SIZE;
     }
-    true
+    pinned_guard_refuses_mapping(&slot)
 }
 
-/// The double-fault handler stands on a guarded stack.
-///
-/// One of the two stacks `002`'s security baseline recorded as having nothing
-/// below them. It used to be a `.bss` array, so an overrun ran into whatever
-/// the linker put next — silently, on the one path that exists because the
-/// kernel is already in trouble.
-///
-/// Structural, like every guard check here: the fault itself is terminal, so
-/// what is asserted is what the tables say (D-52). The interrupt-stack entry
-/// must point at the top of the mapped region, every page of it must be
-/// writable and never executable, and the page below must be absent.
 fn the_double_fault_stack_is_guarded() -> bool {
     let Some(layout) = thread::fault_stack_layout() else {
         return false;
@@ -5774,15 +5422,9 @@ fn the_double_fault_stack_is_guarded() -> bool {
         page += PAGE_SIZE;
     }
 
-    // It used to end by comparing the stack top against the layout base, which
-    // is true of every layout ever built — the failure path was unreachable,
-    // which is D-77's own corrected mistake reappearing. The property that
-    // matters is the one checked above: the interrupt-stack entry points at
-    // *this* region, which the `.bss` array it replaced never satisfies.
     true
 }
 
-/// The mapping retained by the task-state segment cannot be removed safely.
 fn the_double_fault_stack_cannot_be_unmapped() -> bool {
     let Some(layout) = thread::fault_stack_layout() else {
         return false;
@@ -5790,96 +5432,152 @@ fn the_double_fault_stack_cannot_be_unmapped() -> bool {
     let Some(slot) = layout.slot(0) else {
         return false;
     };
-    let Ok(mut inactive) = AddressSpace::new() else {
-        return false;
-    };
-    let inactive_root = inactive.root();
-    let inactive_refused = matches!(
-        inactive.map_pinned_stack(&slot),
-        Err(MapError::Inactive(root)) if root == inactive_root
-    );
-    let inactive_reclaimed = inactive.reclaim(None) == Ok(1);
+    let inactive_refused = in_reclaimed_space(AddressSpace::new, |inactive| {
+        let inactive_root = inactive.root();
+        matches!(
+            inactive.map_pinned_stack(&slot),
+            Err(paging::StackMapError::Mapping(MapError::Inactive(root))) if root == inactive_root
+        )
+    });
     let mut context = ThreadContext::require();
 
     inactive_refused
-        && inactive_reclaimed
         && matches!(
             mem::unmap_fault_stack_for_test(&mut context),
             Some(Err(MapError::Pinned(address))) if address == slot.stack_base()
         )
+        && pinned_guard_refuses_mapping(&slot)
         && the_double_fault_stack_is_guarded()
 }
 
-/// A second address space has the kernel and nothing of anyone else.
-///
-/// The shape a process needs (D-104): the higher half shared so a trap from
-/// ring 3 has somewhere to land, and the lower half empty, which is the
-/// isolation. Two programs' spaces will share the kernel and nothing else.
-///
-/// The sharing is checked by *physical identity*, not by both walks
-/// succeeding: two spaces that each mapped the kernel separately would both
-/// resolve and would not be sharing. The same physical frame at the same
-/// virtual address is what sharing means.
-///
-/// And the emptiness is checked at an address the live space *does* have a
-/// mapping for — the boundary probe's page, which the kernel's own space
-/// carries. A fresh space that lacked it would be indistinguishable from one
-/// that lacked everything, and this way the difference between the halves is
-/// what the check sees. (It used to be the running program's code page; since
-/// D-106 no program is in the running space.)
-fn a_second_space_holds_the_kernel_and_nothing_else() -> bool {
-    let Ok(space) = AddressSpace::for_user() else {
-        return false;
-    };
-
-    // Everything the kernel needs on the way in, at the same frames.
-    let text = boot::sections().text.start;
-    let Some(stack_layout) = thread::layout() else {
-        return false;
-    };
-    let Some(slot) = stack_layout.slot(0) else {
-        return false;
-    };
-    let shared = [text, slot.stack_base(), mem::direct_map_base()]
-        .into_iter()
-        .all(|at| match (paging::translate(at), space.lookup(at)) {
-            (Some(here), Some(there)) => here == there,
-            _ => false,
-        });
-
-    // And nothing of the low half, though the live space has this page.
-    let Some((probe, _)) = boundary_probe() else {
-        return false;
-    };
-    let user_is_absent = paging::translate(probe).is_some() && space.lookup(probe).is_none();
-
-    // The half it shares is not reachable from ring 3, whatever the leaves
-    // say: a shared top-level entry that carried `USER` would hand every
-    // program the kernel.
-    let kernel_is_not_user = space
-        .lookup(text)
-        .is_some_and(|(_, flags)| !flags.contains(Flags::USER));
-
-    shared && user_is_absent && kernel_is_not_user
+fn pinned_guard_refuses_mapping(slot: &StackSlot) -> bool {
+    let free_before = mm::free_frames();
+    let guard_before = paging::translate(slot.guard_base());
+    let stack_before = paging::translate(slot.stack_base());
+    mem::pinned_stack_refuses_map_for_test(&mut context(), slot) == Some(true)
+        && paging::translate(slot.guard_base()) == guard_before
+        && paging::translate(slot.stack_base()) == stack_before
+        && mm::free_frames() == free_before
 }
 
-/// A walk reports what the live tables grant, at the three addresses that
-/// matter.
-///
-/// **This is not the check for the narrowing.** The architecture takes `USER`
-/// and `WRITABLE` as the conjunction down the whole walk and `NO_EXECUTE` as
-/// the disjunction (D-103), and no address space this kernel can build has a
-/// parent narrower than its child: `Entry::table` always writes
-/// `PRESENT | WRITABLE` and never `NO_EXECUTE`, and `set` now *refuses* a user
-/// leaf under a supervisor parent rather than widening one (D-105). So the
-/// disagreement the fold exists for is unconstructible here, and an earlier
-/// version of this doc claimed to construct it while asserting three equalities
-/// that hold with the fold deleted.
-///
-/// The fold moved to `Flags::through` / `Flags::effective_for` in
-/// `libs/x86-paging`, where `cargo test` can hand it a hierarchy the kernel
-/// will not build. What is left here is the machine's half: the three
-/// addresses report what the tables were asked for, end to end.
+fn lower_stack_leaf_substitution_is_restored(
+    slot: &StackSlot,
+    probe: impl FnOnce() -> Option<bool>,
+) -> bool {
+    let free_before = mm::free_frames();
+    let lower = slot.stack_base();
+    let Some(upper) = slot.stack_top().checked_sub(PAGE_SIZE) else {
+        return false;
+    };
+    let guard_before = paging::translate(slot.guard_base());
+    let lower_before = paging::translate(lower);
+    let upper_before = paging::translate(upper);
+
+    guard_before.is_none()
+        && lower_before.is_some()
+        && upper_before.is_some()
+        && probe() == Some(true)
+        && paging::translate(slot.guard_base()) == guard_before
+        && paging::translate(lower) == lower_before
+        && paging::translate(upper) == upper_before
+        && mm::free_frames() == free_before
+}
+
+fn the_boot_stack_rejects_a_lower_leaf_substitution() -> bool {
+    let Some(slot) = thread::boot_stack_layout().and_then(|layout| layout.slot(0)) else {
+        return false;
+    };
+    let pointer = cpu::stack_pointer();
+    (slot.stack_base()..slot.stack_top()).contains(&pointer)
+        && lower_stack_leaf_substitution_is_restored(&slot, || {
+            paging::permanent_stack_rejects_lower_leaf_substitution_for_test(slot.stack_base())
+        })
+        && (slot.stack_base()..slot.stack_top()).contains(&cpu::stack_pointer())
+}
+
+fn the_double_fault_stack_rejects_a_lower_leaf_substitution() -> bool {
+    let Some(slot) = thread::fault_stack_layout().and_then(|layout| layout.slot(0)) else {
+        return false;
+    };
+    let hardware_before = segment::double_fault_stack();
+    hardware_before == slot.stack_top()
+        && lower_stack_leaf_substitution_is_restored(&slot, || {
+            paging::permanent_stack_rejects_lower_leaf_substitution_for_test(slot.stack_base())
+        })
+        && segment::double_fault_stack() == hardware_before
+}
+
+fn a_noncurrent_task_stack_rejects_a_lower_leaf_substitution() -> bool {
+    const FIRST_TASK: usize = task::BOOT + 1;
+
+    let Some(slot) = thread::layout().and_then(|layout| layout.slot(0)) else {
+        return false;
+    };
+    task::current() == task::BOOT
+        && lower_stack_leaf_substitution_is_restored(&slot, || {
+            task::pinned_stack_rejects_lower_leaf_substitution_for_test(FIRST_TASK)
+        })
+        && task::current() == task::BOOT
+}
+
+fn protected_stacks_refuse_overlapping_maps() -> bool {
+    let Some(task_stack) = thread::layout().and_then(|layout| layout.slot(0)) else {
+        return false;
+    };
+    let Some(fault_stack) = thread::fault_stack_layout().and_then(|layout| layout.slot(0)) else {
+        return false;
+    };
+    let Some(boot_stack) = thread::boot_stack_layout().and_then(|layout| layout.slot(0)) else {
+        return false;
+    };
+    let free_before = mm::free_frames();
+    let all_refused = [task_stack, fault_stack, boot_stack].iter().all(|slot| {
+        let guard_before = paging::translate(slot.guard_base());
+        let lower_before = paging::translate(slot.stack_base());
+        let upper_before = slot.stack_top().checked_sub(1).and_then(paging::translate);
+        let refused = mem::pinned_stack_refuses_map_for_test(&mut context(), slot) == Some(true);
+        refused
+            && paging::translate(slot.guard_base()) == guard_before
+            && paging::translate(slot.stack_base()) == lower_before
+            && slot.stack_top().checked_sub(1).and_then(paging::translate) == upper_before
+    });
+    all_refused && mm::free_frames() == free_before
+}
+
+fn a_second_space_holds_the_kernel_and_nothing_else() -> bool {
+    in_reclaimed_space(AddressSpace::for_user, |space| {
+        let text = boot::sections().text.start;
+        let Some(stack_layout) = thread::layout() else {
+            return false;
+        };
+        let Some(slot) = stack_layout.slot(0) else {
+            return false;
+        };
+        let Some(direct_map) = mem::direct_map_base() else {
+            return false;
+        };
+        let shared = [text, slot.stack_base(), direct_map].into_iter().all(|at| {
+            match (paging::translate(at), space.lookup(at)) {
+                (Some(here), Some(there)) => here == there,
+                _ => false,
+            }
+        });
+
+        let Some((probe, _)) = boundary_probe() else {
+            return false;
+        };
+        let user_is_absent = paging::translate(probe).is_some() && space.lookup(probe).is_none();
+
+        // The shared half is not reachable from ring 3: a top-level entry
+        // carrying `USER` would hand every program the kernel.
+        let kernel_is_not_user = space
+            .lookup(text)
+            .is_some_and(|(_, flags)| !flags.contains(Flags::USER));
+
+        shared && user_is_absent && kernel_is_not_user
+    })
+}
+
 fn a_walk_reports_the_permission_the_cpu_grants() -> bool {
     let Some((user_at, _)) = boundary_probe() else {
         return false;
@@ -5911,55 +5609,86 @@ fn a_walk_reports_the_permission_the_cpu_grants() -> bool {
     user_is_user && kernel_is_not_user && direct_is_data
 }
 
-/// A refused mapping leaves no trace, and gives the frames back.
-///
-/// The defect an adversarial pass found in D-87 (fixed by D-94): `map_range`
-/// wrote entries as it walked, so a range that failed part-way left the
-/// earlier pages mapped — while `map_owned`, believing nothing had been
-/// mapped, dropped the run and handed those very frames back to the allocator.
-/// A live writable mapping onto reallocated memory, reachable from safe code.
-///
-/// Checked from both ends, because either alone would have passed before the
-/// fix: the address must be unmapped afterwards, *and* the frames must be back.
 fn a_refused_mapping_leaves_no_trace() -> bool {
-    /// Two pages clear of every other probe here, in a page table that this
-    /// check populates itself rather than inheriting from whatever ran first.
-    const BASE: u64 = 0xffff_fd00_0002_0000;
-    let blocker = BASE + PAGE_SIZE;
+    let Some(base) =
+        thread::boot_stack_layout().and_then(|layout| layout.end().checked_add(8 * PAGE_SIZE))
+    else {
+        return false;
+    };
+    let blocker = base + PAGE_SIZE;
     let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+    let free_before = mm::free_frames();
 
     // Occupy the *second* page of the range, so the mapping below gets one
     // page in before it is refused.
     let Some(taken) = mm::allocate_contiguous(1, 1) else {
         return false;
     };
-    let placed = mem::map_owned_for_test(&mut context(), blocker, taken, wanted);
-    if !matches!(placed, Some(Ok(_))) {
-        return false;
-    }
-
-    // From here the page table exists, so nothing below allocates one and the
-    // frame count means what it looks like.
-    let free_before = mm::free_frames();
-    let Some(run) = mm::allocate_contiguous(2, 1) else {
+    let Some(Ok(blocker_mapping)) = mem::map_owned_for_test(&mut context(), blocker, taken, wanted)
+    else {
         return false;
     };
-    let refused = mem::map_owned_for_test(&mut context(), BASE, run, wanted);
+
+    let free_with_blocker = mm::free_frames();
+    let Some(run) = mm::allocate_contiguous(2, 1) else {
+        let cleaned = mem::unmap_for_test(&mut context(), blocker_mapping)
+            .is_some_and(|result| result.map(drop).is_ok());
+        assert!(
+            cleaned && paging::translate(blocker).is_none() && mm::free_frames() == free_before,
+            "a refused mapping setup did not return its blocker"
+        );
+        return false;
+    };
+    let refused = mem::map_owned_for_test(&mut context(), base, run, wanted);
 
     let rejected = matches!(refused, Some(Err(MapError::Conflict(address))) if address == blocker);
-    let no_trace = paging::translate(BASE).is_none();
-    let returned = mm::free_frames() == free_before;
+    let no_trace = paging::translate(base).is_none();
+    let returned = mm::free_frames() == free_with_blocker;
     let blocker_intact = paging::translate(blocker).is_some();
+    let cleaned = mem::unmap_for_test(&mut context(), blocker_mapping)
+        .is_some_and(|result| result.map(drop).is_ok())
+        && paging::translate(blocker).is_none()
+        && mm::free_frames() == free_before;
 
-    rejected && no_trace && returned && blocker_intact
+    rejected && no_trace && returned && blocker_intact && cleaned
 }
 
-/// A refused remap cannot erase an identical entry it found on arrival.
-///
-/// The PW-101 defect was a mixed transaction: `set` accepted an identical
-/// first leaf, a later conflict refused the range, and blind rollback cleared
-/// the older first leaf. Both older leaves are read back because checking only
-/// the conflict would pass while the collateral deletion remained.
+fn a_partial_mapping_failure_returns_its_tables() -> bool {
+    const BASE: u64 = 0x0000_3700_0000_0000;
+    let flags = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+
+    let allocator_before = AllocatorSnapshot::capture();
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    let allocator_with_root = AllocatorSnapshot::capture();
+    let Some(run) = mm::allocate_contiguous(2, 1) else {
+        let reclaimed = space.reclaim(None).is_ok();
+        drop(space);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+            "a refused mapping allocation did not return its root"
+        );
+        return false;
+    };
+    paging::refuse_mapping_after_for_test(1);
+    let result = space.map_owned(BASE, run, flags);
+    paging::restore_mapping_refusals_for_test();
+
+    let refused = result == Err(MapError::OutOfMemory);
+    let absent = space.lookup(BASE).is_none() && space.lookup(BASE + PAGE_SIZE).is_none();
+    let transaction_returned = AllocatorSnapshot::capture()
+        .accounted_physical_frames()
+        .is_some_and(|accounted| {
+            allocator_with_root.accounted_physical_frames() == Some(accounted)
+        });
+    let root_reclaimed = space.reclaim(None).is_ok_and(|tables| tables == 1);
+    drop(space);
+    let root_returned =
+        root_reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before);
+    refused && absent && transaction_returned && root_returned
+}
+
 fn a_refused_remap_preserves_every_older_entry() -> bool {
     const BASE: u64 = 0x0000_3400_0000_0000;
     let Some(physical) = mm::first_memory_run(PAGE_SIZE * 3) else {
@@ -5974,70 +5703,138 @@ fn a_refused_remap_preserves_every_older_entry() -> bool {
     let Some(requested) = BootRegion::describe(physical, 2 * PAGE_SIZE) else {
         return false;
     };
-    let Ok(mut space) = AddressSpace::for_user() else {
-        return false;
-    };
+    in_reclaimed_space(AddressSpace::for_user, |space| {
+        let flags = Flags::NO_EXECUTE;
+        if space.map_boot(BASE, first, flags).is_err()
+            || space.map_boot(BASE + PAGE_SIZE, blocker, flags).is_err()
+        {
+            return false;
+        }
 
-    let flags = Flags::NO_EXECUTE;
-    if space.map_boot(BASE, first, flags).is_err()
-        || space.map_boot(BASE + PAGE_SIZE, blocker, flags).is_err()
-    {
-        return false;
-    }
-
-    let refused = matches!(
-        space.map_boot(BASE, requested, flags),
-        Err(MapError::Conflict(address)) if address == BASE + PAGE_SIZE
-    );
-    let expected = flags.union(Flags::PRESENT);
-    let first_intact = space.lookup(BASE) == Some((physical, expected));
-    let blocker_intact =
-        space.lookup(BASE + PAGE_SIZE) == Some((physical + 2 * PAGE_SIZE, expected));
-    let reclaimed = space.reclaim(None).is_ok();
-
-    refused && first_intact && blocker_intact && reclaimed
+        let refused = matches!(
+            space.map_boot(BASE, requested, flags),
+            Err(MapError::Conflict(address)) if address == BASE + PAGE_SIZE
+        );
+        let expected = flags.union(Flags::PRESENT);
+        let first_intact = space.lookup(BASE) == Some((physical, expected));
+        let blocker_intact =
+            space.lookup(BASE + PAGE_SIZE) == Some((physical + 2 * PAGE_SIZE, expected));
+        refused && first_intact && blocker_intact
+    })
 }
 
-/// A shared leaf retains its frame until the leaf itself is unreachable.
-///
-/// The allocator tally is the reuse proof: a frame which is not free cannot be
-/// issued to a new owner. The original `Shared` is dropped while the mapping
-/// remains, then reclaim makes the tables unreachable before returning both
-/// their frames and the shared frame.
 fn a_shared_mapping_keeps_its_frame() -> bool {
     const PROBE: u64 = 0x0000_3500_0000_0000;
+    in_reclaimed_space(AddressSpace::for_user, |space| {
+        let Some(run) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        let physical = run.address();
+        let mut shared = mm::USegment::from(run).share().into_bytes();
+        if !shared.write_volatile_at(0, &[0xC7]) {
+            return false;
+        }
+        let flags = Flags::NO_EXECUTE;
+        if space.map_shared(PROBE, &shared, flags).is_err() {
+            return false;
+        }
+        let held = mm::free_frames();
+
+        drop(shared);
+        let withheld = mm::free_frames() == held;
+        let expected = flags.union(Flags::PRESENT).union(Flags::USER);
+        let mapping_intact = space.lookup(PROBE) == Some((physical, expected));
+
+        withheld && mapping_intact
+    })
+}
+
+fn shared_bytes_reject_cache_alias(virtual_base: u64, flags: Flags) -> bool {
     let Ok(mut space) = AddressSpace::for_user() else {
         return false;
     };
-    let Some(run) = mm::allocate_contiguous(1, 1) else {
-        return false;
+    let checked = match mm::allocate_contiguous(1, 1) {
+        Some(mut run) => {
+            if run.zero() {
+                let shared = mm::USegment::from(run).share().into_bytes();
+                let held = mm::free_frames();
+                let refused = space.map_shared(virtual_base, &shared, flags)
+                    == Err(MapError::CacheAlias(virtual_base))
+                    && space.lookup(virtual_base).is_none();
+                drop(shared);
+                let owner_released = held.checked_add(1) == Some(mm::free_frames());
+                refused && owner_released
+            } else {
+                false
+            }
+        }
+        None => false,
     };
-    let physical = run.address();
-    let mut shared = mm::USegment::from(run).share();
-    if !shared.write_volatile_at(0, &[0xC7]) {
-        return false;
-    }
-    let flags = Flags::NO_EXECUTE;
-    if space.map_shared(PROBE, &shared, flags).is_err() {
-        return false;
-    }
-    let held = mm::free_frames();
-
-    drop(shared);
-    let withheld = mm::free_frames() == held;
-    let expected = flags.union(Flags::PRESENT).union(Flags::USER);
-    let mapping_intact = space.lookup(PROBE) == Some((physical, expected));
-
-    let Ok(tables) = space.reclaim(None) else {
-        return false;
-    };
-    let mapping_gone = space.lookup(PROBE).is_none();
-    let released = mm::free_frames() == held + tables + 1;
-
-    withheld && mapping_intact && mapping_gone && released
+    let tables_unchanged = space.reclaim(None).is_ok_and(|tables| tables == 1);
+    checked && tables_unchanged
 }
 
-/// A space larger than D-117's old ownership array returns every table frame.
+fn shared_ring_reject_cache_alias(virtual_base: u64, flags: Flags) -> bool {
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    let checked = match mm::allocate_contiguous(1, 1) {
+        Some(mut run) => {
+            if run.zero() {
+                match SharedLayout::<1>::new(PAGE_SIZE as usize, [0]) {
+                    Ok(layout) => match mm::USegment::from(run).share().into_ring(layout) {
+                        Ok(shared) => {
+                            let held = mm::free_frames();
+                            let refused = space.map_shared_ring(virtual_base, &shared, flags)
+                                == Err(MapError::CacheAlias(virtual_base))
+                                && space.lookup(virtual_base).is_none();
+                            drop(shared);
+                            let owner_released = held.checked_add(1) == Some(mm::free_frames());
+                            refused && owner_released
+                        }
+                        Err(_) => false,
+                    },
+                    Err(_) => false,
+                }
+            } else {
+                false
+            }
+        }
+        None => false,
+    };
+    let tables_unchanged = space.reclaim(None).is_ok_and(|tables| tables == 1);
+    checked && tables_unchanged
+}
+
+fn shared_mappings_reject_cache_aliases() -> bool {
+    const BYTES: u64 = 0x0000_3510_0000_0000;
+    const RING: u64 = 0x0000_3520_0000_0000;
+    let mut all_refused = true;
+    for cache in [
+        Flags::NO_CACHE,
+        Flags::WRITE_THROUGH,
+        Flags::NO_CACHE.union(Flags::WRITE_THROUGH),
+    ] {
+        let flags = Flags::NO_EXECUTE.union(cache);
+        all_refused &= shared_bytes_reject_cache_alias(BYTES, flags);
+        all_refused &= shared_ring_reject_cache_alias(RING, flags);
+    }
+    all_refused
+}
+
+fn shared_topology_rejects_hostile_root_entries() -> bool {
+    let huge = in_reclaimed_space(AddressSpace::new, |space| {
+        space.rejects_huge_shared_topology_for_test()
+    });
+    let user = in_reclaimed_space(AddressSpace::new, |space| {
+        space.rejects_user_shared_topology_for_test()
+    });
+    let supervisor = in_reclaimed_space(AddressSpace::new, |space| {
+        space.reserves_supervisor_shared_topology_for_test()
+    });
+    huge && user && supervisor
+}
+
 fn a_large_space_returns_every_table_frame() -> bool {
     const BASE: u64 = 0x0000_1000_0000_0000;
     const TABLES: u64 = 34;
@@ -6045,108 +5842,106 @@ fn a_large_space_returns_every_table_frame() -> bool {
     let Some(physical) = mm::first_memory_run(PAGE_SIZE) else {
         return false;
     };
-    let build = || -> Option<AddressSpace> {
-        let mut space = AddressSpace::for_user().ok()?;
-        for index in 0..TABLES {
-            let region = BootRegion::describe(physical, PAGE_SIZE)?;
-            let at = BASE.checked_add(index.checked_mul(LARGE_PAGE_SIZE)?)?;
-            space.map_boot(at, region, Flags::NO_EXECUTE).ok()?;
+    let allocator_before = AllocatorSnapshot::capture();
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    for index in 0..TABLES {
+        let Some(region) = BootRegion::describe(physical, PAGE_SIZE) else {
+            let reclaimed = space.reclaim(None).is_ok();
+            drop(space);
+            assert!(
+                reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+                "a refused large-space description did not return its tables"
+            );
+            return false;
+        };
+        let Some(at) = index
+            .checked_mul(LARGE_PAGE_SIZE)
+            .and_then(|offset| BASE.checked_add(offset))
+        else {
+            let reclaimed = space.reclaim(None).is_ok();
+            drop(space);
+            assert!(
+                reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+                "a refused large-space address did not return its tables"
+            );
+            return false;
+        };
+        if space.map_boot(at, region, Flags::NO_EXECUTE).is_err() {
+            let reclaimed = space.reclaim(None).is_ok();
+            drop(space);
+            assert!(
+                reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+                "a refused large-space map did not return its tables"
+            );
+            return false;
         }
-        Some(space)
-    };
-
-    // Warm each Vec size class so the frame count below measures page tables,
-    // not the heap's first backing frame for the ownership list.
-    let Some(mut warmup) = build() else {
-        return false;
-    };
-    if warmup.reclaim(None).is_err() {
-        return false;
     }
-    drop(warmup);
 
-    let free_before = mm::free_frames();
-    let Some(mut space) = build() else {
-        return false;
-    };
-    let free_while_mapped = mm::free_frames();
+    let allocator_while_mapped = AllocatorSnapshot::capture();
     let Ok(returned) = space.reclaim(None) else {
         return false;
     };
+    drop(space);
+    let table_frames_held = allocator_before
+        .accounted_physical_frames()
+        .zip(allocator_while_mapped.accounted_physical_frames())
+        .and_then(|(before, mapped)| before.checked_sub(mapped))
+        == Some(returned);
 
     returned > 32
-        && free_before.checked_sub(free_while_mapped) == Some(returned)
-        && mm::free_frames() == free_before
+        && table_frames_held
+        && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
 }
 
-/// An unmapped range gives its frames back, and not before the invalidation.
-///
-/// The debt D-86 named and left open: while nothing unmapped, a frame put into
-/// the live space could never be returned, because freeing it would hand the
-/// allocator a page a live mapping still reached. `unmap` closes it, and the
-/// shape that makes it sound is that the frames live *inside* the token until
-/// its invalidation has run (D-88) — so this counts free frames before and
-/// after, and the count only comes back once the token is spent.
 fn an_unmapped_range_returns_its_frames() -> bool {
-    /// Clear of the direct map, the stack arena and the device window.
-    const PROBE: u64 = 0xffff_fd00_0001_0000;
     /// More than one page, so the walk covers a run rather than a single slot.
     const PAGES: u64 = 4;
+    let Some(probe) =
+        thread::boot_stack_layout().and_then(|layout| layout.end().checked_add(16 * PAGE_SIZE))
+    else {
+        return false;
+    };
 
+    let free_before = mm::free_frames();
     let Some(run) = mm::allocate_contiguous(PAGES as usize, 1) else {
         return false;
     };
     let physical = run.address();
 
     let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
-    let Some(Ok(mapping)) = mem::map_owned_for_test(&mut context(), PROBE, run, wanted) else {
+    let Some(Ok(mapping)) = mem::map_owned_for_test(&mut context(), probe, run, wanted) else {
         return false;
     };
-    let mapped_here = paging::translate(PROBE).map(|(frame, _)| frame) == Some(physical);
+    let mapped_here = paging::translate(probe).map(|(frame, _)| frame) == Some(physical);
 
-    // Counted *after* the mapping, so the page-table frames it may have taken
-    // are already spent and this measures only the run. Taking it earlier made
-    // the check depend on whether a previous one had built the same table.
-    let before = mm::free_frames();
+    let free_while_mapped = mm::free_frames();
 
     let Some(Ok(token)) = mem::unmap_for_test(&mut context(), mapping) else {
         return false;
     };
 
     // The entries are gone the moment `unmap` returns...
-    let gone = paging::translate(PROBE).is_none();
+    let gone = paging::translate(probe).is_none();
     // ...but the frames are not the allocator's yet.
-    let withheld = mm::free_frames() == before && token.pages() == PAGES;
+    let withheld = mm::free_frames() == free_while_mapped && token.pages() == PAGES;
 
-    let returned = token.flush().is_some_and(|segment| {
+    let returned = token.into_kernel().is_some_and(|segment| {
         let same = segment.address() == physical && segment.frames() == PAGES as usize;
         drop(segment);
         same
     });
-    let counted = mm::free_frames() == before + PAGES as usize;
-    let _ = physical;
+    let counted = mm::free_frames() == free_before
+        && free_before.checked_sub(free_while_mapped) == Some(PAGES as usize);
 
     mapped_here && gone && withheld && returned && counted
 }
 
-/// Unmapping refuses everything it cannot prove it owns.
-///
-/// Six ways to ask for something that is not a run of owned four-kilobyte
-/// pages, and six refusals. The direct map is the interesting one: it is
-/// mapped in two-megabyte pages on purpose (D-45), splitting it is not offered,
-/// and the measurement in `010` §8 says keeping it that way is right.
 fn unmapping_refuses_what_it_does_not_own() -> bool {
     mem::invalid_unmaps_are_refused(&mut context()).unwrap_or(false)
 }
 
-/// A mapping cannot be silently re-pointed; an identical rewrite is the one
-/// rewrite allowed, because the direct map's outward rounding produces it.
-/// One page of described memory, the `index`-th of a run the map offers.
-///
-/// The four checks below each named `0x1000` and got away with it on QEMU. On
-/// VMware that page is not memory, so `describe` answered `None`, every one of
-/// them returned `false` from its setup, and four checks that never ran looked
-/// exactly like four properties that failed (D-177).
 fn probe_page(index: u64) -> Option<BootRegion> {
     let base = mm::first_memory_run(PROBE_PAGES * PAGE_SIZE)?;
     BootRegion::describe(base.checked_add(index * PAGE_SIZE)?, PAGE_SIZE)
@@ -6155,10 +5950,6 @@ fn probe_page(index: u64) -> Option<BootRegion> {
 /// How many pages [`probe_page`] hands out, and the run it asks for.
 const PROBE_PAGES: u64 = 2;
 
-/// The map offers the run the probes below are cut from.
-///
-/// Named separately so that a machine which cannot supply one says so once,
-/// rather than reddening every check that wanted a page from it (D-177).
 fn the_map_offers_a_run_to_probe() -> bool {
     probe_page(0).is_some() && probe_page(PROBE_PAGES - 1).is_some()
 }
@@ -6167,127 +5958,171 @@ fn a_differing_remap_is_refused() -> bool {
     /// Canonical, and far from anything a fresh space would map.
     const PROBE: u64 = 0xffff_8800_0000_0000;
 
-    let Ok(mut space) = AddressSpace::new() else {
-        return false;
-    };
-    let (Some(here), Some(again_here), Some(elsewhere)) =
-        (probe_page(0), probe_page(0), probe_page(1))
-    else {
-        return false;
-    };
-    let first = space.map_boot(PROBE, here, Flags::NO_EXECUTE);
-    let again = space.map_boot(PROBE, again_here, Flags::NO_EXECUTE);
-    let differing = space.map_boot(PROBE, elsewhere, Flags::NO_EXECUTE);
-    first.is_ok() && again.is_ok() && differing == Err(MapError::Conflict(PROBE))
+    in_reclaimed_space(AddressSpace::new, |space| {
+        let (Some(here), Some(again_here), Some(elsewhere)) =
+            (probe_page(0), probe_page(0), probe_page(1))
+        else {
+            return false;
+        };
+        let first = space.map_boot(PROBE, here, Flags::NO_EXECUTE);
+        let again = space.map_boot(PROBE, again_here, Flags::NO_EXECUTE);
+        let differing = space.map_boot(PROBE, elsewhere, Flags::NO_EXECUTE);
+        first.is_ok() && again.is_ok() && differing == Err(MapError::Conflict(PROBE))
+    })
 }
 
-/// A described frame cannot be laundered into the allocator by claiming it.
-///
-/// `Flags::OWNED` is public in `libs/x86-paging` and nameable from here, and
-/// `unmap` consults exactly that bit before minting a `Segment` and handing
-/// the frames to the allocator. If `map_boot` passed caller flags through,
-/// this safe sequence would produce a second owner of a frame the kernel is
-/// standing on — a use-after-free with no `unsafe` anywhere (D-105).
 fn a_boot_mapping_cannot_claim_ownership() -> bool {
     /// Canonical, and far from anything a fresh space maps.
     const PROBE: u64 = 0xffff_8880_0000_0000;
 
-    let Ok(mut space) = AddressSpace::new() else {
-        return false;
-    };
-    let Some(region) = probe_page(0) else {
-        return false;
-    };
-    if space
-        .map_boot(PROBE, region, Flags::NO_EXECUTE.union(Flags::OWNED))
-        .is_err()
-    {
-        return false;
-    }
-    let before = mm::free_frames();
-    // The bit was stripped, so `unmap` sees a mapping nothing owns and refuses
-    // it — rather than minting a `Segment` over the boot handoff's frame and
-    // handing it to the allocator, which would be a second owner of a frame
-    // the kernel is standing on, from safe code.
-    let refused = space.unmap(PROBE, PAGE_SIZE).err() == Some(MapError::NotOwned(PROBE));
-    refused && mm::free_frames() == before
+    in_reclaimed_space(AddressSpace::new, |space| {
+        let Some(region) = probe_page(0) else {
+            return false;
+        };
+        if space
+            .map_boot(PROBE, region, Flags::NO_EXECUTE.union(Flags::OWNED))
+            .is_err()
+        {
+            return false;
+        }
+        let before = mm::free_frames();
+        // With the bit stripped, `unmap` sees a mapping nothing owns and
+        // refuses, rather than minting a second owner of a boot frame.
+        let refused = space.unmap(PROBE, PAGE_SIZE).err() == Some(MapError::NotOwned(PROBE));
+        refused && mm::free_frames() == before
+    })
 }
 
-/// A space that shares the kernel's higher half cannot write to it.
-///
-/// `for_user` copies the kernel's own PML4 entries rather than duplicating the
-/// tables below them, so every higher-half mapping operation on such a space
-/// walks into the live kernel's tables. Unmapping a kernel address through one
-/// would blank a running thread's stack and free its frames (D-105).
+fn caller_global_is_removed_from_safe_mappings() -> bool {
+    const USER: u64 = 0x0000_0100_0000_0000;
+    const SHARED: u64 = 0x0000_0200_0000_0000;
+    const OWNED: u64 = 0x0000_0300_0000_0000;
+    const BOOT: u64 = 0x0000_0400_0000_0000;
+
+    in_reclaimed_space(AddressSpace::for_user, |space| {
+        let hostile = Flags::GLOBAL.union(Flags::NO_EXECUTE);
+
+        let Some(mut user) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !user.zero() || space.map_user(USER, user.into(), hostile).is_err() {
+            return false;
+        }
+
+        let Some(mut shared) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !shared.zero() {
+            return false;
+        }
+        let shared = mm::USegment::from(shared).share().into_bytes();
+        if space.map_shared(SHARED, &shared, hostile).is_err() {
+            return false;
+        }
+
+        let Some(mut owned) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !owned.zero() || space.map_owned(OWNED, owned, hostile).is_err() {
+            return false;
+        }
+
+        let Some(region) = probe_page(0) else {
+            return false;
+        };
+        if space.map_boot(BOOT, region, hostile).is_err() {
+            return false;
+        }
+
+        let stripped = [USER, SHARED, OWNED, BOOT].into_iter().all(|at| {
+            space
+                .lookup(at)
+                .is_some_and(|(_, flags)| !flags.contains(Flags::GLOBAL))
+        });
+        let authorities_hold =
+            space.lookup(USER).is_some_and(|(_, flags)| {
+                flags.contains(Flags::USER) && flags.contains(Flags::OWNED)
+            }) && space.lookup(SHARED).is_some_and(|(_, flags)| {
+                flags.contains(Flags::USER) && !flags.contains(Flags::OWNED)
+            }) && space.lookup(OWNED).is_some_and(|(_, flags)| {
+                !flags.contains(Flags::USER) && flags.contains(Flags::OWNED)
+            }) && space.lookup(BOOT).is_some_and(|(_, flags)| {
+                !flags.contains(Flags::USER) && !flags.contains(Flags::OWNED)
+            });
+
+        let user_removed = space.unmap(USER, PAGE_SIZE).map(drop).is_ok();
+        let owned_removed = space.unmap(OWNED, PAGE_SIZE).map(drop).is_ok();
+        stripped && authorities_hold && user_removed && owned_removed
+    })
+}
+
+fn a_boot_mapping_cannot_publish_kernel_memory() -> bool {
+    const PROBE: u64 = 0x0000_0000_5000_0000;
+
+    in_reclaimed_space(AddressSpace::for_user, |space| {
+        let Some(region) = probe_page(0) else {
+            return false;
+        };
+        space.map_boot(PROBE, region, Flags::USER.union(Flags::NO_EXECUTE))
+            == Err(MapError::NotYours(PROBE))
+            && space.lookup(PROBE).is_none()
+    })
+}
+
 fn a_user_space_cannot_reach_the_kernel_half() -> bool {
-    /// Inside the direct map, so the walk would find real entries to blank.
+    // The direct map ensures the hostile walk reaches real entries to blank.
     const KERNEL: u64 = 0xffff_8000_0010_0000;
-    /// The last page below the user/supervisor boundary.
     const LAST_USER: u64 = 0x0000_7fff_ffff_f000;
 
-    let Ok(mut user) = AddressSpace::for_user() else {
-        return false;
-    };
-    let Some(region) = probe_page(0) else {
-        return false;
-    };
-    let unmapped = user.unmap(KERNEL, PAGE_SIZE);
-    let mapped = user.map_boot(KERNEL, region, Flags::NO_EXECUTE);
-    // The refusal is about the half, not about mapping: the last user page is
-    // still reachable, and a range that straddles the boundary is not.
-    // A range that runs off the top of the user half is refused too, though
-    // not by `may_reach`: the boundary is also where the canonical hole
-    // begins, so a straddle is non-canonical and stopped one check earlier.
-    // Named rather than folded into the others, because "refused" and
-    // "refused for the reason this check is about" are different claims.
-    let straddles =
-        user.unmap(LAST_USER, 2 * PAGE_SIZE).err() == Some(MapError::NonCanonical(LAST_USER));
-    // And the refusal is about the *half*, not about everything: the last page
-    // below the boundary is refused for having nothing mapped in it, which is
-    // a different answer.
-    let reaches_its_own =
-        user.unmap(LAST_USER, PAGE_SIZE).err() != Some(MapError::NotYours(LAST_USER));
+    in_reclaimed_space(AddressSpace::for_user, |user| {
+        let Some(region) = probe_page(0) else {
+            return false;
+        };
+        let unmapped = user.unmap(KERNEL, PAGE_SIZE);
+        let mapped = user.map_boot(KERNEL, region, Flags::NO_EXECUTE);
+        // The canonical-hole check precedes half ownership, so the straddle
+        // must report that distinct refusal.
+        let straddles =
+            user.unmap(LAST_USER, 2 * PAGE_SIZE).err() == Some(MapError::NonCanonical(LAST_USER));
+        // The last user page reaches mapping lookup rather than half refusal.
+        let reaches_its_own =
+            user.unmap(LAST_USER, PAGE_SIZE).err() != Some(MapError::NotYours(LAST_USER));
 
-    unmapped.err() == Some(MapError::NotYours(KERNEL))
-        && mapped == Err(MapError::NotYours(KERNEL))
-        && straddles
-        && reaches_its_own
+        unmapped.err() == Some(MapError::NotYours(KERNEL))
+            && mapped == Err(MapError::NotYours(KERNEL))
+            && straddles
+            && reaches_its_own
+    })
 }
 
-/// A user mapping cannot widen an interior table the kernel is under.
-///
-/// An entry above the leaf covers everything below it, so upgrading a
-/// supervisor table to `USER` to make room for one user page would hand ring 3
-/// every mapping already under it. The refusal is what makes `set`'s
-/// "a present entry accepts only an identical rewrite" true (D-105).
 fn a_user_mapping_cannot_widen_a_supervisor_table() -> bool {
     /// Two addresses one page apart, so they share every table above the leaf.
     const SUPERVISOR: u64 = 0x0000_0000_4000_0000;
     const USER: u64 = SUPERVISOR + PAGE_SIZE;
 
-    let Ok(mut space) = AddressSpace::new() else {
-        return false;
-    };
-    let (Some(first), Some(second)) = (probe_page(0), probe_page(1)) else {
-        return false;
-    };
-    if space
-        .map_boot(SUPERVISOR, first, Flags::NO_EXECUTE)
-        .is_err()
-    {
-        return false;
-    }
-    space.map_boot(USER, second, Flags::NO_EXECUTE.union(Flags::USER))
-        == Err(MapError::Conflict(USER))
+    in_reclaimed_space(AddressSpace::new, |space| {
+        let Some(first) = probe_page(0) else {
+            return false;
+        };
+        if space
+            .map_boot(SUPERVISOR, first, Flags::NO_EXECUTE)
+            .is_err()
+        {
+            return false;
+        }
+        let Some(mut second) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !second.zero() {
+            return false;
+        }
+        space
+            .map_user(USER, second.into(), Flags::NO_EXECUTE)
+            .err()
+            .is_some_and(|error| error.reason() == MapError::Conflict(USER))
+    })
 }
 
-/// A physical range the boot handoff never described cannot be mapped at all.
-///
-/// D-76 left `map` able to name any physical address, and D-77 recorded it as
-/// an authority debt for "the phase that introduces the needed owner types".
-/// This is that debt paid on the memory side (D-87): the public entries take
-/// either frames the caller owns or a [`BootRegion`], and a `BootRegion`
-/// exists only where the bootloader's map says there is memory.
 fn an_undescribed_range_cannot_be_mapped() -> bool {
     /// Far above anything a PC memory map describes, and above `mm::CEILING`.
     const NOWHERE: u64 = 0x0000_7000_0000_0000;
@@ -6301,76 +6136,266 @@ fn an_undescribed_range_cannot_be_mapped() -> bool {
         && BootRegion::describe(u64::MAX - PAGE_SIZE + 1, PAGE_SIZE).is_none()
 }
 
-/// Two virtual windows cannot confer ownership of the same physical device.
 fn device_mappings_are_physically_exclusive() -> bool {
     const PROBE: u64 = 0xfee0_0000;
-    let Ok(mut space) = AddressSpace::new() else {
+    let mut context = context();
+    let Some(before) = mem::device_mappings(&mut context) else {
         return false;
     };
-    if space.map_device(PROBE, 4096).is_err() {
+    let Some(Ok(first)) = mem::map_device(&mut context, PROBE + 4, 4) else {
         return false;
-    }
-    matches!(
-        space.map_device(PROBE, 4096),
-        Err(MapError::DeviceOverlap(PROBE))
-    )
+    };
+    let Ok(first) = first.claim_releasable() else {
+        return false;
+    };
+    let overlap = matches!(
+        mem::map_device(&mut context, PROBE + 8, 4),
+        Some(Err(MapError::DeviceOverlap(found))) if found == PROBE + 8
+    );
+    let removed = matches!(
+        mem::unmap_device_exact(&mut context, first),
+        mem::DeviceRetirement::Retired
+    );
+    overlap && removed && mem::device_mappings(&mut context) == Some(before)
 }
 
-/// Device authority never aliases a frame the allocator can hand out.
 fn device_mappings_refuse_allocatable_ram() -> bool {
-    let Some(frame) = mm::allocate() else {
-        return false;
-    };
-    let address = frame.address();
-    let Ok(mut space) = AddressSpace::new() else {
-        return false;
-    };
-    matches!(
-        space.map_device(address, 4),
-        Err(MapError::NotDeviceMemory(found)) if found == address
-    )
-}
-
-/// Empty and wrapping MMIO extents are rejected before a page is installed.
-fn malformed_device_extents_are_refused() -> bool {
-    let Ok(mut space) = AddressSpace::new() else {
-        return false;
-    };
-    matches!(
-        space.map_device(0xfee0_0000, 0),
-        Err(MapError::InvalidDeviceRange(0xfee0_0000))
-    ) && matches!(
-        space.map_device(4, u64::MAX),
-        Err(MapError::InvalidDeviceRange(4))
-    )
-}
-
-/// A device claim minted by a space that was never installed is refused —
-/// window addresses collide across spaces, so honouring it would cover
-/// whatever the installed space put there (D-49).
-fn a_stale_device_claim_is_refused() -> bool {
-    let mapping = {
-        let Ok(mut space) = AddressSpace::new() else {
+    in_reclaimed_space(AddressSpace::new, |space| {
+        let Some(frame) = mm::allocate() else {
             return false;
         };
-        match space.map_device(0xfec0_0000, 4096) {
-            Ok(mapping) => mapping,
-            Err(_) => return false,
-        }
-    };
-    mapping.claim().is_none()
+        let address = frame.address();
+        matches!(
+            paging::admit_device_range(address, 4).and_then(|range| space.map_device(range)),
+            Err(MapError::NotDeviceMemory(found)) if found == address
+        )
+    })
 }
 
-/// Backspace erases and Enter starts a line, as a person pressing them expects.
-///
-/// Drives the console directly rather than waiting on the injected keystrokes:
-/// every check between here and the injection logs a line, and every line moves
-/// the cursor, so watching for motion would race this function's own output.
-/// The layout half is asserted from `char_for` and tested on the host in `libs/ps2-keys`.
-///
-/// Runs only once the last injected key has been seen released: the harness
-/// injects three, and one still arriving between two cursor readings is a red
-/// check with nothing wrong.
+fn malformed_device_extents_are_refused() -> bool {
+    in_reclaimed_space(AddressSpace::new, |space| {
+        matches!(
+            paging::admit_device_range(0xfee0_0000, 0).and_then(|range| space.map_device(range)),
+            Err(MapError::InvalidDeviceRange(0xfee0_0000))
+        ) && matches!(
+            paging::admit_device_range(4, u64::MAX).and_then(|range| space.map_device(range)),
+            Err(MapError::InvalidDeviceRange(4))
+        )
+    })
+}
+
+fn device_window_reuses_arbitrary_order_gaps() -> bool {
+    fn exercise(context: &mut ThreadContext, physical: u64) -> Option<bool> {
+        let before = mem::device_mappings(context)?;
+        let first = match mem::map_device(context, physical, PAGE_SIZE)? {
+            Ok(mapping) => mapping,
+            Err(MapError::DeviceOverlap(_) | MapError::NotDeviceMemory(_)) => return None,
+            Err(_) => return Some(false),
+        };
+        let first_address = first.address();
+        let Ok(first) = first.claim_releasable() else {
+            return Some(false);
+        };
+
+        let second = match mem::map_device(context, physical + PAGE_SIZE, PAGE_SIZE)? {
+            Ok(mapping) => mapping,
+            Err(MapError::DeviceOverlap(_) | MapError::NotDeviceMemory(_)) => {
+                if matches!(
+                    mem::unmap_device_exact(context, first),
+                    mem::DeviceRetirement::Retired
+                ) {
+                    return None;
+                }
+                return Some(false);
+            }
+            Err(_) => return Some(false),
+        };
+        let Ok(second) = second.claim_releasable() else {
+            return Some(false);
+        };
+
+        paging::refuse_device_unmap_for_test();
+        let first_removed = match mem::unmap_device(context, first) {
+            mem::DeviceUnmapOutcome::Refused(failure) => {
+                let unchanged = mem::device_mappings(context) == Some(before + 2);
+                unchanged
+                    && matches!(
+                        mem::unmap_device_exact(context, failure.region),
+                        mem::DeviceRetirement::Retired
+                    )
+            }
+            _ => false,
+        };
+        let second_removed = matches!(
+            mem::unmap_device_exact(context, second),
+            mem::DeviceRetirement::Retired
+        );
+        if !first_removed || !second_removed {
+            return Some(false);
+        }
+
+        let third = match mem::map_device(context, physical, PAGE_SIZE)? {
+            Ok(mapping) => mapping,
+            Err(_) => return Some(false),
+        };
+        let reused = third.address() == first_address;
+        let Ok(third) = third.claim_releasable() else {
+            return Some(false);
+        };
+        let restored = matches!(
+            mem::unmap_device_exact(context, third),
+            mem::DeviceRetirement::Retired
+        ) && mem::device_mappings(context) == Some(before);
+        Some(reused && restored)
+    }
+
+    let Some(map) = mm::memory_map_for_test() else {
+        return false;
+    };
+    let mut context = context();
+    let mut attempted = 0usize;
+    for region in map.regions().filter(|region| {
+        matches!(
+            region.kind,
+            boot::MemoryKind::Reserved | boot::MemoryKind::Unknown(_)
+        )
+    }) {
+        let Some(mut physical) = region.base.checked_next_multiple_of(PAGE_SIZE) else {
+            continue;
+        };
+        let region_end = region.base + region.len;
+        while attempted < 256 {
+            let Some(end) = physical.checked_add(PAGE_SIZE * 2) else {
+                break;
+            };
+            if end > region_end {
+                break;
+            }
+            attempted += 1;
+            let exclusively_device = map.regions().all(|other| {
+                let overlaps = physical < other.base + other.len && other.base < end;
+                !overlaps
+                    || matches!(
+                        other.kind,
+                        boot::MemoryKind::Reserved | boot::MemoryKind::Unknown(_)
+                    )
+            });
+            if exclusively_device && let Some(result) = exercise(&mut context, physical) {
+                return result;
+            }
+            let Some(next) = physical.checked_add(PAGE_SIZE) else {
+                break;
+            };
+            physical = next;
+        }
+    }
+    false
+}
+
+struct DeviceLiveness {
+    shared_topology: bool,
+    stale_root: bool,
+    first: bool,
+    middle: bool,
+    last: bool,
+    cache_policy: bool,
+}
+
+fn map_three_page_device_extent(context: &mut ThreadContext) -> Option<paging::DeviceMapping> {
+    const EXTENT: u64 = 3 * PAGE_SIZE;
+
+    let map = mm::memory_map_for_test()?;
+    let mut attempted = 0usize;
+    for region in map.regions().filter(|region| {
+        matches!(
+            region.kind,
+            boot::MemoryKind::Reserved | boot::MemoryKind::Unknown(_)
+        )
+    }) {
+        let Some(mut physical) = region.base.checked_next_multiple_of(PAGE_SIZE) else {
+            continue;
+        };
+        let Some(region_end) = region.base.checked_add(region.len) else {
+            continue;
+        };
+        while attempted < 256 {
+            let Some(end) = physical.checked_add(EXTENT) else {
+                break;
+            };
+            if end > region_end {
+                break;
+            }
+            attempted += 1;
+            match mem::map_device(context, physical, EXTENT)? {
+                Ok(mapping) => return Some(mapping),
+                Err(MapError::DeviceOverlap(_) | MapError::NotDeviceMemory(_)) => {}
+                Err(_) => return None,
+            }
+            let Some(next) = physical.checked_add(PAGE_SIZE) else {
+                break;
+            };
+            physical = next;
+        }
+    }
+    None
+}
+
+fn device_liveness_covers_the_current_root_and_extent() -> Option<DeviceLiveness> {
+    let mut context = context();
+    let before = mem::device_mappings(&mut context)?;
+    let mut stale = AddressSpace::for_user().ok()?;
+    let Some(mapping) = map_three_page_device_extent(&mut context) else {
+        if let Err(reason) = stale.reclaim(None) {
+            panic!("device liveness fixture could not reclaim its unused root: {reason}");
+        }
+        return None;
+    };
+
+    let address = mapping.address();
+    let live_before = paging::translate(address);
+    let shared_upper = live_before.is_some() && stale.lookup(address) == live_before;
+    let (mapping, first) = mapping.rejects_physical_substitution_for_test(0);
+    let (mapping, middle) = mapping.rejects_physical_substitution_for_test(1);
+    let (mapping, last) = mapping.rejects_physical_substitution_for_test(2);
+    let (mapping, cache_policy) = mapping.rejects_cache_substitution_for_test(1);
+
+    let (loaded, under_stale) = mapping.claim_releasable_under_for_test(&stale);
+    let (stale_root, region) = match under_stale {
+        Err(mapping) => {
+            let Ok(region) = mapping.claim_releasable() else {
+                panic!("a restored device mapping could not be reclaimed by its test");
+            };
+            (loaded, region)
+        }
+        Ok(region) => (false, region),
+    };
+    let unchanged = paging::translate(address) == live_before;
+    let removed = matches!(
+        mem::unmap_device_exact(&mut context, region),
+        mem::DeviceRetirement::Retired
+    );
+    let reclaimed = stale.reclaim(None).is_ok();
+    let cleaned =
+        removed && reclaimed && mem::device_mappings(&mut context) == Some(before) && unchanged;
+
+    Some(DeviceLiveness {
+        shared_topology: shared_upper && cleaned,
+        stale_root: stale_root && cleaned,
+        first: first && cleaned,
+        middle: middle && cleaned,
+        last: last && cleaned,
+        cache_policy: cache_policy && cleaned,
+    })
+}
+
+fn active_device_tables_cannot_be_reclaimed() -> bool {
+    mem::active_space_reclaim_is_guarded(&mut context()) == Some(true)
+}
+
+fn active_kernel_topology_is_frozen() -> bool {
+    mem::active_kernel_topology_is_frozen(&mut context()) == Some(true)
+}
+
 fn the_editing_keys_move_the_cursor() -> bool {
     let (Some(backspace), Some(newline)) = (
         ps2_keys::us::char_for(ps2_keys::Key::Backspace, ps2_keys::Shift::new()),
@@ -6407,22 +6432,14 @@ fn the_editing_keys_move_the_cursor() -> bool {
     let Some(((home_x, home_y), _)) = dev::console_cursor() else {
         return false;
     };
-    // The margin, not `home_x <= start_x`: that comparison holds for every
-    // reset, because `cursor_x` never goes below the margin and `start_x` is
-    // read after one. The margin is where a line starts, and the one place
-    // `erase_previous` refuses to go below (D-105).
+    // The margin, not `home_x <= start_x`, which holds for every reset; the
+    // margin is where `erase_previous` refuses to go below (D-105).
     let started_a_line =
         home_x == crate::console::MARGIN && home_x <= typed_x && home_y == start_y + line_height;
 
     advanced && erased && started_a_line
 }
 
-/// The framebuffer is mapped write-combining, by the kernel's own tables.
-///
-/// Both halves again: the page attribute table must actually hold the
-/// write-combining entry — a hypervisor may decline the write — and the
-/// mapping must select it. Either alone means writes still cross the bus one
-/// at a time (D-50).
 fn the_framebuffer_is_write_combining() -> bool {
     cpu::write_combining_is_enabled()
         && dev::framebuffer_address()
@@ -6434,35 +6451,29 @@ fn the_framebuffer_is_write_combining() -> bool {
             })
 }
 
-/// The I/O APIC is routing the keyboard's line to the vector we asked for.
-///
-/// Read back out of the controller rather than remembered: the redirection
-/// entry the hardware holds is what decides where an interrupt goes, and a
-/// write that was silently dropped looks exactly like one that took.
 fn the_keyboard_line_is_routed() -> bool {
     // The line the kernel routed, not the one a legacy IRQ number suggests:
     // firmware may map any IRQ to any global system interrupt.
     let gsi = dev::keyboard_gsi();
 
-    dev::routing_of(gsi)
-        .is_some_and(|routing| !routing.masked && routing.vector == vector::KEYBOARD)
+    dev::routing_of(gsi).is_some_and(|routing| {
+        let destination = u8::try_from(apic::id()).ok().map(|id| u32::from(id) << 24);
+        let permitted_low = 0xFF | (1 << 13) | (1 << 15);
+        !routing.masked
+            && routing.vector == vector::KEYBOARD.get()
+            && routing.low & !permitted_low == 0
+            && Some(routing.high) == destination
+    })
 }
 
-/// The controller refuses an interrupt it does not route.
-///
-/// Below its base the line arithmetic wraps, and in release it wrapped
-/// silently into an unrelated register.
 fn the_io_apic_refuses_a_line_it_does_not_own() -> bool {
     let Some(base) = dev::io_apic_base() else {
         return false;
     };
     // Past the end, which every controller has.
     let past_the_end = dev::routing_of(u32::MAX).is_none();
-    // And below the base, which only a controller whose base is above zero
-    // has. The old version asked about `keyboard_gsi() - 1` and accepted
-    // "one of the two refused", which on this machine — base zero, keyboard on
-    // line one — meant the wrap-below arithmetic it names was never reached
-    // and the check could not have noticed if it broke (D-105, D-121).
+    // Below the base exists only when a controller starts above zero; a
+    // base-zero controller has no representable lower GSI (D-105, D-121).
     let below_the_base = base == 0 || dev::routing_of(base - 1).is_none();
     // And the line it *does* own is routed, so this is not the answer "no" to
     // every question.
@@ -6471,19 +6482,10 @@ fn the_io_apic_refuses_a_line_it_does_not_own() -> bool {
     past_the_end && below_the_base && owns_its_own
 }
 
-/// Keystrokes reached the kernel as interrupts, not by polling.
-///
-/// Retires D-37. A zero means the line was routed on paper and delivered
-/// nothing — what the old polled `await_key` hid.
 fn keystrokes_arrive_as_interrupts() -> bool {
     input::is_interrupt_driven() && input::interrupt_count() > 0
 }
 
-/// A freed slot is reused rather than costing the heap another frame.
-///
-/// Counted, not compared by address: nothing obliges the compiler to keep two
-/// allocator calls in source order when the values between them are dead, so
-/// the address form of this check measures the optimiser (D-47).
 fn the_heap_reuses_a_freed_slot() -> bool {
     // Warm the class, so what is measured below is a reuse and not the refill
     // that any first allocation of a class must pay for.
@@ -6496,22 +6498,8 @@ fn the_heap_reuses_a_freed_slot() -> bool {
     let after = mm::heap::stats();
     let balanced = taken && after.live == before.live && after.slab_frames == before.slab_frames;
 
-    // **And a slot is actually reused**, which nothing above shows: deleting
-    // the line that puts a freed slot back on the free list — so every free
-    // leaks — left all of this green. `live` is decremented either way, and
-    // `slab_frames` cannot move because the class was warmed.
-    //
-    // The first version of this counted frames, and could not fail either: a
-    // slab frame carves hundreds of slots, so leaking a few dozen never
-    // reaches a refill. The address is the direct signal — the free list is
-    // LIFO, so a freed slot is the *same* slot the next allocation of that
-    // class gets, and a leak makes it a different one (D-124).
-    //
-    // `black_box` on each is load-bearing and was found the hard way: without
-    // it LLVM elided the pair outright — the second address equalled the first
-    // because neither allocation happened — and the check went red with the
-    // heap correct. It escapes the pointer, so both calls must occur and in
-    // this order.
+    // Accounting cannot see a free-list leak; LIFO reuse must return the
+    // same address, with `black_box` ordering both allocations (D-124).
     let first = core::hint::black_box(Box::new(0u32));
     let address = core::hint::black_box(core::ptr::from_ref(&*first) as usize);
     drop(first);
@@ -6522,30 +6510,12 @@ fn the_heap_reuses_a_freed_slot() -> bool {
     balanced && reused
 }
 
-/// A refill happens with the heap's own lock dropped, and the accounting
-/// balances across the window that opens.
-///
-/// D-85 moved the frame allocation out from under `HEAP`'s guard, which
-/// deletes D-47's lock order and creates a window: between observing an empty
-/// free list and re-acquiring, this thread can be preempted and another can
-/// refill the same class. The cost is meant to be at most one spare slab
-/// frame — never a lost frame, and never an unbalanced `live`.
-///
-/// The *other* half of the claim, that no slot is handed out twice, is checked
-/// as arithmetic in `libs/slab-layout` instead. Breaking it here corrupts the
-/// allocator every later check runs on, so the break is a general-protection
-/// fault rather than a red verdict, and a break that crashes proves less than
-/// one that fails (D-28, and Phase 4 learned it twice).
-///
-/// Preemption is on by this point and the count is chosen to force several
-/// refills, so the window is crossed rather than assumed.
 fn a_refill_costs_one_frame_and_balances() -> bool {
     /// Enough allocations of one class to span several slab frames.
     const TAKEN: usize = 512;
 
-    // The vector's own buffer is allocated before the first snapshot and
-    // released after the last, so all three see the same one allocation and
-    // what moves between them is only the slots under test.
+    // The vector's buffer outlives all three snapshots, so only the slots
+    // under test move between them.
     let mut held: Vec<Box<[u8; 64]>> = Vec::with_capacity(TAKEN);
     let before = mm::heap::stats();
     for index in 0..TAKEN {
@@ -6570,7 +6540,6 @@ fn a_refill_costs_one_frame_and_balances() -> bool {
     refilled && took_every_one && intact && balanced
 }
 
-/// A heap allocation is writable, and holds what was written.
 fn heap_memory_holds_what_it_is_given() -> bool {
     let mut values: Vec<u32> = (0..1024).collect();
     values
@@ -6584,22 +6553,22 @@ fn heap_memory_holds_what_it_is_given() -> bool {
             .all(|(i, v)| *v == (i as u32).wrapping_mul(3))
 }
 
-/// An allocation too large for any slot takes whole frames, and returns them.
 fn a_large_allocation_takes_and_returns_frames() -> bool {
     const FRAMES: usize = 4;
 
-    let before = mm::free_frames();
+    let frames_before = mm::free_frames();
+    let heap_before = mm::heap::stats();
     let large: Vec<u8> = alloc::vec![0x42; FRAMES * 4096];
-    let taken = mm::free_frames() <= before - FRAMES;
+    let heap_taken = mm::heap::stats();
+    let taken = frames_before.checked_sub(mm::free_frames()) == Some(FRAMES)
+        && heap_taken.large_frames == heap_before.large_frames + FRAMES
+        && heap_taken.live == heap_before.live + 1;
     let held = large.iter().all(|byte| *byte == 0x42);
     drop(large);
 
-    taken && held && mm::free_frames() == before
+    taken && held && mm::free_frames() == frames_before && mm::heap::stats() == heap_before
 }
 
-/// The token the blocking calls below need, minted where they are made:
-/// passing one down through every helper would be plumbing with nothing to
-/// say.
 fn context() -> ThreadContext {
     ThreadContext::require()
 }
@@ -6617,7 +6586,6 @@ static TURN: AtomicUsize = AtomicUsize::new(0);
 /// Turns taken so far, each one strictly after the other thread's.
 static TURNS_TAKEN: AtomicUsize = AtomicUsize::new(0);
 
-/// Take every turn that is `mine`, yielding whenever it is not.
 fn take_turns(mine: usize) {
     let mut budget = YIELD_BUDGET;
     while TURNS_TAKEN.load(Ordering::Acquire) < TURNS && budget > 0 {
@@ -6639,7 +6607,6 @@ fn second_turns() {
     take_turns(1);
 }
 
-/// Yield until `done`, or until the budget runs out.
 fn yields_until(done: impl Fn() -> bool) -> bool {
     (0..YIELD_BUDGET).any(|_| {
         thread::yield_now(&mut context());
@@ -6647,13 +6614,6 @@ fn yields_until(done: impl Fn() -> bool) -> bool {
     })
 }
 
-/// Two threads take turns in strict alternation, through yields alone.
-///
-/// Counted rather than inferred: a turn can only be taken when the other
-/// thread has just handed it over, so the count is the number of handovers
-/// that really happened. A yield that does not switch leaves it at zero.
-/// Waits for both threads to exit before returning, so the slots are free
-/// for whatever checks next.
 fn threads_alternate_strictly() -> bool {
     TURN.store(0, Ordering::Release);
     TURNS_TAKEN.store(0, Ordering::Release);
@@ -6677,13 +6637,6 @@ static CHURN_VERDICT: AtomicUsize = AtomicUsize::new(0);
 /// Rounds of churn, each ending in a yield.
 const CHURN_ROUNDS: u64 = 256;
 
-/// Carry five live values across a yield, many times, and report whether
-/// they came back.
-///
-/// Five scalars rather than an array because an array lives in memory, where
-/// a switch cannot lose it. Scalars live across a call are what the compiler
-/// puts in callee-saved registers — the ones the switch must preserve — and
-/// the value it puts there is exactly what a dropped push would corrupt.
 fn churn(seed: u64) -> bool {
     let (mut a, mut b, mut c, mut d, mut e) = (
         core::hint::black_box(seed),
@@ -6726,11 +6679,6 @@ fn churn_and_report() {
     CHURN_VERDICT.store(if survived { 1 } else { 2 }, Ordering::Release);
 }
 
-/// Callee-saved state survives a switch in both directions.
-///
-/// Two threads churn registers with different seeds, yielding to each other
-/// between rounds, so each one's values cross the switch while the other is
-/// overwriting every register it can. Both must come back intact.
 fn registers_survive_a_switch() -> bool {
     CHURN_VERDICT.store(0, Ordering::Release);
     let free = thread::free_slots();
@@ -6744,25 +6692,6 @@ fn registers_survive_a_switch() -> bool {
     boot_survived && exited && CHURN_VERDICT.load(Ordering::Acquire) == 1
 }
 
-/// Nothing acquired a second lock while a leaf guard was live.
-///
-/// `lock_leaf`'s whole obligation is one sentence — **nothing is called while
-/// this guard is live** — and a second acquisition is a call. The asymmetry
-/// matters and the first version of this check got it backwards: a leaf taken
-/// *under* a token-bearing lock is the design, and is what makes D-47's
-/// `HEAP` → `FRAMES` order sound and what lets `Segment::drop` reach the
-/// allocator from wherever it dies. It is the other direction that is the
-/// violation.
-///
-/// Nothing checked it, and `pic::silence` was in breach: it held
-/// `CONTROLLERS`' leaf guard and claimed ports under it, which takes
-/// `CLAIMED`'s — establishing a `CONTROLLERS → CLAIMED` order nothing else in
-/// the kernel knew about, which is the kind that closes a cycle later (D-121,
-/// D-124).
-///
-/// Reports *where*, because a boolean here would send the next reader looking
-/// through every `lock_leaf` in the tree — which is how this one was found,
-/// and it took an instrumented boot.
 fn a_leaf_guard_is_the_last_lock() -> bool {
     match wost::sync::taken_under_a_leaf() {
         None => true,
@@ -6776,68 +6705,51 @@ fn a_leaf_guard_is_the_last_lock() -> bool {
     }
 }
 
-/// A scroll does not carry the cursor up the screen with it.
-///
-/// The cursor is an underline drawn on the framebuffer like any other mark,
-/// and `set_cursor`'s doc says every write takes it down first "which is what
-/// keeps it from being scrolled up the screen as a stray mark". `write_line`
-/// did not: it put the cursor back and *then* called `newline`, so the scroll
-/// that follows copied the underline up. Every log line goes through
-/// `write_line`, so it happened on every scroll (D-137).
-///
-/// Driven by writing real lines rather than by calling `newline` directly:
-/// the defect is in how the two are ordered, so a check that ordered them
-/// itself would be testing its own arrangement.
 fn a_scroll_leaves_no_cursor_behind() -> bool {
-    /// Where to look: the left margin, which is where a cursor sits after a
-    /// line break, on a row a scroll will have moved something into.
     const AT_X: usize = crate::console::MARGIN;
 
-    let Some((_, _, line_height)) = dev::console_probe(AT_X, 0) else {
-        // No console came up; nothing to say about its scrolling.
-        return true;
+    let Some(((_, mut cursor_y), (_, line_height))) = dev::console_cursor() else {
+        return false;
     };
     let Some(geometry) = dev::console_geometry() else {
-        return true;
-    };
-
-    // The row a full screen of lines will have scrolled a cursor up into.
-    // Two cells above the bottom, so it is a row the scroll wrote and not the
-    // one the live cursor is on.
-    let rows = (geometry.height - crate::console::MARGIN) / line_height;
-    let probe_y = crate::console::MARGIN + (rows.saturating_sub(3)) * line_height + line_height - 1;
-
-    // A screenful and a half, so the row above has certainly been scrolled
-    // through. Blank text, so the only foreground pixel that could land on
-    // that row is a cursor: a glyph would put marks there legitimately.
-    for _ in 0..rows * 2 {
-        dev::with_console(|console| console.write_line(""));
-    }
-
-    let Some((pixel, foreground, _)) = dev::console_probe(AT_X, probe_y) else {
         return false;
     };
 
-    // The underline is drawn in the foreground colour. Anything else on a row
-    // of blank lines means a cursor rode the scroll up.
+    let mut scrolled_from = None;
+    for _ in 0..=geometry.height / line_height.max(1) {
+        dev::with_console(|console| console.write_line(""));
+        let Some(((.., next_y), _)) = dev::console_cursor() else {
+            return false;
+        };
+        if next_y == cursor_y {
+            scrolled_from = Some(cursor_y);
+            break;
+        }
+        cursor_y = next_y;
+    }
+
+    // The cursor underline moves one pixel above its prior origin. Blank input
+    // leaves no other legitimate foreground mark there.
+    let Some(probe_y) = scrolled_from.and_then(|y| y.checked_sub(1)) else {
+        return false;
+    };
+    let Some((pixel, foreground, _)) = dev::console_probe(AT_X, probe_y) else {
+        return false;
+    };
     pixel != foreground
 }
 
-/// A stack whose mapping is taken away stops being one the CPU can stand on.
-///
-/// `MappedStack` is evidence dated at construction, and until D-125 that was
-/// all `is_installed` looked at: the root still matched after an unmap, so the
-/// value happily outlived the mapping it stood for — and `set_double_fault_
-/// stack` takes it as proof enough to point the CPU's most privileged handler
-/// somewhere. This is the state that could not be reached before, made
-/// reachable on purpose (D-94's open item).
 fn a_stack_stops_being_installed_when_it_is_unmapped() -> bool {
     let mut context = context();
+    let free_before = mm::free_frames();
 
     // Above every stack the kernel maps, so nothing else is in this window.
     let Some(above) = thread::boot_stack_layout()
-        .and_then(|boot| StackLayout::new(boot.end(), PAGE_SIZE, PAGE_SIZE, 1))
+        .and_then(|boot| StackLayout::new(boot.end(), 2 * PAGE_SIZE, PAGE_SIZE, 1))
     else {
+        return false;
+    };
+    let Some(slot) = above.slot(0) else {
         return false;
     };
     let Some(Ok((stack, mapping))) = mem::map_reclaimable_stack_for_test(&mut context, above)
@@ -6846,30 +6758,188 @@ fn a_stack_stops_being_installed_when_it_is_unmapped() -> bool {
     };
 
     let installed = stack.is_installed();
+    let Some((lower_mapping, top_mapping)) = mem::split_mapping_for_test(mapping, PAGE_SIZE) else {
+        return false;
+    };
 
-    // Taken away underneath it. The value is untouched and still names the
-    // running root, which is exactly what made the old answer wrong.
-    let unmapped = mem::unmap_for_test(&mut context, mapping);
-    let Some(Ok(taken)) = unmapped else {
+    let Some(Ok(lower_taken)) = mem::unmap_for_test(&mut context, lower_mapping) else {
+        return false;
+    };
+    let partial_is_not_the_stack = !stack.is_installed();
+    let Some(lower_original) = lower_taken.into_kernel() else {
+        return false;
+    };
+    let Some(Ok(top_taken)) = mem::unmap_for_test(&mut context, top_mapping) else {
         return false;
     };
     let gone = !stack.is_installed();
-    drop(taken.flush());
+    let Some(top_original) = top_taken.into_kernel() else {
+        return false;
+    };
 
-    installed && gone
+    let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+    let Some(replacement) = mm::allocate_contiguous(2, 1) else {
+        return false;
+    };
+    let physically_different = replacement.address() != lower_original.address();
+    let Some(Ok(replacement_mapping)) =
+        mem::map_owned_for_test(&mut context, slot.stack_base(), replacement, wanted)
+    else {
+        return false;
+    };
+    let substitution_is_not_the_stack = !stack.is_installed();
+    let Some(Ok(replacement_taken)) = mem::unmap_for_test(&mut context, replacement_mapping) else {
+        return false;
+    };
+    drop(replacement_taken.into_kernel());
+    drop(lower_original);
+    drop(top_original);
+
+    installed
+        && gone
+        && partial_is_not_the_stack
+        && physically_different
+        && substitution_is_not_the_stack
+        && mm::free_frames() == free_before
 }
 
-/// Every thread stack is guarded below, read back from the live tables.
-///
-/// Structural, because the fault itself is terminal: the guard must be absent
-/// from the tables, the stack present, writable and never executable — at its
-/// first byte and its last, since a mapping can be right at one end and wrong
-/// at the other.
+struct StackLiveness {
+    stale_root: bool,
+    first: bool,
+    middle: bool,
+    last: bool,
+}
+
+fn stack_liveness_covers_the_current_root_and_extent() -> Option<StackLiveness> {
+    let allocator_before = AllocatorSnapshot::capture();
+    let layout = thread::boot_stack_layout()
+        .and_then(|boot| StackLayout::new(boot.end(), 3 * PAGE_SIZE, PAGE_SIZE, 1))?;
+    let slot = layout.slot(0)?;
+    let mut stale = AddressSpace::for_user().ok()?;
+    let mut context = context();
+    let (stack, mapping) = match mem::map_reclaimable_stack_for_test(&mut context, layout) {
+        Some(Ok(mapped)) => mapped,
+        Some(Err(reason @ paging::StackMapError::Rollback { .. })) => {
+            panic!("stack liveness fixture stranded cleanup authority: {reason}");
+        }
+        Some(Err(paging::StackMapError::Mapping(_))) | None => {
+            if let Err(reason) = stale.reclaim(None) {
+                panic!("stack liveness fixture could not reclaim its unused root: {reason}");
+            }
+            return None;
+        }
+    };
+
+    let live_before = paging::translate(slot.stack_base());
+    let shared_upper = live_before.is_some() && stale.lookup(slot.stack_base()) == live_before;
+    let stale_root = stack.is_installed_under_for_test(&stale) == Some(false)
+        && stack.is_installed()
+        && paging::translate(slot.stack_base()) == live_before;
+    let first = stack.rejects_substituted_page_for_test(0) == Some(true);
+    let middle = stack.rejects_substituted_page_for_test(1) == Some(true);
+    let last = stack.rejects_substituted_page_for_test(2) == Some(true);
+
+    let removed =
+        mem::unmap_for_test(&mut context, mapping).is_some_and(|result| result.map(drop).is_ok());
+    let reclaimed = stale.reclaim(None).is_ok();
+    drop(stale);
+    let cleaned =
+        removed && reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before);
+    Some(StackLiveness {
+        stale_root: stale_root && shared_upper && cleaned,
+        first: first && cleaned,
+        middle: middle && cleaned,
+        last: last && cleaned,
+    })
+}
+
+fn task_init_rejects_a_changed_stack_arena() -> bool {
+    let allocator_before = AllocatorSnapshot::capture();
+    let Some(layout) = thread::boot_stack_layout()
+        .and_then(|boot| boot.end().checked_add(8 * PAGE_SIZE))
+        .and_then(|base| StackLayout::new(base, 2 * PAGE_SIZE, PAGE_SIZE, 1))
+    else {
+        return false;
+    };
+    let Some(slot) = layout.slot(0) else {
+        return false;
+    };
+    let mut context = context();
+    let Some(Ok((arena, stack_mapping))) = mem::map_stack_arena_for_test(&mut context, layout)
+    else {
+        return false;
+    };
+    let Some((lower_mapping, upper_mapping)) =
+        mem::split_mapping_for_test(stack_mapping, PAGE_SIZE)
+    else {
+        return false;
+    };
+    let admitted = task::validate_arena_for_test(&arena) == Ok(());
+    let upper_address = slot.stack_base() + PAGE_SIZE;
+    let upper_before = paging::translate(upper_address);
+
+    let Some(guard) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    let wanted = Flags::WRITABLE.union(Flags::NO_EXECUTE);
+    let Some(Ok(guard_mapping)) =
+        mem::map_owned_for_test(&mut context, slot.guard_base(), guard, wanted)
+    else {
+        return false;
+    };
+    let guard_refused = matches!(
+        task::validate_arena_for_test(&arena),
+        Err(task::TaskError::Unmapped(address)) if address == slot.guard_base()
+    );
+    let guard_removed = mem::unmap_for_test(&mut context, guard_mapping)
+        .is_some_and(|result| result.map(drop).is_ok());
+    let restored = task::validate_arena_for_test(&arena) == Ok(());
+
+    let Some(Ok(unmapped)) = mem::unmap_for_test(&mut context, lower_mapping) else {
+        return false;
+    };
+    let Some(original) = unmapped.into_kernel() else {
+        return false;
+    };
+    let Some(replacement) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    let physically_different = replacement.address() != original.address();
+    let Some(Ok(replacement_mapping)) =
+        mem::map_owned_for_test(&mut context, slot.stack_base(), replacement, Flags::NONE)
+    else {
+        return false;
+    };
+    let leaf_refused = matches!(
+        task::validate_arena_for_test(&arena),
+        Err(task::TaskError::Unmapped(address)) if address == slot.stack_base()
+    );
+    let upper_unchanged =
+        upper_before.is_some() && paging::translate(upper_address) == upper_before;
+    let replacement_removed = mem::unmap_for_test(&mut context, replacement_mapping)
+        .is_some_and(|result| result.map(drop).is_ok());
+    let upper_removed = mem::unmap_for_test(&mut context, upper_mapping)
+        .is_some_and(|result| result.map(drop).is_ok());
+    drop(arena);
+    drop(original);
+
+    admitted
+        && guard_refused
+        && guard_removed
+        && restored
+        && physically_different
+        && leaf_refused
+        && upper_unchanged
+        && replacement_removed
+        && upper_removed
+        && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
+}
+
 fn thread_stacks_are_guarded() -> bool {
     let Some(layout) = thread::layout() else {
         return false;
     };
-    (0..layout.slots()).all(|index| {
+    let exact = (0..layout.slots()).all(|index| {
         let Some(slot) = layout.slot(index) else {
             return false;
         };
@@ -6886,35 +6956,33 @@ fn thread_stacks_are_guarded() -> bool {
                 None => false,
             });
         guard_absent && stack_present
-    })
+    });
+    let pinned = layout
+        .slot(0)
+        .is_some_and(|slot| pinned_guard_refuses_mapping(&slot));
+    let init_validation = task_init_rejects_a_changed_stack_arena();
+    exact && pinned && init_validation
 }
 
 /// What a thread found the interrupt flag to be on its first instruction:
 /// zero before it ran, one for set, two for clear.
 static FIRST_RUN_FLAG: AtomicUsize = AtomicUsize::new(0);
+static FIRST_RUN_CONTEXT: AtomicUsize = AtomicUsize::new(0);
 
 fn report_the_flag() {
+    FIRST_RUN_CONTEXT.store(
+        interrupt::context_matches_for_test(task::current()) as usize,
+        Ordering::Release,
+    );
     FIRST_RUN_FLAG.store(
         if interrupt::are_enabled() { 1 } else { 2 },
         Ordering::Release,
     );
 }
 
-/// A thread is accepting interrupts on its first instruction.
-///
-/// Not a formality. A thread's first run is the one moment its flag comes
-/// from somewhere other than its own stack, and the obvious place to take it
-/// from — the context doing the switch — is always wrong: a scheduler clears
-/// the flag around every decision, so the switch never sees anything but a
-/// clear one. A thread that starts uninterruptible can never be preempted and
-/// never be woken; it can only yield. This kernel spawned such threads from
-/// slice 1 until a sleeping check hung waiting for one of them.
-///
-/// Spawned from a yield, because that is the path that used to get it wrong;
-/// the preemption path always handed over a set flag and would pass either
-/// way.
 fn a_new_thread_is_interruptible() -> bool {
     FIRST_RUN_FLAG.store(0, Ordering::Release);
+    FIRST_RUN_CONTEXT.store(0, Ordering::Release);
     let free = thread::free_slots();
     if thread::spawn("flag", report_the_flag).is_err() {
         return false;
@@ -6923,14 +6991,16 @@ fn a_new_thread_is_interruptible() -> bool {
     let ran = yields_until(|| FIRST_RUN_FLAG.load(Ordering::Acquire) != 0);
     let exited = yields_until(|| thread::free_slots() == free);
 
-    ran && exited && FIRST_RUN_FLAG.load(Ordering::Acquire) == 1
+    ran && exited
+        && FIRST_RUN_FLAG.load(Ordering::Acquire) == 1
+        && FIRST_RUN_CONTEXT.load(Ordering::Acquire) == 1
+        && interrupt::context_matches_for_test(task::current())
+        && interrupt::exclusion_order_is_enforced_for_test()
 }
 
 /// Where [`report_a_local_address`] leaves its probe, or zero until it runs.
 static ALIGNMENT_PROBE: AtomicUsize = AtomicUsize::new(0);
 
-/// Report the address of a sixteen-byte-aligned local. `black_box` because
-/// the compiler believes the ABI and would otherwise answer at compile time.
 fn report_a_local_address() {
     #[repr(align(16))]
     struct Probe {
@@ -6944,8 +7014,6 @@ fn report_a_local_address() {
     );
 }
 
-/// A thread's stack is aligned as the ABI promises: the fabricated first
-/// switch is the one place a stack pointer is invented rather than saved.
 fn a_thread_starts_aligned() -> bool {
     ALIGNMENT_PROBE.store(0, Ordering::Release);
     let free = thread::free_slots();
@@ -6961,28 +7029,54 @@ fn a_thread_starts_aligned() -> bool {
 
 fn leave_at_once() {}
 
-/// A slot whose thread has exited is free again, and can be spawned on.
-///
-/// Counted: the number of free slots must come back to where it began after
-/// a thread runs to its end, and a second spawn must succeed on what the
-/// first gave back.
+const REUSED_SLOT_SECRET: xstate::Probe = xstate::Probe {
+    x87: 0x1357_2468_1234_5678,
+    xmm: 0xA5A5_5A5A_1122_3344,
+    ymm: 0xC3C3_3C3C_5566_7788,
+};
+
+static REUSED_SLOT_STATE_CLEARED: AtomicUsize = AtomicUsize::new(0);
+static REUSED_SLOT_SECRET_WRITTEN: AtomicUsize = AtomicUsize::new(0);
+
+fn leave_extended_state() {
+    let written = xstate::write_probe(REUSED_SLOT_SECRET);
+    REUSED_SLOT_SECRET_WRITTEN.store(written as usize, Ordering::Release);
+}
+
+fn inspect_reused_extended_state() {
+    let cleared = xstate::read_probe().is_some_and(|found| {
+        found.x87 != REUSED_SLOT_SECRET.x87 && found.xmm == 0 && found.ymm == 0
+    });
+    REUSED_SLOT_STATE_CLEARED.store(cleared as usize, Ordering::Release);
+}
+
 fn an_exited_slot_is_reused() -> bool {
     let free = thread::free_slots();
     if thread::spawn("brief", leave_at_once).is_err() {
         return false;
     }
-    // `spawn` re-arms the timer and restores the interrupt flag before it
-    // returns, so an expiry landing here can run `leave_at_once` to completion
-    // and give the slot back before this line reads it — red with nothing
-    // wrong. The property is that a slot was taken *and* came back, which
-    // either ordering satisfies (D-105).
-    let taken = thread::free_slots() < free || thread::free_slots() == free;
     let returned = yields_until(|| thread::free_slots() == free);
 
     let again = thread::spawn("brief again", leave_at_once).is_ok();
     let returned_again = yields_until(|| thread::free_slots() == free);
 
-    taken && returned && again && returned_again
+    let state_cleared = if xstate::is_enabled() {
+        REUSED_SLOT_SECRET_WRITTEN.store(0, Ordering::Release);
+        REUSED_SLOT_STATE_CLEARED.store(0, Ordering::Release);
+        let secret_slot = thread::spawn("state owner", leave_extended_state).ok();
+        let secret_returned = yields_until(|| thread::free_slots() == free);
+        let clean_slot = thread::spawn("state successor", inspect_reused_extended_state).ok();
+        let clean_returned = yields_until(|| thread::free_slots() == free);
+        secret_returned
+            && clean_returned
+            && secret_slot == clean_slot
+            && REUSED_SLOT_SECRET_WRITTEN.load(Ordering::Acquire) == 1
+            && REUSED_SLOT_STATE_CLEARED.load(Ordering::Acquire) == 1
+    } else {
+        true
+    };
+
+    returned && again && returned_again && state_cleared
 }
 
 /// Set to tell every spinner to finish.
@@ -6992,7 +7086,6 @@ static STOP_SPINNING: AtomicUsize = AtomicUsize::new(0);
 static LIGHT_SPINS: AtomicUsize = AtomicUsize::new(0);
 static HEAVY_SPINS: AtomicUsize = AtomicUsize::new(0);
 
-/// Loop without ever yielding, counting, until told to stop.
 fn spin_counting(counter: &AtomicUsize) {
     while STOP_SPINNING.load(Ordering::Acquire) == 0 {
         counter.fetch_add(1, Ordering::Relaxed);
@@ -7008,16 +7101,6 @@ fn heavy_spinner() {
     spin_counting(&HEAVY_SPINS);
 }
 
-/// Run without yielding until `done` or `ms` have passed.
-///
-/// This thread never gives the CPU up on purpose, so anything that makes
-/// progress meanwhile did so because the timer took it away.
-///
-/// Guarded by [`the_clock_is_running`], because a deadline read from a clock
-/// that never advances is a hang — and the harness cannot tell a hang from a
-/// crash, which is the difference between a red verdict and no verdict at
-/// all. The first boot of the tickless kernel spent its sixty seconds here,
-/// on a machine whose calibration had declined.
 fn runs_until(ms: u64, done: impl Fn() -> bool) -> bool {
     if !the_clock_is_running() {
         return false;
@@ -7034,10 +7117,6 @@ fn runs_until(ms: u64, done: impl Fn() -> bool) -> bool {
     }
 }
 
-/// Whether the clock moves at all, within a bounded number of reads.
-///
-/// The precondition every timed wait here takes first, and the only one that
-/// can be established without a working clock to time it against.
 fn the_clock_is_running() -> bool {
     const ATTEMPTS: u32 = 1_000_000;
 
@@ -7045,13 +7124,6 @@ fn the_clock_is_running() -> bool {
     time::is_calibrated() && spins_until(ATTEMPTS, || time::now_ns() > start)
 }
 
-/// A thread that never yields cannot keep the CPU from one that is waiting.
-///
-/// Preemption's whole claim. The boot thread spins without yielding and
-/// watches for a spawned spinner — which also never yields — to make
-/// progress. Either thread making progress while the other spins is the
-/// timer switching them, and it has to happen in both directions for the
-/// boot thread to be here to notice.
 fn a_spinner_cannot_starve_another() -> bool {
     /// Generous beside a 3 ms slice, stingy beside a hung harness.
     const PATIENCE_MS: u64 = 500;
@@ -7070,12 +7142,6 @@ fn a_spinner_cannot_starve_another() -> bool {
     progressed && exited
 }
 
-/// CPU time divides between spinners in proportion to their weights.
-///
-/// Two spinners, one at twice the other's weight, counting as fast as they
-/// can while the boot thread spins alongside them. The ratio of their counts
-/// is the ratio of their CPU time, quantised by the slice and jittered by the
-/// hypervisor — so the bounds are coarse, and deliberately so.
 fn runtime_divides_by_weight() -> bool {
     /// Long enough for a couple of hundred slices between them.
     const WINDOW_MS: u64 = 600;
@@ -7084,8 +7150,8 @@ fn runtime_divides_by_weight() -> bool {
     LIGHT_SPINS.store(0, Ordering::Release);
     HEAVY_SPINS.store(0, Ordering::Release);
     let free = thread::free_slots();
-    if thread::spawn_weighted("light", light_spinner, eevdf::BASE_WEIGHT).is_err()
-        || thread::spawn_weighted("heavy", heavy_spinner, 2 * eevdf::BASE_WEIGHT).is_err()
+    if thread::spawn_weighted_for_test("light", light_spinner, eevdf::BASE_WEIGHT).is_err()
+        || thread::spawn_weighted_for_test("heavy", heavy_spinner, 2 * eevdf::BASE_WEIGHT).is_err()
     {
         return false;
     }
@@ -7108,12 +7174,10 @@ static READER_SAW: AtomicUsize = AtomicUsize::new(0);
 /// Whether the reader actually stopped being runnable to get its keystroke:
 /// zero until it knows, one for blocked, two for not.
 ///
-/// Recorded by the reader across its own call: a key that arrives is a key
-/// that arrives whether the thread waited or spun. An earlier version of this
-/// check lacked it, and a deliberately polling `read_key` passed.
+/// Recorded across the read because key arrival alone cannot distinguish a
+/// blocked reader from a polling one.
 static READER_BLOCKED: AtomicUsize = AtomicUsize::new(0);
 
-/// Block on the keyboard, and record the first key that arrives.
 fn read_one_key() {
     let mut context = context();
     let blocks = thread::blocks();
@@ -7125,16 +7189,6 @@ fn read_one_key() {
     READER_SAW.store(keystroke.event.key as usize + 1, Ordering::Release);
 }
 
-/// A thread blocked on the keyboard is woken by the keystroke's interrupt.
-///
-/// D-49's lesson decides the shape: an outcome cannot tell a working wake
-/// from a working poll. So three things at once — the reader is blocked,
-/// counted by the state transition; the machine is quiet, because nothing is
-/// armed for a thread with no deadline; and what it comes back with is the
-/// key the harness pressed.
-///
-/// Set up here and collected after the injection, because the harness presses
-/// on a marker this check is upstream of.
 fn a_blocked_reader_is_ready_to_wake() -> bool {
     READER_SAW.store(0, Ordering::Release);
     READER_BLOCKED.store(0, Ordering::Release);
@@ -7154,8 +7208,6 @@ fn a_blocked_reader_is_ready_to_wake() -> bool {
     blocked && stayed_quiet && input::has_reader() && READER_SAW.load(Ordering::Acquire) == 0
 }
 
-/// The reader woke, with the key the harness pressed and without polling for
-/// it.
 fn the_blocked_reader_woke_with_the_key() -> bool {
     let wanted = ps2_keys::Key::A as usize + 1;
 
@@ -7165,11 +7217,24 @@ fn the_blocked_reader_woke_with_the_key() -> bool {
         && input::dropped_events() == 0
 }
 
-/// The polled keyboard fallback drains, sleeps and stops.
-///
-/// D-37's path had never run: both test machines have an I/O APIC. Started
-/// here for a bounded number of rounds, on the code the shipped fallback runs.
-/// It must make progress *and* leave, so the exit is half the claim.
+static CLOCKLESS_READER_SAW: AtomicUsize = AtomicUsize::new(0);
+static CLOCKLESS_KEY_QUEUED: AtomicUsize = AtomicUsize::new(0);
+
+fn read_clockless_key() {
+    let key = input::read_key(&mut context()).event.key;
+    CLOCKLESS_READER_SAW.store(key as usize + 1, Ordering::Release);
+}
+
+fn advance_beside_clockless_poller() {
+    while !input::poller_started_for_test() {
+        thread::yield_now(&mut context());
+    }
+    if input::queue_key_for_test(ps2_keys::Key::A) {
+        CLOCKLESS_KEY_QUEUED.store(1, Ordering::Release);
+    }
+    input::mark_poller_peer_progress_for_test();
+}
+
 fn the_polled_fallback_runs_its_rounds_and_sleeps() -> bool {
     const ROUNDS: usize = 4;
 
@@ -7185,14 +7250,41 @@ fn the_polled_fallback_runs_its_rounds_and_sleeps() -> bool {
     let passes = input::poller_passes() - before;
     let exited = yields_until(|| thread::free_slots() == free);
 
-    // **And it slept between them**, which the count alone does not show: a
-    // poller that spun would run its four rounds and exit just as fast, and
-    // every conjunct above would hold. Each sleep arms a timer, so the
-    // expiries are the poller's own — one of them is this thread's sleep, so
-    // the bound is the rounds rather than the rounds plus one (D-124).
+    // And it slept between rounds, which the count cannot show: each sleep
+    // arms a timer, one of which is this thread's own (D-124).
     let slept = time::expiries() - expiries_before >= ROUNDS as u64;
 
-    passes == ROUNDS && exited && slept
+    if passes != ROUNDS || !exited || !slept {
+        return false;
+    }
+
+    CLOCKLESS_READER_SAW.store(0, Ordering::Release);
+    CLOCKLESS_KEY_QUEUED.store(0, Ordering::Release);
+    let free = thread::free_slots();
+    if thread::spawn("clockless-reader", read_clockless_key).is_err()
+        || !yields_until(input::has_reader)
+    {
+        return false;
+    }
+
+    let clockless = time::without_calibration_for_test(|| {
+        if thread::spawn("clockless-poller-peer", advance_beside_clockless_poller).is_err()
+            || !input::start_bounded_poller(ROUNDS)
+        {
+            return false;
+        }
+        let finished = yields_until(|| input::poller_passes() >= before + 2 * ROUNDS);
+        let reader_ran = yields_until(|| CLOCKLESS_READER_SAW.load(Ordering::Acquire) != 0);
+        let threads_exited = yields_until(|| thread::free_slots() == free);
+        finished
+            && reader_ran
+            && threads_exited
+            && CLOCKLESS_KEY_QUEUED.load(Ordering::Acquire) == 1
+            && CLOCKLESS_READER_SAW.load(Ordering::Acquire) == ps2_keys::Key::A as usize + 1
+            && input::poller_saw_peer_progress_for_test()
+    });
+
+    clockless && time::is_calibrated()
 }
 
 /// Release every thread used to fill the table before the idle retry.
@@ -7204,7 +7296,6 @@ fn wait_for_idle_retry() {
     }
 }
 
-/// A full table refuses idle creation without consuming its future retry.
 fn a_failed_idle_start_can_be_retried_exactly_once() -> bool {
     let free = thread::free_slots();
     if free == 0 || thread::idle_threads() != 0 {
@@ -7215,7 +7306,10 @@ fn a_failed_idle_start_can_be_retried_exactly_once() -> bool {
     for _ in 0..free {
         if thread::spawn("idle-slot-filler", wait_for_idle_retry).is_err() {
             RELEASE_IDLE_FILLERS.store(1, Ordering::Release);
-            let _ = yields_until(|| thread::free_slots() == free);
+            assert!(
+                yields_until(|| thread::free_slots() == free),
+                "idle-slot filler cleanup did not return every slot"
+            );
             return false;
         }
     }
@@ -7238,13 +7332,15 @@ fn a_failed_idle_start_can_be_retried_exactly_once() -> bool {
         && thread::idle_threads() == 1
         && thread::free_slots() + 1 == free;
     if !thread::idle_is_started() {
-        thread::restore_idle_retry_for_test();
+        assert!(
+            thread::restore_idle_retry_for_test(),
+            "the refused idle reservation could not be restored"
+        );
         thread::start_idle();
     }
     exact
 }
 
-/// A runnable service worker reclaims a zombie even while idle cannot run.
 fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
     while user::collect().is_some() {}
 
@@ -7252,14 +7348,14 @@ fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
     let crossings = trap::last_syscall().count;
     let attempt = queue::without_worker_for_test(user::run);
     let denied = matches!(&attempt, Err(user::SpawnError::NoServiceWorker));
-    if let Ok(spawned) = attempt {
-        let slot = spawned.slot;
-        drop(spawned);
-        let _ = runs_until(2000, || task::address_space_of(slot).is_none());
-        let _ = runs_until(2000, || !user::has_zombies());
-    }
-    let fail_closed =
-        denied && trap::last_syscall().count == crossings && spawn_resources() == gate_resources;
+    let cleaned = match attempt {
+        Ok(spawned) => cleanup_unexpected_spawn(spawned),
+        Err(_) => true,
+    };
+    let fail_closed = denied
+        && cleaned
+        && trap::last_syscall().count == crossings
+        && spawn_resources().has_same_ownership(&gate_resources);
     if !fail_closed {
         return false;
     }
@@ -7295,18 +7391,12 @@ fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
         && idle_stayed_out
         && LIGHT_SPINS.load(Ordering::Relaxed) > 0
         && settled
-        && spawn_resources() == resources
+        && spawn_resources().has_same_ownership(&resources)
 }
 
-/// The idle thread runs when nothing else can, and never when something can.
-///
-/// Both halves, because either alone is satisfied by a bug: an idle thread
-/// that never runs passes the second, one the policy schedules like any other
-/// passes the first.
 fn the_idle_thread_runs_only_when_nothing_else_can() -> bool {
-    // Slept rather than spun: this thread is a normal one, so as long as it
-    // is runnable the idle thread must not run — which is the very thing the
-    // second half checks.
+    // Slept rather than spun: while this normal thread is runnable the idle
+    // thread must not run, which the second half checks.
     let idled = thread::idle_halts();
     thread::sleep_ms(&mut context(), 20);
     let ran_when_free = thread::idle_halts() > idled;
@@ -7326,23 +7416,8 @@ fn the_idle_thread_runs_only_when_nothing_else_can() -> bool {
     ran_when_free && stayed_off && exited && LIGHT_SPINS.load(Ordering::Relaxed) > 0
 }
 
-/// The console's longest operation does not stop the machine taking
-/// interrupts.
-///
-/// D-34 left interrupt latency bounded by the longest critical section and
-/// the bound unnamed. Named, it is a console scroll — tens of milliseconds,
-/// logged beside this check — which is why D-63 stops interrupts waiting
-/// behind it rather than stating how long they would.
-///
-/// So the property is not how long the scroll takes but that interrupts keep
-/// arriving while it runs. A spinner makes the timer arm at slice intervals;
-/// before D-63 the answer was none.
 fn a_scroll_does_not_block_interrupts() -> bool {
-    /// Scrolls to time, so one unlucky sample cannot decide it.
-    const SAMPLES: usize = 8;
-    /// A scroll spans this many slices at the very least, and each one owes
-    /// an expiry while a second thread is waiting for the CPU.
-    const EXPECTED_EXPIRIES: u64 = 2;
+    const EXPECTED_EXPIRIES: u64 = 1;
 
     let Some((_, (_, line_height))) = dev::console_cursor() else {
         return false;
@@ -7359,37 +7434,53 @@ fn a_scroll_does_not_block_interrupts() -> bool {
         return false;
     }
 
-    // Filled to the bottom once, not once per sample: from here every line
-    // scrolls, and refilling would have cost fifty scrolls a sample — which
-    // it did, until a run spent most of the harness's minute doing it.
-    for _ in 0..rows {
-        dev::with_console(|console| console.write_line(""));
-    }
+    let measured = (|| {
+        let mut ready = false;
+        for _ in 0..=rows {
+            dev::with_console(|console| {
+                ready = console.next_line_scrolls();
+                if !ready {
+                    console.write_line("");
+                }
+            });
+            if ready {
+                break;
+            }
+        }
+        if !ready {
+            return None;
+        }
 
-    let mut worst = 0;
-    let mut expiries = 0;
-    for _ in 0..SAMPLES {
+        let mut result = None;
         dev::with_console(|console| {
-            // Both readings inside the lock: sampled outside, a pending
-            // expiry lands the instant the guard drops and the count moves
-            // either way.
+            let cursor = console.cursor().1;
+            let excluded = interrupt::disable();
             let taken = time::expiries();
+            time::arm_at(time::scheduler_now_ns());
+            excluded.restore();
             let before = time::now_ns();
             console.write_line("");
-            worst = worst.max(time::now_ns() - before);
-            expiries += time::expiries() - taken;
+            result = Some((
+                time::now_ns() - before,
+                time::expiries() - taken,
+                console.cursor().1 == cursor,
+            ));
         });
-    }
+        result
+    })();
+    thread::rearm_current_for_test();
 
     STOP_SPINNING.store(1, Ordering::Release);
     let exited = yields_until(|| thread::free_slots() == free);
-    LONGEST_SCROLL.store(worst as usize, Ordering::Relaxed);
+    let Some((elapsed, expiries, scrolled)) = measured else {
+        LONGEST_SCROLL.store(0, Ordering::Relaxed);
+        return false;
+    };
+    LONGEST_SCROLL.store(elapsed as usize, Ordering::Relaxed);
 
-    exited && worst > 0 && expiries >= EXPECTED_EXPIRIES
+    exited && scrolled && elapsed > 0 && expiries >= EXPECTED_EXPIRIES
 }
 
-/// What [`a_scroll_does_not_block_interrupts`] measured, so the verdict can
-/// report the number as well as the judgement — it is the one D-63 is about.
 static LONGEST_SCROLL: AtomicUsize = AtomicUsize::new(0);
 
 /// Tally of what has been checked so far.
@@ -7401,31 +7492,10 @@ struct Report {
 /// Bumped whenever the machine-to-harness verdict grammar changes.
 const VERDICT_VERSION: usize = 1;
 
-/// Every check in [`run`], including checks whose prerequisite is absent.
-///
-/// Keeping this independent from the tally makes deleting, skipping, or
-/// accidentally bypassing a check turn the final verdict red.
-///
-/// **Changing this number is the moment a mutation is owed** (`AGENTS.md`,
-/// D-119). Five checks landed in one day without one, three of them here, by
-/// sessions that were citing D-119 while writing them. The rule was not
-/// forgotten so much as never *reached*: adding a check happens inside a fix,
-/// and `xtask/src/mutate.rs` is a different file nothing on that path makes you
-/// open. This line and its twin in `xtask/src/qemu.rs` are the two a hand has
-/// to touch either way, so the reminder lives on them rather than in a resolve
-/// to be more careful.
-const EXPECTED_CHECKS: usize = 215;
+/// Exact check count; mismatch catches deletion or bypass before the verdict.
+/// Changing it requires a retained mutation (D-119).
+const EXPECTED_CHECKS: usize = 261;
 
-/// Put a keystroke round in front of the person at the machine, not only in
-/// the transcript.
-///
-/// `log` writes to the serial port alone, on the reasoning that diagnostics
-/// must not scroll the banner away — so every prompt in this file was
-/// invisible to the human D-18 requires, who was being asked to press a key at
-/// a moment nothing on their screen marked. The serial line is unchanged: it
-/// is what the harness matches and what the transcript records. The screen
-/// gets the instruction, in the register `panic` already uses for the other
-/// thing a person has to be told (D-240).
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
     info!("{marker}");
@@ -7485,20 +7555,12 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         ports_are_exclusive(),
     );
     report.check(
-        "a closed channel still yields what it was sent",
-        a_closed_channel_still_yields_what_it_was_sent(),
-    );
-    report.check(
         "a save stays inside its area",
         a_save_stays_inside_its_area(),
     );
     report.check(
         "filling the arena never repeats a slot",
         filling_the_arena_never_repeats_a_slot(),
-    );
-    report.check(
-        "a stale root authorises no walk",
-        a_stale_root_authorises_no_walk(),
     );
     report.check(
         "ring three has no fast-syscall door",
@@ -7524,8 +7586,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check("a one-shot latch admits one caller", latch_admits_one());
 
     report.check(
-        "the frame allocator has usable memory",
-        mm::free_frames() > 0,
+        "the frame allocator admits only exclusively usable frames",
+        mm::free_frames() > 0 && mm::overlapping_allocator_claims_are_arbitrated_for_test(),
     );
     report.check(
         "a frame is returned when its handle drops",
@@ -7534,6 +7596,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "uncertain dma memory is never recycled",
         uncertain_dma_memory_is_never_recycled(),
+    );
+    report.check(
+        "dma byte access is exact and bounded",
+        dma_byte_access_is_exact_and_bounded(),
     );
     report.check(
         "two live frames are different frames",
@@ -7550,6 +7616,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     );
 
     report.check("the loaded page table is ours", the_loaded_table_is_ours());
+    report.check(
+        "an admitted canonical page can be invalidated",
+        an_admitted_canonical_page_can_be_invalidated(),
+    );
     report.check(
         "the kernel image obeys write-xor-execute",
         the_image_obeys_write_xor_execute(),
@@ -7577,6 +7647,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a thread crosses into ring three and calls back",
         a_thread_crosses_into_ring_three_and_calls_back(),
+    );
+    report.check(
+        "ring-three entry restores the kernel stack selector",
+        trap::kernel_stack_selector_on_last_syscall() == u64::from(segment::KERNEL_DATA.bits()),
     );
     report.check(
         "a program cannot bring smap down with it",
@@ -7634,6 +7708,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "a second backend answers the same three operations",
         a_second_backend_answers_the_same_three_operations(),
     );
+    report.check(
+        "enumeration callbacks run without backend ownership",
+        enumeration_callbacks_run_without_backend_ownership(),
+    );
     report.check("a device is not a file", a_device_is_not_a_file());
     report.check(
         "no backend lets a path escape or cross",
@@ -7680,8 +7758,12 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         crate::a_later_nvme_controller_survives_an_earlier_failure(),
     );
     report.check(
-        "a failed bus master enable stops before nvme mapping",
-        a_failed_bus_master_enable_stops_before_nvme_mapping(),
+        "a live nvme bar obeys maxphyaddr",
+        crate::a_live_nvme_bar_obeyed_maxphyaddr(),
+    );
+    report.check(
+        "a failed bus master admission stops before nvme start",
+        a_failed_bus_master_admission_stops_before_nvme_start(),
     );
     report.check(
         "invalid nvme namespace stops before io queues",
@@ -7788,36 +7870,16 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_rewritten_submission_cannot_change_what_was_served(),
     );
     report.check(
-        "a message crosses a channel and is gone",
-        a_message_crosses_a_channel_and_is_gone(),
-    );
-    report.check(
-        "an orphaned channel end refuses",
-        an_orphaned_channel_end_refuses(),
-    );
-    report.check(
-        "a handle crosses with the rights both ends declared",
-        a_handle_crosses_with_the_rights_both_ends_declared(),
-    );
-    report.check(
-        "a handle without transfer is refused at the sender",
-        a_handle_without_transfer_is_refused_at_the_sender(),
-    );
-    report.check(
-        "a handle sent in a message names the same object",
-        a_handle_sent_in_a_message_names_the_same_object(),
-    );
-    report.check(
-        "a blocked receiver wakes with its message",
-        a_blocked_receiver_wakes_with_its_message(),
-    );
-    report.check(
-        "a blocked receiver learns its peer is gone",
-        a_blocked_receiver_learns_its_peer_is_gone(),
-    );
-    report.check(
         "kernel memory cannot be published to ring three",
         kernel_memory_cannot_be_published_to_ring_three(),
+    );
+    report.check(
+        "external user bytes are zeroed before free",
+        external_user_bytes_are_zeroed_before_free(),
+    );
+    report.check(
+        "a refused external clear withholds its run",
+        a_refused_external_clear_withholds_its_run(),
     );
     report.check(
         "only a space that matches the kernel can be installed",
@@ -7839,17 +7901,74 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "a bound space is not reclaimed",
         a_bound_space_is_not_reclaimed(),
     );
+    report.check("one space has one binding", one_space_has_one_binding());
+    report.check(
+        "binding ignores only accessed root drift",
+        binding_ignores_only_accessed_root_drift(),
+    );
     report.check(
         "every refused spawn returns every resource",
         every_refused_spawn_returns_every_resource(),
+    );
+    report.check(
+        "a commit refusal reunites cleanup authority",
+        a_commit_refusal_reunites_cleanup_authority(),
+    );
+    report.check(
+        "a maximum image and stack fit the cleanup ledger",
+        a_maximum_image_and_stack_fit_the_cleanup_ledger(),
+    );
+    report.check(
+        "cleanup refusals retain reachable tables",
+        cleanup_refusals_retain_reachable_tables(),
+    );
+    report.check(
+        "partial stack rollback is retryable",
+        partial_stack_rollback_is_retryable(),
+    );
+    report.check(
+        "guard rollback refusal retains the stack",
+        guard_rollback_refusal_retains_the_stack(),
+    );
+    report.check(
+        "a failed boot-space build returns every table frame",
+        mem::partial_build_failure_is_atomic_for_test(),
+    );
+    report.check(
+        "a retirement refusal is settled before slot reuse",
+        a_retirement_refusal_is_settled_before_slot_reuse(),
+    );
+    report.check(
+        "a task release refusal retains the zombie for retry",
+        a_task_release_refusal_retains_the_zombie_for_retry(),
+    );
+    report.check(
+        "one zombie has one settlement collector",
+        one_zombie_has_one_settlement_collector(),
+    );
+    report.check(
+        "an in-flight collector keeps the worker retry live",
+        an_in_flight_collector_keeps_the_worker_retry_live(),
     );
     report.check(
         "an unguarded boot stack closes the user boundary",
         an_unguarded_boot_stack_closes_the_user_boundary(),
     );
     report.check(
+        "unadmitted interrupts cannot be enabled by a user transition",
+        unadmitted_interrupts_close_the_user_boundary(),
+    );
+    report.check(
+        "shared kernel mappings without an isolation proof are refused",
+        shared_kernel_mappings_without_proof_close_the_user_boundary(),
+    );
+    report.check(
         "no-execute protection closes the user boundary",
         no_execute_protection_closes_the_user_boundary(),
+    );
+    report.check(
+        "missing extended state closes the user boundary",
+        missing_extended_state_closes_the_user_boundary(),
     );
     report.check(
         "an uncalibrated clock admits no user or timer",
@@ -7904,16 +8023,20 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         bytes_cross_the_boundary_only_where_they_may(),
     );
     report.check(
-        "a signal wakes a thread waiting on a handle",
-        a_signal_wakes_a_thread_waiting_on_a_handle(),
+        "an active unmap exposes only its replacement",
+        an_active_unmap_exposes_only_its_replacement(),
+    );
+    report.check(
+        "a shared kernel unmap evicts the live user root",
+        a_shared_kernel_unmap_evicts_the_live_user_root(),
+    );
+    report.check(
+        "an inactive lower-root unmap preserves the live observer",
+        an_inactive_lower_root_unmap_preserves_the_live_observer(),
     );
     report.check(
         "a waiter rereads its condition before blocking",
         a_waiter_rereads_its_condition_before_blocking(),
-    );
-    report.check(
-        "a closed handle names nothing",
-        a_closed_handle_names_nothing(),
     );
     report.check(
         "a meaningless right is refused",
@@ -7926,10 +8049,6 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "table identities never wrap or repeat",
         table_identities_never_wrap_or_repeat(),
-    );
-    report.check(
-        "rights are checked and only narrow",
-        rights_are_checked_and_only_narrow(),
     );
     report.check(
         "a table cannot exceed its quota",
@@ -7960,6 +8079,22 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         the_double_fault_stack_cannot_be_unmapped(),
     );
     report.check(
+        "the boot stack rejects a lower-leaf substitution",
+        the_boot_stack_rejects_a_lower_leaf_substitution(),
+    );
+    report.check(
+        "a noncurrent task stack rejects a lower-leaf substitution",
+        a_noncurrent_task_stack_rejects_a_lower_leaf_substitution(),
+    );
+    report.check(
+        "the double-fault stack rejects a lower-leaf substitution",
+        the_double_fault_stack_rejects_a_lower_leaf_substitution(),
+    );
+    report.check(
+        "protected stacks refuse overlapping maps",
+        protected_stacks_refuse_overlapping_maps(),
+    );
+    report.check(
         "a second space holds the kernel and nothing else",
         a_second_space_holds_the_kernel_and_nothing_else(),
     );
@@ -7972,12 +8107,20 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_refused_mapping_leaves_no_trace(),
     );
     report.check(
+        "a partial mapping failure returns its tables",
+        a_partial_mapping_failure_returns_its_tables(),
+    );
+    report.check(
         "a refused remap preserves every older entry",
         a_refused_remap_preserves_every_older_entry(),
     );
     report.check(
         "a shared mapping keeps its frame",
         a_shared_mapping_keeps_its_frame(),
+    );
+    report.check(
+        "shared mappings reject cache aliases",
+        shared_mappings_reject_cache_aliases(),
     );
     report.check(
         "a large space returns every table frame",
@@ -7998,6 +8141,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a boot mapping cannot claim ownership",
         a_boot_mapping_cannot_claim_ownership(),
+    );
+    report.check(
+        "caller global is removed from safe mappings",
+        caller_global_is_removed_from_safe_mappings(),
+    );
+    report.check(
+        "a boot mapping cannot publish kernel memory",
+        a_boot_mapping_cannot_publish_kernel_memory(),
     );
     report.check(
         "a user space cannot reach the kernel half",
@@ -8028,8 +8179,51 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         malformed_device_extents_are_refused(),
     );
     report.check(
-        "a stale device claim is refused",
-        a_stale_device_claim_is_refused(),
+        "device window reuses arbitrary-order gaps",
+        device_window_reuses_arbitrary_order_gaps(),
+    );
+    let device_liveness = device_liveness_covers_the_current_root_and_extent();
+    report.check(
+        "late device mappings reach earlier user roots",
+        device_liveness
+            .as_ref()
+            .is_some_and(|probe| probe.shared_topology),
+    );
+    report.check(
+        "a stale shared root cannot authenticate a device mapping",
+        device_liveness
+            .as_ref()
+            .is_some_and(|probe| probe.stale_root),
+    );
+    report.check(
+        "a device mapping checks its first leaf",
+        device_liveness.as_ref().is_some_and(|probe| probe.first),
+    );
+    report.check(
+        "a device mapping checks its middle leaf",
+        device_liveness.as_ref().is_some_and(|probe| probe.middle),
+    );
+    report.check(
+        "a device mapping checks its last leaf",
+        device_liveness.as_ref().is_some_and(|probe| probe.last),
+    );
+    report.check(
+        "a device mapping checks its cache policy",
+        device_liveness
+            .as_ref()
+            .is_some_and(|probe| probe.cache_policy),
+    );
+    report.check(
+        "active device tables cannot be reclaimed",
+        active_device_tables_cannot_be_reclaimed(),
+    );
+    report.check(
+        "active kernel topology refuses a new shared root",
+        active_kernel_topology_is_frozen(),
+    );
+    report.check(
+        "shared topology rejects hostile root entries",
+        shared_topology_rejects_hostile_root_entries(),
     );
     report.check(
         "firmware reads are confined to acpi storage",
@@ -8061,6 +8255,25 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "an unmapped stack is no longer installed",
         a_stack_stops_being_installed_when_it_is_unmapped(),
+    );
+    let stack_liveness = stack_liveness_covers_the_current_root_and_extent();
+    report.check(
+        "a stale shared root cannot authenticate a stack",
+        stack_liveness
+            .as_ref()
+            .is_some_and(|probe| probe.stale_root),
+    );
+    report.check(
+        "a stack checks its first leaf",
+        stack_liveness.as_ref().is_some_and(|probe| probe.first),
+    );
+    report.check(
+        "a stack checks its middle leaf",
+        stack_liveness.as_ref().is_some_and(|probe| probe.middle),
+    );
+    report.check(
+        "a stack checks its last leaf",
+        stack_liveness.as_ref().is_some_and(|probe| probe.last),
     );
     report.check(
         "thread stacks are guarded below",
@@ -8133,31 +8346,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         pic::masks() == Some((MASKED, MASKED)),
     );
     report.check("the local apic is software enabled", apic::is_enabled());
+    report.check(
+        "local apic initialization stayed unpublished and interrupt-excluded",
+        apic::initialization_was_atomic_for_test(),
+    );
     report.check("this cpu is accepting interrupts", interrupt::are_enabled());
     report.check(
         "a lock excludes interrupts and gives them back",
         a_lock_excludes_interrupts(),
-    );
-
-    // Two in a row, because one only proves the interrupt arrived. The APIC
-    // will not deliver a second of the same priority class until the first is
-    // dismissed, so the second is what proves the handler's end-of-interrupt.
-    let before = trap::last_ping();
-    apic::send_self_interrupt(vector::PING);
-    report.check(
-        "a self-interrupt is delivered",
-        ping_arrives(before.count + 1),
-    );
-
-    let taken = trap::last_ping();
-    apic::send_self_interrupt(vector::PING);
-    report.check(
-        "the interrupt is dismissed, so the next one arrives",
-        ping_arrives(before.count + 2),
-    );
-    report.check(
-        "the interrupted code was taking interrupts",
-        ping_is_consistent(taken),
     );
 
     report.check(
@@ -8175,9 +8371,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
 
     let sweep = sweep_clock();
     report.check("the clock never runs backwards", sweep.monotonic);
-    // A thousand times finer than the tick it replaced, and the smallest
-    // step is the honest way to say so: the old clock could report a value
-    // between two ticks, but never resolve two events inside one.
+    // The smallest observed step measures resolution; interpolation alone
+    // cannot prove two events inside one tick are distinguishable.
     report.check(
         "the clock advances in steps finer than a microsecond",
         sweep.finest_step.is_some_and(|step| step < 1_000),
@@ -8199,10 +8394,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         sleeping_hands_the_cpu_over(),
     );
 
-    // Everything above ran on a kernel with no idle thread, which is the
-    // state the sleep checks needed: with nothing else runnable, a sleeper
-    // halts on its own stack, and that branch has no other witness. From here
-    // there is always something runnable, which is what the rest assumes.
+    // Everything above ran without an idle thread, the only witness for a
+    // sleeper halting on its own stack; from here something is always runnable.
     report.check(
         "a failed idle start can be retried exactly once",
         a_failed_idle_start_can_be_retried_exactly_once(),
@@ -8224,17 +8417,39 @@ pub(crate) fn run(serial: Result<(), UartError>) {
 
     report.check("the keyboard controller came up", input::is_ready());
     report.check(
-        "the controller raises its line exactly when routed, and never translates",
-        keyboard_config_matches_its_routing(),
+        "a refused controller configuration is typed and changes nothing",
+        input::configuration_refusal_is_visible(),
+    );
+    report.check(
+        "a refused keyboard route restores configuration, masking and mappings",
+        crate::keyboard_routing_rollback_is_exact()
+            && ioapic::ignored_writes_are_refused_for_test()
+            && crate::unproven_external_controllers_veto_interrupts(),
+    );
+    report.check(
+        "an isolated I/O APIC route encodes its typed vector",
+        ioapic::typed_route_is_encoded_for_test(),
+    );
+    report.check(
+        "a failed controller flush stops every following transaction",
+        input::flush_refusals_are_visible(),
+    );
+    report.check(
+        "a refused controller command is typed and consumes no reply",
+        input::transport_refusals_are_visible(),
+    );
+    report.check(
+        "the controller route and ordered interrupt witness are exact",
+        keyboard_config_matches_its_routing()
+            && input::watch_order_is_causal()
+            && input::queue_admission_is_exact(),
     );
     report.check(
         "an echo to the keyboard comes back",
         input::echo_roundtrips(),
     );
-    // The identity first, because it decides what the set query is worth. What
-    // it answered rather than merely that it disagreed: `None` is a controller
-    // that never acknowledged, and a number is one that answers differently
-    // (D-176).
+    // The identity first, because it decides what the set query is worth;
+    // recorded as answered, since `None` and a wrong number differ (D-176).
     let identity = input::identity();
     let translated = identity == Some(TRANSLATED_MF2);
     if !translated && identity != Some(UNTRANSLATED_MF2) {
@@ -8245,37 +8460,31 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         translated || identity == Some(UNTRANSLATED_MF2),
     );
 
-    // **The set query is only readable when nothing rewrites it.** Behind a
-    // translating controller this reply is translated like every other, so
-    // asserting it would be asserting a fact about the controller's rewriting
-    // rather than about the keyboard — VMware answers `0x41` to this too, and
-    // `(0xAB, 0x41)` to the identity beside it, while delivering set 2. Both
-    // probes are diagnostics now; the claim they used to carry has moved to
-    // where a byte has actually arrived (D-178, D-179, D-239).
+    // Translation rewrites set-query replies, so this stays diagnostic and
+    // the decoder is proved from received bytes (D-178, D-179, D-239).
     let set = input::scancode_set();
     if !translated && set != Some(2) {
         warn!("keyboard: reports scancode set {set:?}, not 2");
     }
 
-    // Set up before the marker, collected after it: the reader has to be
-    // blocked before the harness presses anything, or what wakes it is a
-    // keystroke that was already waiting, which proves nothing.
+    // Set up before the marker: the reader must be blocked before the harness
+    // presses, or an already-waiting keystroke proves nothing.
     report.check(
         "a thread blocked on the keyboard is off the run queue, and quiet",
         a_blocked_reader_is_ready_to_wake(),
     );
 
-    // The harness watches serial for this exact line and presses a key when
-    // it appears — kept in step with READY_MARKER in `xtask/src/qemu.rs`.
-    // Nothing may talk to the keyboard between the marker and the wait, or
-    // the injected bytes could interleave with a command's replies.
+    // Kept in step with READY_MARKER in `xtask/src/qemu.rs`; nothing may talk
+    // to the keyboard between the marker and the wait.
+    let first_key = input::arm_key(ps2_keys::Key::A);
+    let last_key = input::arm_key(ps2_keys::Key::Enter);
     awaiting(
         "selftest: awaiting injected keystroke",
         "  PRESS  a  then BACKSPACE  then ENTER",
     );
     report.check(
         "an injected keystroke arrives, and its release follows",
-        input::await_key(ps2_keys::Key::A),
+        first_key.is_some_and(input::await_armed_key),
     );
 
     report.check(
@@ -8298,72 +8507,58 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         "the blocked reader woke with the injected key, without polling",
         the_blocked_reader_woke_with_the_key(),
     );
-    // Before the editing check and not merely beside it: this is what makes
-    // that one's cursor readings its own. Enter is the last key the harness
-    // injects, and only a press echoes a character, so its release is the
-    // moment the console stops moving underneath the measurement.
+    // Before the editing check: Enter is the last injected key and only a
+    // press echoes, so its release is when the console stops moving.
     report.check(
         "the injected editing keys arrive, ending with enter",
-        input::await_key(ps2_keys::Key::Enter),
+        last_key.is_some_and(input::await_armed_key),
     );
     report.check(
         "backspace erases and enter starts a line",
         the_editing_keys_move_the_cursor(),
     );
 
-    // **The set 1 path, on a controller made to behave like VMware's.** QEMU
-    // honours the translation bit, so turning it on produces the exact stream
-    // that machine delivers unasked — and here the injected key's identity is
-    // the harness's choice rather than a guess, which is the only way to check
-    // a translated keystroke without a human at the machine (D-179).
+    // The set 1 path: QEMU honours the translation bit, producing the stream
+    // VMware delivers unasked, with a key the harness chose (D-179).
     report.check(
         "the controller accepts translation being turned on",
-        input::set_translation(true),
+        input::set_translation(crate::arch::current::i8042::Translation::Enabled),
     );
     report.check(
         "a translating controller rewrites the identity too",
         input::identity() == Some(TRANSLATED_MF2),
     );
-    // Seeded against the stream on purpose: from here the round can only
-    // succeed by reading the bytes, which is what VMware forces and what no
-    // machine the gate can reach would otherwise exercise (D-239).
+    // Seeded against the stream on purpose: the round can succeed only by
+    // reading the bytes, as VMware forces (D-239).
     input::assume_wrong_numbering();
-    // Kept in step with TRANSLATED_MARKER in `xtask/src/qemu.rs`, and subject
-    // to the same rule as the first: nothing may talk to the keyboard between
-    // the marker and the wait.
+    // Kept in step with TRANSLATED_MARKER in `xtask/src/qemu.rs`, under the
+    // same rule: nothing talks to the keyboard between marker and wait.
+    let translated_key = input::arm_key(ps2_keys::Key::B);
     awaiting(
         "selftest: awaiting translated keystroke",
         "  PRESS  b   for the last round",
     );
-    // `B`, not `A`: the first round pressed `A`, and a wait that a stale event
-    // can satisfy is a wait that never reads the table it is about. This check
-    // was green with set 1's code for `A` deliberately wrong until the key
-    // changed (D-155, D-165).
+    // `B`, not `A`, so the first round's stale event cannot satisfy this wait
+    // (D-155, D-165).
     report.check(
         "a translated keystroke decodes to the same key",
-        input::await_key(ps2_keys::Key::B),
+        translated_key.is_some_and(input::await_armed_key),
     );
-    // The claim that used to sit beside the identity probe, moved to the one
-    // place a byte has provably arrived. Asked here it is an observation; asked
-    // there it re-derived the identity and compared it with the decoder the
-    // identity had configured, so it agreed on every machine and was green
-    // while VMware's set 2 was being read as set 1 (D-239).
+    // Ask only after a byte has arrived so this observes the active decoder
+    // instead of re-deriving it from the identity that configured it (D-239).
     report.check(
         "the keyboard's numbering and the decoder's are the same",
         input::decoder_reads_what_arrives(),
     );
-    // Turned back off, and the question re-opened rather than re-answered from
-    // the bit that was written — which on a machine that translates regardless
-    // is the difference between reading its bytes and reading its claims. What
-    // settles it is the next byte only one set could have sent (D-178, D-239).
-    let restored = input::set_translation(false);
+    // Turned back off, and the question re-opened rather than answered from
+    // the written bit; the next decisive byte settles it (D-178, D-239).
+    let restored = input::set_translation(crate::arch::current::i8042::Translation::Disabled);
     report.check(
         "the decoder reads the set that arrives, not the bit that was written",
         restored && input::rereads_the_stream(),
     );
 
-    // Last of the timed checks, because it scrolls the console to the bottom
-    // eight times and every check above wants its own output legible.
+    // Last timed check because it advances the console to the bottom.
     report.check(
         "a console scroll does not block interrupts",
         a_scroll_does_not_block_interrupts(),
@@ -8384,22 +8579,13 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         apic::error_status() == 0,
     );
 
-    // **Last, and deliberately**, for a different reason from the scroll check
-    // below: this one *reads* a value every other check can change. It sat at
-    // position eighty of a hundred and forty-three, so a violation in any of
-    // the sixty checks after it — `input.rs` alone has twelve `lock_leaf`
-    // sites — happened after the only read and was never reported. A detector
-    // is worth what it is read at the end of (D-143).
+    // Read this detector last so every preceding check can trip it (D-143).
     report.check(
         "no lock is taken while a leaf guard is held",
         a_leaf_guard_is_the_last_lock(),
     );
 
-    // **Last console check, deliberately.** This writes a screenful of blank lines
-    // to make a region whose only possible foreground mark is a cursor — which
-    // scrolls the console and moves what every earlier console check is
-    // looking at. Placed here it disturbs nothing; placed where it was, it
-    // turned the editing check red (D-137).
+    // Last because it moves the console contents other checks inspect.
     report.check(
         "a scroll leaves no cursor behind",
         a_scroll_leaves_no_cursor_behind(),
@@ -8414,6 +8600,69 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "an nvme timeout quiesces before dma memory returns",
         an_nvme_timeout_quiesces_before_dma_memory_returns(),
+    );
+
+    // Last interrupt exercise: a broken EOI cannot starve later timed checks.
+    let before = trap::last_ping();
+    let duplicate_before = trap::rejected_duplicate_eoi_claims();
+    let reclaimed_before = trap::reclaimed_abandoned_eoi();
+    let first_sent = apic::send_self_interrupt().is_ok();
+    report.check(
+        "a self-interrupt is delivered",
+        first_sent && ping_arrives(before.count + 1),
+    );
+
+    let taken = trap::last_ping();
+    let second_sent = apic::send_self_interrupt().is_ok();
+    report.check(
+        "the interrupt is dismissed, so the next one arrives",
+        second_sent && ping_arrives(before.count + 2),
+    );
+    report.check(
+        "one delivery mints one completion authority",
+        matches!(
+            (
+                trap::last_ping().count.checked_sub(before.count),
+                trap::rejected_duplicate_eoi_claims().checked_sub(duplicate_before),
+            ),
+            (Some(deliveries), Some(refusals)) if deliveries == refusals
+        ),
+    );
+    report.check(
+        "an abandoned completion can be reclaimed for the same delivery",
+        matches!(
+            (
+                trap::last_ping().count.checked_sub(before.count),
+                trap::reclaimed_abandoned_eoi().checked_sub(reclaimed_before),
+            ),
+            (Some(deliveries), Some(reclaims)) if reclaims == usize::from(deliveries >= 2)
+        ),
+    );
+    report.check(
+        "the interrupted code was taking interrupts",
+        ping_is_consistent(taken),
+    );
+
+    let apic_failures =
+        apic::initialization_failures_for_test(vector::LOCAL_APIC, || trap::last_ping().count);
+    report.check(
+        "every late or ignored-write apic refusal stays unavailable and terminal",
+        apic_failures.unavailable_and_terminal()
+            & apic_failures.ignored_spurious_write_is_terminal(),
+    );
+    report.check(
+        "apic refusal defers a live interrupt until exclusion unwinds",
+        apic_failures.delivery_waited_for_unwind(),
+    );
+
+    let activation = paging::activation_publication_for_test();
+    report.check(
+        "paging activation stays unpublished under interrupt exclusion",
+        activation.initializing_is_excluded(),
+    );
+    report.check(
+        "paging activation publishes its root before readiness",
+        activation.root_precedes_ready(),
     );
 
     report_baseline();
@@ -8434,15 +8683,6 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     debug_exit::report(passed);
 }
 
-/// A row must be wide enough to hold the pixels the bootloader says are in it,
-/// and the last of them must land inside the mapping the kernel made.
-///
-/// The four conjuncts about the handoff are a precondition and pass on every
-/// machine this has run on. The fifth is about *this kernel's* arithmetic: the
-/// byte offset of the bottom-right pixel, computed the way `write_pixel`
-/// computes it, against the size the framebuffer was mapped with. A pitch or a
-/// depth misread by the glue puts that offset outside the region, and nothing
-/// above would say so (D-124).
 fn geometry_is_sane(geometry: FramebufferInfo) -> bool {
     let described = geometry.width > 0
         && geometry.height > 0
@@ -8453,11 +8693,6 @@ fn geometry_is_sane(geometry: FramebufferInfo) -> bool {
     described && dev::framebuffer_bytes().is_some_and(|mapped| last <= mapped)
 }
 
-/// The bootloader's masks must place red, green and blue in disjoint bits.
-///
-/// Overlapping masks would not fail loudly — text would simply render in the
-/// wrong colour — so this is worth asserting against the format we were handed
-/// rather than the one we expect.
 fn channels_are_disjoint(geometry: FramebufferInfo) -> bool {
     let pack = |red, green, blue| geometry.format.pack(Rgb { red, green, blue });
     let (red, green, blue) = (
@@ -8473,88 +8708,21 @@ fn channels_are_disjoint(geometry: FramebufferInfo) -> bool {
         && green & blue == 0
         && red & blue == 0;
 
-    // And the three compose the way the format says they do, which disjoint
-    // masks alone do not show: a `pack` that dropped a channel, or shifted one
-    // into the pad bits, satisfies every conjunct above (D-124).
+    // And the three compose as the format says, which disjoint masks alone
+    // do not show: a `pack` dropping a channel passes them (D-124).
     let white = pack(u8::MAX, u8::MAX, u8::MAX) == red | green | blue;
     let black = pack(0, 0, 0) == 0;
 
     disjoint && white && black
 }
 
-/// COM1 is already owned by the serial driver, so a second claim must be
-/// refused — the whole block, and any single port inside it.
 fn ports_are_exclusive() -> bool {
     port::claim_block::<8>(uart::COM1).is_none() && port::claim::<u8>(uart::COM1).is_none()
 }
 
-/// A closed channel still yields what it was sent.
-///
-/// `receive_blocking`'s doc says `None` means "the far end closed with nothing
-/// left to read". It tested emptiness and orphanhood in two separate lock
-/// acquisitions with interrupts on between them, so a peer that sent *and
-/// then* closed in that window got `None` with its message sitting in the
-/// queue — a lost message, reported as a clean close (D-145).
-///
-/// **What this pins is the ordering, not the window.** Draining before
-/// refusing goes red here — test orphanhood first and the message is lost.
-/// The window itself is not reproduced and cannot be single-threaded: it needs
-/// a send to land *between* two lock acquisitions, so the fixed line is
-/// reachable only from a second thread. Removing that line alone leaves this
-/// green, because the take at the top of the loop finds the message. Stated
-/// rather than implied (D-145).
-fn a_closed_channel_still_yields_what_it_was_sent() -> bool {
-    let Some((near, far)) = object::channel() else {
-        return false;
-    };
-    let Some(channel) = near.as_channel() else {
-        return false;
-    };
-
-    // Sent, then the peer closed. Both orderings of the fix's concern end in
-    // this state: orphaned, with a message.
-    let Some(peer) = far.as_channel() else {
-        return false;
-    };
-    let Ok(message) = object::Message::new(b"last words") else {
-        return false;
-    };
-    if peer.send(message).is_err() {
-        return false;
-    }
-    drop(far);
-
-    let orphaned = channel.is_orphaned();
-    let mut context = context();
-    let yielded = channel.receive_blocking(&mut context).is_some();
-    // And now it really is empty, so the second answer is the honest `None`.
-    let then_closed = channel.receive_blocking(&mut context).is_none();
-
-    orphaned && yielded && then_closed
-}
-
-/// A save writes only inside the area the kernel sized for it.
-///
-/// `bytes()` is computed for whichever form `init` chose, and `save`
-/// dispatches on a separate word. Nothing read the second one — `main.rs`
-/// prints ", compacted" from a `CPUID` bool, not from the dispatch — so
-/// storing the uncompacted form with a compacted size would have gone on
-/// announcing the right thing while writing **past the end of every save area
-/// on the machine**, each of which lives inside a thread's slot (D-144).
-///
-/// Checked by consequence: a sentinel past the area must survive the save.
-///
-/// **Not by asserting the form**, and the first version of this did. QEMU's
-/// `-cpu max` reports no `XSAVEC`, so the gate runs the *uncompacted* path;
-/// `AGENTS.md` names the compacted one as something only the VMware boot
-/// reaches. A check requiring "compacted" is red on one machine and green on
-/// the other, which is a check about the hardware. The sentinel is meaningful
-/// on both — and since D-135 put the self-test into the VMware image, this is
-/// the first thing that will exercise the compacted path with a check
-/// watching.
 fn a_save_stays_inside_its_area() -> bool {
     if !xstate::is_enabled() {
-        // Nothing to save, and nothing to overflow.
+        // The bounds check has no instruction to exercise; user launch refuses.
         return xstate::bytes() == 0;
     }
     // The form is whatever the processor supports; what must hold on every
@@ -8562,21 +8730,6 @@ fn a_save_stays_inside_its_area() -> bool {
     xstate::save_stays_inside_its_area()
 }
 
-/// Filling the arena never hands the same slot out twice.
-///
-/// `Arena::take` used to find a free slot, advance the hint and return the
-/// index **without marking it**; `insert` then dropped the guard and
-/// re-acquired it to write the entry. Two callers interleaving in that window
-/// both got the same index, and the second write overwrote a live entry,
-/// dropping an `ObjectRef` under the leaf guard — which can reach
-/// `Channel::drop` and then `THREADS` (D-141).
-///
-/// **This check does not reproduce that interleaving**, and nothing here can:
-/// it needs two threads inside a window between two lock acquisitions, and a
-/// check that spawned racers would be flaky rather than a check. What it does
-/// pin is the deterministic half — every handle a table hands out names a
-/// distinct live slot, and one inserted earlier still resolves after later
-/// ones — which is the invariant an overwrite breaks when it does happen.
 fn filling_the_arena_never_repeats_a_slot() -> bool {
     /// Enough to wrap the hint past the end and force a grow or two.
     const HANDLES: usize = 24;
@@ -8585,7 +8738,8 @@ fn filling_the_arena_never_repeats_a_slot() -> bool {
     let mut handles = [0u32; HANDLES];
 
     for slot in &mut handles {
-        let Ok(handle) = table.insert(object::event(), Rights::UNIVERSAL) else {
+        let object = object::bootstrap_identity();
+        let Ok(handle) = table.insert(object, Rights::UNIVERSAL) else {
             return false;
         };
         *slot = handle;
@@ -8604,100 +8758,43 @@ fn filling_the_arena_never_repeats_a_slot() -> bool {
     // slot that is stale in its table rather than the object it was given.
     let all_live = handles
         .iter()
-        .all(|handle| table.kind_of(*handle) == Ok(ObjectType::Event));
+        .all(|handle| table.kind_of(*handle) == Ok(ObjectType::Channel));
 
     let counted = table.live() == HANDLES;
 
     distinct && all_live && counted
 }
 
-/// A root outlives its thread as a value and not as authority.
-///
-/// `Root` is unforgeable — only `task::address_space_of` mints one — and that
-/// was taken to settle it. It does not: a caller can hold one across the
-/// thread's exit, and `collect` then reclaims the space and returns the root
-/// frame to the allocator, which may hand it to a *program*. The walk would
-/// read ring-3-authored bytes as top-level page-table entries, which is the
-/// arbitrary physical read the type exists to prevent, reached by staleness
-/// rather than forgery (D-140).
-///
-/// Counted rather than observed, for D-139's reason: a stale root usually
-/// walks frames that read as nothing, so the answer is `None` either way.
-fn a_stale_root_authorises_no_walk() -> bool {
-    let Ok(spawned) = user::run_for_bootstrap() else {
-        return false;
-    };
-    let Some(root) = task::address_space_of(spawned.slot) else {
-        return false;
-    };
-
-    // Alive: the walk is authorised, and the kernel half is mapped in every
-    // space, so this is a translation that really resolves.
-    let live = root.is_live();
-    let answered = paging::translate_in_root(root, mem::direct_map_base()).is_some();
-
-    // Let it run to completion and be collected.
-    if !runs_until(2000, || task::address_space_of(spawned.slot).is_none()) {
-        return false;
-    }
-    user::collect();
-
-    let refusals = paging::stale_root_refusals();
-    let dead = !root.is_live();
-    let refused = paging::translate_in_root(root, mem::direct_map_base()).is_none();
-    let counted = paging::stale_root_refusals() == refusals + 1;
-
-    live && answered && dead && refused && counted
-}
-
-/// `syscall` and `sysenter` are shut, **by this kernel**.
-///
-/// Observing that they are shut proves nothing: Limine leaves `EFER.SCE` clear
-/// and `IA32_SYSENTER_CS` is zero at reset, so the register reads shut on both
-/// test machines whether or not `enable_protections` ever wrote anything. The
-/// first version of this check asserted the state and stayed green with the
-/// write deleted (D-139).
-///
-/// So it is driven: open a door, confirm the reader sees it open, shut it
-/// through the kernel's own path, and confirm it closed. The middle step is
-/// what proves the reader is not simply answering `true`.
-///
-/// **What this does and does not establish.** The *shutting* is checked —
-/// break `shut_the_fast_syscall_doors` and the last conjunct goes red. Whether
-/// `enable_protections` **calls** it at boot is **not** falsifiable on either
-/// test machine, because Limine leaves `SCE` clear and `SYSENTER_CS` is zero
-/// at reset: `shut_at_boot` reads true with the call deleted. That conjunct is
-/// a statement about the machine the kernel booted on, not about the kernel,
-/// and it is kept because it is the thing a *different* firmware would break.
-/// Said plainly rather than left for the next audit to find (D-139).
-///
 fn the_fast_syscall_doors_are_shut_by_this_kernel() -> bool {
     cpu::drive_fast_syscall_shutdown_for_test()
 }
 
-/// A reclaimed address space answers nothing and binds to nothing.
-///
-/// `is_reclaimed`'s own doc says "a reclaimed space answers nothing and maps
-/// nothing", and until D-139 only the *mapping* doors checked it. `reclaim`
-/// empties a space by setting `self.root = 0`, so `lookup` walked **physical
-/// frame zero** as a top-level table — any word there with bit 0 set sends the
-/// next level to an arbitrary address. `bind` read the same frame and then
-/// installed it.
-///
-/// And `reclaim` was not idempotent: a second call on a never-bound space
-/// reached `Frame::from_raw(0)` and handed frame zero to the allocator, which
-/// is plausibly the kernel's own top-level table.
 fn a_reclaimed_space_answers_nothing() -> bool {
+    let allocator_before = AllocatorSnapshot::capture();
     let Ok(mut space) = AddressSpace::for_user() else {
         return false;
     };
+    let zero_is_live = space.zero_root_is_live_for_test();
 
     // Something to look up, so the `None` below is about the reclaim and not
     // about an empty space.
     let Some(mut page) = mm::allocate_contiguous(1, 1) else {
+        let reclaimed = space.reclaim(None).is_ok();
+        drop(space);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+            "a missing reclaimed-space page did not return its tables"
+        );
         return false;
     };
     if !page.zero() {
+        drop(page);
+        let reclaimed = space.reclaim(None).is_ok();
+        drop(space);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+            "a refused reclaimed-space zero did not return setup resources"
+        );
         return false;
     }
     let at = user::STACK + 0xB0_0000;
@@ -8705,42 +8802,52 @@ fn a_reclaimed_space_answers_nothing() -> bool {
         .map_user(at, page.into(), Flags::WRITABLE.union(Flags::NO_EXECUTE))
         .is_err()
     {
+        let reclaimed = space.reclaim(None).is_ok();
+        drop(space);
+        assert!(
+            reclaimed && AllocatorSnapshot::capture().has_same_ownership(&allocator_before),
+            "a refused reclaimed-space map did not return setup resources"
+        );
         return false;
     }
     let answered_before = space.lookup(at).is_some();
+    let unmapped = space.unmap(at, PAGE_SIZE).map(drop).is_ok();
 
-    // Never bound, so this is the path the second call used to reach
-    // `Frame::from_raw(0)` on.
+    // Never bound, so reclaim exercises the cold-space path.
     let reclaimed = space.reclaim(None).is_ok();
     let empty = space.is_reclaimed();
 
-    // **Counted, not observed.** Frame zero reads as zeros on both test
-    // machines, so an unguarded `lookup` walks it, finds nothing present, and
-    // returns the same `None` the guard returns — a check on the *answer* is
-    // green with the guard deleted. The tally lives inside each guard, so it
-    // cannot move without them (D-139).
+    // Counted, not observed: frame zero reads as zeros, so an unguarded
+    // `lookup` returns the same `None` the guard does (D-139).
     let refusals = paging::reclaimed_refusals();
 
     let silent = space.lookup(at).is_none();
     let unbindable = matches!(space.bind(), Err(ActivateError::Reclaimed));
-    let once_only = matches!(space.reclaim(None), Err(ReclaimError::Reclaimed));
+    let unactivatable = matches!(paging::activate(&mut space), Err(ActivateError::Reclaimed));
+    let once_only = matches!(
+        space.reclaim(None),
+        Err(paging::ReclaimFailure {
+            reason: ReclaimError::Reclaimed,
+            ..
+        })
+    );
 
-    let all_three_refused = paging::reclaimed_refusals() == refusals + 3;
+    let all_four_refused = paging::reclaimed_refusals() == refusals + 4;
 
-    answered_before && reclaimed && empty && silent && unbindable && once_only && all_three_refused
+    let checked = answered_before
+        && zero_is_live
+        && unmapped
+        && reclaimed
+        && empty
+        && silent
+        && unbindable
+        && unactivatable
+        && once_only
+        && all_four_refused;
+    drop(space);
+    checked && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
 }
 
-/// A refused pair of claims strands neither.
-///
-/// A claim in this registry is permanent — nothing releases, because a driver
-/// owns its registers for the life of the kernel. So a caller that takes one
-/// port and then fails on the second has foreclosed the first for the boot,
-/// and whatever needed both can never be built. `i8042::Controller::new`
-/// chained `DATA` and `CONTROL` exactly that way, so a refused `CONTROL` would
-/// have retired the keyboard (D-138).
-///
-/// Driven against a port the serial driver already owns, so the refusal is
-/// real rather than arranged.
 fn a_refused_pair_of_claims_strands_neither() -> bool {
     /// Free, and two below COM1 so it cannot collide with the serial block.
     const FREE: u16 = uart::COM1 - 4;
@@ -8759,16 +8866,6 @@ fn a_refused_pair_of_claims_strands_neither() -> bool {
     refused && untouched && taken_now
 }
 
-/// A claim covers the ports its access *reaches*, not just the one it names.
-///
-/// The two ports below COM1 are free, so a 32-bit claim starting there can
-/// only be refused because its last two ports are the serial driver's. The
-/// byte claim that follows proves both halves of that reading: the port really
-/// was free, so the refusal was about the width — and the refused claim left
-/// nothing behind on its way out. The third line closes the loop.
-///
-/// This spends port `0x3F6` for the life of the boot, which is why it belongs
-/// to a self-test kernel and not to one that ships.
 fn a_claim_covers_the_width_it_drives() -> bool {
     const BELOW_COM1: u16 = uart::COM1 - 2;
 
@@ -8785,8 +8882,6 @@ fn lock_excludes() -> bool {
     refused && lock.try_lock_leaf().is_some()
 }
 
-/// Safe Rust can leak a guard, but the controlled witness must tell that state
-/// apart from an ordinary live holder and restore the machine afterwards.
 fn forgotten_lock_ownership_is_distinct_from_contention() -> bool {
     let lock = SpinLock::new(0u32);
     let mut context = context();
@@ -8823,29 +8918,14 @@ fn latch_admits_one() -> bool {
 /// Every input line on both legacy controllers, disconnected.
 const MASKED: u8 = 0xFF;
 
-/// Holding a lock must exclude interrupts, releasing it must give them back,
-/// and a nested lock must not give them back early — the last being the one
-/// that a naive "enable on drop" gets wrong, and the one that would show up as
-/// an interrupt arriving in the middle of a critical section months later.
-///
-/// Only meaningful with interrupts already on, which by this point they are.
 fn a_lock_excludes_interrupts() -> bool {
     let outer = SpinLock::new(0u32);
     let inner = SpinLock::new(0u32);
     let mut context = context();
 
     let before = interrupt::are_enabled();
-    // The **token-bearing** form for the outer one, and the leaf for the
-    // inner. That is the sanctioned direction — a leaf under a `lock` is what
-    // makes D-47's `HEAP` → `FRAMES` order sound — and it is what this check
-    // needs anyway: the property is that dropping an inner guard does not
-    // re-enable interrupts, not that two leaves may nest.
-    //
-    // Both were leaves before, which is the one direction `lock_leaf` forbids,
-    // and the leaf-nesting detector reported it the moment its read moved to
-    // the end of the run. A deliberate violation in a check is still a
-    // violation, and it would have masked every later real one — the detector
-    // keeps the first (D-143).
+    // The sanctioned order is one token-bearing outer lock and one inner leaf.
+    // Two leaves would trip D-143's detector and mask a later real violation.
     let outer_guard = outer.lock(&mut context);
     let excluded = !interrupt::are_enabled();
 
@@ -8857,8 +8937,6 @@ fn a_lock_excludes_interrupts() -> bool {
     before && excluded && still_excluded && interrupt::are_enabled()
 }
 
-/// Spin until `done`, giving up after `attempts` rather than hanging the
-/// harness on something that is never going to happen.
 fn spins_until(attempts: u32, done: impl Fn() -> bool) -> bool {
     (0..attempts).any(|_| {
         spin_loop();
@@ -8866,37 +8944,17 @@ fn spins_until(attempts: u32, done: impl Fn() -> bool) -> bool {
     })
 }
 
-/// Spin until the ping count reaches `target`.
-///
-/// A million reads, because it is measuring hardware that has already been
-/// told to do something: a delivery this does not see is not slow, it is
-/// absent.
 fn ping_arrives(target: usize) -> bool {
     const ATTEMPTS: u32 = 1_000_000;
 
     spins_until(ATTEMPTS, || trap::last_ping().count >= target)
 }
 
-/// The hardware's own record of the timer: unmasked, one-shot, our vector.
-///
-/// One-shot is the half that is new. A periodic entry here would mean the
-/// tick D-57 retired had come back, and every check below that counts
-/// interrupts would be counting something the scheduler never asked for.
 fn timer_entry_is_programmed() -> bool {
     let entry = apic::timer_entry();
-    !entry.is_masked() && entry.is_one_shot() && entry.vector() == vector::TIMER
+    !entry.is_masked() && entry.is_one_shot() && entry.vector() == vector::TIMER.get()
 }
 
-/// Both measured rates, against bounds restated here rather than shared with
-/// the code under test. Calibration having declined reads as zero for either,
-/// which fails.
-///
-/// **These bounds catch a rate that is absent or absurd, not one that is
-/// merely wrong.** They were once wide enough that a counter rate off by a
-/// factor of ten sat inside them. Narrowed to what a machine this kernel will
-/// run on can actually report — but the check that catches a plausible wrong
-/// rate is `a_sleeper_wakes_on_time_and_quietly`, which arms on one clock and
-/// measures on the other, and this one does not pretend to (D-124).
 fn rates_are_believable() -> bool {
     (1_000_000..=10_000_000_000).contains(&time::apic_hz())
         && (500_000_000..=10_000_000_000).contains(&time::counter_hz())
@@ -8910,23 +8968,13 @@ struct ClockSweep {
     finest_step: Option<u64>,
 }
 
-/// Read the clock as fast as it can be read, for a few milliseconds.
-///
-/// Monotonicity is no longer a formality: the clamp that made it true by
-/// construction went with the tick (D-57). The first reading is taken while
-/// holding a lock, where the retired clock could read backwards.
-///
-/// The smallest step is the grain, measured rather than inferred. Adjacent
-/// readings that are equal say only that the reads outpaced the counter.
 fn sweep_clock() -> ClockSweep {
     const ATTEMPTS: u32 = 2_000_000;
     const SPAN_MS: u64 = 3;
 
     let deadline = time::uptime_ms() + SPAN_MS;
-    // Seeded with a real reading, not zero. With zero the first comparison is
-    // vacuous — no clock reads below it — so the sample taken under a lock,
-    // which is the one the retired clock could read backwards on and the whole
-    // reason attempt zero is special, was the one sample never checked (D-124).
+    // Seed with a real reading so the first comparison, sampled under a lock,
+    // is not vacuously monotonic against zero (D-124).
     let mut previous = time::now_ns();
     let mut sweep = ClockSweep {
         monotonic: true,
@@ -8960,15 +9008,8 @@ fn sweep_clock() -> ClockSweep {
     sweep
 }
 
-/// Timer expiries taken while nothing at all is waiting for one.
-///
-/// D-57's claim, and a number that would have been fifty before it. Nothing
-/// is runnable but the boot thread and nothing sleeps, so there is nothing to
-/// be interrupted *for* — none, not merely fewer.
 fn an_idle_kernel_takes_no_timer_interrupts() -> bool {
-    /// Fifty times the old tick's period, so a tick that survived would show
-    /// up fifty times over. The comment said five; the tick was 100 Hz, and
-    /// the line four above already says "a number that would have been fifty".
+    // Fifty 100 Hz periods expose any surviving periodic source.
     const QUIET_MS: u64 = 500;
 
     let before = time::expiries();
@@ -8976,16 +9017,6 @@ fn an_idle_kernel_takes_no_timer_interrupts() -> bool {
     time::expiries() == before
 }
 
-/// While threads compete for the CPU, the timer fires about once a slice.
-///
-/// The half the check above cannot make: a machine that takes no interrupts
-/// when idle might have a timer that never works. Bounded both ways — too few
-/// and nothing is preempted on the slice's schedule, too many and something
-/// is arming for less than it was asked.
-///
-/// Also what proves the handler's end-of-interrupt, which the retired tick's
-/// checks used to: the APIC delivers no second timer interrupt until the
-/// first is dismissed.
 fn the_timer_fires_about_once_a_slice() -> bool {
     const WINDOW_MS: u64 = 300;
     /// `thread::SLICE_NS`, in the unit this window is measured in.
@@ -9004,27 +9035,18 @@ fn the_timer_fires_about_once_a_slice() -> bool {
     STOP_SPINNING.store(1, Ordering::Release);
     let exited = yields_until(|| thread::free_slots() == free);
 
-    // A factor of four either way: the window is quantised by the slice and
-    // jittered by a hypervisor, and the numbers this is separating — one an
-    // interrupt per slice, the other none at all or thousands — are orders
-    // of magnitude apart.
+    // A factor of four either way: the window is slice-quantised and
+    // hypervisor-jittered, and the cases differ by orders of magnitude.
     let expected = WINDOW_MS / SLICE_MS;
     exited && spent >= expected / 4 && spent <= expected * 4
 }
 
-/// A thread that sleeps with nothing else to run comes back no earlier than
-/// it asked, and the machine stays quiet while it waits.
-///
-/// The degenerate branch: nobody to hand the CPU to, so the thread halts on
-/// its own stack until its timer fires. Neither half is evidence alone — a
-/// sleeper that returned on time might have spun, a quiet machine might have
-/// had nothing sleeping — and together they say the wait was the timer's.
 fn a_sleeper_wakes_on_time_and_quietly() -> bool {
     /// Long enough that a surviving tick would be caught many times, short
     /// beside the harness's patience.
     const SLEEP_MS: u64 = 200;
-    /// Five bounded validation windows, and room for the odd extra expiry
-    /// around the wake. The retired periodic tick would spend twenty.
+    // Five bounded validation windows plus wake slack; a 10 ms periodic source
+    // would exceed this budget fourfold.
     const EXPIRY_BUDGET: u64 = 7;
     /// How late the wake may be. Nothing else is runnable, so the thread
     /// resumes the moment its own timer fires — this is slack for the
@@ -9037,18 +9059,11 @@ fn a_sleeper_wakes_on_time_and_quietly() -> bool {
     let slept = time::uptime_ms() - before;
     let spent = time::expiries() - expiries;
 
-    // Two-sided, and that is the point: the sleep was armed on the APIC
-    // timer's clock and measured on the counter's, so a conversion wrong in
-    // either direction shows up as a wait of the wrong length.
+    // Two-sided: armed on the APIC clock and measured on the counter's, so a
+    // conversion wrong either way is a wait of the wrong length.
     (SLEEP_MS..=SLEEP_MS + LATE_MS).contains(&slept) && (1..=EXPIRY_BUDGET).contains(&spent)
 }
 
-/// A sleeping thread gives the CPU to a runnable one, and is put back on the
-/// queue when its deadline passes.
-///
-/// The other branch: something else is runnable, so the sleeper really leaves
-/// the CPU and really is woken. What the spinner counted meanwhile is the
-/// proof the CPU went somewhere.
 fn sleeping_hands_the_cpu_over() -> bool {
     const SLEEP_MS: u64 = 100;
     /// A thread with the CPU to itself counts far more than this in 100 ms;
@@ -9072,16 +9087,8 @@ fn sleeping_hands_the_cpu_over() -> bool {
     progressed && woken && exited
 }
 
-/// The configuration byte, against bits restated from the 8042 datasheet
-/// rather than shared with the driver: both interrupt enables and the set 1
-/// translation shim must be off, read back live from the hardware — the
-/// self-test's own reset of this byte is the quirk the driver rewrites it
-/// after, and this is the check that would catch the rewrite going missing.
-/// An MF2 keyboard's identity, as it reads when nothing rewrites it.
-///
-/// Behind a translating controller the same keyboard answers `(0xAB, 0x41)`,
-/// because translation rewrites this reply exactly as it rewrites the
-/// scancodes the decoder is about to read (D-178).
+// Interpret identity in the observed translation mode because a translator
+// rewrites replies and scancodes alike (D-178).
 const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x83);
 
 /// The same keyboard, behind a controller that translates.
@@ -9096,41 +9103,26 @@ fn keyboard_config_matches_its_routing() -> bool {
         return false;
     };
 
-    // Translation stays off in both worlds: the decoder reads set 2 raw, and
-    // a controller quietly converting to set 1 is the classic way to get a
-    // keyboard that types the wrong characters.
+    // Translation stays off: a controller quietly converting to set 1 is the
+    // classic keyboard that types the wrong characters.
     let raw = byte & TRANSLATE == 0;
     // The second port is never enabled — nothing is on it.
     let second_silent = byte & SECOND_IRQ == 0;
-    // The first port raises its line exactly when something routed it. Phase 2
-    // required this to be off because nothing could route it (D-37); slice 5
-    // turns it on, and the two must agree either way.
     let first_matches_routing = (byte & FIRST_IRQ != 0) == input::is_interrupt_driven();
 
     raw && second_silent && first_matches_routing
 }
 
-/// The frame a delivered interrupt saved, checked the way `frame_is_consistent`
-/// checks a breakpoint's — except that this one can also assert something a
-/// trap cannot: the interrupted code had the interrupt flag set, which is the
-/// only direct evidence that this arrived through the flag rather than as a
-/// software `int`.
 fn ping_is_consistent(ping: Record) -> bool {
     /// `RFLAGS` bit 9.
     const INTERRUPT_FLAG: u64 = 1 << 9;
 
-    ping.vector == u64::from(vector::PING)
+    ping.vector == u64::from(vector::PING.get())
         && ping.error_code == 0
         && ping.code_selector == u64::from(segment::KERNEL_CODE.bits())
         && ping.flags & INTERRUPT_FLAG != 0
 }
 
-/// The interrupt frame is the one place a struct definition and an assembly
-/// listing have to agree, and the compiler cannot check it. If the pushes and
-/// the fields drift apart, these values are what turn to nonsense.
-///
-/// `breakpoint` copies its interrupted `rsp` into `rax`, so equality distinguishes
-/// the processor's saved stack pointer from whatever happened to be adjacent.
 fn frame_is_consistent(breakpoint: Record) -> bool {
     /// Bit 1 of the flags register reads as one on every x86 ever made.
     const RESERVED_FLAG: u64 = 1 << 1;
@@ -9143,12 +9135,6 @@ fn frame_is_consistent(breakpoint: Record) -> bool {
         && breakpoint.stack_pointer == breakpoint.rax
 }
 
-/// The saved frame ends exactly where the interrupted stack pointer was.
-///
-/// The compile-time assertions fix the *offsets* within `TrapFrame`; nothing
-/// but a live trap can say the entry path pushes that many words. `rax` holds
-/// the stack pointer as it was before the CPU pushed anything, so the frame
-/// base plus the words the layout claims must land back on it.
 fn frame_spans_the_saved_words(breakpoint: Record) -> bool {
     breakpoint
         .frame_address

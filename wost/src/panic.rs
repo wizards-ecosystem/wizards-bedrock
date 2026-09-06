@@ -40,7 +40,7 @@ pub fn terminate(info: &PanicInfo<'_>, report: fn(&PanicInfo<'_>) -> !) -> ! {
 /// handler is the one caller that may be in it and must be served anyway —
 /// the code it interrupted is never resuming, so there is nothing left for the
 /// rule to protect.
-pub fn is_panicking() -> bool {
+pub(crate) fn is_panicking() -> bool {
     PANICKING.load(Ordering::Relaxed)
 }
 
@@ -53,13 +53,14 @@ pub fn is_panicking() -> bool {
 /// [`SpinLock::force_unlock`](crate::sync::SpinLock::force_unlock) says: the
 /// holder can never resume.
 ///
-/// **Every lock in a `static` inside this crate belongs in this function.** A
-/// new one that is not listed here is a deadlock waiting for the first panic
-/// raised while it is held, and nothing but this comment will catch it.
+/// Every module holding a static lock has one door here; a source contract
+/// derives that set from the parsed sources and refuses an omission (D-293).
 fn reclaim(panic: &PanicToken) {
     crate::arch::current::pic::force_unlock(panic);
     crate::arch::current::port::force_unlock(panic);
     crate::mm::force_unlock(panic);
     crate::mm::heap::force_unlock(panic);
     crate::arch::current::task::force_unlock(panic);
+    crate::arch::current::paging::force_unlock(panic);
+    crate::arch::current::pci::force_unlock(panic);
 }

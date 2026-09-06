@@ -21,11 +21,7 @@ use crate::mmio::MmioRegion;
 /// A function rather than a `const` of the tag type: `BaseRevision` holds
 /// `UnsafeCell`s, and a `const` containing one is what
 /// `clippy::declare_interior_mutable_const` exists to catch.
-///
-/// Revision 4 is the first whose direct map reaches a device hole, and the
-/// first that guarantees the ACPI tables are mapped — the two things Phase 3
-/// needs from the bootloader. `BaseRevision::new()` is revision 3, so asking
-/// for anything is a deliberate act; see D-42 for why not 5 or 6.
+/// Revision 4 admits device holes and maps ACPI tables; see D-42.
 pub const fn base_revision() -> BaseRevision {
     BaseRevision::with_revision(4)
 }
@@ -85,10 +81,8 @@ fn take_module(request: &'static ModuleRequest) -> Result<&'static [u8], Handoff
     if address.is_null() || size == 0 {
         return Err(HandoffError::Empty);
     }
-    // `from_raw_parts` states two bounds the bootloader's numbers do not
-    // promise: the length must fit an `isize`, and the range must not wrap.
-    // Neither is reachable from a real Limine, and neither was checked, which
-    // is the difference the audit was about (D-105).
+    // `from_raw_parts` additionally requires an `isize` length and a
+    // non-wrapping range, neither guaranteed by the handoff type (D-105).
     let len = usize::try_from(size)
         .ok()
         .filter(|len| *len <= isize::MAX as usize)
@@ -186,9 +180,7 @@ fn take_direct_map(request: &'static HhdmRequest) -> Result<DirectMap, HandoffEr
 
 fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer, FramebufferError> {
     let response = request.get_response().ok_or(FramebufferError::NoResponse)?;
-    let fb = response
-        .framebuffers()
-        .next()
+    let fb = core::iter::Iterator::next(&mut response.framebuffers())
         .ok_or(FramebufferError::NoFramebuffer)?;
 
     if fb.memory_model() != MemoryModel::RGB {
@@ -219,7 +211,9 @@ fn take_framebuffer(request: &'static FramebufferRequest) -> Result<Framebuffer,
     };
 
     // SAFETY: the bootloader reports a live linear mapping that nothing else
-    // owns after handoff, and `layout` checked its span and alignment.
+    // owns after handoff, and `layout` checked its span and alignment. Paging
+    // activation verifies this direct-map extent before switching; later user
+    // roots share the frozen higher-half topology containing that mapping.
     let region = unsafe { MmioRegion::new(fb.addr(), layout.span()) };
 
     Ok(Framebuffer::new(region, info, layout))

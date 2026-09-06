@@ -21,17 +21,17 @@
 //! # Examples
 //!
 //! ```
-//! use x86_cpuid::xstate::{Component, Layout, HEADER_BYTES, AVX, SSE, X87};
+//! use x86_cpuid::xstate::{Alignment, Component, Layout, HEADER_BYTES, AVX, SSE, X87};
 //!
 //! // A machine with AVX, whose component 2 is 256 bytes and unaligned.
 //! let layout = Layout::compacted(X87 | SSE | AVX, |index| match index {
-//!     2 => Component::new(256, false),
-//!     _ => Component::ABSENT,
+//!     2 => Component::new(256, Alignment::Natural),
+//!     _ => Component::new(0, Alignment::Natural),
 //! });
 //!
 //! // x87 and SSE live in the legacy area, so AVX is the first thing after it.
-//! assert_eq!(layout.offset_of(2), Some(HEADER_BYTES));
 //! assert_eq!(layout.size(), HEADER_BYTES + 256);
+//! assert!(layout.is_consistent());
 //! ```
 
 /// Legacy x87/SSE save area plus the XSAVE header: 512 + 64 bytes.
@@ -49,6 +49,8 @@ pub const SSE: u64 = 1 << 1;
 /// State component 2: AVX's upper halves.
 pub const AVX: u64 = 1 << 2;
 
+const AVX_SUPPORTED: u32 = 1 << 28;
+
 /// What D-82 permits in `XCR0`, and nothing else.
 ///
 /// Every enabled bit is per-thread memory for the life of the kernel, and
@@ -61,25 +63,55 @@ pub const PERMITTED: u64 = X87 | SSE | AVX;
 /// right; there is no cost to the two above it.
 pub const COMPONENTS: usize = 20;
 
+/// Whether the processor supplies D-82's complete fixed state policy.
+pub const fn has_permitted_components(available: u64) -> bool {
+    available & PERMITTED == PERMITTED
+}
+
+/// Whether the live configured mask is exactly the fixed state policy.
+///
+/// Availability may include components the kernel declines to enable. A live
+/// configuration may not: save-area sizing covers exactly [`PERMITTED`].
+pub const fn matches_permitted_configuration(configured: u64) -> bool {
+    configured == PERMITTED
+}
+
+/// Whether AVX state in `mask` has AVX instruction support.
+///
+/// `CPUID.0DH` advertising AVX state does not make AVX instructions legal;
+/// leaf 1 must independently advertise them before `XCR0.AVX` is enabled.
+pub const fn avx_state_has_instruction_support(mask: u64, basic_ecx: u32) -> bool {
+    mask & AVX == 0 || basic_ecx & AVX_SUPPORTED != 0
+}
+
 /// What the processor says about one state component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Component {
     size: u32,
-    aligned: bool,
+    alignment: Alignment,
+}
+
+/// Placement required by a state component's CPUID sub-leaf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alignment {
+    /// Place directly after the preceding component.
+    Natural,
+    /// Round the start up to a sixty-four-byte boundary.
+    Bytes64,
 }
 
 impl Component {
-    /// A component the processor does not have.
-    pub const ABSENT: Self = Self {
+    #[cfg(test)]
+    const ABSENT: Self = Self {
         size: 0,
-        aligned: false,
+        alignment: Alignment::Natural,
     };
 
-    /// A component of `size` bytes, sixty-four-byte aligned or not.
+    /// A component of `size` bytes with its reported placement requirement.
     ///
-    /// `aligned` is `CPUID.0DH.ECX` bit 1 for this component.
-    pub const fn new(size: u32, aligned: bool) -> Self {
-        Self { size, aligned }
+    /// [`Alignment::Bytes64`] corresponds to `CPUID.0DH.ECX` bit 1.
+    pub const fn new(size: u32, alignment: Alignment) -> Self {
+        Self { size, alignment }
     }
 
     /// How many bytes it takes.
@@ -89,12 +121,27 @@ impl Component {
 
     /// Whether it must start on a sixty-four-byte boundary.
     pub const fn is_aligned(self) -> bool {
-        self.aligned
+        matches!(self.alignment, Alignment::Bytes64)
     }
 
     /// Whether the processor has it at all.
     pub const fn is_present(self) -> bool {
         self.size != 0
+    }
+}
+
+/// End of one component in the standard XSAVE format.
+///
+/// Standard offsets come from `CPUID.0DH` and need not follow component index
+/// order. An absent component, one overlapping the legacy/header area, or an
+/// extent outside CPUID's 32-bit size fields is invalid.
+pub const fn standard_component_extent(component: Component, offset: u32) -> Option<usize> {
+    if !component.is_present() || offset < HEADER_BYTES as u32 {
+        return None;
+    }
+    match offset.checked_add(component.size()) {
+        Some(end) => Some(end as usize),
+        None => None,
     }
 }
 
@@ -112,6 +159,9 @@ impl Layout {
     /// indices two and above, so a caller wiring it to `CPUID.0DH` sub-leaves
     /// never queries one the processor did not advertise.
     ///
+    /// A mask that enables AVX without SSE, or an enabled component whose
+    /// sub-leaf is absent, produces an inconsistent layout.
+    ///
     /// Bits above [`COMPONENTS`] are ignored rather than rejected: a processor
     /// may report state this kernel has no intention of enabling, and the mask
     /// it is *given* is the one D-82 fixed.
@@ -121,25 +171,22 @@ impl Layout {
         // not x87 and SSE are enabled — the header follows it either way.
         let mut cursor = HEADER_BYTES;
 
-        let mut overflowed = false;
+        let mut complete = mask & AVX == 0 || mask & SSE != 0;
         for (index, offset) in offsets.iter_mut().enumerate().skip(2) {
             if mask & (1 << index) == 0 {
                 continue;
             }
             let component = info(index as u32);
             if !component.is_present() {
-                continue;
+                complete = false;
+                break;
             }
             if component.is_aligned() {
                 cursor = cursor.next_multiple_of(64);
             }
-            // Refused rather than truncated. `cursor as u32` wrapped, so a
-            // layout whose components sum past four gigabytes gave two of them
-            // the same offset — two saves into one buffer, reported consistent
-            // (D-105). No architectural component is anywhere near this; the
-            // constructor is public and takes the sizes it is given.
+            // Truncation could give two components one save offset (D-105).
             let Ok(narrowed) = u32::try_from(cursor) else {
-                overflowed = true;
+                complete = false;
                 break;
             };
             *offset = Some(narrowed);
@@ -148,7 +195,7 @@ impl Layout {
 
         Self {
             offsets,
-            size: if overflowed { 0 } else { cursor },
+            size: if complete { cursor } else { 0 },
         }
     }
 
@@ -167,12 +214,8 @@ impl Layout {
         self.size
     }
 
-    /// Where component `index` starts, or `None` if it is not in this layout.
-    ///
-    /// `None` for components 0 and 1 as well: they are inside the legacy area
-    /// rather than placed after it, so an offset for them would be a lie a
-    /// caller could dereference.
-    pub const fn offset_of(&self, index: u32) -> Option<usize> {
+    #[cfg(test)]
+    const fn offset_of(&self, index: u32) -> Option<usize> {
         if index as usize >= COMPONENTS {
             return None;
         }
@@ -188,12 +231,8 @@ impl Layout {
     /// allocator: an offset past the end would be a save that writes outside
     /// its buffer.
     ///
-    /// It used to be a constant `true` — every offset is the cursor *before* a
-    /// non-zero addition, so `offset < size` held by construction, and the one
-    /// input that broke it (an offset truncated to `u32`) was invisible
-    /// because the truncation happened before the comparison. A layout that
-    /// overflows now reports a zero size, which fails here rather than
-    /// silently aliasing two components (D-105).
+    /// An overflowing layout reports zero so it cannot silently alias two
+    /// components (D-105).
     pub fn is_consistent(&self) -> bool {
         let no_duplicates = self.offsets.iter().enumerate().all(|(index, offset)| {
             offset.is_none_or(|offset| {
@@ -217,12 +256,39 @@ impl Layout {
 mod tests {
     use super::*;
 
-    /// A machine with AVX only, which is what D-82 permits.
+    /// A machine whose only extended component is AVX.
     fn avx_only(index: u32) -> Component {
         match index {
-            2 => Component::new(256, false),
+            2 => Component::new(256, Alignment::Natural),
             _ => Component::ABSENT,
         }
+    }
+
+    #[test]
+    fn component_accessors_preserve_size_presence_and_alignment_independently() {
+        let aligned = Component::new(17, Alignment::Bytes64);
+        assert_eq!(aligned.size(), 17);
+        assert!(aligned.is_aligned());
+        assert!(aligned.is_present());
+
+        let empty_but_aligned = Component::new(0, Alignment::Bytes64);
+        assert_eq!(empty_but_aligned.size(), 0);
+        assert!(empty_but_aligned.is_aligned());
+        assert!(!empty_but_aligned.is_present());
+        assert!(!Component::ABSENT.is_aligned());
+        assert!(!Component::ABSENT.is_present());
+    }
+
+    #[test]
+    fn a_standard_component_extent_uses_the_reported_offset() {
+        let avx = Component::new(256, Alignment::Natural);
+        assert_eq!(standard_component_extent(avx, 576), Some(832));
+        assert_eq!(standard_component_extent(Component::ABSENT, 576), None);
+        assert_eq!(standard_component_extent(avx, 575), None);
+        assert_eq!(
+            standard_component_extent(Component::new(2, Alignment::Natural), u32::MAX),
+            None
+        );
     }
 
     /// A snapshot with AVX-512 and APX, whose *non-compacted* offsets are not
@@ -233,13 +299,13 @@ mod tests {
     /// the ordering, not the exact bytes.
     fn avx512_and_apx(index: u32) -> Component {
         match index {
-            2 => Component::new(256, false),
-            5 => Component::new(64, false),
-            6 => Component::new(512, false),
-            7 => Component::new(1024, false),
-            8 => Component::new(128, false),
-            9 => Component::new(8, false),
-            19 => Component::new(80, true),
+            2 => Component::new(256, Alignment::Natural),
+            5 => Component::new(64, Alignment::Natural),
+            6 => Component::new(512, Alignment::Natural),
+            7 => Component::new(1024, Alignment::Natural),
+            8 => Component::new(128, Alignment::Natural),
+            9 => Component::new(8, Alignment::Natural),
+            19 => Component::new(80, Alignment::Bytes64),
             _ => Component::ABSENT,
         }
     }
@@ -272,23 +338,16 @@ mod tests {
     /// **A component with a higher index at a lower offset does not disturb
     /// the compacted layout.**
     ///
-    /// The APX case (`010` §8). In the non-compacted format component 19 sits
-    /// at offset 960, below components 6, 7 and 8 — Linux assumed offsets rose
-    /// with index and had to delete the assertions in 6.16. Compacted offsets
-    /// are computed from the mask in *index* order and never read the
-    /// processor's offsets at all, so the hazard cannot reach this code. This
-    /// test is what says so.
+    /// In the non-compacted APX layout, component 19 sits below components 6,
+    /// 7 and 8. Compacted offsets use mask-index order and ignore those
+    /// processor offsets (`010` §8).
     #[test]
     fn a_high_index_at_a_low_offset_changes_nothing() {
         let mask = 0b111 | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 19);
         let layout = Layout::compacted(mask, avx512_and_apx);
 
-        // Transcribed, not derived. `offset >= previous` with `previous`
-        // recomputed from the layout's own answer is `f(cursor) >= cursor`,
-        // true for every size and every alignment flag and every wrong
-        // implementation of `compacted` (D-105). These are the offsets the
-        // sizes in `avx512_and_apx` produce, worked out by hand: 576, then
-        // +256, +1024, +16, +64, +64, then 64-aligned for APX.
+        // Hand-calculated: deriving the expectation from `Layout` let every
+        // wrong monotonic implementation pass (D-105).
         assert_eq!(layout.offset_of(2), Some(576), "avx");
         assert_eq!(layout.offset_of(5), Some(832), "opmask");
         assert_eq!(layout.offset_of(6), Some(896), "zmm hi256");
@@ -313,8 +372,8 @@ mod tests {
         // Component 2 is 8 bytes, so component 3 would start at 584 — but it
         // asks for alignment, so it starts at 640.
         let layout = Layout::compacted(0b1111, |index| match index {
-            2 => Component::new(8, false),
-            3 => Component::new(16, true),
+            2 => Component::new(8, Alignment::Natural),
+            3 => Component::new(16, Alignment::Bytes64),
             _ => Component::ABSENT,
         });
         assert_eq!(layout.offset_of(2), Some(HEADER_BYTES));
@@ -322,20 +381,53 @@ mod tests {
         assert_eq!(layout.size(), 640 + 16);
     }
 
-    /// A component the mask enables but the processor does not have is skipped
-    /// rather than given a zero-length slot.
-    ///
-    /// A zero-length slot would share an offset with whatever came next, and
-    /// two components at one address is the shape that corrupts a restore.
     #[test]
-    fn an_absent_component_takes_no_room() {
-        let layout = Layout::compacted(0b1111, |index| match index {
-            3 => Component::new(32, false),
-            _ => Component::ABSENT,
-        });
-        assert_eq!(layout.offset_of(2), None, "an absent component was placed");
-        assert_eq!(layout.offset_of(3), Some(HEADER_BYTES));
-        assert_eq!(layout.size(), HEADER_BYTES + 32);
+    fn every_enabled_extended_component_must_be_present() {
+        for index in 2..COMPONENTS {
+            let layout = Layout::compacted(X87 | SSE | (1 << index), |_| Component::ABSENT);
+            assert!(
+                !layout.is_consistent(),
+                "absent component {index} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn avx_without_sse_is_not_consistent() {
+        let layout = Layout::compacted(X87 | AVX, avx_only);
+        assert!(!layout.is_consistent(), "AVX without SSE was accepted");
+    }
+
+    #[test]
+    fn avx_state_requires_avx_instruction_support() {
+        assert!(avx_state_has_instruction_support(X87 | SSE, 0));
+        assert!(!avx_state_has_instruction_support(PERMITTED, 0));
+        assert!(!avx_state_has_instruction_support(PERMITTED, 1 << 27));
+        assert!(!avx_state_has_instruction_support(PERMITTED, 1 << 29));
+        assert!(avx_state_has_instruction_support(PERMITTED, AVX_SUPPORTED));
+    }
+
+    #[test]
+    fn every_permitted_component_must_be_available() {
+        assert!(has_permitted_components(PERMITTED));
+        assert!(has_permitted_components(PERMITTED | (1 << 19)));
+        for component in [X87, SSE, AVX] {
+            assert!(!has_permitted_components(PERMITTED & !component));
+        }
+    }
+
+    #[test]
+    fn the_live_configuration_is_exactly_the_fixed_policy() {
+        assert!(matches_permitted_configuration(PERMITTED));
+        for component in [X87, SSE, AVX] {
+            assert!(!matches_permitted_configuration(PERMITTED & !component));
+        }
+        for extra in [3, 7, 19, 40, 63] {
+            assert!(
+                !matches_permitted_configuration(PERMITTED | (1 << extra)),
+                "extra component {extra} was admitted"
+            );
+        }
     }
 
     /// No two enabled components share an offset, and none starts past the
@@ -362,8 +454,6 @@ mod tests {
         assert!(layout.is_consistent());
     }
 
-    /// Bits above the components this crate lays out are ignored, not
-    /// misplaced.
     #[test]
     fn a_mask_bit_beyond_the_table_is_ignored() {
         let layout = Layout::compacted(PERMITTED | (1 << 40) | (1 << 63), avx_only);
@@ -373,17 +463,9 @@ mod tests {
         assert!(layout.is_consistent());
     }
 
-    /// A layout whose components run past four gigabytes refuses rather than
-    /// giving two of them one offset.
-    ///
-    /// `cursor as u32` wrapped, so three components of `0x8000_0000` bytes
-    /// produced offsets 576, 2147484224 and 576 again — and `is_consistent`
-    /// said yes, because it compared the already-truncated value. No
-    /// architectural component is anywhere near this; `Component::new` is
-    /// public and takes whatever it is given (D-105).
     #[test]
     fn a_layout_that_overflows_a_u32_offset_is_not_consistent() {
-        let huge = |_| Component::new(0x8000_0000, false);
+        let huge = |_| Component::new(0x8000_0000, Alignment::Natural);
         let layout = Layout::compacted(0b1_1100, huge);
 
         assert!(
@@ -418,5 +500,17 @@ mod tests {
             size: 1024,
         };
         assert!(!layout.is_consistent(), "an alias passed");
+    }
+
+    #[test]
+    fn a_component_must_start_before_the_end_of_the_area() {
+        let mut offsets = [None; COMPONENTS];
+        offsets[2] = Some(HEADER_BYTES as u32);
+        let layout = Layout {
+            offsets,
+            size: HEADER_BYTES,
+        };
+
+        assert!(!layout.is_consistent(), "an empty tail component passed");
     }
 }

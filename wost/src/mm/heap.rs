@@ -9,8 +9,8 @@
 //! as a constraint — `activate` made mapping one-way (D-47) — and D-86 removed
 //! the constraint without changing the choice: the direct map needs no table
 //! walk and no invalidation, which is what a slab refill wants. Slab frames are
-//! never returned; [`stats`] reports the numbers that would justify changing
-//! that.
+//! never returned; the machine selftest records the numbers that would justify
+//! changing that.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
@@ -25,11 +25,12 @@ use crate::sync::SpinLock;
 /// higher half, so any real slot is far above it.
 const EMPTY: usize = 0;
 
-/// Free lists and the counters that say how the heap is doing.
+/// Free lists and the accounting that protects heap state transitions.
 struct Heap {
     /// Head of each class's free list, or [`EMPTY`].
     free: [usize; CLASSES],
     /// Frames handed to slabs, never returned.
+    #[cfg(feature = "selftest")]
     slab_frames: usize,
     /// Frames currently held by large allocations.
     large_frames: usize,
@@ -41,6 +42,7 @@ impl Heap {
     const fn new() -> Self {
         Self {
             free: [EMPTY; CLASSES],
+            #[cfg(feature = "selftest")]
             slab_frames: 0,
             large_frames: 0,
             live: 0,
@@ -56,13 +58,16 @@ impl Heap {
         if self.free[class.index()] == EMPTY {
             return ptr::null_mut();
         }
+        let Some(live) = self.live.checked_add(1) else {
+            return ptr::null_mut();
+        };
 
         let slot = self.free[class.index()];
         // SAFETY: `slot` came off this class's free list, so it is a slot of
         // this class inside a slab frame this heap owns and nothing else
         // holds. Its first word is the link, written when it was pushed.
-        self.free[class.index()] = unsafe { (slot as *mut usize).read() };
-        self.live += 1;
+        self.free[class.index()] = unsafe { core::ptr::read(slot as *const usize) };
+        self.live = live;
         slot as *mut u8
     }
 
@@ -72,13 +77,18 @@ impl Heap {
     ///
     /// `slot` must be an address this heap handed out for `class` and not
     /// since returned.
-    unsafe fn give_slot(&mut self, slot: *mut u8, class: SizeClass) {
+    #[must_use = "a refused slot return changed no heap state"]
+    unsafe fn give_slot(&mut self, slot: *mut u8, class: SizeClass) -> bool {
+        let Some(live) = self.live.checked_sub(1) else {
+            return false;
+        };
         // SAFETY: the caller guarantees `slot` is a slot of `class` this heap
         // owns, so its first word is ours to overwrite with the link — the
         // slot's contents are dead the moment it is freed.
-        unsafe { (slot as *mut usize).write(self.free[class.index()]) };
+        unsafe { core::ptr::write(slot as *mut usize, self.free[class.index()]) };
         self.free[class.index()] = slot as usize;
-        self.live -= 1;
+        self.live = live;
+        true
     }
 
     /// Carve a frame the caller already owns into slots of `class`.
@@ -87,27 +97,40 @@ impl Heap {
     ///
     /// `base` must address a whole free frame reachable through the direct
     /// map, which nothing else holds and which the heap now owns.
-    unsafe fn refill_with(&mut self, class: SizeClass, base: *mut u8) {
-        self.slab_frames += 1;
+    #[must_use = "a refused slab refill changed no heap state"]
+    unsafe fn refill_with(&mut self, class: SizeClass, base: *mut u8) -> bool {
+        #[cfg(feature = "selftest")]
+        if !self.record_slab_frame() {
+            return false;
+        }
 
         for slot in 0..class.slots_per_frame() {
-            // SAFETY: the caller's contract is that `base` addresses a whole
-            // free frame reachable through the direct map, and `offset_of` is
-            // below `FRAME_SIZE` by construction, so the result is inside it.
-            // That contract is the ground here — `direct_pointer` is
-            // arithmetic, and this function never calls it (D-140).
-            let address = unsafe { base.add(class.offset_of(slot)) };
-            // SAFETY: the frame was just allocated, so no other code holds any
-            // slot in it; writing the link is the first use of each.
-            unsafe { (address as *mut usize).write(self.free[class.index()]) };
+            let address = base.wrapping_add(class.offset_of(slot));
+            // SAFETY: the caller supplies a uniquely owned direct-mapped frame,
+            // and `offset_of` stays inside it. Writing the link is each slot's
+            // first use; pointer formation alone proves no coverage (D-140).
+            unsafe {
+                core::ptr::write(address as *mut usize, self.free[class.index()]);
+            }
             self.free[class.index()] = address as usize;
         }
+        true
+    }
+
+    #[cfg(feature = "selftest")]
+    fn record_slab_frame(&mut self) -> bool {
+        let Some(next) = self.slab_frames.checked_add(1) else {
+            return false;
+        };
+        self.slab_frames = next;
+        true
     }
 }
 
 static HEAP: SpinLock<Heap> = SpinLock::new(Heap::new());
 
 /// What the heap has taken and is holding.
+#[cfg(feature = "selftest")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
     /// Frames given to slabs. Never returned.
@@ -119,6 +142,7 @@ pub struct Stats {
 }
 
 /// What the heap has taken and is holding, right now.
+#[cfg(feature = "selftest")]
 pub fn stats() -> Stats {
     let heap = HEAP.lock_leaf();
     Stats {
@@ -147,10 +171,8 @@ struct KernelAllocator;
 // returns exactly what `alloc` handed out, under the same lock.
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // A handler that allocates can be the one that interrupted the heap's
-        // own refill, and `003`'s rule that handlers do not allocate was
-        // enforced by nobody until there was a count to ask (D-55). Loud,
-        // because a silent null here would be blamed on memory.
+        // A handler allocation can interrupt the heap's own refill. Fail loudly
+        // so the contract violation is not misreported as exhaustion (D-55).
         assert!(!interrupt::in_trap(), "allocation in trap context");
         match place(layout.size(), layout.align()) {
             Ok(Placement::Slot(class)) => {
@@ -158,26 +180,30 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 if !slot.is_null() {
                     return slot;
                 }
-                // Empty free list. Take a frame with the heap's lock *not*
-                // held, then re-check: a preemption between the two may have
-                // refilled this class already, which costs a slab frame and
-                // nothing else.
+                // Empty free list. Refill with the heap's lock dropped, then
+                // re-check: a preemption may have refilled this class already.
                 let Some(frame) = allocate_zeroed() else {
                     return ptr::null_mut();
                 };
                 let Some(base) = direct_pointer(frame.address(), super::FRAME_SIZE) else {
                     return ptr::null_mut();
                 };
-                // The slab owns the frame from here on; nothing returns one.
-                core::mem::forget(frame);
                 let mut heap = HEAP.lock_leaf();
                 // SAFETY: the frame was just allocated, so nothing else holds
                 // any slot in it, and the direct map covers every frame the
                 // allocator manages — which is what makes the whole of it
                 // reachable. `direct_pointer` returned a pointer; it checked
                 // no coverage (D-140).
-                unsafe { heap.refill_with(class, base) };
-                heap.take_slot(class)
+                let refilled = unsafe { heap.refill_with(class, base) };
+                if !refilled {
+                    drop(heap);
+                    return ptr::null_mut();
+                }
+                let slot = heap.take_slot(class);
+                drop(heap);
+                // The free list owns the frame from here on.
+                core::mem::forget(frame);
+                slot
             }
             Ok(Placement::Frames { count, align }) => {
                 let Some(run) = super::allocate_contiguous(count, align) else {
@@ -186,13 +212,21 @@ unsafe impl GlobalAlloc for KernelAllocator {
                 let Some(address) = direct_pointer(run.address(), run.len()) else {
                     return ptr::null_mut();
                 };
+                let mut heap = HEAP.lock_leaf();
+                let Some(large_frames) = heap.large_frames.checked_add(count) else {
+                    drop(heap);
+                    return ptr::null_mut();
+                };
+                let Some(live) = heap.live.checked_add(1) else {
+                    drop(heap);
+                    return ptr::null_mut();
+                };
+                heap.large_frames = large_frames;
+                heap.live = live;
+                drop(heap);
                 // The run is owned by the caller's allocation now; `dealloc`
                 // reconstructs it from the layout.
                 core::mem::forget(run);
-
-                let mut heap = HEAP.lock_leaf();
-                heap.large_frames += count;
-                heap.live += 1;
                 address
             }
             Err(_) => core::ptr::null_mut(),
@@ -204,25 +238,39 @@ unsafe impl GlobalAlloc for KernelAllocator {
         // makes it (D-55).
         assert!(!interrupt::in_trap(), "deallocation in trap context");
         match place(layout.size(), layout.align()) {
-            // SAFETY: `GlobalAlloc`'s contract is that `pointer` came from
-            // `alloc` with this same layout, so it is a live slot of exactly
-            // this class.
-            Ok(Placement::Slot(class)) => unsafe { HEAP.lock_leaf().give_slot(pointer, class) },
+            Ok(Placement::Slot(class)) => {
+                // SAFETY: `GlobalAlloc`'s contract is that `pointer` came from
+                // `alloc` with this same layout, so it is a live slot of this
+                // exact class.
+                let returned = unsafe { HEAP.lock_leaf().give_slot(pointer, class) };
+                assert!(returned, "heap refused a live slot return");
+            }
             Ok(Placement::Frames { count, .. }) => {
                 let Some(physical) = physical_of(pointer) else {
-                    return;
+                    panic!("heap could not recover a live allocation's physical address");
                 };
-                let mut heap = HEAP.lock_leaf();
-                heap.large_frames -= count;
-                heap.live -= 1;
-                drop(heap);
+                let returned = {
+                    let mut heap = HEAP.lock_leaf();
+                    match (
+                        heap.large_frames.checked_sub(count),
+                        heap.live.checked_sub(1),
+                    ) {
+                        (Some(large_frames), Some(live)) => {
+                            heap.large_frames = large_frames;
+                            heap.live = live;
+                            true
+                        }
+                        _ => false,
+                    }
+                };
+                assert!(returned, "heap refused a live frame return");
 
                 // SAFETY: `GlobalAlloc`'s contract is that `pointer` came from
                 // `alloc` with this layout, so `count` frames at `physical`
                 // are exactly the run allocated for it and not since freed.
                 drop(unsafe { Segment::from_raw(physical, count) });
             }
-            Err(_) => {}
+            Err(error) => panic!("heap refused a live allocation's layout: {error}"),
         }
     }
 }

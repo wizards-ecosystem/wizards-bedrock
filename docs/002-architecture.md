@@ -17,16 +17,18 @@ for evidence and citations behind the choices marked ★.
    current handle-less call creates external object authority. Any future call
    that does must be governed by an explicit per-process **policy layer**; none
    is implemented for today's enumerated ring/time/control facilities. Handles
-   are process-local integers. Duplicate and channel transfer attenuate rights;
-   handle-producing operations such as OpenAt derive authority from a handle
-   already held.
+   are process-local integers. Duplicate attenuates rights today; future
+   channel transfer must do the same. Handle-producing operations such as
+   OpenAt derive authority from a handle already held.
 
    Delegation is stated as an invariant a check can hold us to, rather than
    as a claim about mechanisms: **a process receives exactly one handle at
-   spawn — its bootstrap channel. Later authority either arrives through a
-   channel or is derived by a handle-authorized ring operation.** Nothing can
-   mint ambient object authority. D-151 amended the original channel-only
-   provenance once completions could carry handles.
+   spawn — its opaque bootstrap-channel identity. Later authority is derived
+   by a handle-authorized ring operation today and may arrive through a future
+   channel operation.** Nothing can mint ambient object authority. D-151
+   amended the original channel-only provenance once completions could carry
+   handles; D-248 removed the uncalled channel mechanics without weakening the
+   birth count.
    *Anchors: Zircon handles (verified), seL4 capabilities, and Capsicum's
    namespace confinement and per-object rights. Capsicum is not evidence for
    spawn-only: capability mode survives `fork` and `pdfork`.*
@@ -103,11 +105,13 @@ for evidence and citations behind the choices marked ★.
 | `Socket` | network endpoints (smoltcp behind them) |
 
 This is a target model, not an implementation inventory. The current
-handle-object tags are Event, Channel, File and Directory; the ring is an
-enumerated ambient facility. Process, Thread, MemoryObject, EventPair, Socket
-and a handle-bound Queue wait for their callers and decisions. Monolithic-
-modular still holds: these belong in the kernel when implemented; capability
-discipline applies at the ABI boundary, not via userspace servers.
+handle-object tags are Channel, File and Directory; `Channel` is only an
+opaque, counted bootstrap identity, with no peer or message semantics (D-248).
+The ring is an enumerated ambient facility. Process, Thread, MemoryObject,
+Event, EventPair, Socket and a handle-bound Queue wait for their callers and
+decisions. Monolithic-modular still holds: these belong in the kernel when
+implemented; capability discipline applies at the ABI boundary, not via
+userspace servers.
 
 ## Security baseline
 
@@ -271,10 +275,10 @@ Still open:
 - **Compat-fork mechanics for mlibc** (before Phase 9)
 - **How a program receives its first directory handle.** Phase 6 built
   `OpenAt` and a program cannot reach it: `spawn` gives exactly one handle —
-  the bootstrap channel (D-111) — and no ring-3 channel-receive operation
-  exists yet. A second handle at spawn would break the invariant that makes
-  pillar 1 checkable, so this waits for the channel rather than for a
-  convenience (D-173).
+  the opaque bootstrap-channel identity (D-111, D-248) — and no ring-3
+  channel-receive operation exists yet. A second handle at spawn would break
+  the invariant that makes pillar 1 checkable, so this waits for a concrete
+  channel protocol rather than for a convenience (D-173).
 
 Closed since this list was written:
 

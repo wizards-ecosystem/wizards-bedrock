@@ -1,32 +1,17 @@
-//! Names that yield devices, and **not** bytes.
+//! Names that yield devices rather than byte-bearing files.
 //!
-//! The third backend, and the one that exists to make a point `012` §7 is
-//! emphatic about: **a devfs entry has no bytes.** It is a name that yields a
-//! device object *of another type*. Forcing it to implement `read_at` is the
-//! "everything is a file" conflation, and WASI's own README rejects it on
-//! exactly these grounds.
-//!
-//! So `lookup` on devfs returns a [`Node::Device`](crate::vfs::Node::Device),
-//! and `vfs::read` takes a [`File`](crate::vfs::File). **There is no way to
-//! pass a device to it** — not a refusal at runtime, an absence at compile
-//! time. That is the difference between a design that says devices are not
-//! files and one that enforces it (D-172).
-//!
-//! What is here is a list, not a registry. There is one driver, it is claimed
-//! at boot, and a registry with one entry is a description of that entry
-//! (D-41). Slice 4's `Device` capability is what a program will eventually
-//! receive here; today the name resolves and the handle table entry it becomes
-//! is Phase 7's.
+//! Lookup returns [`Node::Device`](crate::vfs::Node::Device), while reads take
+//! [`File`](crate::vfs::File), enforcing the distinction in types (D-172).
 
 /// A device this kernel can name.
 ///
-/// An enum rather than an index into a registry, so a fourth device is a
+/// An enum rather than an index into a registry, so a new device is a
 /// compile error everywhere that matches on it rather than a number that means
 /// nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub(crate) enum Device {
-    /// The storage controller slice 4 claimed.
+    /// Block storage owned by the claimed controller.
     Storage,
     /// The console the kernel writes its own log to.
     Console,
@@ -52,44 +37,9 @@ impl Device {
 
 /// Every device, in listing order.
 ///
-/// The compiler checks the match in [`Device::name`], so a third variant is a
-/// build failure there — and this array would go on listing two. A test below
-/// makes its completeness a build failure as well (D-174).
+/// The host source contract inventories this independently from the enum and
+/// both descriptive matches (D-174).
 pub(crate) const DEVICES: [Device; 2] = [Device::Storage, Device::Console];
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `DEVICES` is every device there is.
-    ///
-    /// The doc above claimed the compiler checked this and nothing did: the
-    /// match in [`Device::name`] is exhaustive, so a third variant is a build
-    /// failure *there* — and `DEVICES` would go on listing two. The match here
-    /// is what makes the array's completeness a build failure too, and the
-    /// length is asserted after it for the case where a variant is added to
-    /// both the enum and the match and not to the array (D-161, D-174).
-    #[test]
-    fn devices_is_every_device_there_is() {
-        for device in DEVICES {
-            let itself = match device {
-                Device::Storage => Device::Storage,
-                Device::Console => Device::Console,
-            };
-            assert_eq!(device, itself);
-        }
-        assert_eq!(DEVICES.len(), 2, "DEVICES has fallen behind the enum");
-
-        // And no two share a name, which a listing would otherwise show twice
-        // and a lookup would answer with whichever came first.
-        for (index, device) in DEVICES.iter().enumerate() {
-            for earlier in &DEVICES[..index] {
-                assert_ne!(device.name(), earlier.name());
-            }
-            assert!(!device.name().is_empty());
-        }
-    }
-}
 
 /// Find `name` among the devices.
 pub(crate) fn lookup(name: &[u8]) -> Option<Device> {
@@ -99,10 +49,6 @@ pub(crate) fn lookup(name: &[u8]) -> Option<Device> {
 /// Call `found` for every device.
 pub(crate) fn walk(mut found: impl FnMut(&[u8], bool) -> bool) {
     for device in DEVICES {
-        // **Never a directory**, and never a file either. The boolean here is
-        // "is it a directory", which every backend answers, and a device is
-        // neither — which is why the *node* it resolves to is a third thing
-        // rather than a flag on a file.
         if !found(device.name(), false) {
             return;
         }

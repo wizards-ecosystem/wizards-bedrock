@@ -4,20 +4,10 @@
 //! is that source, backed by the NVMe driver — and the *same* reader runs on
 //! the host over a byte slice, which is what makes the oracle possible (D-170).
 //!
-//! **Read-only, and the phase is honest about it** (`014`): the format was
-//! chosen partly because a third-party volume carries zero on-disk-write risk,
-//! and nothing here writes.
-//!
-//! **Sector by sector, with no cache.** `014` carries "no page cache" as a
-//! deliberate hole: reading a directory means reading the same sectors
-//! repeatedly, and whether that is affordable is a measurement this phase
-//! should take rather than assume. The measurement does not exist yet, so
-//! neither does the cache.
+//! This path is read-only: the third-party volume therefore carries no
+//! on-disk-write risk, and nothing here writes (`014`).
 
-use fat32::{FatError, Sectors, Volume};
-use wost::mm::DmaSegment;
-
-use crate::nvme::Controller;
+use fat32::{DirectoryChunk, DirectoryCursor, Entry, FatError, Sectors, Volume};
 
 /// Where the volume begins on the namespace, in sectors.
 ///
@@ -26,16 +16,9 @@ use crate::nvme::Controller;
 /// two (D-158).
 pub(crate) const VOLUME_SECTOR: u64 = 2048;
 
-/// A source of sectors backed by the controller.
-///
-/// Holds the driver and its bounce buffer by reference, because both live in
-/// the `static` the driver is kept in and neither can be moved out.
-pub(crate) struct Blocks<'a> {
-    controller: &'a mut Controller,
-    buffer: &'a mut DmaSegment,
-}
+struct Blocks;
 
-impl Sectors for Blocks<'_> {
+impl Sectors for Blocks {
     type Error = ();
 
     fn read_sector(
@@ -43,39 +26,87 @@ impl Sectors for Blocks<'_> {
         sector: u64,
         into: &mut [u8; fat32::SECTOR_BYTES],
     ) -> Result<(), Self::Error> {
-        // One logical block per sector, which holds because the reader refuses
-        // any volume whose sector size is not 512 and the namespace reports
-        // 512. A controller formatted at 4096 would be refused at the mount
-        // rather than misread here.
-        if self.controller.block_bytes as usize != fat32::SECTOR_BYTES {
-            return Err(());
-        }
-        self.controller
-            .read_blocks(sector, 1, self.buffer)
-            .map_err(|_| ())?;
-        if !self.buffer.read_at(0, into) {
-            return Err(());
-        }
-        Ok(())
+        crate::nvme::read_sector(sector, into)
     }
 }
 
-/// Mount the volume and run `f` against it.
+/// One mounted read-only volume without controller ownership.
+pub(crate) struct Mounted {
+    volume: Volume<Blocks>,
+}
+
+impl Mounted {
+    /// Cluster count and bytes per cluster reported by the mounted layout.
+    pub(crate) const fn shape(&self) -> (u32, u32) {
+        (
+            self.volume.bpb().clusters(),
+            self.volume.bpb().cluster_bytes(),
+        )
+    }
+
+    /// Whether the mounted layout retains the FAT32 bounds proved at parse time.
+    #[cfg(feature = "selftest")]
+    pub(crate) const fn layout_is_fat32(&self) -> bool {
+        let bpb = self.volume.bpb();
+        bpb.root_cluster() >= fat32::FIRST_DATA_CLUSTER
+            && bpb.clusters() >= 65_525
+            && bpb.cluster_bytes() >= fat32::SECTOR_BYTES as u32
+            && bpb.first_data_sector() > 0
+    }
+
+    /// Root directory cluster.
+    pub(crate) const fn root_cluster(&self) -> u32 {
+        self.volume.bpb().root_cluster()
+    }
+
+    /// Resolve every component within this one mounted layout.
+    pub(crate) fn resolve(&mut self, from: u32, components: &[&[u8]]) -> Result<Entry, FatError> {
+        let mut directory = from;
+        for (index, name) in components.iter().enumerate() {
+            let entry = self.volume.lookup(directory, name)?;
+            if index + 1 == components.len() {
+                return Ok(entry);
+            }
+            if !entry.is_directory() {
+                return Err(FatError::WrongKind);
+            }
+            directory = entry.cluster;
+        }
+        Err(FatError::NotFound)
+    }
+
+    /// Read one file range.
+    pub(crate) fn read_file(
+        &mut self,
+        cluster: u32,
+        size: u32,
+        offset: u32,
+        into: &mut [u8],
+    ) -> Result<usize, FatError> {
+        self.volume
+            .read_file(&Entry::for_contents(cluster, size), offset, into)
+    }
+
+    /// Copy the next bounded directory chunk.
+    pub(crate) fn directory_chunk(
+        &mut self,
+        cursor: &mut DirectoryCursor,
+    ) -> Result<DirectoryChunk, FatError> {
+        self.volume.directory_chunk(cursor)
+    }
+}
+
+/// Mount the retained controller's volume.
 ///
 /// Mounted per call rather than kept, which is the same decision as "no cache"
 /// and for the same reason: a boot sector is one sector, the volume is not
 /// going anywhere, and holding a mounted volume in a `static` would mean
 /// holding the controller's borrow for the life of the boot.
 ///
-/// `None` when there is no controller. `Some(Err(..))` when there is one and
-/// the volume will not mount, which is a different thing and worth telling
-/// apart.
-pub(crate) fn with_volume<T>(
-    f: impl FnOnce(&mut Volume<Blocks<'_>>) -> Result<T, FatError>,
-) -> Option<Result<T, FatError>> {
-    crate::nvme::with_controller(|controller, buffer| {
-        let source = Blocks { controller, buffer };
-        let mut volume = Volume::mount(source, VOLUME_SECTOR)?;
-        f(&mut volume)
-    })
+/// `None` means no controller; `Some(Err(..))` means a malformed volume.
+pub(crate) fn mount() -> Option<Result<Mounted, FatError>> {
+    if !crate::nvme::has_controller() {
+        return None;
+    }
+    Some(Volume::mount(Blocks, VOLUME_SECTOR).map(|volume| Mounted { volume }))
 }

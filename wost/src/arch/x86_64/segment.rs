@@ -12,7 +12,7 @@ use x86_tables::Selector;
 use x86_tables::gdt::{Descriptor, SystemDescriptor};
 use x86_tables::tss::TaskState;
 
-use super::paging::PinnedStack;
+use super::paging::{KernelStackTop, PinnedStack};
 use super::table::TablePointer;
 use crate::cell::HardwareCell;
 use crate::sync::Once;
@@ -20,7 +20,7 @@ use crate::sync::Once;
 /// Ring 0 code.
 pub const KERNEL_CODE: Selector = Selector::new(1, 0);
 
-/// Ring 0 data. `SS` holds this; `iretq` reloads it on every return.
+/// Ring 0 data. Boot and common interrupt entry keep this in `SS`.
 pub const KERNEL_DATA: Selector = Selector::new(2, 0);
 
 /// The task-state segment. Being a system descriptor it is sixteen bytes, so it
@@ -31,9 +31,8 @@ pub const TASK_STATE: Selector = Selector::new(3, 0);
 ///
 /// Placed **before** the user code segment, which looks backwards and is what
 /// `sysret` requires: it derives `CS` from `STAR` + 16 and `SS` from
-/// `STAR` + 8, so the data descriptor has to come first. Nothing uses `sysret`
-/// yet and the order is fixed now anyway, because moving a descriptor later
-/// means moving every selector that names it (D-96).
+/// `STAR` + 8, so the data descriptor has to come first. Changing this order
+/// would also renumber every selector shared with entry assembly (D-96).
 pub const USER_DATA: Selector = Selector::new(5, 3);
 
 /// Ring 3 code.
@@ -46,7 +45,7 @@ pub const USER_CODE: Selector = Selector::new(6, 3);
 /// pushed.
 pub(super) const USER_DATA_BITS: u16 = USER_DATA.bits();
 
-/// [`KERNEL_DATA`]'s bits, for the `verw` operand on the return path.
+/// [`KERNEL_DATA`]'s bits, for common entry and the return-path `verw` operand.
 pub(super) const KERNEL_DATA_BITS: u16 = KERNEL_DATA.bits();
 
 /// [`USER_CODE`]'s bits, for the same reason.
@@ -119,7 +118,7 @@ pub fn init() {
     task_state.set_interrupt_stack(DOUBLE_FAULT_STACK as usize, fault_stack_top());
     // SAFETY: `INIT` admitted this caller alone, and nothing reads the segment
     // until the `ltr` below, so no reference to it can exist yet.
-    unsafe { task_state_pointer().write(task_state) };
+    unsafe { core::ptr::write(task_state_pointer(), task_state) };
 
     let task_state_descriptor =
         SystemDescriptor::task_state(task_state_pointer() as u64, size_of::<TaskState>() as u16);
@@ -134,7 +133,7 @@ pub fn init() {
     entries[USER_CODE.index() as usize] = Descriptor::USER_CODE.bits();
     // SAFETY: as above — one writer, and the CPU is not pointed at the table
     // until the `lgdt` below.
-    unsafe { GDT.as_mut_ptr().write(entries) };
+    unsafe { core::ptr::write(GDT.as_mut_ptr(), entries) };
 
     let pointer = TablePointer::new(GDT.address(), (size_of::<[u64; ENTRIES]>() - 1) as u16);
     // SAFETY: `lgdt` reads ten bytes at the operand and points the CPU at the
@@ -158,26 +157,46 @@ pub fn init() {
         asm!(
             "ltr {selector:x}",
             selector = in(reg) TASK_STATE.bits(),
+            options(nostack, preserves_flags),
+        );
+    }
+}
+
+fn selectors() -> (Selector, Selector) {
+    let code: u16;
+    let stack: u16;
+    // SAFETY: reading segment registers has no preconditions and no effects.
+    unsafe {
+        asm!(
+            "mov {code:x}, cs",
+            "mov {stack:x}, ss",
+            code = out(reg) code,
+            stack = out(reg) stack,
             options(nomem, nostack, preserves_flags),
         );
     }
+    (Selector::from_bits(code), Selector::from_bits(stack))
 }
 
 /// The selector this CPU is executing under.
+pub(super) fn current_code_selector() -> Selector {
+    selectors().0
+}
+
+/// The selector this CPU is executing under.
+#[cfg(feature = "selftest")]
 pub fn code_selector() -> Selector {
-    let bits: u16;
-    // SAFETY: reading a segment register has no preconditions and no effects.
-    unsafe {
-        asm!(
-            "mov {selector:x}, cs",
-            selector = out(reg) bits,
-            options(nomem, nostack, preserves_flags),
-        );
-    }
-    Selector::from_bits(bits)
+    current_code_selector()
+}
+
+/// The selector this CPU's stack accesses use.
+#[cfg(feature = "selftest")]
+pub fn stack_selector() -> Selector {
+    selectors().1
 }
 
 /// The selector in the task register, or a null selector if none is loaded.
+#[cfg(feature = "selftest")]
 pub fn task_register() -> Selector {
     let bits: u16;
     // SAFETY: `str` reads the task register. It is unprivileged, has no effects,
@@ -220,51 +239,34 @@ fn reload_selectors() {
             "mov ds, {selector:x}",
             "mov es, {selector:x}",
             selector = in(reg) KERNEL_DATA.bits(),
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
 }
 
-/// Point `RSP0` at `top`, with no evidence asked for.
-///
-/// `pub(super)` and no further: the only caller is the context switch, and the
-/// proof it stands on is one this module cannot express in a type — `task::init`
-/// walked every stack in the arena and confirmed it mapped, guarded, writable
-/// and never executable before it would fabricate on one (D-52), and these are
-/// those stacks. A bare address from *outside* the arch module is exactly what
-/// D-95 refused; from inside it, with that walk behind it, it is the same
-/// evidence by a different route (D-99).
-///
-/// **There was a `pub fn set_kernel_stack(&paging::MappedStack)` beside this,
-/// and it is gone.** It asked for the evidence this one does not, and had no
-/// callers:
-/// the switch writes `RSP0` *before* it installs the arriving thread's tables,
-/// so [`paging::MappedStack::is_installed`](super::paging::MappedStack::is_installed)
-/// — which walks the running tables since
-/// D-125 — would refuse the arriving stack every time. A safe wrapper its only
-/// intended caller cannot use by construction is the speculative API `005`
-/// forbids, and keeping it suggested a road that was never open (D-129).
-pub(super) fn write_kernel_stack(top: u64) {
+/// Point ring-3 traps at a stack retained by the pinned task arena.
+pub(super) fn write_kernel_stack(top: KernelStackTop<'_>) {
+    let top = top.address();
     let at = TaskState::privilege_stack_offset(0);
-    debug_assert!(
+    assert!(
         task_state_pointer()
             .addr()
             .wrapping_add(at)
             .is_multiple_of(8),
         "the privilege-stack entry is not eight-byte aligned"
     );
-    // SAFETY: `at` is a byte offset inside the segment, from the crate that
-    // owns its layout, and the entry there is eight bytes on an eight-byte
-    // boundary — `RSP0` is at offset 4, and the segment is placed
-    // four-mod-eight so that it lands on one (D-95).
-    let entry = unsafe { task_state_pointer().cast::<u8>().add(at) }.cast::<u64>();
-    // SAFETY: as above; a naturally aligned eight-byte store, so a trap
-    // arriving mid-switch reads one stack or the other and never a mixture.
+    let entry = task_state_pointer()
+        .cast::<u8>()
+        .wrapping_add(at)
+        .cast::<u64>();
+    // SAFETY: the layout-owned offset is inside the live segment, and the
+    // assertion proves its eight-byte alignment. The naturally aligned store
+    // lets an arriving trap observe one complete stack or the other (D-95).
     unsafe { entry.write_volatile(top) };
 }
 
 /// Where a trap from ring 3 will land.
-pub fn kernel_stack() -> u64 {
+pub(super) fn kernel_stack() -> u64 {
     read_stack(TaskState::privilege_stack_offset(0))
 }
 
@@ -283,39 +285,34 @@ pub fn kernel_stack() -> u64 {
 ///
 /// `false` if the stack does not belong to the address space this CPU is
 /// walking, which would point the handler at memory it cannot reach.
+#[must_use = "a refused double-fault stack install changed no TSS entry"]
 pub fn set_double_fault_stack(stack: &PinnedStack) -> bool {
     if !stack.is_installed() {
         return false;
     }
-    // SAFETY: `PinnedStack` proves this region was mapped writable with its
-    // guard absent and that safe unmap calls must refuse it; `is_installed`
-    // has just confirmed the CPU walks the space that owns it. The field is
-    // eight bytes and naturally aligned, so a double fault arriving mid-store
-    // reads the old stack or the new one, never a mixture. The old `.bss`
-    // stack is in the kernel image and cannot be unmapped either.
     let at = TaskState::interrupt_stack_offset(DOUBLE_FAULT_STACK as usize);
-    // The alignment this store needs is arranged by `AlignedTaskState`, not
-    // assumed: `IST1` is at `0x24`, which is four-mod-eight, so the segment is
-    // deliberately placed four-mod-eight to compensate. Asserted rather than
-    // trusted, because the two facts live in different crates.
-    debug_assert!(
+    // `IST1` is at `0x24`, four-mod-eight, so `AlignedTaskState` places the
+    // segment four-mod-eight; asserted because the two facts live in two crates.
+    assert!(
         task_state_pointer()
             .addr()
             .wrapping_add(at)
             .is_multiple_of(8),
         "the interrupt-stack entry is not eight-byte aligned"
     );
-    // SAFETY: `at` is a byte offset inside the segment, from the crate that
-    // owns its layout and checks it against the manual, and the assertion
-    // above establishes the alignment this cast promises.
-    let entry = unsafe { task_state_pointer().cast::<u8>().add(at) }.cast::<u64>();
-    // SAFETY: as above; a naturally aligned eight-byte store, so the CPU reads
-    // one value or the other and never a mixture.
+    let entry = task_state_pointer()
+        .cast::<u8>()
+        .wrapping_add(at)
+        .cast::<u64>();
+    // SAFETY: the layout-owned offset is inside the live segment, and the
+    // assertion proves its eight-byte alignment. The naturally aligned store
+    // lets the CPU observe one complete value or the other.
     unsafe { entry.write_volatile(stack.top()) };
     true
 }
 
 /// Where the double-fault handler's stack currently starts.
+#[cfg(feature = "selftest")]
 pub fn double_fault_stack() -> u64 {
     read_stack(TaskState::interrupt_stack_offset(
         DOUBLE_FAULT_STACK as usize,
@@ -330,19 +327,20 @@ pub fn double_fault_stack() -> u64 {
 /// side: `RSP0` moves on every context switch, so a preempted reader could
 /// see half of one stack and half of another (D-105).
 fn read_stack(at: usize) -> u64 {
-    debug_assert!(
+    assert!(
         task_state_pointer()
             .addr()
             .wrapping_add(at)
             .is_multiple_of(8),
         "a stack pointer in the segment is not eight-byte aligned"
     );
-    // SAFETY: `at` is a byte offset inside the segment, from the crate that
-    // owns its layout, and the entry there is eight bytes on an eight-byte
-    // boundary — the segment is placed four-mod-eight so that it is (D-95).
-    let entry = unsafe { task_state_pointer().cast::<u8>().add(at) }.cast::<u64>();
-    // SAFETY: as above; a naturally aligned eight-byte load, so it reads one
-    // value that was written there and never a mixture.
+    let entry = task_state_pointer()
+        .cast::<u8>()
+        .wrapping_add(at)
+        .cast::<u64>();
+    // SAFETY: the layout-owned offset is inside the live segment, and the
+    // assertion proves its eight-byte alignment. The naturally aligned load
+    // observes one complete value written there (D-95).
     unsafe { entry.read_volatile() }
 }
 

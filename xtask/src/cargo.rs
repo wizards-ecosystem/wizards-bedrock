@@ -82,9 +82,8 @@ pub fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -> Resul
             elf.display()
         );
     }
-    // A linker script goes wrong quietly — an unnamed section is placed by a
-    // heuristic rather than refused — so what it was written to produce is
-    // checked against what it produced, every time.
+    // A linker script fails quietly (an unnamed section is placed, not
+    // refused), so what it produced is checked against what it promised.
     crate::elf::verify_file(&elf)?;
     Ok(elf)
 }

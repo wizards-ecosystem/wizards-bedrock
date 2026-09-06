@@ -14,6 +14,7 @@ members = [
     "libs/memory-map",
     "libs/mmio-range",
     "libs/nvme",
+    "libs/panic-record",
     "libs/path-walk",
     "libs/pci-config",
     "libs/pixel",
@@ -47,6 +48,7 @@ default-members = [
     "libs/memory-map",
     "libs/mmio-range",
     "libs/nvme",
+    "libs/panic-record",
     "libs/path-walk",
     "libs/pci-config",
     "libs/pixel",
@@ -84,6 +86,7 @@ handle-space = { path = "libs/handle-space" }
 memory-map = { path = "libs/memory-map" }
 mmio-range = { path = "libs/mmio-range" }
 nvme = { path = "libs/nvme" }
+panic-record = { path = "libs/panic-record" }
 path-walk = { path = "libs/path-walk" }
 pci-config = { path = "libs/pci-config" }
 pixel = { path = "libs/pixel" }
@@ -119,8 +122,9 @@ fscommon = "0.1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["full", "visit"] }
 
-# Verification, for `libs/ring-proto` only (D-84). Both are dev-dependencies of
-# one crate, so nothing they pull in reaches the kernel or the image.
+# Host-only verification. D-242 admits `proptest` in the five pure libraries
+# that state measured generated-input reach; `shuttle` remains confined to
+# `libs/ring-proto`. These are dev-dependencies, so none reaches an OS image.
 #
 # `getrandom` is pinned because proptest's default features reach it and 0.3.2+
 # needs a `windows-sys` this toolchain's `dlltool.exe` cannot link — the same
@@ -169,3 +173,11 @@ debug = true
 
 [profile.dev]
 panic = "abort"
+
+# The orchestrator binary hashes and parses the whole tree many times per gate;
+# unoptimized it turns the API audit into hours. Only the `cargo xtask` alias
+# selects this profile, so tests and audited graphs keep the plain dev
+# profile (D-292).
+[profile.xtask]
+inherits = "dev"
+opt-level = 3

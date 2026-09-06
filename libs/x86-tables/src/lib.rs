@@ -65,11 +65,6 @@ impl Selector {
     pub const fn index(self) -> u16 {
         self.0 >> 3
     }
-
-    /// The privilege level this selector requests.
-    pub const fn privilege(self) -> u16 {
-        self.0 & 0b11
-    }
 }
 
 #[cfg(test)]
@@ -89,7 +84,7 @@ mod tests {
         let selector = Selector::new(5, 3);
         let read_back = Selector::from_bits(selector.bits());
         assert_eq!(read_back.index(), 5);
-        assert_eq!(read_back.privilege(), 3);
+        assert_eq!(read_back.bits() & 0b11, 3);
         assert_eq!(read_back, selector);
     }
 

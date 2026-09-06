@@ -13,5 +13,7 @@ pub mod task;
 pub mod usercopy;
 pub mod xstate;
 
+pub(crate) mod shared_memory;
+
 mod msr;
 mod table;

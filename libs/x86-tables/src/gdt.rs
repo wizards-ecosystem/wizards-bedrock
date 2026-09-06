@@ -67,21 +67,6 @@ impl Descriptor {
     pub const USER_DATA: Self =
         Self(bit::PRESENT | bit::CODE_OR_DATA | bit::ACCESS | bit::RING_THREE);
 
-    /// The privilege level that may load this descriptor.
-    pub const fn privilege(self) -> u8 {
-        ((self.0 >> 45) & 0b11) as u8
-    }
-
-    /// Whether it is a code segment rather than data.
-    pub const fn is_executable(self) -> bool {
-        self.0 & bit::EXECUTABLE != 0
-    }
-
-    /// Build a descriptor from raw bits.
-    pub const fn from_bits(bits: u64) -> Self {
-        Self(bits)
-    }
-
     /// The eight bytes the CPU reads.
     pub const fn bits(self) -> u64 {
         self.0
@@ -141,13 +126,9 @@ mod tests {
     /// A task-state descriptor sets the type and present bits and **nothing
     /// else** in the flag byte.
     ///
-    /// Bits 52–55 were asserted by nothing. `TASK_STATE_TYPE | 1 << 55` — the
-    /// granularity bit — survived the suite, and granularity scales the limit
-    /// by 4 KiB: a 104-byte segment becomes `0x67FFF`, so the TSS's
-    /// `iomap_base` of 104 lands **inside** the segment and the CPU fetches an
-    /// I/O permission bitmap from whatever follows the TSS in memory. Ring 3
-    /// would be granted port access by whatever bytes happened to be there
-    /// (D-142).
+    /// Bits 52–55 need explicit zero anchors: granularity would scale the
+    /// 104-byte limit to `0x67FFF`, placing `iomap_base` inside the segment and
+    /// making the CPU read an unintended I/O permission bitmap (D-142).
     ///
     /// SDM Vol. 3A figure 8-4: for a 64-bit TSS descriptor, bit 52 is
     /// available-for-software, 53 is reserved-zero, 54 is the default/big bit
@@ -212,12 +193,6 @@ mod tests {
     }
 
     #[test]
-    fn a_descriptor_round_trips_through_its_bits() {
-        let bits = Descriptor::KERNEL_CODE.bits();
-        assert_eq!(Descriptor::from_bits(bits), Descriptor::KERNEL_CODE);
-    }
-
-    #[test]
     fn a_task_state_descriptor_scatters_its_base_across_four_fields() {
         let descriptor = SystemDescriptor::task_state(0xFFFF_8877_6655_4433, 104);
 
@@ -266,11 +241,11 @@ mod tests {
     /// Privilege reads back, and only the user pair is ring 3.
     #[test]
     fn only_the_user_descriptors_are_ring_three() {
-        assert_eq!(Descriptor::KERNEL_CODE.privilege(), 0);
-        assert_eq!(Descriptor::KERNEL_DATA.privilege(), 0);
-        assert_eq!(Descriptor::USER_CODE.privilege(), 3);
-        assert_eq!(Descriptor::USER_DATA.privilege(), 3);
-        assert_eq!(Descriptor::NULL.privilege(), 0);
+        assert_eq!(Descriptor::KERNEL_CODE.bits() >> 45 & 0b11, 0);
+        assert_eq!(Descriptor::KERNEL_DATA.bits() >> 45 & 0b11, 0);
+        assert_eq!(Descriptor::USER_CODE.bits() >> 45 & 0b11, 3);
+        assert_eq!(Descriptor::USER_DATA.bits() >> 45 & 0b11, 3);
+        assert_eq!(Descriptor::NULL.bits() >> 45 & 0b11, 0);
     }
 
     /// Code is executable and data is not, at both privilege levels.
@@ -279,10 +254,10 @@ mod tests {
     /// will happily jump into, and at ring 3 that is a privilege boundary.
     #[test]
     fn only_the_code_descriptors_are_executable() {
-        assert!(Descriptor::KERNEL_CODE.is_executable());
-        assert!(Descriptor::USER_CODE.is_executable());
-        assert!(!Descriptor::KERNEL_DATA.is_executable());
-        assert!(!Descriptor::USER_DATA.is_executable());
+        assert_ne!(Descriptor::KERNEL_CODE.bits() & bit::EXECUTABLE, 0);
+        assert_ne!(Descriptor::USER_CODE.bits() & bit::EXECUTABLE, 0);
+        assert_eq!(Descriptor::KERNEL_DATA.bits() & bit::EXECUTABLE, 0);
+        assert_eq!(Descriptor::USER_DATA.bits() & bit::EXECUTABLE, 0);
     }
 
     /// The long-mode bit is set for code and clear for data, at ring 3 too.

@@ -35,14 +35,13 @@ fn capacity() -> impl Strategy<Value = Capacity> {
 }
 
 proptest! {
-    /// `occupied` and `vacant` always account for every slot, and neither ever
-    /// exceeds the capacity.
+    /// Occupancy stays within capacity, and both boundary predicates agree.
     ///
     /// The arithmetic is wrapping subtraction of free-running counters, so the
     /// interesting inputs are the ones that cross `u32::MAX` — which no
     /// hand-written sequence reaches and which `adopt` can start at directly.
     #[test]
-    fn the_two_counts_always_sum_to_the_capacity(
+    fn occupancy_and_boundary_predicates_remain_consistent(
         entries in capacity(),
         head in any::<u32>(),
         offset in 0u32..256,
@@ -62,14 +61,11 @@ proptest! {
                 Step::Produce => { ring.produce(); }
                 Step::Consume => { ring.consume(); }
             }
-            prop_assert_eq!(
-                ring.occupied() + ring.vacant(),
-                entries.entries(),
-                "the counts stopped accounting for every slot"
-            );
-            prop_assert!(ring.occupied() <= entries.entries());
-            prop_assert_eq!(ring.is_empty(), ring.occupied() == 0);
-            prop_assert_eq!(ring.is_full(), ring.occupied() == entries.entries());
+            let occupied = ring.occupied();
+            let capacity = ring.capacity().entries();
+            prop_assert!(occupied <= capacity);
+            prop_assert_eq!(ring.is_empty(), occupied == 0);
+            prop_assert_eq!(ring.is_full(), occupied == capacity);
         }
     }
 

@@ -11,12 +11,11 @@
 //! three operations fit both, they are about directories rather than about
 //! FAT.
 //!
-//! **Fixed-size, and read-only for now.** The arena is a `static`, because the
-//! write path is Phase 6's largest deliberate hole (`014`) and a tmpfs that
-//! could grow would be the write path arriving through the back door. What is
-//! here is populated once, at boot.
+//! **Fixed-size and read-only before the Wizzy gate.** The arena is a `static`;
+//! admitting growth here would invent the post-gate write protocol before its
+//! caller. What is here is populated once, at boot.
 
-use wost::sync::SpinLock;
+use wost::sync::{Once, SpinLock};
 
 /// Entries the arena holds.
 const MAX_ENTRIES: usize = 8;
@@ -67,24 +66,23 @@ struct Arena {
     written: usize,
 }
 
+impl Arena {
+    const EMPTY: Self = Self {
+        entries: [Entry::EMPTY; MAX_ENTRIES],
+        used: 0,
+        bytes: [0; MAX_BYTES],
+        written: 0,
+    };
+}
+
 /// The one instance.
-static ARENA: SpinLock<Arena> = SpinLock::new(Arena {
-    entries: [Entry::EMPTY; MAX_ENTRIES],
-    used: 0,
-    bytes: [0; MAX_BYTES],
-    written: 0,
-});
+static ARENA: SpinLock<Arena> = SpinLock::new(Arena::EMPTY);
+static INIT: Once = Once::new();
 
 /// Build the tree this kernel starts with.
-///
-/// Idempotent: a second call finds the root already there and does nothing,
-/// because the question it is really asking is "is there a tmpfs", and there
-/// is.
 pub(crate) fn init() {
-    let mut arena = ARENA.lock_leaf();
-    if arena.used > 0 {
-        return;
-    }
+    assert!(INIT.claim(), "tmpfs initialized twice");
+    let mut arena = Arena::EMPTY;
 
     // The root, which is its own parent — the only entry that is, and the
     // reason nothing needs a separate "is the root" flag.
@@ -103,35 +101,54 @@ pub(crate) fn init() {
         Some(b"the wizard's os, from memory\n"),
     );
     let notes = add(&mut arena, ROOT, b"NOTES", None);
-    if let Some(notes) = notes {
-        add(
-            &mut arena,
-            notes,
-            b"ONE.TXT",
-            Some(b"a file in a directory\n"),
-        );
-        // **The same name as the root's, on purpose.** A lookup that ignored
-        // the parent would find whichever came first and be right about every
-        // path in a tree whose names are unique — so this tree's are not
-        // (D-155, D-172).
-        add(&mut arena, notes, b"MOTD", Some(b"a different motd\n"));
-    }
+    add(
+        &mut arena,
+        notes,
+        b"ONE.TXT",
+        Some(b"a file in a directory\n"),
+    );
+    // Duplicate names in different parents expose parent-blind lookup.
+    add(&mut arena, notes, b"MOTD", Some(b"a different motd\n"));
+
+    let mut stored = ARENA.lock_leaf();
+    *stored = arena;
 }
 
-/// Add an entry, and say where it went.
-fn add(arena: &mut Arena, parent: usize, name: &[u8], content: Option<&[u8]>) -> Option<usize> {
-    if arena.used >= MAX_ENTRIES || name.len() > MAX_NAME {
-        return None;
-    }
+fn add(arena: &mut Arena, parent: usize, name: &[u8], content: Option<&[u8]>) -> usize {
+    assert!(
+        arena.used < MAX_ENTRIES,
+        "tmpfs entry capacity is structural"
+    );
+    assert!(
+        !name.is_empty() && name.len() <= MAX_NAME,
+        "invalid tmpfs boot name"
+    );
+    assert!(
+        parent < arena.used && matches!(arena.entries[parent].kind, Kind::Directory),
+        "tmpfs boot parent is not a directory"
+    );
+    assert!(
+        arena.entries[..arena.used]
+            .iter()
+            .all(|entry| { entry.parent != parent || &entry.name[..entry.name_len] != name }),
+        "duplicate tmpfs boot name"
+    );
+    let next_written = content.map(|bytes| {
+        let Some(end) = arena.written.checked_add(bytes.len()) else {
+            panic!("tmpfs byte capacity overflowed");
+        };
+        assert!(end <= MAX_BYTES, "tmpfs byte capacity is structural");
+        end
+    });
     let kind = match content {
         None => Kind::Directory,
         Some(bytes) => {
-            if arena.written + bytes.len() > MAX_BYTES {
-                return None;
-            }
             let at = arena.written;
-            arena.bytes[at..at + bytes.len()].copy_from_slice(bytes);
-            arena.written += bytes.len();
+            let Some(end) = next_written else {
+                panic!("file bytes were not preflighted");
+            };
+            arena.bytes[at..end].copy_from_slice(bytes);
+            arena.written = end;
             Kind::File {
                 at,
                 len: bytes.len(),
@@ -149,7 +166,7 @@ fn add(arena: &mut Arena, parent: usize, name: &[u8], content: Option<&[u8]>) ->
         kind,
     };
     arena.used += 1;
-    Some(index)
+    index
 }
 
 /// What a name in a directory resolved to.
@@ -166,9 +183,8 @@ pub(crate) fn lookup(directory: usize, name: &[u8]) -> Option<Found> {
     let arena = ARENA.lock_leaf();
     for index in 0..arena.used {
         let entry = &arena.entries[index];
-        // **The parent is the whole of the containment check**, and `index !=
-        // ROOT` is what stops the root — which is its own parent — from being
-        // found inside itself under an empty name.
+        // The parent is the whole containment check; `index != ROOT` stops
+        // the root, its own parent, from being found inside itself.
         if index == ROOT || entry.parent != directory {
             continue;
         }
@@ -183,19 +199,66 @@ pub(crate) fn lookup(directory: usize, name: &[u8]) -> Option<Found> {
     None
 }
 
-/// Call `found` for every entry of `directory`.
-pub(crate) fn walk(directory: usize, mut found: impl FnMut(&[u8], bool) -> bool) {
+/// One owned directory-entry summary.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Summary {
+    name: [u8; MAX_NAME],
+    name_len: usize,
+    directory: bool,
+}
+
+impl Summary {
+    const EMPTY: Self = Self {
+        name: [0; MAX_NAME],
+        name_len: 0,
+        directory: false,
+    };
+
+    pub(crate) fn name(&self) -> &[u8] {
+        &self.name[..self.name_len]
+    }
+
+    pub(crate) const fn is_directory(&self) -> bool {
+        self.directory
+    }
+}
+
+/// Owned children of one directory.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Listing {
+    entries: [Summary; MAX_ENTRIES - 1],
+    len: usize,
+}
+
+impl Listing {
+    pub(crate) fn entries(&self) -> &[Summary] {
+        &self.entries[..self.len]
+    }
+}
+
+/// Copy every child out while the arena is locked.
+pub(crate) fn list(directory: usize) -> Option<Listing> {
     let arena = ARENA.lock_leaf();
+    if directory >= arena.used || !matches!(arena.entries[directory].kind, Kind::Directory) {
+        return None;
+    }
+    let mut listing = Listing {
+        entries: [Summary::EMPTY; MAX_ENTRIES - 1],
+        len: 0,
+    };
     for index in 0..arena.used {
         let entry = &arena.entries[index];
         if index == ROOT || entry.parent != directory {
             continue;
         }
-        let is_directory = matches!(entry.kind, Kind::Directory);
-        if !found(&entry.name[..entry.name_len], is_directory) {
-            return;
-        }
+        listing.entries[listing.len] = Summary {
+            name: entry.name,
+            name_len: entry.name_len,
+            directory: matches!(entry.kind, Kind::Directory),
+        };
+        listing.len += 1;
     }
+    Some(listing)
 }
 
 /// Copy bytes of a file into `into`, starting `offset` in.
@@ -208,12 +271,27 @@ pub(crate) fn read(at: usize, len: usize, offset: usize, into: &mut [u8]) -> usi
     if offset >= len {
         return 0;
     }
-    let arena = ARENA.lock_leaf();
     let wanted = into.len().min(len - offset);
-    let from = at + offset;
-    if from + wanted > arena.bytes.len() {
+    let Some(from) = at.checked_add(offset) else {
+        return 0;
+    };
+    let Some(end) = from.checked_add(wanted) else {
+        return 0;
+    };
+    if end > MAX_BYTES {
         return 0;
     }
-    into[..wanted].copy_from_slice(&arena.bytes[from..from + wanted]);
+    let arena = ARENA.lock_leaf();
+    if end > arena.written {
+        return 0;
+    }
+    into[..wanted].copy_from_slice(&arena.bytes[from..end]);
     wanted
+}
+
+/// Check that fabricated file metadata cannot expose unwritten arena bytes.
+#[cfg(feature = "selftest")]
+pub(crate) fn unwritten_bytes_are_refused_for_test() -> bool {
+    let mut byte = [0xA5];
+    read(MAX_BYTES - 1, 1, 0, &mut byte) == 0 && byte == [0xA5]
 }

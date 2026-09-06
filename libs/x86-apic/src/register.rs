@@ -19,6 +19,18 @@ pub const VERSION: Register = Register::new(0x030);
 /// everything, which is what a kernel with no interrupt priorities wants.
 pub const TASK_PRIORITY: Register = Register::new(0x080);
 
+/// Interrupt-service state, one word for each thirty-two-vector bank.
+pub const IN_SERVICE: [Register; 8] = [
+    Register::new(0x100),
+    Register::new(0x110),
+    Register::new(0x120),
+    Register::new(0x130),
+    Register::new(0x140),
+    Register::new(0x150),
+    Register::new(0x160),
+    Register::new(0x170),
+];
+
 /// Written to dismiss the interrupt currently in service. Until it is, nothing
 /// of the same priority class or lower can be delivered.
 pub const END_OF_INTERRUPT: Register = Register::new(0x0B0);
@@ -65,6 +77,14 @@ mod tests {
         ("id", ID),
         ("version", VERSION),
         ("task priority", TASK_PRIORITY),
+        ("in service 0", IN_SERVICE[0]),
+        ("in service 1", IN_SERVICE[1]),
+        ("in service 2", IN_SERVICE[2]),
+        ("in service 3", IN_SERVICE[3]),
+        ("in service 4", IN_SERVICE[4]),
+        ("in service 5", IN_SERVICE[5]),
+        ("in service 6", IN_SERVICE[6]),
+        ("in service 7", IN_SERVICE[7]),
         ("end of interrupt", END_OF_INTERRUPT),
         ("spurious interrupt vector", SPURIOUS_INTERRUPT_VECTOR),
         ("error status", ERROR_STATUS),
@@ -92,7 +112,6 @@ mod tests {
     fn all_names_every_register_the_crate_defines() {
         let mut defined: Vec<usize> = include_str!("register.rs")
             .lines()
-            .filter(|line| line.starts_with("pub const "))
             .filter_map(|line| line.split_once("Register::new(0x"))
             .filter_map(|(_, rest)| rest.split_once(')'))
             .filter_map(|(digits, _)| usize::from_str_radix(digits, 16).ok())
@@ -160,6 +179,14 @@ mod tests {
             ("id", ID, 0x802),
             ("version", VERSION, 0x803),
             ("task priority", TASK_PRIORITY, 0x808),
+            ("in service 0", IN_SERVICE[0], 0x810),
+            ("in service 1", IN_SERVICE[1], 0x811),
+            ("in service 2", IN_SERVICE[2], 0x812),
+            ("in service 3", IN_SERVICE[3], 0x813),
+            ("in service 4", IN_SERVICE[4], 0x814),
+            ("in service 5", IN_SERVICE[5], 0x815),
+            ("in service 6", IN_SERVICE[6], 0x816),
+            ("in service 7", IN_SERVICE[7], 0x817),
             ("end of interrupt", END_OF_INTERRUPT, 0x80B),
             ("spurious", SPURIOUS_INTERRUPT_VECTOR, 0x80F),
             ("error status", ERROR_STATUS, 0x828),
@@ -173,8 +200,7 @@ mod tests {
             ("divide configuration", DIVIDE_CONFIGURATION, 0x83E),
         ];
 
-        // Tied to `ALL`, which is tied to the source: a register the crate
-        // defines and this list forgets is a register with no manual value
+        // Tied to `ALL`: a register this list forgets has no manual value
         // behind it, and the loop alone would never say so.
         assert_eq!(
             anchored.len(),

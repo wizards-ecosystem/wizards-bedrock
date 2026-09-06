@@ -7,7 +7,7 @@
 //!
 //! Nothing here is privileged: a claimed `Port` writes in safe code.
 
-use wost::arch::current::port;
+use wost::arch::current::port::{self, Port};
 
 /// The `iobase` the harness passes to QEMU.
 const PORT: u16 = 0xF4;
@@ -25,6 +25,6 @@ const FAILED: u32 = 0x11;
 /// a self-test kernel booted on real hardware still reaches its idle loop.
 pub(crate) fn report(passed: bool) {
     if let Some(mut device) = port::claim::<u32>(PORT) {
-        device.write(if passed { PASSED } else { FAILED });
+        Port::write(&mut device, if passed { PASSED } else { FAILED });
     }
 }

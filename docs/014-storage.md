@@ -51,10 +51,9 @@ and teardown history.
 | A wait with a timeout | `009` slice 4; `011` | Slice 1, where it falls out of the completion queue |
 | Every new hardcoded window is interest on the KASLR debt | D-46 | Slices 2 and 4 each add an entry: the time page and the NVMe register window |
 
-Not this phase's debt, recorded so nobody mistakes it: KASLR waits for Phase 12
-(D-46); SMP bring-up waits for Phase 12, and with it the four races D-126,
-D-129, D-141 and D-145 record as unreproducible (D-154); compat-fork waits for
-Phase 9; WizFS waits for Phase 13 (D-73).
+Not this phase's debt, recorded so nobody mistakes it: KASLR and SMP bring-up
+wait for Phase 12 (D-46, D-154); the finite register owns their exact triggers.
+Compat-fork waits for Phase 9; WizFS waits for Phase 13 (D-73).
 
 ---
 
@@ -78,7 +77,7 @@ before its abstraction is anything but a guess.
 | 7 | **The VFS.** A directory abstraction over resolve, read and enumerate (`modify` is reserved for a future write path), enum dispatch, and path resolution that cannot ascend | Done |
 | 8 | **tmpfs and devfs**, so the abstraction has more than one backend and devfs proves that not everything is bytes | Done |
 | 9 | **The file handle.** File `READ`, directory `TRAVERSE`/`ENUMERATE`, offsets per operation, and a `Read` submission later deferred by D-200 | Done |
-| 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks — D-135), the adversarial audit, the roadmap and this file's closing section | Code complete; the post-audit image still awaits the human VMware close |
+| 10 | **Phase close.** The VMware boot (D-18, and the first one that runs the checks — D-135), the adversarial audit, the roadmap and this file's closing section | Planned slices complete; the finite foundation register and current VMware close remain open |
 
 ---
 
@@ -100,8 +99,8 @@ Three properties follow, and each is a check:
   a cancelled one, and a retired program's are three paths and the third is
   slice 3's. `012` §10 records `IORING_FILE_INDEX_ALLOC` reporting `-ENFILE` at
   completion as the symptom of getting this wrong.
-- **Same-object rights attenuate on arrival**, the way D-110 makes channel
-  transfer attenuate. A cross-type producer may derive only a type-specific
+- **Same-object rights attenuate on arrival**, the same non-escalation rule a
+  future channel transfer must obey. A cross-type producer may derive only a type-specific
   right authorised by the source operation and preserves no universal right
   the source lacked; OpenAt's `TRAVERSE`-to-`READ` rule is the worked case.
 - **Exactly one terminal completion still holds.** Cancellation is itself an
@@ -130,9 +129,10 @@ precondition, not a comment.
 
 ### An operation outlives its program, and exit waits (D-153, amended)
 
-`LastRites`, `orphan` and `collect` already exist for a dead program's memory.
-An operation in flight becomes one more thing the zombie holds — and `012` §10
-adds what the original entry did not say: **exit must be a wait, not a signal.**
+`orphan` and `collect` already exist for a dead program's memory; `LastRites`
+is now only a self-test snapshot (D-248). An operation in flight becomes one
+more thing the production zombie holds — and `012` §10 adds what the original
+entry did not say: **exit must be a wait, not a signal.**
 
 io_uring cancelled out of line for six years and the symptom was mount points
 staying busy after the process had exited. Three consequences: collection waits
@@ -197,14 +197,26 @@ Four things that decide whether it works at all, all from the specification:
 
 - **Bus Master Enable.** PCI Command register bit 3, alongside Memory Space
   Enable. Without it the controller cannot DMA, queues never advance, and
-  **there is no error anywhere to read.** This belongs in a comment at the
-  write site.
+  **there is no error anywhere to read.**
 - **Enumeration must recurse through bridges.** VMware places functions behind
   `pciBridge0`–`pciBridge7`; a bus-0-only scan may not find the controller.
 - **The BAR is mapped uncacheable**, and doorbells are write-only so the tail is
   shadowed in software. Mapping it write-back is a silent, hard-to-debug bug.
 - **`CAP` is read, never assumed** — `MQES`, `DSTRD`, `CQR`, `MPSMIN`/`MPSMAX`,
   `TO`. `012` §11 records that VMware's values are unmeasured.
+
+DMA publication and hardware retirement are separate authorities (D-251).
+`libs/nvme::DmaState` can prove only reservation, doorbell publication,
+matching completion and closure. After an ambiguous exit, the kernel may
+recycle memory only through a linear stop token borrowing that controller's
+register mapping and DMA state after fresh reads prove both `CC.EN = 0` and
+`CSTS.RDY = 0`; otherwise queues and the current buffer remain retained.
+Preparation itself is split into capability, disable, allocation, programming
+and enable stages that carry one linear owner. Local post-split frame inspection
+reported a conservative linked debug-stack path of 22,980 bytes, leaving 9,788
+bytes on the guarded 32 KiB boot stack (D-287); PW-541 requires that measurement
+to be reproduced and retained before close. An individual function-frame
+ceiling could not have detected the original nested overflow.
 
 CF8/CFC rather than ECAM: it reaches everything a read-only driver needs, and
 it is the only mechanism guaranteed present on **both** boot targets — QEMU's
@@ -257,9 +269,10 @@ handle remains Phase 7 work.
 The four universal rights are already, bit for bit, Zircon's basic rights. Per
 type:
 
-- **File:** `READ`. `WRITE` remains meaningful for Channel but no current File
-  admits it. Raw `EXECUTE` and `MAP` are defined by `handle-space`, but no
-  current object admits either.
+- **Channel:** no type-specific rights while it is only an opaque bootstrap
+  identity (D-248).
+- **File:** `READ`. Raw `WRITE`, `EXECUTE` and `MAP` are defined by
+  `handle-space`, but no current object admits them.
 - **Directory:** `TRAVERSE`, `ENUMERATE`. Raw `MODIFY` is reserved but no
   current Directory admits it while the namespace has no mutating operation.
 
@@ -660,8 +673,9 @@ outside the guard now.
 
 The `Device` is a **kernel-side capability, not a handle**: obtainable only
 from the registry, exactly as `Port<T>` is. Slice 8 makes it resolvable
-internally through devfs but does not create a handle; the first user-visible
-Device handle remains Phase 7 work (D-41, D-172).
+internally through devfs but does not create a handle. D-184 classifies a
+user-visible Device handle after the compiler gate; it is not pre-Wizzy
+foundation work.
 
 ---
 
@@ -719,8 +733,8 @@ is exactly `PCD`.
 
 A read still spins, bounded rather than endless. Slice 9 gave it a submission
 shape; D-200 later moved the polling to a preemptible worker and coupled its
-queued/running state to slice 3's teardown rule. An interrupt-driven controller
-remains future work.
+queued/running state to slice 3's teardown rule. PW-704 keeps interrupt-driven
+service stopped until a measured storage workload justifies it.
 
 ---
 
@@ -813,14 +827,14 @@ than the caller asked, and on a walk that ends in an open, open a different file
 ### What hung the harness
 
 The enumeration check's first version resolved each listed name from *inside*
-the enumeration callback. Both operations reach the controller through a leaf
-guard, so the inner call re-entered the same lock and spun — reported as a
-sixty-second timeout, which is `lock_leaf`'s rule arriving in the only form a
-same-lock re-entry can take. The "no lock under a leaf guard" check watches for
-a *different* lock; a spin on the same one is not something a counter can see.
+the enumeration callback. `with_controller` now holds the controller's
+non-reentrant `ThreadLock` across that callback (D-200), so the inner call tried
+to acquire the same held lock and spun until the harness timed out. The type
+prevents a thread lock from surviving a scheduler handoff; it cannot make
+callback re-entry succeed.
 
 The check collects the names and resolves them afterwards, which is also the
-shape a caller must use, and the comment says so.
+shape a caller must use.
 
 ### Carried
 
@@ -939,10 +953,10 @@ of the data area and requires the count unchanged.
 ### The slice's named limit
 
 **A ring-3 program still cannot reach any of this.** `spawn` gives a program
-exactly one handle — its bootstrap channel — and there is no ring-3
-channel-receive operation yet. Giving a program a second handle at spawn would
-break the invariant that makes pillar 1 checkable, so it waits for the channel
-rather than for a convenience.
+exactly one handle — its opaque bootstrap-channel identity — and there is no
+ring-3 channel-receive operation yet. Giving a program a second handle at spawn
+would break the invariant that makes pillar 1 checkable, so it waits for a
+concrete channel protocol rather than for a convenience (D-248).
 
 ---
 
@@ -961,10 +975,10 @@ first, because a caller freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 215 |
-| Mutations | 296 registered; 285 in the last recorded full sweep, with 11 later entries broken individually |
+| Machine checks | 261 |
+| Mutations | 1353 registered; 285 in the last successful complete sweep; 296 in a newer failed complete sweep; 1057 registered after that failed sweep, with a fresh complete sweep still required |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-242 |
+| Decisions | Phase decisions D-163 … D-179; post-phase corrections D-181, D-182 and D-185 … D-296 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but that proves registration rather than a current full
@@ -992,14 +1006,15 @@ The five file sysdeps remain incomplete for distinguishable reasons.
 `sys_read` has a native explicit-offset Read, but needs a reachable file
 handle and the compatibility layer's shared cursor. `sys_write` has no write
 path. `sys_seek` changes that same POSIX cursor, which the native ABI
-deliberately omits. `sys_close` has an internal kernel mechanism, but releasing
-the last object reference can deallocate; it still needs a deferred or otherwise
-trap-safe user route. `sys_open` layers root/cwd/descriptor policy and explicit
+deliberately omits. `sys_close` has no current user route or duplicate
+HandleTable-level mechanism; D-248 removed the uncalled shortcut so its
+eventual operation must own safe last-reference destruction. `sys_open` layers
+root/cwd/descriptor policy and explicit
 EROFS refusals over read-only OpenAt, but also lacks the ring-3 route that
 delivers its first directory. D-181's exact register, narrowed by D-182, keeps
 those routes separate.
 
-### The five decisions this file left open
+### The five questions this file resolved
 
 1. **A device claim contains the port claim** rather than authorising one
    (D-168). Two mechanisms with a gap between them is how a driver comes to
@@ -1100,14 +1115,14 @@ checks that read what the first round delivered. Every other check in that
 image was green, including the ten storage checks that had no device, the four
 paging checks that had never run, and both keyboard checks once they stopped
 claiming a set the kernel no longer requires. D-181 and D-182 post-date that
-measurement, so the current 189-check image still needs the same human round;
+measurement, so the current self-test image still needs the same human round;
 the old total is evidence about that dated image, not a current verdict.
 
-**So the phase is closed on the code and open on one boot with a person at it.**
-The count in the table above is QEMU's. This section records what VMware
-actually said rather than a boot that was not got — which is what D-77 forbade,
-and what `012` §11's "VMware's values are unmeasured" already admits about the
-neighbouring number.
+**So the planned slices are complete, while the finite foundation and its
+human VMware close remain open.** The count in the table above is QEMU's. This
+section records what VMware actually said rather than a boot that was not got
+— which is what D-77 forbade, and what `012` §11's "VMware's values are
+unmeasured" already admits about the neighbouring number.
 
 One thing stays unexplained on purpose: the clock refused to calibrate on the
 first of these boots and calibrated on the five that followed, with no change

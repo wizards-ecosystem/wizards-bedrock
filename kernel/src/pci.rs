@@ -24,22 +24,22 @@
 //! thirty-two kilobytes and a malicious or broken bridge topology is a cycle.
 
 use pci_config::{
-    Address, Bar, ClaimRegistry, Class, CommandAccess, CommandState, EnableError, HeaderType,
-    ProbeError, RegistryError, Window, header,
+    Address, Bar, BarEnableError, Class, CommandState, EnableError, HeaderType, ProbeError,
+    ProbeRetry, ProbedBars, Window, header,
 };
-use wost::arch::current::pci;
+use wost::arch::current::{paging, pci};
 use wost::sync::SpinLock;
+
+#[cfg(feature = "selftest")]
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::thread::ThreadContext;
 
 /// Base address registers a type 0 header has.
 pub(crate) const BARS: usize = pci_config::BARS;
 
-/// Functions that may be claimed at once.
-///
-/// A policy number, small because this kernel has one driver. Permanent claims
-/// remain until shutdown; a fully retired selection candidate returns its slot.
-const MAX_CLAIMS: usize = 8;
+/// Function authorities the platform PCI registry can hold concurrently.
+pub(crate) const FUNCTION_AUTHORITY_LIMIT: usize = 8;
 
 /// Buses the walk will visit before giving up.
 ///
@@ -96,9 +96,8 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
         for device in 0..pci_config::DEVICES {
             for function in 0..pci_config::FUNCTIONS {
                 let Some(entry) = read_function(bus, device, function) else {
-                    // Function zero absent means the whole device is: the
-                    // specification allows a gap between functions, but never
-                    // a device whose first function is missing.
+                    // Function zero absent means the whole device is; the
+                    // specification allows gaps but never a missing first function.
                     if function == 0 {
                         break;
                     }
@@ -111,11 +110,8 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
                     survey.bridges += 1;
                 }
 
-                // **Both** tests, and they are different claims: the class
-                // says what the function is for and the header type says what
-                // the rest of its registers mean. A function that claimed one
-                // and not the other would have its bus numbers read out of
-                // whatever a type 0 header has there.
+                // Both tests: the class says what the function is for and the
+                // header type says what its registers mean.
                 if entry.class.is_bridge()
                     && entry.header.is_bridge()
                     && let Some(behind) = secondary_of(&entry)
@@ -126,10 +122,8 @@ pub(crate) fn enumerate(mut found: impl FnMut(&Function)) -> Option<Survey> {
                     queued += 1;
                 }
 
-                // A single-function device answers every function with its
-                // own header, so probing past zero would report it eight
-                // times. Bit 7 of the header type is the machine's own answer
-                // to how many there are.
+                // A single-function device answers every function with its own
+                // header; bit 7 of the header type says how many there are.
                 if function == 0 && !entry.header.is_multifunction() {
                     break;
                 }
@@ -185,11 +179,33 @@ fn secondary_of(entry: &Function) -> Option<u8> {
     Some(pci_config::secondary_bus(pci::read(at)?))
 }
 
-/// Functions already claimed.
-static CLAIMED: SpinLock<ClaimRegistry<MAX_CLAIMS>> = SpinLock::new(ClaimRegistry::new());
+/// A committed controller whose command word no longer matched its lease.
+static RETAINED_COMMAND: SpinLock<Option<Device>> = SpinLock::new(None);
+
+/// An uncertain BAR restoration retained after its bounded retry refused.
+static RETAINED_PROBE: SpinLock<Option<ProbeRecovery>> = SpinLock::new(None);
+
+/// Device leases whose final exact release remained refused.
+static RETAINED_RELEASES: SpinLock<[Option<Device>; FUNCTION_AUTHORITY_LIMIT]> =
+    SpinLock::new([const { None }; FUNCTION_AUTHORITY_LIMIT]);
+
+/// Bare function claims whose final sublease-free release remained refused.
+static RETAINED_FUNCTIONS: SpinLock<[Option<pci::FunctionClaim>; FUNCTION_AUTHORITY_LIMIT]> =
+    SpinLock::new([const { None }; FUNCTION_AUTHORITY_LIMIT]);
+
+/// Make the first real DMA admission exercise the post-disable rollback path.
+#[cfg(feature = "selftest")]
+static FORCED_BUS_MASTER_REFUSALS: AtomicUsize = AtomicUsize::new(1);
+
+/// Exercise cleanup after the function and its BAR shape have been claimed.
+#[cfg(feature = "selftest")]
+static REFUSE_CLEAN_PREPARATION: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "selftest")]
+static OBSERVED_BUS_MASTER_REFUSAL: AtomicBool = AtomicBool::new(false);
 
 /// Why a device could not be claimed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum ClaimError {
     /// Configuration space cannot be reached.
     NoBus,
@@ -204,18 +220,177 @@ pub(crate) enum ClaimError {
     WindowTaken,
     /// A BAR consumes another header field or reports an impossible window.
     InvalidWindow,
+    /// BAR or command restoration remains uncertain under its function lease.
+    ProbeRestore(ProbeRecovery),
+    /// A restored, otherwise clean function remains quarantined in the registry.
+    FunctionRetained,
+}
+
+/// One uncertain BAR restoration and the function authority it still owns.
+#[derive(Debug)]
+pub(crate) struct ProbeRecovery {
+    function: pci::FunctionClaim,
+    authority: ProbeRecoveryAuthority,
+}
+
+#[derive(Debug)]
+enum ProbeRecoveryAuthority {
+    Probe(ProbeRetry),
+    Command(CommandState),
+}
+
+/// A refused recovery with the unchanged function and restoration authority.
+#[derive(Debug)]
+pub(crate) struct ProbeRecoveryFailure {
+    reason: ProbeError<()>,
+    recovery: ProbeRecovery,
+}
+
+/// Result of retrying an uncertain PCI probe restoration.
+#[derive(Debug)]
+#[must_use = "probe recovery may retain exclusive function authority"]
+pub(crate) enum ProbeRecoveryOutcome {
+    /// Registers were restored and the function claim was returned.
+    Recovered,
+    /// Restoration still owns an exact retry.
+    Refused(ProbeRecoveryFailure),
+    /// Restoration finished, but the function claim remains quarantined.
+    FunctionRetained,
+}
+
+impl ProbeRecoveryFailure {
+    /// Why the restoration remains uncertain.
+    pub(crate) const fn reason(&self) -> &ProbeError<()> {
+        &self.reason
+    }
+
+    /// Recover the complete retry authority.
+    pub(crate) fn into_recovery(self) -> ProbeRecovery {
+        self.recovery
+    }
+}
+
+impl ProbeRecovery {
+    /// Retry exact BAR and command restoration, then release the function.
+    pub(crate) fn retry(self) -> ProbeRecoveryOutcome {
+        let Self {
+            function,
+            authority,
+        } = self;
+        let restored = match authority {
+            ProbeRecoveryAuthority::Probe(retry) => match pci::retry_probe(&function, retry) {
+                Ok(()) => Ok(()),
+                Err(failure) => {
+                    let reason = *failure.reason();
+                    let Some(retry) = failure.into_retry() else {
+                        retain_failed_function(function);
+                        return ProbeRecoveryOutcome::FunctionRetained;
+                    };
+                    Err((reason, ProbeRecoveryAuthority::Probe(retry)))
+                }
+            },
+            ProbeRecoveryAuthority::Command(state) => {
+                match pci::restore_command(&function, state) {
+                    Ok(()) => Ok(()),
+                    Err(failure) => Err((
+                        ProbeError::Unavailable(failure.reason()),
+                        ProbeRecoveryAuthority::Command(failure.into_state()),
+                    )),
+                }
+            }
+        };
+        match restored {
+            Ok(()) => match pci::release_function(function) {
+                Ok(()) => ProbeRecoveryOutcome::Recovered,
+                Err(failure) => {
+                    retain_failed_function(failure.into_function());
+                    ProbeRecoveryOutcome::FunctionRetained
+                }
+            },
+            Err((reason, authority)) => ProbeRecoveryOutcome::Refused(ProbeRecoveryFailure {
+                reason,
+                recovery: ProbeRecovery {
+                    function,
+                    authority,
+                },
+            }),
+        }
+    }
 }
 
 impl core::fmt::Display for ClaimError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::NoBus => f.write_str("configuration space is not reachable"),
-            Self::Absent => f.write_str("nothing is at that address"),
-            Self::Taken => f.write_str("another driver holds it"),
-            Self::NoRoom => f.write_str("no room in the device registry"),
-            Self::WindowTaken => f.write_str("an i/o window it decodes is already claimed"),
-            Self::InvalidWindow => f.write_str("a base address window is malformed"),
+            Self::NoBus => core::fmt::Write::write_str(f, "configuration space is not reachable"),
+            Self::Absent => core::fmt::Write::write_str(f, "nothing is at that address"),
+            Self::Taken => core::fmt::Write::write_str(f, "another driver holds it"),
+            Self::NoRoom => core::fmt::Write::write_str(f, "no room in the device registry"),
+            Self::WindowTaken => {
+                core::fmt::Write::write_str(f, "an i/o window it decodes is already claimed")
+            }
+            Self::InvalidWindow => {
+                core::fmt::Write::write_str(f, "a base address window is malformed")
+            }
+            Self::ProbeRestore(_) => {
+                core::fmt::Write::write_str(f, "a base address probe could not be restored")
+            }
+            Self::FunctionRetained => {
+                core::fmt::Write::write_str(f, "the restored function claim could not be returned")
+            }
         }
+    }
+}
+
+/// Why a probed memory BAR could not become page-table authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BarAdmissionError {
+    /// The requested BAR slot is empty.
+    Missing,
+    /// The requested BAR is an I/O window.
+    NotMemory,
+    /// CPU width, range arithmetic, or immutable memory-map policy refused it.
+    Range(paging::MapError),
+    /// Exact function/BAR binding refused it.
+    Bind(pci::BarBindError),
+}
+
+impl core::fmt::Display for BarAdmissionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Missing => core::fmt::Write::write_str(f, "the BAR slot is empty"),
+            Self::NotMemory => core::fmt::Write::write_str(f, "the BAR is not memory"),
+            Self::Range(reason) => write!(f, "physical range: {reason}"),
+            Self::Bind(reason) => write!(f, "function binding: {reason}"),
+        }
+    }
+}
+
+/// A refused memory-decode transition with the inaccessible mapped BAR.
+#[derive(Debug)]
+pub(crate) struct BarDecodeFailure {
+    reason: BarEnableError,
+    bar: pci::DisabledBar,
+}
+
+/// Result of the function-owned BAR decode transition.
+#[derive(Debug)]
+#[must_use = "decode refusal retains an inaccessible mapping"]
+pub(crate) enum BarDecodeOutcome {
+    /// Memory decode is verified and the mapping is accessible.
+    Enabled(pci::MappedBar),
+    /// Decode was refused with the mapping retained for cleanup.
+    Refused(BarDecodeFailure),
+}
+
+impl BarDecodeFailure {
+    /// Why the BAR did not become accessible.
+    pub(crate) const fn reason(&self) -> BarEnableError {
+        self.reason
+    }
+
+    /// Recover the mapping for exact retirement.
+    pub(crate) fn into_bar(self) -> pci::DisabledBar {
+        self.bar
     }
 }
 
@@ -226,8 +401,8 @@ pub(crate) enum ReleaseError {
     Command,
     /// The dynamic I/O claims no longer matched the unique span handles.
     Ports,
-    /// The function registry no longer held this lease's exact identity.
-    Registry,
+    /// The function registry refused the exact claim after all subleases ended.
+    Function,
     /// A permanent driver claim was offered to the transient release door.
     Permanent,
 }
@@ -235,11 +410,43 @@ pub(crate) enum ReleaseError {
 impl core::fmt::Display for ReleaseError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Command => f.write_str("the pci command word could not be restored"),
-            Self::Ports => f.write_str("the device's i/o spans could not be returned"),
-            Self::Registry => f.write_str("the device registry did not hold this lease"),
-            Self::Permanent => f.write_str("a permanent device claim cannot be released"),
+            Self::Command => {
+                core::fmt::Write::write_str(f, "the pci command word could not be restored")
+            }
+            Self::Ports => {
+                core::fmt::Write::write_str(f, "the device's i/o spans could not be returned")
+            }
+            Self::Function => {
+                core::fmt::Write::write_str(f, "the function claim could not be returned")
+            }
+            Self::Permanent => {
+                core::fmt::Write::write_str(f, "a permanent device claim cannot be released")
+            }
         }
+    }
+}
+
+/// Result of retiring a device, retaining the complete lease on refusal.
+#[must_use = "a retained PCI lease must be retried or the kernel must stop"]
+#[derive(Debug)]
+pub(crate) struct ReleaseOutcome {
+    retained: Option<(ReleaseError, Device)>,
+}
+
+impl ReleaseOutcome {
+    const fn released() -> Self {
+        Self { retained: None }
+    }
+
+    fn refused(reason: ReleaseError, device: Device) -> Self {
+        Self {
+            retained: Some((reason, device)),
+        }
+    }
+
+    /// Recover the refusal and unchanged lease for an exact retry.
+    pub(crate) fn into_retained(self) -> Option<(ReleaseError, Device)> {
+        self.retained
     }
 }
 
@@ -250,37 +457,33 @@ impl core::fmt::Display for ReleaseError {
 /// boot; a selection lease has an explicit all-or-stop release (D-199).
 #[derive(Debug)]
 pub(crate) struct Device {
-    at: Address,
+    #[cfg(feature = "selftest")]
+    observed_address: Address,
+    function: Option<pci::FunctionClaim>,
     vendor: u16,
     device: u16,
-    windows: [Option<Window>; BARS],
-    /// The I/O runs this device decodes, claimed with it.
-    ///
-    /// Held rather than merely recorded, and never read here: a `PortSpan` is
-    /// the *access*, so this is the thing a driver reaches through to touch
-    /// registers. Slice 5 is its first reader. It is kept in the device rather
-    /// than handed back separately because the claim is one thing — a driver
-    /// with the ports and no device would be the arrangement D-77 objected to.
+    bars: ProbedBars,
+    // Keep port and function authority inseparable (D-77).
     ports: [Option<wost::arch::current::port::PortSpan>; BARS],
-    /// Whether this is the permanent claim API rather than a selection lease.
-    permanent: bool,
+    /// Whether selection may still retire this function.
+    lifetime: ClaimLifetime,
     /// The command word to restore before a transient lease may disappear.
     command_state: Option<CommandState>,
     /// A failed restoration makes reuse unsafe even if later reads look sane.
     uncertain: bool,
-    /// Deterministic refusal before a test claim can touch configuration space.
-    #[cfg(feature = "selftest")]
-    forced_enable_error: Option<EnableError>,
-    /// Enable attempts made through this claim.
-    #[cfg(feature = "selftest")]
-    enable_attempts: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimLifetime {
+    Selection,
+    Permanent,
 }
 
 impl Device {
     /// Where it lives.
-    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    #[cfg(feature = "selftest")]
     pub(crate) const fn at(&self) -> Address {
-        self.at
+        self.observed_address
     }
 
     /// Who made it, and which of theirs it is.
@@ -290,56 +493,95 @@ impl Device {
 
     /// The window base address register `index` decodes, if it decodes one.
     pub(crate) fn window(&self, index: usize) -> Option<Window> {
-        self.windows.get(index).copied().flatten()
+        self.bars.window(index)
     }
 
-    /// Turn on memory space and **bus master**.
-    ///
-    /// Without bus master the controller cannot DMA: queues never advance, and
-    /// **there is no error anywhere to read** (`012` §2). It is the single most
-    /// expensive bit to forget in this subsystem, which is why it is set here,
-    /// by the thing that holds the claim, rather than by a driver that might
-    /// not.
+    /// Bind one probed memory BAR to this CPU and immutable boot map.
+    pub(crate) fn admit_memory_bar(
+        &self,
+        index: usize,
+    ) -> Result<pci::AdmittedBar, BarAdmissionError> {
+        let Some(window) = self.window(index) else {
+            return Err(BarAdmissionError::Missing);
+        };
+        let Bar::Memory { address, .. } = window.bar else {
+            return Err(BarAdmissionError::NotMemory);
+        };
+        let range =
+            paging::admit_device_range(address, window.size).map_err(BarAdmissionError::Range)?;
+        pci::bind_memory_bar(self.function(), &self.bars, index, range)
+            .map_err(BarAdmissionError::Bind)
+    }
+
+    /// Admit bus mastering with fresh proof from this function's mapped BAR.
     ///
     /// # Errors
     ///
     /// [`EnableError`] after an exact rollback, or when rollback could not be
-    /// verified. No caller may use a window after either result.
-    pub(crate) fn enable_bus_master(&mut self) -> Result<(), EnableError> {
+    /// verified. The command restoration authority remains in this device.
+    pub(crate) fn admit_bus_master(
+        &mut self,
+        authority: pci::NvmeBusMasterAuthority<'_>,
+    ) -> Result<(), EnableError> {
         #[cfg(feature = "selftest")]
         {
-            self.enable_attempts += 1;
-            if let Some(error) = self.forced_enable_error {
-                return Err(error);
+            if FORCED_BUS_MASTER_REFUSALS
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                OBSERVED_BUS_MASTER_REFUSAL.store(true, Ordering::Release);
+                return Err(EnableError::Refused(0));
             }
         }
 
-        if self.command_state.is_some() {
-            return Ok(());
+        let Some(state) = self.command_state.as_mut() else {
+            return Err(EnableError::Stale);
+        };
+        let result = pci::admit_bus_master(authority, state);
+        if let Err(error) = result {
+            self.uncertain |= matches!(error, EnableError::Restore);
+            return Err(error);
         }
-        let at = self.at.at(header::COMMAND).ok_or(EnableError::Access)?;
-        let result = pci_config::enable_bus_master(|access| match access {
-            CommandAccess::Read => pci::read(at),
-            CommandAccess::Write(value) => pci::write_command(at, value).then_some(0),
-        });
-        match result {
-            Ok(state) => {
-                if !self.permanent {
-                    self.command_state = Some(state);
-                }
-                Ok(())
-            }
-            Err(error) => {
-                self.uncertain |= matches!(error, EnableError::Restore);
-                Err(error)
+        Ok(())
+    }
+
+    /// Expose one mapped BAR only after its live identity enables memory decode.
+    pub(crate) fn enable_memory_bar(&mut self, bar: pci::DisabledBar) -> BarDecodeOutcome {
+        let Some(function) = self.function.as_ref() else {
+            panic!("a production PCI device has no function authority");
+        };
+        let Some(state) = self.command_state.as_mut() else {
+            return BarDecodeOutcome::Refused(BarDecodeFailure {
+                reason: BarEnableError::Command(EnableError::Stale),
+                bar,
+            });
+        };
+        match pci::enable_memory_bar(function, bar, state) {
+            pci::BarEnableOutcome::Enabled(bar) => BarDecodeOutcome::Enabled(bar),
+            pci::BarEnableOutcome::Refused(failure) => {
+                let reason = failure.reason();
+                let bar = failure.into_bar();
+                self.uncertain |= matches!(reason, BarEnableError::Command(EnableError::Restore));
+                BarDecodeOutcome::Refused(BarDecodeFailure { reason, bar })
             }
         }
     }
 
     /// Make a successful selection lease permanent.
-    pub(crate) fn commit(mut self) {
-        self.permanent = true;
-        self.command_state = None;
+    pub(crate) fn commit(&mut self) -> Result<(), EnableError> {
+        if let Some(state) = self.command_state.take()
+            && let Err(failure) = pci::commit_command(self.function(), state)
+        {
+            let reason = failure.reason();
+            self.command_state = Some(failure.into_state());
+            self.uncertain = true;
+            return Err(reason);
+        }
+        self.lifetime = ClaimLifetime::Permanent;
+        self.uncertain = false;
+        Ok(())
     }
 
     /// Restore and return every resource held by a transient lease.
@@ -347,81 +589,88 @@ impl Device {
     /// Any uncertainty leaves the function recorded and forbids selection from
     /// advancing. Successful return is the proof that the next candidate may
     /// be touched (D-199).
-    pub(crate) fn release(mut self, context: &mut ThreadContext) -> Result<(), ReleaseError> {
-        if self.permanent {
-            return Err(ReleaseError::Permanent);
-        }
-        if self.uncertain {
-            return Err(ReleaseError::Command);
+    pub(crate) fn release(mut self, _context: &mut ThreadContext) -> ReleaseOutcome {
+        if self.lifetime == ClaimLifetime::Permanent {
+            return ReleaseOutcome::refused(ReleaseError::Permanent, self);
         }
         if let Some(state) = self.command_state.take() {
-            let Some(at) = self.at.at(header::COMMAND) else {
-                self.uncertain = true;
-                return Err(ReleaseError::Command);
-            };
-            if pci_config::restore_command(state, |access| match access {
-                CommandAccess::Read => pci::read(at),
-                CommandAccess::Write(value) => pci::write_command(at, value).then_some(0),
-            })
-            .is_err()
-            {
-                self.uncertain = true;
-                return Err(ReleaseError::Command);
+            if let Err(failure) = pci::restore_command(self.function(), state) {
+                self.command_state = Some(failure.into_state());
+                return ReleaseOutcome::refused(ReleaseError::Command, self);
             }
+            self.uncertain = false;
+        }
+        if self.uncertain {
+            return ReleaseOutcome::refused(ReleaseError::Command, self);
         }
 
-        // Hold the function slot across the port return. This preflight makes
-        // the second commit infallible under the same guard; a port refusal
-        // leaves both registries unchanged.
-        let mut claimed = CLAIMED.lock(context);
-        if !claimed.is_claimed(self.at) {
-            return Err(ReleaseError::Registry);
-        }
         let ports = core::mem::replace(&mut self.ports, [const { None }; BARS]);
-        if !wost::arch::current::port::release_spans(ports) {
-            return Err(ReleaseError::Ports);
+        if let Err(failure) = wost::arch::current::port::release_spans(ports) {
+            self.ports = failure.spans;
+            return ReleaseOutcome::refused(ReleaseError::Ports, self);
         }
-        if !claimed.release(self.at) {
-            return Err(ReleaseError::Registry);
+        let Some(function) = self.function.take() else {
+            panic!("a production PCI device lost its function authority");
+        };
+        if let Err(failure) = pci::release_function(function) {
+            self.function = Some(failure.into_function());
+            return ReleaseOutcome::refused(ReleaseError::Function, self);
         }
-        Ok(())
+        ReleaseOutcome::released()
     }
 
-    /// A claim-shaped controller which refuses before configuration access.
-    #[cfg(feature = "selftest")]
-    pub(crate) fn refusing_bus_master() -> Option<Self> {
-        const WINDOW_ADDRESS: u64 = 0xDEAD_0000;
-        const WINDOW_BYTES: u64 = 0x4000;
-
-        let at = Address::new(0, 0, 0, header::VENDOR)?;
-        let mut windows = [None; BARS];
-        windows[0] = Some(Window {
-            bar: Bar::Memory {
-                address: WINDOW_ADDRESS,
-                wide: false,
-                prefetchable: false,
-            },
-            size: WINDOW_BYTES,
-        });
-        Some(Self {
-            at,
-            vendor: 0xFFFF,
-            device: 0xFFFF,
-            windows,
-            ports: [const { None }; BARS],
-            permanent: true,
-            command_state: None,
-            uncertain: false,
-            forced_enable_error: Some(EnableError::Refused(0)),
-            enable_attempts: 0,
-        })
+    fn function(&self) -> &pci::FunctionClaim {
+        let Some(function) = self.function.as_ref() else {
+            panic!("a production PCI device has no function authority");
+        };
+        function
     }
+}
 
-    /// Enable attempts made through this claim.
-    #[cfg(feature = "selftest")]
-    pub(crate) const fn enable_attempts(&self) -> u32 {
-        self.enable_attempts
-    }
+/// Whether the deterministic post-disable DMA-admission refusal was consumed.
+#[cfg(feature = "selftest")]
+pub(crate) fn bus_master_refusal_was_observed() -> bool {
+    OBSERVED_BUS_MASTER_REFUSAL.load(Ordering::Acquire)
+}
+
+/// Refuse the next clean preparation after its BAR probe has settled.
+#[cfg(feature = "selftest")]
+pub(crate) fn refuse_clean_preparation_for_test() {
+    assert!(
+        !REFUSE_CLEAN_PREPARATION.swap(true, Ordering::Relaxed),
+        "a clean PCI preparation refusal was already armed"
+    );
+}
+
+/// Keep a command-mismatched device claimed after storage selection stops.
+pub(crate) fn retain_failed_commit(device: Device) {
+    let mut retained = RETAINED_COMMAND.lock_leaf();
+    assert!(retained.is_none(), "two PCI commit failures were retained");
+    *retained = Some(device);
+}
+
+/// Keep an uncertain BAR restoration owned after its bounded retry refused.
+pub(crate) fn retain_failed_probe(recovery: ProbeRecovery) {
+    let mut retained = RETAINED_PROBE.lock_leaf();
+    assert!(retained.is_none(), "two PCI probe failures were retained");
+    *retained = Some(recovery);
+}
+
+/// Keep a device lease reachable after its bounded retirement refuses.
+pub(crate) fn retain_failed_release(device: Device) {
+    let mut retained = RETAINED_RELEASES.lock_leaf();
+    let Some(slot) = retained.iter_mut().find(|slot| slot.is_none()) else {
+        panic!("retained device leases exceed the eight-function PCI registry");
+    };
+    *slot = Some(device);
+}
+
+fn retain_failed_function(function: pci::FunctionClaim) {
+    let mut retained = RETAINED_FUNCTIONS.lock_leaf();
+    let Some(slot) = retained.iter_mut().find(|slot| slot.is_none()) else {
+        panic!("retained function claims exceed the eight-function PCI registry");
+    };
+    *slot = Some(function);
 }
 
 /// Claim the function at `at`, with every window it decodes.
@@ -433,117 +682,143 @@ impl Device {
 ///
 /// # Errors
 ///
-/// See [`ClaimError`]. Every one of them leaves the world as it was: a refused
-/// claim records nothing, and the holder of a taken device is untouched.
-#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
-pub(crate) fn claim(context: &mut ThreadContext, at: Address) -> Result<Device, ClaimError> {
-    claim_as(context, at, true)
+/// See [`ClaimError`]. Clean refusals record nothing. An uncertain BAR restore
+/// returns its exclusive retry owner rather than releasing the function.
+#[cfg(feature = "selftest")]
+pub(crate) fn claim(at: Address) -> Result<Device, ClaimError> {
+    claim_as(at, ClaimLifetime::Permanent)
 }
 
 /// Lease one function while storage selection determines whether to keep it.
-pub(crate) fn lease(context: &mut ThreadContext, at: Address) -> Result<Device, ClaimError> {
-    claim_as(context, at, false)
+pub(crate) fn lease(at: Address) -> Result<Device, ClaimError> {
+    claim_as(at, ClaimLifetime::Selection)
 }
 
-fn claim_as(
-    context: &mut ThreadContext,
-    at: Address,
-    permanent: bool,
-) -> Result<Device, ClaimError> {
-    if !pci::is_available() {
-        return Err(ClaimError::NoBus);
+fn claim_as(at: Address, lifetime: ClaimLifetime) -> Result<Device, ClaimError> {
+    let function = pci::claim_function(at).map_err(|reason| match reason {
+        pci::ClaimError::Unavailable => ClaimError::NoBus,
+        pci::ClaimError::Absent => ClaimError::Absent,
+        pci::ClaimError::Taken => ClaimError::Taken,
+        pci::ClaimError::NoRoom | pci::ClaimError::Exhausted => ClaimError::NoRoom,
+        pci::ClaimError::Header(_) => ClaimError::InvalidWindow,
+        _ => ClaimError::NoBus,
+    })?;
+    #[cfg(feature = "selftest")]
+    let observed_address = function.address();
+    let (vendor, device) = function.identity();
+    let staged = match pci::probe_bars(&function) {
+        Ok(staged) => staged,
+        Err(failure) => {
+            let invalid = matches!(
+                failure.reason(),
+                ProbeError::Malformed | ProbeError::InvalidWindow
+            );
+            if let Some(retry) = failure.into_retry() {
+                return Err(ClaimError::ProbeRestore(ProbeRecovery {
+                    function,
+                    authority: ProbeRecoveryAuthority::Probe(retry),
+                }));
+            }
+            let reason = if invalid {
+                ClaimError::InvalidWindow
+            } else {
+                ClaimError::NoBus
+            };
+            return Err(release_clean_function(function, reason));
+        }
+    };
+    let (bars, command_state) = staged.into_parts();
+
+    #[cfg(feature = "selftest")]
+    if REFUSE_CLEAN_PREPARATION.swap(false, Ordering::Relaxed) {
+        return Err(restore_staged_function(
+            function,
+            command_state,
+            ClaimError::WindowTaken,
+        ));
     }
 
-    let at = at.function_base();
-    let mut claimed = CLAIMED.lock(context);
-    claimed
-        .claim(at, || {
-            let identity = pci::read(at).ok_or(ClaimError::NoBus)?;
-            let vendor = identity as u16;
-            if pci_config::is_absent(vendor) {
-                return Err(ClaimError::Absent);
-            }
+    let ports = match claim_windows(&bars) {
+        Ok(ports) => ports,
+        Err(reason) => {
+            return Err(restore_staged_function(function, command_state, reason));
+        }
+    };
 
-            let layout = HeaderType::from_bits(
-                (pci::read(at.at(header::HEADER_TYPE).ok_or(ClaimError::NoBus)?)
-                    .ok_or(ClaimError::NoBus)?
-                    >> 16) as u8,
-            );
-            // A bridge has two registers where a device has six; the rest of its
-            // header is bus numbers, and reading those as base addresses is how a
-            // walk comes to size and claim something that is not a window at all.
-            let registers = if layout.is_bridge() {
-                pci_config::BRIDGE_BARS
-            } else {
-                BARS
-            };
+    Ok(Device {
+        #[cfg(feature = "selftest")]
+        observed_address,
+        function: Some(function),
+        vendor,
+        device,
+        bars,
+        ports,
+        lifetime,
+        command_state: Some(command_state),
+        uncertain: false,
+    })
+}
 
-            let windows = match pci::probe_bars(at, registers) {
-                Ok(probed) => probed.into_windows(),
-                Err(ProbeError::Access(()) | ProbeError::Restore(())) => {
-                    return Err(ClaimError::NoBus);
-                }
-                Err(ProbeError::Malformed | ProbeError::InvalidWindow) => {
-                    return Err(ClaimError::InvalidWindow);
-                }
-            };
+fn claim_windows(
+    bars: &ProbedBars,
+) -> Result<[Option<wost::arch::current::port::PortSpan>; BARS], ClaimError> {
+    let mut requested = [(0u16, 0usize); BARS];
+    let mut port_slots = [0usize; BARS];
+    let mut port_count = 0;
+    for index in 0..BARS {
+        if let Some(Window {
+            bar: Bar::Io { port },
+            size,
+        }) = bars.window(index)
+        {
+            let len = usize::try_from(size).map_err(|_| ClaimError::InvalidWindow)?;
+            requested[port_count] = (port, len);
+            port_slots[port_count] = index;
+            port_count += 1;
+        }
+    }
 
-            let mut requested = [(0u16, 0usize); BARS];
-            let mut port_slots = [0usize; BARS];
-            let mut port_count = 0;
-            for (index, window) in windows.iter().enumerate() {
-                if let Some(Window {
-                    bar: Bar::Io { port },
-                    size,
-                }) = window
-                {
-                    let len = usize::try_from(*size).map_err(|_| ClaimError::InvalidWindow)?;
-                    requested[port_count] = (*port, len);
-                    port_slots[port_count] = index;
-                    port_count += 1;
-                }
-            }
+    let mut ports = [const { None }; BARS];
+    if port_count > 0 {
+        let owned = wost::arch::current::port::claim_spans::<BARS>(&requested[..port_count])
+            .ok_or(ClaimError::WindowTaken)?;
+        for (dense, span) in owned.into_iter().enumerate().take(port_count) {
+            ports[port_slots[dense]] = span;
+        }
+    }
+    Ok(ports)
+}
 
-            let mut ports = [const { None }; BARS];
-            if port_count > 0 {
-                let owned =
-                    wost::arch::current::port::claim_spans::<BARS>(&requested[..port_count])
-                        .ok_or(ClaimError::WindowTaken)?;
-                for (dense, span) in owned.into_iter().enumerate().take(port_count) {
-                    ports[port_slots[dense]] = span;
-                }
-            }
+fn release_clean_function(function: pci::FunctionClaim, reason: ClaimError) -> ClaimError {
+    if let Err(failure) = pci::release_function(function) {
+        retain_failed_function(failure.into_function());
+        return ClaimError::FunctionRetained;
+    }
+    reason
+}
 
-            Ok(Device {
-                at,
-                vendor,
-                device: (identity >> 16) as u16,
-                windows,
-                ports,
-                permanent,
-                command_state: None,
-                uncertain: false,
-                #[cfg(feature = "selftest")]
-                forced_enable_error: None,
-                #[cfg(feature = "selftest")]
-                enable_attempts: 0,
-            })
-        })
-        .map_err(|error| match error {
-            RegistryError::Taken => ClaimError::Taken,
-            RegistryError::NoRoom => ClaimError::NoRoom,
-            RegistryError::Prepare(error) => error,
-        })
+fn restore_staged_function(
+    function: pci::FunctionClaim,
+    state: CommandState,
+    reason: ClaimError,
+) -> ClaimError {
+    match pci::restore_command(&function, state) {
+        Ok(()) => release_clean_function(function, reason),
+        Err(failure) => ClaimError::ProbeRestore(ProbeRecovery {
+            function,
+            authority: ProbeRecoveryAuthority::Command(failure.into_state()),
+        }),
+    }
 }
 
 /// Whether the function at `at` is claimed.
 #[cfg(feature = "selftest")]
 pub(crate) fn is_claimed(at: Address) -> bool {
-    CLAIMED.lock_leaf().is_claimed(at)
+    pci::is_claimed(at)
 }
 
 /// How many functions are claimed.
 #[cfg(feature = "selftest")]
 pub(crate) fn claims() -> usize {
-    CLAIMED.lock_leaf().len()
+    pci::claims()
 }

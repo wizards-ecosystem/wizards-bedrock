@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 59083b395afb032c727b65f019f1889cbb3530d139d50692a7718d242fca3c3f # shrinks to a = 1458434141647759704, b = 1458434141647759705, len = 2
+cc 854ede3aad8e9efb870db9b36ac1d42325e038aeba5e2e889ee6398a7ee842a0 # shrinks to (a, alen, b, blen, contact, side) = (64, 1, 63, 1, Adjacent, Below)

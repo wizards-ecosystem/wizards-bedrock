@@ -6,9 +6,99 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 
 use crate::cargo::Profile;
+
+fn collect_directory_entries<T>(
+    entries: impl Iterator<Item = std::io::Result<T>>,
+) -> std::io::Result<Vec<T>> {
+    entries.collect()
+}
+
+fn collect_classified_entries<T>(entries: impl Iterator<Item = Result<T>>) -> Result<Vec<T>> {
+    entries.collect()
+}
+
+const fn repository_entry_is_supported(
+    is_symlink: bool,
+    is_reparse_point: bool,
+    is_dir: bool,
+    is_file: bool,
+) -> bool {
+    !is_symlink && !is_reparse_point && (is_dir || is_file)
+}
+
+fn metadata_is_supported(metadata: &std::fs::Metadata) -> bool {
+    let file_type = metadata.file_type();
+    repository_entry_is_supported(
+        file_type.is_symlink(),
+        is_reparse_point(metadata),
+        file_type.is_dir(),
+        file_type.is_file(),
+    )
+}
+
+#[cfg(windows)]
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+const fn is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// One repository entry with its fallible file type already resolved.
+#[derive(Debug)]
+pub(crate) struct DirectoryEntry {
+    entry: std::fs::DirEntry,
+    file_type: std::fs::FileType,
+}
+
+impl DirectoryEntry {
+    /// The entry's full path.
+    pub(crate) fn path(&self) -> PathBuf {
+        self.entry.path()
+    }
+
+    /// Whether the captured entry is a directory.
+    pub(crate) fn is_dir(&self) -> bool {
+        self.file_type.is_dir()
+    }
+}
+
+fn classify_directory_entry(entry: std::fs::DirEntry) -> Result<DirectoryEntry> {
+    let path = entry.path();
+    let metadata = std::fs::symlink_metadata(&path)
+        .with_context(|| format!("classifying {}", path.display()))?;
+    let file_type = metadata.file_type();
+    ensure!(
+        metadata_is_supported(&metadata),
+        "repository proof walk refuses redirected or special entry {}",
+        path.display()
+    );
+    Ok(DirectoryEntry { entry, file_type })
+}
+
+/// Read and classify a complete directory or refuse its repository proof.
+pub(crate) fn directory_entries(directory: &Path) -> Result<Vec<DirectoryEntry>> {
+    let metadata = std::fs::symlink_metadata(directory)
+        .with_context(|| format!("classifying proof directory {}", directory.display()))?;
+    ensure!(
+        metadata.file_type().is_dir() && metadata_is_supported(&metadata),
+        "repository proof walk refuses redirected or non-directory root {}",
+        directory.display()
+    );
+    let entries =
+        std::fs::read_dir(directory).with_context(|| format!("listing {}", directory.display()))?;
+    let entries = collect_directory_entries(entries)
+        .with_context(|| format!("reading every entry in {}", directory.display()))?;
+    collect_classified_entries(entries.into_iter().map(classify_directory_entry))
+}
 
 /// Cargo package producing the kernel binary.
 pub const KERNEL_PACKAGE: &str = "wizard-kernel";
@@ -29,6 +119,7 @@ pub const HOST_PACKAGES: &[&str] = &[
     "memory-map",
     "mmio-range",
     "nvme",
+    "panic-record",
     "path-walk",
     "pci-config",
     "pixel",
@@ -66,9 +157,9 @@ pub fn default_members(manifest: &str) -> Vec<String> {
         .and_then(|(_, rest)| rest.split_once(']'))
         .map(|(list, _)| {
             list.lines()
-                .map(|line| line.split('#').next().unwrap_or(line))
+                .map(|line| core::iter::Iterator::next(&mut line.split('#')).unwrap_or(line))
                 .filter_map(|line| line.split('"').nth(1))
-                .filter_map(|path| path.rsplit('/').next())
+                .filter_map(|path| core::iter::Iterator::next(&mut path.rsplit('/')))
                 .map(str::to_string)
                 .collect()
         })
@@ -218,6 +309,35 @@ mod tests {
     }
 
     #[test]
+    fn directory_enumeration_errors_are_not_hidden() {
+        let entries = [
+            Ok(PathBuf::from("visible")),
+            Err(std::io::Error::other("refused entry")),
+        ];
+
+        assert!(collect_directory_entries(entries.into_iter()).is_err());
+    }
+
+    #[test]
+    fn directory_classification_errors_are_not_hidden() {
+        let entries = [
+            Ok(PathBuf::from("visible")),
+            Err(anyhow::anyhow!("refused classification")),
+        ];
+
+        assert!(collect_classified_entries(entries.into_iter()).is_err());
+    }
+
+    #[test]
+    fn repository_entry_classification_rejects_redirects_and_special_files() {
+        assert!(repository_entry_is_supported(false, false, true, false));
+        assert!(repository_entry_is_supported(false, false, false, true));
+        assert!(!repository_entry_is_supported(true, false, true, false));
+        assert!(!repository_entry_is_supported(false, true, true, false));
+        assert!(!repository_entry_is_supported(false, false, false, false));
+    }
+
+    #[test]
     fn default_members_reads_a_list_of_paths_as_package_names() {
         let manifest = "\
 [workspace]
@@ -247,10 +367,6 @@ default-members = [
         assert!(default_members("").is_empty());
     }
 
-    /// The list lives here and in the root manifest, and drifted once: a new
-    /// `libs/` crate reached `default-members` but not [`HOST_PACKAGES`], so
-    /// `cargo xtask test` and `cargo xtask clippy` quietly stopped covering
-    /// it while a bare `cargo test` still did. This is the check that says so.
     #[test]
     fn host_packages_are_exactly_the_workspace_default_members() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -340,7 +456,11 @@ default-members = [
             config
                 .lines()
                 .find_map(|line| line.trim().strip_prefix(key))
-                .map(|value| value.trim().rsplit('/').next().unwrap_or("").to_string())
+                .map(|value| {
+                    core::iter::Iterator::next(&mut value.trim().rsplit('/'))
+                        .unwrap_or("")
+                        .to_string()
+                })
                 .unwrap_or_else(|| panic!("no {key} line in boot/limine.conf"))
         };
 
@@ -366,19 +486,31 @@ default-members = [
         let members = default_members(&manifest);
 
         let mut found = Vec::new();
-        for entry in std::fs::read_dir(root.join("libs"))
-            .expect("libs/")
-            .flatten()
-        {
-            if !entry.path().is_dir() {
+        for entry in directory_entries(&root.join("libs")).expect("complete libs/ listing") {
+            let path = entry.path();
+            if !entry.is_dir() {
                 continue;
             }
             // A directory is a crate when it has a manifest; anything else is
             // not this test's business.
-            if !entry.path().join("Cargo.toml").exists() {
-                continue;
+            let manifest = path.join("Cargo.toml");
+            match std::fs::symlink_metadata(&manifest) {
+                Ok(metadata) => {
+                    let kind = metadata.file_type();
+                    assert!(
+                        kind.is_file() && !kind.is_symlink() && !is_reparse_point(&metadata),
+                        "{} is not a regular manifest",
+                        manifest.display()
+                    );
+                }
+                Err(reason) if reason.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(reason) => panic!("inspecting {}: {reason}", manifest.display()),
             }
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_else(|| panic!("library path is not UTF-8: {}", path.display()))
+                .to_string();
             assert!(
                 members.contains(&name),
                 "libs/{name} is not in the workspace default-members"

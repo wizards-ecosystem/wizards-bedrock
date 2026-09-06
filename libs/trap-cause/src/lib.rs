@@ -1,17 +1,12 @@
 //! What a trap was, decoded from the vector and error code the CPU pushed.
 //!
-//! The entry path saves one frame shape for every vector (D-29) and hands it
-//! to one handler. That handler used to match on the raw vector number, which
-//! works but spreads the architecture's meaning across the call sites that
-//! test for it — and it threw the page-fault error code away entirely, so a
-//! fault report could say *where* but never *why*.
+//! The entry path saves one frame shape for every vector (D-29). Central
+//! decoding keeps architectural meaning out of call sites and preserves the
+//! page-fault error code.
 //!
-//! This crate is the decode, and it is here rather than in `wost` for the
-//! usual reason (D-41): it touches no hardware and holds no pointer, so
-//! `cargo test` can reach it. It is also the shape a second architecture would
-//! need — a decoded cause dispatched from a table, rather than a vector number
-//! every handler re-interprets — which is why `010` §10 asks for it while the
-//! entry path is being rebuilt FRED-first (D-81).
+//! The pure decode lives outside `wost` so host tests can reach it; handlers
+//! consume one decoded cause instead of reinterpreting vector numbers (D-41,
+//! D-81).
 //!
 //! # Examples
 //!
@@ -33,6 +28,8 @@
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+
+use core::ops::Range;
 
 use x86_tables::exception;
 
@@ -103,15 +100,6 @@ impl TrapCause {
             Self::Reserved(_) => "reserved vector",
             Self::Interrupt(_) => "interrupt",
         }
-    }
-
-    /// Whether the interrupted code can be resumed.
-    ///
-    /// Only a breakpoint: the saved instruction pointer is already past the
-    /// `int3`, so returning continues the program (D-31). Every other fault is
-    /// terminal, and an interrupt is not a fault at all.
-    pub const fn is_resumable(self) -> bool {
-        matches!(self, Self::Fault(Fault::Breakpoint))
     }
 }
 
@@ -227,6 +215,14 @@ impl Fault {
 pub struct PageFault(u64);
 
 impl PageFault {
+    /// Whether the error code describes a ring-0 data access.
+    ///
+    /// Present/missing and read/write may vary. Every privilege, fetch,
+    /// reserved, key, shadow-stack, SGX, or future bit is refused.
+    pub const fn is_supervisor_data_access(self) -> bool {
+        self.0 & !0b11 == 0
+    }
+
     /// A page was present, and the access violated its permissions.
     ///
     /// Clear means the translation was absent — a miss rather than a refusal.
@@ -249,8 +245,7 @@ impl PageFault {
         self.0 & (1 << 3) != 0
     }
 
-    /// The access was an instruction fetch. Meaningful only with NX enabled,
-    /// which it has been since Phase 2.
+    /// The access was an instruction fetch. Meaningful only with NX enabled.
     pub const fn was_fetch(self) -> bool {
         self.0 & (1 << 4) != 0
     }
@@ -260,7 +255,7 @@ impl PageFault {
         self.0 & (1 << 5) != 0
     }
 
-    /// A shadow-stack access. Set once CET is enabled; never today.
+    /// A shadow-stack access. Set when CET shadow stacks are enabled.
     pub const fn shadow_stack(self) -> bool {
         self.0 & (1 << 6) != 0
     }
@@ -292,15 +287,72 @@ impl core::fmt::Debug for PageFault {
             if self.from_user() { "user" } else { "kernel" }
         )?;
         if self.reserved_bit_set() {
-            f.write_str(", reserved bit set in a table entry")?;
+            core::fmt::Write::write_str(f, ", reserved bit set in a table entry")?;
         }
         if self.protection_key() {
-            f.write_str(", protection key")?;
+            core::fmt::Write::write_str(f, ", protection key")?;
         }
         if self.shadow_stack() {
-            f.write_str(", shadow stack")?;
+            core::fmt::Write::write_str(f, ", shadow stack")?;
         }
         Ok(())
+    }
+}
+
+/// A page fault presented to a controlled recovery boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveryAttempt {
+    /// The vector saved in the trap frame.
+    pub vector: u64,
+    /// The error code saved in the trap frame.
+    pub frame_error_code: u64,
+    /// The selector saved in the trap frame.
+    pub code_selector: u64,
+    /// The instruction pointer saved in the trap frame.
+    pub instruction_pointer: u64,
+    /// The page-fault cause decoded by the trap dispatcher.
+    pub page_fault: PageFault,
+    /// The address saved in `CR2`.
+    pub faulting_address: u64,
+}
+
+/// The page-fault class one controlled recovery site admits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RecoveryFault {
+    /// Any present/missing, read/write supervisor data access.
+    SupervisorData,
+    /// Exactly a present supervisor write-protection violation.
+    SupervisorWriteProtection,
+}
+
+/// The complete non-liveness policy for one controlled recovery site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryRule {
+    /// The admitted page-fault class.
+    pub fault: RecoveryFault,
+    /// The half-open `CR2` interval owned by the operation.
+    pub fault_addresses: Range<u64>,
+    /// The half-open faulting-instruction interval owned by the operation.
+    pub instruction_addresses: Range<u64>,
+}
+
+impl RecoveryAttempt {
+    /// Whether every architectural value binds this attempt to `rule`.
+    pub fn is_admitted_by(&self, rule: &RecoveryRule) -> bool {
+        let class_matches = match rule.fault {
+            RecoveryFault::SupervisorData => self.page_fault.is_supervisor_data_access(),
+            RecoveryFault::SupervisorWriteProtection => self.page_fault.bits() == 0b11,
+        };
+
+        self.vector == u64::from(exception::PAGE_FAULT)
+            && self.frame_error_code == self.page_fault.bits()
+            && self.code_selector & 0b11 == 0
+            && class_matches
+            && rule.fault_addresses.contains(&self.faulting_address)
+            && rule
+                .instruction_addresses
+                .contains(&self.instruction_pointer)
     }
 }
 
@@ -316,20 +368,9 @@ mod tests {
     /// of error that costs an afternoon.
     /// Every vector decodes to the variant the architecture assigns it.
     ///
-    /// **Transcribed from SDM Vol. 3A table 6-1**, not derived. The two tests
-    /// that look like they cover this — `every_vector_decodes_and_reports_its_own_number`
-    /// and `a_faults_name_is_its_vectors_name` — both route through the same
-    /// mapping in both directions, so a *consistent permutation* of `decode`
-    /// and `Fault::vector` satisfies them: swap `6 => InvalidOpcode` with
-    /// `18 => MachineCheck` in both and every test stays green.
-    ///
-    /// That is not cosmetic. `kernel/src/arch/x86_64/trap.rs` decides whether
-    /// a fault is the program's to die of by matching on the *variant*, so
-    /// under that swap a ring-3 `ud2` arrives as `MachineCheck` and panics the
-    /// machine instead of retiring the thread — an unprivileged halt, from a
-    /// permutation nothing could see (D-136).
-    ///
-    /// Only `Breakpoint` and `PageFault` were pinned to a number before this.
+    /// **Transcribed from SDM Vol. 3A table 6-1**, not derived. Bidirectional
+    /// implementation checks admit a consistent permutation, while fault
+    /// containment relies on the decoded variant (D-136).
     #[test]
     fn every_fault_sits_on_the_vector_the_manual_gives_it() {
         // SDM Vol. 3A, table 6-1. The numbers are the architecture's, so they
@@ -382,9 +423,8 @@ mod tests {
         assert_eq!(Fault::Security.vector(), 30);
         assert_eq!(TrapCause::decode(30, 0), TrapCause::Fault(Fault::Security));
 
-        // And the gaps stay gaps: 9, 15, 22..=27 are reserved, and 31 is the
-        // last of them. A variant appearing on one of these would mean the
-        // table above had been renumbered around it.
+        // The gaps stay gaps: 9, 15, 22..=27 and 31 are reserved, and a
+        // variant there would mean the table was renumbered around it.
         for reserved in [9u8, 15, 22, 23, 24, 25, 26, 27, 31] {
             assert!(
                 matches!(TrapCause::decode(reserved, 0), TrapCause::Reserved(_)),
@@ -433,18 +473,6 @@ mod tests {
         }
     }
 
-    /// Only a breakpoint is resumable (D-31).
-    #[test]
-    fn only_a_breakpoint_resumes() {
-        for vector in 0..=u8::MAX {
-            assert_eq!(
-                TrapCause::decode(vector, 0).is_resumable(),
-                vector == exception::BREAKPOINT,
-                "vector {vector} disagrees about being resumable"
-            );
-        }
-    }
-
     /// Each page-fault bit is read on its own, and not by accident from
     /// another.
     #[test]
@@ -467,6 +495,173 @@ mod tests {
                 !read(PageFault(!bit)),
                 "bit {bit:#x} read as set from the others"
             );
+        }
+    }
+
+    #[test]
+    fn only_exact_supervisor_data_faults_are_admitted() {
+        for bits in 0_u64..=u16::MAX as u64 {
+            assert_eq!(
+                PageFault(bits).is_supervisor_data_access(),
+                bits <= 0b11,
+                "error code {bits:#x}"
+            );
+        }
+    }
+
+    fn page_fault(bits: u64) -> PageFault {
+        let TrapCause::Fault(Fault::PageFault(fault)) =
+            TrapCause::decode(exception::PAGE_FAULT, bits)
+        else {
+            panic!("the page-fault vector decodes as a page fault");
+        };
+        fault
+    }
+
+    fn attempt(bits: u64, faulting_address: u64, instruction_pointer: u64) -> RecoveryAttempt {
+        RecoveryAttempt {
+            vector: u64::from(exception::PAGE_FAULT),
+            frame_error_code: bits,
+            code_selector: 0x10,
+            instruction_pointer,
+            page_fault: page_fault(bits),
+            faulting_address,
+        }
+    }
+
+    fn user_copy_rule() -> RecoveryRule {
+        RecoveryRule {
+            fault: RecoveryFault::SupervisorData,
+            fault_addresses: 0x2000..0x3000,
+            instruction_addresses: 0x8000..0x8002,
+        }
+    }
+
+    fn write_protection_rule() -> RecoveryRule {
+        RecoveryRule {
+            fault: RecoveryFault::SupervisorWriteProtection,
+            fault_addresses: 0xd00d..0xd00e,
+            instruction_addresses: 0x9000..0x9001,
+        }
+    }
+
+    #[test]
+    fn recovery_requires_the_page_fault_vector() {
+        let cases = [
+            (attempt(0b10, 0x2345, 0x8001), user_copy_rule()),
+            (attempt(0b11, 0xd00d, 0x9000), write_protection_rule()),
+        ];
+        for (mut candidate, rule) in cases {
+            assert!(candidate.is_admitted_by(&rule));
+            for vector in [0, 13, 15, u64::MAX] {
+                candidate.vector = vector;
+                assert!(!candidate.is_admitted_by(&rule), "vector {vector}");
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_requires_the_error_code_the_dispatcher_decoded() {
+        let cases = [
+            (attempt(0b10, 0x2345, 0x8001), user_copy_rule()),
+            (attempt(0b11, 0xd00d, 0x9000), write_protection_rule()),
+        ];
+        for (mut candidate, rule) in cases {
+            assert!(candidate.is_admitted_by(&rule));
+            candidate.frame_error_code ^= 1;
+            assert!(!candidate.is_admitted_by(&rule));
+        }
+    }
+
+    #[test]
+    fn recovery_requires_a_ring_zero_frame() {
+        let cases = [
+            (attempt(0b10, 0x2345, 0x8001), user_copy_rule()),
+            (attempt(0b11, 0xd00d, 0x9000), write_protection_rule()),
+        ];
+        for (mut candidate, rule) in cases {
+            assert!(candidate.is_admitted_by(&rule));
+            for selector in [1, 2, 3, 0x11, 0x12, 0x13, u64::MAX] {
+                candidate.code_selector = selector;
+                assert!(!candidate.is_admitted_by(&rule), "selector {selector:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn user_copy_recovery_accepts_only_supervisor_data_faults() {
+        let rule = user_copy_rule();
+        for bits in (0_u64..=u16::MAX as u64).chain((16..64).map(|bit| 1_u64 << bit)) {
+            assert_eq!(
+                attempt(bits, 0x2345, 0x8001).is_admitted_by(&rule),
+                bits & !0b11 == 0,
+                "error code {bits:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn write_protection_recovery_requires_the_exact_protection_write() {
+        let rule = write_protection_rule();
+        for bits in (0_u64..=u16::MAX as u64).chain((16..64).map(|bit| 1_u64 << bit)) {
+            assert_eq!(
+                attempt(bits, 0xd00d, 0x9000).is_admitted_by(&rule),
+                bits == 0b11,
+                "error code {bits:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_requires_cr2_inside_the_owned_interval() {
+        let cases = [(0b10, user_copy_rule()), (0b11, write_protection_rule())];
+        for (bits, rule) in cases {
+            let start = rule.fault_addresses.start;
+            let end = rule.fault_addresses.end;
+            for address in [start, end - 1] {
+                assert!(
+                    attempt(bits, address, rule.instruction_addresses.start).is_admitted_by(&rule)
+                );
+            }
+            for address in [start - 1, end, u64::MAX] {
+                assert!(
+                    !attempt(bits, address, rule.instruction_addresses.start).is_admitted_by(&rule),
+                    "CR2 {address:#x}"
+                );
+            }
+
+            let mut empty = rule.clone();
+            empty.fault_addresses = start..start;
+            assert!(!attempt(bits, start, rule.instruction_addresses.start).is_admitted_by(&empty));
+            empty.fault_addresses = end..start;
+            assert!(!attempt(bits, start, rule.instruction_addresses.start).is_admitted_by(&empty));
+        }
+    }
+
+    #[test]
+    fn recovery_requires_rip_inside_the_owned_interval() {
+        let cases = [
+            (0b10, 0x2345, user_copy_rule()),
+            (0b11, 0xd00d, write_protection_rule()),
+        ];
+        for (bits, address, rule) in cases {
+            let start = rule.instruction_addresses.start;
+            let end = rule.instruction_addresses.end;
+            for instruction in [start, end - 1] {
+                assert!(attempt(bits, address, instruction).is_admitted_by(&rule));
+            }
+            for instruction in [start - 1, end, u64::MAX] {
+                assert!(
+                    !attempt(bits, address, instruction).is_admitted_by(&rule),
+                    "RIP {instruction:#x}"
+                );
+            }
+
+            let mut empty = rule.clone();
+            empty.instruction_addresses = start..start;
+            assert!(!attempt(bits, address, start).is_admitted_by(&empty));
+            empty.instruction_addresses = end..start;
+            assert!(!attempt(bits, address, start).is_admitted_by(&empty));
         }
     }
 
@@ -519,6 +714,22 @@ mod tests {
         assert_eq!(named(8), Some("double fault"));
         assert_eq!(named(13), Some("general protection fault"));
         assert_eq!(named(14), Some("page fault"));
+    }
+
+    #[test]
+    fn every_decoded_cause_has_the_architectural_report_name() {
+        for vector in 0..=u8::MAX {
+            let expected = if vector >= exception::COUNT {
+                "interrupt"
+            } else {
+                exception::name(vector).unwrap_or("reserved vector")
+            };
+            assert_eq!(
+                TrapCause::decode(vector, 0).name(),
+                expected,
+                "vector {vector}"
+            );
+        }
     }
 
     /// The report reads as a sentence, and says miss and refusal differently.

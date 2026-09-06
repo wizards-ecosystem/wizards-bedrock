@@ -30,9 +30,13 @@
 //! image[0..4].copy_from_slice(&[0x7F, b'E', b'L', b'F']);
 //! image[4] = 2; // ELFCLASS64
 //! image[5] = 1; // little-endian
+//! image[6] = 1; // current ELF identification version
+//! image[16..18].copy_from_slice(&2u16.to_le_bytes()); // ET_EXEC
 //! image[18..20].copy_from_slice(&62u16.to_le_bytes()); // EM_X86_64
+//! image[20..24].copy_from_slice(&1u32.to_le_bytes()); // current ELF version
 //! image[24..32].copy_from_slice(&0x40_1000u64.to_le_bytes()); // e_entry
 //! image[32..40].copy_from_slice(&(HEADER_BYTES as u64).to_le_bytes()); // e_phoff
+//! image[52..54].copy_from_slice(&(HEADER_BYTES as u16).to_le_bytes()); // e_ehsize
 //! image[54..56].copy_from_slice(&(PROGRAM_HEADER_BYTES as u16).to_le_bytes());
 //! image[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
 //!
@@ -59,9 +63,6 @@
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
 )]
 
-/// Bytes of the identification array at the start of every ELF.
-pub const IDENT_BYTES: usize = 16;
-
 /// What every ELF begins with.
 pub const MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
 
@@ -80,6 +81,10 @@ pub const PROGRAM_HEADER_BYTES: usize = 56;
 /// `EM_X86_64`, the only machine this loader will run.
 pub const MACHINE_X86_64: u16 = 62;
 
+const CURRENT_VERSION: u32 = 1;
+
+const EXECUTABLE: u16 = 2;
+
 /// Why an image could not be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -97,12 +102,20 @@ pub enum ElfError {
     NotSixtyFourBit(u8),
     /// Not `ELFDATA2LSB`.
     NotLittleEndian(u8),
+    /// The independent identification version is not `EV_CURRENT`.
+    WrongIdentificationVersion(u8),
+    /// The object is not an executable image.
+    WrongType(u16),
+    /// The file-header version is not `EV_CURRENT`.
+    WrongVersion(u32),
     /// Not built for this machine.
     ///
     /// An aarch64 or i386 ELF64 parses cleanly by every other rule here and
     /// yields segments full of instructions this CPU would fault on. The image
     /// builder writes `EM_X86_64` and nothing read it back (D-105).
     WrongMachine(u16),
+    /// The file-header size is not [`HEADER_BYTES`].
+    WrongHeaderSize(u16),
     /// The program-header entry size is not [`PROGRAM_HEADER_BYTES`].
     ///
     /// Refused rather than honoured: a different size means a different
@@ -124,13 +137,23 @@ impl core::fmt::Display for ElfError {
             Self::Truncated { wanted, available } => {
                 write!(f, "wanted {wanted} bytes and there are {available}")
             }
-            Self::NotAnElf => f.write_str("does not begin with the elf magic"),
+            Self::NotAnElf => core::fmt::Write::write_str(f, "does not begin with the elf magic"),
             Self::NotSixtyFourBit(class) => write!(f, "elf class {class} is not 64-bit"),
             Self::NotLittleEndian(data) => {
                 write!(f, "elf data encoding {data} is not little-endian")
             }
+            Self::WrongIdentificationVersion(version) => {
+                write!(f, "elf identification version {version} is not current")
+            }
+            Self::WrongType(kind) => write!(f, "elf object type {kind} is not executable"),
+            Self::WrongVersion(version) => {
+                write!(f, "elf file version {version} is not current")
+            }
             Self::WrongMachine(machine) => {
                 write!(f, "elf machine {machine} is not x86-64")
+            }
+            Self::WrongHeaderSize(size) => {
+                write!(f, "elf header is {size} bytes, expected {HEADER_BYTES}")
             }
             Self::WrongProgramHeaderSize(size) => {
                 write!(f, "program headers of {size} bytes are not this format's")
@@ -263,6 +286,13 @@ impl Segment {
         self.alignment
     }
 
+    /// Whether `p_align` is legal and the file and memory offsets agree.
+    pub const fn has_valid_alignment(self) -> bool {
+        self.alignment <= 1
+            || self.alignment.is_power_of_two()
+                && self.address % self.alignment == self.offset % self.alignment
+    }
+
     /// Whether it may be read.
     pub const fn is_readable(self) -> bool {
         self.flags & Self::READ != 0
@@ -355,11 +385,11 @@ pub struct Elf<'a> {
 impl<'a> Elf<'a> {
     /// Read the file header, or say why it is not one.
     ///
-    /// Validates the identification, the class, the endianness, the
-    /// program-header entry size, and that the program-header table lies
-    /// inside the image. It does **not** validate the segments: a caller that
-    /// only wants the entry point should not pay for a walk, and a loader has
-    /// to look at each one anyway.
+    /// Validates the identification, current format versions, executable type,
+    /// machine, file-header size, program-header entry size, and that the
+    /// program-header table lies inside the image. It does **not** validate the
+    /// segments: a caller that only wants the entry point should not pay for a
+    /// walk, and a loader has to look at each one anyway.
     ///
     /// # Errors
     ///
@@ -381,13 +411,30 @@ impl<'a> Elf<'a> {
             None => return Err(ElfError::NotAnElf),
         }
 
+        let identification_version = header[6];
+        if u32::from(identification_version) != CURRENT_VERSION {
+            return Err(ElfError::WrongIdentificationVersion(identification_version));
+        }
+
+        let kind = read_u16(header, 16)?;
+        if kind != EXECUTABLE {
+            return Err(ElfError::WrongType(kind));
+        }
+
         let entry = read_u64(header, 24)?;
-        // `e_machine`, at offset 18. Checked because the initrd is bytes a
-        // program supplied: everything else here rules out a *malformed* ELF,
-        // and this rules out a well-formed one for another architecture.
+        // Format checks do not reject a well-formed image for another
+        // architecture.
         let machine = read_u16(header, 18)?;
         if machine != MACHINE_X86_64 {
             return Err(ElfError::WrongMachine(machine));
+        }
+        let version = read_u32(header, 20)?;
+        if version != CURRENT_VERSION {
+            return Err(ElfError::WrongVersion(version));
+        }
+        let header_size = read_u16(header, 52)?;
+        if header_size as usize != HEADER_BYTES {
+            return Err(ElfError::WrongHeaderSize(header_size));
         }
 
         let program_offset = read_u64(header, 32)?;
@@ -404,9 +451,8 @@ impl<'a> Elf<'a> {
             return Err(ElfError::WrongProgramHeaderSize(entry_size));
         }
 
-        // The table must lie inside the image, checked without overflowing:
-        // a `p_phoff` near `u64::MAX` with a plausible count is exactly what a
-        // hostile image looks like.
+        // Checked without overflowing: a `p_phoff` near `u64::MAX` with a
+        // plausible count is exactly what a hostile image looks like.
         let span = (program_count as u64) * (PROGRAM_HEADER_BYTES as u64);
         let fits = program_offset
             .checked_add(span)
@@ -513,9 +559,8 @@ mod tests {
             );
         }
 
-        // And the named kinds are distinct, so no two arms encode alike — the
-        // failure the loop above cannot see, because it never holds two
-        // answers at once.
+        // And no two named kinds encode alike, which the loop above cannot
+        // see because it never holds two answers at once.
         let named = [
             SegmentKind::Null,
             SegmentKind::Load,
@@ -542,9 +587,13 @@ mod tests {
         bytes[0..4].copy_from_slice(&MAGIC);
         bytes[4] = CLASS_64;
         bytes[5] = LITTLE_ENDIAN;
+        bytes[6] = CURRENT_VERSION as u8;
+        bytes[16..18].copy_from_slice(&EXECUTABLE.to_le_bytes());
         bytes[18..20].copy_from_slice(&MACHINE_X86_64.to_le_bytes());
+        bytes[20..24].copy_from_slice(&CURRENT_VERSION.to_le_bytes());
         bytes[24..32].copy_from_slice(&0x40_1000u64.to_le_bytes());
         bytes[32..40].copy_from_slice(&(HEADER_BYTES as u64).to_le_bytes());
+        bytes[52..54].copy_from_slice(&(HEADER_BYTES as u16).to_le_bytes());
         bytes[54..56].copy_from_slice(&(PROGRAM_HEADER_BYTES as u16).to_le_bytes());
         bytes[56..58].copy_from_slice(&(segments.len() as u16).to_le_bytes());
 
@@ -574,12 +623,85 @@ mod tests {
         assert_eq!(elf.entry(), 0x40_1000, "e_entry is at offset 24");
         assert_eq!(elf.segment_count(), 1, "e_phnum is at offset 56");
 
-        let segment = elf.segments().next().expect("one segment");
+        let segment = core::iter::Iterator::next(&mut elf.segments()).expect("one segment");
         assert_eq!(segment.kind(), SegmentKind::Load, "p_type is at offset 0");
         assert_eq!(segment.address(), 0x40_0000, "p_vaddr is at offset 16");
         assert_eq!(segment.file_size(), 0x100, "p_filesz is at offset 32");
         assert_eq!(segment.memory_size(), 0x200, "p_memsz is at offset 40");
         assert_eq!(segment.alignment(), 0x1000, "p_align is at offset 48");
+    }
+
+    #[test]
+    fn diagnostic_messages_keep_their_reason_and_values() {
+        let cases = [
+            (
+                ElfError::Truncated {
+                    wanted: 64,
+                    available: 17,
+                },
+                "wanted 64 bytes and there are 17",
+            ),
+            (ElfError::NotAnElf, "does not begin with the elf magic"),
+            (ElfError::NotSixtyFourBit(1), "elf class 1 is not 64-bit"),
+            (
+                ElfError::NotLittleEndian(2),
+                "elf data encoding 2 is not little-endian",
+            ),
+            (
+                ElfError::WrongIdentificationVersion(0),
+                "elf identification version 0 is not current",
+            ),
+            (
+                ElfError::WrongType(4),
+                "elf object type 4 is not executable",
+            ),
+            (
+                ElfError::WrongVersion(0),
+                "elf file version 0 is not current",
+            ),
+            (ElfError::WrongMachine(183), "elf machine 183 is not x86-64"),
+            (
+                ElfError::WrongHeaderSize(52),
+                "elf header is 52 bytes, expected 64",
+            ),
+            (
+                ElfError::WrongProgramHeaderSize(32),
+                "program headers of 32 bytes are not this format's",
+            ),
+            (
+                ElfError::ProgramHeadersOutOfRange {
+                    offset: 0x1234,
+                    count: 7,
+                },
+                "7 program headers at 0x1234 run past the image",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn segment_metadata_and_permission_boundaries_are_exact() {
+        let flags = Segment::WRITE | 0x8000_0000;
+        let offset = 0x1122_3344_5566_7788;
+        let bytes = image(&[
+            (1, flags, offset, 0x1000, 17, 17),
+            (1, Segment::READ, 3, 0x2000, 1, 2),
+        ]);
+        let elf = Elf::parse(&bytes).expect("well formed");
+        assert_eq!(elf.segment_count(), 2);
+
+        let segments: Vec<_> = elf.segments().collect();
+        assert_eq!(segments[0].flags(), flags);
+        assert_eq!(segments[0].offset(), offset);
+        assert!(!segments[0].is_readable(), "write is not read permission");
+        assert!(segments[1].is_readable());
+        assert!(
+            !segments[0].is_oversized(),
+            "equal file and memory sizes fit exactly"
+        );
     }
 
     #[test]
@@ -628,6 +750,31 @@ mod tests {
         let mut big = image(&[]);
         big[5] = 2;
         assert_eq!(Elf::parse(&big).err(), Some(ElfError::NotLittleEndian(2)));
+    }
+
+    #[test]
+    fn every_required_header_identity_field_is_validated() {
+        let mut identification = image(&[]);
+        identification[6] = 0;
+        assert_eq!(
+            Elf::parse(&identification).err(),
+            Some(ElfError::WrongIdentificationVersion(0))
+        );
+
+        let mut object_type = image(&[]);
+        object_type[16..18].copy_from_slice(&4u16.to_le_bytes());
+        assert_eq!(Elf::parse(&object_type).err(), Some(ElfError::WrongType(4)));
+
+        let mut version = image(&[]);
+        version[20..24].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(Elf::parse(&version).err(), Some(ElfError::WrongVersion(0)));
+
+        let mut header_size = image(&[]);
+        header_size[52..54].copy_from_slice(&52u16.to_le_bytes());
+        assert_eq!(
+            Elf::parse(&header_size).err(),
+            Some(ElfError::WrongHeaderSize(52))
+        );
     }
 
     /// **A program-header table running past the image is refused, and the
@@ -733,64 +880,55 @@ mod tests {
         assert!(!segments[0].is_oversized());
     }
 
+    #[test]
+    fn segment_alignment_is_power_of_two_and_congruent() {
+        let mut bytes = image(&[(1, Segment::READ, 0, 0x4000, 0, 1)]);
+        let field = HEADER_BYTES + 48;
+        for alignment in [0u64, 1, 2, 0x1000] {
+            bytes[field..field + 8].copy_from_slice(&alignment.to_le_bytes());
+            let segment = core::iter::Iterator::next(
+                &mut Elf::parse(&bytes).expect("well formed").segments(),
+            )
+            .expect("one segment");
+            assert!(segment.has_valid_alignment(), "alignment {alignment}");
+        }
+
+        bytes[field..field + 8].copy_from_slice(&3u64.to_le_bytes());
+        let non_power =
+            core::iter::Iterator::next(&mut Elf::parse(&bytes).expect("well formed").segments())
+                .expect("one segment");
+        assert!(!non_power.has_valid_alignment());
+
+        bytes[field..field + 8].copy_from_slice(&0x1000u64.to_le_bytes());
+        let offset = HEADER_BYTES + 8;
+        bytes[offset..offset + 8].copy_from_slice(&1u64.to_le_bytes());
+        let incongruent =
+            core::iter::Iterator::next(&mut Elf::parse(&bytes).expect("well formed").segments())
+                .expect("one segment");
+        assert!(!incongruent.has_valid_alignment());
+
+        let address = HEADER_BYTES + 16;
+        bytes[address..address + 8].copy_from_slice(&0x4001u64.to_le_bytes());
+        let congruent =
+            core::iter::Iterator::next(&mut Elf::parse(&bytes).expect("well formed").segments())
+                .expect("one segment");
+        assert!(congruent.has_valid_alignment());
+    }
+
     /// An unknown segment type keeps its number rather than becoming nothing.
     #[test]
     fn an_unknown_segment_type_keeps_its_number() {
         let bytes = image(&[(0x6474_e551, 6, 0, 0, 0, 0)]);
-        let segment = Elf::parse(&bytes)
-            .expect("well formed")
-            .segments()
-            .next()
-            .expect("one segment");
+        let segment =
+            core::iter::Iterator::next(&mut Elf::parse(&bytes).expect("well formed").segments())
+                .expect("one segment");
         assert_eq!(segment.kind(), SegmentKind::Other(0x6474_e551));
-    }
-
-    /// The real linked kernel parses, and looks like a kernel.
-    ///
-    /// The one input here nobody wrote for the test. Read only when a build
-    /// has produced it, so a fresh checkout does not fail on its absence.
-    #[test]
-    fn the_linked_kernel_parses() {
-        let candidates = [
-            "../../target/x86_64-unknown-none/release/wizard-kernel",
-            "../../target/x86_64-unknown-none/debug/wizard-kernel",
-        ];
-        let Some(bytes) = candidates.iter().find_map(|path| std::fs::read(path).ok()) else {
-            // Loud rather than silent. `ci` runs `test` before any kernel
-            // build, so on a fresh checkout this asserts nothing and reports
-            // green — a skip that looks exactly like a pass (D-105). The
-            // constants it used to be the only witness for are pinned to
-            // literals below, so the skip no longer costs coverage.
-            eprintln!("skipped: no linked kernel in target/; run after a kernel build");
-            return;
-        };
-
-        let elf = Elf::parse(&bytes).expect("the linked kernel is an elf64");
-        assert!(
-            elf.entry() >= 0xffff_ffff_8000_0000,
-            "the entry point is not in the higher half"
-        );
-
-        let loadable: Vec<Segment> = elf
-            .segments()
-            .filter(|segment| segment.kind() == SegmentKind::Load)
-            .collect();
-        assert!(!loadable.is_empty(), "no loadable segments");
-        for segment in loadable {
-            assert!(
-                !segment.is_write_execute(),
-                "the kernel has a writable executable segment, which D-40 forbids"
-            );
-            assert!(segment.contents_fit(bytes.len()));
-            assert!(!segment.is_oversized());
-        }
     }
 
     #[test]
     fn an_elf_for_another_architecture_is_refused() {
-        // Well-formed by every other rule, and full of instructions this CPU
-        // would fault on. The image builder writes `EM_X86_64` and nothing
-        // read it back (D-105).
+        // Well-formed by every other rule and full of instructions this CPU
+        // would fault on; nothing read `EM_X86_64` back before this (D-105).
         let mut aarch64 = image(&[]);
         aarch64[18..20].copy_from_slice(&183u16.to_le_bytes());
         assert_eq!(
@@ -809,19 +947,17 @@ mod tests {
     /// The two structure sizes, against the format rather than each other.
     ///
     /// The fixture builds its headers *from* these constants, so every test
-    /// using it stays self-consistent when they move together — the only
-    /// witness against the real format was the linked-kernel test, which
-    /// skips (D-105).
+    /// using it stays self-consistent when they move together. Literal format
+    /// values keep this host check independent; `xtask` separately validates
+    /// every linked kernel immediately after building it (D-105).
     #[test]
     fn the_structure_sizes_are_the_format_s() {
-        // ELF64 file header: 16 ident + 2 type + 2 machine + 4 version
-        // + 8 entry + 8 phoff + 8 shoff + 4 flags + 2 ehsize + 2 phentsize
-        // + 2 phnum + 2 shentsize + 2 shnum + 2 shstrndx = 64.
+        // ELF64 header: 16 ident + 2 + 2 + 4 + 8 entry + 8 phoff + 8 shoff
+        // + 4 flags + 2 + 2 + 2 + 2 + 2 + 2 = 64.
         assert_eq!(HEADER_BYTES, 64);
         // ELF64 program header: 4 type + 4 flags + 8 offset + 8 vaddr
         // + 8 paddr + 8 filesz + 8 memsz + 8 align = 56.
         assert_eq!(PROGRAM_HEADER_BYTES, 56);
-        assert_eq!(IDENT_BYTES, 16);
         assert_eq!(MACHINE_X86_64, 62);
     }
 }

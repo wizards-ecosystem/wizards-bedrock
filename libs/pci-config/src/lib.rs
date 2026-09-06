@@ -1,29 +1,9 @@
-//! Configuration-space addressing, BAR decoding and the class codes this
-//! kernel looks for.
+//! PCI configuration-space addressing and BAR decoding.
 //!
-//! The arithmetic of talking to PCI, where `cargo test` and a mutation can
-//! reach it. `wost` keeps the two ports and the `in`/`out` instructions, and
-//! nothing else.
-//!
-//! **CF8/CFC rather than ECAM**, and the reason is not preference. ECAM needs
-//! an MCFG table, and QEMU's i440fx publishes none while VMware emulates a
-//! 440BX — so the mechanism guaranteed present on *both* boot targets is the
-//! one from 1992. It reaches everything a read-only driver needs, and an ECAM
-//! path later is purely additive (`012` §2).
-//!
-//! Three things here are worth more than their size:
-//!
-//! - **The offset's low two bits must be zero.** Configuration space is read a
-//!   dword at a time; a misaligned offset does not fault, it silently reads the
-//!   dword containing it and the caller shifts the wrong bytes out.
-//! - **A BAR's size is learned by writing all ones and reading back**, and the
-//!   answer is the two's complement of the mask — *in the register's own
-//!   width*. Getting it wrong maps too little, which fails at the far end of
-//!   the register file long after the mapping, or too much, which overlaps the
-//!   next device.
-//! - **A 64-bit BAR occupies two slots**, so a walk that steps one at a time
-//!   reads the high half as a second base address and finds a device at a
-//!   nonsense address.
+//! `wost` owns the CF8/CFC instructions; this crate owns their host-tested
+//! arithmetic. Offsets are dword-aligned, BAR masks are complemented in their
+//! register width, and 64-bit BARs consume two slots. CF8/CFC is the common
+//! mechanism on the QEMU i440fx and VMware 440BX targets (`012` §2).
 //!
 //! # Examples
 //!
@@ -45,6 +25,8 @@
     not(test),
     deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)
 )]
+
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Devices on one bus.
 pub const DEVICES: u8 = 32;
@@ -94,10 +76,12 @@ pub mod command {
     /// Respond to memory-space accesses.
     pub const MEMORY_SPACE: u16 = 1 << 1;
     /// **Bus master.** Without it the controller cannot DMA, queues never
-    /// advance, and *there is no error anywhere to read* (`012` §2). It is the
-    /// single most expensive bit to forget in this whole subsystem.
+    /// advance, and there is no device error to read (`012` §2).
     pub const BUS_MASTER: u16 = 1 << 2;
 }
+
+const PROBE_DECODE: u16 = command::IO_SPACE | command::MEMORY_SPACE;
+const PROBE_DISABLED: u16 = PROBE_DECODE | command::BUS_MASTER;
 
 /// A configuration-space address, ready for the address port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,108 +155,193 @@ impl Address {
     pub const fn function(self) -> u8 {
         ((self.0 >> 8) & 0x07) as u8
     }
-
-    /// Which offset within its header.
-    pub const fn offset(self) -> u16 {
-        (self.0 & 0xFF) as u16
-    }
 }
 
-/// A bounded registry of claimed PCI functions.
+/// The exclusive right to mutate one PCI function.
 ///
-/// The fallible preparation closure runs before the registry's commit point.
-/// This makes an unchanged registry on every probe and port-claim error a
-/// property of the operation rather than statement ordering in its caller.
+/// Its registry identity, generation and address are opaque. A token minted by
+/// another registry therefore cannot authorize a hardware adapter backed by
+/// this one, even when both name the same bus/device/function tuple.
 #[derive(Debug, PartialEq, Eq)]
-pub struct ClaimRegistry<const N: usize> {
-    slots: [Option<Address>; N],
+#[must_use = "dropping function authority permanently retains its claim"]
+pub struct FunctionAuthority {
+    lease: FunctionLease,
+    registers: usize,
 }
 
-impl<const N: usize> ClaimRegistry<N> {
-    /// Create an empty function registry.
-    pub const fn new() -> Self {
-        Self { slots: [None; N] }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FunctionLease {
+    registry: u64,
+    at: Address,
+    generation: u64,
+}
+
+impl FunctionAuthority {
+    /// The claimed bus/device/function identity, with register offset zero.
+    pub const fn address(&self) -> Address {
+        self.lease.at
     }
 
-    /// Prepare and claim one function, or change nothing.
+    /// BAR register slots proved by the claimed function's header layout.
+    pub const fn bar_registers(&self) -> usize {
+        self.registers
+    }
+}
+
+/// A bounded registry of exclusive function authorities.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FunctionClaims<const N: usize> {
+    slots: [Option<FunctionLease>; N],
+    mapped_bars: [u8; N],
+    identity: u64,
+    generation: u64,
+    commands: CommandLeases<N>,
+}
+
+static NEXT_FUNCTION_REGISTRY: AtomicU64 = AtomicU64::new(1);
+
+impl<const N: usize> FunctionClaims<N> {
+    /// Create an empty function-authority registry.
+    pub const fn new() -> Self {
+        Self {
+            slots: [None; N],
+            mapped_bars: [0; N],
+            identity: 0,
+            generation: 0,
+            commands: CommandLeases::new(),
+        }
+    }
+
+    /// Claim one function whose header layout was read from that function.
     ///
-    /// The address is canonicalized before duplicate lookup. `prepare` may do
-    /// all fallible configuration and resource work; the registry records the
-    /// function only after that work returns a value.
+    /// The returned token is bound to this registry, a non-repeating
+    /// generation and the canonical function address.
     ///
     /// # Errors
     ///
-    /// [`RegistryError::Taken`] if any offset of the function is held,
-    /// [`RegistryError::NoRoom`] if the fixed registry is full, or
-    /// [`RegistryError::Prepare`] with the closure's error. Every refusal
-    /// leaves all slots unchanged.
-    pub fn claim<T, E>(
+    /// Refuses unsupported header layouts, a duplicate function, a full
+    /// registry or exhausted non-repeating identities before changing a slot.
+    pub fn claim(
         &mut self,
         at: Address,
-        prepare: impl FnOnce() -> Result<T, E>,
-    ) -> Result<T, RegistryError<E>> {
+        header: HeaderType,
+    ) -> Result<FunctionAuthority, FunctionClaimError> {
+        let Some(registers) = header.bar_registers() else {
+            return Err(FunctionClaimError::Header(header.layout()));
+        };
         let at = at.function_base();
         if self.is_claimed(at) {
-            return Err(RegistryError::Taken);
+            return Err(FunctionClaimError::Taken);
         }
-        let room = self
-            .slots
-            .iter()
-            .position(Option::is_none)
-            .ok_or(RegistryError::NoRoom)?;
+        let Some(room) = self.slots.iter().position(Option::is_none) else {
+            return Err(FunctionClaimError::NoRoom);
+        };
+        let registry = if self.identity == 0 {
+            let identity = NEXT_FUNCTION_REGISTRY
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    current.checked_add(1)
+                })
+                .map_err(|_| FunctionClaimError::Exhausted)?;
+            self.identity = identity;
+            identity
+        } else {
+            self.identity
+        };
+        let Some(generation) = self.generation.checked_add(1) else {
+            return Err(FunctionClaimError::Exhausted);
+        };
+        self.generation = generation;
+        let lease = FunctionLease {
+            registry,
+            at,
+            generation,
+        };
+        self.slots[room] = Some(lease);
+        self.mapped_bars[room] = 0;
+        Ok(FunctionAuthority { lease, registers })
+    }
 
-        let prepared = prepare().map_err(RegistryError::Prepare)?;
-        self.slots[room] = Some(at);
-        Ok(prepared)
+    /// Whether `authority` is this registry's exact live generation.
+    pub fn holds(&self, authority: &FunctionAuthority) -> bool {
+        self.slots
+            .iter()
+            .flatten()
+            .any(|held| *held == authority.lease)
     }
 
     /// Whether any register offset of `at`'s function is held.
     pub fn is_claimed(&self, at: Address) -> bool {
         let at = at.function_base();
-        self.slots.iter().flatten().any(|held| *held == at)
+        self.slots.iter().flatten().any(|held| held.at == at)
     }
 
-    /// Release one function after its transient lease has retired.
+    /// Release one exact function authority.
     ///
-    /// The kernel wrapper exposes this only by consuming the unique device
-    /// lease. Permanent driver claims never call it (D-199).
-    #[must_use = "a refused release leaves the function claimed"]
-    pub fn release(&mut self, at: Address) -> bool {
-        let at = at.function_base();
-        let Some(slot) = self.slots.iter_mut().find(|held| **held == Some(at)) else {
-            return false;
+    /// # Errors
+    ///
+    /// Returns the unchanged token if it is foreign or stale.
+    fn release(&mut self, authority: FunctionAuthority) -> Result<(), FunctionAuthority> {
+        let Some(index) = self
+            .slots
+            .iter()
+            .position(|held| *held == Some(authority.lease))
+        else {
+            return Err(authority);
+        };
+        if self.mapped_bars.get(index).copied() != Some(0) {
+            return Err(authority);
+        }
+        let Some(slot) = self.slots.get_mut(index) else {
+            return Err(authority);
         };
         *slot = None;
-        true
+        Ok(())
     }
 
     /// Functions recorded so far.
+    #[expect(
+        clippy::len_without_is_empty,
+        reason = "the authority registry exposes a diagnostic count, not a collection API"
+    )]
     pub fn len(&self) -> usize {
         self.slots.iter().flatten().count()
     }
-
-    /// Whether no function has been recorded.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
-impl<const N: usize> Default for ClaimRegistry<N> {
+impl<const N: usize> Default for FunctionClaims<N> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Why a function registry transaction refused.
+/// Why exclusive function authority could not be minted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RegistryError<E> {
-    /// Another driver already holds this function.
+#[non_exhaustive]
+pub enum FunctionClaimError {
+    /// Another authority already holds this function.
     Taken,
     /// The registry's fixed lifetime bound is exhausted.
     NoRoom,
-    /// Fallible device/resource preparation refused.
-    Prepare(E),
+    /// Registry identity or generation space is exhausted.
+    Exhausted,
+    /// The header layout is neither a device nor a bridge.
+    Header(u8),
 }
+
+impl core::fmt::Display for FunctionClaimError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Taken => core::fmt::Write::write_str(f, "the function is already claimed"),
+            Self::NoRoom => core::fmt::Write::write_str(f, "the function registry is full"),
+            Self::Exhausted => {
+                core::fmt::Write::write_str(f, "function claim generations are exhausted")
+            }
+            Self::Header(layout) => write!(f, "header layout {layout} is unsupported"),
+        }
+    }
+}
+
+impl core::error::Error for FunctionClaimError {}
 
 /// What a function says it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,6 +416,18 @@ impl HeaderType {
     pub const fn is_bridge(self) -> bool {
         self.layout() == 1
     }
+
+    /// BAR register slots defined by this header layout.
+    ///
+    /// `None` for layouts this kernel cannot safely size: their registers do
+    /// not have either the type-0 device or type-1 bridge meaning.
+    pub const fn bar_registers(self) -> Option<usize> {
+        match self.layout() {
+            0 => Some(BARS),
+            1 => Some(BRIDGE_BARS),
+            _ => None,
+        }
+    }
 }
 
 /// A base address register, decoded.
@@ -376,122 +457,125 @@ pub enum Bar {
 impl Bar {
     /// Bit 0: zero for memory, one for I/O.
     const IS_IO: u32 = 1;
+    /// Bits 2:1 select the memory BAR encoding.
+    const TYPE_MASK: u32 = 0b110;
+    /// The obsolete memory encoding constrained below one megabyte.
+    const BELOW_ONE_MEGABYTE: u32 = 0b010;
     /// Bits 2:1 == 0b10: the address is 64 bits and takes the next slot too.
     const WIDE: u32 = 0b100;
+    /// Bits 2:1 == 0b11 have no defined memory BAR meaning.
+    const RESERVED: u32 = 0b110;
     /// Bit 3.
     const PREFETCHABLE: u32 = 0b1000;
 
-    /// Decode one slot, given the slot after it in case this one is wide.
+    /// Decode one supported slot, given the slot after it when it is wide.
     ///
     /// `high` is read unconditionally by the caller because it must be read
     /// *before* this can say whether it was needed, and reading it costs one
     /// configuration cycle.
-    pub const fn decode(low: u32, high: u32) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// `None` for the unsupported below-one-megabyte memory encoding or the
+    /// reserved memory encoding.
+    pub const fn decode(low: u32, high: u32) -> Option<Self> {
         if low == 0 {
-            return Self::Absent;
+            return Some(Self::Absent);
         }
         if low & Self::IS_IO != 0 {
-            return Self::Io {
+            return Some(Self::Io {
                 port: (low & !0x3) as u16,
-            };
+            });
+        }
+        let memory_type = low & Self::TYPE_MASK;
+        if memory_type == Self::BELOW_ONE_MEGABYTE {
+            return None;
+        }
+        if memory_type == Self::RESERVED {
+            return None;
         }
         let base = (low & !0xF) as u64;
-        if low & 0b110 == Self::WIDE {
-            Self::Memory {
+        if memory_type == Self::WIDE {
+            Some(Self::Memory {
                 address: base | ((high as u64) << 32),
                 wide: true,
                 prefetchable: low & Self::PREFETCHABLE != 0,
-            }
+            })
         } else {
-            Self::Memory {
+            Some(Self::Memory {
                 address: base,
                 wide: false,
                 prefetchable: low & Self::PREFETCHABLE != 0,
-            }
-        }
-    }
-
-    /// How many register slots this occupies.
-    ///
-    /// One, except a 64-bit memory window, which occupies two. A walk that
-    /// steps one at a time over a wide register reads its high half as a
-    /// second base address and believes there is a device at a nonsense
-    /// address.
-    pub const fn slots(self) -> usize {
-        match self {
-            Self::Memory { wide: true, .. } => 2,
-            _ => 1,
+            })
         }
     }
 }
 
+/// Register width used to interpret a probed memory-window mask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryWidth {
+    /// One 32-bit base-address register.
+    Bits32,
+    /// A low/high pair forming one 64-bit base-address register.
+    Bits64,
+}
+
 /// The size of a **memory** window, from the all-ones probe.
 ///
-/// The protocol is: write `0xFFFF_FFFF` to the register, read it back, restore
-/// what was there. What comes back has the address bits the device does not
-/// decode set to zero, so the size is the two's complement of the mask.
-///
-/// `wide` says whether `high` is part of the same register or the next one.
-/// It is a parameter rather than a convention because the first version of
-/// this function took "pass all ones for a narrow register", and the I/O case
-/// then complemented a thirty-two-bit mask in sixty-four bits and answered
-/// eighteen quintillion (D-168). A width you must remember to pass correctly
-/// is a width that will be passed wrongly.
+/// The size is the two's complement of the returned address mask. `width`
+/// keeps complementation in the register's actual width (D-168).
 ///
 /// # Errors
 ///
-/// `None` when the mask decodes nothing — an absent register, or a device that
-/// answered all zeros, both of which mean "there is no window here" rather
-/// than "the window is four gigabytes".
+/// `None` when the mask decodes no window.
 ///
 /// # Examples
 ///
 /// ```
-/// use pci_config::memory_window_size;
+/// use pci_config::{MemoryWidth, memory_window_size};
 ///
 /// // A 16 KiB window: the low fourteen address bits are not decoded.
-/// assert_eq!(memory_window_size(0xFFFF_C000, 0, false), Some(0x4000));
+/// assert_eq!(
+///     memory_window_size(0xFFFF_C000, 0, MemoryWidth::Bits32),
+///     Some(0x4000),
+/// );
 ///
 /// // A 64-bit window of four gigabytes, where the high half carries it.
-/// assert_eq!(memory_window_size(0, 0xFFFF_FFFF, true), Some(0x1_0000_0000));
+/// assert_eq!(
+///     memory_window_size(0, 0xFFFF_FFFF, MemoryWidth::Bits64),
+///     Some(0x1_0000_0000),
+/// );
 /// ```
-pub const fn memory_window_size(low: u32, high: u32, wide: bool) -> Option<u64> {
-    if wide {
-        let mask = ((low & !0xF) as u64) | ((high as u64) << 32);
-        if mask == 0 {
-            return None;
+pub const fn memory_window_size(low: u32, high: u32, width: MemoryWidth) -> Option<u64> {
+    match width {
+        MemoryWidth::Bits64 => {
+            let mask = ((low & !0xF) as u64) | ((high as u64) << 32);
+            if mask == 0 {
+                return None;
+            }
+            let size = (!mask).wrapping_add(1);
+            if size == 0 { None } else { Some(size) }
         }
-        let size = (!mask).wrapping_add(1);
-        if size == 0 { None } else { Some(size) }
-    } else {
-        let mask = low & !0xF;
-        if mask == 0 {
-            return None;
+        MemoryWidth::Bits32 => {
+            let mask = low & !0xF;
+            if mask == 0 {
+                return None;
+            }
+            Some((!mask).wrapping_add(1) as u64)
         }
-        Some((!mask).wrapping_add(1) as u64)
     }
 }
 
 /// The size of an **I/O** window, from the same probe.
 ///
-/// Thirty-two bits throughout, and separate from the memory form for exactly
-/// that reason: an I/O window is at most sixty-five thousand ports, and
-/// complementing its mask in sixty-four bits gives a number no machine has.
+/// I/O masks stay 32-bit and must describe a run within the 16-bit port space.
 ///
 /// # Errors
 ///
 /// `None` when the mask decodes nothing, or when the size will not fit the
 /// port space it claims to describe.
 ///
-/// # Examples
-///
-/// ```
-/// use pci_config::io_window_size;
-///
-/// // Thirty-two ports. The low two bits are the register's own.
-/// assert_eq!(io_window_size(0xFFFF_FFE1), Some(32));
-/// ```
-pub const fn io_window_size(mask: u32) -> Option<u16> {
+const fn io_window_size(mask: u32) -> Option<u16> {
     let mask = mask & !0x3;
     if mask == 0 {
         return None;
@@ -499,10 +583,11 @@ pub const fn io_window_size(mask: u32) -> Option<u16> {
     let size = (!mask).wrapping_add(1);
     // A run that does not fit the sixteen-bit port space is a device
     // misreporting, and claiming it would be claiming most of I/O space.
-    if size == 0 || size > u16::MAX as u32 {
-        return None;
+    if size >> u16::BITS == 0 {
+        Some(size as u16)
+    } else {
+        None
     }
-    Some(size as u16)
 }
 
 /// One command-register access in a verified enable transaction.
@@ -514,20 +599,323 @@ pub enum CommandAccess {
     Write(u16),
 }
 
-/// The exact command word a successful enablement replaced.
+/// The exclusive right to finish one function's command-register transition.
 ///
-/// Kept opaque so a retiring device lease restores only state which the
-/// verified enable transaction actually observed (D-199).
+/// The function identity, original word, installed word and registry
+/// generation are deliberately opaque. Restoration therefore cannot be aimed
+/// at another function or replayed over a later lease.
 #[derive(Debug, PartialEq, Eq)]
-pub struct CommandState(u16);
+#[must_use = "dropping command state permanently retains its function lease"]
+pub struct CommandState {
+    lease: CommandLease,
+    before: u16,
+    installed: u16,
+    phase: CommandPhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CommandLease {
+    registry: u64,
+    function: FunctionLease,
+    generation: u64,
+}
+
+impl CommandLease {
+    const fn command_address(self) -> Address {
+        Address(self.function.at.0 | header::COMMAND as u32)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandPhase {
+    Installed,
+    Restoring(u16),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CommandLeases<const N: usize> {
+    slots: [Option<CommandLease>; N],
+    identity: u64,
+    generation: u64,
+}
+
+static NEXT_COMMAND_REGISTRY: AtomicU64 = AtomicU64::new(1);
+
+impl<const N: usize> CommandLeases<N> {
+    const fn new() -> Self {
+        Self {
+            slots: [None; N],
+            identity: 0,
+            generation: 0,
+        }
+    }
+
+    fn reserve(&mut self, authority: &FunctionAuthority) -> Result<CommandLease, EnableError> {
+        if self
+            .slots
+            .iter()
+            .flatten()
+            .any(|lease| lease.function == authority.lease)
+        {
+            return Err(EnableError::Leased);
+        }
+        let Some(room) = self.slots.iter().position(Option::is_none) else {
+            return Err(EnableError::NoRoom);
+        };
+        let registry = if self.identity == 0 {
+            let identity = NEXT_COMMAND_REGISTRY
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    current.checked_add(1)
+                })
+                .map_err(|_| EnableError::Exhausted)?;
+            self.identity = identity;
+            identity
+        } else {
+            self.identity
+        };
+        let Some(generation) = self.generation.checked_add(1) else {
+            return Err(EnableError::Exhausted);
+        };
+        self.generation = generation;
+        let lease = CommandLease {
+            registry,
+            function: authority.lease,
+            generation,
+        };
+        self.slots[room] = Some(lease);
+        Ok(lease)
+    }
+
+    fn holds(&self, authority: &FunctionAuthority, lease: CommandLease) -> bool {
+        self.holds_function(authority.lease, lease)
+    }
+
+    fn holds_function(&self, function: FunctionLease, lease: CommandLease) -> bool {
+        lease.function == function && self.slots.iter().flatten().any(|held| *held == lease)
+    }
+
+    fn release(&mut self, lease: CommandLease) -> bool {
+        let Some(slot) = self.slots.iter_mut().find(|held| **held == Some(lease)) else {
+            return false;
+        };
+        *slot = None;
+        true
+    }
+
+    fn begin_probe(&mut self, authority: &FunctionAuthority) -> Result<CommandProbe, EnableError> {
+        self.reserve(authority).map(CommandProbe)
+    }
+
+    /// Finish a BAR probe whose command word was restored exactly.
+    ///
+    /// # Errors
+    ///
+    /// Returns the unchanged probe token when it did not come from this
+    /// registry or no longer names its live generation.
+    fn finish_probe(
+        &mut self,
+        authority: &FunctionAuthority,
+        probe: CommandProbe,
+    ) -> Result<(), CommandProbe> {
+        if self.holds(authority, probe.0) && self.release(probe.0) {
+            Ok(())
+        } else {
+            Err(probe)
+        }
+    }
+
+    fn stage_probe(
+        &mut self,
+        authority: &FunctionAuthority,
+        probe: CommandProbe,
+        before: u16,
+    ) -> Result<CommandState, CommandProbe> {
+        if !self.holds(authority, probe.0) {
+            return Err(probe);
+        }
+        Ok(CommandState {
+            lease: probe.0,
+            before,
+            installed: before & !PROBE_DISABLED,
+            phase: CommandPhase::Installed,
+        })
+    }
+
+    fn has_function(&self, authority: &FunctionAuthority) -> bool {
+        self.slots
+            .iter()
+            .flatten()
+            .any(|lease| lease.function == authority.lease)
+    }
+}
+
+impl<const N: usize> Default for CommandLeases<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Why one function authority could not be returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FunctionReleaseError {
+    /// A command transition or BAR restoration still owns this function.
+    Active,
+    /// The token is foreign to this function registry or no longer current.
+    Stale,
+}
+
+impl core::fmt::Display for FunctionReleaseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Active => {
+                core::fmt::Write::write_str(f, "the function still has a configuration sublease")
+            }
+            Self::Stale => {
+                core::fmt::Write::write_str(f, "the function authority is foreign or stale")
+            }
+        }
+    }
+}
+
+impl core::error::Error for FunctionReleaseError {}
+
+/// A refused function release with unchanged retry authority.
+#[derive(Debug, PartialEq, Eq)]
+pub struct FunctionReleaseFailure {
+    reason: FunctionReleaseError,
+    authority: FunctionAuthority,
+}
+
+impl FunctionReleaseFailure {
+    /// Why release refused.
+    pub const fn reason(&self) -> FunctionReleaseError {
+        self.reason
+    }
+
+    /// Recover the exact function authority for retry.
+    pub fn into_authority(self) -> FunctionAuthority {
+        self.authority
+    }
+}
+
+impl core::fmt::Display for FunctionReleaseFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.reason, f)
+    }
+}
+
+impl core::error::Error for FunctionReleaseFailure {}
+
+/// Release a function only after every command and probe sublease is gone.
+///
+/// # Errors
+///
+/// Returns the unchanged authority while a sublease remains or if the token
+/// is foreign or stale. No registry slot changes on refusal.
+pub fn release_function<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    authority: FunctionAuthority,
+) -> Result<(), FunctionReleaseFailure> {
+    if !functions.holds(&authority) {
+        return Err(FunctionReleaseFailure {
+            reason: FunctionReleaseError::Stale,
+            authority,
+        });
+    }
+    if functions.commands.has_function(&authority) {
+        return Err(FunctionReleaseFailure {
+            reason: FunctionReleaseError::Active,
+            authority,
+        });
+    }
+    if functions
+        .slot_of(authority.lease)
+        .and_then(|slot| functions.mapped_bars.get(slot))
+        .is_some_and(|mapped| *mapped != 0)
+    {
+        return Err(FunctionReleaseFailure {
+            reason: FunctionReleaseError::Active,
+            authority,
+        });
+    }
+    functions
+        .release(authority)
+        .map_err(|authority| FunctionReleaseFailure {
+            reason: FunctionReleaseError::Stale,
+            authority,
+        })
+}
+
+/// Exclusive command-register reservation held for one BAR probe.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use = "dropping a probe token permanently retains its function reservation"]
+pub struct CommandProbe(CommandLease);
+
+/// A refused command enablement, including cleanup authority when uncertain.
+#[derive(Debug, PartialEq, Eq)]
+pub struct EnableFailure {
+    reason: EnableError,
+    state: Option<CommandState>,
+}
+
+impl EnableFailure {
+    /// Why enablement refused.
+    pub const fn reason(&self) -> EnableError {
+        self.reason
+    }
+
+    /// Recover an uncertain transition for exact restoration.
+    pub fn into_state(self) -> Option<CommandState> {
+        self.state
+    }
+}
+
+impl From<EnableError> for EnableFailure {
+    fn from(reason: EnableError) -> Self {
+        Self {
+            reason,
+            state: None,
+        }
+    }
+}
+
+/// A refused command restoration with the unchanged retry state.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RestoreFailure {
+    reason: EnableError,
+    state: CommandState,
+}
+
+impl RestoreFailure {
+    /// Why the lease could not be completed.
+    pub const fn reason(&self) -> EnableError {
+        self.reason
+    }
+
+    /// Recover the exact command word for another restoration attempt.
+    pub fn into_state(self) -> CommandState {
+        self.state
+    }
+}
 
 /// Why memory decode and bus mastering could not be verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum EnableError {
+    /// This function already has a live command transition.
+    Leased,
+    /// Every bounded command-transition slot is occupied.
+    NoRoom,
+    /// The non-repeating command-transition generation was exhausted.
+    Exhausted,
+    /// The token does not name a live registry generation.
+    Stale,
+    /// The command word changed after this lease installed it.
+    Changed(u16),
     /// A configuration access failed and any attempted change was restored.
     Access,
-    /// The device read back without every required command bit.
+    /// The device read back a command other than the exact word written.
     Refused(u16),
     /// The original command could not be read back exactly after failure.
     Restore,
@@ -536,66 +924,356 @@ pub enum EnableError {
 impl core::fmt::Display for EnableError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Access => f.write_str("configuration access failed"),
+            Self::Leased => {
+                core::fmt::Write::write_str(f, "the function already has a command lease")
+            }
+            Self::NoRoom => core::fmt::Write::write_str(f, "the command-lease registry is full"),
+            Self::Exhausted => {
+                core::fmt::Write::write_str(f, "command-lease generations are exhausted")
+            }
+            Self::Stale => core::fmt::Write::write_str(f, "the command lease is no longer current"),
+            Self::Changed(observed) => {
+                write!(f, "the leased command register changed to {observed:#06x}")
+            }
+            Self::Access => core::fmt::Write::write_str(f, "configuration access failed"),
             Self::Refused(observed) => {
                 write!(f, "the command register read back as {observed:#06x}")
             }
-            Self::Restore => f.write_str("the original command could not be verified"),
+            Self::Restore => {
+                core::fmt::Write::write_str(f, "the original command could not be verified")
+            }
         }
     }
 }
 
 impl core::error::Error for EnableError {}
 
-/// Enable memory decode and bus mastering as one verified transaction.
+/// Enable memory decode while explicitly withholding bus mastering.
 ///
-/// An already-enabled function needs only its first read. Once a write is
-/// attempted, any access loss or refused readback restores the exact original
-/// command and reads it again before returning the initiating error.
-///
-/// # Errors
-///
-/// [`EnableError::Access`] or [`EnableError::Refused`] only after exact
-/// rollback, and [`EnableError::Restore`] when rollback cannot be verified.
-pub fn enable_bus_master(
-    mut access: impl FnMut(CommandAccess) -> Option<u32>,
-) -> Result<CommandState, EnableError> {
-    let original = access(CommandAccess::Read).ok_or(EnableError::Access)? as u16;
-    let required = command::MEMORY_SPACE | command::BUS_MASTER;
-    if original & required == required {
-        return Ok(CommandState(original));
+/// This is the safe first stage for a memory-mapped controller whose firmware
+/// DMA state must be disabled before bus mastering is admitted.
+pub fn enable_memory_space<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    authority: &FunctionAuthority,
+    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<CommandState, EnableFailure> {
+    if !functions.holds(authority) {
+        return Err(EnableFailure::from(EnableError::Stale));
     }
-    let wanted = original | required;
+    enable_memory_space_with_leases(&mut functions.commands, authority, access)
+}
 
-    let failure = match access(CommandAccess::Write(wanted)) {
+fn enable_memory_space_with_leases<const N: usize>(
+    leases: &mut CommandLeases<N>,
+    authority: &FunctionAuthority,
+    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<CommandState, EnableFailure> {
+    begin_command(
+        leases,
+        authority,
+        command::MEMORY_SPACE,
+        command::BUS_MASTER,
+        access,
+    )
+}
+
+#[cfg(test)]
+fn enable_bus_master<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    authority: &FunctionAuthority,
+    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<CommandState, EnableFailure> {
+    if !functions.holds(authority) {
+        return Err(EnableFailure::from(EnableError::Stale));
+    }
+    enable_bus_master_with_leases(&mut functions.commands, authority, access)
+}
+
+#[cfg(test)]
+fn enable_bus_master_with_leases<const N: usize>(
+    leases: &mut CommandLeases<N>,
+    authority: &FunctionAuthority,
+    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<CommandState, EnableFailure> {
+    begin_command(
+        leases,
+        authority,
+        command::MEMORY_SPACE | command::BUS_MASTER,
+        0,
+        access,
+    )
+}
+
+fn begin_command<const N: usize>(
+    leases: &mut CommandLeases<N>,
+    authority: &FunctionAuthority,
+    set: u16,
+    clear: u16,
+    mut access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<CommandState, EnableFailure> {
+    let lease = leases.reserve(authority).map_err(|reason| EnableFailure {
+        reason,
+        state: None,
+    })?;
+    let at = lease.command_address();
+    let before = match access(at, CommandAccess::Read) {
+        Some(bits) => bits as u16,
+        None => {
+            assert!(
+                leases.release(lease),
+                "a pre-write command refusal lost its exact reservation"
+            );
+            return Err(EnableFailure {
+                reason: EnableError::Access,
+                state: None,
+            });
+        }
+    };
+    let installed = (before | set) & !clear;
+    let mut state = CommandState {
+        lease,
+        before,
+        installed,
+        phase: CommandPhase::Restoring(before),
+    };
+    match change_command(at, before, installed, &mut access) {
+        Ok(()) => {
+            state.phase = CommandPhase::Installed;
+            Ok(state)
+        }
+        Err(reason) if reason == EnableError::Restore => Err(EnableFailure {
+            reason,
+            state: Some(state),
+        }),
+        Err(reason) => {
+            assert!(
+                leases.release(lease),
+                "a restored command refusal lost its exact reservation"
+            );
+            Err(EnableFailure {
+                reason,
+                state: None,
+            })
+        }
+    }
+}
+
+fn change_command(
+    at: Address,
+    original: u16,
+    wanted: u16,
+    access: &mut impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), EnableError> {
+    if original == wanted {
+        return Ok(());
+    }
+
+    let failure = match access(at, CommandAccess::Write(wanted)) {
         None => EnableError::Access,
-        Some(_) => match access(CommandAccess::Read) {
-            Some(bits) if bits as u16 & wanted == wanted => return Ok(CommandState(original)),
+        Some(_) => match access(at, CommandAccess::Read) {
+            Some(bits) if bits as u16 == wanted => return Ok(()),
             Some(bits) => EnableError::Refused(bits as u16),
             None => EnableError::Access,
         },
     };
 
-    let _ = access(CommandAccess::Write(original));
-    match access(CommandAccess::Read) {
+    let _ = access(at, CommandAccess::Write(original));
+    match access(at, CommandAccess::Read) {
         Some(bits) if bits as u16 == original => Err(failure),
         Some(_) | None => Err(EnableError::Restore),
     }
 }
 
-/// Restore the exact command word captured by [`enable_bus_master`].
+#[cfg(test)]
+fn admit_bus_master<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    authority: &FunctionAuthority,
+    state: &mut CommandState,
+    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), EnableError> {
+    if !functions.holds(authority) {
+        return Err(EnableError::Stale);
+    }
+    admit_bus_master_with_leases(&mut functions.commands, authority.lease, state, access)
+}
+
+fn admit_bus_master_with_leases<const N: usize>(
+    leases: &mut CommandLeases<N>,
+    function: FunctionLease,
+    state: &mut CommandState,
+    mut access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), EnableError> {
+    if !leases.holds_function(function, state.lease) || state.phase != CommandPhase::Installed {
+        return Err(EnableError::Stale);
+    }
+    let at = state.lease.command_address();
+    let current = access(at, CommandAccess::Read).ok_or(EnableError::Access)? as u16;
+    if current != state.installed {
+        return Err(EnableError::Changed(current));
+    }
+    let wanted = current | command::MEMORY_SPACE | command::BUS_MASTER;
+    state.phase = CommandPhase::Restoring(wanted);
+    let result = change_command(at, current, wanted, &mut access);
+    match result {
+        Ok(()) => {
+            state.installed = wanted;
+            state.phase = CommandPhase::Installed;
+            Ok(())
+        }
+        Err(error) => {
+            if error != EnableError::Restore {
+                state.phase = CommandPhase::Installed;
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Restore the exact command word carried by a [`CommandState`].
 ///
 /// # Errors
 ///
-/// [`EnableError::Restore`] unless the final readback equals the captured word.
-pub fn restore_command(
+/// The unchanged state is returned in [`RestoreFailure`] whenever its registry
+/// generation is stale, the installed word changed, an access failed, or the
+/// final readback did not equal the captured word.
+pub fn restore_command<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    authority: &FunctionAuthority,
     state: CommandState,
-    mut access: impl FnMut(CommandAccess) -> Option<u32>,
-) -> Result<(), EnableError> {
-    let _ = access(CommandAccess::Write(state.0));
-    match access(CommandAccess::Read) {
-        Some(bits) if bits as u16 == state.0 => Ok(()),
-        Some(_) | None => Err(EnableError::Restore),
+    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), RestoreFailure> {
+    if !functions.holds(authority) {
+        return Err(RestoreFailure {
+            reason: EnableError::Stale,
+            state,
+        });
+    }
+    restore_command_with_leases(&mut functions.commands, authority, state, access)
+}
+
+fn restore_command_with_leases<const N: usize>(
+    leases: &mut CommandLeases<N>,
+    authority: &FunctionAuthority,
+    state: CommandState,
+    mut access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), RestoreFailure> {
+    let mut state = state;
+    if !leases.holds(authority, state.lease) {
+        return Err(RestoreFailure {
+            reason: EnableError::Stale,
+            state,
+        });
+    }
+    let at = state.lease.command_address();
+    let current = match access(at, CommandAccess::Read) {
+        Some(bits) => bits as u16,
+        None => {
+            return Err(RestoreFailure {
+                reason: EnableError::Access,
+                state,
+            });
+        }
+    };
+    if current == state.before {
+        return if leases.release(state.lease) {
+            Ok(())
+        } else {
+            Err(RestoreFailure {
+                reason: EnableError::Stale,
+                state,
+            })
+        };
+    }
+    let pending = match state.phase {
+        CommandPhase::Installed => None,
+        CommandPhase::Restoring(word) => Some(word),
+    };
+    if current != state.installed && pending != Some(current) {
+        return Err(RestoreFailure {
+            reason: EnableError::Changed(current),
+            state,
+        });
+    }
+
+    state.phase = CommandPhase::Restoring(current);
+    let _ = access(at, CommandAccess::Write(state.before));
+    match access(at, CommandAccess::Read) {
+        Some(bits) if bits as u16 == state.before => {
+            if leases.release(state.lease) {
+                Ok(())
+            } else {
+                Err(RestoreFailure {
+                    reason: EnableError::Stale,
+                    state,
+                })
+            }
+        }
+        Some(bits) => Err(RestoreFailure {
+            reason: EnableError::Refused(bits as u16),
+            state,
+        }),
+        None => Err(RestoreFailure {
+            reason: EnableError::Access,
+            state,
+        }),
+    }
+}
+
+/// Finish a permanent command transition without restoring its old word.
+///
+/// # Errors
+///
+/// Returns the unchanged state unless its exact registry generation is live
+/// and the command register still equals the installed word.
+pub fn commit_command<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    authority: &FunctionAuthority,
+    state: CommandState,
+    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), RestoreFailure> {
+    if !functions.holds(authority) {
+        return Err(RestoreFailure {
+            reason: EnableError::Stale,
+            state,
+        });
+    }
+    commit_command_with_leases(&mut functions.commands, authority, state, access)
+}
+
+fn commit_command_with_leases<const N: usize>(
+    leases: &mut CommandLeases<N>,
+    authority: &FunctionAuthority,
+    state: CommandState,
+    mut access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), RestoreFailure> {
+    if !leases.holds(authority, state.lease) || state.phase != CommandPhase::Installed {
+        return Err(RestoreFailure {
+            reason: EnableError::Stale,
+            state,
+        });
+    }
+    let current = match access(state.lease.command_address(), CommandAccess::Read) {
+        Some(bits) => bits as u16,
+        None => {
+            return Err(RestoreFailure {
+                reason: EnableError::Access,
+                state,
+            });
+        }
+    };
+    if current != state.installed {
+        return Err(RestoreFailure {
+            reason: EnableError::Changed(current),
+            state,
+        });
+    }
+    if leases.release(state.lease) {
+        Ok(())
+    } else {
+        Err(RestoreFailure {
+            reason: EnableError::Stale,
+            state,
+        })
     }
 }
 
@@ -625,20 +1303,38 @@ pub struct Window {
     pub size: u64,
 }
 
-/// Every window discovered by one restored probe transaction.
+/// Every window discovered by one BAR-restored probe transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbedBars {
+    function: Option<FunctionLease>,
     windows: [Option<Window>; BARS],
 }
 
+/// A completed BAR probe whose safe command state remains exclusively owned.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use = "the staged command must be committed or restored before releasing its function"]
+pub struct StagedProbe {
+    bars: ProbedBars,
+    command: CommandState,
+}
+
+impl StagedProbe {
+    /// Separate the discovered windows from their command restoration owner.
+    pub fn into_parts(self) -> (ProbedBars, CommandState) {
+        (self.bars, self.command)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BarSlots {
+    low: usize,
+    high: Option<usize>,
+}
+
 impl ProbedBars {
-    /// The window in BAR slot `index`, if that slot decodes one.
-    pub const fn window(&self, index: usize) -> Option<Window> {
-        if index < BARS {
-            self.windows[index]
-        } else {
-            None
-        }
+    /// The decoded window in one BAR slot.
+    pub fn window(&self, index: usize) -> Option<Window> {
+        self.windows.get(index).copied().flatten()
     }
 
     /// All slots, including the empty high halves of wide BARs.
@@ -647,218 +1343,866 @@ impl ProbedBars {
     }
 }
 
+/// A live function's exclusive authority over one probed memory BAR.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use = "a BAR authority must remain with its mapping or be returned"]
+pub struct BarAuthority {
+    function: FunctionLease,
+    index: usize,
+    window: Window,
+}
+
+impl BarAuthority {
+    /// The BAR slot this authority names.
+    pub const fn index(&self) -> usize {
+        self.index
+    }
+
+    /// The exact decoded window observed by the restored probe.
+    pub const fn window(&self) -> Window {
+        self.window
+    }
+}
+
+/// Why a probed memory BAR could not become an exclusive mapping authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BarAuthorityError {
+    /// The function, registry generation, or probe provenance is not current.
+    Stale,
+    /// The BAR slot does not contain a memory window.
+    NotMemory,
+    /// Another live mapping authority already owns this BAR slot.
+    Busy,
+}
+
+impl core::fmt::Display for BarAuthorityError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Stale => core::fmt::Write::write_str(f, "the BAR authority is stale or foreign"),
+            Self::NotMemory => core::fmt::Write::write_str(f, "the BAR is not a memory window"),
+            Self::Busy => core::fmt::Write::write_str(f, "the BAR already has a mapping authority"),
+        }
+    }
+}
+
+impl core::error::Error for BarAuthorityError {}
+
+/// A refused BAR-authority return with the unchanged token.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BarAuthorityFailure {
+    reason: BarAuthorityError,
+    authority: BarAuthority,
+}
+
+impl core::fmt::Display for BarAuthorityFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.reason, f)
+    }
+}
+
+impl core::error::Error for BarAuthorityFailure {}
+
+/// Why a live BAR no longer matches the probed identity behind its mapping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BarIdentityError {
+    /// The function or BAR mapping generation is stale or foreign.
+    Stale,
+    /// Configuration space could not read the complete BAR identity.
+    Access,
+    /// The decoded BAR value changed since the restored probe.
+    Changed,
+}
+
+impl core::fmt::Display for BarIdentityError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Stale => core::fmt::Write::write_str(f, "the BAR identity is stale or foreign"),
+            Self::Access => core::fmt::Write::write_str(f, "the BAR identity is unreadable"),
+            Self::Changed => core::fmt::Write::write_str(f, "the BAR identity changed"),
+        }
+    }
+}
+
+impl core::error::Error for BarIdentityError {}
+
+/// One access in the indivisible BAR-identity and memory-decode transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarEnableAccess {
+    /// Read one BAR slot before any command write.
+    ReadBar(usize),
+    /// Access the command register through its verified transaction.
+    Command(CommandAccess),
+}
+
+/// Why BAR-bound memory decoding could not be enabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BarEnableError {
+    /// The mapped BAR identity was stale, inaccessible, or changed.
+    Identity(BarIdentityError),
+    /// The command transaction refused or could not restore exactly.
+    Command(EnableError),
+}
+
+impl core::fmt::Display for BarEnableError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Identity(reason) => write!(f, "BAR identity: {reason}"),
+            Self::Command(reason) => write!(f, "memory decode: {reason}"),
+        }
+    }
+}
+
+impl core::error::Error for BarEnableError {}
+
+impl<const N: usize> FunctionClaims<N> {
+    fn slot_of(&self, function: FunctionLease) -> Option<usize> {
+        self.slots.iter().position(|held| *held == Some(function))
+    }
+
+    fn holds_bar(&self, authority: &BarAuthority) -> bool {
+        let Some(slot) = self.slot_of(authority.function) else {
+            return false;
+        };
+        let Some(bit) = 1u8.checked_shl(authority.index as u32) else {
+            return false;
+        };
+        self.mapped_bars
+            .get(slot)
+            .is_some_and(|mapped| mapped & bit != 0)
+    }
+}
+
+/// Add bus mastering through one live function-bound BAR mapping.
+///
+/// # Errors
+///
+/// Refuses a stale or foreign BAR mapping, a command state from another
+/// function, or any configuration access or exact-readback failure.
+pub fn admit_mapped_bus_master<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    authority: &BarAuthority,
+    state: &mut CommandState,
+    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), EnableError> {
+    if !functions.holds_bar(authority) {
+        return Err(EnableError::Stale);
+    }
+    admit_bus_master_with_leases(&mut functions.commands, authority.function, state, access)
+}
+
+/// Reserve one probed memory BAR under its exact function generation.
+///
+/// # Errors
+///
+/// Refuses a stale or cross-function probe, a non-memory slot, or a BAR whose
+/// existing mapping authority has not been returned.
+pub fn bind_memory_bar<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    function: &FunctionAuthority,
+    bars: &ProbedBars,
+    index: usize,
+) -> Result<BarAuthority, BarAuthorityError> {
+    if !functions.holds(function) || bars.function != Some(function.lease) {
+        return Err(BarAuthorityError::Stale);
+    }
+    let Some(
+        window @ Window {
+            bar: Bar::Memory { .. },
+            ..
+        },
+    ) = bars.window(index)
+    else {
+        return Err(BarAuthorityError::NotMemory);
+    };
+    let Some(slot) = functions.slot_of(function.lease) else {
+        return Err(BarAuthorityError::Stale);
+    };
+    let Some(bit) = 1u8.checked_shl(index as u32) else {
+        return Err(BarAuthorityError::NotMemory);
+    };
+    let Some(mapped) = functions.mapped_bars.get_mut(slot) else {
+        return Err(BarAuthorityError::Stale);
+    };
+    if *mapped & bit != 0 {
+        return Err(BarAuthorityError::Busy);
+    }
+    *mapped |= bit;
+    Ok(BarAuthority {
+        function: function.lease,
+        index,
+        window,
+    })
+}
+
+/// Return one exact BAR mapping authority to its function registry.
+///
+/// # Errors
+///
+/// Returns the unchanged authority if its function generation or BAR slot is
+/// no longer live in this registry.
+pub fn release_memory_bar<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    authority: BarAuthority,
+) -> Result<(), BarAuthorityFailure> {
+    let Some(slot) = functions.slot_of(authority.function) else {
+        return Err(BarAuthorityFailure {
+            reason: BarAuthorityError::Stale,
+            authority,
+        });
+    };
+    let Some(bit) = 1u8.checked_shl(authority.index as u32) else {
+        return Err(BarAuthorityFailure {
+            reason: BarAuthorityError::Stale,
+            authority,
+        });
+    };
+    let Some(mapped) = functions.mapped_bars.get_mut(slot) else {
+        return Err(BarAuthorityFailure {
+            reason: BarAuthorityError::Stale,
+            authority,
+        });
+    };
+    if *mapped & bit == 0 {
+        return Err(BarAuthorityFailure {
+            reason: BarAuthorityError::Stale,
+            authority,
+        });
+    }
+    *mapped &= !bit;
+    Ok(())
+}
+
+/// Re-read a mapped BAR and require its exact decoded identity to be unchanged.
+///
+/// The closure performs only reads. A caller can therefore compose this check
+/// and a command transaction under one hardware lock without any write before
+/// identity validation succeeds.
+///
+/// # Errors
+///
+/// Refuses a stale or foreign mapping authority, an inaccessible BAR half, or
+/// any decoded identity change.
+fn verify_memory_bar<const N: usize>(
+    functions: &FunctionClaims<N>,
+    function: &FunctionAuthority,
+    authority: &BarAuthority,
+    mut read: impl FnMut(Address, usize) -> Option<u32>,
+) -> Result<(), BarIdentityError> {
+    if function.lease != authority.function
+        || !functions.holds(function)
+        || !functions.holds_bar(authority)
+    {
+        return Err(BarIdentityError::Stale);
+    }
+    let low_offset = u16::try_from(authority.index)
+        .ok()
+        .and_then(|index| index.checked_mul(4))
+        .and_then(|offset| header::BAR0.checked_add(offset))
+        .ok_or(BarIdentityError::Stale)?;
+    let low_at = function
+        .address()
+        .at(low_offset)
+        .ok_or(BarIdentityError::Stale)?;
+    let low = read(low_at, authority.index).ok_or(BarIdentityError::Access)?;
+    let high = match authority.window.bar {
+        Bar::Memory { wide: true, .. } => {
+            let high_offset = low_offset.checked_add(4).ok_or(BarIdentityError::Stale)?;
+            if authority.index + 1 >= function.bar_registers() {
+                return Err(BarIdentityError::Stale);
+            }
+            let high_at = function
+                .address()
+                .at(high_offset)
+                .ok_or(BarIdentityError::Stale)?;
+            read(high_at, authority.index + 1).ok_or(BarIdentityError::Access)?
+        }
+        Bar::Memory { wide: false, .. } => 0,
+        Bar::Io { .. } | Bar::Absent => return Err(BarIdentityError::Stale),
+    };
+    if Bar::decode(low, high) != Some(authority.window.bar) {
+        return Err(BarIdentityError::Changed);
+    }
+    Ok(())
+}
+
+/// Enable memory decode from a staged probe after its BAR identity is re-proven.
+///
+/// BAR reads and the command transition share one closure so a platform
+/// adapter can hold its configuration lock across the complete sequence.
+///
+/// # Errors
+///
+/// Identity refusal performs no command access. Every command refusal leaves
+/// the caller's restoration authority in `state`.
+pub fn enable_memory_bar<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    function: &FunctionAuthority,
+    authority: &BarAuthority,
+    state: &mut CommandState,
+    mut access: impl FnMut(Address, BarEnableAccess) -> Option<u32>,
+) -> Result<(), BarEnableError> {
+    verify_memory_bar(functions, function, authority, |at, index| {
+        access(at, BarEnableAccess::ReadBar(index))
+    })
+    .map_err(BarEnableError::Identity)?;
+    admit_memory_space_with_leases(
+        &mut functions.commands,
+        function.lease,
+        state,
+        |at, command| access(at, BarEnableAccess::Command(command)),
+    )
+    .map_err(BarEnableError::Command)
+}
+
+fn admit_memory_space_with_leases<const N: usize>(
+    leases: &mut CommandLeases<N>,
+    function: FunctionLease,
+    state: &mut CommandState,
+    mut access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), EnableError> {
+    if state.phase != CommandPhase::Installed || !leases.holds_function(function, state.lease) {
+        return Err(EnableError::Stale);
+    }
+    let at = state.lease.command_address();
+    let current = match access(at, CommandAccess::Read) {
+        Some(bits) => bits as u16,
+        None => return Err(EnableError::Access),
+    };
+    if current != state.installed {
+        return Err(EnableError::Changed(current));
+    }
+    let wanted = (current | command::MEMORY_SPACE) & !command::BUS_MASTER;
+    state.phase = CommandPhase::Restoring(wanted);
+    let result = change_command(at, current, wanted, &mut access);
+    match result {
+        Ok(()) => {
+            state.installed = wanted;
+            state.phase = CommandPhase::Installed;
+            Ok(())
+        }
+        Err(EnableError::Restore) => Err(EnableError::Restore),
+        Err(error) => {
+            state.phase = CommandPhase::Installed;
+            Err(error)
+        }
+    }
+}
+
 /// Why a BAR-probe transaction could not produce windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeError<E> {
+    /// The function or command-transition reservation was unavailable.
+    Unavailable(EnableError),
     /// The configuration mechanism refused an access before rollback failed.
     Access(E),
+    /// The command register did not accept the exact decode-off word.
+    Refused(u16),
     /// At least one original register could not be put back.
     Restore(E),
-    /// The header layout or a BAR's slot use is impossible.
+    /// A restoration readback did not equal the captured register word.
+    RestoreChanged,
+    /// The header layout, BAR slot use, or memory encoding is unsupported.
     Malformed,
     /// A device returned a mask or base that cannot describe its window.
     InvalidWindow,
 }
 
-/// Probe every BAR under one decode-off, fully restored transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeRestorePhase {
+    Bars,
+    Command,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ProbeRestore {
+    original: [u32; BARS],
+    modified: u8,
+    command: u16,
+    phase: ProbeRestorePhase,
+}
+
+impl ProbeRestore {
+    const fn modified(&self, index: usize) -> bool {
+        self.modified & (1 << index) != 0
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RawProbeFailure<E> {
+    reason: ProbeError<E>,
+    restore: Option<ProbeRestore>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RawStagedProbe {
+    bars: ProbedBars,
+    restore: ProbeRestore,
+}
+
+/// A refused BAR probe, including exact retry authority when restoration is uncertain.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use = "an uncertain BAR probe may carry exclusive restoration authority"]
+pub struct ProbeFailure<E> {
+    reason: ProbeError<E>,
+    retry: Option<ProbeRetry>,
+}
+
+impl<E> ProbeFailure<E> {
+    /// Refuse before a probe reservation exists.
+    pub fn unavailable(reason: EnableError) -> Self {
+        Self {
+            reason: ProbeError::Unavailable(reason),
+            retry: None,
+        }
+    }
+
+    /// Refuse while preserving an existing restoration owner.
+    pub fn with_retry(reason: ProbeError<E>, retry: ProbeRetry) -> Self {
+        Self {
+            reason,
+            retry: Some(retry),
+        }
+    }
+
+    /// Why the probe refused.
+    pub const fn reason(&self) -> &ProbeError<E> {
+        &self.reason
+    }
+
+    /// Recover the same function reservation and captured register words.
+    pub fn into_retry(self) -> Option<ProbeRetry> {
+        self.retry
+    }
+}
+
+/// The exclusive right to retry one uncertain BAR restoration.
+#[derive(Debug, PartialEq, Eq)]
+#[must_use = "an uncertain BAR probe must be retried or retained fail-stopped"]
+pub struct ProbeRetry {
+    probe: CommandProbe,
+    restore: ProbeRestore,
+}
+
+/// Probe every BAR under one exclusive decode-off transaction.
 ///
 /// The closure is called for configuration cycles while the platform adapter
-/// holds its configuration lock. The command register is restored last, so a
-/// device cannot decode a half-restored window. A 64-bit BAR has both halves
-/// filled with ones before either half is read.
+/// holds its configuration lock. I/O decode, memory decode and bus mastering
+/// are cleared and read back before the first BAR write. BARs are restored
+/// while that state remains verified; the successful result retains exclusive
+/// authority to restore the original command later. A 64-bit BAR has both
+/// halves filled with ones before either half is read.
 ///
 /// # Errors
 ///
-/// Refuses an impossible register count, a wide BAR in the final available
-/// slot, an invalid size or alignment, or any configuration access. Once a
-/// write may have happened, every modified BAR and then the command register
-/// are restored even when the initiating access or an earlier restore failed.
-pub fn probe_bars<E>(
+/// Refuses invalid layout, size, alignment, or configuration access. A clean
+/// failure restores every modified register and the original command;
+/// uncertain restoration keeps DMA and decode disabled and returns retry
+/// authority in [`ProbeFailure::into_retry`].
+pub fn probe_bars<const N: usize, E>(
+    functions: &mut FunctionClaims<N>,
+    authority: &FunctionAuthority,
+    access: impl FnMut(Address, ProbeAccess) -> Result<u32, E>,
+) -> Result<StagedProbe, ProbeFailure<E>> {
+    if !functions.holds(authority) {
+        return Err(ProbeFailure::unavailable(EnableError::Stale));
+    }
+    probe_bars_with_leases(&mut functions.commands, authority, access)
+}
+
+fn probe_bars_with_leases<const N: usize, E>(
+    leases: &mut CommandLeases<N>,
+    authority: &FunctionAuthority,
+    mut access: impl FnMut(Address, ProbeAccess) -> Result<u32, E>,
+) -> Result<StagedProbe, ProbeFailure<E>> {
+    let probe = leases
+        .begin_probe(authority)
+        .map_err(|reason| ProbeFailure {
+            reason: ProbeError::Unavailable(reason),
+            retry: None,
+        })?;
+    let function = probe.0.function.at;
+    match probe_bars_unleased(authority.bar_registers(), |event| access(function, event)) {
+        Ok(staged) => {
+            let RawStagedProbe { mut bars, restore } = staged;
+            let command = match leases.stage_probe(authority, probe, restore.command) {
+                Ok(command) => command,
+                Err(probe) => {
+                    return Err(ProbeFailure {
+                        reason: ProbeError::Unavailable(EnableError::Stale),
+                        retry: Some(ProbeRetry { probe, restore }),
+                    });
+                }
+            };
+            bars.function = Some(authority.lease);
+            Ok(StagedProbe { bars, command })
+        }
+        Err(failure) => match failure.restore {
+            Some(restore) => Err(ProbeFailure {
+                reason: failure.reason,
+                retry: Some(ProbeRetry { probe, restore }),
+            }),
+            None => {
+                let reason = failure.reason;
+                assert!(
+                    leases.finish_probe(authority, probe).is_ok(),
+                    "a restored BAR-probe refusal lost its exact reservation"
+                );
+                Err(ProbeFailure {
+                    reason,
+                    retry: None,
+                })
+            }
+        },
+    }
+}
+
+/// Retry a BAR restoration through the same function reservation.
+///
+/// # Errors
+///
+/// Returns the unchanged retry authority when access or exact readback still
+/// cannot prove the captured device state.
+pub fn retry_probe<const N: usize, E>(
+    functions: &mut FunctionClaims<N>,
+    authority: &FunctionAuthority,
+    retry: ProbeRetry,
+    access: impl FnMut(Address, ProbeAccess) -> Result<u32, E>,
+) -> Result<(), ProbeFailure<E>> {
+    if !functions.holds(authority) {
+        return Err(ProbeFailure::with_retry(
+            ProbeError::Unavailable(EnableError::Stale),
+            retry,
+        ));
+    }
+    retry_probe_with_leases(&mut functions.commands, authority, retry, access)
+}
+
+fn retry_probe_with_leases<const N: usize, E>(
+    leases: &mut CommandLeases<N>,
+    authority: &FunctionAuthority,
+    retry: ProbeRetry,
+    mut access: impl FnMut(Address, ProbeAccess) -> Result<u32, E>,
+) -> Result<(), ProbeFailure<E>> {
+    if !leases.holds(authority, retry.probe.0) {
+        return Err(ProbeFailure {
+            reason: ProbeError::Unavailable(EnableError::Stale),
+            retry: Some(retry),
+        });
+    }
+    let function = retry.probe.0.function.at;
+    match finish_probe_restoration(retry.restore, &mut |event| access(function, event)) {
+        Ok(()) => {
+            assert!(
+                leases.finish_probe(authority, retry.probe).is_ok(),
+                "a restored BAR retry lost its exact reservation"
+            );
+            Ok(())
+        }
+        Err((reason, restore)) => Err(ProbeFailure {
+            reason,
+            retry: Some(ProbeRetry {
+                probe: retry.probe,
+                restore,
+            }),
+        }),
+    }
+}
+
+fn probe_bars_unleased<E>(
     registers: usize,
     mut access: impl FnMut(ProbeAccess) -> Result<u32, E>,
-) -> Result<ProbedBars, ProbeError<E>> {
+) -> Result<RawStagedProbe, RawProbeFailure<E>> {
     if registers > BARS {
-        return Err(ProbeError::Malformed);
+        return Err(RawProbeFailure {
+            reason: ProbeError::Malformed,
+            restore: None,
+        });
     }
 
-    let command = access(ProbeAccess::ReadCommand).map_err(ProbeError::Access)? as u16;
+    let command = access(ProbeAccess::ReadCommand).map_err(|error| RawProbeFailure {
+        reason: ProbeError::Access(error),
+        restore: None,
+    })? as u16;
     let mut original = [0u32; BARS];
     for (index, slot) in original.iter_mut().enumerate().take(registers) {
-        *slot = access(ProbeAccess::ReadBar(index)).map_err(ProbeError::Access)?;
+        *slot = access(ProbeAccess::ReadBar(index)).map_err(|error| RawProbeFailure {
+            reason: ProbeError::Access(error),
+            restore: None,
+        })?;
     }
 
-    let mut index = 0;
-    while index < registers {
-        let wide = original[index] & 0b110 == 0b100;
-        if wide && index + 1 == registers {
-            return Err(ProbeError::Malformed);
-        }
-        index += if wide { 2 } else { 1 };
-    }
+    let Some(plan) = bar_slots(registers, &original) else {
+        return Err(RawProbeFailure {
+            reason: ProbeError::Malformed,
+            restore: None,
+        });
+    };
 
-    let mut modified = [false; BARS];
-    let command_modified = true;
-    let decode_off = command & !(command::IO_SPACE | command::MEMORY_SPACE);
+    let mut modified = 0u8;
+    let decode_off = command & !PROBE_DISABLED;
+    let command_restore = ProbeRestore {
+        original,
+        modified,
+        command,
+        phase: ProbeRestorePhase::Command,
+    };
     if let Err(error) = access(ProbeAccess::WriteCommand(decode_off)) {
-        return after_access_error(
-            error,
-            &mut access,
-            &original,
-            &modified,
-            command,
-            command_modified,
-        );
+        return Err(after_access_error(error, &mut access, command_restore));
+    }
+    match access(ProbeAccess::ReadCommand) {
+        Ok(bits) if bits as u16 == decode_off => {}
+        Ok(bits) => {
+            return Err(after_probe_error(
+                ProbeError::Refused(bits as u16),
+                &mut access,
+                command_restore,
+            ));
+        }
+        Err(error) => {
+            return Err(after_access_error(error, &mut access, command_restore));
+        }
     }
 
     let mut masks = [0u32; BARS];
-    index = 0;
-    while index < registers {
-        let wide = original[index] & 0b110 == 0b100;
-        modified[index] = true;
+    for slots in plan.iter().flatten() {
+        let index = slots.low;
+        modified |= 1 << index;
         if let Err(error) = access(ProbeAccess::WriteBar(index, u32::MAX)) {
-            return after_access_error(
+            return Err(after_access_error(
                 error,
                 &mut access,
-                &original,
-                &modified,
-                command,
-                command_modified,
-            );
+                ProbeRestore {
+                    original,
+                    modified,
+                    command,
+                    phase: ProbeRestorePhase::Bars,
+                },
+            ));
         }
-        if wide {
-            modified[index + 1] = true;
-            if let Err(error) = access(ProbeAccess::WriteBar(index + 1, u32::MAX)) {
-                return after_access_error(
+        if let Some(high) = slots.high {
+            modified |= 1 << high;
+            if let Err(error) = access(ProbeAccess::WriteBar(high, u32::MAX)) {
+                return Err(after_access_error(
                     error,
                     &mut access,
-                    &original,
-                    &modified,
-                    command,
-                    command_modified,
-                );
+                    ProbeRestore {
+                        original,
+                        modified,
+                        command,
+                        phase: ProbeRestorePhase::Bars,
+                    },
+                ));
             }
         }
 
         masks[index] = match access(ProbeAccess::ReadBar(index)) {
             Ok(mask) => mask,
             Err(error) => {
-                return after_access_error(
+                return Err(after_access_error(
                     error,
                     &mut access,
-                    &original,
-                    &modified,
-                    command,
-                    command_modified,
-                );
+                    ProbeRestore {
+                        original,
+                        modified,
+                        command,
+                        phase: ProbeRestorePhase::Bars,
+                    },
+                ));
             }
         };
-        if wide {
-            masks[index + 1] = match access(ProbeAccess::ReadBar(index + 1)) {
+        if let Some(high) = slots.high {
+            masks[high] = match access(ProbeAccess::ReadBar(high)) {
                 Ok(mask) => mask,
                 Err(error) => {
-                    return after_access_error(
+                    return Err(after_access_error(
                         error,
                         &mut access,
-                        &original,
-                        &modified,
-                        command,
-                        command_modified,
-                    );
+                        ProbeRestore {
+                            original,
+                            modified,
+                            command,
+                            phase: ProbeRestorePhase::Bars,
+                        },
+                    ));
                 }
             };
         }
-        index += if wide { 2 } else { 1 };
     }
 
-    if let Some(error) = restore(&mut access, &original, &modified, command, command_modified) {
-        return Err(ProbeError::Restore(error));
+    let restore = ProbeRestore {
+        original,
+        modified,
+        command,
+        phase: ProbeRestorePhase::Bars,
+    };
+    let restore = match restore_probe_bars(restore, &mut access) {
+        Ok(restore) => restore,
+        Err((reason, restore)) => {
+            return Err(RawProbeFailure {
+                reason,
+                restore: Some(restore),
+            });
+        }
+    };
+    let windows = match decode_windows(&plan, &original, &masks) {
+        Ok(windows) => windows,
+        Err(reason) => return Err(after_probe_error(reason, &mut access, restore)),
+    };
+    Ok(RawStagedProbe {
+        bars: ProbedBars {
+            function: None,
+            windows,
+        },
+        restore,
+    })
+}
+
+fn restore_probe_bars<E>(
+    mut restore: ProbeRestore,
+    access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
+) -> Result<ProbeRestore, (ProbeError<E>, ProbeRestore)> {
+    if restore.phase == ProbeRestorePhase::Bars {
+        let decode_off = restore.command & !PROBE_DISABLED;
+        let _ = access(ProbeAccess::WriteCommand(decode_off));
+        match access(ProbeAccess::ReadCommand) {
+            Ok(bits) if bits as u16 == decode_off => {}
+            Ok(_) => return Err((ProbeError::RestoreChanged, restore)),
+            Err(error) => return Err((ProbeError::Restore(error), restore)),
+        }
+
+        for index in (0..BARS).rev() {
+            if restore.modified(index) {
+                let _ = access(ProbeAccess::WriteBar(index, restore.original[index]));
+            }
+        }
+        for index in (0..BARS).rev() {
+            if !restore.modified(index) {
+                continue;
+            }
+            match access(ProbeAccess::ReadBar(index)) {
+                Ok(bits) if bits == restore.original[index] => {}
+                Ok(_) => return Err((ProbeError::RestoreChanged, restore)),
+                Err(error) => return Err((ProbeError::Restore(error), restore)),
+            }
+        }
+        restore.phase = ProbeRestorePhase::Command;
     }
-    decode_windows(registers, &original, &masks).map(|windows| ProbedBars { windows })
+    Ok(restore)
+}
+
+fn finish_probe_restoration<E>(
+    restore: ProbeRestore,
+    access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
+) -> Result<(), (ProbeError<E>, ProbeRestore)> {
+    let restore = restore_probe_bars(restore, access)?;
+    let _ = access(ProbeAccess::WriteCommand(restore.command));
+    match access(ProbeAccess::ReadCommand) {
+        Ok(bits) if bits as u16 == restore.command => Ok(()),
+        Ok(_) => Err((ProbeError::RestoreChanged, restore)),
+        Err(error) => Err((ProbeError::Restore(error), restore)),
+    }
+}
+
+#[cfg(test)]
+fn restore_staged_probe<E>(
+    staged: RawStagedProbe,
+    access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
+) -> Result<ProbedBars, RawProbeFailure<E>> {
+    if let Err((reason, restore)) = finish_probe_restoration(staged.restore, access) {
+        return Err(RawProbeFailure {
+            reason,
+            restore: Some(restore),
+        });
+    }
+    Ok(staged.bars)
+}
+
+fn bar_slots(registers: usize, original: &[u32; BARS]) -> Option<[Option<BarSlots>; BARS]> {
+    let mut plan = [None; BARS];
+    let mut indices = 0..registers;
+    while let Some(low) = core::iter::Iterator::next(&mut indices) {
+        let high = if matches!(
+            Bar::decode(original[low], 0)?,
+            Bar::Memory { wide: true, .. }
+        ) {
+            Some(core::iter::Iterator::next(&mut indices)?)
+        } else {
+            None
+        };
+        plan[low] = Some(BarSlots { low, high });
+    }
+    Some(plan)
 }
 
 fn after_access_error<E>(
     error: E,
     access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
-    original: &[u32; BARS],
-    modified: &[bool; BARS],
-    command: u16,
-    command_modified: bool,
-) -> Result<ProbedBars, ProbeError<E>> {
-    match restore(access, original, modified, command, command_modified) {
-        Some(restore) => Err(ProbeError::Restore(restore)),
-        None => Err(ProbeError::Access(error)),
-    }
+    restore: ProbeRestore,
+) -> RawProbeFailure<E> {
+    after_probe_error(ProbeError::Access(error), access, restore)
 }
 
-fn restore<E>(
+fn after_probe_error<E>(
+    reason: ProbeError<E>,
     access: &mut impl FnMut(ProbeAccess) -> Result<u32, E>,
-    original: &[u32; BARS],
-    modified: &[bool; BARS],
-    command: u16,
-    command_modified: bool,
-) -> Option<E> {
-    let mut failed = None;
-    for index in (0..BARS).rev() {
-        if modified[index]
-            && let Err(error) = access(ProbeAccess::WriteBar(index, original[index]))
-            && failed.is_none()
-        {
-            failed = Some(error);
-        }
+    restore: ProbeRestore,
+) -> RawProbeFailure<E> {
+    match finish_probe_restoration(restore, access) {
+        Ok(()) => RawProbeFailure {
+            reason,
+            restore: None,
+        },
+        Err((reason, restore)) => RawProbeFailure {
+            reason,
+            restore: Some(restore),
+        },
     }
-    if command_modified
-        && let Err(error) = access(ProbeAccess::WriteCommand(command))
-        && failed.is_none()
-    {
-        failed = Some(error);
-    }
-    failed
 }
 
 fn decode_windows<E>(
-    registers: usize,
+    plan: &[Option<BarSlots>; BARS],
     original: &[u32; BARS],
     masks: &[u32; BARS],
 ) -> Result<[Option<Window>; BARS], ProbeError<E>> {
     let mut windows = [None; BARS];
-    let mut index = 0;
-    while index < registers {
-        let kind = if original[index] == 0 {
-            masks[index] & 0xF
-        } else {
-            original[index]
-        };
-        let wide = kind & 0b110 == 0b100;
-        let (bar, size) = if kind & 1 != 0 {
-            let Some(size) = io_window_size(masks[index]) else {
-                index += 1;
-                continue;
-            };
-            (
-                Bar::Io {
-                    port: (original[index] & !0x3) as u16,
-                },
-                u64::from(size),
-            )
-        } else {
-            if wide && index + 1 == registers {
-                return Err(ProbeError::Malformed);
+    for slots in plan.iter().flatten() {
+        let index = slots.low;
+        let high = slots.high.map_or(0, |high| original[high]);
+        let mask_high = slots.high.map_or(0, |high| masks[high]);
+        let (bar, size) = match Bar::decode(original[index], high).ok_or(ProbeError::Malformed)? {
+            Bar::Io { port } => {
+                let Some(size) = io_window_size(masks[index]) else {
+                    continue;
+                };
+                (Bar::Io { port }, u64::from(size))
             }
-            let high = if wide { original[index + 1] } else { 0 };
-            let mask_high = if wide { masks[index + 1] } else { 0 };
-            let Some(size) = memory_window_size(masks[index], mask_high, wide) else {
-                index += if wide { 2 } else { 1 };
-                continue;
-            };
-            let address = u64::from(original[index] & !0xF) | (u64::from(high) << 32);
-            (
-                Bar::Memory {
-                    address,
-                    wide,
-                    prefetchable: kind & 0b1000 != 0,
-                },
-                size,
-            )
+            bar @ Bar::Memory { wide, .. } => {
+                let width = if wide {
+                    MemoryWidth::Bits64
+                } else {
+                    MemoryWidth::Bits32
+                };
+                let Some(size) = memory_window_size(masks[index], mask_high, width) else {
+                    continue;
+                };
+                (bar, size)
+            }
+            Bar::Absent => {
+                let Some(size) = memory_window_size(masks[index], 0, MemoryWidth::Bits32) else {
+                    continue;
+                };
+                (
+                    Bar::Memory {
+                        address: 0,
+                        wide: false,
+                        prefetchable: false,
+                    },
+                    size,
+                )
+            }
         };
 
         let base = match bar {
@@ -866,14 +2210,10 @@ fn decode_windows<E>(
             Bar::Io { port } => u64::from(port),
             Bar::Absent => 0,
         };
-        if !size.is_power_of_two()
-            || !base.is_multiple_of(size)
-            || matches!(bar, Bar::Io { .. }) && base + size > u64::from(u16::MAX) + 1
-        {
+        if !size.is_power_of_two() || !base.is_multiple_of(size) {
             return Err(ProbeError::InvalidWindow);
         }
         windows[index] = Some(Window { bar, size });
-        index += if wide { 2 } else { 1 };
     }
     Ok(windows)
 }
@@ -894,21 +2234,18 @@ pub const fn secondary_bus(bits: u32) -> u8 {
     (bits >> 8) as u8
 }
 
-/// A bridge's subordinate bus number: the highest bus behind it.
-pub const fn subordinate_bus(bits: u32) -> u8 {
-    (bits >> 16) as u8
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const TRACE_CAPACITY: usize = 40;
-    const COMMAND_TRACE_CAPACITY: usize = 5;
+    const TRACE_CAPACITY: usize = 96;
+    const COMMAND_TRACE_CAPACITY: usize = 16;
 
     struct FakeCommand {
         command: u16,
+        status: u16,
         writable: u16,
+        injected_read: Option<(usize, u16)>,
         trace: [Option<CommandAccess>; COMMAND_TRACE_CAPACITY],
         calls: usize,
         fail_at: Option<usize>,
@@ -918,7 +2255,9 @@ mod tests {
         fn new(command: u16, writable: u16) -> Self {
             Self {
                 command,
+                status: 0xA55A,
                 writable,
+                injected_read: None,
                 trace: [None; COMMAND_TRACE_CAPACITY],
                 calls: 0,
                 fail_at: None,
@@ -934,7 +2273,13 @@ mod tests {
             }
 
             match event {
-                CommandAccess::Read => Some(u32::from(self.command)),
+                CommandAccess::Read => {
+                    let injected = self
+                        .injected_read
+                        .filter(|(at, _)| *at == call)
+                        .map_or(0, |(_, bits)| bits);
+                    Some(u32::from(self.command | injected) | (u32::from(self.status) << 16))
+                }
                 CommandAccess::Write(value) => {
                     self.command = (self.command & !self.writable) | (value & self.writable);
                     Some(0)
@@ -956,6 +2301,8 @@ mod tests {
         trace: [Option<ProbeAccess>; TRACE_CAPACITY],
         calls: usize,
         fail_at: Option<usize>,
+        ignore_write_at: Option<usize>,
+        bar_writes_with_bus_master: usize,
     }
 
     impl FakeConfig {
@@ -968,6 +2315,8 @@ mod tests {
                 trace: [None; TRACE_CAPACITY],
                 calls: 0,
                 fail_at: None,
+                ignore_write_at: None,
+                bar_writes_with_bus_master: 0,
             }
         }
 
@@ -981,7 +2330,9 @@ mod tests {
                     u32::from(self.command) | (u32::from(self.status) << 16)
                 }
                 ProbeAccess::WriteCommand(command) => {
-                    self.command = command;
+                    if self.ignore_write_at != Some(call) {
+                        self.command = command;
+                    }
                     0
                 }
                 ProbeAccess::ReadBar(index) => {
@@ -992,7 +2343,12 @@ mod tests {
                     }
                 }
                 ProbeAccess::WriteBar(index, value) => {
-                    self.bars[index] = value;
+                    if self.command & command::BUS_MASTER != 0 {
+                        self.bar_writes_with_bus_master += 1;
+                    }
+                    if self.ignore_write_at != Some(call) {
+                        self.bars[index] = value;
+                    }
                     0
                 }
             };
@@ -1008,15 +2364,600 @@ mod tests {
         }
     }
 
-    /// A successful enable is read back and preserves every unrelated bit.
+    fn fake_command_access(fake: &mut FakeConfig, access: CommandAccess) -> Option<u32> {
+        let event = match access {
+            CommandAccess::Read => ProbeAccess::ReadCommand,
+            CommandAccess::Write(value) => ProbeAccess::WriteCommand(value),
+        };
+        fake.access(event).ok()
+    }
+
+    fn command_address(function: u8) -> Address {
+        Address::new(0, 1, function, header::BAR0).expect("a valid test function")
+    }
+
+    fn authority(at: Address, header: HeaderType) -> FunctionAuthority {
+        FunctionAuthority {
+            lease: FunctionLease {
+                registry: 1,
+                at: at.function_base(),
+                generation: 1,
+            },
+            registers: header
+                .bar_registers()
+                .expect("a test authority needs a supported header"),
+        }
+    }
+
+    fn device_authority(at: Address) -> FunctionAuthority {
+        authority(at, HeaderType::from_bits(0))
+    }
+
+    fn state_authority(state: &CommandState) -> FunctionAuthority {
+        FunctionAuthority {
+            lease: state.lease.function,
+            registers: BARS,
+        }
+    }
+
+    fn enable_bus_master<const N: usize>(
+        leases: &mut CommandLeases<N>,
+        at: Address,
+        access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+    ) -> Result<CommandState, EnableFailure> {
+        super::enable_bus_master_with_leases(leases, &device_authority(at), access)
+    }
+
+    fn enable_memory_space<const N: usize>(
+        leases: &mut CommandLeases<N>,
+        at: Address,
+        access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+    ) -> Result<CommandState, EnableFailure> {
+        super::enable_memory_space_with_leases(leases, &device_authority(at), access)
+    }
+
+    fn admit_bus_master<const N: usize>(
+        leases: &mut CommandLeases<N>,
+        state: &mut CommandState,
+        access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+    ) -> Result<(), EnableError> {
+        super::admit_bus_master_with_leases(leases, state.lease.function, state, access)
+    }
+
+    fn restore_command<const N: usize>(
+        leases: &mut CommandLeases<N>,
+        state: CommandState,
+        access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+    ) -> Result<(), RestoreFailure> {
+        let authority = state_authority(&state);
+        super::restore_command_with_leases(leases, &authority, state, access)
+    }
+
+    fn commit_command<const N: usize>(
+        leases: &mut CommandLeases<N>,
+        state: CommandState,
+        access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+    ) -> Result<(), RestoreFailure> {
+        let authority = state_authority(&state);
+        super::commit_command_with_leases(leases, &authority, state, access)
+    }
+
+    fn probe_bars<E>(
+        registers: usize,
+        mut access: impl FnMut(ProbeAccess) -> Result<u32, E>,
+    ) -> Result<ProbedBars, ProbeError<E>> {
+        let staged =
+            probe_bars_unleased(registers, &mut access).map_err(|failure| failure.reason)?;
+        restore_staged_probe(staged, &mut access).map_err(|failure| failure.reason)
+    }
+
+    fn duplicate_state(state: &CommandState) -> CommandState {
+        CommandState {
+            lease: state.lease,
+            before: state.before,
+            installed: state.installed,
+            phase: state.phase,
+        }
+    }
+
+    #[test]
+    fn command_state_is_bound_to_its_registry_function_and_command_offset() {
+        let supplied = command_address(0);
+        let expected = supplied
+            .function_base()
+            .at(header::COMMAND)
+            .expect("the command register is aligned");
+        let other = command_address(1)
+            .function_base()
+            .at(header::COMMAND)
+            .expect("the command register is aligned");
+        let mut first_fake = FakeCommand::new(0, u16::MAX);
+        let mut second_fake = FakeCommand::new(0, u16::MAX);
+        let mut first = CommandLeases::<1>::new();
+        let mut second = CommandLeases::<1>::new();
+
+        let first_state = enable_bus_master(&mut first, supplied, |at, event| {
+            assert_eq!(at, expected);
+            first_fake.access(event)
+        })
+        .expect("the first registry enabled its function");
+        let second_state = enable_bus_master(&mut second, supplied, |at, event| {
+            assert_eq!(at, expected);
+            second_fake.access(event)
+        })
+        .expect("the second registry enabled its function");
+        assert_eq!(first_state.lease.generation, second_state.lease.generation);
+        assert_ne!(first_state.lease.registry, second_state.lease.registry);
+
+        let mut wrong_function = duplicate_state(&first_state);
+        wrong_function.lease.function.at = other.function_base();
+        let mut accesses = 0;
+        let wrong_function = commit_command(&mut first, wrong_function, |_, _| {
+            accesses += 1;
+            None
+        })
+        .expect_err("the token cannot be aimed at another function");
+        assert_eq!(wrong_function.reason(), EnableError::Stale);
+        assert_eq!(accesses, 0);
+
+        let mut accesses = 0;
+        let cross_registry = commit_command(&mut second, first_state, |_, _| {
+            accesses += 1;
+            None
+        })
+        .expect_err("another registry cannot consume the token");
+        assert_eq!(cross_registry.reason(), EnableError::Stale);
+        assert_eq!(accesses, 0);
+
+        commit_command(&mut first, cross_registry.into_state(), |at, event| {
+            assert_eq!(at, expected);
+            first_fake.access(event)
+        })
+        .expect("the issuing registry retained its token");
+        commit_command(&mut second, second_state, |at, event| {
+            assert_eq!(at, expected);
+            second_fake.access(event)
+        })
+        .expect("the other registry retained its own token");
+    }
+
+    #[test]
+    fn command_leases_refuse_nesting_and_preserve_uncertain_retry_authority() {
+        let at = command_address(0);
+        let mut fake = FakeCommand::new(0, !command::BUS_MASTER);
+        fake.fail_at = Some(4);
+        let mut leases = CommandLeases::<2>::new();
+
+        let failure = enable_bus_master(&mut leases, at, |_, event| fake.access(event))
+            .expect_err("the final rollback read was unavailable");
+        assert_eq!(failure.reason(), EnableError::Restore);
+        let state = failure
+            .into_state()
+            .expect("an uncertain write retains cleanup authority");
+        let calls = fake.calls;
+        let nested = enable_bus_master(&mut leases, at, |_, event| fake.access(event))
+            .expect_err("a live command transition is exclusive");
+        assert_eq!(nested.reason(), EnableError::Leased);
+        assert_eq!(nested.into_state(), None);
+        assert_eq!(fake.calls, calls, "nesting performed an access");
+        assert_eq!(
+            leases.begin_probe(&device_authority(at)),
+            Err(EnableError::Leased)
+        );
+
+        fake.fail_at = None;
+        restore_command(&mut leases, state, |_, event| fake.access(event))
+            .expect("the same uncertain token retries exactly");
+        fake.writable = u16::MAX;
+        let replacement = enable_bus_master(&mut leases, at, |_, event| fake.access(event))
+            .expect("exact restoration made room again");
+        commit_command(&mut leases, replacement, |_, event| fake.access(event))
+            .expect("the replacement remained current");
+    }
+
+    #[test]
+    fn command_consumption_requires_the_installed_word_and_live_generation() {
+        let at = command_address(0);
+        let installed = command::MEMORY_SPACE | command::BUS_MASTER;
+        let mut fake = FakeCommand::new(0, u16::MAX);
+        let mut leases = CommandLeases::<1>::new();
+
+        let first = enable_bus_master(&mut leases, at, |_, event| fake.access(event))
+            .expect("the first generation was installed");
+        let stale = duplicate_state(&first);
+        commit_command(&mut leases, first, |_, event| fake.access(event))
+            .expect("the first generation was committed");
+        let current = enable_bus_master(&mut leases, at, |_, event| fake.access(event))
+            .expect("the next generation was reserved");
+
+        let calls = fake.calls;
+        let stale = commit_command(&mut leases, stale, |_, event| fake.access(event))
+            .expect_err("a released generation cannot consume its replacement");
+        assert_eq!(stale.reason(), EnableError::Stale);
+        assert_eq!(fake.calls, calls, "a stale token reached the device");
+
+        fake.command = installed | command::IO_SPACE;
+        let calls = fake.calls;
+        let changed = commit_command(&mut leases, current, |_, event| fake.access(event))
+            .expect_err("a changed command word cannot be committed");
+        assert_eq!(changed.reason(), EnableError::Changed(fake.command));
+        assert_eq!(fake.calls, calls + 1);
+        assert_eq!(fake.events()[calls], Some(CommandAccess::Read));
+
+        fake.command = installed;
+        commit_command(&mut leases, changed.into_state(), |_, event| {
+            fake.access(event)
+        })
+        .expect("the unchanged token retries after the exact word returns");
+
+        fake.command = 0;
+        let restorable = enable_bus_master(&mut leases, at, |_, event| fake.access(event))
+            .expect("a restorable generation was installed");
+        fake.command = installed | command::IO_SPACE;
+        let calls = fake.calls;
+        let changed = restore_command(&mut leases, restorable, |_, event| fake.access(event))
+            .expect_err("restoration cannot overwrite an independently changed word");
+        assert_eq!(changed.reason(), EnableError::Changed(fake.command));
+        assert_eq!(fake.calls, calls + 1);
+        assert_eq!(fake.events()[calls], Some(CommandAccess::Read));
+
+        fake.command = installed;
+        restore_command(&mut leases, changed.into_state(), |_, event| {
+            fake.access(event)
+        })
+        .expect("restoration retries with the same token");
+        assert_eq!(fake.command, 0);
+    }
+
+    #[test]
+    fn command_generation_exhaustion_refuses_before_configuration_access() {
+        let mut leases = CommandLeases::<1>::new();
+        leases.generation = u64::MAX;
+        let mut accessed = false;
+
+        let failure = enable_bus_master(&mut leases, command_address(0), |_, _| {
+            accessed = true;
+            Some(0)
+        })
+        .expect_err("a command generation cannot wrap");
+        assert_eq!(failure.reason(), EnableError::Exhausted);
+        assert_eq!(failure.into_state(), None);
+        assert!(!accessed);
+        assert!(leases.slots.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn a_command_upgrade_cannot_cross_command_registries() {
+        let at = command_address(0);
+        let mut fake = FakeCommand::new(0, u16::MAX);
+        let mut issuing = CommandLeases::<1>::new();
+        let mut other = CommandLeases::<1>::new();
+        let mut state = enable_memory_space(&mut issuing, at, |_, event| fake.access(event))
+            .expect("the issuing registry installed memory decode");
+        let calls = fake.calls;
+
+        assert_eq!(
+            admit_bus_master(&mut other, &mut state, |_, event| fake.access(event)),
+            Err(EnableError::Stale)
+        );
+        assert_eq!(fake.calls, calls, "a foreign registry reached the device");
+
+        admit_bus_master(&mut issuing, &mut state, |_, event| fake.access(event))
+            .expect("the issuing registry retained its upgrade authority");
+        restore_command(&mut issuing, state, |_, event| fake.access(event))
+            .expect("the issuing registry retained its restoration authority");
+    }
+
+    #[test]
+    fn a_clean_upgrade_refusal_can_retry_the_same_state() {
+        let at = command_address(0);
+        let mut fake = FakeCommand::new(0, u16::MAX);
+        let mut leases = CommandLeases::<1>::new();
+        let mut state = enable_memory_space(&mut leases, at, |_, event| fake.access(event))
+            .expect("memory decode was installed");
+        fake.fail_at = Some(fake.calls + 1);
+
+        assert_eq!(
+            admit_bus_master(&mut leases, &mut state, |_, event| fake.access(event)),
+            Err(EnableError::Access)
+        );
+        assert_eq!(state.phase, CommandPhase::Installed);
+        assert_eq!(fake.command, command::MEMORY_SPACE);
+
+        fake.fail_at = None;
+        admit_bus_master(&mut leases, &mut state, |_, event| fake.access(event))
+            .expect("exact rollback left the same state retryable");
+        restore_command(&mut leases, state, |_, event| fake.access(event))
+            .expect("the retried upgrade retained its original word");
+        assert_eq!(fake.command, 0);
+    }
+
+    #[test]
+    fn every_bus_master_upgrade_access_refusal_preserves_its_owner() {
+        let at = command_address(0);
+        let memory_only = command::MEMORY_SPACE;
+
+        for fail_at in 0..=2 {
+            let mut fake = FakeCommand::new(0, u16::MAX);
+            let mut leases = CommandLeases::<1>::new();
+            let mut state = enable_memory_space(&mut leases, at, |_, event| fake.access(event))
+                .expect("memory decode stage");
+            fake.calls = 0;
+            fake.trace = [None; COMMAND_TRACE_CAPACITY];
+            fake.fail_at = Some(fail_at);
+
+            assert_eq!(
+                admit_bus_master(&mut leases, &mut state, |_, event| fake.access(event)),
+                Err(EnableError::Access),
+                "access {fail_at}"
+            );
+            assert_eq!(fake.command, memory_only, "access {fail_at}");
+            assert_eq!(state.phase, CommandPhase::Installed, "access {fail_at}");
+            assert_eq!(
+                leases.begin_probe(&device_authority(at)),
+                Err(EnableError::Leased),
+                "access {fail_at} lost the command owner"
+            );
+
+            fake.fail_at = None;
+            admit_bus_master(&mut leases, &mut state, |_, event| fake.access(event))
+                .expect("the unchanged owner retries the upgrade");
+            restore_command(&mut leases, state, |_, event| fake.access(event))
+                .expect("the retried owner restores the original command");
+            assert_eq!(fake.command, 0, "access {fail_at}");
+        }
+    }
+
+    #[test]
+    fn failed_bus_master_upgrade_rollback_never_loses_cleanup_authority() {
+        let at = command_address(0);
+
+        for fail_at in [3, 4] {
+            let mut fake = FakeCommand::new(0, !command::BUS_MASTER);
+            let mut leases = CommandLeases::<1>::new();
+            let mut state = enable_memory_space(&mut leases, at, |_, event| fake.access(event))
+                .expect("memory decode stage");
+            fake.calls = 0;
+            fake.trace = [None; COMMAND_TRACE_CAPACITY];
+            fake.fail_at = Some(fail_at);
+
+            let failure = admit_bus_master(&mut leases, &mut state, |_, event| fake.access(event))
+                .expect_err("the device refuses bus master");
+            assert_eq!(fake.command, command::MEMORY_SPACE, "access {fail_at}");
+            assert_eq!(
+                leases.begin_probe(&device_authority(at)),
+                Err(EnableError::Leased),
+                "access {fail_at} lost the command owner"
+            );
+
+            if fail_at == 3 {
+                assert_eq!(failure, EnableError::Refused(command::MEMORY_SPACE));
+                assert_eq!(state.phase, CommandPhase::Installed);
+            } else {
+                assert_eq!(failure, EnableError::Restore);
+                assert_eq!(
+                    state.phase,
+                    CommandPhase::Restoring(command::MEMORY_SPACE | command::BUS_MASTER)
+                );
+            }
+
+            fake.fail_at = None;
+            fake.writable = u16::MAX;
+            restore_command(&mut leases, state, |_, event| fake.access(event))
+                .expect("the retained owner restores the original command");
+            assert_eq!(fake.command, 0, "access {fail_at}");
+        }
+    }
+
+    #[test]
+    fn bus_master_upgrade_rejects_another_function_before_access() {
+        let mut functions = FunctionClaims::<2>::new();
+        let first = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("first function authority");
+        let second = functions
+            .claim(command_address(1), HeaderType::from_bits(0))
+            .expect("second function authority");
+        let mut fake = FakeCommand::new(0, u16::MAX);
+        let mut state =
+            super::enable_memory_space(&mut functions, &first, |_, event| fake.access(event))
+                .expect("first function memory decode");
+        let calls = fake.calls;
+
+        assert_eq!(
+            super::admit_bus_master(&mut functions, &second, &mut state, |_, event| {
+                fake.access(event)
+            }),
+            Err(EnableError::Stale)
+        );
+        assert_eq!(fake.calls, calls, "a foreign function reached the device");
+
+        super::admit_bus_master(&mut functions, &first, &mut state, |_, event| {
+            fake.access(event)
+        })
+        .expect("the issuing function retained the upgrade owner");
+        super::restore_command(&mut functions, &first, state, |_, event| fake.access(event))
+            .expect("the issuing function restores its command");
+        release_function(&mut functions, first).expect("first release");
+        release_function(&mut functions, second).expect("second release");
+    }
+
+    #[test]
+    fn an_uncertain_command_state_cannot_be_committed() {
+        let at = command_address(0);
+        let mut fake = FakeCommand::new(0, !command::BUS_MASTER);
+        fake.fail_at = Some(4);
+        let mut leases = CommandLeases::<1>::new();
+        let failure = enable_bus_master(&mut leases, at, |_, event| fake.access(event))
+            .expect_err("the rollback read was unavailable");
+        assert_eq!(failure.reason(), EnableError::Restore);
+        let state = failure
+            .into_state()
+            .expect("uncertainty retains the command owner");
+        let calls = fake.calls;
+
+        let failure = commit_command(&mut leases, state, |_, event| fake.access(event))
+            .expect_err("uncertain hardware cannot be committed");
+        assert_eq!(failure.reason(), EnableError::Stale);
+        assert_eq!(fake.calls, calls, "commit inspected uncertain hardware");
+
+        fake.fail_at = None;
+        fake.writable = u16::MAX;
+        restore_command(&mut leases, failure.into_state(), |_, event| {
+            fake.access(event)
+        })
+        .expect("the refused commit returned exact cleanup authority");
+    }
+
+    #[test]
+    fn restoration_retains_the_prewrite_word_across_access_loss() {
+        let at = command_address(0);
+        let mut fake = FakeCommand::new(0, u16::MAX);
+        let mut leases = CommandLeases::<1>::new();
+        let mut state = enable_memory_space(&mut leases, at, |_, event| fake.access(event))
+            .expect("memory decode was installed");
+        let wanted = command::MEMORY_SPACE | command::BUS_MASTER;
+        fake.injected_read = Some((fake.calls + 2, command::IO_SPACE));
+        fake.fail_at = Some(fake.calls + 3);
+
+        assert_eq!(
+            admit_bus_master(&mut leases, &mut state, |_, event| fake.access(event)),
+            Err(EnableError::Restore)
+        );
+        assert_eq!(fake.command, wanted);
+        assert_eq!(state.phase, CommandPhase::Restoring(wanted));
+
+        fake.injected_read = None;
+        fake.fail_at = Some(fake.calls + 1);
+        let failure = restore_command(&mut leases, state, |_, event| fake.access(event))
+            .expect_err("the first restoration write was unavailable");
+        assert_eq!(failure.reason(), EnableError::Refused(wanted));
+        assert_eq!(fake.command, wanted);
+
+        fake.fail_at = None;
+        restore_command(&mut leases, failure.into_state(), |_, event| {
+            fake.access(event)
+        })
+        .expect("the same token retained both possible hardware words");
+        assert_eq!(fake.command, 0);
+    }
+
+    #[test]
+    fn an_already_original_word_releases_after_its_readback() {
+        let at = command_address(0);
+        let required = command::MEMORY_SPACE | command::BUS_MASTER;
+        let mut fake = FakeCommand::new(required, u16::MAX);
+        let mut leases = CommandLeases::<1>::new();
+        let state = enable_bus_master(&mut leases, at, |_, event| fake.access(event))
+            .expect("the already enabled command was leased");
+
+        restore_command(&mut leases, state, |_, event| fake.access(event))
+            .expect("the captured word already read back exactly");
+        assert_eq!(
+            fake.events(),
+            &[Some(CommandAccess::Read), Some(CommandAccess::Read)]
+        );
+    }
+
+    #[test]
+    fn an_interrupted_upgrade_records_retry_authority_before_the_write() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let at = command_address(0);
+        let mut fake = FakeCommand::new(0, u16::MAX);
+        let mut leases = CommandLeases::<1>::new();
+        let mut state = enable_memory_space(&mut leases, at, |_, event| fake.access(event))
+            .expect("memory decode was installed first");
+        let installed = state.installed;
+        let wanted = installed | command::BUS_MASTER;
+
+        let interrupted = catch_unwind(AssertUnwindSafe(|| {
+            let _ = admit_bus_master(&mut leases, &mut state, |_, event| match event {
+                CommandAccess::Read => fake.access(event),
+                CommandAccess::Write(_) => panic!("injected interruption before the write"),
+            });
+        }));
+        assert!(interrupted.is_err());
+        assert_eq!(state.phase, CommandPhase::Restoring(wanted));
+        assert_eq!(fake.command, installed);
+        assert_eq!(
+            leases.begin_probe(&device_authority(at)),
+            Err(EnableError::Leased)
+        );
+
+        restore_command(&mut leases, state, |_, event| fake.access(event))
+            .expect("the pre-recorded state retained exact restoration authority");
+        assert_eq!(fake.command, 0);
+    }
+
+    #[test]
+    fn bar_probe_reservations_are_registry_bound() {
+        let at = command_address(0);
+        let authority = device_authority(at);
+        let mut first = CommandLeases::<1>::new();
+        let mut second = CommandLeases::<1>::new();
+        let first_probe = first.begin_probe(&authority).expect("first reservation");
+        let second_probe = second.begin_probe(&authority).expect("second reservation");
+
+        let first_probe = second
+            .finish_probe(&authority, first_probe)
+            .expect_err("another registry cannot release the reservation");
+        assert_eq!(second.begin_probe(&authority), Err(EnableError::Leased));
+        first
+            .finish_probe(&authority, first_probe)
+            .expect("the issuing registry releases it");
+        second
+            .finish_probe(&authority, second_probe)
+            .expect("the other registry retained its reservation");
+        let first_probe = first
+            .begin_probe(&authority)
+            .expect("first registry made room");
+        let second_probe = second
+            .begin_probe(&authority)
+            .expect("second registry made room");
+        first
+            .finish_probe(&authority, first_probe)
+            .expect("first exact release");
+        second
+            .finish_probe(&authority, second_probe)
+            .expect("second exact release");
+    }
+
+    #[test]
+    fn one_registry_identity_binds_every_simultaneous_lease() {
+        let mut leases = CommandLeases::<2>::new();
+        let first_authority = device_authority(command_address(0));
+        let second_authority = device_authority(command_address(1));
+        let first = leases
+            .begin_probe(&first_authority)
+            .expect("the first function was reserved");
+        let second = leases
+            .begin_probe(&second_authority)
+            .expect("the second function was reserved");
+
+        assert_ne!(first.0.registry, 0);
+        assert_eq!(second.0.registry, first.0.registry);
+
+        leases
+            .finish_probe(&first_authority, first)
+            .expect("first release");
+        leases
+            .finish_probe(&second_authority, second)
+            .expect("second release");
+    }
+
     #[test]
     fn bus_master_enable_is_verified_and_preserves_the_command() {
         const OTHER: u16 = 1 << 9;
         let original = command::IO_SPACE | OTHER;
         let wanted = original | command::MEMORY_SPACE | command::BUS_MASTER;
         let mut fake = FakeCommand::new(original, u16::MAX);
+        let mut leases = CommandLeases::<1>::new();
 
-        let state = enable_bus_master(|event| fake.access(event)).expect("enabled");
+        let state = enable_bus_master(&mut leases, command_address(0), |_, event| {
+            fake.access(event)
+        })
+        .expect("enabled");
         assert_eq!(fake.command, wanted);
         assert_eq!(
             fake.events(),
@@ -1028,16 +2969,104 @@ mod tests {
         );
 
         let mut already = FakeCommand::new(wanted, u16::MAX);
-        let already_state = enable_bus_master(|event| already.access(event)).expect("enabled");
+        let mut already_leases = CommandLeases::<1>::new();
+        let already_state =
+            enable_bus_master(&mut already_leases, command_address(0), |_, event| {
+                already.access(event)
+            })
+            .expect("enabled");
         assert_eq!(already.events(), &[Some(CommandAccess::Read)]);
 
-        restore_command(state, |event| fake.access(event)).expect("restored");
+        restore_command(&mut leases, state, |_, event| fake.access(event)).expect("restored");
         assert_eq!(fake.command, original);
-        restore_command(already_state, |event| already.access(event)).expect("restored");
+        restore_command(&mut already_leases, already_state, |_, event| {
+            already.access(event)
+        })
+        .expect("restored");
         assert_eq!(already.command, wanted);
     }
 
-    /// A write is not success until the device reports every required bit.
+    #[test]
+    fn bus_master_enable_preserves_either_already_required_bit() {
+        const OTHER: u16 = 1 << 9;
+        const REQUIRED: u16 = command::MEMORY_SPACE | command::BUS_MASTER;
+
+        for original in [OTHER | command::MEMORY_SPACE, OTHER | command::BUS_MASTER] {
+            let mut fake = FakeCommand::new(original, u16::MAX);
+            let mut leases = CommandLeases::<1>::new();
+            let state = enable_bus_master(&mut leases, command_address(0), |_, event| {
+                fake.access(event)
+            })
+            .expect("enabled");
+
+            assert_eq!(fake.command, original | REQUIRED);
+            restore_command(&mut leases, state, |_, event| fake.access(event)).expect("restored");
+            assert_eq!(fake.command, original);
+        }
+    }
+
+    #[test]
+    fn memory_decode_and_bus_master_are_two_exact_restorable_stages() {
+        const OTHER: u16 = 1 << 9;
+        let original = command::IO_SPACE | command::BUS_MASTER | OTHER;
+        let mut fake = FakeCommand::new(original, u16::MAX);
+        let mut leases = CommandLeases::<1>::new();
+
+        let mut original_state =
+            enable_memory_space(&mut leases, command_address(0), |_, event| {
+                fake.access(event)
+            })
+            .expect("memory decode enabled");
+        let memory_only = (original | command::MEMORY_SPACE) & !command::BUS_MASTER;
+        assert_eq!(fake.command, memory_only);
+        assert_eq!(fake.command & command::BUS_MASTER, 0);
+
+        admit_bus_master(&mut leases, &mut original_state, |_, event| {
+            fake.access(event)
+        })
+        .expect("bus master enabled later");
+        assert_eq!(
+            fake.command,
+            original | command::MEMORY_SPACE | command::BUS_MASTER
+        );
+
+        restore_command(&mut leases, original_state, |_, event| fake.access(event))
+            .expect("original restored");
+        assert_eq!(fake.command, original);
+        assert_eq!(
+            fake.events(),
+            &[
+                Some(CommandAccess::Read),
+                Some(CommandAccess::Write(memory_only)),
+                Some(CommandAccess::Read),
+                Some(CommandAccess::Read),
+                Some(CommandAccess::Write(
+                    original | command::MEMORY_SPACE | command::BUS_MASTER,
+                )),
+                Some(CommandAccess::Read),
+                Some(CommandAccess::Read),
+                Some(CommandAccess::Write(original)),
+                Some(CommandAccess::Read),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_enable_error_describes_its_cause() {
+        assert_eq!(
+            EnableError::Access.to_string(),
+            "configuration access failed"
+        );
+        assert_eq!(
+            EnableError::Refused(0x00A5).to_string(),
+            "the command register read back as 0x00a5"
+        );
+        assert_eq!(
+            EnableError::Restore.to_string(),
+            "the original command could not be verified"
+        );
+    }
+
     #[test]
     fn a_refused_bus_master_enable_restores_the_exact_command() {
         const OTHER: u16 = 1 << 9;
@@ -1045,9 +3074,12 @@ mod tests {
         let wanted = original | command::MEMORY_SPACE | command::BUS_MASTER;
         let observed = wanted & !command::BUS_MASTER;
         let mut fake = FakeCommand::new(original, !command::BUS_MASTER);
+        let mut leases = CommandLeases::<1>::new();
 
         assert_eq!(
-            enable_bus_master(|event| fake.access(event)),
+            enable_bus_master(&mut leases, command_address(0), |_, event| fake
+                .access(event))
+            .map_err(|failure| failure.reason()),
             Err(EnableError::Refused(observed))
         );
         assert_eq!(fake.command, original);
@@ -1063,7 +3095,35 @@ mod tests {
         );
     }
 
-    /// Every access loss after a possible write either restores or says it could not.
+    #[test]
+    fn a_bus_master_enable_refuses_and_restores_an_unwritten_command_bit() {
+        const OTHER: u16 = 1 << 9;
+        let original = OTHER;
+        let wanted = original | command::MEMORY_SPACE | command::BUS_MASTER;
+        let observed = wanted | command::IO_SPACE;
+        let mut fake = FakeCommand::new(original, u16::MAX);
+        fake.injected_read = Some((2, command::IO_SPACE));
+        let mut leases = CommandLeases::<1>::new();
+
+        assert_eq!(
+            enable_bus_master(&mut leases, command_address(0), |_, event| fake
+                .access(event))
+            .map_err(|failure| failure.reason()),
+            Err(EnableError::Refused(observed))
+        );
+        assert_eq!(fake.command, original);
+        assert_eq!(
+            fake.events(),
+            &[
+                Some(CommandAccess::Read),
+                Some(CommandAccess::Write(wanted)),
+                Some(CommandAccess::Read),
+                Some(CommandAccess::Write(original)),
+                Some(CommandAccess::Read),
+            ]
+        );
+    }
+
     #[test]
     fn every_failed_bus_master_access_restores_or_reports_uncertainty() {
         const OTHER: u16 = 1 << 9;
@@ -1072,77 +3132,94 @@ mod tests {
         for fail_at in 0..=2 {
             let mut fake = FakeCommand::new(original, u16::MAX);
             fake.fail_at = Some(fail_at);
-            assert_eq!(
-                enable_bus_master(|event| fake.access(event)),
-                Err(EnableError::Access),
-                "access {fail_at}"
-            );
+            let mut leases = CommandLeases::<1>::new();
+            let failure = enable_bus_master(&mut leases, command_address(0), |_, event| {
+                fake.access(event)
+            })
+            .expect_err("the injected access must refuse enablement");
+            assert_eq!(failure.reason(), EnableError::Access, "access {fail_at}");
+            assert_eq!(failure.into_state(), None, "access {fail_at}");
             assert_eq!(fake.command, original, "access {fail_at}");
         }
 
         let refuses_bus_master = !command::BUS_MASTER;
         let mut restore_write = FakeCommand::new(original, refuses_bus_master);
         restore_write.fail_at = Some(3);
+        let mut write_leases = CommandLeases::<1>::new();
         assert_eq!(
-            enable_bus_master(|event| restore_write.access(event)),
-            Err(EnableError::Restore)
+            enable_bus_master(&mut write_leases, command_address(0), |_, event| {
+                restore_write.access(event)
+            })
+            .expect_err("rollback uncertainty")
+            .reason(),
+            EnableError::Restore
         );
         assert_ne!(restore_write.command, original);
 
         let mut restore_read = FakeCommand::new(original, refuses_bus_master);
         restore_read.fail_at = Some(4);
+        let mut read_leases = CommandLeases::<1>::new();
         assert_eq!(
-            enable_bus_master(|event| restore_read.access(event)),
-            Err(EnableError::Restore)
+            enable_bus_master(&mut read_leases, command_address(0), |_, event| {
+                restore_read.access(event)
+            })
+            .expect_err("rollback uncertainty")
+            .reason(),
+            EnableError::Restore
         );
         assert_eq!(restore_read.command, original);
     }
 
-    /// A successful lease retirement restores the captured word exactly.
     #[test]
     fn a_bus_master_lease_restores_the_exact_command_or_reports_uncertainty() {
         const OTHER: u16 = 1 << 9;
         let original = command::IO_SPACE | OTHER;
         let mut restored = FakeCommand::new(original, u16::MAX);
-        let state = enable_bus_master(|event| restored.access(event)).expect("enabled");
+        let mut restored_leases = CommandLeases::<1>::new();
+        let state = enable_bus_master(&mut restored_leases, command_address(0), |_, event| {
+            restored.access(event)
+        })
+        .expect("enabled");
         assert_eq!(
-            restore_command(state, |event| restored.access(event)),
+            restore_command(&mut restored_leases, state, |_, event| {
+                restored.access(event)
+            }),
             Ok(())
         );
         assert_eq!(restored.command, original);
 
         let mut refused = FakeCommand::new(original, u16::MAX);
-        let state = enable_bus_master(|event| refused.access(event)).expect("enabled");
+        let mut refused_leases = CommandLeases::<1>::new();
+        let state = enable_bus_master(&mut refused_leases, command_address(0), |_, event| {
+            refused.access(event)
+        })
+        .expect("enabled");
         refused.writable = 0;
-        assert_eq!(
-            restore_command(state, |event| refused.access(event)),
-            Err(EnableError::Restore)
-        );
+        let failure = restore_command(&mut refused_leases, state, |_, event| refused.access(event))
+            .expect_err("a masked restore must retain its retry authority");
         assert_ne!(refused.command, original);
+
+        refused.writable = u16::MAX;
+        restore_command(&mut refused_leases, failure.into_state(), |_, event| {
+            refused.access(event)
+        })
+        .expect("the unchanged state retries exactly");
+        assert_eq!(refused.command, original);
     }
 
-    /// An address is the bus, device, function and offset the manual gives.
-    ///
-    /// Transcribed from the specification's field positions rather than
-    /// derived, and the values are **pairwise distinct** so no two fields can
-    /// be swapped with this still passing (D-136).
     #[test]
     fn an_address_puts_every_field_where_the_manual_says() {
+        // Pairwise-distinct fields expose every accidental swap (D-136).
         let at = Address::new(0x12, 0x1A, 0x05, 0x3C).expect("a valid address");
 
         assert_eq!(at.bits() >> 31, 1, "the enable bit");
         assert_eq!(at.bus(), 0x12);
         assert_eq!(at.device(), 0x1A);
         assert_eq!(at.function(), 0x05);
-        assert_eq!(at.offset(), 0x3C);
+        assert_eq!(at.bits() as u16 & 0xFF, 0x3C);
         assert_eq!(at.bits(), 0x8012_D53C);
     }
 
-    /// Every encodable address round-trips through its own fields.
-    ///
-    /// Exhaustive over devices, functions and offsets, and a spread of buses:
-    /// a field that overlapped its neighbour would survive any single example
-    /// and cannot survive all of them.
     #[test]
     fn every_address_round_trips_through_its_fields() {
         for bus in [0u8, 1, 0x7F, 0x80, 0xFE, 0xFF] {
@@ -1152,7 +3229,12 @@ mod tests {
                         let at =
                             Address::new(bus, device, function, offset).expect("all encodable");
                         assert_eq!(
-                            (at.bus(), at.device(), at.function(), at.offset()),
+                            (
+                                at.bus(),
+                                at.device(),
+                                at.function(),
+                                at.bits() as u16 & 0xFF,
+                            ),
                             (bus, device, function, offset)
                         );
                     }
@@ -1161,76 +3243,318 @@ mod tests {
         }
     }
 
-    /// Register offsets are not device identities.
     #[test]
     fn every_offset_of_one_function_has_one_identity() {
-        let identity = Address::new(0x12, 0x1A, 5, 0).expect("valid");
-        for offset in (0..HEADER_BYTES).step_by(4) {
-            let alias = identity.at(offset).expect("valid offset");
-            assert_eq!(alias.function_base(), identity);
+        for start in (0..HEADER_BYTES).step_by(4) {
+            let identity = Address::new(0x12, 0x1A, 5, start).expect("valid");
+            for replacement in (0..HEADER_BYTES).step_by(4) {
+                let alias = identity.at(replacement).expect("valid offset");
+                assert_eq!(
+                    (
+                        alias.bus(),
+                        alias.device(),
+                        alias.function(),
+                        alias.bits() as u16 & 0xFF
+                    ),
+                    (0x12, 0x1A, 5, replacement)
+                );
+                assert_eq!(alias.function_base(), identity.function_base());
+            }
         }
+        let identity = Address::new(0x12, 0x1A, 5, 0).expect("valid");
         assert_ne!(identity.at(header::CLASS), identity.at(header::BAR0));
     }
 
-    /// Every fallible preparation edge precedes the registry commit point.
     #[test]
-    fn every_refused_claim_preparation_leaves_the_registry_unchanged() {
+    fn function_claims_validate_headers_and_aliases_before_commit() {
         let at = Address::new(3, 4, 5, header::CLASS).expect("valid");
-        let mut registry = ClaimRegistry::<2>::new();
-
-        for refused in 0..8 {
-            let result = registry.claim(at, || {
-                for edge in 0..8 {
-                    if edge == refused {
-                        return Err(edge);
-                    }
-                }
-                Ok(())
-            });
-            assert_eq!(result, Err(RegistryError::Prepare(refused)));
-            assert!(registry.is_empty(), "failure at edge {refused} committed");
-            assert!(!registry.is_claimed(at));
-        }
-
-        assert_eq!(registry.claim(at, || Ok::<_, ()>(0xA5)), Ok(0xA5));
+        let mut registry = FunctionClaims::<2>::new();
+        assert_eq!(
+            registry.claim(at, HeaderType::from_bits(2)),
+            Err(FunctionClaimError::Header(2))
+        );
+        assert_eq!(registry.len(), 0);
+        let authority = registry
+            .claim(at, HeaderType::from_bits(0))
+            .expect("a type-zero function is claimable");
+        assert_eq!(authority.bar_registers(), BARS);
+        assert_eq!(registry.len(), 1);
         assert_eq!(registry.len(), 1);
         assert!(registry.is_claimed(at.at(header::BAR0).expect("valid alias")));
         assert_eq!(
-            registry.claim(at.at(header::VENDOR).expect("valid alias"), || Ok::<_, ()>(
-                ()
-            )),
-            Err(RegistryError::Taken)
+            registry.claim(
+                at.at(header::VENDOR).expect("valid alias"),
+                HeaderType::from_bits(1)
+            ),
+            Err(FunctionClaimError::Taken)
         );
         assert_eq!(registry.len(), 1, "duplicate refusal changed the holder");
+        assert!(registry.holds(&authority));
     }
 
-    /// A transient claim returns exactly its canonical function slot.
     #[test]
-    fn a_claim_release_is_exact_and_makes_room_for_the_same_function() {
+    fn function_authority_is_registry_bound_and_releases_exactly() {
         let first = Address::new(3, 4, 5, header::CLASS).expect("valid");
         let second = Address::new(3, 4, 6, header::VENDOR).expect("valid");
-        let absent = Address::new(3, 4, 7, header::VENDOR).expect("valid");
-        let mut registry = ClaimRegistry::<2>::new();
-
-        assert_eq!(registry.claim(first, || Ok::<_, ()>(())), Ok(()));
-        assert_eq!(registry.claim(second, || Ok::<_, ()>(())), Ok(()));
-        assert!(!registry.release(absent));
+        let mut registry = FunctionClaims::<2>::new();
+        let mut other = FunctionClaims::<2>::new();
+        let first_authority = registry
+            .claim(first, HeaderType::from_bits(0))
+            .expect("first authority");
+        let second_authority = registry
+            .claim(second, HeaderType::from_bits(1))
+            .expect("second authority");
+        assert_eq!(second_authority.bar_registers(), BRIDGE_BARS);
+        let foreign = other
+            .claim(first, HeaderType::from_bits(0))
+            .expect("the other registry has its own authority");
+        let foreign = registry
+            .release(foreign)
+            .expect_err("a foreign token cannot release this registry");
+        assert!(other.holds(&foreign));
         assert_eq!(registry.len(), 2, "a refused release changed the registry");
 
-        assert!(registry.release(first.at(header::BAR0).expect("valid alias")));
+        registry
+            .release(first_authority)
+            .expect("the exact authority releases");
         assert!(!registry.is_claimed(first));
         assert!(registry.is_claimed(second));
         assert_eq!(registry.len(), 1);
-        assert_eq!(registry.claim(first, || Ok::<_, ()>(0xA5)), Ok(0xA5));
-        assert!(!registry.release(absent));
+        let replacement = registry
+            .claim(first, HeaderType::from_bits(0))
+            .expect("release made room for a new generation");
         assert_eq!(registry.len(), 2);
+        registry.release(replacement).expect("replacement release");
+        registry
+            .release(second_authority)
+            .expect("second exact release");
+        other.release(foreign).expect("foreign issuer release");
     }
 
-    /// An address that cannot be encoded is refused, not truncated.
-    ///
-    /// The misaligned offset is the one that matters: it does not fault, it
-    /// reads the dword containing it, and the caller shifts the wrong bytes
-    /// out of a plausible-looking value.
+    #[test]
+    fn configuration_cycles_require_the_issuing_function_registry() {
+        let at = command_address(0);
+        let mut issuer = FunctionClaims::<1>::new();
+        let authority = issuer
+            .claim(at, HeaderType::from_bits(0))
+            .expect("issuing function authority");
+        let mut foreign = FunctionClaims::<1>::new();
+        let mut foreign_accesses = 0;
+
+        let refusal = super::enable_bus_master(&mut foreign, &authority, |_, _| {
+            foreign_accesses += 1;
+            Some(0)
+        })
+        .expect_err("another registry cannot spend the function authority");
+        assert_eq!(refusal.reason(), EnableError::Stale);
+        assert_eq!(refusal.into_state(), None);
+        assert_eq!(foreign_accesses, 0, "a foreign token reached the device");
+        assert_eq!(foreign.len(), 0);
+        assert!(issuer.holds(&authority));
+
+        let mut fake = FakeCommand::new(0, u16::MAX);
+        let state =
+            super::enable_bus_master(&mut issuer, &authority, |_, access| fake.access(access))
+                .expect("the issuing registry reaches its function");
+        super::restore_command(&mut issuer, &authority, state, |_, access| {
+            fake.access(access)
+        })
+        .expect("the issuing registry restores its command");
+        release_function(&mut issuer, authority).expect("settled function authority releases");
+    }
+
+    #[test]
+    fn public_memory_decode_accepts_only_its_function_authority() {
+        let at = command_address(0);
+        let mut issuer = FunctionClaims::<1>::new();
+        let authority = issuer
+            .claim(at, HeaderType::from_bits(0))
+            .expect("issuing function authority");
+        let mut foreign = FunctionClaims::<1>::new();
+        let mut foreign_fake = FakeCommand::new(0, u16::MAX);
+
+        let refusal = super::enable_memory_space(&mut foreign, &authority, |_, access| {
+            foreign_fake.access(access)
+        })
+        .expect_err("another registry cannot enable memory decode");
+        assert_eq!(refusal.reason(), EnableError::Stale);
+        assert_eq!(refusal.into_state(), None);
+        assert_eq!(foreign_fake.calls, 0, "a foreign token reached the device");
+
+        let mut fake = FakeCommand::new(0, u16::MAX);
+        let state =
+            super::enable_memory_space(&mut issuer, &authority, |_, access| fake.access(access))
+                .expect("the issuing registry enables memory decode");
+        assert_eq!(fake.command, command::MEMORY_SPACE);
+        super::restore_command(&mut issuer, &authority, state, |_, access| {
+            fake.access(access)
+        })
+        .expect("memory decode restores exactly");
+        release_function(&mut issuer, authority).expect("settled function authority releases");
+    }
+
+    #[test]
+    fn public_bus_master_admission_changes_the_device_and_state() {
+        let at = command_address(0);
+        let mut functions = FunctionClaims::<1>::new();
+        let authority = functions
+            .claim(at, HeaderType::from_bits(0))
+            .expect("function authority");
+        let mut fake = FakeCommand::new(0, u16::MAX);
+        let mut state =
+            super::enable_memory_space(&mut functions, &authority, |_, access| fake.access(access))
+                .expect("memory decode stage");
+
+        super::admit_bus_master(&mut functions, &authority, &mut state, |_, access| {
+            fake.access(access)
+        })
+        .expect("DMA admission");
+        let admitted = command::MEMORY_SPACE | command::BUS_MASTER;
+        assert_eq!(fake.command, admitted);
+        assert_eq!(state.installed, admitted);
+        super::restore_command(&mut functions, &authority, state, |_, access| {
+            fake.access(access)
+        })
+        .expect("admitted command restores exactly");
+        release_function(&mut functions, authority).expect("settled function authority releases");
+    }
+
+    #[test]
+    fn public_command_commit_consumes_the_live_sublease() {
+        let at = command_address(0);
+        let mut functions = FunctionClaims::<1>::new();
+        let authority = functions
+            .claim(at, HeaderType::from_bits(0))
+            .expect("function authority");
+        let mut fake = FakeCommand::new(0, u16::MAX);
+        let state =
+            super::enable_bus_master(&mut functions, &authority, |_, access| fake.access(access))
+                .expect("verified command transition");
+
+        super::commit_command(&mut functions, &authority, state, |_, access| {
+            fake.access(access)
+        })
+        .expect("the live command generation commits");
+        assert_eq!(fake.command, command::MEMORY_SPACE | command::BUS_MASTER);
+        release_function(&mut functions, authority).expect("commit released the command sublease");
+    }
+
+    #[test]
+    fn public_probe_retry_restores_hardware_and_releases_its_sublease() {
+        let at = command_address(0);
+        let mut functions = FunctionClaims::<1>::new();
+        let authority = functions
+            .claim(at, HeaderType::from_bits(0))
+            .expect("function authority");
+        let mut fake = FakeConfig::device();
+        let original = fake.clone();
+        fake.fail_at = Some(30);
+        let failure =
+            super::probe_bars(&mut functions, &authority, |_, access| fake.access(access))
+                .expect_err("one restoration read is unavailable");
+        assert_eq!(failure.reason(), &ProbeError::Restore(30));
+        let retry = failure
+            .into_retry()
+            .expect("uncertain restoration retains retry authority");
+
+        fake.fail_at = None;
+        super::retry_probe(&mut functions, &authority, retry, |_, access| {
+            fake.access(access)
+        })
+        .expect("the issuing function restores its exact captured state");
+        assert_eq!(fake.command, original.command);
+        assert_eq!(fake.status, original.status);
+        assert_eq!(fake.bars, original.bars);
+        release_function(&mut functions, authority).expect("retry released the probe sublease");
+    }
+
+    #[test]
+    fn function_release_waits_for_every_command_and_probe_sublease() {
+        let at = command_address(0);
+        let mut functions = FunctionClaims::<1>::new();
+        let authority = functions
+            .claim(at, HeaderType::from_bits(0))
+            .expect("function authority");
+        let mut fake = FakeCommand::new(0, !command::BUS_MASTER);
+        fake.fail_at = Some(4);
+        let failure =
+            super::enable_bus_master(&mut functions, &authority, |_, access| fake.access(access))
+                .expect_err("rollback uncertainty keeps its command sublease");
+        let state = failure.into_state().expect("uncertain command owner");
+
+        let failure = release_function(&mut functions, authority)
+            .expect_err("an uncertain command prevents function release");
+        assert_eq!(failure.reason(), FunctionReleaseError::Active);
+        let authority = failure.into_authority();
+        assert!(functions.holds(&authority));
+        assert_eq!(
+            functions.claim(at, HeaderType::from_bits(0)),
+            Err(FunctionClaimError::Taken)
+        );
+
+        fake.fail_at = None;
+        fake.writable = u16::MAX;
+        super::restore_command(&mut functions, &authority, state, |_, access| {
+            fake.access(access)
+        })
+        .expect("the uncertain command restored");
+        let probe = functions
+            .commands
+            .begin_probe(&authority)
+            .expect("BAR probe sublease");
+        let failure = release_function(&mut functions, authority)
+            .expect_err("a live BAR probe prevents function release");
+        assert_eq!(failure.reason(), FunctionReleaseError::Active);
+        let authority = failure.into_authority();
+        functions
+            .commands
+            .finish_probe(&authority, probe)
+            .expect("the exact BAR sublease settles");
+        release_function(&mut functions, authority).expect("settled function authority releases");
+        assert_eq!(functions.len(), 0);
+    }
+
+    #[test]
+    fn command_and_probe_subleases_cannot_cross_function_authorities() {
+        let mut functions = FunctionClaims::<2>::new();
+        let first = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("first function authority");
+        let second = functions
+            .claim(command_address(1), HeaderType::from_bits(0))
+            .expect("second function authority");
+        let mut fake = FakeCommand::new(0, u16::MAX);
+        let state =
+            super::enable_bus_master(&mut functions, &first, |_, access| fake.access(access))
+                .expect("first command transition");
+        let calls = fake.calls;
+        let failure = super::commit_command(&mut functions, &second, state, |_, access| {
+            fake.access(access)
+        })
+        .expect_err("another function cannot consume command authority");
+        assert_eq!(failure.reason(), EnableError::Stale);
+        assert_eq!(fake.calls, calls, "a foreign function reached the device");
+        super::restore_command(&mut functions, &first, failure.into_state(), |_, access| {
+            fake.access(access)
+        })
+        .expect("the issuing function retained its command owner");
+
+        let probe = functions
+            .commands
+            .begin_probe(&first)
+            .expect("first probe owner");
+        let probe = functions
+            .commands
+            .finish_probe(&second, probe)
+            .expect_err("another function cannot settle the probe owner");
+        functions
+            .commands
+            .finish_probe(&first, probe)
+            .expect("the issuing function settles the probe");
+        release_function(&mut functions, first).expect("first release");
+        release_function(&mut functions, second).expect("second release");
+    }
+
     #[test]
     fn an_address_that_cannot_be_encoded_is_refused() {
         assert!(Address::new(0, DEVICES, 0, 0).is_none(), "device 32");
@@ -1246,22 +3570,16 @@ mod tests {
             );
         }
 
-        // And `at` refuses the same things, because it is the same rule from
-        // the other direction — a walk that re-offsets is where a misaligned
-        // value would actually come from.
         let at = Address::new(0, 1, 0, 0).expect("valid");
         assert!(at.at(0x0D).is_none());
         assert!(at.at(HEADER_BYTES).is_none());
-        assert_eq!(at.at(0x10).expect("valid").offset(), 0x10);
+        assert_eq!(at.at(0x10).expect("valid").bits() as u16 & 0xFF, 0x10);
         assert_eq!(at.at(0x10).expect("valid").device(), 1, "the rest is kept");
     }
 
-    /// The class word is read as four separate bytes.
-    ///
-    /// Pairwise distinct on purpose: `01:08:02:03` would let class and
-    /// subclass be swapped, so every byte here differs from every other.
     #[test]
     fn the_class_word_is_read_as_four_separate_bytes() {
+        // Distinct bytes prevent one field from standing in for another.
         let class = Class::from_bits(0x0C_03_30_A1);
         assert_eq!(class.class, 0x0C);
         assert_eq!(class.subclass, 0x03);
@@ -1269,11 +3587,6 @@ mod tests {
         assert_eq!(class.revision, 0xA1);
     }
 
-    /// NVM Express is all three bytes, and its neighbours are not it.
-    ///
-    /// `01:08:01` is NVMHCI — an older interface a driver written for `02`
-    /// would misprogram — so a two-byte test would accept the wrong device
-    /// and the failure would be a controller that never answers.
     #[test]
     fn nvme_is_all_three_bytes_and_its_neighbours_are_not() {
         assert!(Class::from_bits(0x01_08_02_00).is_nvme());
@@ -1291,7 +3604,6 @@ mod tests {
         }
     }
 
-    /// A bridge is recognised, because enumeration has to descend through one.
     #[test]
     fn a_bridge_is_recognised_and_nothing_else_is() {
         assert!(Class::from_bits(0x06_04_00_00).is_bridge());
@@ -1306,7 +3618,6 @@ mod tests {
         assert!(!Class::from_bits(0x01_08_02_00).is_bridge());
     }
 
-    /// The header-type byte's two halves are read separately.
     #[test]
     fn the_header_type_byte_is_a_layout_and_a_flag() {
         let plain = HeaderType::from_bits(0x00);
@@ -1327,87 +3638,103 @@ mod tests {
         assert!(!multi_plain.is_bridge());
     }
 
-    /// A base address register decodes into what it actually describes.
     #[test]
     fn a_base_address_register_decodes_to_its_window() {
-        assert_eq!(Bar::decode(0, 0), Bar::Absent);
+        assert_eq!(Bar::decode(0, 0), Some(Bar::Absent));
 
-        assert_eq!(Bar::decode(0xC001, 0), Bar::Io { port: 0xC000 });
+        assert_eq!(Bar::decode(0xC001, 0), Some(Bar::Io { port: 0xC000 }));
 
         assert_eq!(
             Bar::decode(0xFEBF_0000, 0),
-            Bar::Memory {
+            Some(Bar::Memory {
                 address: 0xFEBF_0000,
                 wide: false,
                 prefetchable: false,
-            }
+            })
         );
 
         assert_eq!(
             Bar::decode(0xFEBF_000C, 0x0000_0001),
-            Bar::Memory {
+            Some(Bar::Memory {
                 address: 0x1_FEBF_0000,
                 wide: true,
                 prefetchable: true,
-            }
+            })
+        );
+        assert_eq!(
+            Bar::decode(0xFEBF_0004, 0x0000_0001),
+            Some(Bar::Memory {
+                address: 0x1_FEBF_0000,
+                wide: true,
+                prefetchable: false,
+            })
         );
     }
 
-    /// A 64-bit register occupies two slots and a 32-bit one does not.
-    ///
-    /// The whole reason this function exists: a walk that steps one at a time
-    /// over a wide register reads its high half as a second base address, and
-    /// believes there is a window at whatever the top thirty-two bits were.
     #[test]
-    fn a_wide_register_occupies_the_slot_after_it() {
-        assert_eq!(Bar::decode(0xFEBF_000C, 0).slots(), 2);
-        assert_eq!(Bar::decode(0xFEBF_0000, 0).slots(), 1);
-        assert_eq!(Bar::decode(0xC001, 0).slots(), 1);
-        assert_eq!(Bar::decode(0, 0).slots(), 1);
+    fn every_memory_bar_type_encoding_has_one_exact_outcome() {
+        const BASE: u32 = 0x0008_0000;
+        const HIGH: u32 = 0x5A;
+
+        for memory_type in 0..=3 {
+            let decoded = Bar::decode(BASE | memory_type << 1, HIGH);
+            match memory_type {
+                0 => assert_eq!(
+                    decoded,
+                    Some(Bar::Memory {
+                        address: u64::from(BASE),
+                        wide: false,
+                        prefetchable: false,
+                    })
+                ),
+                1 | 3 => assert_eq!(decoded, None),
+                2 => assert_eq!(
+                    decoded,
+                    Some(Bar::Memory {
+                        address: u64::from(BASE) | (u64::from(HIGH) << 32),
+                        wide: true,
+                        prefetchable: false,
+                    })
+                ),
+                _ => unreachable!("the complete two-bit domain was exhausted"),
+            }
+        }
     }
 
-    /// A memory window's size is the two's complement of what came back.
-    ///
-    /// Every power of two from a page to two gigabytes, because the failure is
-    /// off by a factor of two and a single example cannot see it.
     #[test]
     fn a_memory_window_size_is_the_complement_of_the_probe() {
         for bits in 4..31u32 {
             let size = 1u32 << bits;
             let mask = !(size - 1);
             assert_eq!(
-                memory_window_size(mask, 0, false),
+                memory_window_size(mask, 0, MemoryWidth::Bits32),
                 Some(u64::from(size)),
                 "a {size}-byte window"
             );
         }
 
-        // A 64-bit window past four gigabytes, where the high half carries it.
         assert_eq!(
-            memory_window_size(0, 0xFFFF_FFFF, true),
+            memory_window_size(0, 0xFFFF_FFFF, MemoryWidth::Bits64),
             Some(0x1_0000_0000)
         );
         assert_eq!(
-            memory_window_size(0xFFF0_0000, 0xFFFF_FFFF, true),
+            memory_window_size(0xFFF0_0000, 0xFFFF_FFFF, MemoryWidth::Bits64),
             Some(0x10_0000)
         );
     }
 
-    /// A narrow register's mask is complemented in thirty-two bits.
-    ///
-    /// The bug this function was split to prevent: complementing a
-    /// thirty-two-bit mask in sixty-four bits sets the whole high half and
-    /// answers eighteen quintillion, which a caller then tries to map
-    /// (D-168).
     #[test]
     fn a_narrow_window_is_not_complemented_in_a_wide_word() {
-        // The same mask read both ways: as a narrow register it is 16 KiB, as
-        // the low half of a wide one it is very much not.
-        assert_eq!(memory_window_size(0xFFFF_C000, 0, false), Some(0x4000));
-        assert!(memory_window_size(0xFFFF_C000, 0, true).unwrap() > u64::from(u32::MAX));
+        // The same mask must be complemented in the selected register width.
+        assert_eq!(
+            memory_window_size(0xFFFF_C000, 0, MemoryWidth::Bits32),
+            Some(0x4000)
+        );
+        assert!(
+            memory_window_size(0xFFFF_C000, 0, MemoryWidth::Bits64).unwrap() > u64::from(u32::MAX)
+        );
     }
 
-    /// An I/O window's size is a port count, not an address range.
     #[test]
     fn an_io_window_size_is_a_port_count() {
         for bits in 2..16u32 {
@@ -1419,28 +3746,199 @@ mod tests {
                 "a {size}-port window"
             );
         }
-        // The register's own low bits are not address bits.
         assert_eq!(io_window_size(0xFFFF_FFE1), Some(32));
     }
 
-    /// A probe that decoded nothing is refused rather than read as huge.
-    ///
-    /// All zeros means "there is no window here". Read as a mask it is a
-    /// four-gigabyte window at address zero, which a kernel would then map.
     #[test]
     fn a_probe_that_decoded_nothing_is_refused() {
-        assert_eq!(memory_window_size(0, 0, false), None);
-        assert_eq!(memory_window_size(0, 0, true), None);
+        assert_eq!(memory_window_size(0, 0, MemoryWidth::Bits32), None);
+        assert_eq!(memory_window_size(0, 0, MemoryWidth::Bits64), None);
         assert_eq!(io_window_size(0), None);
-        // Only the low bits set, which are the register's own and not address
-        // bits at all.
-        assert_eq!(memory_window_size(0x0000_000F, 0, false), None);
+        assert_eq!(
+            memory_window_size(0x0000_000F, 0, MemoryWidth::Bits32),
+            None
+        );
         assert_eq!(io_window_size(0x0000_0003), None);
-        // And a window larger than the port space is a device misreporting.
         assert_eq!(io_window_size(0xFFFF_0000), None);
     }
 
-    /// Decode is off throughout one wide-aware transaction and restored last.
+    #[test]
+    fn probed_bars_return_their_complete_slot_array() {
+        let first = Window {
+            bar: Bar::Memory {
+                address: 0x4000,
+                wide: false,
+                prefetchable: false,
+            },
+            size: 0x1000,
+        };
+        let mut windows = [None; BARS];
+        windows[0] = Some(first);
+        let probed = ProbedBars {
+            function: None,
+            windows,
+        };
+
+        assert_eq!(probed.into_windows(), windows);
+    }
+
+    #[test]
+    fn a_bar_probe_refuses_only_register_counts_above_its_bound() {
+        let mut accessed = false;
+        assert_eq!(
+            probe_bars(BARS + 1, |_| {
+                accessed = true;
+                Ok::<_, ()>(0)
+            }),
+            Err(ProbeError::Malformed)
+        );
+        assert!(!accessed);
+
+        let mut fake = FakeConfig::device();
+        fake.bars = [0; BARS];
+        fake.masks = [0; BARS];
+        assert!(probe_bars(1, |event| fake.access(event)).is_ok());
+    }
+
+    #[test]
+    fn an_address_zero_memory_bar_is_discovered_from_its_mask() {
+        let mut fake = FakeConfig::device();
+        fake.bars = [0; BARS];
+        fake.masks = [0xFFFF_F000, 0, 0, 0, 0, 0];
+
+        let probed = probe_bars(1, |event| fake.access(event)).expect("valid BAR");
+        assert_eq!(
+            probed.into_windows()[0],
+            Some(Window {
+                bar: Bar::Memory {
+                    address: 0,
+                    wide: false,
+                    prefetchable: false,
+                },
+                size: 0x1000,
+            })
+        );
+    }
+
+    #[test]
+    fn an_io_address_bit_is_not_a_wide_memory_type() {
+        let mut fake = FakeConfig::device();
+        fake.bars = [0x0000_C005, 0, 0, 0, 0, 0];
+        fake.masks = [0xFFFF_FFFD, 0, 0, 0, 0, 0];
+
+        let probed = probe_bars(1, |event| fake.access(event)).expect("valid BAR");
+        assert_eq!(
+            probed.into_windows()[0],
+            Some(Window {
+                bar: Bar::Io { port: 0xC004 },
+                size: 4,
+            })
+        );
+    }
+
+    #[test]
+    fn unsupported_memory_bar_types_refuse_before_any_probe_write() {
+        for memory_type in [1, 3] {
+            let mut fake = FakeConfig::device();
+            fake.bars = [0; BARS];
+            fake.bars[0] = 0x0008_0000 | memory_type << 1;
+            let original = fake.clone();
+
+            assert_eq!(
+                probe_bars(1, |event| fake.access(event)),
+                Err(ProbeError::Malformed),
+                "memory type {memory_type:02b}"
+            );
+            assert_eq!(
+                fake.events(),
+                [ProbeAccess::ReadCommand, ProbeAccess::ReadBar(0)].map(Some),
+                "memory type {memory_type:02b}"
+            );
+            assert_eq!(fake.command, original.command);
+            assert_eq!(fake.bars, original.bars);
+        }
+    }
+
+    #[test]
+    fn the_claimed_header_alone_sets_the_public_bar_probe_extent() {
+        for (function, header, registers) in [(0, 0u8, BARS), (1, 1u8, BRIDGE_BARS)] {
+            let mut functions = FunctionClaims::<1>::new();
+            let authority = functions
+                .claim(command_address(function), HeaderType::from_bits(header))
+                .expect("supported header authority");
+            let mut fake = FakeConfig::device();
+
+            let staged = super::probe_bars(&mut functions, &authority, |at, event| {
+                assert_eq!(at, authority.address());
+                fake.access(event)
+            })
+            .expect("header-sized probe");
+            let (_, state) = staged.into_parts();
+
+            assert!(fake.events().iter().any(|event| {
+                matches!(event, Some(ProbeAccess::ReadBar(index)) if *index == registers - 1)
+            }));
+            assert!(!fake.events().iter().any(|event| {
+                matches!(event, Some(ProbeAccess::ReadBar(index) | ProbeAccess::WriteBar(index, _)) if *index >= registers)
+            }));
+            super::restore_command(&mut functions, &authority, state, |_, access| {
+                fake_command_access(&mut fake, access)
+            })
+            .expect("the staged command restores");
+            release_function(&mut functions, authority)
+                .expect("a retired probe releases its function");
+        }
+    }
+
+    #[test]
+    fn inherited_bus_master_stays_off_until_the_staged_command_retires() {
+        let mut functions = FunctionClaims::<1>::new();
+        let authority = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("function authority");
+        let mut fake = FakeConfig::device();
+        let original = fake.command;
+        assert_ne!(original & command::BUS_MASTER, 0);
+
+        let staged = super::probe_bars(&mut functions, &authority, |_, event| fake.access(event))
+            .expect("the BARs probe with inherited DMA disabled");
+        let (_, state) = staged.into_parts();
+        assert_eq!(fake.bar_writes_with_bus_master, 0);
+        assert_eq!(fake.command, original & !PROBE_DISABLED);
+
+        let failure = release_function(&mut functions, authority)
+            .expect_err("the staged command keeps its function authority");
+        assert_eq!(failure.reason(), FunctionReleaseError::Active);
+        let authority = failure.into_authority();
+        super::restore_command(&mut functions, &authority, state, |_, access| {
+            fake_command_access(&mut fake, access)
+        })
+        .expect("retirement restores the inherited command exactly");
+        assert_eq!(fake.command, original);
+        release_function(&mut functions, authority)
+            .expect("the function releases only after command retirement");
+    }
+
+    #[test]
+    fn refused_bus_master_clear_releases_only_after_exact_rollback() {
+        let mut functions = FunctionClaims::<1>::new();
+        let authority = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("function authority");
+        let mut fake = FakeConfig::device();
+        let original = fake.command;
+        fake.ignore_write_at = Some(7);
+
+        let failure = super::probe_bars(&mut functions, &authority, |_, event| fake.access(event))
+            .expect_err("the device ignored the DMA-disable write");
+        assert_eq!(failure.reason(), &ProbeError::Refused(original));
+        assert!(failure.into_retry().is_none());
+        assert_eq!(fake.bar_writes_with_bus_master, 0);
+        assert_eq!(fake.command, original);
+        release_function(&mut functions, authority)
+            .expect("verified rollback released the probe sublease");
+    }
+
     #[test]
     fn a_bar_probe_is_one_restored_decode_off_transaction() {
         let mut fake = FakeConfig::device();
@@ -1454,7 +3952,7 @@ mod tests {
         );
         assert_eq!(fake.bars, original.bars);
         assert_eq!(
-            probed.window(0),
+            probed.into_windows()[0],
             Some(Window {
                 bar: Bar::Memory {
                     address: 0x1_8000_0000,
@@ -1465,12 +3963,12 @@ mod tests {
             })
         );
         assert_eq!(
-            probed.window(1),
+            probed.into_windows()[1],
             None,
             "the high half is not another window"
         );
         assert_eq!(
-            probed.window(2),
+            probed.into_windows()[2],
             Some(Window {
                 bar: Bar::Io { port: 0xC000 },
                 size: 32,
@@ -1485,7 +3983,8 @@ mod tests {
             ProbeAccess::ReadBar(3),
             ProbeAccess::ReadBar(4),
             ProbeAccess::ReadBar(5),
-            ProbeAccess::WriteCommand(command::BUS_MASTER),
+            ProbeAccess::WriteCommand(0),
+            ProbeAccess::ReadCommand,
             ProbeAccess::WriteBar(0, u32::MAX),
             ProbeAccess::WriteBar(1, u32::MAX),
             ProbeAccess::ReadBar(0),
@@ -1498,25 +3997,33 @@ mod tests {
             ProbeAccess::ReadBar(4),
             ProbeAccess::WriteBar(5, u32::MAX),
             ProbeAccess::ReadBar(5),
+            ProbeAccess::WriteCommand(0),
+            ProbeAccess::ReadCommand,
             ProbeAccess::WriteBar(5, 0),
             ProbeAccess::WriteBar(4, 0),
             ProbeAccess::WriteBar(3, 0),
             ProbeAccess::WriteBar(2, 0x0000_C001),
             ProbeAccess::WriteBar(1, 1),
             ProbeAccess::WriteBar(0, 0x8000_0004),
+            ProbeAccess::ReadBar(5),
+            ProbeAccess::ReadBar(4),
+            ProbeAccess::ReadBar(3),
+            ProbeAccess::ReadBar(2),
+            ProbeAccess::ReadBar(1),
+            ProbeAccess::ReadBar(0),
             ProbeAccess::WriteCommand(
                 command::IO_SPACE | command::MEMORY_SPACE | command::BUS_MASTER,
             ),
+            ProbeAccess::ReadCommand,
         ];
         assert_eq!(fake.events(), expected.map(Some));
     }
 
-    /// Every access failure after the first write rolls the exact device back.
     #[test]
     fn every_probe_access_failure_restores_the_device() {
-        // Calls 7 through 19 are the decode-off write and probe cycles. The
+        // Calls 7 through 20 are the decode-off write and probe cycles. The
         // events after them are rollback itself and have a separate proof.
-        for fail_at in 7..20 {
+        for fail_at in 7..=20 {
             let mut fake = FakeConfig::device();
             let original = fake.clone();
             fake.fail_at = Some(fail_at);
@@ -1531,35 +4038,216 @@ mod tests {
             assert_eq!(fake.bars, original.bars, "BARs at cycle {fail_at}");
             assert_eq!(
                 fake.events().last(),
-                Some(&Some(ProbeAccess::WriteCommand(original.command))),
+                Some(&Some(ProbeAccess::ReadCommand)),
                 "decode is restored last at cycle {fail_at}"
             );
         }
     }
 
-    /// One refused restore does not prevent the remaining registers restoring.
     #[test]
     fn a_restore_failure_still_attempts_every_later_restore() {
+        for fail_at in 23..=28 {
+            let mut fake = FakeConfig::device();
+            let original = fake.clone();
+            fake.fail_at = Some(fail_at);
+
+            probe_bars(BARS, |event| fake.access(event))
+                .expect("an applied restore write is verified by the later reads");
+            assert_eq!(fake.command, original.command, "command at cycle {fail_at}");
+            assert_eq!(fake.bars, original.bars, "BARs at cycle {fail_at}");
+        }
+    }
+
+    #[test]
+    fn an_ignored_decode_off_write_is_refused_before_any_bar_access() {
         let mut fake = FakeConfig::device();
         let original = fake.clone();
-        fake.fail_at = Some(23);
+        fake.ignore_write_at = Some(7);
 
         assert_eq!(
             probe_bars(BARS, |event| fake.access(event)),
-            Err(ProbeError::Restore(23))
+            Err(ProbeError::Refused(original.command))
         );
-        assert_eq!(
-            fake.command, original.command,
-            "command restoration was attempted"
-        );
-        assert_eq!(fake.status, original.status);
-        assert_eq!(
-            fake.events().last(),
-            Some(&Some(ProbeAccess::WriteCommand(original.command)))
+        assert_eq!(fake.command, original.command);
+        assert_eq!(fake.bars, original.bars);
+        assert!(
+            !fake.events()[7..]
+                .iter()
+                .any(|event| matches!(event, Some(ProbeAccess::WriteBar(_, _))))
         );
     }
 
-    /// A wide BAR cannot consume a slot belonging to another header field.
+    #[test]
+    fn a_restore_read_failure_keeps_decode_off() {
+        let mut fake = FakeConfig::device();
+        let original = fake.clone();
+        fake.fail_at = Some(30);
+
+        assert_eq!(
+            probe_bars(BARS, |event| fake.access(event)),
+            Err(ProbeError::Restore(30))
+        );
+        assert_eq!(
+            fake.command,
+            original.command & !PROBE_DISABLED,
+            "decode became live before every BAR was proven"
+        );
+        assert_eq!(fake.status, original.status);
+        assert_eq!(fake.bars, original.bars);
+        assert_eq!(fake.events().last(), Some(&Some(ProbeAccess::ReadBar(4))));
+    }
+
+    #[test]
+    fn an_uncertain_bar_restore_retains_exclusion_and_retries_exactly() {
+        let supplied = command_address(0);
+        let function = supplied.function_base();
+        let authority = device_authority(supplied);
+        let mut leases = CommandLeases::<1>::new();
+        let mut fake = FakeConfig::device();
+        let original = fake.clone();
+        fake.fail_at = Some(30);
+
+        let failure = super::probe_bars_with_leases(&mut leases, &authority, |at, event| {
+            assert_eq!(at, function);
+            fake.access(event)
+        })
+        .expect_err("one restoration read was unavailable");
+        assert_eq!(failure.reason(), &ProbeError::Restore(30));
+        let retry = failure
+            .into_retry()
+            .expect("uncertain hardware retains its function reservation");
+        assert_eq!(leases.begin_probe(&authority), Err(EnableError::Leased));
+        assert_eq!(fake.command, original.command & !PROBE_DISABLED);
+
+        fake.fail_at = None;
+        super::retry_probe_with_leases(&mut leases, &authority, retry, |at, event| {
+            assert_eq!(at, function);
+            fake.access(event)
+        })
+        .expect("the same owner restored every captured register");
+        assert_eq!(fake.command, original.command);
+        assert_eq!(fake.status, original.status);
+        assert_eq!(fake.bars, original.bars);
+
+        let probe = leases
+            .begin_probe(&authority)
+            .expect("exact retry released the reservation");
+        leases
+            .finish_probe(&authority, probe)
+            .expect("the new probe releases");
+    }
+
+    #[test]
+    fn a_retry_reproves_decode_is_off_before_restoring_bars() {
+        let supplied = command_address(0);
+        let function = supplied.function_base();
+        let authority = device_authority(supplied);
+        let mut leases = CommandLeases::<1>::new();
+        let mut fake = FakeConfig::device();
+        let original = fake.clone();
+        fake.fail_at = Some(30);
+
+        let failure = super::probe_bars_with_leases(&mut leases, &authority, |at, event| {
+            assert_eq!(at, function);
+            fake.access(event)
+        })
+        .expect_err("one restoration read was unavailable");
+        let retry = failure
+            .into_retry()
+            .expect("the uncertain restoration retains its owner");
+
+        fake.fail_at = None;
+        fake.command = original.command;
+        let retry_start = fake.calls;
+        fake.ignore_write_at = Some(retry_start);
+        let failure =
+            super::retry_probe_with_leases(&mut leases, &authority, retry, |at, event| {
+                assert_eq!(at, function);
+                fake.access(event)
+            })
+            .expect_err("an ignored decode-off write cannot expose the BAR restore");
+        assert_eq!(failure.reason(), &ProbeError::RestoreChanged);
+        let retry = failure
+            .into_retry()
+            .expect("the failed recheck retains the same owner");
+        assert_eq!(
+            &fake.events()[retry_start..],
+            &[
+                Some(ProbeAccess::WriteCommand(
+                    original.command & !PROBE_DISABLED,
+                )),
+                Some(ProbeAccess::ReadCommand),
+            ]
+        );
+
+        fake.ignore_write_at = None;
+        super::retry_probe_with_leases(&mut leases, &authority, retry, |at, event| {
+            assert_eq!(at, function);
+            fake.access(event)
+        })
+        .expect("an exact retry restores the captured device state");
+        assert_eq!(fake.command, original.command);
+        assert_eq!(fake.bars, original.bars);
+    }
+
+    #[test]
+    fn ignored_bar_and_command_restore_writes_retain_retry_authority() {
+        let supplied = command_address(0);
+        let function = supplied.function_base();
+        let authority = device_authority(supplied);
+        let mut leases = CommandLeases::<1>::new();
+        let mut fake = FakeConfig::device();
+        let original = fake.clone();
+        fake.ignore_write_at = Some(26);
+
+        let failure = super::probe_bars_with_leases(&mut leases, &authority, |at, event| {
+            assert_eq!(at, function);
+            fake.access(event)
+        })
+        .expect_err("an ignored BAR restoration write cannot be accepted");
+        assert_eq!(failure.reason(), &ProbeError::RestoreChanged);
+        let retry = failure
+            .into_retry()
+            .expect("the uncertain BAR restoration retains its owner");
+        assert_eq!(leases.begin_probe(&authority), Err(EnableError::Leased));
+        assert_eq!(fake.command, original.command & !PROBE_DISABLED);
+
+        fake.ignore_write_at = None;
+        super::retry_probe_with_leases(&mut leases, &authority, retry, |at, event| {
+            assert_eq!(at, function);
+            fake.access(event)
+        })
+        .expect("the same token retries the ignored BAR write");
+        assert_eq!(fake.command, original.command);
+        assert_eq!(fake.bars, original.bars);
+
+        let staged = super::probe_bars_with_leases(&mut leases, &authority, |at, event| {
+            assert_eq!(at, function);
+            fake.access(event)
+        })
+        .expect("a second probe stages its command");
+        let (_, state) = staged.into_parts();
+        fake.ignore_write_at = Some(fake.calls + 1);
+        let failure =
+            super::restore_command_with_leases(&mut leases, &authority, state, |_, access| {
+                fake_command_access(&mut fake, access)
+            })
+            .expect_err("an ignored command restoration write cannot be accepted");
+        assert_eq!(failure.reason(), EnableError::Refused(0));
+        assert_eq!(leases.begin_probe(&authority), Err(EnableError::Leased));
+
+        fake.ignore_write_at = None;
+        super::restore_command_with_leases(
+            &mut leases,
+            &authority,
+            failure.into_state(),
+            |_, access| fake_command_access(&mut fake, access),
+        )
+        .expect("the same command owner retries the ignored write");
+        assert_eq!(fake.command, original.command);
+        assert_eq!(fake.bars, original.bars);
+    }
+
     #[test]
     fn a_wide_bar_in_the_final_slot_is_refused_before_mutation() {
         let mut fake = FakeConfig::device();
@@ -1580,7 +4268,6 @@ mod tests {
         )));
     }
 
-    /// A nonsensical mask is refused only after the hardware is restored.
     #[test]
     fn an_invalid_bar_mask_is_refused_after_restoration() {
         let mut fake = FakeConfig::device();
@@ -1596,7 +4283,314 @@ mod tests {
         assert_eq!(fake.bars, original.bars);
     }
 
-    /// An absent function is all ones, and that is not a vendor.
+    #[test]
+    fn a_misaligned_bar_base_is_refused_after_restoration() {
+        let mut fake = FakeConfig::device();
+        fake.bars = [0x0000_1800, 0, 0, 0, 0, 0];
+        fake.masks = [0xFFFF_F000, 0, 0, 0, 0, 0];
+        let original = fake.clone();
+
+        assert_eq!(
+            probe_bars(1, |event| fake.access(event)),
+            Err(ProbeError::InvalidWindow)
+        );
+        assert_eq!(fake.command, original.command);
+        assert_eq!(fake.status, original.status);
+        assert_eq!(fake.bars, original.bars);
+    }
+
+    fn probe_claimed_bars<const N: usize>(
+        functions: &mut FunctionClaims<N>,
+        authority: &FunctionAuthority,
+        fake: &mut FakeConfig,
+    ) -> (ProbedBars, CommandState) {
+        super::probe_bars(functions, authority, |at, event| {
+            assert_eq!(at, authority.address());
+            fake.access(event)
+        })
+        .expect("the claimed function has valid BARs")
+        .into_parts()
+    }
+
+    #[test]
+    fn a_bar_mapping_authority_is_linear_and_bound_to_its_probe_function() {
+        let mut functions = FunctionClaims::<2>::new();
+        let first = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("first function");
+        let second = functions
+            .claim(command_address(1), HeaderType::from_bits(0))
+            .expect("second function");
+        let mut fake = FakeConfig::device();
+        let (bars, state) = probe_claimed_bars(&mut functions, &first, &mut fake);
+
+        assert_eq!(
+            bind_memory_bar(&mut functions, &second, &bars, 0),
+            Err(BarAuthorityError::Stale)
+        );
+        assert_eq!(
+            bind_memory_bar(&mut functions, &first, &bars, 2),
+            Err(BarAuthorityError::NotMemory)
+        );
+        let bar = bind_memory_bar(&mut functions, &first, &bars, 0)
+            .expect("the issuing function binds its memory BAR");
+        assert_eq!(bar.index(), 0);
+        assert_eq!(bar.window(), bars.window(0).expect("BAR0"));
+        assert_eq!(
+            bind_memory_bar(&mut functions, &first, &bars, 0),
+            Err(BarAuthorityError::Busy)
+        );
+
+        let failure = release_function(&mut functions, first)
+            .expect_err("a mapped BAR keeps its function claimed");
+        assert_eq!(failure.reason(), FunctionReleaseError::Active);
+        let first = failure.into_authority();
+        release_memory_bar(&mut functions, bar).expect("exact BAR authority returns");
+        super::restore_command(&mut functions, &first, state, |_, access| {
+            fake_command_access(&mut fake, access)
+        })
+        .expect("the staged probe restores");
+        release_function(&mut functions, first).expect("the settled first function releases");
+        release_function(&mut functions, second).expect("the untouched second function releases");
+    }
+
+    #[test]
+    fn changed_or_foreign_bar_identity_performs_zero_command_writes() {
+        let mut functions = FunctionClaims::<2>::new();
+        let first = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("first function");
+        let second = functions
+            .claim(command_address(1), HeaderType::from_bits(0))
+            .expect("second function");
+        let mut fake = FakeConfig::device();
+        let (bars, mut state) = probe_claimed_bars(&mut functions, &first, &mut fake);
+        let bar = bind_memory_bar(&mut functions, &first, &bars, 0).expect("BAR0 authority");
+
+        let mut foreign_accesses = 0;
+        let foreign = enable_memory_bar(&mut functions, &second, &bar, &mut state, |_, _| {
+            foreign_accesses += 1;
+            Some(0)
+        })
+        .expect_err("another function cannot spend the BAR authority");
+        assert_eq!(foreign, BarEnableError::Identity(BarIdentityError::Stale));
+        assert_eq!(foreign_accesses, 0);
+
+        let mut command_writes = 0;
+        let changed =
+            enable_memory_bar(
+                &mut functions,
+                &first,
+                &bar,
+                &mut state,
+                |_, event| match event {
+                    BarEnableAccess::ReadBar(0) => Some(fake.bars[0] + 0x4000),
+                    BarEnableAccess::ReadBar(1) => Some(fake.bars[1]),
+                    BarEnableAccess::ReadBar(_) => None,
+                    BarEnableAccess::Command(CommandAccess::Write(_)) => {
+                        command_writes += 1;
+                        Some(0)
+                    }
+                    BarEnableAccess::Command(CommandAccess::Read) => Some(u32::from(fake.command)),
+                },
+            )
+            .expect_err("a changed BAR cannot enable decode");
+        assert_eq!(changed, BarEnableError::Identity(BarIdentityError::Changed));
+        assert_eq!(command_writes, 0);
+
+        let inaccessible = enable_memory_bar(
+            &mut functions,
+            &first,
+            &bar,
+            &mut state,
+            |_, event| match event {
+                BarEnableAccess::ReadBar(0) => Some(fake.bars[0]),
+                BarEnableAccess::ReadBar(1) => None,
+                BarEnableAccess::ReadBar(_) => None,
+                BarEnableAccess::Command(CommandAccess::Write(_)) => {
+                    command_writes += 1;
+                    Some(0)
+                }
+                BarEnableAccess::Command(CommandAccess::Read) => Some(u32::from(fake.command)),
+            },
+        )
+        .expect_err("an incomplete wide identity cannot enable decode");
+        assert_eq!(
+            inaccessible,
+            BarEnableError::Identity(BarIdentityError::Access)
+        );
+        assert_eq!(command_writes, 0);
+
+        release_memory_bar(&mut functions, bar).expect("BAR authority returns");
+        super::restore_command(&mut functions, &first, state, |_, access| {
+            fake_command_access(&mut fake, access)
+        })
+        .expect("the staged probe restores");
+        release_function(&mut functions, first).expect("first function releases");
+        release_function(&mut functions, second).expect("second function releases");
+    }
+
+    #[test]
+    fn every_type_only_bar_change_performs_zero_command_writes() {
+        let mut functions = FunctionClaims::<1>::new();
+        let function = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("function");
+        let mut fake = FakeConfig::device();
+        fake.bars = [0x8000_0000, 0, 0, 0, 0, 0];
+        fake.masks = [0xFFFF_C000, 0, 0, 0, 0, 0];
+        let (bars, mut state) = probe_claimed_bars(&mut functions, &function, &mut fake);
+        let bar = bind_memory_bar(&mut functions, &function, &bars, 0).expect("BAR0 authority");
+
+        for memory_type in 1..=3 {
+            let mut command_writes = 0;
+            let changed =
+                enable_memory_bar(&mut functions, &function, &bar, &mut state, |_, event| {
+                    match event {
+                        BarEnableAccess::ReadBar(0) => Some(fake.bars[0] | memory_type << 1),
+                        BarEnableAccess::ReadBar(_) => None,
+                        BarEnableAccess::Command(CommandAccess::Write(_)) => {
+                            command_writes += 1;
+                            Some(0)
+                        }
+                        BarEnableAccess::Command(CommandAccess::Read) => {
+                            Some(u32::from(fake.command))
+                        }
+                    }
+                })
+                .expect_err("a type-only BAR change cannot enable decode");
+            assert_eq!(
+                changed,
+                BarEnableError::Identity(BarIdentityError::Changed),
+                "memory type {memory_type:02b}"
+            );
+            assert_eq!(command_writes, 0, "memory type {memory_type:02b}");
+        }
+
+        release_memory_bar(&mut functions, bar).expect("BAR authority returns");
+        super::restore_command(&mut functions, &function, state, |_, access| {
+            fake_command_access(&mut fake, access)
+        })
+        .expect("the staged probe restores");
+        release_function(&mut functions, function).expect("function releases");
+    }
+
+    #[test]
+    fn exact_wide_bar_reads_precede_the_first_decode_write() {
+        let mut functions = FunctionClaims::<1>::new();
+        let function = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("function");
+        let mut fake = FakeConfig::device();
+        let (bars, mut state) = probe_claimed_bars(&mut functions, &function, &mut fake);
+        let bar = bind_memory_bar(&mut functions, &function, &bars, 0).expect("BAR0 authority");
+        let mut command = FakeCommand::new(0, u16::MAX);
+        let mut trace = Vec::new();
+
+        enable_memory_bar(&mut functions, &function, &bar, &mut state, |at, event| {
+            trace.push(event);
+            match event {
+                BarEnableAccess::ReadBar(index) => {
+                    assert_eq!(
+                        at,
+                        function
+                            .address()
+                            .at(header::BAR0 + index as u16 * 4)
+                            .expect("BAR address")
+                    );
+                    fake.bars.get(index).copied()
+                }
+                BarEnableAccess::Command(access) => {
+                    assert_eq!(
+                        at,
+                        function
+                            .address()
+                            .at(header::COMMAND)
+                            .expect("command address")
+                    );
+                    command.access(access)
+                }
+            }
+        })
+        .expect("the unchanged mapped BAR enables memory decode");
+
+        assert_eq!(
+            trace,
+            [
+                BarEnableAccess::ReadBar(0),
+                BarEnableAccess::ReadBar(1),
+                BarEnableAccess::Command(CommandAccess::Read),
+                BarEnableAccess::Command(CommandAccess::Write(command::MEMORY_SPACE)),
+                BarEnableAccess::Command(CommandAccess::Read),
+            ]
+        );
+        super::restore_command(&mut functions, &function, state, |_, access| {
+            command.access(access)
+        })
+        .expect("the command lease restores");
+        release_memory_bar(&mut functions, bar).expect("BAR authority returns");
+        release_function(&mut functions, function).expect("function releases");
+    }
+
+    #[test]
+    fn mapped_bus_master_admission_requires_its_bar_and_command_owner() {
+        let mut functions = FunctionClaims::<2>::new();
+        let first = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("first function");
+        let second = functions
+            .claim(command_address(1), HeaderType::from_bits(0))
+            .expect("second function");
+        let mut first_config = FakeConfig::device();
+        let (first_bars, mut state) = probe_claimed_bars(&mut functions, &first, &mut first_config);
+        let first_bar =
+            bind_memory_bar(&mut functions, &first, &first_bars, 0).expect("first BAR authority");
+        let mut second_config = FakeConfig::device();
+        let (second_bars, second_state) =
+            probe_claimed_bars(&mut functions, &second, &mut second_config);
+        let second_bar = bind_memory_bar(&mut functions, &second, &second_bars, 0)
+            .expect("second BAR authority");
+        let mut command = FakeCommand::new(0, u16::MAX);
+        enable_memory_bar(
+            &mut functions,
+            &first,
+            &first_bar,
+            &mut state,
+            |_, access| match access {
+                BarEnableAccess::ReadBar(index) => first_config.bars.get(index).copied(),
+                BarEnableAccess::Command(access) => command.access(access),
+            },
+        )
+        .expect("first function memory decode");
+        let calls = command.calls;
+
+        assert_eq!(
+            admit_mapped_bus_master(&mut functions, &second_bar, &mut state, |_, access| {
+                command.access(access)
+            }),
+            Err(EnableError::Stale)
+        );
+        assert_eq!(command.calls, calls, "a foreign BAR reached configuration");
+
+        admit_mapped_bus_master(&mut functions, &first_bar, &mut state, |_, access| {
+            command.access(access)
+        })
+        .expect("the mapped issuing BAR admits bus master");
+        assert_eq!(command.command, command::MEMORY_SPACE | command::BUS_MASTER);
+        super::restore_command(&mut functions, &first, state, |_, access| {
+            command.access(access)
+        })
+        .expect("the issuing function restores its command");
+        super::restore_command(&mut functions, &second, second_state, |_, access| {
+            fake_command_access(&mut second_config, access)
+        })
+        .expect("the second staged probe restores");
+        release_memory_bar(&mut functions, first_bar).expect("first BAR release");
+        release_memory_bar(&mut functions, second_bar).expect("second BAR release");
+        release_function(&mut functions, first).expect("first function release");
+        release_function(&mut functions, second).expect("second function release");
+    }
+
     #[test]
     fn an_absent_function_reads_as_all_ones() {
         assert!(is_absent(0xFFFF));
@@ -1606,13 +4600,9 @@ mod tests {
         assert!(!is_absent(0x0000), "a vendor of zero is odd, not absent");
     }
 
-    /// A bridge's bus numbers are three separate bytes.
     #[test]
-    fn a_bridges_bus_numbers_are_read_separately() {
-        // Primary 0x11, secondary 0x22, subordinate 0x33: pairwise distinct,
-        // so a shift off by eight cannot pass.
+    fn a_bridge_secondary_bus_is_read_from_its_own_byte() {
         let bits = 0x0044_3322u32 << 8 | 0x11;
         assert_eq!(secondary_bus(bits), 0x22);
-        assert_eq!(subordinate_bus(bits), 0x33);
     }
 }

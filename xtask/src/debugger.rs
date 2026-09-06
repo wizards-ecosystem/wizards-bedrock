@@ -3,8 +3,10 @@
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Output};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, bail};
 
@@ -18,8 +20,8 @@ const GDB_IDENTITY: &str = "GNU gdb (GDB for MinGW-W64 x86_64, built by Brecht S
 const WINGET_PACKAGE_PREFIX: &str = "BrechtSanders.WinLibs.POSIX.UCRT_";
 const ENTRY_SYMBOL: &str = "kmain";
 const PROOF_MARKER: &str = "wizard-debug: kernel-entry-hit";
+const IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const PROOF_TIMEOUT: Duration = Duration::from_secs(45);
-const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 pub(crate) fn run(paths: &Paths, mode: DebugMode) -> Result<()> {
     let gdb = Debugger::locate()?;
@@ -85,9 +87,9 @@ impl Debugger {
         if !executable.is_file() {
             bail!("{} is not a file", executable.display());
         }
-        let output = Command::new(&executable)
-            .arg("--version")
-            .output()
+        let mut command = Command::new(&executable);
+        command.arg("--version");
+        let output = bounded_identity_output(command, IDENTITY_TIMEOUT)
             .with_context(|| format!("running {} --version", executable.display()))?;
         if !output.status.success() {
             bail!(
@@ -118,11 +120,8 @@ impl Debugger {
 
     fn check(&self, elf: &Path, endpoint: &str) -> Result<()> {
         let mut command = Command::new(&self.executable);
-        command
-            .args(gdb_arguments(elf, endpoint, DebugMode::Check))
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let output = bounded_output(&mut command, PROOF_TIMEOUT)?;
+        command.args(gdb_arguments(elf, endpoint, DebugMode::Check));
+        let output = bounded_output(command, PROOF_TIMEOUT)?;
         std::io::stdout()
             .write_all(&output.stdout)
             .context("forwarding GDB's proof output")?;
@@ -146,7 +145,8 @@ impl Debugger {
 }
 
 fn require_identity(stdout: &str) -> Result<&str> {
-    let identity = stdout.lines().next().context("GDB printed no identity")?;
+    let identity =
+        core::iter::Iterator::next(&mut stdout.lines()).context("GDB printed no identity")?;
     if identity != GDB_IDENTITY {
         bail!("unsupported GDB identity `{identity}`; expected `{GDB_IDENTITY}`");
     }
@@ -219,33 +219,12 @@ fn gdb_arguments(elf: &Path, endpoint: &str, mode: DebugMode) -> Vec<OsString> {
     arguments
 }
 
-fn bounded_output(command: &mut Command, timeout: Duration) -> Result<Output> {
-    let mut child = command.spawn().context("launching the bounded GDB proof")?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        if child
-            .try_wait()
-            .context("checking GDB's proof process")?
-            .is_some()
-        {
-            return child
-                .wait_with_output()
-                .context("collecting GDB's proof output");
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let output = child
-                .wait_with_output()
-                .context("reaping the timed-out GDB proof")?;
-            bail!(
-                "GDB did not complete its proof within {} seconds\nstdout:\n{}\nstderr:\n{}",
-                timeout.as_secs(),
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        std::thread::sleep(POLL_INTERVAL);
-    }
+fn bounded_output(command: Command, timeout: Duration) -> Result<Output> {
+    crate::bounded_process::output(command, timeout, "GDB proof")
+}
+
+fn bounded_identity_output(command: Command, timeout: Duration) -> Result<Output> {
+    crate::bounded_process::output(command, timeout, "GDB identity probe")
 }
 
 fn require_proof(transcript: &str) -> Result<()> {
@@ -301,8 +280,30 @@ mod tests {
         assert!(check.contains("--batch"));
         assert!(check.contains(PROOF_MARKER));
         assert!(check.contains("backtrace|--ex|detach|--ex|quit"));
+        assert!(IDENTITY_TIMEOUT <= Duration::from_secs(10));
         assert!(PROOF_TIMEOUT >= Duration::from_secs(10));
         assert!(PROOF_TIMEOUT <= Duration::from_secs(60));
+    }
+
+    #[test]
+    #[ignore]
+    fn slow_identity_child() {
+        std::thread::sleep(Duration::from_secs(2));
+    }
+
+    #[test]
+    fn the_gdb_identity_probe_has_a_direct_child_return_deadline() {
+        let mut command = Command::new(std::env::current_exe().expect("current test executable"));
+        command.args([
+            "--exact",
+            "debugger::tests::slow_identity_child",
+            "--ignored",
+        ]);
+        let started = Instant::now();
+        let error = bounded_identity_output(command, Duration::from_millis(100)).unwrap_err();
+
+        assert!(format!("{error:#}").contains("GDB identity probe timed out after 100 ms"));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

@@ -33,11 +33,6 @@ impl GsiRange {
         self.first
     }
 
-    /// The last GSI this controller owns, inclusive.
-    pub const fn last(self) -> u32 {
-        self.last
-    }
-
     /// Whether this controller owns `gsi`.
     pub const fn contains(self, gsi: u32) -> bool {
         self.first <= gsi && gsi <= self.last
@@ -102,7 +97,7 @@ mod tests {
 
         let one = GsiRange::new(u32::MAX, 1).expect("the final GSI alone");
         assert_eq!(one.first(), u32::MAX);
-        assert_eq!(one.last(), u32::MAX);
+        assert_eq!(one.last, u32::MAX);
         assert!(one.contains(u32::MAX));
     }
 
@@ -134,6 +129,18 @@ mod tests {
                 first: 0,
                 second: 2,
             })
+        );
+    }
+
+    #[test]
+    fn an_overlap_error_names_both_controller_indices() {
+        assert_eq!(
+            OverlappingRanges {
+                first: 3,
+                second: 7,
+            }
+            .to_string(),
+            "i/o apic ranges 3 and 7 overlap"
         );
     }
 }

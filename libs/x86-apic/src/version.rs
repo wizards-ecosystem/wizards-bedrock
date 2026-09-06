@@ -64,10 +64,8 @@ mod tests {
 
     /// The boundary, both sides.
     ///
-    /// The three values in use — 0x14, 0x0F and 0 — are satisfied by any
-    /// threshold in 0x10..=0x14, so the constant was pinned to an interval
-    /// rather than to a number. A real integrated APIC reporting 0x11 would
-    /// have been rejected as the 486-era 82489DX (D-124).
+    /// Common values 0x14, 0x0F and 0 admit any threshold in 0x10..=0x14, so
+    /// both sides explicitly anchor the architectural boundary (D-124).
     #[test]
     fn the_integrated_threshold_is_sixteen() {
         assert_eq!(FIRST_INTEGRATED, 0x10);

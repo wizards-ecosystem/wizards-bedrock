@@ -1,21 +1,13 @@
 //! The decision log, checked against the code that cites it.
 //!
 //! `docs/004-decision-log.md` is the authority on why this kernel is shaped the
-//! way it is, and roughly two hundred comments cite it by number. Nothing
-//! checked those numbers, and the cost of that showed up as **D-121 cited in
-//! eight places with no such entry in the log** — a decision the code says was
-//! taken and the record does not contain. Every one of those citations reads as
-//! a pointer to a rationale, and every one led nowhere.
-//!
-//! Two tests, both host-side and both milliseconds, because this is a text
-//! property and belongs where `cargo test` reaches it (D-41):
+//! way it is. Host tests enforce two text properties where `cargo test` can
+//! reach them (D-41):
 //!
 //! - the entries run from `D-01` upward with no gap and no repeat, so a number
 //!   cannot be skipped when one is minted;
 //! - every `D-NNN` written anywhere in the tree names an entry that exists.
 //!
-//! The second is the one that would have caught D-121. The first is what stops
-//! the next gap being introduced, which is the cheaper end to fix it from.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -45,8 +37,7 @@ pub fn defined(root: &Path) -> Result<BTreeSet<u32>> {
 ///
 /// The digits must end at a boundary, symmetric with the one the caller checks
 /// in front: a run of hex that merely opens with a digit is not a citation, and
-/// reporting one would name a decision nobody claimed. This function's own doc
-/// comment was the first thing the check caught.
+/// reporting one would name a decision nobody claimed.
 fn number(rest: &str) -> Option<(u32, &str)> {
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     if digits.is_empty() || digits.len() > 3 {
@@ -56,7 +47,7 @@ fn number(rest: &str) -> Option<(u32, &str)> {
     if after.starts_with(|char: char| char.is_alphanumeric() || char == '_') {
         return None;
     }
-    Some((digits.parse().ok()?, after))
+    Some((<u32 as core::str::FromStr>::from_str(&digits).ok()?, after))
 }
 
 /// Every `D-NNN` cited in a file, with the line it is on.
@@ -82,6 +73,12 @@ fn cited(text: &str) -> Vec<(u32, usize)> {
     found
 }
 
+#[cfg(test)]
+fn searchable_text(path: &Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|reason| panic!("reading searchable file {}: {reason}", path.display()))
+}
+
 /// Every file worth searching for citations: sources, docs, and manifests.
 #[cfg(test)]
 fn searchable(root: &Path) -> Result<Vec<std::path::PathBuf>> {
@@ -91,22 +88,20 @@ fn searchable(root: &Path) -> Result<Vec<std::path::PathBuf>> {
     let mut found = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(&directory)
-            .with_context(|| format!("reading {}", directory.display()))?
-        {
-            let path = entry?.path();
+        for entry in crate::paths::directory_entries(&directory)? {
+            let path = entry.path();
             let name = path
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("");
-            if path.is_dir() {
+            if entry.is_dir() {
                 if !SKIP.contains(&name) && !name.starts_with('.') {
                     pending.push(path);
                 }
             } else if matches!(
                 path.extension().and_then(|extension| extension.to_str()),
-                // `.ld` included since D-147: `kernel/linker.ld` cites D-45
-                // and D-21 and was scanned by nothing.
+                // Linker scripts cite decisions and therefore belong in the
+                // source inventory (D-147).
                 Some("rs" | "md" | "toml" | "h" | "cpp" | "tla" | "cfg" | "ld")
             ) {
                 found.push(path);
@@ -170,9 +165,7 @@ mod tests {
         let mut dangling = Vec::new();
 
         for path in searchable(&root).expect("walking the tree") {
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+            let text = searchable_text(&path);
             for (decision, line) in cited(&text) {
                 if !defined.contains(&decision) {
                     let shown = path.strip_prefix(&root).unwrap_or(&path);
@@ -201,5 +194,15 @@ mod tests {
         assert!(cited("D- alone").is_empty());
         // And the forms that are: mid-sentence, parenthesised, possessive.
         assert_eq!(cited("D-105's rule"), vec![(105, 1)]);
+    }
+
+    #[test]
+    fn an_unreadable_searchable_file_fails_the_citation_proof() {
+        let missing = root().join("xtask/src/__missing_decision_proof_file__");
+        assert!(
+            !missing.exists(),
+            "the missing-file fixture unexpectedly exists"
+        );
+        assert!(std::panic::catch_unwind(|| searchable_text(&missing)).is_err());
     }
 }

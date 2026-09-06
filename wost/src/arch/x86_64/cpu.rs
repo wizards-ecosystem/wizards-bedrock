@@ -3,22 +3,29 @@
 //! The interrupt flag lives in [`interrupt`] instead, next to
 //! the table whose existence is the precondition for setting it.
 
+use core::arch::asm;
 use core::arch::x86_64::{__cpuid_count, __get_cpuid_max};
-use core::arch::{asm, global_asm};
 use core::fmt;
+
+#[cfg(feature = "selftest")]
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+use x86_cpuid::physical::{ADDRESS_SIZE_LEAF, PhysicalAddressWidth};
+use x86_cpuid::{
+    CpuidLeaf, Cr4Additions, ExecutionEnvironment, FrequencyHints, SPEC_CTRL_MSR,
+    SharedKernelMappingReason, Speculation,
+};
+use x86_paging::CanonicalAddress;
 
 use super::interrupt;
 use super::msr;
-use x86_cpuid::{FrequencyHints, SPEC_CTRL_MSR, Speculation};
 
 /// Extended feature enable register.
 const EFER: u32 = 0xC000_0080;
 
 /// `EFER` bit: enable `syscall`/`sysret`.
 ///
-/// This kernel does not use them — ring 3 enters through one interrupt gate at
-/// DPL 3 (D-96) — and left set by the firmware it is a second door into ring 0
-/// that the kernel never chose. `LSTAR` would be whatever was there.
+/// This kernel enters through its DPL-3 interrupt gate instead (D-96).
 const EFER_SYSCALL: u64 = 1 << 0;
 
 /// `IA32_SYSENTER_CS`. Zero makes `sysenter` fault, which is the shut state.
@@ -34,13 +41,16 @@ const CR0_WRITE_PROTECT: u64 = 1 << 16;
 /// `CR4` bit: user mode instruction prevention.
 const CR4_UMIP: u64 = 1 << 11;
 
+const CR4_PCIDE: u64 = 1 << 17;
+
 /// `CR4` bit: supervisor mode execution prevention.
 const CR4_SMEP: u64 = 1 << 20;
 
 /// `CR4` bit: supervisor mode access prevention.
 const CR4_SMAP: u64 = 1 << 21;
 
-global_asm!(
+#[cfg(feature = "selftest")]
+::core::arch::global_asm!(
     ".pushsection .rodata.wost_write_protection_probe,\"a\",@progbits",
     ".globl wost_write_protection_target",
     "wost_write_protection_target:",
@@ -64,6 +74,7 @@ global_asm!(
     "  ret",
 );
 
+#[cfg(feature = "selftest")]
 unsafe extern "C" {
     /// Write the byte back to its own read-only location.
     fn wost_write_protection_probe() -> u64;
@@ -77,14 +88,28 @@ unsafe extern "C" {
     static wost_write_protection_target: u8;
 }
 
-/// Halt this CPU until the next interrupt.
+#[cfg(feature = "selftest")]
+pub(super) struct WriteProtectionRecoveryTarget(u64);
+
+#[cfg(feature = "selftest")]
+impl WriteProtectionRecoveryTarget {
+    fn fixup() -> Self {
+        Self(core::ptr::addr_of!(wost_write_protection_fixup) as u64)
+    }
+
+    pub(super) const fn address(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Halt this CPU until an enabled interrupt or another architectural wake event.
 ///
-/// Returns immediately if interrupts are disabled and one is already pending;
-/// callers that must not proceed should loop, as [`halt_forever`] does.
+/// An ordinary maskable interrupt cannot wake `hlt` while `IF` is clear.
 pub fn halt() {
     // SAFETY: `hlt` in ring 0 stops the CPU until an interrupt arrives. It has
-    // no memory effects and cannot fail.
-    unsafe { asm!("hlt", options(nomem, nostack, preserves_flags)) };
+    // no architectural precondition and cannot fail. It remains a compiler
+    // memory barrier so state publication cannot move past the sleep.
+    unsafe { asm!("hlt", options(nostack, preserves_flags)) };
 }
 
 /// Disable interrupts and halt permanently.
@@ -101,11 +126,8 @@ pub fn halt_forever() -> ! {
 /// Whether this processor's timestamp counter runs at a constant rate
 /// whatever the core is doing.
 ///
-/// `cpuid` leaf 0x8000_0007, `EDX` bit 8. Without it the counter still counts,
-/// but it counts *cycles* — slower when the core throttles, stopped in the
-/// deeper idle states — which is a performance counter, not a clock. Present
-/// on everything since Nehalem and Bulldozer, which is the same generation
-/// the x2APIC mode this kernel already requires arrived in.
+/// Without this CPUID guarantee, throttling and deep idle may change or stop
+/// the count, making it a performance counter rather than a clock.
 pub fn has_invariant_tsc() -> bool {
     /// `cpuid` leaf 0x8000_0007, `EDX` bit 8.
     const INVARIANT: u32 = 1 << 8;
@@ -128,17 +150,21 @@ pub fn frequency_hints() -> FrequencyHints {
     FrequencyHints::from_leaves(ratio, base_mhz)
 }
 
+/// The running processor's validated `MAXPHYADDR`.
+pub fn physical_address_width() -> Option<PhysicalAddressWidth> {
+    let maximum = max_leaf(0x8000_0000);
+    let eax = if maximum >= ADDRESS_SIZE_LEAF {
+        cpuid(ADDRESS_SIZE_LEAF, 0).eax
+    } else {
+        0
+    };
+    PhysicalAddressWidth::from_leaf(maximum, eax)
+}
+
 /// The timestamp counter: cycles since the processor started.
 ///
-/// Fenced, because `rdtsc` is not a serialising instruction and the processor
-/// is free to execute it out of order with the work it is meant to bracket —
-/// which for a calibration window means measuring something other than the
-/// window. `lfence` in front is the sequence both vendors document for
-/// reading the counter as a clock.
-///
-/// `nomem` is deliberately absent for the same reason: it would let the
-/// compiler move the read across memory operations, undoing at compile time
-/// what the fence does at run time.
+/// `lfence` and the compiler memory barrier keep this non-serialising
+/// instruction inside the interval it is meant to measure.
 pub fn timestamp() -> u64 {
     let low: u32;
     let high: u32;
@@ -260,26 +286,18 @@ impl fmt::Display for Protections {
             (self.nx, "nx"),
         ] {
             if enabled {
-                f.write_str(separator)?;
-                f.write_str(name)?;
+                core::fmt::Write::write_str(f, separator)?;
+                core::fmt::Write::write_str(f, name)?;
                 separator = " ";
             }
         }
         if separator.is_empty() {
-            f.write_str("none")?;
+            core::fmt::Write::write_str(f, "none")?;
         }
         Ok(())
     }
 }
 
-/// Whether `CR4.OSXSAVE` is set, which is what makes `XGETBV`, `XSETBV` and
-/// the save instructions legal.
-///
-/// `CR4.OSXSAVE`: the bit that makes `XSAVE` and `XGETBV` legal at all.
-///
-/// One definition for the two functions that name it — the one that sets it
-/// and the one that reads it back to say whether the write took. They were a
-/// local each, with the same value and the same doc line (D-160).
 const CR4_OSXSAVE: u64 = 1 << 18;
 
 /// Read from the register rather than from a remembered flag: the one caller
@@ -289,36 +307,19 @@ pub fn extended_state_is_enabled() -> bool {
     read_cr4() & CR4_OSXSAVE != 0
 }
 
-/// Turn on `CR4.OSXSAVE`, `OSFXSR` and `OSXMMEXCPT`, and clear `CR0.EM`.
+/// Enable extended-state instructions after all layout preflight succeeds.
 ///
-/// Safe for the same reason [`enable_protections`] is: none of these bits can
-/// produce undefined behaviour, and a processor that does not support one
-/// faults, which is a trap the kernel reports.
-///
-/// After this, SSE instructions are legal — **including at CPL 3** — so it is
-/// called only once every refusal in
-/// [`xstate::init`](super::xstate::init) has been made. A path that enabled
-/// and then refused would leave the register file shared between processes
-/// with nothing saving it (D-115).
-///
-/// `pub(super)` for that reason: the ordering argument is about one call site,
-/// and a `pub` front door let any safe caller reach the state D-115 fixed
-/// inside `init` — which is the same defect one level out (D-123).
+/// This is restricted to [`xstate::init`](super::xstate::init), because enabling
+/// SSE before save/restore is ready would share register state with ring 3
+/// (D-115, D-123).
 pub(super) fn enable_extended_state() {
-    /// `CR4.OSFXSR`: without it every SSE instruction is a `#UD`, whatever
-    /// `XCR0` says. Setting `OSXSAVE` alone bought a fault, not a register.
-    const CR4_OSFXSR: u64 = 1 << 9;
-    /// `CR4.OSXMMEXCPT`: SSE numeric errors arrive as `#XM` rather than as the
-    /// `#UD` a processor raises when the kernel has not said it can handle
-    /// them.
-    const CR4_OSXMMEXCPT: u64 = 1 << 10;
     /// `CR0.MP`: monitor coprocessor, which the manual pairs with `EM` clear.
     const CR0_MONITOR: u64 = 1 << 1;
     /// `CR0.EM`: emulation. Set, every SSE instruction faults.
     const CR0_EMULATE: u64 = 1 << 2;
 
     write_cr0((read_cr0() | CR0_MONITOR) & !CR0_EMULATE);
-    write_cr4(read_cr4() | CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_OSXSAVE);
+    add_cr4(Cr4Additions::extended_state());
 }
 
 /// Enable every protection in [`Protections`] this CPU supports, and report
@@ -332,17 +333,17 @@ pub fn enable_protections() -> Protections {
 
     enable_write_protection();
 
-    let mut cr4 = read_cr4();
+    let mut additions = Cr4Additions::none();
     if supported.smep {
-        cr4 |= CR4_SMEP;
+        additions = additions.with_smep();
     }
     if supported.smap {
-        cr4 |= CR4_SMAP;
+        additions = additions.with_smap();
     }
     if supported.umip {
-        cr4 |= CR4_UMIP;
+        additions = additions.with_umip();
     }
-    write_cr4(cr4);
+    add_cr4(additions);
 
     if supported.nx {
         // SAFETY: the only register named is `EFER`, and the only bit added to
@@ -363,10 +364,9 @@ pub fn write_protection_is_enabled() -> bool {
 
 /// Drive the write-protect bit off and through the kernel's enabling path.
 ///
-/// Firmware commonly leaves `CR0.WP` set, so merely observing it at boot does
-/// not prove this kernel enabled it. Interrupts stay excluded across the short
-/// interval in which supervisor writes are not protected. A failed enabling
-/// path is repaired before returning, but still reports `false`.
+/// Firmware commonly leaves `CR0.WP` set, so the check needs a controlled
+/// off/on transition. Interrupts stay excluded and a failed enable is repaired.
+#[cfg(feature = "selftest")]
 pub fn drive_write_protection_for_test() -> bool {
     let disabled = interrupt::disable();
     write_cr0(read_cr0() & !CR0_WRITE_PROTECT);
@@ -386,6 +386,7 @@ pub fn drive_write_protection_for_test() -> bool {
 /// The assembly reads the byte and writes the same value back, so a broken
 /// protection leaves the image unchanged. `true` means the write faulted and
 /// the trap handler resumed at this probe's private fixup.
+#[cfg(feature = "selftest")]
 pub fn write_protection_probe() -> bool {
     // SAFETY: the assembly names one byte in this crate's own read-only image
     // and writes back exactly the value it read. The trap path recognises only
@@ -396,16 +397,35 @@ pub fn write_protection_probe() -> bool {
 /// Resume the controlled write-protection probe, if it caused this fault.
 ///
 /// `false` for every other instruction or address, having changed nothing.
-pub fn recover_write_protection_probe(frame: &interrupt::TrapFrame) -> bool {
+#[cfg(feature = "selftest")]
+pub fn recover_write_protection_probe(
+    frame: &interrupt::TrapFrame,
+    fault: trap_cause::PageFault,
+) -> bool {
     let at = frame.instruction_pointer();
     let start = core::ptr::addr_of!(wost_write_protection_fault) as u64;
     let end = core::ptr::addr_of!(wost_write_protection_fault_end) as u64;
     let target = core::ptr::addr_of!(wost_write_protection_target) as u64;
-    if at < start || at >= end || faulting_address() != target {
+    let Some(target_end) = target.checked_add(1) else {
+        return false;
+    };
+    let attempt = trap_cause::RecoveryAttempt {
+        vector: frame.vector(),
+        frame_error_code: frame.error_code(),
+        code_selector: frame.code_selector(),
+        instruction_pointer: at,
+        page_fault: fault,
+        faulting_address: faulting_address(),
+    };
+    let rule = trap_cause::RecoveryRule {
+        fault: trap_cause::RecoveryFault::SupervisorWriteProtection,
+        fault_addresses: target..target_end,
+        instruction_addresses: start..end,
+    };
+    if !attempt.is_admitted_by(&rule) {
         return false;
     }
-    let fixup = core::ptr::addr_of!(wost_write_protection_fixup) as u64;
-    interrupt::resume_at(frame, fixup)
+    interrupt::resume_write_protection(frame, WriteProtectionRecoveryTarget::fixup())
 }
 
 fn enable_write_protection() {
@@ -414,18 +434,9 @@ fn enable_write_protection() {
 
 /// Close `syscall` and `sysenter`, which this kernel does not use.
 ///
-/// **The IDT is not the only door into ring 0.** `vector::SYSCALL`'s doc says
-/// `0x80` is "the only gate in the table ring 3 may reach", and that is true of
-/// the *table*: `syscall` and `sysenter` are instructions, not vectors. Neither
-/// `EFER.SCE` nor `IA32_SYSENTER_CS` was ever read, cleared or asserted — the
-/// boot preserved whatever the firmware left, because the `EFER` write ORs a
-/// bit into what it read.
-///
-/// With either open, a ring-3 `syscall` transfers to ring 0 at `LSTAR` with no
-/// stack switch, at an address this kernel never chose. Limine leaves `SCE`
-/// clear and `SYSENTER_CS` is zero at reset, so nothing was reachable — which
-/// is the "a claim nothing enforces" shape D-124 and D-126 are about, and the
-/// reason this is a write rather than a comment (D-139).
+/// Both instructions bypass the IDT and would enter through state this kernel
+/// never configured, so boot closes them explicitly instead of trusting
+/// firmware defaults (D-139).
 fn shut_the_fast_syscall_doors() {
     // SAFETY: the only register named is `EFER`, and the only bit *removed*
     // from what it already held is the one that enables an instruction this
@@ -439,15 +450,10 @@ fn shut_the_fast_syscall_doors() {
 
 /// Drive a fast-syscall door open and through the kernel's closing path.
 ///
-/// Nothing in this kernel wants one open. This exists because the check for
-/// D-139 could not otherwise fail: Limine leaves `SCE` clear and
-/// `SYSENTER_CS` is zero at reset, so `fast_syscall_doors_are_shut` answers
-/// true whether or not the kernel ever wrote anything. Observing a state the
-/// firmware already arranged is not a check of the code that arranges it.
-///
-/// Interrupts stay excluded across the deliberately unsafe state, and the
-/// door is closed before this function returns. The result requires it to
-/// have started shut, to have been observed open, and to end shut again.
+/// Firmware already boots the test machine shut, so only a controlled
+/// closed/open/closed transition makes the production close causal (D-139).
+/// Interrupts stay excluded while the door is open.
+#[cfg(feature = "selftest")]
 pub fn drive_fast_syscall_shutdown_for_test() -> bool {
     let disabled = interrupt::disable();
     let shut_at_start = fast_syscall_doors_are_shut();
@@ -474,9 +480,6 @@ pub fn fast_syscall_doors_are_shut() -> bool {
 
 /// Whether this processor has a local advanced programmable interrupt
 /// controller of its own.
-///
-/// Every x86_64 processor does. Checking is what makes the register access that
-/// follows a reasoned step rather than an assumption, and costs one `cpuid`.
 pub(super) fn has_local_apic() -> bool {
     /// `cpuid` leaf 1, `EDX` bit 9.
     const APIC: u32 = 1 << 9;
@@ -486,9 +489,6 @@ pub(super) fn has_local_apic() -> bool {
 
 /// Whether that controller has an x2APIC mode, where its registers are
 /// model-specific registers rather than a page of memory.
-///
-/// Present on everything since Nehalem and Bulldozer. It is what lets this
-/// kernel drive the controller before it can map anything.
 pub(super) fn has_x2apic() -> bool {
     /// `cpuid` leaf 1, `ECX` bit 21.
     const X2APIC: u32 = 1 << 21;
@@ -501,17 +501,15 @@ pub(super) fn has_x2apic() -> bool {
 ///
 /// Read rather than assumed, because the whole point of D-101 is that ring 3
 /// can set this bit and interrupt delivery does not clear it.
+#[cfg(feature = "selftest")]
 pub fn access_check_is_off() -> bool {
     /// `EFLAGS.AC`.
     const AC: u64 = 1 << 18;
 
     let flags: u64;
-    // SAFETY: `pushfq` and `pop` read the flags register into a general
-    // register; neither touches memory the compiler owns beyond the stack slot
-    // it is told about.
-    unsafe {
-        core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags))
-    };
+    // SAFETY: `pushfq` and `pop` use one matching stack slot and restore `rsp`;
+    // no Rust value aliases the temporary word.
+    unsafe { core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(preserves_flags)) };
     flags & AC != 0
 }
 
@@ -531,21 +529,11 @@ pub fn has_buffer_clear() -> bool {
 /// Read the machine's speculation posture and enable enhanced IBRS if it has
 /// it.
 ///
-/// One MSR write at boot, and D-81 records why it happens here rather than
-/// later: it is trivial now and awkward to retrofit into a mature entry path.
-///
-/// The decisions are `x86_cpuid`'s, host-tested against synthetic capability
-/// words, and this keeps the two instructions. That split matters more here
-/// than usual: QEMU's TCG does not emulate `IA32_ARCH_CAPABILITIES`, so on the
-/// development loop this function always takes its earliest return and the
-/// write below is never reached (D-91).
+/// `x86_cpuid` owns the host-tested policy. QEMU TCG lacks the architectural
+/// capabilities MSR, so native/VMware qualification exercises the write
+/// (D-81, D-91).
 pub fn enable_speculation_controls() -> Speculation {
-    // Leaf 7 is only meaningful where the processor reports it. Without this,
-    // a machine whose highest basic leaf is below 7 answers with some other
-    // leaf's registers, and a stray bit 29 sends the read below to an MSR that
-    // does not exist — which is a `#GP`, not a wrong answer (D-94).
-    let leaf_7_edx = if max_leaf(0) >= 7 { cpuid(7, 0).edx } else { 0 };
-    let posture = Speculation::read(leaf_7_edx, msr::read);
+    let posture = speculation_posture();
     if !posture.wants_boot_ibrs() {
         return posture;
     }
@@ -557,6 +545,34 @@ pub fn enable_speculation_controls() -> Speculation {
     // preserves every bit firmware set.
     unsafe { msr::write(SPEC_CTRL_MSR, wanted) };
     posture
+}
+
+fn speculation_posture() -> Speculation {
+    // A nonexistent leaf may alias another answer and must not authorize an
+    // architectural-capabilities MSR read (D-94).
+    let leaf_7_edx = if max_leaf(0) >= 7 { cpuid(7, 0).edx } else { 0 };
+    Speculation::read(leaf_7_edx, msr::read)
+}
+
+/// Return the CPU evidence that permits kernel mappings in user page tables.
+///
+/// The QEMU TCG answer is trusted development-host configuration, not a
+/// hardware attestation. Native and other virtualized machines therefore need
+/// the processor's affirmative `RDCL_NO` report.
+pub fn shared_kernel_mapping_reason(
+    speculation: &Speculation,
+) -> Option<SharedKernelMappingReason> {
+    let leaf_1 = cpuid(1, 0);
+    let execution = ExecutionEnvironment::read(leaf_1.ecx, || {
+        let leaf = cpuid(0x4000_0000, 0);
+        CpuidLeaf::new(leaf.eax, leaf.ebx, leaf.ecx, leaf.edx)
+    });
+    x86_cpuid::shared_kernel_mapping_reason(speculation, execution)
+}
+
+/// Reread unforgeable hardware evidence for the final ring-3 crossing.
+pub(super) fn shared_kernel_mappings_are_safe() -> bool {
+    shared_kernel_mapping_reason(&speculation_posture()).is_some()
 }
 
 /// One `cpuid` answer.
@@ -630,6 +646,16 @@ fn read_cr4() -> u64 {
     value
 }
 
+fn page_table_context_ids_are_enabled() -> bool {
+    read_cr4() & CR4_PCIDE != 0
+}
+
+/// Whether page-table reloads flush every non-global translation.
+#[cfg(feature = "selftest")]
+pub fn page_table_context_ids_are_disabled_for_test() -> bool {
+    !page_table_context_ids_are_enabled()
+}
+
 /// A reversible change to the page attribute table.
 #[derive(Debug)]
 #[must_use = "dropping the transition restores the previous PAT entry"]
@@ -640,6 +666,7 @@ pub struct WriteCombining {
 
 impl WriteCombining {
     /// Keep the new entry after the page tables selecting it are active.
+    #[must_use = "a refused PAT commit restores the previous entry on drop"]
     pub fn commit(mut self) -> bool {
         let enabled = write_combining_is_enabled();
         if enabled {
@@ -650,11 +677,6 @@ impl WriteCombining {
 }
 
 /// The page attribute table, `IA32_PAT`.
-///
-/// One definition. It was transcribed three times in this file — once in each
-/// of the two public functions and once in `Drop` — so a typo in any of them
-/// would have named a different MSR entirely, and nothing compared them
-/// (D-124).
 const PAT: u32 = 0x277;
 
 impl Drop for WriteCombining {
@@ -673,20 +695,8 @@ impl Drop for WriteCombining {
 
 /// Give page tables a write-combining memory type to select.
 ///
-/// The page attribute table holds eight memory types, and a mapping picks one
-/// with three of its bits. Only the second is changed here, from write-through
-/// — which this kernel never asks for — to write-combining, so a caller that
-/// sets `WRITE_THROUGH` and nothing else gets writes that coalesce in a fill
-/// buffer instead of crossing the bus one at a time. Every other entry keeps
-/// its architectural default, so no existing mapping changes meaning.
-///
-/// Reports whether the processor has a PAT at all. Safe for the same reason
-/// [`enable_protections`] is: the worst an unexpected value can do here is
-/// make a mapping slower or uncached, never unsound.
-///
-/// Call before the tables whose mappings select the entry are activated: the
-/// manual asks for a TLB flush after repurposing a live PAT entry, and the
-/// `CR3` load in `activate` is exactly that.
+/// Only the unused write-through entry changes. Call before activating tables
+/// that select it; activation's `CR3` load supplies the required flush.
 pub fn enable_write_combining() -> Option<WriteCombining> {
     /// `cpuid` leaf 1, `EDX` bit 16.
     const SUPPORTED: u32 = 1 << 16;
@@ -712,7 +722,8 @@ pub fn enable_write_combining() -> Option<WriteCombining> {
 fn reload_page_table() {
     let root = page_table_base();
     // SAFETY: `root` is the page table the processor is executing through now,
-    // so reloading it preserves every live translation and flushes the TLB.
+    // so reloading it preserves the live mappings and flushes their non-global
+    // translations.
     unsafe { set_page_table_base(root) };
 }
 
@@ -749,18 +760,29 @@ pub fn page_table_base() -> u64 {
     }
     value & ADDRESS
 }
+
+#[cfg(feature = "selftest")]
+static PAGE_INVALIDATIONS: AtomicUsize = AtomicUsize::new(0);
+
 /// Drop any cached translation for `address` from this CPU's TLB.
 ///
-/// Safe, and it is worth saying why, because most of this module is not: the
-/// page tables are the truth and the TLB is a cache of them, so removing an
-/// entry can only make the CPU re-read what is already there. The unsound
-/// direction is the other one — *not* invalidating after a mapping is taken
-/// away — which is why [`super::paging::Unmapped`] owns the frames until this
-/// has run (D-88).
-pub fn invalidate_page(address: u64) {
-    // SAFETY: `invlpg` reads no memory through `address` and writes none; it
-    // only discards a cached translation for it, which is sound for any value.
-    unsafe { core::arch::asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags)) };
+/// Removing a cached entry can only make the CPU reread its page tables;
+/// [`CanonicalAddress`] excludes the operands that raise `#GP`.
+pub fn invalidate_page(address: CanonicalAddress) {
+    // SAFETY: construction of `CanonicalAddress` proves the instruction's
+    // operand is canonical. `invlpg` dereferences no memory and only evicts
+    // this CPU's cached translation.
+    unsafe {
+        core::arch::asm!("invlpg [{}]", in(reg) address.get(), options(nostack, preserves_flags))
+    };
+    #[cfg(feature = "selftest")]
+    PAGE_INVALIDATIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Number of `invlpg` instructions issued since boot.
+#[cfg(feature = "selftest")]
+pub fn page_invalidations_for_test() -> usize {
+    PAGE_INVALIDATIONS.load(Ordering::Relaxed)
 }
 
 /// Point the CPU at a different top-level page table.
@@ -774,11 +796,20 @@ pub fn invalidate_page(address: u64) {
 /// writes before the next switch. A table missing any of them faults on an
 /// instruction that has no handler mapped, which the CPU reports as a triple
 /// fault and the machine as a reset.
-pub unsafe fn set_page_table_base(address: u64) {
+///
+/// # Panics
+///
+/// If `CR4.PCIDE` is set. This kernel uses a `CR3` reload to flush inactive
+/// roots and therefore cannot preserve tagged translations.
+pub(super) unsafe fn set_page_table_base(address: u64) {
+    assert!(
+        !page_table_context_ids_are_enabled(),
+        "page-table switching requires CR4.PCIDE to remain clear"
+    );
     // SAFETY: the caller guarantees the address names a page table that maps
     // everything this CPU is standing on, which is the entire precondition for
-    // the write. Writing `CR3` also flushes the non-global TLB entries, so no
-    // stale translation survives the switch.
+    // the write. PCID is disabled, so writing `CR3` flushes every non-global
+    // translation from the previous use of either root.
     unsafe {
         asm!(
             "mov cr3, {address}",
@@ -788,20 +819,16 @@ pub unsafe fn set_page_table_base(address: u64) {
     }
 }
 
-/// Write `CR4`.
-///
-/// Private, and it stays private: the register holds bits that switch paging
-/// modes underneath the running kernel. The only value this module ever writes
-/// is one it just read with protection bits added.
-fn write_cr4(value: u64) {
-    // SAFETY: `value` is the register's current contents with SMEP, SMAP or
-    // UMIP set, each only if `cpuid` reported it. No bit that governs paging or
-    // addressing is touched.
+fn add_cr4(additions: Cr4Additions) {
+    let value = additions.apply(read_cr4());
+    // SAFETY: `Cr4Additions` can only add the reviewed extended-state and
+    // protection bits. The asm is a memory barrier because those bits change
+    // which memory accesses and instruction fetches the CPU permits.
     unsafe {
         asm!(
             "mov cr4, {value}",
             value = in(reg) value,
-            options(nomem, nostack, preserves_flags),
+            options(nostack, preserves_flags),
         );
     }
 }

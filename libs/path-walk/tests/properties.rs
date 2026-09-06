@@ -14,7 +14,7 @@
 //! components. Whether a walker honours the descent-only guarantee is a
 //! property of the walker, and four machine checks in `selftest.rs` carry it.
 
-use path_walk::{MAX_NAME, SEPARATOR, is_a_name, split};
+use path_walk::{MAX_NAME, SEPARATOR, split};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config, TestRunner};
@@ -77,11 +77,6 @@ proptest! {
         );
     }
 
-    /// Every component handed back is one the crate itself calls a name.
-    ///
-    /// `is_a_name` and `split` are separate public answers about the same
-    /// bytes; a component the first rejects and the second emits is the two
-    /// disagreeing, which no single-answer test can see.
     #[test]
     fn every_returned_component_is_a_name(path in path(), room in 1usize..12) {
         let mut into = vec![b"".as_slice(); room];
@@ -90,9 +85,12 @@ proptest! {
         };
         for component in &into[..count] {
             prop_assert!(component.len() <= MAX_NAME, "a component exceeded MAX_NAME");
+            prop_assert!(!component.is_empty(), "split emitted an empty component");
             prop_assert!(
-                is_a_name(component),
-                "split emitted {:?}, which is_a_name rejects",
+                component
+                    .iter()
+                    .all(|byte| *byte != 0 && *byte != SEPARATOR),
+                "split emitted a forbidden byte in {:?}",
                 component
             );
         }

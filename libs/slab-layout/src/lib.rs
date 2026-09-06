@@ -32,6 +32,12 @@
 
 use core::fmt;
 
+#[cfg(any(test, feature = "selftest"))]
+mod ownership;
+
+#[cfg(any(test, feature = "selftest"))]
+pub use ownership::AllocatorOwnership;
+
 /// Bytes in a page frame — the unit a slab is carved from.
 pub const FRAME_SIZE: usize = 4096;
 
@@ -129,15 +135,13 @@ impl SizeClass {
         if needed > MAX_CLASS {
             return Ok(None);
         }
-
-        let mut index = 0;
-        while index < CLASSES {
-            if MIN_CLASS << index >= needed {
-                return Ok(Some(Self { index }));
-            }
-            index += 1;
-        }
-        Ok(None)
+        let bytes = if needed <= MIN_CLASS {
+            MIN_CLASS
+        } else {
+            needed.next_power_of_two()
+        };
+        let index = (bytes / MIN_CLASS).trailing_zeros() as usize;
+        Ok(Self::from_index(index))
     }
 }
 
@@ -171,9 +175,8 @@ pub const fn place(size: usize, align: usize) -> Result<Placement, PlacementErro
     match SizeClass::for_size_align(size, align) {
         Err(error) => Err(error),
         Ok(Some(class)) => Ok(Placement::Slot(class)),
-        // At least one frame: a zero-sized request whose alignment is too
-        // large for any class lands here, and `GlobalAlloc` owes it a unique
-        // non-null address rather than a run of nothing.
+        // At least one frame: a zero-sized, over-aligned request lands here
+        // and `GlobalAlloc` owes it a unique non-null address.
         Ok(None) if size == 0 => Ok(Placement::Frames {
             count: 1,
             align: align.div_ceil(FRAME_SIZE),
@@ -199,15 +202,13 @@ mod tests {
 
     /// A size class reports the free list it uses, and the bytes follow it.
     ///
-    /// `index()` was read back by no test: `{ self.index + 1 }` survived the
-    /// suite. `wost/src/mm/heap.rs` indexes `self.free[class.index()]` with
-    /// it, so the largest class would have run off the end of the array —
-    /// a panic inside the allocator (D-136).
+    /// Check every index independently because `wost/src/mm/heap.rs` uses it
+    /// directly and an offset largest class would index past the array
+    /// (D-136).
     #[test]
     fn a_size_class_reports_its_own_index_and_bytes() {
-        // Every class, against the arithmetic the type documents rather than
-        // against itself: class `i` is the `i`th list and holds `MIN_CLASS <<
-        // i` bytes.
+        // Against the documented arithmetic, not the type itself: class `i`
+        // holds `MIN_CLASS << i` bytes.
         for index in 0..CLASSES {
             let class = SizeClass::from_index(index).expect("a class that exists");
             assert_eq!(class.index(), index, "class {index} reports another index");
@@ -253,6 +254,30 @@ mod tests {
         assert_eq!(size_class(17, 1).map(SizeClass::bytes), Some(32));
         assert_eq!(size_class(2048, 1).map(SizeClass::bytes), Some(2048));
         assert_eq!(size_class(2049, 1), None);
+    }
+
+    #[test]
+    fn every_slab_size_takes_the_exact_smallest_class() {
+        let classes = [16, 32, 64, 128, 256, 512, 1024, 2048];
+        for size in 0..=MAX_CLASS {
+            let expected = classes
+                .into_iter()
+                .find(|bytes| *bytes >= size.max(1))
+                .expect("the largest class covers this size");
+            assert_eq!(
+                size_class(size, 1).map(SizeClass::bytes),
+                Some(expected),
+                "size {size}"
+            );
+        }
+    }
+
+    #[test]
+    fn placement_errors_name_the_invalid_alignment() {
+        assert_eq!(
+            PlacementError::InvalidAlignment(24).to_string(),
+            "alignment 24 is not a non-zero power of two"
+        );
     }
 
     #[test]
@@ -385,17 +410,13 @@ mod tests {
     /// Every slot a frame is carved into is distinct, ordered, and wholly
     /// inside the frame.
     ///
-    /// **Against transcribed numbers, not against the formula.** An earlier
-    /// version asserted `offset >= previous + bytes()`, which reduces to
-    /// `n*b >= n*b` and holds for every input — true by algebra rather than by
-    /// the code being right, which is the pattern `x86-paging`'s module doc
-    /// names as the thing to avoid. The counts and offsets below are worked
-    /// out from `FRAME_SIZE` by hand, so a rewritten `offset_of` or
-    /// `slots_per_frame` disagrees with them instead of agreeing with itself.
+    /// **Against transcribed numbers, not against the formula.** The counts and
+    /// offsets below are worked out from `FRAME_SIZE` by hand, so a broken
+    /// `offset_of` or `slots_per_frame` disagrees with them instead of agreeing
+    /// with itself.
     ///
-    /// It lives here rather than on the machine because breaking it there
-    /// corrupts the allocator every later check depends on, and a break that
-    /// crashes proves less than one that fails (D-28, D-85).
+    /// It runs on the host because breaking this invariant on the machine can
+    /// corrupt the allocator that later checks depend on (D-28, D-85).
     #[test]
     fn no_two_slots_of_any_class_overlap() {
         // (class size, slots in a 4096-byte frame, offset of the last slot),

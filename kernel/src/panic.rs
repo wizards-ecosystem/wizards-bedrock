@@ -7,6 +7,7 @@
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
+use panic_record::write_record;
 use wost::arch::current::cpu;
 
 use crate::{dev, theme, thread};
@@ -21,7 +22,7 @@ fn report(info: &PanicInfo<'_>) -> ! {
     // report with no subject: every thread runs the same kernel.
     let thread = thread::current_name();
     dev::try_with_uart(|uart| {
-        let _ = writeln!(uart, "[error] KERNEL PANIC on thread '{thread}': {info}");
+        let _ = write_record(uart, thread, info);
     });
 
     dev::try_with_console(|console| {

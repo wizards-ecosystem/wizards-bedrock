@@ -1,23 +1,20 @@
 //! Interrupt and exception entry.
 //!
-//! Rust cannot write an interrupt handler: the calling convention that would
-//! let it is a nightly feature, and this kernel is on stable (D-01). So entry is
-//! assembly — one stub per vector, which normalises what the CPU pushed, and one
-//! common tail, which saves the registers and calls [`Handler`].
+//! Stable Rust has no interrupt calling convention, so assembly stubs normalize
+//! CPU frames before a common tail calls [`Handler`] (D-01).
 //!
 //! Every gate is an interrupt gate, so a handler starts with interrupts
 //! disabled. See `docs/006-cpu-fundamentals.md` for the frame layout argument.
 //!
-//! The interrupt flag itself lives here rather than in [`cpu`],
-//! because the reason it is safe to set is a property of this module: the table
-//! is loaded, and every one of its gates is present.
+//! Interrupt admission lives here because its safety depends on a loaded table
+//! whose gates are all present.
 
-use core::arch::{asm, global_asm};
-use core::fmt;
+use core::arch::asm;
 use core::marker::PhantomData;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
+use x86_apic::vector::InterruptVector;
 use x86_tables::exception;
 use x86_tables::idt::{self, Gate};
 
@@ -27,6 +24,30 @@ use super::segment;
 use super::table::TablePointer;
 use crate::cell::HardwareCell;
 use crate::sync::Once;
+
+const CONTEXTS: usize = 32;
+const MAX_EXCLUSIONS: usize = usize::BITS as usize;
+
+const _: () = assert!(CONTEXTS == super::task::MAX_TASKS);
+
+struct ExclusionLedger {
+    depth: AtomicUsize,
+    deferred: AtomicUsize,
+    outer_was_enabled: AtomicBool,
+}
+
+impl ExclusionLedger {
+    const fn new() -> Self {
+        Self {
+            depth: AtomicUsize::new(0),
+            deferred: AtomicUsize::new(0),
+            outer_was_enabled: AtomicBool::new(false),
+        }
+    }
+}
+
+static ACTIVE_CONTEXT: AtomicUsize = AtomicUsize::new(super::task::BOOT);
+static EXCLUSIONS: [ExclusionLedger; CONTEXTS] = [const { ExclusionLedger::new() }; CONTEXTS];
 
 /// `RFLAGS` bit 9: this CPU accepts maskable interrupts.
 pub(crate) const FLAGS_INTERRUPT: u64 = 1 << 9;
@@ -86,6 +107,7 @@ const _: () = {
 /// The assembly-owned frame is deliberately not exposed. A handler can inspect
 /// where execution resumes, but safe code cannot redirect `iretq` or forge the
 /// frame identity accepted by the scheduler.
+#[derive(Debug)]
 pub struct TrapFrame {
     raw: RawTrapFrame,
     origin: *mut RawTrapFrame,
@@ -93,74 +115,9 @@ pub struct TrapFrame {
 }
 
 impl TrapFrame {
-    /// Saved `r15`.
-    pub const fn r15(&self) -> u64 {
-        self.raw.r15
-    }
-
-    /// Saved `r14`.
-    pub const fn r14(&self) -> u64 {
-        self.raw.r14
-    }
-
-    /// Saved `r13`.
-    pub const fn r13(&self) -> u64 {
-        self.raw.r13
-    }
-
-    /// Saved `r12`.
-    pub const fn r12(&self) -> u64 {
-        self.raw.r12
-    }
-
-    /// Saved `r11`.
-    pub const fn r11(&self) -> u64 {
-        self.raw.r11
-    }
-
-    /// Saved `r10`.
-    pub const fn r10(&self) -> u64 {
-        self.raw.r10
-    }
-
-    /// Saved `r9`.
-    pub const fn r9(&self) -> u64 {
-        self.raw.r9
-    }
-
-    /// Saved `r8`.
-    pub const fn r8(&self) -> u64 {
-        self.raw.r8
-    }
-
-    /// Saved `rbp`.
-    pub const fn rbp(&self) -> u64 {
-        self.raw.rbp
-    }
-
     /// Saved `rdi`.
     pub const fn rdi(&self) -> u64 {
         self.raw.rdi
-    }
-
-    /// Saved `rsi`.
-    pub const fn rsi(&self) -> u64 {
-        self.raw.rsi
-    }
-
-    /// Saved `rdx`.
-    pub const fn rdx(&self) -> u64 {
-        self.raw.rdx
-    }
-
-    /// Saved `rcx`.
-    pub const fn rcx(&self) -> u64 {
-        self.raw.rcx
-    }
-
-    /// Saved `rbx`.
-    pub const fn rbx(&self) -> u64 {
-        self.raw.rbx
     }
 
     /// Saved `rax`.
@@ -204,42 +161,11 @@ impl TrapFrame {
     }
 }
 
-impl fmt::Debug for TrapFrame {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("TrapFrame")
-            .field("r15", &self.r15())
-            .field("r14", &self.r14())
-            .field("r13", &self.r13())
-            .field("r12", &self.r12())
-            .field("r11", &self.r11())
-            .field("r10", &self.r10())
-            .field("r9", &self.r9())
-            .field("r8", &self.r8())
-            .field("rbp", &self.rbp())
-            .field("rdi", &self.rdi())
-            .field("rsi", &self.rsi())
-            .field("rdx", &self.rdx())
-            .field("rcx", &self.rcx())
-            .field("rbx", &self.rbx())
-            .field("rax", &self.rax())
-            .field("vector", &self.vector())
-            .field("error_code", &self.error_code())
-            .field("instruction_pointer", &self.instruction_pointer())
-            .field("code_selector", &self.code_selector())
-            .field("flags", &self.flags())
-            .field("stack_pointer", &self.stack_pointer())
-            .field("stack_selector", &self.stack_selector())
-            .finish()
-    }
-}
-
 /// What the kernel does when a vector is raised.
 ///
 /// Runs with interrupts disabled, on the interrupted stack unless the gate
-/// selected one from the task-state segment. Returning resumes the interrupted
-/// code, which is meaningful for a trap such as a breakpoint and is a loop for
-/// a fault, whose saved instruction pointer is the instruction that faulted.
+/// selected a task-state-segment stack. Fault handlers must redirect or stop;
+/// their saved instruction pointer still names the faulting instruction.
 pub type Handler = fn(&TrapFrame);
 
 static IDT: HardwareCell<[Gate; idt::TABLE_LEN]> =
@@ -249,10 +175,8 @@ static INIT: Once = Once::new();
 
 /// How many trap handlers are on this CPU's stack — zero in thread context.
 ///
-/// What "in trap context" means, made a value something can read (D-55): the
-/// heap refuses to allocate while it is non-zero, and the scheduler refuses
-/// to yield. A context switch out of a handler parks the count with the
-/// thread that owns it, so the thread switched *to* sees its own.
+/// The heap and scheduler consult this count. Context switches park it with
+/// the thread that owns the interrupted stack (D-55).
 static TRAP_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
 /// The assembly frame behind the innermost handler's read-only snapshot.
@@ -270,6 +194,7 @@ pub fn in_trap() -> bool {
 ///
 /// The pushes and the struct that mirrors them have to agree on how many
 /// words that is, and only a live trap can say whether they still do.
+#[cfg(feature = "selftest")]
 pub const SAVED_FRAME_BYTES: u64 = size_of::<RawTrapFrame>() as u64;
 
 /// Where the innermost live handler's assembly frame begins.
@@ -277,6 +202,7 @@ pub const SAVED_FRAME_BYTES: u64 = size_of::<RawTrapFrame>() as u64;
 /// A number rather than a pointer: nothing safe can reach the frame through
 /// it, and the machine selftest needs only to subtract.
 #[doc(hidden)]
+#[cfg(feature = "selftest")]
 pub fn live_frame_address() -> u64 {
     LIVE_FRAME.load(Ordering::Relaxed) as u64
 }
@@ -286,20 +212,14 @@ pub(crate) fn is_live_frame(frame: &TrapFrame) -> bool {
     LIVE_FRAME.load(Ordering::Relaxed) == frame.origin
 }
 
-/// Resume the interrupted context at `address` instead of where it faulted.
-///
-/// `pub(super)`, and there is exactly one caller: `usercopy::recover`, which
-/// has already established that the fault was inside its own two-instruction
-/// copy and that `address` is its own fixup label. A general "set the
-/// instruction pointer" is not something this kernel should have — it is the
-/// primitive every exploit wants — and the narrowness is the whole safety
-/// argument (D-120).
+/// Resume a faulting user copy at its unforgeable fixup target.
 ///
 /// Refused unless `frame` is the innermost live one, as [`answer`] is: a stale
 /// snapshot's `origin` names a stack another thread is now standing on.
 ///
 /// `false` if the frame is not live, having written nothing.
-pub(super) fn resume_at(frame: &TrapFrame, address: u64) -> bool {
+#[must_use = "a refused resume changed no trap frame"]
+pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::RecoveryTarget) -> bool {
     if !is_live_frame(frame) {
         return false;
     }
@@ -307,26 +227,40 @@ pub(super) fn resume_at(frame: &TrapFrame, address: u64) -> bool {
     // check above says it is still the innermost one, so it is on this
     // thread's kernel stack and the stub has not yet popped it.
     let slot = unsafe { core::ptr::addr_of_mut!((*frame.origin).instruction_pointer) };
-    // SAFETY: as above. The value is a label inside this crate's own text, so
-    // `iretq` returns to an instruction rather than to whatever a caller chose.
-    unsafe { slot.write(address) };
+    // SAFETY: as above. Only `usercopy` can construct the target, from its
+    // in-crate fixup label, so `iretq` cannot be redirected by another caller.
+    unsafe { core::ptr::write(slot, target.address()) };
+    true
+}
+
+/// Resume the controlled write-protection probe at its private fixup target.
+#[cfg(feature = "selftest")]
+#[must_use = "a refused resume changed no trap frame"]
+pub(super) fn resume_write_protection(
+    frame: &TrapFrame,
+    target: super::cpu::WriteProtectionRecoveryTarget,
+) -> bool {
+    if !is_live_frame(frame) {
+        return false;
+    }
+    // SAFETY: `origin` is the innermost assembly frame and remains live.
+    let slot = unsafe { core::ptr::addr_of_mut!((*frame.origin).instruction_pointer) };
+    // SAFETY: only the write-protection probe can construct this in-crate label.
+    unsafe { core::ptr::write(slot, target.address()) };
     true
 }
 
 /// Set the `rax` the interrupted context will resume with.
 ///
-/// The one way anything writes a trap frame, and the whole of the return-value
-/// convention: a call's result goes back in `rax`, which the entry stub pops
-/// on its way to `iretq`. Everything else in the frame stays read-only —
-/// `TrapFrame` is a snapshot on purpose, and a handler that could edit the
-/// interrupted state at will is a handler that can resume a thread somewhere
-/// it never was (D-116).
+/// Only the ABI return register is mutable; the remaining interrupted state
+/// stays a read-only snapshot (D-116).
 ///
 /// Refused unless `frame` is the innermost live one, for the same reason
 /// `switch_from_trap` refuses a foreign frame: a stale snapshot's `origin`
 /// names a stack another thread is now standing on.
 ///
 /// `false` if the frame is not live, having written nothing.
+#[must_use = "a refused answer changed no trap frame"]
 pub fn answer(frame: &TrapFrame, value: u64) -> bool {
     if !is_live_frame(frame) {
         return false;
@@ -337,7 +271,7 @@ pub fn answer(frame: &TrapFrame, value: u64) -> bool {
     let slot = unsafe { core::ptr::addr_of_mut!((*frame.origin).rax) };
     // SAFETY: as above, and `rax` is caller-saved — no compiled code is
     // holding the value being replaced.
-    unsafe { slot.write(value) };
+    unsafe { core::ptr::write(slot, value) };
     true
 }
 
@@ -367,10 +301,7 @@ pub(crate) struct TrapSuspension {
 /// Fill the interrupt descriptor table and load it, routing every vector to
 /// `handler`.
 ///
-/// All 256 gates are filled. The architecture defines 32 of them; the rest
-/// would otherwise turn a stray interrupt into a general protection fault, then
-/// a double fault, then a reset with nothing printed.
-///
+/// All 256 gates are present so a stray vector reaches the common handler.
 /// Does nothing after the first call.
 ///
 /// # Panics
@@ -378,24 +309,13 @@ pub(crate) struct TrapSuspension {
 /// Panics if the global descriptor table has not been installed — the gates
 /// name its code selector — or if the generated stub table is not the size the
 /// indexing assumes.
-pub fn init(handler: Handler, user_gate: Option<u8>) {
-    // The third door to the same eight-byte frame shift as
-    // `apic::send_self_interrupt`: a gate on a vector the CPU pushes an error
-    // code for enters a stub that pushes a second one, and a *ring-3-callable*
-    // one at that. `int n` from ring 3 pushes no error code whatever `n`
-    // means, so the vector's meaning and the frame's shape disagree (D-123).
-    if let Some(vector) = user_gate {
-        assert!(
-            !exception::pushes_error_code(vector),
-            "a user gate on a vector the cpu pushes an error code for"
-        );
-    }
+pub fn init(handler: Handler, user_gate: Option<InterruptVector>) {
     if !INIT.claim() {
         return;
     }
 
     assert!(
-        segment::code_selector() == segment::KERNEL_CODE,
+        segment::current_code_selector() == segment::KERNEL_CODE,
         "install the global descriptor table before the interrupt one"
     );
 
@@ -419,11 +339,9 @@ pub fn init(handler: Handler, user_gate: Option<u8>) {
             0
         };
         let address = (base + vector * STUB_BYTES) as u64;
-        // Exactly one gate may be reached from ring 3, and it is named rather
-        // than defaulted: every other vector raises a general-protection fault
-        // when user code says `int`, because a device's line is not a service
-        // (D-96).
-        *gate = if user_gate == Some(vector as u8) {
+        // Only the named gate is reachable from ring 3; a user `int` at any
+        // other vector faults, because a device's line is not a service (D-96).
+        *gate = if user_gate.is_some_and(|user| usize::from(user.get()) == vector) {
             Gate::callable_from_user(address, segment::KERNEL_CODE, stack)
         } else {
             Gate::interrupt(address, segment::KERNEL_CODE, stack)
@@ -446,6 +364,7 @@ pub fn init(handler: Handler, user_gate: Option<u8>) {
 /// The privilege level that may reach `vector` with `int`.
 ///
 /// Read back from the table the CPU is walking, not from what was asked for.
+#[cfg(feature = "selftest")]
 pub fn gate_privilege(vector: u8) -> u8 {
     // SAFETY: the table is written once by `init` and never again, and this
     // reads one gate of it by value.
@@ -455,10 +374,7 @@ pub fn gate_privilege(vector: u8) -> u8 {
 
 /// Whether `clac` may be executed on the way in.
 ///
-/// A plain byte for the same reason [`MDS_CLEAR`] is one: the entry stub reads
-/// it with a single instruction and nothing writes it after boot. Zero until
-/// the kernel has established that this processor has SMAP, because `clac` is
-/// a `#UD` without it.
+/// The entry stub needs one immutable byte; `clac` would fault without SMAP.
 #[unsafe(no_mangle)]
 static mut SMAP_ARMED: u8 = 0;
 
@@ -468,11 +384,8 @@ static mut SMAP_ARMED: u8 = 0;
 ///
 /// # Panics
 ///
-/// If SMAP is not enabled. `clac` is a `#UD` without it, and the fault
-/// handler re-enters the stub that executed it — an unbreakable loop, on a
-/// machine configuration this project deliberately supports (D-90). A
-/// call-site check is what D-77 rejected: another safe caller can omit it
-/// (D-105).
+/// If SMAP is not enabled. `clac` would fault in the entry stub and re-enter
+/// the same path indefinitely; the safe API checks this itself (D-90, D-105).
 pub fn arm_access_clear() {
     assert!(
         cpu::Protections::enabled().smap,
@@ -484,6 +397,7 @@ pub fn arm_access_clear() {
 }
 
 /// Whether the entry path clears `AC`.
+#[cfg(feature = "selftest")]
 pub fn access_clear_is_armed() -> bool {
     // SAFETY: a one-byte read of a value only ever written during boot.
     unsafe { SMAP_ARMED == 1 }
@@ -491,11 +405,11 @@ pub fn access_clear_is_armed() -> bool {
 
 /// Whether the return path should flush before entering ring 3.
 ///
-/// A plain byte rather than an atomic because the entry stub reads it with one
-/// instruction and nothing writes it after boot. Set from `cpuid`, so a
-/// processor reporting `MDS_NO` pays nothing.
+/// The entry stub reads this immutable byte directly.
 #[unsafe(no_mangle)]
 pub(super) static mut MDS_CLEAR: u8 = 0;
+
+pub(super) const RECORD_BUFFER_CLEARS: usize = cfg!(feature = "selftest") as usize;
 
 /// Turn on the buffer flush that precedes every return to ring 3.
 ///
@@ -510,10 +424,9 @@ pub fn enable_buffer_clear() {
 
 /// How many times the buffer flush has actually executed.
 ///
-/// Counted in the asm, beside the `verw` itself. Reading the arming byte says
-/// only that the instruction was *compiled in*, which is the split D-101 found
-/// after the flush shipped unexecuted for a phase — so the check reads the
-/// instruction's own tally instead (D-105).
+/// Counted conditionally after `verw`, so the tally witnesses execution rather
+/// than only an armed branch (D-101, D-105).
+#[cfg(feature = "selftest")]
 pub fn buffer_clears() -> u64 {
     let counter = core::ptr::addr_of!(BUFFER_CLEARS);
     // SAFETY: naturally aligned and written only by an `inc` from the one
@@ -522,17 +435,18 @@ pub fn buffer_clears() -> u64 {
 }
 
 /// The tally [`buffer_clears`] reports, incremented where the `verw` is.
-pub(super) static mut BUFFER_CLEARS: u64 = 0;
+#[cfg(feature = "selftest")]
+#[unsafe(no_mangle)]
+static mut BUFFER_CLEARS: u64 = 0;
 
 /// Whether the buffer flush is armed.
+#[cfg(feature = "selftest")]
 pub fn buffer_clear_is_armed() -> bool {
     // SAFETY: a one-byte read of a value only ever written during boot.
     unsafe { MDS_CLEAR == 1 }
 }
 
-/// Whether the CPU's interrupt descriptor table register points at the table
-/// [`init`] built, with the limit it wrote.
-pub fn table_is_loaded() -> bool {
+fn idt_is_loaded() -> bool {
     let mut pointer = TablePointer::empty();
     // SAFETY: `sidt` stores ten bytes at the operand, which is a `TablePointer`
     // this call owns.
@@ -546,16 +460,24 @@ pub fn table_is_loaded() -> bool {
     pointer.base() == IDT.address() && pointer.limit() == idt::TABLE_LIMIT
 }
 
-/// Whether this CPU was accepting interrupts, captured so that a critical
-/// section can put the flag back the way it found it rather than guessing.
+/// Whether the CPU's interrupt descriptor table register points at the table
+/// [`init`] built, with the limit it wrote.
+#[cfg(feature = "selftest")]
+pub fn table_is_loaded() -> bool {
+    idt_is_loaded()
+}
+
+/// One context's place in the interrupt-exclusion stack.
 ///
-/// Restoring rather than enabling is what makes nesting work: an inner section
-/// that saw the flag already clear puts back a clear flag, so the outer section
-/// keeps the exclusion it was relying on.
+/// Context switches park this state with the stack that owns it. Restoring an
+/// outer state first defers it until every inner state has unwound; it never
+/// enables interrupts through a still-live exclusion.
 #[must_use = "dropping this state intentionally leaves interrupts disabled"]
 #[derive(Debug, PartialEq, Eq)]
 pub struct InterruptState {
-    was_enabled: bool,
+    owner: usize,
+    level: usize,
+    live: bool,
     stays_here: PhantomData<*mut ()>,
 }
 
@@ -567,9 +489,148 @@ impl InterruptState {
 
     /// Restore a state stored inside a guard that is itself being dropped.
     pub(crate) fn restore_in_place(&mut self) {
-        if core::mem::replace(&mut self.was_enabled, false) {
+        if !core::mem::replace(&mut self.live, false) {
+            return;
+        }
+        if restore_level(self.owner, self.level) {
             set_flag();
         }
+    }
+
+    /// Wait atomically while retaining this outer exclusion.
+    pub fn wait_for_interrupt(&mut self) {
+        assert!(self.live, "an interrupt exclusion was already consumed");
+        assert_owner(self.owner);
+        let ledger = &EXCLUSIONS[self.owner];
+        assert_eq!(self.level, 1, "only an outer exclusion may wait");
+        assert_eq!(
+            ledger.depth.load(Ordering::Relaxed),
+            1,
+            "an inner interrupt exclusion is still live"
+        );
+        assert_eq!(
+            ledger.deferred.load(Ordering::Relaxed),
+            0,
+            "a deferred interrupt restoration is still live"
+        );
+        assert!(
+            ledger.outer_was_enabled.load(Ordering::Relaxed),
+            "a context entered with interrupts disabled cannot wait by enabling them"
+        );
+        assert_platform_enable_preconditions();
+
+        ledger.depth.store(0, Ordering::Relaxed);
+        ledger.outer_was_enabled.store(false, Ordering::Relaxed);
+        // SAFETY: `sti; hlt` closes the lost-wakeup window and `cli`
+        // re-establishes this token's exclusion before compiled code resumes.
+        unsafe { asm!("sti", "hlt", "cli", options(nostack)) };
+        assert_owner(self.owner);
+        assert_eq!(
+            ledger.depth.load(Ordering::Relaxed),
+            0,
+            "an interrupt handler returned with an exclusion live"
+        );
+        ledger.outer_was_enabled.store(true, Ordering::Relaxed);
+        ledger.depth.store(1, Ordering::Relaxed);
+    }
+
+    /// Consume the sole exclusion while deliberately leaving interrupts off.
+    pub(crate) fn commit_disabled(mut self) {
+        assert!(self.live, "an interrupt exclusion was already consumed");
+        assert_owner(self.owner);
+        let ledger = &EXCLUSIONS[self.owner];
+        assert_eq!(self.level, 1, "an outer interrupt exclusion is still live");
+        assert_eq!(
+            ledger.depth.load(Ordering::Relaxed),
+            1,
+            "an inner interrupt exclusion is still live"
+        );
+        assert_eq!(ledger.deferred.load(Ordering::Relaxed), 0);
+        ledger.depth.store(0, Ordering::Relaxed);
+        ledger.outer_was_enabled.store(false, Ordering::Relaxed);
+        self.live = false;
+    }
+
+    /// End a dying context's exclusion ownership without setting its flag.
+    pub(super) fn commit_context_disabled(mut self) {
+        assert!(self.live, "an interrupt exclusion was already consumed");
+        assert_owner(self.owner);
+        let ledger = &EXCLUSIONS[self.owner];
+        assert_eq!(
+            self.level,
+            ledger.depth.load(Ordering::Relaxed),
+            "an inner interrupt exclusion is still live"
+        );
+        ledger.depth.store(0, Ordering::Relaxed);
+        ledger.deferred.store(0, Ordering::Relaxed);
+        ledger.outer_was_enabled.store(false, Ordering::Relaxed);
+        self.live = false;
+    }
+
+    /// Whether the context accepted interrupts before this exclusion.
+    pub(super) fn were_enabled(&self) -> bool {
+        self.live
+            && self.level == 1
+            && EXCLUSIONS[self.owner]
+                .outer_was_enabled
+                .load(Ordering::Relaxed)
+    }
+
+    /// Transfer this state out of a guard without registering a replacement.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn take_for_transfer(&mut self) -> Self {
+        core::mem::replace(
+            self,
+            Self {
+                owner: usize::MAX,
+                level: 0,
+                live: false,
+                stays_here: PhantomData,
+            },
+        )
+    }
+}
+
+fn assert_owner(owner: usize) {
+    assert_eq!(
+        ACTIVE_CONTEXT.load(Ordering::Relaxed),
+        owner,
+        "an interrupt exclusion belongs to another task context"
+    );
+}
+
+fn restore_level(owner: usize, level: usize) -> bool {
+    assert_owner(owner);
+    let ledger = &EXCLUSIONS[owner];
+    let depth = ledger.depth.load(Ordering::Relaxed);
+    assert!(
+        level != 0 && level <= depth,
+        "interrupt exclusion order is corrupt"
+    );
+    let bit = 1usize << (level - 1);
+    let mut deferred = ledger.deferred.load(Ordering::Relaxed);
+    assert_eq!(deferred & bit, 0, "interrupt exclusion restored twice");
+    if level != depth {
+        ledger.deferred.store(deferred | bit, Ordering::Relaxed);
+        return false;
+    }
+
+    let mut remaining = depth - 1;
+    while remaining != 0 {
+        let outer = 1usize << (remaining - 1);
+        if deferred & outer == 0 {
+            break;
+        }
+        deferred &= !outer;
+        remaining -= 1;
+    }
+    ledger.deferred.store(deferred, Ordering::Relaxed);
+    ledger.depth.store(remaining, Ordering::Relaxed);
+    if remaining == 0 {
+        assert_eq!(deferred, 0, "a restoration survived its interrupt context");
+        ledger.outer_was_enabled.swap(false, Ordering::Relaxed)
+    } else {
+        false
     }
 }
 
@@ -588,78 +649,69 @@ pub fn disable() -> InterruptState {
     // SAFETY: `cli` clears IF on the current CPU and touches nothing else. It
     // has no preconditions in ring 0. `preserves_flags` is deliberately absent —
     // modifying IF is the whole point.
-    unsafe { asm!("cli", options(nomem, nostack)) };
+    unsafe { asm!("cli", options(nostack)) };
+    let owner = ACTIVE_CONTEXT.load(Ordering::Relaxed);
+    let ledger = &EXCLUSIONS[owner];
+    let depth = ledger.depth.load(Ordering::Relaxed);
+    assert!(
+        depth < MAX_EXCLUSIONS,
+        "interrupt exclusion nesting exceeds one machine word"
+    );
+    if depth == 0 {
+        assert_eq!(ledger.deferred.load(Ordering::Relaxed), 0);
+        ledger.outer_was_enabled.store(previous, Ordering::Relaxed);
+    } else {
+        assert!(!previous, "interrupts became enabled inside an exclusion");
+    }
+    ledger.depth.store(depth + 1, Ordering::Relaxed);
     InterruptState {
-        was_enabled: previous,
+        owner,
+        level: depth + 1,
+        live: true,
         stays_here: PhantomData,
     }
 }
 
 /// Begin accepting maskable interrupts on this CPU.
 ///
-/// Safe rather than `unsafe` because both of its preconditions are checkable
-/// and are checked. That is the point: the version of this function deleted in
-/// Phase 1 could only have stated them in prose.
-///
 /// # Panics
 ///
-/// Panics unless the interrupt table is loaded and the legacy controller has
-/// been silenced. With no table, the first interrupt is a reset with nothing
-/// printed; with a live 8259 the firmware left pointing at the exception
-/// vectors, the first timer tick arrives as a double fault.
+/// Panics unless the table is loaded and the legacy controller is silent;
+/// either omission can route the first interrupt into a reset.
 pub fn enable() {
-    assert!(
-        table_is_loaded(),
-        "load the interrupt table before accepting interrupts"
-    );
-    assert!(
-        pic::is_silenced(),
-        "silence the legacy controller before accepting interrupts"
-    );
+    assert_enable_preconditions();
     set_flag();
 }
 
-/// Begin accepting interrupts and halt, as one step.
-///
-/// What a thread with nothing to do until a deadline does with the flag
-/// clear. The two halves cannot be separate calls: an interrupt arriving
-/// between them would be taken before the halt, and the CPU would then halt
-/// with the thing that was going to wake it already spent. The architecture
-/// closes exactly that window — `sti` does not admit an interrupt until after
-/// the instruction following it, which here is the `hlt`.
-///
-/// Returns once an interrupt has been taken, with the flag left set.
-///
-/// # Panics
-///
-/// As [`enable`], whose preconditions this shares: with no table loaded or a
-/// live legacy controller, the interrupt that ends the halt is a reset.
-pub fn enable_and_halt() {
+fn assert_enable_preconditions() {
+    assert_platform_enable_preconditions();
+    assert_eq!(
+        EXCLUSIONS[ACTIVE_CONTEXT.load(Ordering::Relaxed)]
+            .depth
+            .load(Ordering::Relaxed),
+        0,
+        "an interrupt exclusion is still live"
+    );
+}
+
+fn assert_platform_enable_preconditions() {
     assert!(
         crate::sync::spinlocks_held() == 0,
-        "a spin lock is held, so halting with the flag set would strand it"
+        "a spin lock is held, so setting the interrupt flag would strand it"
     );
     assert!(
-        table_is_loaded(),
+        idt_is_loaded(),
         "load the interrupt table before accepting interrupts"
     );
     assert!(
         pic::is_silenced(),
         "silence the legacy controller before accepting interrupts"
     );
-    // SAFETY: `sti` sets IF and `hlt` stops the CPU until an interrupt
-    // arrives; both are unprivileged in ring 0 and neither touches memory.
-    // The preconditions for setting the flag are the two asserts above, and
-    // the pair cannot deadlock the CPU because the shadow makes the halt
-    // reachable only with interrupts already admitted.
-    unsafe { asm!("sti", "hlt", options(nomem, nostack, preserves_flags)) };
 }
 
 /// Set the interrupt flag with nothing checked.
 ///
-/// Private, and the difference between it and [`enable`] is the whole design:
-/// restoring a flag that was set is safe because setting it was, whereas
-/// setting it the first time is the step that needs an argument.
+/// Private because only restoration may reuse a previously admitted flag.
 ///
 /// # Panics
 ///
@@ -667,6 +719,13 @@ pub fn enable_and_halt() {
 /// being interrupted, and an interrupt that then waits on the same lock waits
 /// on a context that cannot resume (D-66).
 fn set_flag() {
+    assert_eq!(
+        EXCLUSIONS[ACTIVE_CONTEXT.load(Ordering::Relaxed)]
+            .depth
+            .load(Ordering::Relaxed),
+        0,
+        "an interrupt exclusion is still live"
+    );
     assert!(
         crate::sync::spinlocks_held() == 0 || crate::panic::is_panicking(),
         "a spin lock is held, so setting the interrupt flag would strand it"
@@ -674,7 +733,44 @@ fn set_flag() {
     // SAFETY: `sti` sets IF on the current CPU and touches nothing else. Every
     // caller either checked the preconditions or is restoring a flag whose
     // caller did.
-    unsafe { asm!("sti", options(nomem, nostack)) };
+    unsafe { asm!("sti", options(nostack)) };
+}
+
+/// Move interrupt-exclusion ownership at the context-switch boundary.
+pub(super) fn switch_context(to: usize) {
+    assert!(
+        !are_enabled(),
+        "a context switch requires interrupts disabled"
+    );
+    assert!(to < CONTEXTS, "task context is outside the exclusion table");
+    ACTIVE_CONTEXT.store(to, Ordering::Relaxed);
+}
+
+/// Whether `slot` has no parked interrupt exclusions.
+pub(super) fn context_is_clear(slot: usize) -> bool {
+    slot < CONTEXTS && EXCLUSIONS[slot].depth.load(Ordering::Relaxed) == 0
+}
+
+/// Prove nested restoration and direct admission share the production ledger.
+#[cfg(feature = "selftest")]
+pub fn exclusion_order_is_enforced_for_test() -> bool {
+    let owner = ACTIVE_CONTEXT.load(Ordering::Relaxed);
+    if !are_enabled() || !context_is_clear(owner) {
+        return false;
+    }
+    let outer = disable();
+    let inner = disable();
+    outer.restore();
+    let deferred = !are_enabled() && EXCLUSIONS[owner].depth.load(Ordering::Relaxed) == 2;
+    let direct_enable_refused = EXCLUSIONS[owner].depth.load(Ordering::Relaxed) != 0;
+    inner.restore();
+    deferred && direct_enable_refused && are_enabled()
+}
+
+/// Whether interrupt ownership follows `slot` on this instruction stream.
+#[cfg(feature = "selftest")]
+pub fn context_matches_for_test(slot: usize) -> bool {
+    ACTIVE_CONTEXT.load(Ordering::Relaxed) == slot
 }
 
 /// The flags register.
@@ -695,10 +791,7 @@ fn flags() -> u64 {
 }
 
 /// Raise a breakpoint exception on this CPU.
-///
-/// The trap a debugger plants, and the only exception that can be raised
-/// deliberately and returned from: the saved instruction pointer is already
-/// past the instruction that caused it.
+#[cfg(feature = "selftest")]
 pub fn breakpoint() {
     assert!(
         table_is_loaded(),
@@ -725,7 +818,7 @@ extern "C" fn dispatch(raw: *mut RawTrapFrame) {
     // SAFETY: the entry path passes a properly aligned, fully initialised
     // register block with the exact `RawTrapFrame` layout. Copying it leaves
     // the assembly-owned frame untouched for `iretq`.
-    let saved = unsafe { raw.read() };
+    let saved = unsafe { core::ptr::read(raw) };
     let frame = TrapFrame {
         raw: saved,
         origin: raw,
@@ -752,12 +845,10 @@ unsafe extern "C" {
     fn stub_table_end();
 }
 
-global_asm!(
-    // One stub per vector, each padded to the same size so the table can be
-    // indexed rather than named. Vectors the CPU pushes no error code for push
-    // a zero, so every saved frame has one shape; `ERROR_CODE_VECTORS` is the
-    // single source of truth for which those are, shared with the host tests
-    // that check it against the SDM's table.
+::core::arch::global_asm!(
+    // Stubs are padded to one size so the table indexes by vector. Vectors
+    // without an error code push a zero, so every frame has one shape;
+    // `ERROR_CODE_VECTORS` is the one source, checked against the SDM on the host.
     ".balign {stub_bytes}",
     ".globl wost_interrupt_stubs",
     "wost_interrupt_stubs:",
@@ -782,30 +873,21 @@ global_asm!(
     ".globl wost_interrupt_stubs_end",
     "wost_interrupt_stubs_end:",
 
-    // The common tail. `cld` because the ABI requires a clear direction flag
-    // and an interrupt does not clear it. An interrupted stack is not a Rust
-    // call boundary, so `rsp` is aligned explicitly; `rbx` is already saved and
-    // the called ABI preserves it, making it a stable route back to the frame.
-    // Floating-point state is not saved because the kernel is built without
-    // SSE and cannot disturb it.
+    // Entry clears neither DF nor the alignment debt. RBX survives the call
+    // and routes back to the frame; kernel code holds no floating-point state.
     "wost_interrupt_entry:",
     "cld",
-    // And `clac`, because `AC` is *not* one of the flags interrupt delivery
-    // clears — and it is writable at CPL 3. A ring-3 thread that sets it walks
-    // into this handler with SMAP disabled, and it stays disabled for every
-    // thread switched to afterwards, because a context switch restores no
-    // flags. That is the mitigation this phase is built around, defeated from
-    // the far side of the boundary by three instructions (D-101). Linux emits
-    // `ASM_CLAC` at the top of every entry point for exactly this reason.
-    //
-    // Branched rather than patched: `clac` is a `#UD` where SMAP is absent,
-    // which the degraded boot exercises (D-90), and this kernel has no
-    // instruction-patching machinery to make it free.
+    // Ring 3 controls `AC` and entry does not clear it, so every SMAP entry
+    // does (D-101); a branch, because `clac` faults without SMAP.
     "cmp byte ptr [rip + {smap}], 0",
     "je 3f",
     "clac",
     "3:",
+    // A privilege-changing entry nulls live `SS`; dispatch may switch kernel
+    // contexts before `iretq`, so restore the kernel selector before Rust.
     "push rax",
+    "mov ax, {kernel_data}",
+    "mov ss, ax",
     "push rbx",
     "push rcx",
     "push rdx",
@@ -841,35 +923,28 @@ global_asm!(
     "pop rbx",
     "pop rax",
     "add rsp, 16",
-    // Returning to ring 3? The saved `CS` is at `[rsp + 8]` now that the
-    // vector and error code have been stepped over, and its low two bits are
-    // the privilege the CPU will return to.
+    // Returning to ring 3? With vector and error code stepped over, the saved
+    // `CS` sits at `[rsp + 8]` and its low two bits are the target privilege.
     "test byte ptr [rsp + 8], 3",
     "jz 2f",
-    // `VERW` on a data selector flushes the microarchitectural buffers MDS
-    // reads from, and this is the last instruction before the boundary. One
-    // instruction, on the path that is painful to modify once mature, which is
-    // why D-81 asked for it now — and skipped where the processor says it is
-    // not needed (D-98).
+    // `VERW` flushes MDS-visible buffers as the last instruction before the
+    // boundary, unless `MDS_NO` makes it pointless (D-81, D-98).
     "cmp byte ptr [rip + {clear}], 0",
     "je 2f",
     "sub rsp, 8",
     "mov word ptr [rsp], {kernel_data}",
     "verw word ptr [rsp]",
-    // `verw` sets ZF when the selector is writable, which the kernel data
-    // segment is — so the tally counts the *instruction*, not its neighbour.
-    // It sat beside the `verw` before, and deleting the `verw` alone left the
-    // count intact and every check green: adjacency is not causation, which
-    // is the split D-101 already cost this project once (D-143).
+    ".if {record_clears}",
     "jnz 3f",
-    "inc qword ptr [rip + {clears}]",
+    "inc qword ptr [rip + BUFFER_CLEARS]",
     "3:",
+    ".endif",
     "add rsp, 8",
     "2:",
     "iretq",
     stub_bytes = const STUB_BYTES,
     clear = sym MDS_CLEAR,
-    clears = sym BUFFER_CLEARS,
+    record_clears = const RECORD_BUFFER_CLEARS,
     smap = sym SMAP_ARMED,
     kernel_data = const (segment::KERNEL_DATA_BITS as u32),
     architectural = const exception::COUNT,

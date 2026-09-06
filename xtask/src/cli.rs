@@ -38,6 +38,8 @@ CHECK TASKS:
 QUALIFICATION TASKS:
     evidence          run CI, reproduce the release twice and write its evidence
     verify-evidence   verify the evidence bundle without network access
+    qualify-advisory  fetch RustSec data and qualify the exact Cargo.lock
+    qualify-vmware    validate and preserve a fresh VMware serial transcript
     baseline          repeat debug/release foundation measurements in QEMU
     debug             open the debug kernel at kmain in native GDB
 
@@ -46,10 +48,13 @@ QUALIFICATION TASKS:
 const HELP_AFTER_REGISTRY: &str = "\
 NOT IN CI (exceptional dependency, interaction, or runtime):
     debug --check     as above (needs the pinned native GDB)
+    baseline          as above (six descriptive QEMU boots)
     model-check       run TLC over the ring models (needs java)
     vmware            as above (needs VMware Workstation to boot the result)
+    qualify-vmware    as above (validates a fresh human-boot transcript)
     mutate            break the kernel on purpose, once per known defect, and
                       require a check to go red (one QEMU boot each)
+    qualify-advisory  as above (needs cargo-audit and fresh RustSec data)
 
 HOUSEKEEPING:
     update-sbom       regenerate the SPDX SBOM from the reviewed inventory
@@ -60,7 +65,7 @@ OPTIONS:
     --debug           build unoptimised
     --check           fmt: do not rewrite; debug: run the bounded setup proof
     --all             clean only: also remove the generated vm/ directory
-    --shipped         vmware only: generate the image users boot, not self-test
+    --shipped         vmware tasks: select the image users boot, not self-test
     --message-format=<FMT>
                       check only: forwarded to cargo
     -h, --help        print this help
@@ -139,6 +144,13 @@ pub enum Task {
     Evidence,
     /// Verify a release evidence bundle without network access.
     VerifyEvidence,
+    /// Qualify the locked dependency graph against fresh RustSec data.
+    QualifyAdvisory,
+    /// Validate and preserve one executed VMware machine.
+    QualifyVmware {
+        /// Which generated machine supplied the transcript.
+        kernel: crate::image::Kernel,
+    },
     /// Remove build output.
     Clean(CleanScope),
 }
@@ -175,11 +187,10 @@ pub enum CleanScope {
 
 /// Parse the arguments after the task separator.
 ///
-/// An empty argument list is an error, not a default: the previous behaviour
-/// booted a virtual machine whenever a task name was mistyped.
+/// Empty input is refused so a mistyped task cannot default to booting a VM.
 pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
     let mut args = args.into_iter();
-    let Some(first) = args.next() else {
+    let Some(first) = core::iter::Iterator::next(&mut args) else {
         bail!("no task given");
     };
 
@@ -196,7 +207,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
     let mut passthrough = Vec::new();
 
     let mut rest = args;
-    while let Some(arg) = rest.next() {
+    while let Some(arg) = core::iter::Iterator::next(&mut rest) {
         let flag = arg.to_string_lossy().into_owned();
         match flag.as_str() {
             "--release" => profile = Profile::Release,
@@ -258,6 +269,14 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         "ci" => Ok(Task::Ci),
         "evidence" => Ok(Task::Evidence),
         "verify-evidence" => Ok(Task::VerifyEvidence),
+        "qualify-advisory" => Ok(Task::QualifyAdvisory),
+        "qualify-vmware" => Ok(Task::QualifyVmware {
+            kernel: if shipped {
+                crate::image::Kernel::Shipped
+            } else {
+                crate::image::Kernel::SelfTest
+            },
+        }),
         "clean" => Ok(Task::Clean(if all {
             CleanScope::Everything
         } else {
@@ -335,6 +354,10 @@ mod tests {
     #[test]
     fn task_specific_flags_reach_their_task() {
         assert_eq!(
+            parse_args(&["qualify-advisory"]).unwrap(),
+            Task::QualifyAdvisory
+        );
+        assert_eq!(
             parse_args(&["fmt", "--check"]).unwrap(),
             Task::Fmt(FmtMode::Check)
         );
@@ -358,6 +381,18 @@ mod tests {
             parse_args(&["vmware", "--shipped"]).unwrap(),
             Task::Vmware {
                 profile: Profile::Release,
+                kernel: crate::image::Kernel::Shipped,
+            }
+        );
+        assert_eq!(
+            parse_args(&["qualify-vmware"]).unwrap(),
+            Task::QualifyVmware {
+                kernel: crate::image::Kernel::SelfTest,
+            }
+        );
+        assert_eq!(
+            parse_args(&["qualify-vmware", "--shipped"]).unwrap(),
+            Task::QualifyVmware {
                 kernel: crate::image::Kernel::Shipped,
             }
         );
@@ -387,10 +422,8 @@ mod tests {
     /// nobody will run; one the help offers but the parser rejects is worse.
     #[test]
     fn every_task_the_parser_accepts_is_named_in_the_help() {
-        // Read out of the parser rather than restated beside it. A list here
-        // would only be a second copy of the match below, and a second copy is
-        // green on the day the two disagree — which is the whole failure this
-        // test exists to prevent.
+        // Derive this from the parser so the test cannot drift through a
+        // second handwritten task list.
         let names: Vec<&str> = include_str!("cli.rs")
             .lines()
             .filter(|line| line.contains("=> Ok(Task::"))
@@ -416,5 +449,35 @@ mod tests {
     #[test]
     fn the_doc_task_parses() {
         assert_eq!(parse_args(&["doc"]).unwrap(), Task::Doc);
+    }
+
+    #[test]
+    fn every_exceptional_task_is_named_in_the_not_in_ci_block() {
+        let help = help();
+        let block = help
+            .split_once("NOT IN CI (exceptional dependency, interaction, or runtime):\n")
+            .unwrap()
+            .1
+            .split_once("\nHOUSEKEEPING:")
+            .unwrap()
+            .0;
+        let names: std::collections::BTreeSet<&str> = block
+            .lines()
+            .filter(|line| line.starts_with("    ") && !line.starts_with("                      "))
+            .filter_map(|line| core::iter::Iterator::next(&mut line.split_whitespace()))
+            .map(|name| name.split_once(' ').map_or(name, |(task, _)| task))
+            .collect();
+        assert_eq!(
+            names,
+            std::collections::BTreeSet::from([
+                "baseline",
+                "debug",
+                "model-check",
+                "mutate",
+                "qualify-advisory",
+                "qualify-vmware",
+                "vmware",
+            ])
+        );
     }
 }

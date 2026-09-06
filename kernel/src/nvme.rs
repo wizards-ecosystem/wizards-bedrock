@@ -9,15 +9,15 @@
 //! "this kernel has no interrupt sharing" from the critical path entirely. The
 //! cost is that a read spins. D-200 confines that polling to the one file
 //! worker, where timer and input interrupts may preempt it; `RingEnter` only
-//! admits the request. An interrupt-driven controller remains future work.
+//! admits the request. PW-704 requires a measured workload before replacing it.
 //!
 //! **Three things decide whether this works at all, and none is optional.**
 //! Bus master must be on or the controller cannot DMA and *there is no error
-//! anywhere to read* — `pci::claim` sets it. The register window must be mapped
-//! **uncacheable**; write-back is a silent, hard-to-debug bug. And `CAP` is
-//! read, never assumed: the queue size, the doorbell stride, the timeout and
-//! the page-size range all come from it, and `012` §11 records that VMware's
-//! values are unmeasured.
+//! anywhere to read*. The PCI lease withholds it until controller-disable
+//! readback is exact. The register window must be mapped **uncacheable**;
+//! write-back is a silent, hard-to-debug bug. And `CAP` is read, never assumed:
+//! the queue size, the doorbell stride, the timeout and the page-size range all
+//! come from it, and `012` §11 records that VMware's values are unmeasured.
 //!
 //! **The ring parallel is a trap.** This looks like `kernel::queue` and is not:
 //! there is no completion tail to read, entries are found by their phase tag,
@@ -26,21 +26,53 @@
 //! structure is not (D-169).
 
 use nvme::{
-    Capabilities, Capacity, Command, Completion, DmaState, NAMESPACE_IDENTIFY_BYTES, Namespace,
-    NamespaceError, PollLimit, ReadTransfer, TransferError, configuration, register, status,
+    Capabilities, Capacity, Command, Completion, ControllerPreparation, DisabledPreparation,
+    DisabledRegisters, DmaPublication, DmaState as DmaFlightState, NAMESPACE_IDENTIFY_BYTES,
+    Namespace, NamespaceError, PollLimit, PreparationFailure, ReadTransfer, TransferError,
+    configuration, register, status,
 };
 #[cfg(feature = "selftest")]
 use wost::arch::current::cpu;
-use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
+use wost::arch::current::pci::MappedBar;
 use wost::mm::{self, DmaSegment};
 use wost::sync::ThreadLock;
 use x86_paging::PAGE_SIZE;
 
 use crate::thread::ThreadContext;
-use crate::{info, mem, warn};
+use crate::{info, mem};
 
 #[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+#[cfg(feature = "selftest")]
+static BME_PRECEDING_CC: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+#[cfg(feature = "selftest")]
+static BME_PRECEDING_CSTS: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+#[cfg(feature = "selftest")]
+static REFUSED_BME_PRECEDING_CC: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+#[cfg(feature = "selftest")]
+static REFUSED_BME_PRECEDING_CSTS: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+#[cfg(feature = "selftest")]
+static START_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(feature = "selftest")]
+static SUBMISSION_DOORBELLS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(feature = "selftest")]
+fn count(observation: &AtomicUsize) {
+    assert!(
+        observation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .is_ok(),
+        "an NVMe self-test observation exhausted"
+    );
+}
 
 /// Entries in the queues this driver builds.
 ///
@@ -82,8 +114,8 @@ struct QueuePair {
     /// Where the host will write next. **Shadowed**, because the doorbell is
     /// write-only and the controller's idea of the tail cannot be read back.
     tail: u32,
-    /// Where the host has consumed up to.
-    head: u32,
+    submission_head: u32,
+    completion_head: u32,
     /// The phase a *new* completion carries.
     ///
     /// There is no tail to read: an entry is new when its phase tag differs
@@ -112,7 +144,8 @@ impl QueuePair {
             submission,
             completion,
             tail: 0,
-            head: 0,
+            submission_head: 0,
+            completion_head: 0,
             phase: true,
         })
     }
@@ -136,15 +169,17 @@ pub(crate) struct Controller {
     /// were mapped**: a register file mapped write-back is a driver whose
     /// writes arrive when the cache feels like it, and nothing about the
     /// driver's behaviour would say so on an emulator.
-    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
-    window: u64,
-    registers: Option<ReleasableDevice>,
+    #[cfg(feature = "selftest")]
+    observed_window: u64,
+    registers: Option<MappedBar>,
     capabilities: Capabilities,
     admin: QueuePair,
     io: Option<QueuePair>,
     /// The next command identifier. Wrapping is fine: a completion is matched
     /// by it and only one command is outstanding at a time.
     next_id: u16,
+    #[cfg(feature = "selftest")]
+    published_commands: u32,
     /// Whether the one outstanding command's memory is host-owned again.
     dma: DmaState,
     /// Makes the production timeout arm deterministic for its machine proof.
@@ -168,14 +203,157 @@ pub(crate) struct Controller {
     pub(crate) block_bytes: u32,
 }
 
+#[derive(Debug)]
+struct DmaState {
+    flight: DmaFlightState,
+    disposition: DmaDisposition,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DmaDisposition {
+    Active,
+    Quiesced,
+    Retained,
+}
+
+#[derive(Debug)]
+struct ControllerStopped<'controller> {
+    _registers: &'controller MappedBar,
+    _observed: DisabledRegisters,
+    dma: &'controller mut DmaState,
+}
+
+impl ControllerStopped<'_> {
+    fn quiesce(self) {
+        if self.dma.disposition == DmaDisposition::Active {
+            self.dma.flight.close();
+            self.dma.disposition = DmaDisposition::Quiesced;
+        }
+    }
+}
+
+impl DmaState {
+    const fn idle() -> Self {
+        Self {
+            flight: DmaFlightState::idle(),
+            disposition: DmaDisposition::Active,
+        }
+    }
+
+    fn reserve(&mut self) -> bool {
+        self.disposition == DmaDisposition::Active && self.flight.reserve()
+    }
+
+    fn cancel_unpublished(&mut self) -> bool {
+        self.disposition == DmaDisposition::Active && self.flight.cancel_unpublished()
+    }
+
+    fn publish_with<T>(&mut self, handoff: impl FnOnce(DmaPublication<'_>) -> T) -> Option<T> {
+        if self.disposition != DmaDisposition::Active {
+            return None;
+        }
+        self.flight.publish_with(handoff)
+    }
+
+    fn complete(&mut self) -> bool {
+        self.disposition == DmaDisposition::Active && self.flight.complete()
+    }
+
+    fn retain_unquiesced(&mut self) {
+        if self.disposition == DmaDisposition::Active {
+            self.flight.close();
+            self.disposition = DmaDisposition::Retained;
+        }
+    }
+
+    const fn is_settled(&self) -> bool {
+        !matches!(&self.disposition, DmaDisposition::Active)
+    }
+
+    const fn is_quiesced(&self) -> bool {
+        matches!(&self.disposition, DmaDisposition::Quiesced)
+    }
+
+    #[cfg(feature = "selftest")]
+    const fn is_in_flight(&self) -> bool {
+        self.flight.is_in_flight()
+    }
+
+    const fn must_retain(&self) -> bool {
+        matches!(&self.disposition, DmaDisposition::Retained)
+    }
+}
+
+/// A mapped controller observed disabled while PCI bus mastering was off.
+#[derive(Debug)]
+pub(crate) struct DisabledController {
+    controller: Controller,
+    configuration: u32,
+    capacity: Capacity,
+}
+
+/// A disabled controller whose PCI function accepted bus-master admission.
+///
+/// Only [`DisabledController::admit_bus_master`] constructs this value, so
+/// consuming it is proof that controller start cannot bypass a refused PCI
+/// transition.
+#[derive(Debug)]
+pub(crate) struct BusMasterAdmittedController(DisabledController);
+
+/// The two ownership-preserving results of bus-master admission.
+#[derive(Debug)]
+pub(crate) enum BusMasterAdmission {
+    /// PCI admitted DMA and minted controller-start authority.
+    Admitted(BusMasterAdmittedController),
+    /// PCI refused DMA and returned retirement authority.
+    Refused(BusMasterAdmissionFailure),
+}
+
+/// A refused bus-master transition with the unchanged disabled controller.
+#[derive(Debug)]
+pub(crate) struct BusMasterAdmissionFailure {
+    reason: BusMasterAdmissionError,
+    disabled: DisabledController,
+}
+
+/// Why fresh controller proof or the PCI command transition refused DMA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BusMasterAdmissionError {
+    /// The disabled controller no longer retained its mapped register BAR.
+    NotMapped,
+    /// BAR identity, register access, or live disabled state was refused.
+    Observation(wost::arch::current::pci::NvmeObservationError),
+    /// The exact function's PCI command transition was refused.
+    Command(pci_config::EnableError),
+}
+
+impl core::fmt::Display for BusMasterAdmissionError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotMapped => core::fmt::Write::write_str(formatter, "register BAR is absent"),
+            Self::Observation(reason) => write!(formatter, "controller observation: {reason}"),
+            Self::Command(reason) => write!(formatter, "PCI command: {reason}"),
+        }
+    }
+}
+
+impl BusMasterAdmissionFailure {
+    /// Why PCI refused bus-master admission.
+    pub(crate) const fn reason(&self) -> BusMasterAdmissionError {
+        self.reason
+    }
+
+    /// Recover the disabled controller for exact retirement.
+    pub(crate) fn into_disabled(self) -> DisabledController {
+        self.disabled
+    }
+}
+
 /// Why a controller could not be brought up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BringUpError {
     /// The register window could not be mapped.
     NotMapped,
-    /// The window was mapped and could not be claimed, which means the space
-    /// it was mapped into is not the one running.
-    NotClaimable,
     /// The controller reports no NVM command set, so it has no blocks.
     NoCommandSet,
     /// The controller cannot work in this kernel's page size.
@@ -188,6 +366,12 @@ pub(crate) enum BringUpError {
     NotReady,
     /// A command was refused, or never answered.
     Command(u16),
+    /// A completion did not come from the command and queue just published.
+    UnexpectedCompletion {
+        queue: u16,
+        id: u16,
+        submission_head: u16,
+    },
     /// A read did not fit its command, namespace or DMA owner.
     InvalidTransfer(TransferError),
     /// Identify Namespace data did not fit the supported storage contract.
@@ -197,119 +381,403 @@ pub(crate) enum BringUpError {
 impl core::fmt::Display for BringUpError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::NotMapped => f.write_str("the register window could not be mapped"),
-            Self::NotClaimable => f.write_str("the register window is not in the running space"),
-            Self::NoCommandSet => f.write_str("no nvm command set"),
-            Self::PageSize => f.write_str("this kernel's page size is outside mpsmin..mpsmax"),
-            Self::QueueSize => f.write_str("the reported queue size holds nothing"),
-            Self::NoMemory => f.write_str("no memory for the queues"),
-            Self::NotReady => f.write_str("the controller never became ready"),
+            Self::NotMapped => {
+                core::fmt::Write::write_str(f, "the register window could not be mapped")
+            }
+            Self::NoCommandSet => core::fmt::Write::write_str(f, "no nvm command set"),
+            Self::PageSize => {
+                core::fmt::Write::write_str(f, "this kernel's page size is outside mpsmin..mpsmax")
+            }
+            Self::QueueSize => {
+                core::fmt::Write::write_str(f, "the reported queue size holds nothing")
+            }
+            Self::NoMemory => core::fmt::Write::write_str(f, "no memory for the queues"),
+            Self::NotReady => core::fmt::Write::write_str(f, "the controller never became ready"),
             Self::Command(status) => write!(f, "a command was refused: status {status:#x}"),
+            Self::UnexpectedCompletion {
+                queue,
+                id,
+                submission_head,
+            } => write!(
+                f,
+                "completion names queue {queue}, command {id}, submission head {submission_head}"
+            ),
             Self::InvalidTransfer(reason) => write!(f, "an invalid transfer: {reason}"),
             Self::InvalidNamespace(reason) => write!(f, "an invalid namespace: {reason}"),
         }
     }
 }
 
-/// A failed candidate and whether every resource it touched was retired.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A bring-up failure paired with its exact cleanup disposition.
+#[derive(Debug)]
 pub(crate) struct StartFailure {
     reason: BringUpError,
-    retired: bool,
+    retirement: ControllerRetirement,
+}
+
+/// Exact result of attempting to retire a controller and its mapped BAR.
+#[derive(Debug)]
+#[must_use = "controller retirement may return quarantine ownership"]
+pub(crate) enum ControllerRetirement {
+    /// Controller DMA stopped and its mapped BAR retired exactly.
+    Retired,
+    /// Cleanup could not be proven, so the controller remains owned.
+    Quarantined(ControllerQuarantine),
+}
+
+/// Proof that an incompletely retired controller remains in kernel quarantine.
+#[derive(Debug)]
+#[must_use = "the controller and PCI lease must remain reachable"]
+pub(crate) struct ControllerQuarantine {
+    _private: (),
+}
+
+/// Result of preparing a mapped controller before bus-master admission.
+#[derive(Debug)]
+#[must_use = "controller preparation returns ownership in both outcomes"]
+pub(crate) enum PrepareOutcome {
+    /// The controller is verified disabled and ready for DMA admission.
+    Prepared(DisabledController),
+    /// Preparation refused with an exact ownership disposition.
+    Failed(PrepareFailure),
+}
+
+/// A pre-DMA failure with an exact retirement or quarantine disposition.
+#[derive(Debug)]
+#[must_use = "a preparation failure may retain mapped BAR authority"]
+pub(crate) enum PrepareFailure {
+    /// The disabled controller mapping was retired exactly.
+    Retired(BringUpError),
+    /// Controller state stayed uncertain, so its complete ownership is retained.
+    Quarantined(PrepareQuarantine),
+}
+
+/// A mapped controller which cannot yet be safely retired.
+#[derive(Debug)]
+#[must_use = "the mapped BAR and PCI lease must remain reachable"]
+pub(crate) struct PrepareQuarantine {
+    reason: BringUpError,
+    _registers: QuarantinedRegisters,
+}
+
+#[derive(Debug)]
+enum QuarantinedRegisters {
+    Unverified {
+        _preparation: ControllerPreparation<MappedBar>,
+    },
+    Disabled {
+        _registers: MappedBar,
+    },
+    MemoryQuarantine,
+}
+
+impl PrepareFailure {
+    fn quarantined(reason: BringUpError, preparation: ControllerPreparation<MappedBar>) -> Self {
+        Self::Quarantined(PrepareQuarantine {
+            reason,
+            _registers: QuarantinedRegisters::Unverified {
+                _preparation: preparation,
+            },
+        })
+    }
+
+    fn disabled_quarantine(reason: BringUpError, registers: MappedBar) -> Self {
+        Self::Quarantined(PrepareQuarantine {
+            reason,
+            _registers: QuarantinedRegisters::Disabled {
+                _registers: registers,
+            },
+        })
+    }
+
+    fn memory_quarantine(reason: BringUpError) -> Self {
+        Self::Quarantined(PrepareQuarantine {
+            reason,
+            _registers: QuarantinedRegisters::MemoryQuarantine,
+        })
+    }
+
+    /// Why preparation failed.
+    pub(crate) const fn reason(&self) -> BringUpError {
+        match self {
+            Self::Retired(reason) => *reason,
+            Self::Quarantined(quarantine) => quarantine.reason,
+        }
+    }
+
+    /// Recover ownership which must remain quarantined with its PCI lease.
+    pub(crate) fn into_quarantine(self) -> Option<PrepareQuarantine> {
+        match self {
+            Self::Retired(_) => None,
+            Self::Quarantined(quarantine) => Some(quarantine),
+        }
+    }
 }
 
 impl StartFailure {
     /// Why bring-up failed.
-    pub(crate) const fn reason(self) -> BringUpError {
+    pub(crate) const fn reason(&self) -> BringUpError {
         self.reason
     }
 
-    /// Whether selection may safely advance to another controller.
-    pub(crate) const fn is_retired(self) -> bool {
-        self.retired
+    /// Recover the exact retirement or quarantine outcome.
+    pub(crate) fn into_retirement(self) -> ControllerRetirement {
+        self.retirement
     }
 }
 
-/// Bring a controller up on the registers at `base`.
+/// Bring a controller up on its mapped register window.
 ///
 /// The specification's initialisation sequence, in order, with the two waits
 /// bounded by `CAP.TO` rather than by a number chosen here.
-pub(crate) fn bring_up(
-    context: &mut ThreadContext,
-    base: u64,
-    len: u64,
-) -> Result<Controller, StartFailure> {
-    // Uncacheable, which `map_device` chooses: a register file mapped
-    // write-back is a driver whose writes arrive when the cache feels like it.
-    let mapping: DeviceMapping = mem::map_device(context, base, len)
-        .and_then(Result::ok)
-        .ok_or(StartFailure {
-            reason: BringUpError::NotMapped,
-            retired: true,
-        })?;
-    let window = mapping.address();
-    let mut registers = mapping.claim_releasable().map_err(|_| StartFailure {
-        reason: BringUpError::NotClaimable,
-        retired: false,
-    })?;
+pub(crate) fn prepare(context: &mut ThreadContext, registers: MappedBar) -> PrepareOutcome {
+    #[cfg(feature = "selftest")]
+    let observed_window = registers.address();
+
+    let (preparation, capabilities) = match read_capabilities(registers) {
+        CapabilityRead::Read(preparation, capabilities) => (preparation, capabilities),
+        CapabilityRead::Failed(failure) => return PrepareOutcome::Failed(failure),
+    };
+    let disabled = match disable_preparation(preparation, capabilities) {
+        DisableOutcome::Disabled(disabled) => disabled,
+        DisableOutcome::Failed(failure) => return PrepareOutcome::Failed(failure),
+    };
+    let admin = match allocate_admin(
+        context,
+        disabled,
+        capabilities,
+        #[cfg(feature = "selftest")]
+        observed_window,
+    ) {
+        AdminAllocation::Allocated(admin) => admin,
+        AdminAllocation::Failed(failure) => return PrepareOutcome::Failed(failure),
+    };
+    program_admin_registers(context, admin)
+}
+
+struct AdminPreparation {
+    disabled: DisabledPreparation<MappedBar>,
+    capabilities: Capabilities,
+    admin: QueuePair,
+    capacity: Capacity,
+    submission: u64,
+    completion: u64,
+    #[cfg(feature = "selftest")]
+    observed_window: u64,
+}
+
+enum CapabilityRead {
+    Read(ControllerPreparation<MappedBar>, Capabilities),
+    Failed(PrepareFailure),
+}
+
+enum DisableOutcome {
+    Disabled(DisabledPreparation<MappedBar>),
+    Failed(PrepareFailure),
+}
+
+enum AdminAllocation {
+    Allocated(AdminPreparation),
+    Failed(PrepareFailure),
+}
+
+enum DisabledRegisterWrite {
+    Written(DisabledPreparation<MappedBar>),
+    Failed(DisabledPreparationFailure),
+}
+
+fn read_capabilities(registers: MappedBar) -> CapabilityRead {
+    let preparation = ControllerPreparation::new(registers);
 
     // `CAP` in two halves, because an `MmioRegion` makes thirty-two-bit
     // accesses. The specification allows it for this register.
-    let low = read(&registers, register::CAP).map_err(|reason| StartFailure {
-        reason,
-        retired: false,
-    })?;
-    let high = read(&registers, register::CAP + 4).map_err(|reason| StartFailure {
-        reason,
-        retired: false,
-    })?;
+    let (preparation, low) = match preparation.access(|registers| read(registers, register::CAP)) {
+        Ok(result) => result,
+        Err(failure) => {
+            return CapabilityRead::Failed(quarantine_preparation_access(failure));
+        }
+    };
+    let (preparation, high) =
+        match preparation.access(|registers| read(registers, register::CAP + 4)) {
+            Ok(result) => result,
+            Err(failure) => {
+                return CapabilityRead::Failed(quarantine_preparation_access(failure));
+            }
+        };
     let capabilities = Capabilities::from_bits(u64::from(low) | (u64::from(high) << 32));
+    CapabilityRead::Read(preparation, capabilities)
+}
 
+fn disable_preparation(
+    preparation: ControllerPreparation<MappedBar>,
+    capabilities: Capabilities,
+) -> DisableOutcome {
     // Disabled before any policy refusal, so even an unsupported controller
     // can be retired without leaving firmware DMA behind.
-    if let Err(reason) = write(&mut registers, register::CC, 0)
-        .and_then(|()| wait_for_ready(&mut registers, capabilities, false))
+    let (preparation, ()) = match preparation.access(|registers| write(registers, register::CC, 0))
     {
-        return Err(StartFailure {
-            reason,
-            retired: false,
-        });
+        Ok(result) => result,
+        Err(failure) => {
+            return DisableOutcome::Failed(quarantine_preparation_access(failure));
+        }
+    };
+    let preparation = match wait_for_disabled_preparation(preparation, capabilities) {
+        PreparationWait::Disabled(preparation) => preparation,
+        PreparationWait::Failed(failure) => return DisableOutcome::Failed(failure),
+    };
+    let (preparation, cc) = match preparation.access(|registers| read(registers, register::CC)) {
+        Ok(result) => result,
+        Err(failure) => {
+            return DisableOutcome::Failed(quarantine_preparation_access(failure));
+        }
+    };
+    let (preparation, csts) = match preparation.access(|registers| read(registers, register::CSTS))
+    {
+        Ok(result) => result,
+        Err(failure) => {
+            return DisableOutcome::Failed(quarantine_preparation_access(failure));
+        }
+    };
+    match preparation.prove_disabled(cc, csts) {
+        Ok(disabled) => DisableOutcome::Disabled(disabled),
+        Err(failure) => {
+            let (_reason, preparation) = failure.into_parts();
+            DisableOutcome::Failed(PrepareFailure::quarantined(
+                BringUpError::NotReady,
+                preparation,
+            ))
+        }
     }
+}
 
+fn allocate_admin(
+    context: &mut ThreadContext,
+    disabled: DisabledPreparation<MappedBar>,
+    capabilities: Capabilities,
+    #[cfg(feature = "selftest")] observed_window: u64,
+) -> AdminAllocation {
     if !capabilities.supports_nvm_command_set() {
-        return Err(retire_disabled(
+        return AdminAllocation::Failed(retire_disabled(
             context,
-            registers,
+            disabled,
             BringUpError::NoCommandSet,
         ));
     }
     if !capabilities.supports_page_size(PAGE_SIZE) {
-        return Err(retire_disabled(context, registers, BringUpError::PageSize));
+        return AdminAllocation::Failed(retire_disabled(context, disabled, BringUpError::PageSize));
     }
     let Some(most) = Capacity::new(capabilities.max_queue_entries()) else {
-        return Err(retire_disabled(context, registers, BringUpError::QueueSize));
+        return AdminAllocation::Failed(retire_disabled(
+            context,
+            disabled,
+            BringUpError::QueueSize,
+        ));
     };
     let Some(capacity) = Capacity::new(WANTED_ENTRIES.min(most.entries())) else {
-        return Err(retire_disabled(context, registers, BringUpError::QueueSize));
+        return AdminAllocation::Failed(retire_disabled(
+            context,
+            disabled,
+            BringUpError::QueueSize,
+        ));
     };
 
     let Some(admin) = QueuePair::new(0, capacity) else {
-        return Err(retire_disabled(context, registers, BringUpError::NoMemory));
+        return AdminAllocation::Failed(retire_disabled(context, disabled, BringUpError::NoMemory));
     };
     let Some(submission) = admin.submission.address() else {
-        return Err(retire_disabled(context, registers, BringUpError::NoMemory));
+        return AdminAllocation::Failed(retire_disabled(context, disabled, BringUpError::NoMemory));
     };
     let Some(completion) = admin.completion.address() else {
-        return Err(retire_disabled(context, registers, BringUpError::NoMemory));
+        return AdminAllocation::Failed(retire_disabled(context, disabled, BringUpError::NoMemory));
     };
-    let aqa = (capacity.as_zero_based() << 16) | capacity.as_zero_based();
-    if let Err(reason) = write(&mut registers, register::AQA, aqa)
-        .and_then(|()| write_u64(&mut registers, register::ASQ, submission))
-        .and_then(|()| write_u64(&mut registers, register::ACQ, completion))
-    {
-        return Err(retire_disabled(context, registers, reason));
-    }
+    AdminAllocation::Allocated(AdminPreparation {
+        disabled,
+        capabilities,
+        admin,
+        capacity,
+        submission,
+        completion,
+        #[cfg(feature = "selftest")]
+        observed_window,
+    })
+}
 
+fn program_admin_registers(
+    context: &mut ThreadContext,
+    preparation: AdminPreparation,
+) -> PrepareOutcome {
+    let AdminPreparation {
+        disabled,
+        capabilities,
+        admin,
+        capacity,
+        submission,
+        completion,
+        #[cfg(feature = "selftest")]
+        observed_window,
+    } = preparation;
+    let aqa = (capacity.as_zero_based() << 16) | capacity.as_zero_based();
+    let disabled = match write_disabled_register(disabled, register::AQA, aqa) {
+        DisabledRegisterWrite::Written(disabled) => disabled,
+        DisabledRegisterWrite::Failed(failure) => {
+            return PrepareOutcome::Failed(retire_failed_preparation_access(context, failure));
+        }
+    };
+    // The controller latches ASQ and ACQ when their high half is written.
+    let disabled = match write_disabled_register(disabled, register::ASQ, submission as u32) {
+        DisabledRegisterWrite::Written(disabled) => disabled,
+        DisabledRegisterWrite::Failed(failure) => {
+            return PrepareOutcome::Failed(retire_failed_preparation_access(context, failure));
+        }
+    };
+    let disabled =
+        match write_disabled_register(disabled, register::ASQ + 4, (submission >> 32) as u32) {
+            DisabledRegisterWrite::Written(disabled) => disabled,
+            DisabledRegisterWrite::Failed(failure) => {
+                return PrepareOutcome::Failed(retire_failed_preparation_access(context, failure));
+            }
+        };
+    let disabled = match write_disabled_register(disabled, register::ACQ, completion as u32) {
+        DisabledRegisterWrite::Written(disabled) => disabled,
+        DisabledRegisterWrite::Failed(failure) => {
+            return PrepareOutcome::Failed(retire_failed_preparation_access(context, failure));
+        }
+    };
+    let disabled =
+        match write_disabled_register(disabled, register::ACQ + 4, (completion >> 32) as u32) {
+            DisabledRegisterWrite::Written(disabled) => disabled,
+            DisabledRegisterWrite::Failed(failure) => {
+                return PrepareOutcome::Failed(retire_failed_preparation_access(context, failure));
+            }
+        };
+    finish_preparation(
+        disabled.into_owner(),
+        capabilities,
+        admin,
+        capacity,
+        #[cfg(feature = "selftest")]
+        observed_window,
+    )
+}
+
+fn write_disabled_register(
+    disabled: DisabledPreparation<MappedBar>,
+    offset: usize,
+    value: u32,
+) -> DisabledRegisterWrite {
+    match disabled.access(|registers| write(registers, offset, value)) {
+        Ok((disabled, ())) => DisabledRegisterWrite::Written(disabled),
+        Err(failure) => DisabledRegisterWrite::Failed(failure),
+    }
+}
+
+fn finish_preparation(
+    registers: MappedBar,
+    capabilities: Capabilities,
+    admin: QueuePair,
+    capacity: Capacity,
+    #[cfg(feature = "selftest")] observed_window: u64,
+) -> PrepareOutcome {
     // `MPS` is the host page size as `log2 - 12`, and the entry sizes are the
     // specification's fixed logarithms.
     let page_shift = PAGE_SIZE.trailing_zeros() - 12;
@@ -319,14 +787,17 @@ pub(crate) fn bring_up(
         | (nvme::IOCQES << configuration::COMPLETION_ENTRY_SHIFT);
 
     // Cleanup owns every published queue address before the enable write.
-    let mut controller = Controller {
-        window,
+    let controller = Controller {
+        #[cfg(feature = "selftest")]
+        observed_window,
         registers: Some(registers),
         capabilities,
         admin,
         io: None,
         next_id: 1,
-        dma: DmaState::new(),
+        #[cfg(feature = "selftest")]
+        published_commands: 0,
+        dma: DmaState::idle(),
         #[cfg(feature = "selftest")]
         force_timeout: false,
         #[cfg(feature = "selftest")]
@@ -341,57 +812,59 @@ pub(crate) fn bring_up(
         block_bytes: 0,
     };
 
-    if let Err(reason) = controller
-        .registers
-        .as_mut()
-        .ok_or(BringUpError::NotMapped)
-        .and_then(|registers| write(registers, register::CC, cc))
-        .and_then(|()| {
-            let registers = controller
-                .registers
-                .as_mut()
-                .ok_or(BringUpError::NotMapped)?;
-            wait_for_ready(registers, capabilities, true)
-        })
-    {
-        let retired = controller.retire(context);
-        return Err(StartFailure { reason, retired });
-    }
-
-    if let Err(reason) = controller.identify_namespace(capacity) {
-        let retired = controller.retire(context);
-        return Err(StartFailure { reason, retired });
-    }
-    Ok(controller)
+    PrepareOutcome::Prepared(DisabledController {
+        controller,
+        configuration: cc,
+        capacity,
+    })
 }
 
 /// Return a mapping while the controller is already verified disabled.
 fn retire_disabled(
     context: &mut ThreadContext,
-    registers: ReleasableDevice,
+    registers: DisabledPreparation<MappedBar>,
     reason: BringUpError,
-) -> StartFailure {
-    let retired = matches!(mem::unmap_device(context, registers), Some(Ok(())));
-    StartFailure { reason, retired }
+) -> PrepareFailure {
+    match mem::unmap_mapped_pci_bar_exact(context, registers.into_owner()) {
+        mem::MappedPciBarRetirement::Retired => PrepareFailure::Retired(reason),
+        mem::MappedPciBarRetirement::Retained(registers) => {
+            PrepareFailure::disabled_quarantine(reason, registers)
+        }
+        mem::MappedPciBarRetirement::Quarantined => PrepareFailure::memory_quarantine(reason),
+    }
+}
+
+type UnverifiedPreparationFailure =
+    PreparationFailure<ControllerPreparation<MappedBar>, BringUpError>;
+type DisabledPreparationFailure = PreparationFailure<DisabledPreparation<MappedBar>, BringUpError>;
+
+fn quarantine_preparation_access(failure: UnverifiedPreparationFailure) -> PrepareFailure {
+    let (reason, preparation) = failure.into_parts();
+    PrepareFailure::quarantined(reason, preparation)
+}
+
+fn retire_failed_preparation_access(
+    context: &mut ThreadContext,
+    failure: DisabledPreparationFailure,
+) -> PrepareFailure {
+    let (reason, preparation) = failure.into_parts();
+    retire_disabled(context, preparation, reason)
 }
 
 impl Controller {
     /// Commands this controller has been given.
     ///
-    /// The identifier counter, which advances once per command submitted. It
-    /// is what makes "the device was not asked" observable from outside the
-    /// driver — a refusal that happened *before* the read reached the
-    /// controller looks exactly like one that happened after, unless something
-    /// counts (D-173).
-    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
-    pub(crate) const fn commands(&self) -> u16 {
-        self.next_id
+    /// Incremented only after the submission doorbell write succeeds, so a
+    /// local refusal cannot satisfy evidence that the device was asked.
+    #[cfg(feature = "selftest")]
+    pub(crate) const fn commands(&self) -> u32 {
+        self.published_commands
     }
 
     /// Where the register window is readable.
-    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    #[cfg(feature = "selftest")]
     pub(crate) const fn window(&self) -> u64 {
-        self.window
+        self.observed_window
     }
 
     /// What `CAP` said.
@@ -405,7 +878,7 @@ impl Controller {
     }
 
     /// Whether an I/O queue pair was built.
-    #[cfg_attr(not(feature = "selftest"), expect(dead_code))]
+    #[cfg(feature = "selftest")]
     pub(crate) const fn has_io_queue(&self) -> bool {
         self.io.is_some()
     }
@@ -419,11 +892,8 @@ impl Controller {
         }
         let address = buffer.address().ok_or(BringUpError::NoMemory)?;
 
-        // CNS = 0: this namespace's data structure.
-        let command = Command::new(nvme::admin::IDENTIFY, self.take_id())
-            .namespace(NAMESPACE)
-            .buffers(address, 0)
-            .dword(10, 0);
+        let command = Command::identify_namespace(self.take_id(), NAMESPACE, address, PAGE_SIZE)
+            .ok_or(BringUpError::NotReady)?;
         self.run_admin(command, Some(&mut buffer))?;
 
         let mut identify = [0u8; NAMESPACE_IDENTIFY_BYTES];
@@ -454,6 +924,10 @@ impl Controller {
             return Err(BringUpError::NotReady);
         }
 
+        let negotiation =
+            Command::number_of_queues(self.take_id(), 1, 1).ok_or(BringUpError::QueueSize)?;
+        self.run_admin(negotiation, None)?;
+
         let pair = QueuePair::new(IO_QUEUE, capacity).ok_or(BringUpError::NoMemory)?;
         let completion_address = pair.completion.address().ok_or(BringUpError::NoMemory)?;
         let submission_address = pair.submission.address().ok_or(BringUpError::NoMemory)?;
@@ -461,24 +935,29 @@ impl Controller {
         // runs. Keeping them here gives failure cleanup ownership of both.
         self.io = Some(pair);
 
-        // The completion queue first: a submission queue names the completion
-        // queue that answers it, so the answer has to exist.
-        //
-        // `CDW11` bit 0 is `PC`, physically contiguous, which these are. Bit 1
-        // is `IEN`, and it is **left clear**: that is what makes this polled
-        // and what removes interrupt sharing from the critical path (`012` §2).
-        let completion = Command::new(nvme::admin::CREATE_COMPLETION_QUEUE, self.take_id())
-            .buffers(completion_address, 0)
-            .dword(10, (capacity.as_zero_based() << 16) | u32::from(IO_QUEUE))
-            .dword(11, 1);
+        // Completion first because submission names it; `IEN` stays clear so
+        // bootstrap remains polled (`012` §2).
+        let completion = Command::create_completion_queue(
+            self.take_id(),
+            IO_QUEUE,
+            capacity,
+            completion_address,
+            PAGE_SIZE,
+        )
+        .ok_or(BringUpError::QueueSize)?;
         self.run_admin(completion, None)?;
 
         // `CDW11` here is the completion queue's identifier in the high half,
         // and `PC` in bit 0.
-        let submission = Command::new(nvme::admin::CREATE_SUBMISSION_QUEUE, self.take_id())
-            .buffers(submission_address, 0)
-            .dword(10, (capacity.as_zero_based() << 16) | u32::from(IO_QUEUE))
-            .dword(11, (u32::from(IO_QUEUE) << 16) | 1);
+        let submission = Command::create_submission_queue(
+            self.take_id(),
+            IO_QUEUE,
+            IO_QUEUE,
+            capacity,
+            submission_address,
+            PAGE_SIZE,
+        )
+        .ok_or(BringUpError::QueueSize)?;
         self.run_admin(submission, None)?;
 
         Ok(())
@@ -540,6 +1019,7 @@ impl Controller {
             u64::from(self.block_bytes),
             buffer_bytes,
         )
+        .and_then(|request| request.within_limit(PAGE_SIZE))
         .map_err(BringUpError::InvalidTransfer)
     }
 
@@ -559,20 +1039,10 @@ impl Controller {
             return Err(BringUpError::NotReady);
         }
         let address = into.address().ok_or(BringUpError::NotReady)?;
-        let built = nvme::regions(address, request.bytes(), PAGE_SIZE, None)
-            .ok_or(BringUpError::NoMemory)?;
-        let lba = request.lba();
+        let command = Command::read(self.take_id(), NAMESPACE, address, PAGE_SIZE, request)
+            .ok_or(BringUpError::NotReady)?;
 
-        let command = Command::new(nvme::nvm::READ, self.take_id())
-            .namespace(NAMESPACE)
-            .buffers(built.prp1, built.prp2)
-            .dword(10, lba as u32)
-            .dword(11, (lba >> 32) as u32)
-            // **Zero-based**, like every count in this specification: one block
-            // is a zero here, and an off-by-one reads a block too many.
-            .dword(12, u32::from(request.zero_based_blocks()));
-
-        self.run_on(IO_QUEUE, command, Some(into))
+        self.run_on(IO_QUEUE, command, Some(into)).map(|_| ())
     }
 
     /// Prove malformed Identify data cannot reach I/O queue creation.
@@ -735,7 +1205,7 @@ impl Controller {
         &mut self,
         command: Command,
         data: Option<&mut DmaSegment>,
-    ) -> Result<(), BringUpError> {
+    ) -> Result<Completion, BringUpError> {
         self.run_on(0, command, data)
     }
 
@@ -745,37 +1215,63 @@ impl Controller {
         which: u16,
         command: Command,
         mut data: Option<&mut DmaSegment>,
-    ) -> Result<(), BringUpError> {
+    ) -> Result<Completion, BringUpError> {
         let expected = command.id();
         let capabilities = self.capabilities;
+        let submission_doorbell = nvme::doorbell(capabilities, which, nvme::Doorbell::Submission)
+            .ok_or(BringUpError::NotReady)?;
 
-        // Written, published, and only then rung: the controller may read the
-        // entry the instant the doorbell moves.
-        let (submission_tail, submission_doorbell) = {
+        {
             let queue = self.queue_mut(which).ok_or(BringUpError::NotReady)?;
-            if !queue.capacity.has_room(queue.head, queue.tail) {
+            if queue.capacity.has_room(queue.submission_head, queue.tail) != Some(true) {
                 return Err(BringUpError::NotReady);
             }
+        }
+        if self.registers.is_none() {
+            return Err(BringUpError::NotMapped);
+        }
+        if !self.dma.reserve() {
+            return Err(BringUpError::NotReady);
+        }
+
+        // Reserve ownership first: a refused preparation cancels it, and only
+        // a rung doorbell needs controller quiescence to recover.
+        let prepared = (|| {
+            let queue = self.queue_mut(which).ok_or(BringUpError::NotReady)?;
             let at = queue.tail as usize * nvme::SUBMISSION_ENTRY_BYTES;
             if !queue.submission.write_at(at, &command.to_bytes()) {
                 return Err(BringUpError::NoMemory);
             }
-            queue.tail = queue.capacity.next(queue.tail);
-            (
-                queue.tail,
-                nvme::doorbell(capabilities, which, false).ok_or(BringUpError::NotReady)?,
-            )
+            queue.tail =
+                Capacity::next(queue.capacity, queue.tail).ok_or(BringUpError::NotReady)?;
+            Ok(queue.tail)
+        })();
+        let submission_tail = match prepared {
+            Ok(tail) => tail,
+            Err(reason) => {
+                if !self.dma.cancel_unpublished() {
+                    panic!("an unpublished DMA reservation must be cancellable");
+                }
+                return Err(reason);
+            }
         };
-        if !self.dma.begin() {
-            return Err(BringUpError::NotReady);
-        }
-        let rung = self
-            .registers
-            .as_mut()
-            .ok_or(BringUpError::NotMapped)
-            .and_then(|registers| write(registers, submission_doorbell, submission_tail));
+        let registers = &mut self.registers;
+        let Some(rung) = self.dma.publish_with(|publication| {
+            registers
+                .as_mut()
+                .ok_or(BringUpError::NotMapped)
+                .and_then(|registers| {
+                    write_submission(publication, registers, submission_doorbell, submission_tail)
+                })
+        }) else {
+            panic!("a prepared DMA reservation must publish exactly once");
+        };
         if let Err(error) = rung {
             return self.fail_submitted(error, data.as_deref_mut());
+        }
+        #[cfg(feature = "selftest")]
+        {
+            self.published_commands = self.published_commands.saturating_add(1);
         }
 
         #[cfg(feature = "selftest")]
@@ -787,8 +1283,7 @@ impl Controller {
             COMMAND_HELD.store(false, Ordering::Release);
         }
 
-        // Poll for a completion carrying the phase this pass expects. There is
-        // no tail to read; the phase tag is the whole of how a new entry is
+        // There is no tail to read; the phase tag is how a new entry is
         // recognised (`012` §3).
         let mut limit = PollLimit::after_ms(clock_ns(), COMMAND_TIMEOUT_MS, POLL_ATTEMPTS);
         #[cfg(feature = "selftest")]
@@ -800,37 +1295,59 @@ impl Controller {
                 let Some(queue) = self.queue_mut(which) else {
                     return self.fail_submitted(BringUpError::NotReady, data.as_deref_mut());
                 };
-                let at = queue.head as usize * nvme::COMPLETION_ENTRY_BYTES;
+                let at = queue.completion_head as usize * nvme::COMPLETION_ENTRY_BYTES;
                 let mut bytes = [0u8; nvme::COMPLETION_ENTRY_BYTES];
                 if !queue.completion.read_at(at, &mut bytes) {
                     return self.fail_submitted(BringUpError::NoMemory, data.as_deref_mut());
                 }
-                let entry = Completion::from_bytes(bytes);
-                if entry.phase == queue.phase {
-                    let head = queue.capacity.next(queue.head);
-                    // The phase flips on every wrap, which is what lets the
-                    // *next* pass tell a new entry from the one still there.
-                    if head == 0 {
-                        queue.phase = !queue.phase;
+                if Completion::from_bytes(bytes).phase == queue.phase {
+                    DmaSegment::observe_device();
+                    if !queue.completion.read_at(at, &mut bytes) {
+                        return self.fail_submitted(BringUpError::NoMemory, data.as_deref_mut());
                     }
-                    queue.head = head;
-                    Some(entry)
+                    Some(Completion::from_bytes(bytes))
                 } else {
                     None
                 }
             };
 
             if let Some(entry) = found {
-                if entry.id != expected {
-                    return self
-                        .fail_submitted(BringUpError::Command(entry.status), data.as_deref_mut());
+                let provenance = self.queue_mut(which).is_some_and(|queue| {
+                    entry.phase == queue.phase
+                        && entry.matches_submission(which, expected, queue.tail, queue.capacity)
+                });
+                if !provenance {
+                    return self.fail_submitted(
+                        BringUpError::UnexpectedCompletion {
+                            queue: entry.submission_queue,
+                            id: entry.id,
+                            submission_head: entry.submission_head,
+                        },
+                        data.as_deref_mut(),
+                    );
                 }
-                self.dma.complete();
+                let Some(queue) = self.queue_mut(which) else {
+                    return self.fail_submitted(BringUpError::NotReady, data.as_deref_mut());
+                };
+                queue.submission_head = u32::from(entry.submission_head);
+                let Some(completion_head) = Capacity::next(queue.capacity, queue.completion_head)
+                else {
+                    return self.fail_submitted(BringUpError::NotReady, data.as_deref_mut());
+                };
+                if completion_head == 0 {
+                    queue.phase = !queue.phase;
+                }
+                queue.completion_head = completion_head;
+                if !self.dma.complete() {
+                    panic!("a matching completion must finish one published command");
+                }
 
-                let Some(doorbell) = nvme::doorbell(capabilities, which, true) else {
+                let Some(doorbell) =
+                    nvme::doorbell(capabilities, which, nvme::Doorbell::Completion)
+                else {
                     return self.fail_controller(BringUpError::NotReady);
                 };
-                let Some(head) = self.queue_mut(which).map(|queue| queue.head) else {
+                let Some(head) = self.queue_mut(which).map(|queue| queue.completion_head) else {
                     return self.fail_controller(BringUpError::NotReady);
                 };
                 let acknowledged = self
@@ -844,7 +1361,7 @@ impl Controller {
                 if !entry.is_success() {
                     return Err(BringUpError::Command(entry.status));
                 }
-                return Ok(());
+                return Ok(entry);
             }
             core::hint::spin_loop();
         }
@@ -852,17 +1369,17 @@ impl Controller {
     }
 
     /// Stop uncertain DMA before exposing an error to the caller.
-    fn fail_submitted(
+    fn fail_submitted<T>(
         &mut self,
         error: BringUpError,
         data: Option<&mut DmaSegment>,
-    ) -> Result<(), BringUpError> {
+    ) -> Result<T, BringUpError> {
         self.stop_dma(data);
         Err(error)
     }
 
     /// Fail closed after a completion made the transfer buffer safe.
-    fn fail_controller(&mut self, error: BringUpError) -> Result<(), BringUpError> {
+    fn fail_controller<T>(&mut self, error: BringUpError) -> Result<T, BringUpError> {
         self.stop_dma(None);
         Err(error)
     }
@@ -870,12 +1387,10 @@ impl Controller {
     /// Disable the controller and verify it idle, or withhold all DMA memory.
     fn stop_dma(&mut self, data: Option<&mut DmaSegment>) {
         if !self.dma.is_settled() {
-            let stopped = self.registers.as_mut().is_some_and(|registers| {
-                write(registers, register::CC, 0)
-                    .and_then(|()| wait_for_ready(registers, self.capabilities, false))
-                    .is_ok()
-            });
-            self.dma.quiesce(stopped);
+            match stop_controller(self) {
+                Ok(stopped) => stopped.quiesce(),
+                Err(_) => self.dma.retain_unquiesced(),
+            }
         }
 
         if self.dma.must_retain() {
@@ -889,16 +1404,23 @@ impl Controller {
         }
     }
 
-    /// Stop DMA, consume register access, and return the mapping.
-    pub(crate) fn retire(mut self, context: &mut ThreadContext) -> bool {
+    /// Stop DMA and retire the mapping or return the complete controller owner.
+    pub(crate) fn retire(mut self, context: &mut ThreadContext) -> ControllerRetirement {
         self.stop_dma(None);
         if !self.dma.is_quiesced() {
-            return false;
+            return quarantine_controller(self);
         }
         let Some(registers) = self.registers.take() else {
-            return false;
+            return quarantine_controller(self);
         };
-        matches!(mem::unmap_device(context, registers), Some(Ok(())))
+        match mem::unmap_mapped_pci_bar_exact(context, registers) {
+            mem::MappedPciBarRetirement::Retired => ControllerRetirement::Retired,
+            mem::MappedPciBarRetirement::Retained(registers) => {
+                self.registers = Some(registers);
+                quarantine_controller(self)
+            }
+            mem::MappedPciBarRetirement::Quarantined => quarantine_controller(self),
+        }
     }
 
     /// Force the ordinary timeout arm and prove its cleanup before returning.
@@ -911,11 +1433,10 @@ impl Controller {
         let protected = matches!(result, Err(BringUpError::NotReady))
             && self.dma.is_quiesced()
             && !data.is_retained();
-        // A timeout mutation must turn the check red without letting its
-        // deliberately outstanding command make the remainder of the boot
-        // unsafe. Repair only after remembering the failed observation.
+        // Record the expected failure before quiescing the deliberately
+        // outstanding DMA command for the remainder of the boot.
         if self.dma.is_in_flight() {
-            let _ = self.fail_submitted(BringUpError::NotReady, Some(data));
+            self.stop_dma(Some(data));
         }
         protected
     }
@@ -939,20 +1460,83 @@ impl Drop for Controller {
 ///
 /// `CSTS.CFS` ends an enable wait. During disable, observed `RDY = 0` wins:
 /// fatal status does not mean the controller can still reach host memory.
-fn wait_for_ready(
-    registers: &mut ReleasableDevice,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Readiness {
+    Ready,
+    NotReady,
+}
+
+enum PreparationWait {
+    Disabled(ControllerPreparation<MappedBar>),
+    Failed(PrepareFailure),
+}
+
+fn wait_for_disabled_preparation(
+    mut preparation: ControllerPreparation<MappedBar>,
     capabilities: Capabilities,
-    wanted: bool,
+) -> PreparationWait {
+    let timeout_ms = capabilities.timeout_ms().max(500);
+    let fallback = (timeout_ms.saturating_mul(20_000)).min(20_000_000) as u32;
+    let mut limit = PollLimit::after_ms(clock_ns(), timeout_ms, fallback);
+    while limit.permit(clock_ns()) {
+        let (returned, bits) = match preparation.access(|registers| read(registers, register::CSTS))
+        {
+            Ok(result) => result,
+            Err(failure) => {
+                return PreparationWait::Failed(quarantine_preparation_access(failure));
+            }
+        };
+        preparation = returned;
+        if bits & status::READY == 0 {
+            return PreparationWait::Disabled(preparation);
+        }
+        core::hint::spin_loop();
+    }
+    PreparationWait::Failed(PrepareFailure::quarantined(
+        BringUpError::NotReady,
+        preparation,
+    ))
+}
+
+fn stop_controller(controller: &mut Controller) -> Result<ControllerStopped<'_>, BringUpError> {
+    let Controller {
+        registers,
+        capabilities,
+        dma,
+        ..
+    } = controller;
+    let registers = registers.as_mut().ok_or(BringUpError::NotMapped)?;
+    write(registers, register::CC, 0)?;
+    wait_for_ready(registers, *capabilities, Readiness::NotReady)?;
+    let cc = read(registers, register::CC)?;
+    let csts = read(registers, register::CSTS)?;
+    let observed = DisabledRegisters::from_bits(cc, csts).map_err(|_| BringUpError::NotReady)?;
+    Ok(ControllerStopped {
+        _registers: registers,
+        _observed: observed,
+        dma,
+    })
+}
+
+fn wait_for_ready(
+    registers: &mut MappedBar,
+    capabilities: Capabilities,
+    wanted: Readiness,
 ) -> Result<(), BringUpError> {
     let timeout_ms = capabilities.timeout_ms().max(500);
     let fallback = (timeout_ms.saturating_mul(20_000)).min(20_000_000) as u32;
     let mut limit = PollLimit::after_ms(clock_ns(), timeout_ms, fallback);
     while limit.permit(clock_ns()) {
         let bits = read(registers, register::CSTS)?;
-        if ((bits & status::READY) != 0) == wanted {
+        let observed = if bits & status::READY != 0 {
+            Readiness::Ready
+        } else {
+            Readiness::NotReady
+        };
+        if observed == wanted {
             return Ok(());
         }
-        if wanted && bits & status::FATAL != 0 {
+        if wanted == Readiness::Ready && bits & status::FATAL != 0 {
             return Err(BringUpError::NotReady);
         }
         core::hint::spin_loop();
@@ -965,30 +1549,27 @@ fn clock_ns() -> Option<u64> {
     crate::time::is_calibrated().then(crate::time::now_ns)
 }
 
-fn read(registers: &ReleasableDevice, offset: usize) -> Result<u32, BringUpError> {
-    registers
-        .read_u32(offset)
-        .map_err(|_| BringUpError::NotMapped)
+fn read(registers: &MappedBar, offset: usize) -> Result<u32, BringUpError> {
+    MappedBar::read_u32(registers, offset).map_err(|_| BringUpError::NotMapped)
 }
 
-fn write(registers: &mut ReleasableDevice, offset: usize, value: u32) -> Result<(), BringUpError> {
-    registers
-        .write_u32(offset, value)
-        .map_err(|_| BringUpError::NotMapped)
+fn write(registers: &mut MappedBar, offset: usize, value: u32) -> Result<(), BringUpError> {
+    MappedBar::write_u32(registers, offset, value).map_err(|_| BringUpError::NotMapped)
 }
 
-/// Write a sixty-four-bit register as two halves, low first.
-///
-/// The specification allows it for `ASQ` and `ACQ`, and an `MmioRegion` makes
-/// thirty-two-bit accesses. Low first because the controller latches on the
-/// high half.
-fn write_u64(
-    registers: &mut ReleasableDevice,
+fn write_submission(
+    _publication: DmaPublication<'_>,
+    registers: &mut MappedBar,
     offset: usize,
-    value: u64,
+    tail: u32,
 ) -> Result<(), BringUpError> {
-    write(registers, offset, value as u32)?;
-    write(registers, offset + 4, (value >> 32) as u32)
+    DmaSegment::publish_to_device();
+    let result = write(registers, offset, tail);
+    #[cfg(feature = "selftest")]
+    if result.is_ok() {
+        count(&SUBMISSION_DOORBELLS);
+    }
+    result
 }
 
 /// Bring the controller up and say what it is.
@@ -997,25 +1578,120 @@ fn write_u64(
 /// without storage, but may try a sibling only when teardown was exact.
 pub(crate) fn start(
     context: &mut ThreadContext,
-    base: u64,
-    len: u64,
+    prepared: BusMasterAdmittedController,
 ) -> Result<Controller, StartFailure> {
-    match bring_up(context, base, len) {
-        Ok(controller) => {
-            info!(
-                "nvme: up — {} entries a queue, {} blocks of {} bytes, doorbells {} apart",
-                controller.queue_entries(),
-                controller.blocks,
-                controller.block_bytes,
-                controller.capabilities().doorbell_bytes()
-            );
-            Ok(controller)
+    #[cfg(feature = "selftest")]
+    count(&START_ATTEMPTS);
+    let BusMasterAdmittedController(DisabledController {
+        mut controller,
+        configuration,
+        capacity,
+    }) = prepared;
+    let capabilities = controller.capabilities;
+    let enabled = controller
+        .registers
+        .as_mut()
+        .ok_or(BringUpError::NotMapped)
+        .and_then(|registers| write(registers, register::CC, configuration))
+        .and_then(|()| {
+            let registers = controller
+                .registers
+                .as_mut()
+                .ok_or(BringUpError::NotMapped)?;
+            wait_for_ready(registers, capabilities, Readiness::Ready)
+        });
+    if let Err(reason) = enabled {
+        let retirement = controller.retire(context);
+        return Err(StartFailure { reason, retirement });
+    }
+    if let Err(reason) = controller.identify_namespace(capacity) {
+        let retirement = controller.retire(context);
+        return Err(StartFailure { reason, retirement });
+    }
+
+    info!(
+        "nvme: up — {} entries a queue, {} blocks of {} bytes, doorbells {} apart",
+        controller.queue_entries(),
+        controller.blocks,
+        controller.block_bytes,
+        controller.capabilities().doorbell_bytes()
+    );
+    Ok(controller)
+}
+
+impl DisabledController {
+    /// Admit DMA from a fresh observation through the retained mapped BAR.
+    pub(crate) fn admit_bus_master(self, device: &mut crate::pci::Device) -> BusMasterAdmission {
+        let Some(registers) = self.controller.registers.as_ref() else {
+            return BusMasterAdmission::Refused(BusMasterAdmissionFailure {
+                reason: BusMasterAdmissionError::NotMapped,
+                disabled: self,
+            });
+        };
+        let authority = match registers.observe_nvme_disabled() {
+            Ok(authority) => authority,
+            Err(reason) => {
+                return BusMasterAdmission::Refused(BusMasterAdmissionFailure {
+                    reason: BusMasterAdmissionError::Observation(reason),
+                    disabled: self,
+                });
+            }
+        };
+        #[cfg(feature = "selftest")]
+        let observed = authority.observation_for_test();
+        #[cfg(feature = "selftest")]
+        {
+            BME_PRECEDING_CC.store(observed.0 as usize, Ordering::Release);
+            BME_PRECEDING_CSTS.store(observed.1 as usize, Ordering::Release);
         }
-        Err(failure) => {
-            warn!("nvme: not brought up: {}", failure.reason());
-            Err(failure)
+        match device.admit_bus_master(authority) {
+            Ok(()) => BusMasterAdmission::Admitted(BusMasterAdmittedController(self)),
+            Err(reason) => {
+                #[cfg(feature = "selftest")]
+                {
+                    REFUSED_BME_PRECEDING_CC.store(observed.0 as usize, Ordering::Release);
+                    REFUSED_BME_PRECEDING_CSTS.store(observed.1 as usize, Ordering::Release);
+                }
+                BusMasterAdmission::Refused(BusMasterAdmissionFailure {
+                    reason: BusMasterAdmissionError::Command(reason),
+                    disabled: self,
+                })
+            }
         }
     }
+
+    /// Return the mapping and all unpublished queues while DMA is still off.
+    pub(crate) fn retire(self, context: &mut ThreadContext) -> ControllerRetirement {
+        self.controller.retire(context)
+    }
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn bus_master_followed_disable_for_test() -> bool {
+    let cc = BME_PRECEDING_CC.load(Ordering::Acquire);
+    let csts = BME_PRECEDING_CSTS.load(Ordering::Acquire);
+    cc != usize::MAX
+        && csts != usize::MAX
+        && cc & configuration::ENABLE as usize == 0
+        && csts & status::READY as usize == 0
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn refused_bus_master_followed_disable_for_test() -> bool {
+    let cc = REFUSED_BME_PRECEDING_CC.load(Ordering::Acquire);
+    let csts = REFUSED_BME_PRECEDING_CSTS.load(Ordering::Acquire);
+    cc != usize::MAX
+        && csts != usize::MAX
+        && cc & configuration::ENABLE as usize == 0
+        && csts & status::READY as usize == 0
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn activity_for_test() -> (usize, usize) {
+    (
+        START_ATTEMPTS.load(Ordering::Acquire),
+        SUBMISSION_DOORBELLS.load(Ordering::Acquire),
+    )
 }
 
 /// The one controller, kept so anything that wants blocks can ask.
@@ -1024,6 +1700,16 @@ pub(crate) fn start(
 /// outlives the function that built it. Runtime reads reach it only through
 /// the file worker (D-200).
 static CONTROLLER: ThreadLock<Option<(Controller, DmaSegment)>> = ThreadLock::new(None);
+
+static PREPARE_QUARANTINE: ThreadLock<Option<(PrepareQuarantine, crate::pci::Device)>> =
+    ThreadLock::new(None);
+
+static CONTROLLER_QUARANTINE: ThreadLock<Option<RetainedController>> = ThreadLock::new(None);
+
+struct RetainedController {
+    _controller: Controller,
+    device: Option<crate::pci::Device>,
+}
 
 #[cfg(feature = "selftest")]
 static HOLD_COMMAND: AtomicBool = AtomicBool::new(false);
@@ -1036,17 +1722,154 @@ pub(crate) fn keep(controller: Controller, buffer: DmaSegment) {
     *CONTROLLER.lock() = Some((controller, buffer));
 }
 
-/// Run `f` against the controller, if there is one.
-///
-/// The thread lock may remain held while the polled command is preempted. Only
-/// the file worker performs runtime reads, and no interrupt handler or second
-/// thread contends for the controller (D-200).
-pub(crate) fn with_controller<T>(
-    f: impl FnOnce(&mut Controller, &mut DmaSegment) -> T,
-) -> Option<T> {
+/// Keep an uncertain mapping and its inseparable PCI lease reachable.
+pub(crate) fn keep_prepare_quarantine(quarantine: PrepareQuarantine, device: crate::pci::Device) {
+    let mut retained = PREPARE_QUARANTINE.lock();
+    assert!(
+        retained.is_none(),
+        "NVMe selection continued after quarantining a preparation failure"
+    );
+    *retained = Some((quarantine, device));
+}
+
+/// Keep an incompletely retired controller and its PCI lease reachable.
+pub(crate) fn keep_controller_quarantine(
+    quarantine: ControllerQuarantine,
+    device: crate::pci::Device,
+) {
+    let ControllerQuarantine { _private: () } = quarantine;
+    let mut retained = CONTROLLER_QUARANTINE.lock();
+    let Some(retained) = retained.as_mut() else {
+        panic!("controller quarantine token has no retained controller");
+    };
+    assert!(
+        retained.device.is_none(),
+        "NVMe selection continued after quarantining controller retirement"
+    );
+    retained.device = Some(device);
+}
+
+fn quarantine_controller(controller: Controller) -> ControllerRetirement {
+    let mut retained = CONTROLLER_QUARANTINE.lock();
+    assert!(
+        retained.is_none(),
+        "two NVMe controller retirements reached one quarantine slot"
+    );
+    *retained = Some(RetainedController {
+        _controller: controller,
+        device: None,
+    });
+    ControllerRetirement::Quarantined(ControllerQuarantine { _private: () })
+}
+
+/// Whether a retained controller exists.
+pub(crate) fn has_controller() -> bool {
+    CONTROLLER.lock().is_some()
+}
+
+/// Read one FAT-sized logical block into owned caller bytes.
+pub(crate) fn read_sector(sector: u64, into: &mut [u8; fat32::SECTOR_BYTES]) -> Result<(), ()> {
+    let mut held = CONTROLLER.lock();
+    let (controller, buffer) = held.as_mut().ok_or(())?;
+    if controller.block_bytes as usize != fat32::SECTOR_BYTES {
+        return Err(());
+    }
+    controller.read_blocks(sector, 1, buffer).map_err(|_| ())?;
+    buffer.read_at(0, into).then_some(()).ok_or(())
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn command_count_for_test() -> Option<u32> {
+    CONTROLLER
+        .lock()
+        .as_ref()
+        .map(|(controller, _)| controller.commands())
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn controller_facts_hold_for_test() -> bool {
+    let held = CONTROLLER.lock();
+    let Some((controller, _)) = held.as_ref() else {
+        return false;
+    };
+    let capabilities = controller.capabilities();
+    capabilities.supports_nvm_command_set()
+        && capabilities.supports_page_size(PAGE_SIZE)
+        && controller.queue_entries() <= capabilities.max_queue_entries()
+        && controller.queue_entries() >= 2
+        && controller.has_io_queue()
+        && controller.blocks > 0
+        && controller.block_bytes.is_power_of_two()
+        && controller.block_bytes >= 512
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn malformed_namespace_is_bounded_for_test() -> bool {
+    let mut held = CONTROLLER.lock();
+    held.as_mut()
+        .is_some_and(|(controller, _)| controller.malformed_namespace_stops_before_io_queues())
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn malformed_reads_are_bounded_for_test() -> bool {
+    let mut held = CONTROLLER.lock();
+    let Some((controller, buffer)) = held.as_mut() else {
+        return false;
+    };
+    controller.malformed_reads_stop_before_submission(buffer)
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn read_block_probe_for_test(lba: u64) -> Option<(usize, [u8; 8], [u8; 8])> {
     let mut held = CONTROLLER.lock();
     let (controller, buffer) = held.as_mut()?;
-    Some(f(controller, buffer))
+    let block = controller.block_bytes as usize;
+    if !buffer.fill(0) || controller.read_blocks(lba, 1, buffer).is_err() {
+        return None;
+    }
+    let mut head = [0u8; 8];
+    let mut beyond = [0u8; 8];
+    if !buffer.read_at(0, &mut head) || !buffer.read_at(block, &mut beyond) {
+        return None;
+    }
+    Some((block, head, beyond))
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn queue_entries_for_test() -> Option<u32> {
+    CONTROLLER
+        .lock()
+        .as_ref()
+        .map(|(controller, _)| controller.queue_entries())
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn controller_window_for_test() -> Option<u64> {
+    CONTROLLER
+        .lock()
+        .as_ref()
+        .map(|(controller, _)| controller.window())
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn controller_is_unlocked_for_test() -> bool {
+    CONTROLLER.try_lock().is_some()
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn timeout_quiesces_for_test() -> bool {
+    let mut held = CONTROLLER.lock();
+    let Some((controller, buffer)) = held.as_mut() else {
+        return false;
+    };
+    controller.a_timeout_quiesces_before_dma_returns(buffer)
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn measure_buffered_read_for_test() -> Option<(u64, u64)> {
+    let mut held = CONTROLLER.lock();
+    let (controller, buffer) = held.as_mut()?;
+    controller.measure_buffered_read(buffer)
 }
 
 /// Hold the next submitted command inside its preemptible polling owner.

@@ -1,19 +1,8 @@
 //! What the documents say about the tree, checked against the tree.
 //!
-//! `docs/` is where this project's decisions live, and roughly every page
-//! names crates by path. Nothing looked at those names, and the Phase 0–6
-//! sweep found what that costs: `libs/xstate` was named three times in D-82 as
-//! the crate holding the compacted-offset arithmetic, and never written — the
-//! arithmetic turned out to be four instructions and a CPUID read, so there
-//! was nothing for a crate to hold. A reader following the ADR finds nothing,
-//! and the ADR reads like a description of the tree.
-//!
-//! **A crate named and not built is not automatically an error.** Research
-//! notes propose crates that later phases will write, and an ADR that records
-//! a crate being *declined* has to name it to decline it. So the check is not
-//! "every name exists" but "every name that does not exist is on this list,
-//! with why" — which turns an accident into a reviewable line in a commit, the
-//! same mechanism the unsafe budget uses (D-124).
+//! Documentation may name planned or rejected crates, so missing paths are not
+//! automatically errors. Every missing documented crate instead needs one
+//! explicit exemption with its reason, making drift reviewable (D-124).
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -70,8 +59,8 @@ pub const ABSENT: &[Absent] = &[
 pub fn named_in_docs(root: &Path) -> Result<BTreeSet<String>> {
     let docs = root.join("docs");
     let mut found = BTreeSet::new();
-    for entry in std::fs::read_dir(&docs).with_context(|| format!("reading {}", docs.display()))? {
-        let path = entry?.path();
+    for entry in crate::paths::directory_entries(&docs)? {
+        let path = entry.path();
         if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
             continue;
         }
@@ -130,15 +119,13 @@ mod tests {
         .iter()
         .map(|relative| root.join(relative))
         .collect::<Vec<_>>();
-        documents.extend(
-            std::fs::read_dir(root.join("docs"))
-                .expect("docs")
-                .filter_map(|entry| {
-                    let path = entry.ok()?.path();
-                    (path.extension().and_then(|extension| extension.to_str()) == Some("md"))
-                        .then_some(path)
-                }),
-        );
+        let paths = crate::paths::directory_entries(&root.join("docs"))
+            .expect("complete docs directory listing")
+            .into_iter()
+            .map(|entry| entry.path());
+        documents.extend(paths.into_iter().filter(|path| {
+            path.extension().and_then(|extension| extension.to_str()) == Some("md")
+        }));
         documents.sort();
         documents
     }
@@ -152,9 +139,7 @@ mod tests {
                 let Some(close) = after.find(')') else {
                     break;
                 };
-                let raw = after[..close]
-                    .split_ascii_whitespace()
-                    .next()
+                let raw = core::iter::Iterator::next(&mut after[..close].split_ascii_whitespace())
                     .unwrap_or("")
                     .trim_matches(['<', '>']);
                 if !raw.is_empty() {
@@ -173,9 +158,7 @@ mod tests {
             let line = line.trim_start();
             let hashes = line.bytes().take_while(|byte| *byte == b'#').count();
             if !(1..=6).contains(&hashes)
-                || !line[hashes..]
-                    .chars()
-                    .next()
+                || !core::iter::Iterator::next(&mut line[hashes..].chars())
                     .is_some_and(char::is_whitespace)
             {
                 continue;
@@ -322,30 +305,22 @@ mod tests {
 
     /// The crates `libs/` actually holds.
     fn built(root: &Path) -> BTreeSet<String> {
-        std::fs::read_dir(root.join("libs"))
-            .expect("libs")
-            .filter_map(|entry| {
-                let path = entry.ok()?.path();
-                if !path.is_dir() {
-                    return None;
-                }
-                Some(path.file_name()?.to_str()?.to_string())
+        crate::paths::directory_entries(&root.join("libs"))
+            .expect("complete libs directory listing")
+            .into_iter()
+            .filter(|entry| entry.is_dir())
+            .map(|entry| entry.path())
+            .map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_else(|| panic!("library path is not UTF-8: {}", path.display()))
+                    .to_string()
             })
             .collect()
     }
 
-    /// The phase's closing table says what the source says.
-    ///
-    /// `014`'s per-slice lines are history — what the gate reported the day
-    /// that slice landed — and seven of them were wrong, written from
-    /// expectation before the gate had run. History cannot be checked against
-    /// the present, but the **closing table** is a claim about the tree as it
-    /// stands, and that can be (D-175).
-    ///
-    /// The same mechanism as the README's boot count, and the same reason
-    /// `002` gives for pointing at the exact sysdep register rather than
-    /// restating it: a claim copied to a second place can disagree with itself,
-    /// and the copy that is never read is the one that goes stale.
+    /// `014`'s current closing table must match source; dated per-slice history
+    /// remains historical rather than being rewritten (D-175).
     #[test]
     fn the_phase_close_says_what_the_source_says() {
         let root = root();
@@ -359,12 +334,19 @@ mod tests {
         let expected = selftest
             .lines()
             .find_map(|line| line.trim().strip_prefix("const EXPECTED_CHECKS: usize = "))
-            .and_then(|value| value.trim_end_matches(';').parse::<usize>().ok())
+            .and_then(|value| {
+                <usize as core::str::FromStr>::from_str(value.trim_end_matches(';')).ok()
+            })
             .expect("no EXPECTED_CHECKS in selftest.rs");
         assert_eq!(
             claimed_checks, expected,
             "`014`'s closing table says {claimed_checks} machine checks and the kernel expects \
              {expected}"
+        );
+        assert_eq!(
+            current_numeric_claim(&storage),
+            None,
+            "`014` must keep its closing table as the sole current numeric summary"
         );
 
         // `| Mutations | 64, each caught ... |`
@@ -379,13 +361,30 @@ mod tests {
         let mutation_numbers = table_numbers(&storage, "Mutations");
         assert_eq!(
             mutation_numbers.len(),
-            3,
-            "the mutation row must state total, last full sweep and later individual count"
+            4,
+            "the mutation row must state the total, last successful sweep, newer failed sweep and post-failure count"
+        );
+        let last_successful_sweep = mutation_numbers[1];
+        let failed_sweep = mutation_numbers[2];
+        let registered_after_failure = mutation_numbers[3];
+        assert_eq!(
+            last_successful_sweep, 285,
+            "the last successful complete sweep is a historical result"
         );
         assert_eq!(
-            mutation_numbers[0] - mutation_numbers[1],
-            mutation_numbers[2],
-            "`014`'s later-mutation count is not total minus the last full sweep"
+            failed_sweep, 296,
+            "the newer failed complete sweep is a historical result"
+        );
+        let mutation_cell = table_cell(&storage, "Mutations");
+        assert!(
+            mutation_cell.contains("last successful complete sweep")
+                && mutation_cell.contains("newer failed complete sweep"),
+            "the mutation row does not distinguish successful and failed history"
+        );
+        assert_eq!(
+            mutation_numbers[0] - failed_sweep,
+            registered_after_failure,
+            "`014`'s later-mutation count is not total minus the newer failed sweep"
         );
 
         let decisions =
@@ -393,8 +392,8 @@ mod tests {
         let latest_decision = decisions
             .lines()
             .filter_map(|line| line.strip_prefix("## D-"))
-            .filter_map(|rest| rest.split_ascii_whitespace().next())
-            .filter_map(|number| number.parse::<usize>().ok())
+            .filter_map(|rest| core::iter::Iterator::next(&mut rest.split_ascii_whitespace()))
+            .filter_map(|number| <usize as core::str::FromStr>::from_str(number).ok())
             .max()
             .expect("a decision heading");
         let claimed_decision = table_numbers(&storage, "Decisions")
@@ -405,6 +404,19 @@ mod tests {
             claimed_decision, latest_decision,
             "`014` ends at D-{claimed_decision}, but the log ends at D-{latest_decision}"
         );
+    }
+
+    #[test]
+    fn current_numeric_history_is_distinct_from_a_current_claim() {
+        assert_eq!(
+            current_numeric_claim("2026-08-25 had 189 checks; the then-current 189-check image"),
+            None
+        );
+        assert_eq!(
+            current_numeric_claim("the current **189**-check image"),
+            Some(189)
+        );
+        assert_eq!(current_numeric_claim("concurrently 189 checks"), None);
     }
 
     /// Current summaries name later resolutions without rewriting old evidence.
@@ -421,6 +433,8 @@ mod tests {
         let research = read("docs/012-research-notes-4.md");
         let decisions = read("docs/004-decision-log.md");
         let ports = read("wost/src/arch/x86_64/port.rs");
+        let readme = read("README.md");
+        let instructions = read("AGENTS.md");
 
         for decision in ["D-121", "D-125", "D-154", "D-164", "D-189", "D-214"] {
             assert!(
@@ -466,6 +480,20 @@ mod tests {
             decisions.contains("**Amended by D-219.** Limine remains the boot boundary"),
             "D-03 does not name its current bootloader amendment"
         );
+        assert!(
+            instructions.contains("both a pinned draft\nartifact and a runtime seam"),
+            "the contributor gate can authorize scaffolding without a runtime seam"
+        );
+        assert!(
+            decisions.contains(
+                "scaffolding remains stopped until both a pinned draft artifact and its runtime\nseam exist"
+            ),
+            "D-183 can be read as authorizing OS scaffolding before PW-601"
+        );
+        assert!(
+            readme.contains("`cargo xtask qualify-vmware --shipped`"),
+            "the phase-close guide omits shipped VMware transcript qualification"
+        );
 
         assert!(
             vision.contains("124 machine checks at the close")
@@ -481,26 +509,58 @@ mod tests {
 
     /// The first number in the table row whose left cell is `label`.
     fn table_number(document: &str, label: &str) -> usize {
-        table_numbers(document, label)
-            .into_iter()
-            .next()
+        core::iter::Iterator::next(&mut table_numbers(document, label).into_iter())
             .unwrap_or_else(|| panic!("the `{label}` row states no number"))
     }
 
+    fn current_numeric_claim(document: &str) -> Option<usize> {
+        document.match_indices("current").find_map(|(offset, _)| {
+            if document[..offset]
+                .chars()
+                .next_back()
+                .is_some_and(|character| {
+                    character.is_alphanumeric() || matches!(character, '_' | '-')
+                })
+            {
+                return None;
+            }
+            let suffix = &document[offset + "current".len()..];
+            if suffix
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_alphanumeric() || character == '_')
+            {
+                return None;
+            }
+            let suffix = suffix.trim_start_matches(|character: char| {
+                character.is_whitespace() || matches!(character, '`' | '*' | '_')
+            });
+            let digits = suffix
+                .chars()
+                .take_while(|character| character.is_ascii_digit())
+                .collect::<String>();
+            (!digits.is_empty())
+                .then(|| <usize as core::str::FromStr>::from_str(&digits).ok())
+                .flatten()
+        })
+    }
+
     fn table_numbers(document: &str, label: &str) -> Vec<usize> {
-        let row = document
+        table_cell(document, label)
+            .split(|character: char| !character.is_ascii_digit())
+            .filter(|digits| !digits.is_empty())
+            .filter_map(|digits| <usize as core::str::FromStr>::from_str(digits).ok())
+            .collect()
+    }
+
+    fn table_cell<'a>(document: &'a str, label: &str) -> &'a str {
+        document
             .lines()
             .find(|line| line.trim_start().starts_with(&format!("| {label} |")))
-            .unwrap_or_else(|| panic!("no `{label}` row in the closing table"));
-        row.split('|')
+            .unwrap_or_else(|| panic!("no `{label}` row in the closing table"))
+            .split('|')
             .nth(2)
-            .into_iter()
-            .flat_map(|cell| {
-                cell.split(|character: char| !character.is_ascii_digit())
-                    .filter(|digits| !digits.is_empty())
-                    .filter_map(|digits| digits.parse().ok())
-            })
-            .collect()
+            .expect("a table value cell")
     }
 
     #[test]
@@ -708,6 +768,148 @@ mod tests {
             assert!(
                 document.contains("016-pre-wizzy-foundation.md"),
                 "{path} does not point at the finite register document"
+            );
+        }
+    }
+
+    #[test]
+    fn every_live_register_row_has_a_hostile_surface_disposition() {
+        const LIVE: [&str; 4] = ["REQUIRED", "READY", "VERIFY", "DECIDE"];
+
+        let root = root();
+        let register = std::fs::read_to_string(root.join("docs/016-pre-wizzy-foundation.md"))
+            .expect("016-pre-wizzy-foundation.md");
+        let audit =
+            std::fs::read_to_string(root.join("docs/017-pre-wizzy-hostile-surface-audit.md"))
+                .expect("017-pre-wizzy-hostile-surface-audit.md");
+        let (_, body) = register
+            .split_once("<!-- PRE-WIZZY-REGISTER:START -->")
+            .expect("pre-Wizzy register start marker");
+        let (body, _) = body
+            .split_once("<!-- PRE-WIZZY-REGISTER:END -->")
+            .expect("pre-Wizzy register end marker");
+        let audit_ids = audit
+            .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
+            .filter(|token| token.starts_with("PW-"))
+            .collect::<BTreeSet<_>>();
+        let mut missing = Vec::new();
+
+        for line in body.lines().filter(|line| line.starts_with("| PW-")) {
+            let cells = line
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect::<Vec<_>>();
+            if cells.len() == 6 && LIVE.contains(&cells[1]) && !audit_ids.contains(cells[0]) {
+                missing.push(cells[0]);
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "the hostile-surface audit omits live register rows: {}",
+            missing.join(", ")
+        );
+    }
+
+    #[test]
+    fn every_historical_handoff_has_one_current_disposition() {
+        const TRIGGERS: [usize; 4] = [121, 129, 143, 154];
+        const REVIEW_LIMITS: [usize; 5] = [124, 128, 134, 140, 150];
+        const READY: [usize; 4] = [125, 136, 142, 148];
+        const CLOSED_OR_SUPERSEDED: [usize; 28] = [
+            122, 123, 124, 126, 127, 128, 130, 131, 132, 133, 134, 135, 137, 138, 139, 140, 141,
+            144, 145, 146, 147, 149, 150, 151, 152, 153, 155, 156,
+        ];
+
+        let register = std::fs::read_to_string(root().join("docs/016-pre-wizzy-foundation.md"))
+            .expect("016-pre-wizzy-foundation.md");
+        let (_, reconciliation) = register
+            .split_once("### Historical D-121 through D-156 handoff reconciliation")
+            .expect("the historical handoff reconciliation");
+        let (reconciliation, _) = reconciliation
+            .split_once("## What is left")
+            .expect("the end of the historical handoff reconciliation");
+        let mut dispositions = BTreeMap::<usize, (&str, &str)>::new();
+
+        for line in reconciliation.lines().filter(|line| line.starts_with('|')) {
+            let cells = line
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect::<Vec<_>>();
+            if cells.len() != 3 {
+                continue;
+            }
+            for token in cells[0]
+                .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
+                .filter_map(|token| token.strip_prefix("D-"))
+                .filter_map(|number| <usize as core::str::FromStr>::from_str(number).ok())
+                .filter(|number| (121..=156).contains(number))
+            {
+                assert!(
+                    dispositions.insert(token, (cells[1], cells[2])).is_none(),
+                    "D-{token} has more than one current disposition"
+                );
+            }
+        }
+
+        let expected = (121..=156).collect::<BTreeSet<_>>();
+        let actual = dispositions.keys().copied().collect::<BTreeSet<_>>();
+        assert_eq!(
+            actual, expected,
+            "the historical handoff reconciliation is incomplete"
+        );
+
+        let register_ids = register
+            .lines()
+            .filter_map(|line| {
+                let mut cells = line.trim_start().strip_prefix("| ")?.split('|');
+                let id = core::iter::Iterator::next(&mut cells)?.trim();
+                (id.starts_with("PW-") || id.starts_with("WZ-")).then_some(id)
+            })
+            .collect::<BTreeSet<_>>();
+        for (decision, (_, evidence)) in &dispositions {
+            for reference in evidence
+                .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
+                .filter(|token| token.starts_with("PW-") || token.starts_with("WZ-"))
+            {
+                assert!(
+                    register_ids.contains(reference),
+                    "D-{decision} cites unknown register row {reference}"
+                );
+            }
+        }
+
+        for decision in TRIGGERS {
+            let (state, trigger) = dispositions[&decision];
+            assert_eq!(state, "TRIGGER", "D-{decision} is stopped work");
+            assert!(
+                trigger.contains("PW-70")
+                    || trigger.contains("Phase 12")
+                    || trigger.contains("post-Wizzy"),
+                "D-{decision} has no exact current trigger"
+            );
+        }
+        for decision in REVIEW_LIMITS {
+            assert!(
+                dispositions[&decision].0.contains("REVIEW LIMIT"),
+                "D-{decision} hides its non-automatable review boundary"
+            );
+        }
+        for decision in READY {
+            let (state, evidence) = dispositions[&decision];
+            assert_eq!(state, "READY", "D-{decision} hides active handoff work");
+            assert!(
+                evidence.contains("PW-"),
+                "D-{decision} has no finite current owner"
+            );
+        }
+        for decision in CLOSED_OR_SUPERSEDED {
+            let state = dispositions[&decision].0;
+            assert!(
+                state.contains("CLOSED") || state.contains("SUPERSEDED"),
+                "D-{decision} does not name its later closure or supersession"
             );
         }
     }

@@ -139,23 +139,13 @@ mod tests {
     /// one code above `0x7F`.
     /// Every single-byte set 2 make code, transcribed from the specification.
     ///
-    /// Twenty-one of about eighty-nine codes were anchored before this, so a
-    /// swap of two unanchored keys survived the suite — `0x33`/`0x34` would
-    /// have exchanged H and G on every keyboard and no test could say so
-    /// (D-156).
-    ///
     /// Source: Andries Brouwer, *Keyboard scancodes*, section 10, "Scan code
     /// set 2" — the table Linux's own documentation points at. The numbers are
     /// the specification's, so they are written out rather than derived.
     ///
-    /// **Backslash was the one code left unanchored, and is now anchored.**
-    /// D-156 recorded a conflict — the source read as `0x5C` where the table
-    /// has `0x5D` — and refused to assert either without a second source. The
-    /// conflict was a misread column, not an ambiguity: Brouwer's
-    /// correspondence table gives backslash as `0x2B` in set 1, `0x5D` in set
-    /// **2**, and `0x5C` in set **3**, and Vetra's translation table agrees
-    /// independently. `0x5C` is the set-3 value for a keyboard this kernel
-    /// never puts in set 3 (D-162).
+    /// Brouwer's correspondence table gives backslash as `0x5D` in set 2 and
+    /// `0x5C` in set 3; Vetra's translation table independently agrees
+    /// (D-156, D-162).
     #[test]
     fn every_single_byte_make_code_is_the_specification_s() {
         const SET_2: [(u8, Key); 69] = [
@@ -311,9 +301,8 @@ mod tests {
         for table in [key_for, extended_key_for] {
             for code in 0..=u8::MAX {
                 let Some(key) = table(code) else { continue };
-                // Widened: `code + 1` overflows the loop counter at `0xFF`,
-                // so assigning that code a key would make this test panic in
-                // its own arithmetic rather than report (D-105).
+                // Widened: `code + 1` overflows at `0xFF`, and the test would
+                // panic in its own arithmetic rather than report (D-105).
                 for other in (u16::from(code) + 1)..=u16::from(u8::MAX) {
                     let other = other as u8;
                     assert_ne!(table(other), Some(key), "{code:#04x} vs {other:#04x}");

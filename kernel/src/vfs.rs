@@ -91,15 +91,6 @@ pub(crate) enum Node {
     /// Something with bytes in it.
     File(File),
     /// A device.
-    ///
-    /// **Not a file**, and the distinction is enforced rather than described:
-    /// [`read`] takes a [`File`], so there is no way to pass one of these to
-    /// it. Forcing a device to implement `read_at` is the "everything is a
-    /// file" conflation, and WASI's own README rejects it on exactly these
-    /// grounds (`012` §7, D-172).
-    ///
-    /// What a program will eventually receive here is slice 4's `Device`
-    /// capability. Today the name resolves; the handle it becomes is Phase 7's.
     Device(crate::devfs::Device),
 }
 
@@ -144,9 +135,11 @@ impl From<FatError> for VfsError {
 /// are both out of scope. A program gets the directory handles it was given,
 /// and this is the one the kernel has to give.
 pub(crate) fn root() -> Option<Directory> {
-    crate::fs::with_volume(|volume| Ok(volume.bpb().root_cluster()))
+    crate::fs::mount()
         .and_then(Result::ok)
-        .map(|cluster| Directory::Fat { cluster })
+        .map(|volume| Directory::Fat {
+            cluster: volume.root_cluster(),
+        })
 }
 
 /// The root of the filesystem made of memory.
@@ -208,9 +201,8 @@ fn resolve_in_tmp(from: usize, components: &[&[u8]]) -> Result<Node, VfsError> {
             }
             crate::tmpfs::Found::File { at, len } => {
                 if !is_last {
-                    // The same rule as every other backend's, and the same
-                    // reason: a file walked *through* would be answered out of
-                    // whatever its bytes look like.
+                    // As every backend: a file walked through would be
+                    // answered out of whatever its bytes look like.
                     return Err(VfsError::NotADirectory);
                 }
                 return Ok(Node::File(File::Tmp { at, len }));
@@ -238,41 +230,20 @@ fn resolve_in_dev(components: &[&[u8]]) -> Result<Node, VfsError> {
 
 /// Walk `components` from a FAT32 directory.
 fn resolve_in_fat(from: u32, components: &[&[u8]]) -> Result<Node, VfsError> {
-    crate::fs::with_volume(|volume| {
-        let mut cluster = from;
-        let mut last = None;
-
-        for (index, name) in components.iter().enumerate() {
-            let entry = volume.lookup(cluster, name)?;
-            let is_last = index + 1 == components.len();
-
-            if !is_last {
-                // Every component but the last must be a directory. Without
-                // this, `HELLO.TXT/NESTED.TXT` would be answered out of
-                // whatever the file's bytes look like as directory entries.
-                if !entry.is_directory() {
-                    return Err(FatError::WrongKind);
-                }
-                cluster = entry.cluster;
-                continue;
-            }
-
-            last = Some(if entry.is_directory() {
-                Node::Directory(Directory::Fat {
-                    cluster: entry.cluster,
-                })
-            } else {
-                Node::File(File::Fat {
-                    cluster: entry.cluster,
-                    size: entry.size,
-                })
-            });
-        }
-
-        last.ok_or(FatError::NotFound)
+    let mut volume = crate::fs::mount()
+        .ok_or(VfsError::NoVolume)?
+        .map_err(VfsError::from)?;
+    let entry = volume.resolve(from, components).map_err(VfsError::from)?;
+    Ok(if entry.is_directory() {
+        Node::Directory(Directory::Fat {
+            cluster: entry.cluster,
+        })
+    } else {
+        Node::File(File::Fat {
+            cluster: entry.cluster,
+            size: entry.size,
+        })
     })
-    .ok_or(VfsError::NoVolume)?
-    .map_err(VfsError::from)
 }
 
 /// Read `into.len()` bytes of `file`, starting `offset` bytes in.
@@ -289,27 +260,16 @@ fn resolve_in_fat(from: u32, components: &[&[u8]]) -> Result<Node, VfsError> {
 /// See [`VfsError`].
 pub(crate) fn read(file: File, offset: u32, into: &mut [u8]) -> Result<usize, VfsError> {
     match file {
-        File::Fat { cluster, size } => crate::fs::with_volume(|volume| {
-            // Rebuilt rather than kept: a `fat32::Entry` holds a name this
-            // does not need, and carrying one would mean a `File` that is a
-            // copy of a directory entry rather than a thing in its own right.
-            let entry = fat32::Entry::for_contents(cluster, size);
-            volume.read_file(&entry, offset, into)
-        })
-        .ok_or(VfsError::NoVolume)?
-        .map_err(VfsError::from),
+        File::Fat { cluster, size } => crate::fs::mount()
+            .ok_or(VfsError::NoVolume)?
+            .map_err(VfsError::from)?
+            .read_file(cluster, size, offset, into)
+            .map_err(VfsError::from),
         File::Tmp { at, len } => Ok(crate::tmpfs::read(at, len, offset as usize, into)),
     }
 }
 
 /// Call `found` for every name in `directory`, stopping when it returns false.
-///
-/// **Enumeration is a separate authority from traversal** (`012` §4): "may
-/// resolve a name I know" and "may list the names" are different, and the
-/// resolver consults one while this consults the other. Capsicum folds
-/// enumeration into read; WASI Preview 1 had both by accident of being
-/// syscall-named. Here they are apart on purpose, and slice 9 is where the
-/// rights that gate them arrive.
 ///
 /// # Errors
 ///
@@ -319,13 +279,32 @@ pub(crate) fn enumerate(
     mut found: impl FnMut(&[u8], bool) -> bool,
 ) -> Result<(), VfsError> {
     match directory {
-        Directory::Fat { cluster } => crate::fs::with_volume(|volume| {
-            volume.walk_directory(cluster, |entry| found(entry.name(), entry.is_directory()))
-        })
-        .ok_or(VfsError::NoVolume)?
-        .map_err(VfsError::from),
+        Directory::Fat { cluster } => {
+            let mut volume = crate::fs::mount()
+                .ok_or(VfsError::NoVolume)?
+                .map_err(VfsError::from)?;
+            let mut cursor = fat32::DirectoryCursor::new(cluster);
+            loop {
+                let chunk = volume
+                    .directory_chunk(&mut cursor)
+                    .map_err(VfsError::from)?;
+                for entry in chunk.entries() {
+                    if !found(entry.name(), entry.is_directory()) {
+                        return Ok(());
+                    }
+                }
+                if cursor.is_done() {
+                    return Ok(());
+                }
+            }
+        }
         Directory::Tmp { index } => {
-            crate::tmpfs::walk(index, found);
+            let listing = crate::tmpfs::list(index).ok_or(VfsError::NotFound)?;
+            for entry in listing.entries() {
+                if !found(entry.name(), entry.is_directory()) {
+                    break;
+                }
+            }
             Ok(())
         }
         Directory::Dev => {

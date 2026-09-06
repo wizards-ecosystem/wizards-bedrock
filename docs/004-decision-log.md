@@ -443,7 +443,7 @@ install.
 
 ---
 
-## D-17 Toolchain pins and workarounds — Status: Accepted (revisit periodically)
+## D-17 Toolchain pins and workarounds — Status: Accepted; review trigger owned by PW-705 (2026-08-30)
 
 - **Rust 1.97.1**, pinned exactly via `rust-toolchain.toml`
   (`profile = "minimal"`, `rustfmt`/`clippy`, the `x86_64-unknown-none`
@@ -464,6 +464,10 @@ install.
 - **Kernel link flags**: `code-model=kernel`, `relocation-model=static`
   (higher-half at `0xffffffff80000000`); linker script passed via
   `build.rs` absolute path so builds work from any directory.
+
+**Current disposition (2026-08-30).** Calendar review is retired. PW-705 fires
+only when stable support appears, a pin or workaround blocks a supported host
+or required dependency, or a concrete configuration/ABI caller needs a change.
 
 ---
 
@@ -740,6 +744,10 @@ guarantee was real — it is why `xtask` uses `EXE_SUFFIX` and `QEMU_DIR` instea
 of hardcoding `.exe` and a Program Files path — so the portability *code* stays,
 untested. Revisit the moment a second person contributes, or if this is ever
 built on Linux in earnest; the deleted workflow is recoverable from history.
+
+**Current disposition (2026-08-30).** PW-708 turns that prose into an exact
+trigger: restore a supported-host gate when a second active contributor or
+serious non-Windows support makes it authoritative rather than duplicative.
 
 ---
 
@@ -1400,6 +1408,14 @@ for technically-public items). `libs/x86-paging` is the first crate written
 under the new rule and carries doctests on its entry encoders. The lint that
 would enforce example presence does not exist, so this one is enforced by
 review — which is why it is written down.
+
+*Amended 2026-08-30 by D-249's framebuffer repair.* The scroll path's raw
+`rep movsd` had moved address and length arithmetic outside `MmioRegion` and
+had no measurement admitting D-41's performance exception. It is removed.
+`libs/pixel` now proves each visible-row span against the padded layout, while
+`MmioRegion` admits the complete destination slice before issuing volatile
+platform writes. Padding determines row starts and the mapping bound; it is
+not copied or published.
 
 ---
 
@@ -5826,7 +5842,7 @@ Left owed: `STACK_SLOTS = 16` is still a compile-time default, and the arena is
 still mapped at boot rather than per thread. D-86 and D-88 made the second one
 possible; nothing yet does it.
 
-## D-110 Channels carry bytes and handles, and both ends declare the rights — Status: Accepted (2026-08-24)
+## D-110 Channels carry bytes and handles, and both ends declare the rights — Status: Accepted design (2026-08-24); speculative implementation retired by D-248
 
 **Context.** `002` named `Channel` as the IPC primitive and, at this decision,
 pillar 1 said a process received one bootstrap handle and every later handle
@@ -5895,7 +5911,7 @@ per-message allocation is charged to no quota (D-44). And a channel end has no
 blocked on the other side is only noticed at the next wake; the check that
 would catch it is the one owed with reclamation.
 
-## D-111 A program receives exactly one handle at birth, and it is a channel — Status: Accepted (2026-08-24) (provenance amended by D-151; implemented by D-163), amends D-07
+## D-111 A program receives exactly one handle at birth, and it is a channel — Status: Accepted (2026-08-24) (provenance amended by D-151; opaque identity implementation amended by D-248), amends D-07
 
 **Context.** `002`'s pillar 1 was amended once already, because its original
 wording — "channels are the sole delegation mechanism" — was false even of
@@ -5904,46 +5920,42 @@ joined a load-bearing birth count to a channel-only provenance claim. The
 birth count remains; D-151 and D-163 later made handle-authorized completions
 a second provenance path. Until D-110 there were no channels to give one.
 
-**Decision.** `user::spawn` builds a channel pair before the thread exists,
-puts the child's end in a fresh `HandleTable` as its only entry, and returns
-the parent's end. The table is made and filled inside the `Reserved` window
-`spawn_in_space` opens (D-106), so it is never observable holding anything
-else — not "we only ever insert once", but "there is no moment at which a
-second entry could be seen".
-
-The parent keeps the far end and nothing else. That is what no ambient
-authority looks like from the spawning side: a parent that dropped its end
-could never speak to what it spawned again, and there is no name it could look
-the child up by.
+**Decision.** `user::spawn` creates one opaque, typed bootstrap identity before
+the thread exists and puts it in a fresh `HandleTable` as the child's only
+entry. The table is made and filled inside the `Reserved` window
+`spawn_in_space` opens (D-106), so it is never observable holding anything else
+— not "we only ever insert once", but "there is no moment at which a second
+entry could be seen". D-248 removed the original paired parent endpoint; no
+current operation could use it, so constructing and immediately orphaning it
+was not authority a parent could exercise.
 
 **Rationale.** The count is the load-bearing half. "It has a bootstrap channel"
 would hold with a second handle granted beside it, and a second grant is
 exactly the regression this invariant exists to prevent — it is one line, it
 looks harmless, and it quietly turns a capability system into an ambient one.
-`bootstrap_of` reports the table's live count so the check can assert `== 1`,
-and adding an event alongside the channel turns it red.
+Self-test `Birth` records the table's live count before runnability so the check
+can assert `== 1`; installing any second object turns it red.
 
 Quota is 64 handles per process (D-78), which is the answer to kernel-memory
 exhaustion at the handle layer. At this decision nothing gave a program a
 second handle; D-151's completion reservation and D-163's shared table made
 that room usable.
 
-**Consequences.** `spawn` returns a `Spawned` — the thread slot and the
-parent's channel end — rather than a bare slot. The check spawns its own
-program rather than reusing a launcher, because every ring-3 check counts
-crossings and an extra one from here would be attributed to whichever check
-looked next; that cost two red checks before it was noticed, and the fix is
-that a check which spawns owns its program. 119 checks.
+**Consequences.** `spawn` returns a `Spawned` carrying the thread slot and, in
+self-test builds, the exact table identity that keys its birth and death
+evidence. The check spawns its own program rather than reusing a launcher,
+because every ring-3 check counts crossings and an extra one from here would
+be attributed to whichever check looked next; that cost two red checks before
+it was noticed, and the fix is that a check which spawns owns its program.
 
 `002`'s Zircon correction was already made when the pillar was reworded; what
 this decision adds is the code that makes the birth count true of *this*
 kernel. The current provenance rule is channel receipt or derivation through
 a handle-authorized ring operation, never ambient minting (D-151, D-163).
 
-Left owed: the program cannot yet *use* its bootstrap channel — that needs a
-syscall surface, which is slice 9's ring. Nothing reclaims a bootstrap when a
-program retires, so a table and its channel end live for the boot; that is the
-same reclamation debt D-106 recorded and it now has a second holder.
+Left owed: the program cannot yet *use* its bootstrap identity. The channel
+protocol waits behind the Wizzy gate, while current retirement reclaims the
+table and its counted identity through the zombie collector.
 
 ## D-112 The queue protocol is checked before it is written, and each tier is asked only what it can answer — Status: Accepted (2026-08-24)
 
@@ -7224,7 +7236,7 @@ says "move into" a module that had to be created first.
 acquisition is take-mutate-return by the same argument, but nothing checks that
 it is, and the panic path takes locks under it deliberately.
 
-## D-127 A channel end that dies says so — Status: Accepted (2026-08-25)
+## D-127 A channel end that dies says so — Status: Accepted design (2026-08-25); speculative implementation retired by D-248
 
 **Context.** `Channel::receive_blocking` documents two ways to return: with a
 message, or `None` when "the far end closed with nothing left to read". The
@@ -10567,8 +10579,8 @@ both sites. The claim happens outside the guard now.
 - **The `Device` is a kernel-side capability, not yet a handle.** It is
   obtainable only from the registry, exactly as `Port<T>` is, which is the same
   discipline one level up. Slice 8 makes it resolvable internally through devfs
-  but does not create a handle; the first user-visible Device handle remains
-  Phase 7 work (D-41, D-172).
+  but does not create a handle. A user-visible Device handle is explicitly
+  post-compiler-gate work in D-184's register, not pre-Wizzy foundation debt.
 
 ## D-169 An NVMe controller, polled, and a disk with something on it — Status: Accepted (2026-08-25) (amended by D-181)
 
@@ -10646,9 +10658,10 @@ exists.
   two transcriptions of one table — so a host test compares them (D-158).
 - **A read still spins in the serving thread.** `POLL_ATTEMPTS` bounds it,
   because a controller that does not answer is a controller to report, and on a
-  machine without bus master enabled a hang is the only symptom there is. A
-  deferred device state machine, interrupt path and teardown coupling remain
-  future work.
+  machine without bus master enabled a hang is the only symptom there is.
+  D-188, D-199, D-200 and D-245 later supplied teardown and deferred VFS
+  ownership; only replacing polled service with a deferred or interrupt-driven
+  throughput policy remains stopped behind PW-704's measured workload trigger.
 
 ## D-170 FAT32, an oracle, and a block layer that is one trait — Status: Accepted (2026-08-25)
 
@@ -11627,8 +11640,8 @@ invariant-TSC bit. D-57's live policy does the opposite deliberately: two
 believable, agreeing windows admit the clock and a missing invariant promise
 produces a warning. The page and kernel clock share that fixed conversion, so
 they agree even when the hardware guarantee is absent; neither becomes more
-stable than the underlying counter. Suspend, NTP adjustment and automatic
-revocation remain future work.
+stable than the underlying counter. D-225 later supplied automatic post-boot
+revocation; suspend/resume and NTP adjustment remain later policy.
 
 The C header now assigns numbers only to the four calls `Call::decode`
 accepts. Proposed close, duplicate, channel, mapping and futex call numbers are
@@ -11934,6 +11947,12 @@ product slice stop. Work is in scope only when it is one of:
   runtime seam or gate; or
 - work in `wizards-ink` that advances the gate itself.
 
+**Current amendment (D-184/PW-601).** In this repository, the third item means
+specification and validation of the versioned handoff only. Consumer
+scaffolding remains stopped until both a pinned draft artifact and its runtime
+seam exist. The fourth item names externally owned work in the separate
+`wizards-ink` repository; it never authorizes compiler implementation here.
+
 Host tooling is allowed only in support of that work. The compiled Rust
 boundary probe may remain as an oracle and may validate a language-neutral wire
 contract, but it does not grow into `init`, a shell, a service or a product
@@ -11997,11 +12016,13 @@ restored. This is a repository-claim check, not a machine behavior mutation.
 ## D-184 The closed compiler gate has one finite, evidence-bound foundation register - Status: Accepted (2026-08-27), refines D-18, D-77, D-135, D-175 and D-183
 
 **Context.** D-183 permits kernel correctness, concrete language-neutral
-prerequisites, artifact handoff work and work in `wizards-ink` while its
-compiler gate is closed. It deliberately does not enumerate every legitimate
-kernel debt. Calling the resulting space "polish" would make it unlimited;
-freezing the OS repository completely would leave safe-abstraction, DMA,
-privilege and verification defects in the foundation Wizzy must trust.
+prerequisites and artifact-handoff specification while its compiler gate is
+closed; gate work in `wizards-ink` is externally owned. Consumer scaffolding
+waits for PW-601's pinned-draft-artifact and runtime-seam trigger. D-183
+deliberately does not enumerate every legitimate kernel debt. Calling the
+resulting space "polish" would make it unlimited; freezing the OS repository
+completely would leave safe-abstraction, DMA, privilege and verification
+defects in the foundation Wizzy must trust.
 
 The Phase 6 slices had landed and QEMU reported 189 checks, but the current
 189-check VMware round and current 77-mutation full sweep were not recorded.
@@ -12106,7 +12127,7 @@ is reclaimed. A second constructs an identical first entry and conflicting
 second entry and requires both older entries to survive the refusal. Each
 protection has a persistent mutation targeting its exact named check.
 
-## D-186 Supervisor writes obey read-only mappings by this kernel's act â€” Status: Accepted (2026-08-27), amends D-12 and closes PW-300
+## D-186 Supervisor writes obey read-only mappings by this kernel's act — Status: Accepted (2026-08-27), amends D-12 and closes PW-300
 
 **Context.** Kernel text and read-only data have read-only leaves, but x86
 allows supervisor writes through those leaves while `CR0.WP` is clear. The
@@ -12218,8 +12239,9 @@ QEMU still discovers the NVMe controller's 64-bit BAR and boots storage. Its
 machine checks prove two offsets cannot claim one bridge twice and a claimed
 device's whole I/O window refuses bare access. Ten new persistent mutations
 cover the pure ordering/rollback and transaction properties; the two changed
-machine mutations were also driven red. PW-201 remains `VERIFY` only until the
-current VMware close observes the controller BAR required by its register row.
+machine mutations were also driven red. PW-201 is `REQUIRED`: the
+implementation is established, and the current VMware close must still observe
+the controller BAR named by its register row.
 
 ## D-188 Uncertain NVMe commands stop the controller or retain every DMA frame — Status: Accepted (2026-08-27), amends D-169 and closes PW-200
 
@@ -12741,7 +12763,7 @@ the interceptor observed the bypass before allocation or MMIO. The release
 image then passed all 201 checks and the complete CI matrix; the mutation
 register now contains 117 entries. No unsafe operation was added.
 
-## D-197 A refused PCI command enablement closes NVMe before a window exists — Status: Accepted (2026-08-27), amends D-168 and D-169; closes PW-206
+## D-197 A refused PCI command enablement closes NVMe before a window exists — Status: Accepted (2026-08-27), amends D-168 and D-169; advances PW-206
 
 **Context.** The boot path asked the claimed PCI function to enable memory
 decode and bus mastering, logged when the command register refused, and then
@@ -12803,6 +12825,13 @@ claim performed no configuration access and the check never mapped its fake
 address. The release image then passed all 202 checks and the complete CI
 matrix; the mutation register now contains 121 entries. No unsafe operation was
 added.
+
+**Current disposition (2026-08-30).** Later PCI authority work moved live DMA
+admission to `prepared.admit_bus_master` after verified controller disable and
+before `nvme::start`. The injected pre-mapping proof above is historical and
+does not close that current ordering. PW-206 is `READY`; its remaining proof is
+the causal `a failed bus master admission stops before nvme start` machine red
+and restored boot.
 
 ## D-198 Hardware-free namespaces do not depend on device discovery — Status: Accepted (2026-08-27), amends D-90 and D-172; closes PW-207
 
@@ -13063,8 +13092,8 @@ user-clock and Timer-clock gates separately reddened only their named checks;
 all three have persistent mutations. The degraded `qemu64` boot reports
 mandatory `wp nx`, omits optional SMEP/SMAP/UMIP, and settles after the exact
 clock-based ring-3 refusal. The complete gate now carries 208 machine checks
-and 139 mutations. PW-301 remains `VERIFY` until the current phase-close VMware
-round shows NX, calibration and successful user launch together. PW-303 still
+and 139 mutations. PW-301 is `REQUIRED`: the current phase-close VMware round
+must show NX, calibration and successful user launch together. PW-303 still
 owns clocksource qualification and post-boot revocation; this decision does
 not claim those solved.
 
@@ -13989,6 +14018,14 @@ last decision must equal the decision log's last heading. `016` points to that
 checked table instead of copying the changing machine and mutation totals into
 three more current-facing cells.
 
+**2026-09-06 enforcement correction.** A later paragraph in `014` still called
+the image “current” beside an obsolete 189-check total, even though the closing
+table had advanced. The prose check now rejects a current numeric restatement
+outside that table while continuing to permit explicitly dated and
+“then-current” historical evidence. The same pass makes contributor and README
+guidance name both PW-601 prerequisites and the separate VMware transcript
+qualification step. Six focused defects remain mutations 1,343 through 1,348.
+
 The manual `008`–`012` pass preserves measurements made at their dated
 research and slice checkpoints. Each document now says explicitly that
 numbers, tool versions and words such as “current” are scoped to that date;
@@ -14111,7 +14148,7 @@ QEMU artifact; it does not turn the deliberately separate VMware, TLC or full
 mutation qualifications into CI, and it does not close PW-509's remaining
 environment recreation policy.
 
-## D-217 Process birth and death evidence names one exact incarnation — Status: Accepted (2026-08-29), closes PW-515
+## D-217 Process birth and death evidence names one exact incarnation — Status: Accepted (2026-08-29), pairing evidence removed by D-248; closes PW-515
 
 **Context.** The clean evidence refresh after D-216 exposed an intermittent
 debug failure in `a spawned program holds exactly one handle`. The check made
@@ -14134,10 +14171,11 @@ it is meant to observe.
 **Decision.** Self-test builds record an immutable `Birth` immediately before
 the reserved thread commits and becomes runnable. It contains the authority
 table's non-repeating identity, initial live-handle count and bootstrap kind,
-the kernel-owned ring shape, the ring mapping's flags, and the object identity
-of the child's exact channel peer. The returned parent endpoint is compared
-with that peer identity; a merely live but unrelated channel cannot satisfy
-the claim.
+the kernel-owned ring shape and the ring mapping's flags. `Spawned` carries
+that table identity, and `birth_of` returns a record only when the slot and
+identity both match. D-248 removed the former parent-end/peer comparison after
+the production caller audit showed the paired endpoint existed only to satisfy
+this check.
 
 The birth record lives in a fixed per-slot side table rather than in the
 transaction's return value. Recording is a separate call that returns before
@@ -14167,14 +14205,13 @@ program a test-only wait protocol would add target ABI behaviour solely for a
 kernel check. Enlarging `Spawned` or the commit frame was rejected by the
 measured debug stack faults.
 
-**Consequences.** A repaired debug boot passed 212/212. Replacing the returned
-parent endpoint with a newly created unrelated channel failed only `a spawned
-program holds exactly one handle`, at 211/212; the transformation was restored
-and persists as mutation 214. Removing the obsolete live-table helper also
-required retargeting D-126's existing leaf-lock mutation to the production
-authority lookup; its property and registry cardinality are unchanged. The
-failed D-216 evidence refresh is not release evidence and must be regenerated
-on the committed repair before qualification resumes.
+**Consequences.** The original repaired debug boot passed 212/212. D-248 later
+removed the pairing-only state and replaced its retained break with corruption
+of the returned table identity; the same check must then reject the mismatched
+incarnation. Removing the obsolete live-table helper also required retargeting
+D-126's existing leaf-lock mutation to the production authority lookup; its
+property and registry cardinality are unchanged. The failed D-216 evidence
+refresh was not release evidence and was regenerated by later qualification.
 
 ## D-218 Qualification names a stable machine and every resolved tool — Status: Accepted (2026-08-29), closes PW-509
 
@@ -14924,6 +14961,10 @@ once the current VMware image passes the same named check, PW-305 is `DONE`.
 No state beyond the already enabled mask is added. The reviewed target wrapper
 adds ten lines to the unsafe audit surface, now exactly 380 against its
 unchanged 380-line ceiling, and advances only `xstate.rs`'s pinned fingerprint.
+
+**Current disposition (2026-08-31).** The implementation finding is resolved,
+so PW-305 is now `REQUIRED` rather than `VERIFY`: only PW-003's fresh
+compacted-`XSAVEC` VMware observation remains.
 
 ## D-229 The ring model carries visibility through every terminal owner — Status: Accepted (2026-08-29), closes PW-404
 
@@ -15757,3 +15798,2027 @@ over code can catch that. The mechanism that can is one that refuses to proceed
 on a bad premise rather than reporting accurately into a void, which is what
 `prove_green_baselines` did when it declined to credit mutations against a red
 tree.
+
+## D-243 Release authority is linear, and hostile layouts must be complete — Status: Accepted (2026-08-30), amends D-87, D-106, D-117, D-123, D-177 and D-241; closes PW-110, PW-111, PW-112, PW-211 and PW-308
+
+**Context.** The post-handoff audit treated every earlier `DONE` claim as an
+unproved hypothesis. It found five safe-boundary failures.
+
+`AddressSpace::map_boot` stripped ownership but accepted `Flags::USER`. A
+`BootRegion` proves only that firmware described physical bytes; it does not
+prove that kernel or firmware contents may be published to ring 3.
+
+Address-space release had a deeper authority split. `AddressSpace::bind`
+minted a one-shot `Binding`, but `task::release_address_space` accepted the
+root as a plain integer. A caller could mint `Released` before installing the
+binding, reclaim the tables, and then install the stale binding through safe
+APIs.
+
+Three hostile descriptions also passed their preflights. A long usable memory
+region let `covered_by` jump over a nested reserved claim. FAT32 accepted more
+data clusters than its FAT could index and always read FAT 0. XSAVE accepted an
+enabled component with no CPUID sub-leaf and AVX without SSE.
+
+**Decision — privilege and lifetime.** Boot-evidence mappings reject `USER`,
+as allocator-owned mappings already did. Refusal is chosen over silently
+stripping the bit: attempting to publish kernel bytes is an authority error,
+not a request for a nearby weaker mapping.
+
+Release no longer accepts an address. Installing `Binding` returns a linear
+`Bound` token which the process owner stores beside the `AddressSpace`.
+Releasing a live task returns that same token unchanged; after retirement it
+becomes `Released`. Construction that stops before installation consumes its
+still-uninstalled `Binding` directly. Thus no safe caller can hold both release
+evidence and something that can later install the same root.
+
+The process transaction binds only after its other fallible objects exist and
+returns the appropriate token through every thread-construction refusal. Its
+region ledger is now a tuple array plus an explicit used count, rather than an
+array of tagged optional tuples. Besides being the data's actual shape, this
+makes the debug construction record smaller; the first token-carrying draft
+exceeded the guarded kernel stack and double-faulted, so stack size is part of
+this boundary's correctness.
+
+**Decision — complete descriptions.** Memory coverage first arbitrates every
+nonempty region intersecting the requested interval, then walks the union of
+admitted regions. A forbidden nested claim therefore cannot be skipped by a
+larger span's end.
+
+FAT32 preflight requires room for the two reserved entries and every advertised
+data cluster. `BPB_ExtFlags` selects FAT 0 when mirroring is enabled and the
+named in-range copy otherwise; table addressing includes that copy's offset.
+
+Compacted XSAVE preflight requires every enabled extended component to have a
+present sub-leaf and enforces AVX's SSE dependency before any hardware write.
+Contradictory virtual hardware is refused rather than delegated to `XSETBV` or
+an undersized state area.
+
+**Alternatives.** A global registry of pending roots would duplicate ownership
+already represented by Rust values and introduce synchronization into task
+construction. Checking only the task table was the defect because a pending
+binding is deliberately not there. Sorting the boot memory map would not
+resolve contradictory overlapping claims; safe arbitration is independent of
+input order. Deferring FAT and CPUID contradictions to later reads or hardware
+faults would move hostile input past the boundary that has enough information
+to reject it.
+
+**Evidence and consequences.** Two debug QEMU mutations independently failed
+only `a boot mapping cannot publish kernel memory` and `a bound space is not
+reclaimed`. The memory-map byte oracle exhausts every query over two regions in
+the bounded address space 0 through 6 and caught both the original nested hole
+and its retained mutation. FAT32's fifteen host tests trace the exact selected
+table sectors and kill four capacity/selector/offset mutations. XSAVE's exact
+presence and dependency checks each failed under their retained mutation. The
+unsafe block and declaration counts did not change; the paging and task source
+fingerprints were re-reviewed because the safe wrappers around those blocks
+did.
+
+## D-244 Exceptional evidence records executions, not installed tools — Status: Accepted (2026-08-30), amends D-216, D-218 and D-235; closes PW-007 and PW-008; advances PW-009
+
+**Context.** The rejected phase handoff treated exceptional tools as though
+recording their identity recorded their work. Mutation's `last-run` journal
+had no overall verdict, did not retain failed completed evidence and let an
+older pass authorize closure after a newer sweep failed. The model observer
+accepted any nonzero exit which contained the expected invariant text, even
+beside unrelated failure, and could wait forever. An initial qualification
+layer bound mutation and model inputs, but its VMware path retained the same
+execution defect: `begin_vmware` probed `vmrun`, then discarded the resolved
+tool, and `qualify` accepted a transcript already present on disk without
+executing VMware's observer. A synthetic marker fixture passed the check.
+
+The surrounding provenance was weaker than its prose too. D-235 truncated one
+shared serial name but left every other file in each machine directory, and
+the live tree contained older NVRAM, suspend metadata and scoreboards beside
+new descriptors. A copied mutation snapshot was verified only when opened; if
+it changed later, completion restored from the changed copy and still wrote a
+report for the original digest. Evidence parsing accepted reordered fields and
+one missing terminal LF, and a broken staging symlink could survive
+invalidation. These are stale-success, substitution and path-authority defects,
+not missing explanatory comments.
+
+**Decision — exceptional records.** Mutation, TLC and each VMware selector own
+one sorted, checksummed qualification record under ignored target output. An
+attempt removes the older success before its first fallible preflight and can
+commit `result=pass` only after its terminal operation. Every record binds the
+clean Git commit and tree. Mutation additionally binds the registry, source
+and index digests and the durable complete report. TLC binds the resolved Java
+bytes and version, the TLC jar and the complete tracked model tree. VMware
+binds the resolved `vmrun`, generation receipt, both disks, both descriptors,
+VMX, serial transcript and execution observer. The release evidence format is
+v3 and carries every one of those support files and digests; offline
+verification reconstructs their inner schemas instead of trusting only the
+outer manifest.
+
+Every record rechecks clean source immediately before rename. The mutation
+runner also re-digests its supposedly immutable copied source at completion,
+before publishing `last-run` or a passing report. A changed copy can therefore
+invalidate work, but cannot authorize pristine source.
+
+Mutation completion writes a canonical, checksummed, immutable sequenced
+report whose caught, survived and inconclusive totals determine its explicit
+verdict. Older reports remain available, but only the greatest sequence for
+the current clean commit, registry, source and index can authorize a pass. The
+returned current-pass value owns the mutation sweep lock until its consumer
+finishes; mutation qualification and the release-evidence snapshot retain that
+value through publication, so a newer failed sweep cannot race an older pass
+into the bundle.
+
+TLC gets a hard 30-second process deadline. Its observer requires empty
+diagnostics, exactly one terminal verdict before exactly one final completion
+record and an exit status consistent with that verdict. A clean verdict has no
+counterexample trace; an invariant violation has exactly one later behavior
+header and at least one state before completion. Wrong invariants, mixed
+verdicts, truncated traces, unrelated `Error:` records, Java throwables, stack
+records and fatal worker text are refusals rather than mutation catches.
+
+**Decision — one generated VMware machine.** D-235's selectors now own
+`vm/self-test/` and `vm/shipped/`. Generation removes only that exact selector
+directory after real-directory and canonical-parent checks, then constructs an
+exact initial inventory: five authoritative machine artifacts, one empty
+`serial-<generation>.log`, and the generation receipt (the incomplete receipt
+occupies that seventh name until the atomic rename). NVRAM, locks, logs,
+scoreboards and suspend state are absent at generation. VMware may create them
+after boot, but they are explicitly runtime extras and carry no authority.
+The five artifact names, receipt and transcript must remain regular files;
+substituting a link, directory or another canonical parent is a refusal.
+
+The generation ID is a new per-invocation local identifier derived from the
+host clock, process and an in-process sequence. Its purpose is to give VMware a
+new serial destination and stop accidental reuse of `serial.log`; it is not a
+secret, nonce supplied to the guest, or cryptographic attestation. The receipt
+binds the empty reset, exact source, selector and initial artifact digests.
+Qualification requires the transcript at the receipt's generated name to have
+become nonempty and rechecks every authoritative digest before and after it is
+copied.
+
+**Decision — observe execution.** `VmwareAttempt` retains the exact resolved
+tool. Qualification probes those bytes, executes that path with exactly
+`-T ws list`, requires successful exit and the canonical VMware count header,
+and accepts exactly one absolute VMX path. Canonicalizing that path must produce
+the generated selector's regular VMX. The tool is probed again around the
+observation and before commit. The normalized command output is stored as
+`vmrun-list.txt`; its length and digest are in the checksummed inner record and
+the outer evidence manifest. Availability text can no longer stand in for
+execution, another running VM cannot share the observation, and a foreign VMX
+cannot donate it.
+
+All destructive evidence and qualification paths are revalidated at the point
+of use. A real root and every real parent are required before recursive reset,
+copy or record commit, canonical children must remain under the exact configured
+root, and new staging/support files use exclusive creation. Qualification and
+generation records require their one canonical sorted LF encoding and
+checksum; the outer manifest requires canonical encoding and verifies every
+recorded digest. These checks prevent a linked parent with identical bytes
+from substituting provenance, not merely a different digest from being
+noticed.
+
+**Trust boundary.** This is strong local qualification, not remote
+attestation. It proves that the recorded `vmrun` returned one running canonical
+VMX at the observation, that the selected generated files retained their
+recorded bytes, and that the accepted transcript occupied that generation's
+serial path. It does not prove that `vmrun` started the VM, that those serial
+bytes were emitted by that process, or that a privileged operator, host
+filesystem, hypervisor or `vmrun` did not fabricate them. In particular, an
+operator can copy an older valid transcript into the fresh path. There is no
+guest-consumed per-generation challenge with which to reject that act, and the
+checksums are integrity checks rather than signatures. PW-531 stops stronger
+process-to-transcript binding until a concrete guest-readable challenge channel
+or platform attestation mechanism exists.
+
+**Alternatives.** Keeping a fixed serial filename plus truncation was rejected
+because it gives accidental replay one stable destination. Treating every
+post-boot VMware file as evidence was rejected because their formats and
+lifecycle belong to Workstation; authority rests in the generated inputs and
+explicit observer. Parsing any positive `vmrun` count was rejected because it
+allows an unrelated running machine to donate execution. Inventing a
+cryptographic claim from host-generated metadata was rejected because the
+guest never consumes or returns that metadata. Deleting the whole `vm/` root
+was rejected because one selector must never destroy its sibling.
+
+**Evidence and consequences.** Host fixtures complete and consume a clean
+isolated mutation sweep, retain an older pass beside a newer failure, reject
+failed and stale reports and block a concurrent replacement until the current
+pass is consumed. TLC fixtures distinguish clean success and the exact named
+invariant from wrong status, wrong invariant, mixed verdict, truncation,
+unrelated error, diagnostic output, Java throwable, fatal output and a
+missing or contradictory behavior trace; a parked child proves the deadline.
+PW-007 and PW-008 are therefore closed as observer implementations, while the
+real current-registry mutation and TLC executions remain PW-001 and PW-002.
+
+Other host fixtures reject zero, noncanonical and multiple `vmrun` counts,
+missing and extra paths, relative and foreign VMXs, linked selector and
+qualification parents, stale NVRAM, authoritative-name substitution, shared
+serial names, linked evidence roots, broken staging links, reordered manifests
+and a changed mutation snapshot. The command seam executes exact pre-probe,
+`-T ws list` and post-probe order, and production requires the real observer
+before result and commit. Each guard was removed or weakened once and its exact
+fixture went red; the restored defects persist in the mutation registry. No
+real exceptional close is claimed here: PW-009 is `REQUIRED` until one clean
+final commit completes mutation, TLC, both human VMware rounds, both execution
+qualifications, evidence creation and independent offline replay.
+
+## D-245 Cleanup authority survives every refusal, and partial construction is fail-atomic — Status: Accepted (2026-08-30), amends D-106, D-117, D-190, D-191, D-206 and D-243; closes PW-527
+
+**Context.** Re-auditing cleanup as hostile code found the same defect at four
+ownership layers. The process region ledger silently discarded its final entry
+when a maximum-size image also owned a stack. Loader rollback, construction
+drop and zombie collection discarded `unmap` or release refusals; in the last
+case `.ok()` consumed the only `Bound` token that could authorize a retry.
+`AddressSpace::Drop` deliberately cannot walk or free live mappings, so those
+discarded results were safe from use-after-free only by leaking every remaining
+owner.
+
+Boot paging had the production form of the same problem. A failed kernel-space
+build dropped an unreclaimed root, stack-arena construction kept the prefix it
+had already mapped, and boot continued with that partial arena. Guard
+verification also ignored rollback refusal. Separately, task construction
+ignored a retirement refusal before returning its scheduler slot, and a free
+scheduler slot could still have an older process zombie attached to the same
+index. A later orphan could then replace the retained owner. Finally, user
+launch remained open when XSAVE isolation was unavailable, and `Frame` and
+`Segment` drop ignored allocator-ledger refusal even though D-206 classifies
+such internal ownership contradiction as fatal.
+
+**Decision.** Cleanup state is complete, typed and retryable. The fixed process
+ledger has one entry for every admitted image segment plus the stack, and
+overflow is an error rather than a dropped record. Loader and process rollback
+return the refusal and exact page progress. A zombie retains either its `Bound`
+or `Released` authority, its remaining mappings and its returned-page tally
+until the next attempt. Page-table reclaim refuses while any owned leaf remains
+reachable and returns the release token on refusal.
+
+`AddressSpace::Drop` remains non-reclaiming: drop has neither the fallible API
+nor, for an installed space, the linear release evidence needed to reclaim
+tables safely. Every owning production path therefore calls `unmap` and
+`reclaim` explicitly. Stack teardown returns a linear progress token, so a
+partial refusal resumes below already-unmapped slots rather than failing on
+them. Range mapping snapshots its table ownership, clears every written leaf
+and detaches newly linked empty tables in reverse order; a contradictory
+rollback walk fails stopped before a still-addressable run can be freed.
+Kernel-space construction applies the same transaction. `Frame` and `Segment`
+drop release the allocator lock and then fail stopped if their live handle is
+absent from the ledger.
+
+A zombie table records both stored and currently-collecting owners. Scheduler
+selection excludes either state, and process commit checks the slot again
+before publishing launch records. Commit refusal returns the still-bound
+`PreparedProcess` with its `Bound` token; retirement first yields `Released`
+authority, which rejoins construction before drop. Task retirement is completed
+before the scheduler slot is released: one injected first refusal is retried,
+and a second refusal is an internal contradiction.
+
+Ring 3 also requires isolated extended state before its first allocation.
+Absent or contradictory XSAVE state now produces `NoExtendedState`; boot may
+continue, but user launch stays closed. Kernel stacks remain guarded and are
+32 KiB: the linear construction path exceeded the former 16 KiB debug stack,
+while a measured publication point on the restored build retained 11,216 bytes
+above the guard and the complete debug and release machine suites crossed it.
+No guard was weakened.
+
+**Alternatives.** Treating cleanup refusal as a harmless leak was rejected:
+it loses retry authority and turns bounded pressure into permanent exhaustion.
+Reclaiming implicitly from `Drop` was rejected because drop cannot return a
+typed refusal or manufacture installation authority. Reusing a scheduler slot
+and relying only on the final process-commit check was rejected because it
+makes ordinary admission perform and then unwind avoidable construction.
+Growing stacks again after one unreproduced fault was rejected after the clean
+build's measured headroom and interrupt-frame disassembly did not support it.
+
+**Evidence and consequences.** Machine checks prove the maximum image-and-stack
+ledger, refusal after one successful unmap, resumable full-prefix and guard
+rollback, failed boot-space and range-map table reclamation, commit-authority
+reunion, retirement retry, zombie non-aliasing/retry and the no-XSAVE gate.
+Host ELF tests prove power-of-two `p_align` and file/address congruence; the
+machine loader additionally refuses non-page placement before taking a frame.
+The integrated release QEMU suite passed 218/218. Exact retained breaks cover
+progress-token loss, forgotten table rollback, rollback-walk refusal,
+commit-owner loss, loader alignment and activation privilege/cache drift. The
+new table transaction remains inside `wost`'s reviewed unsafe boundary.
+
+## D-246 An independent grader judges frozen host logic — Status: Accepted (2026-08-30), extends D-28 and D-119; qualification tracked by PW-025
+
+**Context.** The project-authored mutation registry and the checks named by it
+can share an assumption. Its last `cargo-mutants` experiment was an old blocked
+research run, not a grade of the accumulated foundation.
+
+**Decision.** Run unmodified `cargo-mutants` 27.1.0 against every host-testable
+workspace package from one clean source-frozen commit. Each package gets an
+isolated work tree, target directory and machine-readable output. Project code
+does not choose or rewrite the grader's mutants. Every survivor, timeout,
+unviable mutant and build failure is adjudicated; an actionable result gets a
+test or fix, followed by a complete current-source rerun. Equivalence requires
+a source-level argument, not merely a familiar-looking mutant.
+
+The grade records the commit, exact commands, package coverage, per-package
+and aggregate totals, and every adjudication. It passes only with no
+unadjudicated miss, timeout, unviable mutant or build failure.
+
+**Evidence.** This entry fixes the method without inventing the result. PW-025
+remains open until the frozen run is complete; its factual totals and artifact
+locations will be appended here before phase close.
+
+## D-247 Type errors and typed ownership make two review claims durable — Status: Accepted (2026-08-30), amends D-85, D-150 and D-223; closes PW-529 and PW-530
+
+**Context.** D-85 recorded three compiler experiments: a live token-bearing
+spin guard made a second lock and reuse of its `ThreadContext` fail with
+`E0499`, dropping the guard made reuse compile, and removing the guard's
+`Drop` implementation made both refusals disappear under non-lexical
+lifetimes. They were the right breaks and remained a one-time transcript.
+D-223 later built the missing durable mechanism — a host test that
+cross-compiles a throwaway crate against the real `wost` — but used it only
+for the guards' `!Send` contract.
+
+D-150 had the inverse problem. Its semantic rule is intentionally not a
+whole-program source analysis: whether an operation can wait is a design fact,
+not a function-name fact. Its direct-call surface nevertheless had no
+mechanical inventory, so adding a variant or a wildcard arm could bypass even
+the point where that fact must be decided.
+
+**Decision.** The actual-`wost` probe now carries D-85 as well as D-223. Two
+negative programs use `SpinLock::lock` and the real `ThreadContext`: one takes
+a second token-bearing lock and one passes the still-borrowed token to a
+blocking-shaped operation. Each compilation must fail with exactly one coded
+diagnostic, `E0499`, at the probe source. A positive control explicitly drops
+the guard and must compile. The assertion classifies rustc's diagnostic code;
+it does not depend on English diagnostic wording.
+
+The direct user-call surface has a typed registry beside that compiler
+harness. A structural `syn` walk requires the registry, the `Call` enum and the
+`Call::decode` dispatch to name exactly the same variants, with no wildcard or
+duplicate arm. Every variant is classified `CannotWait` or
+`CompletionPlane`. The sole completion-plane owner must invoke `wait_ring`
+directly, and a cannot-wait arm may not. A new direct door therefore cannot
+compile its host proof until its ownership is classified.
+
+This does not pretend to infer transitive waiting from arbitrary Rust. The
+reviewer still owns the semantic classification D-150 requires; the machine
+now makes omitting that classification impossible and pins the one deliberate
+trap-side wait to the completion plane that owns it.
+
+**Alternatives.** Copying `ThreadContext` and a guard into a host-only crate was
+rejected because it would test a model that can drift from `wost`. Matching
+rustc's prose was rejected because wording is not the language contract;
+`E0499` is. A name search for `wait`, `yield` or `block` was rejected because
+both false positives and renamed helpers would turn prose convention into a
+claimed call-graph proof. Whole-program analysis remains rejected for D-150's
+original reason.
+
+**Evidence and consequences.** The three compiler probes and both existing
+guard `!Send` probes pass against the current target. Compiling out `Drop for
+SpinLockGuard` made the two negative programs compile and failed only
+`contracts::a_live_spin_guard_keeps_the_thread_context_borrowed`; restoring it
+returned the test to green. Deleting `RingEnter`'s typed row failed
+`contracts::every_direct_door_has_an_explicit_wait_owner` with the enum/registry
+set difference, and restoration returned it to green. Both exact breaks are
+retained as host mutations. No kernel behavior, unsafe operation, ABI or
+machine-check count changed.
+
+## D-248 The shipped object surface stops at one opaque bootstrap identity — Status: Accepted (2026-08-30), amends D-95, D-110, D-111, D-127, D-130, D-181 and D-217; advances PW-532
+
+**Context.** The pre-Wizzy caller audit asked D-184's question of every kernel
+surface: what concrete current caller forces this mechanism? `Event`, channel
+messages, send/receive, backpressure, blocking, peer-close and HandleTable
+send/accept/close/duplicate operations were reached only by self-tests or by
+prose about a future userland. They made their own tests look like demand.
+Queue `Duplicate` was the only shipped handle operation, and it already owned
+reservation, attenuation and completion without those HandleTable wrappers.
+
+The remaining channel pair was also test-shaped runtime state. Production
+`spawn` created two `Arc<Channel>` values joined by weak references, inserted
+one in the child and immediately dropped the other. The peer existed solely so
+`Spawned` and `Birth` could prove pairing. Every shipped process therefore
+began with an already-orphaned fictional endpoint and a lock no production
+operation could use. Several scheduler weights, failure seams, object ledgers
+and last-rites snapshots were likewise compiled into the shipped kernel only
+for machine checks. Raw self-test `AddressSpace` setup refusals could abandon
+page-table frames while purporting to prove cleanup.
+
+**Decision.** The current `Channel` is one opaque, counted identity. `spawn`
+creates exactly one, installs it as the child's sole handle and creates no peer
+or transport state. The `Channel` tag remains because the current bootstrap
+ABI and the future Wizzy handoff need a concrete typed identity; removing the
+tag would either break that birth contract or substitute an untyped placeholder.
+Bytes, transferred handles, waiting, close and pairing return only when the
+post-gate bootstrap caller fixes their protocol. `Event` is removed. The
+direct `WaitQueue::wait_unless` lost-wakeup proof remains because production
+ring waiting uses that primitive independently of either speculative object.
+
+Channel has no type-specific rights. The child's initial entry still carries
+the universal rights, and ring-3 `Duplicate` requests `INSPECT`, not a fictional
+channel `READ`. Queue owns the one implemented reservation/commit delegation
+path; duplicate HandleTable convenience operations are removed. Test weights,
+fault injection, resource counters, birth/death snapshots and inspection APIs
+compile only under `selftest`. `Spawned` and `Birth` correlate through the
+authority table's existing non-repeating identity rather than an invented
+object peer. Every retained raw self-test address space reclaims its tables on
+every setup refusal and verifies the exact frame-ledger baseline. All
+`expect(dead_code)` attributes are gone: a surface is shipped because a caller
+uses it or is explicitly self-test-only.
+
+**Alternatives.** Keeping mechanisms because tests exercised them was rejected:
+it reverses the caller/dependency direction and freezes a pre-Wizzy protocol.
+Keeping the weak peer only under `selftest` was rejected because the pairing
+claim itself described no production invariant. Deleting `Channel` entirely
+was rejected because the one typed bootstrap entry is a current machine and
+handoff contract. Replacing queue delegation with the removed wrappers was
+rejected because it would move ownership away from the only concrete caller.
+
+**Evidence and consequences.** The machine suite now has 213 checks rather
+than preserving eleven tests for deleted behavior. Retained mutations corrupt
+the exact birth-table identity, widen Channel's meaningful rights, bypass the
+WaitQueue condition recheck, erase the test weight and skip raw-space reclaim.
+The complete mutation source matcher passed after the rewrite. Target checks,
+API audit, Clippy and restored debug/release boot evidence remain PW-532
+acceptance work; historical Phase 5 channel and Event sections remain design
+history but no longer claim to inventory the current kernel. No unsafe
+operation was added.
+
+## D-249 Device refusal is transactional, and internal contradictions fail in every build — Status: Accepted (2026-08-30), amends D-37, D-41, D-48, D-115, D-133 and D-206; verification tracked by PW-533
+
+**Context.** Several safe hardware boundaries returned refusal and their
+callers discarded it. Framebuffer reads substituted zero and writes updated
+the RAM shadow even when checked MMIO changed no device byte. The i8042 path
+continued after a failed flush or controller command, so a later read could
+consume stale output; configuration writes were neither admitted nor verified.
+Queue and time-page helpers likewise ignored impossible shared-page bounds.
+
+The same policy split by build mode. Queue reservations, handle commitments,
+page-table indices and TSS alignment supported permanent ownership or unsafe
+pointer preconditions, yet `debug_assert!` removed them from release kernels.
+Some syscall answers, test cleanup, the NVMe timeout repair, the shipped tmpfs
+survey and the synthetic degraded PCI claim also discarded their results.
+Those are not graceful fallbacks: they leave a stale register, false evidence,
+or divergent ownership while execution continues.
+
+**Decision.** A framebuffer lease is checked at construction; any later MMIO
+refusal contradicts that geometry and fails stopped before the shadow changes.
+Framebuffer scroll arithmetic is a checked `libs/pixel` row plan. Each visible
+source row is published through one bounds-checked MMIO slice before the same
+span commits to the RAM shadow; the device boundary performs only volatile
+word writes. This removes the raw copy shortcut and avoids copying padding
+while retaining the pitch as the stride.
+The i8042 controller admits every required command, verifies each required
+configuration byte and types refusal as `TransportRefused` or
+`ConfigurationRefused`. All six operations that begin by draining output stop
+immediately when draining fails. The redundant best-effort set-2 command is
+removed: reset already establishes the protocol default, while arriving bytes
+remain the decoder's arbiter under D-239.
+
+Internal queue, handle, heap, page-table, TSS, framebuffer-shadow, time-page and
+shared-memory bounds use release assertions. Operation-style boolean APIs and
+the time-page publication outcome are `#[must_use]`; predicates remain ordinary
+booleans. A source contract keeps that distinction explicit and another rejects
+known discarded or saturating cleanup results. Every returning syscall uses one
+answer helper which records refusal and then fails stopped. NVMe invokes its
+cleanup primitive directly, tmpfs reports enumeration failure, the keyboard's
+one-shot interrupt handoff is asserted, and the degraded image must prove it
+reserved PCI configuration.
+
+**Alternatives.** Treating MMIO refusal as a blank pixel was rejected because
+it made the shadow lie. Continuing an i8042 query after command refusal was
+rejected because there is no way to attribute the next buffered byte. Silent
+release-only recovery was rejected under D-206: a missing promised slot or an
+unsafe bound contradiction has no coherent state to return to. Making every
+boolean `#[must_use]` was rejected because predicates are routinely and safely
+queried for control flow; only operations with a refusal outcome carry it.
+
+**Evidence and consequences.** Three machine checks inject configuration,
+flush and transport refusal while requiring exact live-state restoration.
+Framebuffer qualification shortens both the validated lease and nonempty
+shadow by one word and names each terminal marker. Host row-plan checks cover
+12,400 small geometry/request combinations plus
+distinct padded-stride and short-shadow cases. Copying padding, advancing by
+visible width, accepting downward copies and omitting the source bound each
+reddened its named host check before restoration. Heap corruption mutations
+name slot, frame and direct-map provenance failures. Every target graph checks,
+the integrated release suite passed 218/218 before the final result-audit
+edits, and all 505 retained mutation patterns match exactly. PW-533 closes on
+the restored debug, release and degraded boots. No ABI changed.
+
+## D-250 Shared kernel mappings require positive runtime evidence — Status: Accepted (2026-08-30), amends D-81 and D-91; verification tracked by PW-534
+
+**Context.** D-81 declined KPTI because this kernel's target hardware reports
+`RDCL_NO`, but process admission never checked the processor actually running
+the image. D-91 correctly kept an absent `IA32_ARCH_CAPABILITIES` distinct from
+an all-clear word, yet that distinction only affected reporting and eIBRS.
+Ring 3 still received page tables containing the kernel on a silent processor,
+which is exactly the boundary KPTI exists to protect.
+
+TCG makes a blanket fail-closed policy insufficient for the development gate:
+the pinned QEMU does not expose `IA32_ARCH_CAPABILITIES`, so it cannot report
+`RDCL_NO`. A generic hypervisor or vendor signature is not a substitute. QEMU
+can use another accelerator, user configuration and later command-line options
+can replace its CPU or machine, and a hostile virtual-machine monitor can spoof
+CPUID. The gate needs a narrow statement about the controlled emulator it
+started, not a claim that CPUID attests the host.
+
+**Decision.** A process may be constructed with shared kernel mappings only
+for one of two opaque reasons: an affirmative `RDCL_NO` in a described
+architectural-capability word, or the exact QEMU TCG base tuple. The latter
+requires the CPUID.1 hypervisor bit, maximum hypervisor leaf `0x40000001` and
+the twelve-byte `TCGTCGTCG` signature. Missing capability evidence, VMware,
+other hypervisors and every near match refuse. Positive `RDCL_NO` remains
+sufficient regardless of environment.
+
+The TCG reason is trusted local development configuration, not attestation and
+not a hardware security claim. Every repository QEMU launch disables ambient
+user configuration, selects `-accel tcg`, and exposes the hypervisor and
+`tcg-cpuid` features in both normal and degraded CPU profiles. Interactive
+arguments may still select displays, debuggers, devices and diagnostics, but
+the runner rejects every CPU, machine, accelerator, global-property or config
+file avenue that can replace the fixed profile, including long aliases and
+machine-embedded accelerator selection. Legacy `-set` remains permitted
+because it addresses an existing named QemuOpts group and cannot replace these
+scalar machine, CPU or accelerator selections.
+
+Boot evaluates the policy once and records a distinct admission state before
+process construction. An accepted reason is logged; refusal leaves diagnostic
+kernel service running but returns `NoSharedKernelIsolation` immediately after
+the guarded-stack check and before page tables or any other process resource
+exist. Automated QEMU success additionally requires exactly one exact
+`qemu_tcg` log record, proving that the guest consumed the policy chosen by the
+runner. It does not prove that an untrusted hypervisor told the truth.
+
+**Alternatives.** Treating silence as `RDCL_NO` was rejected by D-91 and would
+fail open on the processors that most need isolation. Refusing every silent
+machine was rejected for the controlled TCG loop because it would remove all
+ring-3 machine evidence without improving native-hardware safety. Accepting a
+generic QEMU, VMware or hypervisor signature was rejected because those names
+do not constrain the execution engine or CPU model. Inferring TCG solely from
+the host command was rejected because later arguments and ambient config can
+override it and because the guest must demonstrate that it reached the same
+decision. KPTI is not silently waived: PW-706 triggers it before supported
+native hardware without `RDCL_NO` may launch user programs.
+
+**Evidence and consequences.** Pure host tests refuse an undescribed word, a
+described zero word, the historical VMware tuple and every one-bit mutation of
+all four QEMU tuple registers; they also prove that the hypervisor leaf is not
+read without the hypervisor bit. Host runner tests pin every launch site,
+reject all profile-changing aliases and config avenues, allow unrelated debug
+arguments, and require the exact guest marker only for a passing verdict.
+Each guard was broken once and its named host witness went red before
+restoration. The machine check injects the production refusal, requires the
+typed error, no syscall crossing and an unchanged resource ledger, then proves
+the accepted state was restored. Its retained mutation and the current QEMU
+and VMware observations remain PW-534; no boot result is invented here.
+
+## D-251 Hardware observations mint exact, non-derivable authority — Status: Accepted (2026-08-30), amends D-188, D-205 and D-249; advances PW-130 and PW-213
+
+**Context.** Pure `nvme::DmaState` claimed whether hardware was quiesced, and
+the boot module converted a forgeable enum into permission to enable and route
+external interrupts. Neither representation tied the permission to the device
+whose register state supplied it.
+
+**Decision.** Pure NVMe state records only reservation, publication,
+completion and terminal closure. The kernel separately records active,
+quiesced or retained disposition. Only `stop_controller` may produce
+`ControllerStopped<'_>`, after observing `CC.EN = 0` and `CSTS.RDY = 0`; that
+value borrows the exact controller mapping and exact DMA state, and consuming
+it performs the quiescence transition. Failure closes publication and retains
+every reachable run.
+
+I/O APIC preparation similarly produces one opaque
+`ExternalControllersMasked`. Its fields are private, it has no cloning or
+default construction, interrupt enable borrows it, and routing consumes it
+only after rechecking the live interrupt flag. An unproven inventory cannot
+mint it.
+
+**Alternatives and evidence.** A boolean or public enum was rejected because
+the caller could restate the conclusion. Keeping hardware disposition in the
+pure crate was rejected because host logic cannot observe the register. Thirty
+NVMe tests, two doctests, five DMA contracts, routing contracts and a 247-check
+release boot passed. Cross-controller stop evidence, wrong readiness, a second
+mask mint, a default-derived mask, bypassed live-IF checks and every disposition
+inversion were each observed red before restoration.
+
+## D-252 A recoverable fault carries its one permitted destination — Status: Accepted (2026-08-30), amends D-120 and D-186
+
+**Context.** Validating a page fault and then passing a raw resume address to
+the trap-frame writer left a second authority door: any safe in-module caller
+could redirect `iretq`, and a helper could move the fixup construction outside
+the validated adapter while the original checks stayed green.
+
+**Decision.** User-copy and write-protection recovery each use an opaque
+`pub(super)` target with a private field. Its sole private constructor names the
+exact linker fixup; its observer returns only that field. The interrupt adapter
+accepts the target rather than `u64`, first proves the frame is still the live
+innermost frame, and performs the sole instruction-pointer write. Recursive
+source contracts inventory nested modules, associated methods, constructors,
+fixup references and writers.
+
+**Evidence.** Moving the fixup call into a helper, adding a nested raw
+constructor, changing the linker symbol, changing the private-field observer
+and hiding a writer in a nested module each failed its exact contract after the
+collector was repaired. The restored five-contract suite and the real
+user-copy recovery machine check pass.
+
+## D-253 Retained stack addresses are re-derived from permanent identity — Status: Accepted (2026-08-30), amends D-94, D-125 and D-245; advances PW-113 and PW-120
+
+**Context.** A copied stack-top integer could outlive the mapping identity that
+justified it. Independently, a fixed device ledger and first-fit scratch arrays
+put several kilobytes on debug kernel stacks, obscuring whether a fault was an
+ownership defect or ordinary stack exhaustion.
+
+**Decision.** Pinning the task arena is permanent. The task table owns one
+`TaskStackPin`, each slot stores only an arena index, and every TSS or switch
+write obtains a `KernelStackTop<'_>` borrowed from the corresponding retained
+`StackIdentity`. Dropping an earlier token cannot clear the global pin.
+
+`AddressSpace` keeps device extents in a fallible `Vec`. Mapping reserves all
+ledger and geometry state before page-table mutation, so publication after the
+commit cannot allocate or refuse. First-fit arithmetic stays in the host-tested
+pure crate without a fixed projection array.
+
+**Evidence.** Complete first/middle/last stack rewalks, stale-root checks,
+pinned guard/map refusals and device-ledger rollback pass in the 247-check
+release boot. Measured debug frames fell from 2,888 to 312 bytes for
+`AddressSpace::new`; the direct nested MMIO path uses 1,936 bytes. The
+independent first-fit oracle covers 175,232 cases.
+
+## D-254 APIC initialization owns exclusion, not the caller's entry flag — Status: Accepted (2026-08-30), amends D-33, D-35 and D-49; advances PW-126
+
+**Context.** The hardware-free lifecycle model rejected an IF-enabled caller,
+while production deliberately disables interrupts and restores the exact entry
+state. That stricter model contradicted the behavior PW-126 requires and could
+hide a broken restoration path.
+
+**Decision.** Beginning depends only on `Cold` lifecycle state. The privileged
+transaction disables interrupts itself, retains that exclusion through every
+hardware stage and readiness publication, then restores the saved entry flag.
+Losing exclusion during progress poisons the controller; every late refusal
+remains unpublished and terminal.
+
+**Evidence.** The 82 APIC unit tests and doctest pass, including every ordered
+stage, exclusion loss and late refusal. Removing cold-state admission failed
+the exact host test. The release machine passed atomic initialization,
+deferred-delivery and exact-entry-IF checks within its 247 checks.
+
+## D-255 One arena guard owns both handle-slot choice and publication — Status: Accepted (2026-08-30), closes PW-027 and D-141's fired condition
+
+**Context.** PW-027 asked for a deterministic two-claimant schedule only if a
+free slot could be selected under one guard and filled under another.
+
+**Decision.** That window is absent. `Arena::claim(&mut self, Entry)` calls the
+private `find_free`, reads the generation and installs the entry before its
+single `&mut Arena` borrow can end. The only production caller invokes it while
+holding the one global arena guard. A scheduler seam would test lock exclusion
+again rather than a distinct claim protocol.
+
+**Evidence.** The retained source mutation removes the install from
+`Arena::claim`; `filling the arena never repeats a slot` then fails because the
+next claim selects the same generation and index. Restoring the install passes
+the real arena check. Reintroducing a split claim/fill API is therefore a source
+change which must also replace this decision and mutation.
+
+## D-256 Timer cleanup depends on admitted authority, and degraded panics are typed — Status: Accepted (2026-08-31), amends D-90, D-209 and D-249; advances PW-122 and PW-533
+
+**Context.** Returning a typed error from local-timer disarm exposed a valid
+degraded path which the earlier infallible wrapper had hidden. With x2APIC
+absent, no countdown conversion is ever published, but scheduler cleanup still
+asks for an idle timer to be stopped. Treating that unavailable device as a
+live-timer contradiction panicked an otherwise responsive degraded kernel.
+
+The degraded runner also reduced every panic to a generic error and checked
+only an atomic flag before the serial reader joined. A panic printed in the
+settle/kill interval could therefore be logged after the last check and still
+be reported as a clean boot. A missing-marker mutation could not distinguish
+the intended no-APIC cleanup failure from an unrelated terminal defect.
+
+**Decision.** `TimerError::Unavailable` is benign only while the APIC
+countdown conversion remains uncalibrated. Publishing that conversion follows
+successful calibration, disarm and one-shot configuration and is never
+revoked; after publication, losing the timer is terminal. `StillRunning` and
+`InvalidConfiguration` are always terminal. The broader user-clock predicate
+is not used because a self-test may revoke that policy after hardware timer
+authority exists.
+
+The boot serial reader now retains a panic transcript and whether the exact
+no-x2APIC diagnosis preceded it. The degraded observer returns either settled
+evidence or that typed panic only after the reader joins. Mutation grading has
+a distinct degraded-panic outcome: a green degraded baseline is mandatory,
+and only the prior diagnosis plus the exact expected panic is caught. A wrong
+panic, missing diagnosis, timeout or build failure is inconclusive.
+
+**Alternatives and evidence.** Ignoring every unavailable timer was rejected
+because it hides loss of established hardware authority. Keying cleanup to
+user-launch calibration was rejected because that policy is independently
+revocable. Treating any degraded panic or missing marker as sufficient was
+rejected because an unrelated crash proves nothing about this branch. Host
+tests preserve the transcript and reject wrong, unordered and undiagnosed
+panics. Removing only the pre-publication exception produced the exact timer
+panic after the no-x2APIC diagnosis; shortening either extended-state or user
+refusal marker failed on that exact missing marker. All three changes were
+restored, the degraded kernel settled, and the timer break remains in the
+mutation registry. Current debug and ordinary release boots still gate the
+register rows.
+
+## D-257 APIC readiness follows an exact software-enable readback — Status: Accepted (2026-08-31), amends D-33 and D-254; advances PW-126
+
+**Context.** The final local-APIC initialization write sets the spurious vector
+and the SVR bit which software-enables the controller. The transaction then
+published its vector identities and eventually `Ready` without reading that
+write back. `is_enabled` checked the register only after readiness; it could
+make individual operations unavailable but could not retract the successful
+initialization which lets boot continue toward maskable-interrupt admission.
+An ignored write therefore admitted a ready but disabled controller.
+
+**Decision.** The `ConfigureSources` stage reads the SVR immediately after its
+write and requires the complete value to equal the typed `Spurious` encoding.
+Only that exact observation permits vector-identity stores, the identity stage
+and readiness publication. A mismatch returns `NotResponding`; the transaction
+restores its entry interrupt state, publishes no vector identity, terminally
+poisons initialization and refuses retry.
+
+**Alternatives and evidence.** Checking only bit 8 was rejected because an
+altered vector would deliver through the wrong trap entry. Rechecking in the
+kernel caller was rejected because it would leave the safe `apic::init`
+contract false for every other caller. Trusting `wrmsr` was rejected because
+the safety-dependent value is readable and ignored writes are an explicit
+hostile surface. A typed fake retained normal writes and ignored only the SVR
+write; it then proved the readback refused with zero vector identities and a
+poisoned, unavailable controller. Deleting only the comparison failed that
+single machine check at 246/247. The restored release boot passed 247/247, the
+82 APIC host tests and doctest passed, and the exact break is retained in the
+mutation registry.
+
+## D-258 APIC deliverability is one shared typed decision — Status: Accepted (2026-08-31), advances PW-121
+
+**Context.** Self-IPI and one-shot timer planning independently checked that a
+source used an architectural external-interrupt frame and differed from the
+configured spurious vector. Only the command path exhausted the vector domain
+and retained a mutation. The timer's duplicate predicate had sampled tests and
+could be deleted while the recorded PW-121 witness stayed green.
+
+**Decision.** `DeliverableVector` is the sole pure constructor for this
+relationship. It accepts a source only when both it and the configured
+spurious vector use an external-interrupt frame and are distinct. Command and
+timer encoders consume that type, so neither can restate or omit the rule.
+Hardware wrappers return their existing typed configuration errors when the
+authority cannot be constructed, before issuing a register write.
+
+**Alternatives and evidence.** Adding a second timer mutation was rejected
+because it would preserve two sources of truth. Embedding the spurious value
+in each register encoder was rejected for the same reason. Host tests exhaust
+all 65,536 source/spurious pairs and separately walk all 256 timer sources.
+Deleting the shared distinctness guard made the fake self-IPI write and failed
+its exact test; restoration passed 84 unit tests and one doctest. The same
+break remains in the mutation registry, and current machine closure remains in
+PW-121.
+
+## D-259 Retained stack identity is checked at map admission and hardware use — Status: Accepted (2026-08-31), amends D-94, D-125, D-214 and D-253; closes PW-113
+
+**Context.** D-253's complete stack rewalks attacked a disposable
+`MappedStack`. They did not substitute a page after the boot, task or
+double-fault stack had become irrevocable, and map-side pin admission had no
+retained causal mutation. `TaskStackPin::stack_top` borrowed the retained
+identity but derived its address without rewalking it at the hardware-use
+boundary.
+
+**Decision.** Every safe map and unmap reaches the same complete permanent and
+task-pin overlap ledger, covering each guard and stack byte. Each task stack
+pointer rewalks the actual loaded CR3 immediately before use and requires the
+original supervisor, write-back, four-kilobyte physical leaves with `PRESENT`,
+`WRITABLE`, `NO_EXECUTE` and `OWNED`. The returned `KernelStackTop` still
+borrows that exact retained identity.
+
+The actual root matters. A switch may start while a live bound user CR3 is
+loaded; its checked higher half contains the kernel stacks. Requiring the
+published kernel root instead panicked the first real release boot when the
+service worker followed a user task. Rewalking the loaded tables verifies what
+the next hardware access will reach without accepting a stale recorded root.
+
+Boot and double-fault stacks cannot be rechecked before every use: one is
+already executing and hardware selects the other before handler code runs.
+Their permanent ledger therefore makes safe remapping impossible. Self-test
+may transiently replace only a noncurrent lower leaf under interrupt exclusion;
+it observes rejection through the shared identity walk and restores the exact
+entry and translation before returning. The map-admission probe similarly uses
+an adjacent existing physical leaf, then rolls back any deliberately admitted
+guard alias and table before reporting failure.
+
+**Alternatives and evidence.** Checking only the top page was rejected because
+all three retained stacks have lower leaves hardware can reach. Requiring the
+kernel root was rejected by the real user-to-worker switch above. Allocating a
+replacement frame or relying on normal unmap to clean an intentionally broken
+pin check was rejected because either would add ownership noise or leave the
+hostile guard mapped.
+
+Release QEMU passed 251/251 with exact guard, lower and upper lookups and free
+frame counts preserved around lower-leaf substitutions in the running boot
+stack, a noncurrent task stack and the TSS double-fault stack. Skipping the
+first leaf failed all three new checks. Disabling map-side pin admission failed
+the exact protected-map check and its three older consumers, while the restored
+substitution checks and all later task switches still passed, proving cleanup
+left no residual alias. Restoration returned 251/251. The map-admission and
+task hardware-use breaks are retained beside the existing first/middle/last
+rewalk mutations.
+
+## D-260 A panic becomes terminal evidence only at its framed completion record — Status: Accepted (2026-08-31), amends D-209 and D-256; advances PW-029
+
+**Context.** The boot readers published their panic flag as soon as a line
+contained `KERNEL PANIC`. The watcher could then stop QEMU before later lines
+from the same `PanicInfo` reached the reader. Joining the reader preserved only
+bytes already read; it did not prove the exact cause was complete. A terminal
+mutation could therefore become inconclusive or be attributed from a truncated
+transcript depending on scheduling.
+
+**Decision.** Version 1 is exactly two newline-terminated physical records: one
+opening/body record and one completion record. The allocation-free writer
+escapes backslash, carriage return and line feed injectively before either can
+reach the framing transport. It emits the body separator and completion only
+after every prior formatter write succeeds. The UART keeps its bounded polling
+but returns `fmt::Error` for any byte it cannot transmit, including the inserted
+carriage return, so a truncated body cannot be followed by a completion from
+the same call.
+
+The self-test, shipped and degraded readers share one exact newline- and
+severity-framed parser. They remove only the transport LF and its optional CR,
+preserve every other byte, and reject an unterminated or internally CR/LF
+opening, a continuation, a second opening, completion before opening, duplicate
+completion and all post-terminal data. Only the distinct completion transition
+publishes terminal state. Degraded attribution additionally requires the exact
+canonical no-x2APIC warning record composed by the kernel and `wost`; a marker
+substring, wrong severity or altered prefix/suffix is not prior diagnosis.
+
+**Alternatives and evidence.** Moving the old atomic store after the opening
+line was rejected because it still races a partial write. A fixed delay was
+rejected because time is not a framing boundary. Literal and pairwise
+round-trip host oracles distinguish escaped line breaks from literal escape
+text; a one-shot writer refuses every character position and proves no
+completion follows an error. Exact parser fixtures cover whitespace retention,
+malformed framing, every state transition and no-x2APIC near misses, while
+source contracts bind the kernel adapter, UART error propagation and canonical
+diagnosis producers. Manual breaks exposed and repaired two initially
+self-derived witnesses: an omitted completion and a post-terminal refusal
+credited to the continuation guard. The retained mutations cover each distinct
+writer, framing, state, diagnosis, attribution and UART branch. The real
+timer-panic and restored degraded boots remain PW-029's machine close.
+
+## D-261 Entry-slot identity owns translation eviction — Status: Accepted (2026-08-31), amends D-88, D-94 and D-214; closes PW-131
+
+**Context.** Synchronous invalidation removed the lifetime hazard from
+`Unmapped`, but deciding from page-table-root identity was still wrong in both
+directions. Distinct roots share higher-half tables, so a live translation can
+reach the same entry even when the roots differ. Distinct lower-half tables can
+instead contain different entries for the same virtual address, so invalidating
+solely because the address matches evicts an unrelated current translation.
+Duplicated raw entry reads and writes obscured which identity the decision was
+actually comparing.
+
+The unsafe inventory audit also found three assembly contracts which claimed
+`nomem` despite architectural memory effects: `pushfq`/`pop`, `ltr` and segment
+selector loads. Several raw-pointer additions needed no unsafe operation at
+all. Those claims made compiler constraints, not just prose, part of this
+correction.
+
+**Decision.** A private, non-duplicable `EntrySlot` is the one volatile access
+boundary for a validated direct-mapped page-table entry. Safe pointer formation
+and table-index bounds establish its address; its private read and write
+primitives each contain exactly one volatile unsafe operation.
+
+Every clear which can remove a cached mapping disables interrupts, walks the
+actual current CR3 to the cleared mapping's level, clears the target slot, and
+executes `invlpg` iff the walk reached that identical slot. Mapping undo,
+ordinary unmap and device unmap share this rule. Rolling back an empty child
+table writes its proved parent link directly: every leaf written through that
+link was already cleared and invalidated, or no present leaf ever existed, so
+the link carries no TLB debt. Inactive lower mappings rely on the existing
+no-PCID, non-global CR3 reload contract; callers still cannot admit `GLOBAL`.
+
+The corrected assembly omits false `nomem` promises, safe pointer formation no
+longer opens unsafe blocks, and the D-261 inventory was 356 unsafe lines, 146
+blocks and 37 declarations under the unchanged 380-line budget. The later
+explicit-dispatch cleanup changed no unsafe operation or declaration; rustfmt
+expanded one existing heap write by two lines, making the current reviewed
+inventory 358/146/37.
+
+**Alternatives and evidence.** Root equality was rejected because it misses
+shared higher-half slots. Unconditional invalidation was rejected because the
+same address in an inactive lower root may denote a different leaf. Deferring
+the decision to `Unmapped` was rejected because a safe caller may forget that
+frame-return token.
+
+Release QEMU passed 252/252. It warmed two user roots whose same lower virtual
+address reached distinct physical leaves, removed the inactive victim, and
+observed the current translation, byte, leaf and self-test invalidation tally
+unchanged; the existing active replacement and shared-higher-half checks still
+proved every required eviction. Substituting root equality failed only the
+shared-slot witness, and forcing invalidation failed only the distinct-slot
+witness. Both breaks remain retained beside three exact false-`nomem`
+reintroductions caught by the unsafe fingerprint gate. The budget and one
+reviewed fingerprint were each made wrong by hand, failed their exact host
+checks, and were restored.
+
+## D-262 Artifact limits are caller policy, not parser recovery — Status: Accepted (2026-08-31), amends D-220 and D-244; advances PW-012, PW-014, PW-018 and PW-028
+
+**Context.** D-244 bound exceptional records to executions, but several byte
+doors still trusted allocation to fail safely. Model output was classified and
+then discarded, deterministic images were hashed through generic paths, and
+records or transcripts could reach whole-file allocation before their semantic
+limit. A parser refusing an oversized value after allocation is not a resource
+bound. Marker substrings also let a warning or longer forged record donate a
+success claim.
+
+**Decision.** Each artifact class has one explicit maximum and exact-size bit,
+shared by qualification and offline replay. Metadata is checked before reading;
+hashes stream through a bounded reader; reads and copies take at most the limit
+plus one and remeasure afterward. Deterministic images require their exact
+extent. Model evidence retains separately digested stdout and stderr for every
+registered run, in registered order, and reconstructs the exact classified
+bytes. Machine evidence accepts required output only as one complete canonical
+severity record; dynamic values use their own exact grammar.
+
+**Alternatives and current evidence.** A single generous bundle-wide cap was
+rejected because it does not express which caller may consume which bytes.
+Trusting a digest was rejected because hashing attacker-sized input can itself
+exhaust the verifier. Current host fixtures cover sparse preflight, bounded
+growth, size-policy mapping, transcript identity and canonical log near misses.
+Retained mutations cover the metadata, post-read growth, identity, extent,
+count and policy-map doors now implemented. PW-002, PW-009 and PW-028 still own
+the real external executions and closing bundle; no exceptional result is
+claimed here.
+
+**Current disposition (2026-08-31).** PW-012, PW-014 and PW-018 are `DONE`:
+their implementation and exact host/mutation witnesses are complete. PW-028
+remains `REQUIRED` solely for its fresh external advisory execution and
+replayable closing bundle.
+
+## D-263 Path authority is retained until publication or destruction commits — Status: Accepted (2026-08-31), amends D-244 and D-245; advances PW-015, PW-016, PW-017, PW-020, PW-021, PW-023 and PW-024
+
+**Context.** Host tools repeatedly validated one pathname and then truncated,
+replaced or recursively removed another object reached through the same text.
+Symlinks, hardlinks and redirected ancestors turned an ordinary refusal into an
+outside write; unlink-before-rename also destroyed the last complete authority
+before the replacement was known good.
+
+**Decision.** A recursive deletion or authoritative publication target must be
+the exact allowlisted real child of its canonical repository root, with real
+non-link ancestors checked immediately before the operation. New authoritative
+bytes are built through `create_new` in that parent, synchronized and
+revalidated before replacement. When a complete object is being replaced,
+publication keeps it as rollback authority until the new name and bytes
+validate. Recursive cleanup is narrower: only the exact VMware root may enter
+`remove_dir_all`, and a redirected final component or ancestor is a refusal.
+
+Portable pathname preflight does not defeat a concurrent replacement by a
+local actor with the same filesystem authority. Directory-handle and no-follow
+operations would be needed for that stronger claim; this repository records the
+race instead of pretending canonicalization removes it.
+
+**Current evidence.** Host fixtures substitute links at SPDX, QEMU storage,
+boot-image, VMware-generation, API-workspace and mutation-workspace boundaries,
+and preserve outside sentinels. Rollback fixtures preserve prior complete
+bytes. Exact-root, ancestor, construction-failure and rollback mutations
+protect every named publication door; current integrated boots and generation
+runs remain in their register rows.
+
+**Current disposition (2026-08-31).** PW-015, PW-016, PW-017, PW-020, PW-021,
+PW-023 and PW-024 are `DONE`. Their path, publication and rollback mechanisms
+have exact host and mutation witnesses; integrated execution or generation
+evidence remains with the separate register rows that own it.
+
+## D-264 A child is complete only after bounded exit and capture — Status: Accepted (2026-08-31), amends D-134 and D-244; advances PW-019 and PW-022
+
+**Context.** A caller deadline did not bound a later blocking `wait`, and pipe
+capture could wait forever on an inherited writer. Mutation grading could then
+call a timeout caught even when termination failed, or leak the first capture
+file when reserving the second stream failed.
+
+**Decision.** Qualified host processes own one direct child. They poll through
+the caller deadline, attempt termination on failure, and poll reap through one
+named additive deadline; no control interface exposes a blocking wait. Stdout
+and stderr are exclusive regular files under one rollback reservation and share
+one caller-selected byte cap. Collection reads the retained handles only after
+an exit was observed. Kill refusal, a still-live child, capture overflow or
+partial reservation is an error or inconclusive mutation outcome, never a red
+proof.
+
+**Alternatives and current evidence.** Extending the original timeout was
+rejected because it leaves an unbounded operation after the extension. Pipes
+were rejected because descendants can retain their ends. Parked, noisy,
+delayed-exit, exit/kill-race and second-stream fixtures exercise each state, and
+the exact mutations name those host tests. This owns only the direct child;
+delegated process-tree containment remains PW-013's trigger.
+
+**Current disposition (2026-08-31).** PW-019 and PW-022 are `DONE`: bounded
+exit, capture, cleanup and partial-reservation rollback have exact host and
+mutation witnesses.
+
+## D-265 One PCI function authority owns every uncertain transition — Status: Accepted (2026-08-31), amends D-187, D-197 and D-251; advances PW-118, PW-125 and PW-129
+
+**Context.** Address equality was not function authority. A command snapshot
+could be replayed through another function or another registry with the same
+generation, nested command transitions could overlap, and a failed BAR restore
+could retain uncertain hardware without returning the one owner allowed to
+retry it.
+
+**Decision.** The exclusive function claim mints one non-duplicable authority
+bound to its issuing registry, canonical function address and generation.
+Memory decode, bus mastering, command commit/restore and BAR probe/retry borrow
+or consume registry-bound subleases from that authority. The verified header,
+not a caller count, fixes the BAR slots. A possibly effective write is settled
+only after exact current-state observation; uncertain restoration returns a
+linear retry owner and continues to exclude every competing transition.
+
+**Alternatives and current evidence.** Raw `Address` write APIs and caller BAR
+counts were rejected because neither proves ownership or header shape. Dropping
+uncertain state as a leak was rejected because it loses both recovery and
+exclusion. Fake configuration tests cover cross-function, cross-registry,
+nested, changed-word, bridge-header and one-shot restore cases. Compiler probes
+reject raw calls, forgery, `Copy` and `Clone`; retained host mutations attack
+each identity component. Native observations remain PW-201 and the current
+boot rows. This authority decision does not settle the separately audited NVMe
+lifecycle sequencing or physical BAR-admission constraints.
+
+## D-266 Unsafe instruction doors expose only their checked caller scope — Status: Accepted (2026-08-31), amends D-41 and D-123; advances PW-119 and PW-133
+
+**Context.** A safe raw-address `invlpg` door admitted a faulting noncanonical
+operand, while CR3, XSAVE and FS-base instruction helpers were visible farther
+than any compiled caller. Public unsafe is not safer than private unsafe: it
+widens the set of contracts safe wrappers must defend and invites a second
+unchecked route.
+
+**Decision.** Safe instruction adapters accept the narrowest typed operand that
+proves the architectural precondition. The raw instruction remains unsafe and
+visible only to the sibling architecture module which implements that adapter.
+A helper which already consumes a checked type, such as the FS-base writer,
+remains safe and private to its sole caller rather than becoming another raw
+door. Recursive syntax inventory rejects every unrestricted public unsafe
+function anywhere below `wost/src`.
+
+**Alternatives and current evidence.** Documentation on a public integer was
+rejected because safe callers cannot be required to uphold it. `pub(crate)` was
+rejected where no crate-wide caller exists. Canonical cutover tests, compiler
+graphs and AST contracts cover the four narrowed doors. Separate visibility and
+safety-shape mutations cover each one, and an unrelated public `wrmsr` mutation
+proves the inventory is global. The current machine and API gates remain in the
+register. It does not claim that every safe API is narrow; later usercopy, PCI
+and vector-door audits are separate.
+
+## D-267 APIC completion and timer disarm are linear observations — Status: Accepted (2026-08-31), amends D-251 and D-256; advances PW-122 and PW-123
+
+**Context.** A non-`Copy` token can still be `Clone`, and a type alone does not
+make its constructor unique. One APIC delivery could therefore mint competing
+EOI owners, while timer reprogramming could consume a stale claim that the
+countdown had stopped.
+
+**Decision.** `EoiToken` and `DisarmedTimer` are neither `Copy` nor `Clone`.
+EOI claim first proves the exact live trap and ISR dismissal, atomically latches
+that opportunity, and releases the latch only when the token completes or is
+dropped. Timer disarm returns its proof only after observing zero current count;
+one-shot programming consumes it and rechecks the count immediately before the
+LVT write. A changed observation performs no write and mints no replacement
+authority.
+
+**Alternatives and current evidence.** Treating non-`Copy` as linear was
+rejected because a manual `Clone` remains possible. Rechecking only at the
+first observation was rejected because hardware can progress afterward. Pure
+register planners cover running and refused timers and exact ISR ownership;
+compiler probes reject both duplication traits, with independent Clone
+mutations. The latch, drop and live-count breaks remain registered. Current
+machine transport is still owned by the rows. External-delivery vector
+assignment is a separate admission problem.
+
+## D-268 Paging activation publishes `Ready` last — Status: Accepted (2026-08-31), amends D-86 and D-261; advances PW-127
+
+**Context.** Activation stored a ready flag before CR3 and the active-root
+identity became authoritative. A safe observer could authenticate a mapping
+through half-published state, and reclaimed-space refusal read the root before
+proving the space still owned one.
+
+**Decision.** Activation is one `Cold -> Initializing -> Ready` transaction.
+It refuses a reclaimed space before reading its root, acquires and retains
+interrupt exclusion, writes CR3, publishes the active root, and publishes
+`Ready` last with Release ordering. Every observer requires `Ready` before using
+the root. An uncommitted software preflight aborts back to `Cold` while it still
+owns interrupt exclusion; after CR3 is written, no fallible step remains before
+publication.
+
+**Alternatives and current evidence.** Publishing the flag early and relying on
+one CPU was rejected because interrupt handlers are observers on that CPU.
+Reading the root before reclaimed-state validation was rejected because the
+ownership precondition must dominate even a harmless read. Source contracts
+pin CR3/root/readiness order, while registered early-ready, root-order,
+interrupt-exclusion and reclaimed-order mutations name their exact witnesses.
+The current restored machine run remains PW-127's close.
+
+## D-269 Shared memory chooses one access layout once — Status: Accepted (2026-08-31), amends D-221; advances PW-128
+
+**Context.** Safe volatile byte methods and atomic publication-word methods
+could cover the same shared allocation. Ring 3 could then access a payload byte
+while the kernel treated an overlapping word as atomic, which violates the
+atomic object's exclusive layout even though every individual offset was in
+bounds.
+
+**Decision.** An unpartitioned `Shared` allocation is consumed exactly once
+into either `SharedBytes` or one checked `SharedRing<WORDS>`. None of those
+authorities is `Copy` or `Clone`. The ring constructor checks alignment,
+wrapping and every publication-word/payload intersection before exposing either
+access API. Byte-only pages cannot mint atomic words, and ring payload methods
+cannot address a publication word.
+
+**Alternatives and current evidence.** Checking overlap independently on each
+access was rejected because it preserves two safe doors and makes their future
+agreement the invariant. Runtime borrowing was rejected because ring 3 is not
+a Rust borrower. Host exhaustion covers touching, overlapping, misaligned and
+wrapping ranges. Compiler probes reject recovery or duplication of all three
+authority shapes, and separate Clone mutations plus the retained overlap
+mutation fail those proofs. The current real ring boot remains in the register.
+
+## D-270 User admission asks one live extended-state predicate — Status: Accepted (2026-08-31), amends D-82, D-115, D-228 and D-245; advances PW-132
+
+**Context.** A remembered nonzero save form did not prove that live CR4 and
+XCR0 still matched the area which had been sized. Boot could also enable a
+strict subset of the fixed x87/SSE/AVX policy, and a fresh task restored zero
+bytes under a contract which named only save-produced images.
+
+**Decision.** Initialization accepts only the complete exact fixed component
+mask. Standard-form size uses each component's reported offset and checked
+extent; compacted size retains its checked layout. A fully zeroed, aligned area
+with zero `XSTATE_BV`, `XCOMP_BV` and reserved header bytes is an explicit
+architectural initial image. One live predicate requires a configured form,
+live `CR4.OSXSAVE` and exact live XCR0; both early user construction and the
+final crossing ask that same predicate.
+
+**Alternatives and current evidence.** Trusting the remembered form at the
+early door was rejected because it disagrees with the final hardware boundary.
+Saving once merely to initialize a slot was rejected because architectural
+zeros already encode initial state. Host tests cover partial masks and malformed
+standard offsets/extents. Source and compiler contracts bind both user doors,
+and retained mutations cover component policy, slot clearing and substitution
+of the remembered predicate. Fresh-slot and current hardware observations
+remain PW-132 and PW-305.
+
+## D-271 Raw timebase parts must survive their published encoding — Status: Accepted (2026-08-31), amends D-166; advances PW-309
+
+**Context.** `Timebase::from_parts` was public but admitted shifts which cannot
+be evaluated and multipliers wider than the one-word time-page representation.
+Debug could panic on the shift while release silently decoded different fields.
+
+**Decision.** Raw construction is checked and returns `None` unless the
+multiplier fits its 32-bit published field and the shift is at most 63. Zero
+remains the valid uncalibrated conversion. Every admitted pair must round-trip
+exactly through `to_bits` and `from_bits`; decoding arbitrary bits remains total
+by masking into those same bounds.
+
+**Alternatives and current evidence.** Making `from_parts` private was rejected
+because host and ABI code legitimately reconstruct checked published fields.
+Masking at construction was rejected because it would accept one value and
+silently store another. Boundary and complete-shift round-trip host tests cover
+the decision, and deleting either bound fails its distinct retained mutation.
+Debug, release and current page consumers remain the register's final proof.
+
+## D-272 The Wizzy handoff has one line ending and one HTTPS authority grammar — Status: Accepted (2026-08-31), amends D-226; advances PW-520
+
+**Context.** D-226 required a byte-stable envelope but its parser accepted both
+terminal-line forms and treated the `https://` prefix as sufficient provenance.
+A hostless or malformed authority is not a reachable repository identity, and
+two terminal forms are not one canonical encoding.
+
+**Decision.** A v1 handoff contains no carriage return and ends in exactly one
+LF. Repository provenance uses `https://` followed by a nonempty authority: a
+DNS-style name with nonempty alphanumeric-bounded labels, IPv4, or bracketed
+IPv6, with an optional nonzero decimal `u16` port without leading zeroes. User
+information, empty labels, invalid brackets, malformed numeric hosts and stray
+authority characters are refused. Path, query and fragment bytes have no power
+to repair an invalid authority.
+
+**Alternatives and current evidence.** Accepting a generic URI string was
+rejected because the envelope promises reachable HTTPS provenance, not merely
+syntax containing a scheme. Normalizing alternate bytes was rejected because
+the byte identity is the original envelope. Exact negative fixtures and
+supported-host tables cover the grammar; terminal-LF, hostless-authority and
+over-refusal mutations are registered against separate tests. This remains
+specification-only: PW-601 still stops every consumer and no Wizzy artifact is
+claimed.
+
+## D-273 An empty repeated MMIO access touches nothing — Status: Accepted (2026-08-31), amends D-105 and D-136; advances PW-522
+
+**Context.** `AccessRange` claimed zero width was impossible while its own
+constructor admitted a zero count, then suppressed the lint which exposed that
+contradiction. The first exhaustive oracle could also accept arbitrary false
+refusals, so it did not decide what an empty request meant.
+
+**Decision.** A repeated access still requires a valid power-of-two element
+width. With count zero it is an empty no-op at any offset at or before the
+region end; alignment is irrelevant because no address is touched. An offset
+past the region remains out of bounds. `AccessRange` exposes the exact checked
+offset iterator rather than a misleading byte-length API, and the empty
+iterator yields no pointer candidate.
+
+**Alternatives and current evidence.** Refusing every empty span was rejected
+because callers can naturally produce zero work and no device precondition is
+needed for an access which does not occur. Admitting an offset outside the
+region was rejected because it would make the range cease to describe that
+region even though iteration is empty. An independent bounded oracle compares
+every acceptance and exact error class across widths, counts, offsets and
+region lengths. On 2026-08-31 the exhaustive width/alignment/range domain and
+current MMIO consumers passed; empty-span, repeated-offset and refusal-class
+mutations each failed their exact host witness before restoration, closing
+PW-522.
+
+## D-274 A fresh advisory result binds one immutable database and one lock graph — Status: Accepted (2026-08-31), amends D-220, D-244 and D-262; advances PW-028
+
+**Context.** D-220 required a fresh RustSec review but did not bind freshness
+to one immutable database checkout. A default audit may fetch while it runs,
+and human output does not carry the complete result schema. An old pass can
+also outlive a changed lockfile, policy, tool, source revision or advisory
+database unless starting a new attempt invalidates it.
+
+**Decision.** Advisory qualification remains exceptional and outside ordinary
+CI. It first resolves and digests `cargo-audit-audit 0.22.2`, invalidates the
+old pass, creates an empty private database location, and performs one bounded
+population run from the exact RustSec URL. The resulting Git revision, tree,
+origin and clean status become immutable authority for a second bounded
+`--no-fetch` audit of the exact repository `Cargo.lock` under the committed
+empty-ignore policy and warning denial.
+
+Only canonical JSON with a nonempty database and dependency graph, that exact
+database revision, empty target filters, null severity, no ignored advisories,
+the expected informational-warning policy, zero vulnerabilities and zero
+dependency warnings is a pass. The record binds both commands, the source,
+lockfile, policy, tool, database identity, UTC observation and bounded
+stdout/stderr transcript. Evidence schema v5 carries those exact artifacts and
+reconstructs the semantic result offline.
+
+**Alternatives and current evidence.** Fetching during the final audit was
+rejected because the result would not name one stable database. A digest without
+semantic JSON validation, human summaries, ignored advisories and networked CI
+were rejected because each weakens or obscures the claim. Host fixtures and
+retained mutations prove the mechanism's source, path, bound, schema and
+replay contracts only. PW-028 remains required until an unmodified clean
+closing commit runs the real tool against a fresh database and the resulting
+bundle verifies offline; no fresh advisory result is claimed here.
+
+## D-275 Public reachability is bound to an exact compiler origin — Status: Accepted (2026-09-01), amends D-213; advances PW-519, PW-523 and PW-532
+
+**Context.** D-213's deprecation-marker direction was sound, but its claim that
+one host graph compiled all targets was not an exact root model. Target programs
+and standard test harnesses have different roots, a custom harness can generate
+its own `main`, and a dependency compiling included first-party text can report
+a first-party-looking source span. Macros, conditional attributes, trait method
+dispatch and implicit `Drop` or `GlobalAlloc` calls also contain resolved
+execution which syntax alone can over-credit. Repeated compilation additionally
+inherited Cargo configuration, registry source, environment tools and build
+scripts which the copied source snapshot did not bind.
+
+**Decision.** Cargo metadata v1 defines each registered pass's exact package
+identities, dependency-kind closure, targets and target roots. Every registered
+pass, metadata-declared example and standard harness target receives a distinct
+compiler graph and build directory. Custom-harness syntax, active procedural
+macros, reserved `std`/`core`/`alloc` rebinding and source shapes whose runtime
+meaning is not classified fail closed. Declarative macro bodies remain opaque
+except for the constrained standard forms and exact `wost::entry!` contract the
+audit models.
+
+Only a structured Cargo JSON warning with code `deprecated`, one primary span
+and the exact expected package ID, target name, target kind and canonical root
+source can contribute an edge. Compiler character columns map into half-open
+source ranges. A classified primary retains that lexical authority when rustc
+also reports deeper expansion metadata. An unclassified primary never supplies
+caller evidence; it may only be discarded when one terminal immediate
+expansion maps to a classified opaque callsite under the exact Cargo origin.
+Missing, unclassified, non-opaque or nested external fallback refuses.
+
+The one credited cross-target shape is the exact audited `wost::entry!`
+contract. Catalog-backed validation issues authority for exactly four
+first-party identities and derives each identity's exact use site from the
+token-pinned expansion; raw target discovery issues no such authority. The
+primary must match that identity and site. Rustc must then report one terminal
+immediate expansion named exactly `::wost::entry!` at the sole kernel
+invocation, and the full Cargo origin must match that kernel target. Only then
+does the definition-site use receive the invocation as its caller. A normal
+same-`wost` definition-site diagnostic remains opaque and cannot claim that
+edge. No other dependency macro receives consumer-origin authority.
+
+A live trait dispatch must select exactly one audited implementation; generic
+or ambiguous evidence is a refusal. `GlobalAlloc` activation requires the exact
+nominal global-allocator type. Implicit `Drop` activation is limited to reviewed
+nominal types reached through a live exact value construction or a validated
+reviewed owned-`Self` producer. That is an honest nominal reachability boundary,
+not a claim that runtime execution cannot forget or wrap the value in
+`ManuallyDrop`.
+
+Original and copied source, private Cargo configuration and materialized
+registry source are real-file snapshots checked throughout the compiler rounds
+and before a verdict. Locked registry packages are materialized from cached
+`.crate` archives whose SHA-256 matches `Cargo.lock`; the exact package/file set
+and Cargo-generated file checksums are then revalidated. Every active external
+package must resolve to that exact materialized crates.io root; path and Git
+packages are refused. The diagnostic marker is rejected in workspace Rust,
+authenticated registry files, generated build inputs, Cargo/rustc runtime
+files and the selected host and kernel sysroot inputs. Those compiler inputs
+are SHA-256 bound: target libraries after each round, rustc and `rust-lld`
+after each graph, and the complete runtime and target sets after metadata,
+pristine compilation and all observations before the verdict. Child Cargo runs
+start at the filesystem root with a blank private `CARGO_HOME`, explicit
+offline source replacement, stripped ambient Cargo/Rust semantics, exact
+rustflags and a toolchain-only `PATH`. Only the exact kernel linker build script
+and the checksum-bound reviewed dependency-build-script set are admitted, and
+their Cargo output and `OUT_DIR` authority must remain identical and
+marker-free between pristine and instrumented rounds.
+
+**Alternatives and current evidence.** Rendered short diagnostics were rejected
+because they carry no trustworthy package/target origin. Merging targets was
+rejected because it confuses target `main` with harness roots. Trusting a
+mutable directory source was rejected because source and its adjacent checksum
+map can be changed together; the lock-matched archive is the authority.
+Pretending stable diagnostics prove destructor execution was rejected in favor
+of the explicit construction boundary.
+
+The focused API suite passed 107/107 in both debug and release. Weakening exact dispatch selection,
+removing reviewed owned-`Self` producer activation, bypassing diagnostic-origin
+binding and admitting a rebound `core` root respectively made
+`ambiguous_variable_receiver_dispatch_fails_closed`,
+`a_reviewed_owned_self_producer_activates_drop_without_type_use_shortcuts`,
+`cargo_diagnostic_origins_bind_markers_to_the_exact_package_and_target` and
+`a_rebound_core_root_cannot_forge_the_approved_global_asm_macro` red before
+restoration. The real entry fixture additionally reproduced all four
+consumer-origin definition shapes; granting raw discovery authority, omitting
+`BootInfo`, or weakening the identity/site, declaration, terminal expansion,
+macro identity, callsite, target or ordinary same-`wost` opacity made its exact
+witness red before restoration. Removing the registry, generated-input,
+compiler-runtime, target-metadata, digest or active-package guards likewise
+made their focused witnesses red before restoration. The remaining trusted
+base is the Cargo command path embedded in `xtask`, stable rustc diagnostic
+behavior, the snapshot-bound compiler bytes, checksum-matched archives and
+reviewed build scripts. An opaque compiler input which synthesizes a marker not
+present in its exact bytes, or a same-authority mutation restored byte-for-byte
+between the named checkpoints, remains outside the claim; no build-script
+sandbox is claimed. The real API audit, complete CI,
+PW-519/PW-523 reintroduction runs and PW-532 machine matrix are not claimed by
+this focused evidence.
+
+## D-276 An I/O APIC destination changes only behind a proven mask — Status: Accepted (2026-09-04), amends D-205 and D-251; closes PW-130
+
+**Context.** Controller takeover wrote the low redirection word's mask and then
+cleared its destination before reading either word back. An ignored mask write
+therefore let the kernel alter a still-live firmware route, while the returned
+probe failure exposed no evidence that its register state had been changed.
+
+**Decision.** Masking is a two-phase transaction. It writes the exact inert low
+word, reads the complete entry back, and refuses without touching the
+destination unless that low word is exact. Only then may it clear the high word
+and verify the complete inert entry. A takeover refusal returns the original
+register authority and cannot mint masked-controller authority; routing keeps
+the same ordered mask, destination and final-entry proofs.
+
+**Alternatives and evidence.** Treating an accepted MMIO write as hardware
+state was rejected because indexed register transport cannot supply readback.
+Clearing the destination first was rejected because it changes a live route.
+The indexed fake records any high-word write while the low word is live and
+inspects the registers returned by an ignored takeover mask. Reintroducing the
+old ordering made only `a refused keyboard route restores configuration,
+masking and mappings` fail, 251/252; restoring the transaction passed release
+QEMU 252/252. Mutation 1219 retains that exact defect and witness.
+
+## D-277 Interrupt sources share one typed global vector assignment — Status: Accepted (2026-09-04), amends D-33, D-49, D-81, D-96, D-123, D-205 and D-258; advances PW-535
+
+**Context.** I/O-APIC routing still accepted a raw byte, local-APIC policy
+admitted vectors 16 through 31, and the keyboard, syscall and four local
+sources were constants checked only in separate subsets. A duplicate or
+reserved value could therefore select an exception-frame stub or dispatch one
+source as another through safe code.
+
+**Decision.** `x86-apic` owns the sole assignable-vector type. Its constructor
+excludes the CPU's 0 through 31 vectors and the remapped 8259 range 0x20 through
+0x2f. A const-generic assignment validates every member and pair before
+producing typed values. `kernel::arch::vector` contains the sole production
+assignment for the keyboard, syscall, spurious, error, self-interrupt and timer
+sources. IDT, local-APIC and I/O-APIC programming consume those typed values;
+raw bytes remain only hardware observations decoded at the boundary.
+
+**Alternatives and proof obligation.** Retaining separate APIC and IDT guards
+was rejected because it leaves uniqueness between subsystems unstated. A
+kernel-private newtype was rejected because privileged framework doors could
+still accept raw values from another caller. The 79 `x86-apic` tests exhaust all
+256 inputs and 65,536 pairs; compiler/source contracts reject raw programming
+doors and a second production assignment. Architectural-boundary, remapped-PIC
+and duplicate breaks failed only their exact host witnesses before restoration.
+Release QEMU then passed 253/253, including the isolated typed route and the
+restored keyboard/APIC checks. The raw-door and fake-route breaks are retained
+in the 1,235-entry mutation registry but still need exact red executions, so
+PW-535 remains open rather than treating registration as qualification.
+
+## D-278 PCI decode and DMA follow one function-bound BAR authority — Status: Accepted (2026-09-04), amends D-187, D-197, D-251 and D-265; advances PW-536 and PW-537
+
+**Context.** The storage path enabled memory decoding before page-rounded RAM
+exclusion and mapped a raw physical range against the page-table format's
+static 52-bit ceiling. Bus mastering then required only the PCI function claim
+and a copied NVMe observation. Safe callers could therefore map reserved
+physical-address bits, enable a changed BAR, or pair one disabled controller
+with another function.
+
+**Decision.** Physical MMIO admission first decodes the running CPU's
+`MAXPHYADDR`, validates the complete page-rounded extent against that width and
+the immutable boot memory map, and produces a linear range token. A live PCI
+function binds that token to its opaque registry generation, exact BAR slot and
+decoded BAR value. The PCI mapping door consumes this authority. Memory decode
+is enabled only after the mapped token returns to the same function and a fresh
+configuration read proves that BAR identity unchanged.
+
+The resulting register region retains the function and BAR binding. The only
+bus-master transition consumes a fresh, non-constructible observation borrowed
+from that exact region after reading `CC.EN = 0` and `CSTS.RDY = 0`; the borrow
+prevents safe register access between observation and transition. Unqualified
+hardware adapters that enable memory decode or bus mastering are removed. Pure
+configuration transactions remain host-testable, but holding a function claim
+alone is no longer enough to reach either platform write.
+
+BAR probing first clears and reads back I/O decode, memory decode and inherited
+bus mastering before writing any BAR. Its staged result retains the original
+command and the function-bound restoration sublease; memory decode borrows that
+same state while keeping bus mastering clear, and only the later quiescence
+authority may add it. Unsupported memory BAR type encodings are rejected before
+the first probe write, and the live identity comparison includes those type
+bits rather than only the address.
+
+NVMe preparation also carries its mapped owner through every fallible register
+access. Before disabled state is proven a refusal returns a quarantine owner;
+afterward it either retires the BAR exactly or returns the still-mapped owner.
+The selector retains any uncertain mapping with its PCI lease instead of
+reporting an ordinary clean retirement or dropping the sole cleanup route.
+
+**Alternatives and proof obligation.** Passing an address, a boolean, or a
+copyable controller-state record was rejected because each lets the caller
+restate the conclusion. Checking only the unrounded BAR was rejected because a
+page mapping reaches bytes outside it. Treating the PTE encoding's maximum as
+the processor's maximum was rejected because reserved physical bits can fault
+only when first accessed. PW-536 and PW-537 close only after width and range
+properties, hostile configuration/MMIO traces, compile-time door inventory,
+durable identity/ordering/quiescence mutations and restored machine boots all
+pass. No native BAR observation is claimed by this decision.
+
+The implementation now carries one chain from `PhysicalAddressWidth` through a
+page-rounded `AdmittedDeviceRange`, exact `BarAuthority`, inaccessible mapping,
+fresh BAR identity readback and `MappedBar`, then through typed preparation,
+fresh `CC`/`CSTS` classification and a borrowed `NvmeBusMasterAuthority` to the
+sole bus-master write. Focused `pci-config` and `nvme` suites pass 72 plus two
+doctests and 33 plus two doctests respectively; the memory-map, paging and
+CPUID suites and the compile/source door contracts also pass. Inherited-BME,
+staged-owner, clean-rollback, BAR-type, identity, preparation-quarantine and
+retirement-owner breaks reddened their focused witnesses before restoration,
+and retained equivalents are registered. Current release-machine mutation
+runs, PW-206's causal refusal, the live `MAXPHYADDR` marker break, VMware and
+the complete mutation sweep remain open, so PW-536 and PW-537 remain `READY`.
+
+## D-279 User-copy recovery has one fixed test driver, not a general unchecked copy — Status: Accepted (2026-09-04), amends D-120 and D-252; closes PW-538
+
+**Context.** D-120 concluded that recovering a fault made any lower-half
+unwalked read safe. That range check proves neither user permission nor
+confidentiality: a safe address space can contain a supervisor-only leaf below
+`USER_END`, and ring 0 can read it. The general door had no production caller;
+only the recovery machine check used it.
+
+**Decision.** Production copies continue to walk every page and require its
+effective `USER` permission before the assembly window opens. The general
+address-and-slice unwalked API is removed. A self-test-only, zero-argument
+driver instead verifies one module-private address is unmapped, copies from
+that fixed hole into module-private sentinel scratch, and reports only whether
+the complete remainder was returned with the scratch unchanged. Neither the
+address, bytes nor partial result crosses its API.
+
+D-252's exact opaque recovery target and D-126's separate self-test fault-window
+observer remain unchanged. The former confines the trap-frame rewrite; the
+latter proves a ring-3 instruction in that interval retires rather than taking
+the ring-0 recovery path. Recoverability now justifies the walked copy's
+map-to-use race, not arbitrary access to the lower half.
+
+**Alternatives and evidence.** Making the old door unsafe would retain
+an unnecessary caller obligation, while driving the test through the walked
+copy would refuse before reaching the recovery mechanism. Shipped compiler
+probes rejected both the removed door and the test driver; restoring either
+symbol made that exact contract fail. Substituting a completed-copy remainder,
+corrupting the private scratch and admitting a supervisor-only leaf each failed
+only its named machine check. The restored release boot passed 253/253, and the
+fixed-hole trap-arm mutation remains the terminal-panic witness from D-120.
+Concurrent revocation remains the future PW-702 trigger.
+
+## D-280 One address space mints one binding for one process lifetime — Status: Accepted (2026-09-05), amends D-117 and D-123; advances PW-539
+
+**Context.** `Binding` was linear after construction, but that did not prove an
+`AddressSpace` could construct it only once. The current user-copy concurrency
+limit also depends on one production task owning each user space, while neither
+the caller inventory nor that lifetime was mechanically visible.
+
+**Decision.** A user `AddressSpace` may mint one `Binding`; later binds refuse
+without changing the root, active root or scheduler capacity. The sole
+production bind remains `user::spawn_transaction`. It installs `task::Bound` in
+`BootstrapAuthority::Bound`, retirement exchanges that value for `Released`,
+and `AddressSpace::reclaim` consumes the exact release evidence.
+
+A source inventory excludes self-test callers, requires that single production
+bind and pins the complete bound-to-released-to-reclaimed chain. A separate
+machine witness keeps the first binding, attempts a second, and then proves
+exact release, reclamation and frame restoration.
+
+**Alternative and proof obligation.** Relying on a non-`Clone` binding was
+rejected because two calls could still mint two distinct linear values. A prose
+caller count was rejected because it would silently rot. The exact inventory
+and machine witness are implemented, and guard-removal and second-owner
+mutations are registered. PW-539 remains `READY` until those breaks are
+executed and a restored release boot passes.
+
+## D-281 Kernel top-level topology freezes before user roots — Status: Accepted (2026-09-05), amends D-45, D-104, D-106, D-139 and D-199; advances PW-540
+
+**Context.** A user address space copied the kernel's present higher-half PML4
+entries once. Later device mapping was allowed to allocate an absent PML4
+entry, so a root created earlier could omit that mapping. Task switching still
+treated the bind-time comparison as permanent, and a safe `MmioRegion` could
+then be used after a switch into the stale root.
+
+**Decision.** Activation reserves the supervisor-only top-level table covering
+the complete device window before installing the kernel root. Once activation
+is published, the active kernel space refuses allocation of every new
+higher-half top-level table. Later device mappings can allocate only beneath
+the already-shared entry, so roots created both before and after a mapping
+reach the same subordinate topology. Binding continues to compare the whole
+higher half, while the freeze makes that comparison stable for later switches.
+
+**Alternatives and proof obligation.** Re-copying entries at each switch was
+rejected because it silently mutates a process root and still needs an
+authority and rollback story. Sampling only live code, stack and direct-map
+addresses was rejected because it misses a newly populated slot. A root
+generation check would detect the defect but strand an otherwise runnable
+task. The retained proof instead creates a user root before a late device map
+and requires the identical mapping to appear there; a reversible active-root
+probe requires a new absent higher-half slot to be refused without changing
+tables. Reservation-removal and freeze-removal mutations must red those exact
+checks before PW-540 closes, followed by restored debug, release and VMware
+boots.
+
+## D-282 Hostile publication words are architecture memory, not Rust atomic objects — Status: Accepted (2026-09-05), amends D-221 and D-269; advances PW-128
+
+**Context.** D-269 prevented safe kernel byte access from overlapping a ring's
+publication words, but the publication door still constructed `&AtomicU32`
+over those bytes. Ring 3 writes the same words with ordinary machine stores and
+does not participate in Rust's atomic-object rules. Alignment and the correct
+ordering enum therefore did not make the safe wrapper sound: a valid program
+could race a Rust atomic with a non-atomic alias.
+
+**Decision.** A checked `SharedRing` derives only an aligned integer address
+inside its fixed publication partition. A crate-private x86 boundary performs
+one naturally aligned dword `mov` through opaque assembly and never constructs
+a Rust reference or atomic object. The assembly declares memory effects, so it
+is a compiler barrier; x86 TSO gives the load and store the acquire and release
+ordering required by D-221. Endianness conversion remains in the safe wrapper,
+and byte-only or payload access still cannot name a publication word.
+
+**Alternatives and proof obligation.** `read_volatile` and `write_volatile`
+were rejected because volatile access is neither atomic nor a synchronization
+edge. Adding compiler fences around them does not repair atomicity, while
+`AtomicU32::from_ptr` recreates the same external-alias contract. Locked
+instructions are unnecessary for naturally aligned 32-bit x86 accesses and
+would obscure the actual protocol. Source checks require the exact two `mov`
+instructions, their memory effects, complete bounds/alignment preflight and
+the absence of `AtomicU32`, references and volatile publication access. Six
+independent breaks made those checks red and were restored; the retained
+memory-effect and volatile-access mutations plus restored release, debug and
+VMware ring exercises remain PW-128's close.
+
+## D-283 Shared allocator aliases keep one write-back cache policy — Status: Accepted (2026-09-05), amends D-185 and D-269; advances PW-128
+
+**Context.** A shared allocation remains reachable through the kernel's
+write-back direct map while ring 3 reaches a second mapping. The safe shared
+mapping doors nevertheless accepted `NO_CACHE` and `WRITE_THROUGH`, allowing
+one physical run to have incompatible memory types at the same time. Bounds,
+ownership and publication ordering do not make that alias safe.
+
+**Decision.** `map_shared` and `map_shared_ring` accept only the allocation's
+write-back policy. Either cache-policy flag is refused before page-table
+preflight, keepalive reservation or mapping state can change. Device memory
+continues through its separate admitted, uncached mapping path; the shared
+allocator is not a generic physical-alias constructor.
+
+**Alternatives and proof obligation.** Changing the direct map per allocation
+was rejected because it would mutate a global kernel alias and require a
+separate shootdown and restoration protocol. Treating one of the two cache
+flags as harmless was rejected because the conflict is between aliases, not
+the spelling of one entry. The shared-mapping machine witness covers each flag
+and their combination for both shared types, requires no installed leaf or
+retained owner on refusal, and has a registered single-flag bypass mutation.
+Its restored release, debug and VMware executions remain part of PW-128.
+
+## D-284 Shared top-level identity ignores only hardware access metadata — Status: Accepted (2026-09-05), amends D-281; advances PW-540
+
+**Context.** D-281 compared complete higher-half PML4 words when binding and
+switching a user root. Hardware may independently set `ACCESSED` in either
+copy, so exact word equality could reject an otherwise identical root. At the
+same time, topology reservation treated any present device-window entry as an
+acceptable table, including a huge or user-accessible entry.
+
+**Decision.** Intermediate-table identity requires the same physical address
+and every identical flag except `ACCESSED`. The pure comparison lives in
+`x86-paging`; no other bit is normalized. Device-window reservation rejects a
+present huge or `USER` entry and creates an absent entry only as a
+supervisor-only table before activation freezes the topology.
+
+**Alternatives and proof obligation.** Ignoring all hardware-looking bits was
+rejected because dirty, cache, permission, execution and reserved-bit drift
+are part of the mapping contract. Continuing to compare raw words was rejected
+because page walks themselves can invalidate the proof. The host test toggles
+all 64 bits and accepts only `ACCESSED`; machine witnesses cover accessed-only
+bind drift, both hostile present entries and the supervisor reservation.
+Registered mutations retain each defect. Their restored release, debug and
+VMware executions remain PW-540's close.
+
+## D-285 Refused device retirement remains a reachable linear owner — Status: Accepted (2026-09-05), amends D-199, D-245, D-251 and D-278; advances PW-533 and PW-536
+
+**Context.** Several bounded cleanup paths preserved an exact owner on their
+first refusal but discarded it, panicked or returned an ownerless boolean on a
+second refusal. This affected PCI function/device leases, BAR mappings,
+generic device mappings and I/O-APIC routing. NVMe stop also treated
+`CSTS.RDY = 0` alone as sufficient after clearing `CC.EN`, without freshly
+proving that both registers described a disabled controller.
+
+**Decision.** A recyclable NVMe stop token is minted only from fresh
+`CC.EN = 0` and `CSTS.RDY = 0` observations of the same mapped controller, and
+retains that typed observation until DMA state is retired. Every other stop or
+cleanup outcome carries or stores the exact remaining owner. Bounded static
+quarantines retain controller and PCI device together, BAR mapping or release
+authority, device and bare-function leases, and I/O-APIC mapping or routing
+authority. Selection and interrupt routing stop cleanly after quarantine;
+they do not continue from an ownerless success or panic merely because safe
+retention was required.
+
+**Alternatives and proof obligation.** Infinite retry was rejected because a
+device or ignored hardware write can remain unavailable forever. `forget` and
+terminal panic were rejected as ownership protocols because neither leaves a
+typed, inspectable recovery route. Fourteen structural DMA/cleanup contracts
+cover the mint and every production sink. Ten individual manual breaks of
+the CC read, CSTS read, classifier, stop classification, controller store,
+memory-quarantine classification, repeated PCI release, repeated device
+unmap, routing retention and panic-before-retention each made its exact witness
+red before restoration.
+The retained mutations and current machine boots remain PW-533/PW-536's close.
+
+## D-286 Repository-wide proofs fail closed on directory enumeration — Status: Accepted (2026-09-05), amends D-124 and D-215; advances PW-525
+
+**Context.** The unsafe, citation, page-size, target-source, Markdown/link,
+host-crate, model, vendored-directory and inline-command inventories opened
+their directories but then skipped some enumeration, classification or
+metadata errors. An unreadable entry could therefore disappear from an “all
+files” claim without making the check fail.
+
+**Decision.** One `xtask::paths` helper collects every `DirEntry` result and
+resolves every file type before a repository proof interprets any path.
+Opening, enumerating or classifying the directory returns an error with its
+path identity; redirected and special entries are refused. All affected
+inventories use that helper. Filtering begins only after the complete,
+classified listing exists, and a crate manifest distinguishes absence from
+every other metadata failure.
+
+**Alternatives and evidence.** Treating an unreadable entry as out of scope was
+rejected because unreadability is not evidence that it contains no source,
+crate, document or vendored authority. Repeating `expect` in each iterator was
+rejected because the fail-closed rule would remain easy to omit. Injected
+enumeration and classification errors now fail their collectors, and a pure
+classification witness rejects redirected and special entries. Replacing
+either collection with `filter_map`, accepting either rejected kind, turning
+unreadable citation input into empty text, or treating optional-source metadata
+failure as absence made its exact witness red before restoration. Those six
+defects remain mutations 1,295 through 1,300. Full API audit and CI remain
+PW-525's integrated proof.
+
+## D-287 NVMe preparation preserves one linear owner across bounded stack stages — Status: Accepted (2026-09-05), amends D-217, D-245 and D-278; advances PW-541
+
+**Context.** A local guarded debug boot reproduced the storage-path double fault
+that D-245 had not reproduced. Local frame inspection reported a 16,200-byte
+`nvme::prepare` frame beneath `try_controller`'s 16,184-byte frame on the 32 KiB
+boot stack. The individual frame limit stayed green while the live nested path
+exhausted the stack.
+
+**Decision.** Preparation is a sequence of ownership-preserving stages:
+capability read, disable, admin allocation, register programming and final
+enable. `AdminPreparation` carries the one controller and DMA owner forward;
+each stage returns a bounded explicit outcome whose refusal either transfers
+that owner to the next stage or retains it in the existing quarantine. The
+same local inspection reported a largest conservative linked path of 22,980
+bytes, leaving 9,788 bytes on the guarded stack.
+
+**Alternatives and evidence.** Enlarging the stack would hide rather than bound
+the path. Boxing the state would add allocation and failure at the recovery
+boundary. Per-function `.debug_frame` limits cannot prove nested use. The
+causal red and frame report informed the split but are not durable phase-close
+receipts. After the split the guarded boot reached and passed every NVMe
+witness. PW-541 requires a reproducible retained frame measurement and current
+complete debug, release and integrated runs.
+
+## D-288 Ownership proofs conserve allocator state and name one process incarnation — Status: Accepted (2026-09-05), amends D-26, D-217, D-245 and D-261; advances PW-542
+
+**Context.** Several cleanup checks compared raw free-frame counts. A correct
+slab refill may retain free frames without changing ownership, so those checks
+could fail or need warm-up even when cleanup was exact. The zombie witness also
+used wall time, global retirement counts and a reusable slot, allowing an
+unrelated process incarnation or scheduling delay to decide the result.
+
+**Decision.** The pure ownership relation conserves checked
+`free + slab + large` physical frames, requires the exact live-allocation
+count, and permits only later retained slab frames to be greater than or equal
+to the earlier snapshot. The large-frame bucket may move when a still-live
+allocation changes capacity or class; conservation, rather than bucket
+identity, proves that those frames remain owned. One interrupt-excluded epoch
+covers both the allocator snapshot and the broader spawn-resource ledger; a
+host-tested `libs/` helper owns the arithmetic. Lifecycle checks combine that
+relation with their exact live owner and refusal tallies. Zombie collection
+names the exact `(slot, non-repeating table)` incarnation, waits by scheduler
+yield, observes the full retained `(launches, bootstraps, zombies)` tuple, uses
+a distinct-slot probe and requires exactly two successful reclaim steps. The
+sum returned by those two successes must equal the exact page and table tally
+deltas. Mapping cleanup separately counts per-attempt partial returns without
+double-counting them.
+
+**Alternatives and evidence.** Warm-up allocations, fixed sleeps, order
+assumptions and global counts were rejected because they tune the witness to
+incidental allocator or scheduler state. Exact slab equality was rejected
+because retaining a newly populated slab is intentional. Exact large-frame
+equality was rejected after a debug run kept every live owner and the total
+physical account exact while one still-live allocation moved one frame from
+the free pool into its large capacity. That false red corrected the oracle
+rather than weakening ownership. Pure boundary tests, the debug counterexample,
+retained mutations and repeated current boots remain PW-542's close. Six
+relation defects, two torn-observation epochs and four zombie/resource-ledger
+defects remain mutations 1,301 through 1,312.
+
+## D-289 Every privilege entry installs the kernel stack selector before Rust — Status: Accepted (2026-09-05), amends D-49 and D-96; advances PW-543
+
+**Context.** A ring-3 interrupt changes privilege and leaves the live `SS`
+null in long mode even though the CPU frame contains the old user `SS:RSP`.
+Trap dispatch may switch to another saved kernel context before the original
+`iretq`; that context then inherits the null live selector. A later kernel
+breakpoint consequently carried a valid frame span and saved user selectors
+but failed the independently expected kernel stack selector. AMD's
+[Architecture Programmer's Manual, Volume 2, section 8.9](https://docs.amd.com/v/u/en-US/24593_3.44_APM_Vol2)
+specifies the privilege-entry behavior.
+
+**Decision.** Common entry first saves `RAX`, uses its low half to load
+`KERNEL_DATA` into live `SS`, then saves the remaining registers and enters
+Rust. The CPU-pushed frame is unchanged, original `RAX` is restored, and the
+same-privilege path performs an idempotent selector load. The first ring-3
+call records live `SS` separately from the saved user stack selector, while the
+later breakpoint retains the context-switch witness.
+
+**Alternatives and proof obligation.** Weakening the late frame check would
+erase the symptom. Normalizing only scheduler return sites would miss other
+trap-side exits and multiply architectural policy. Removing the common-entry
+load failed the exact live-selector witness at 259/261 while the direct frame
+span still passed; that defect remains mutation 1,313. Restored repeated debug,
+release and VMware boots remain PW-543's close.
+
+## D-290 Machine evidence does not widen shipped hardware APIs — Status: Accepted (2026-09-05), amends D-124, D-214 and D-248; advances PW-525 and PW-532
+
+**Context.** Later machine witnesses left observer functions, constants and
+evidence tallies compiled into shipped `wost` and kernel paths. Their only
+consumers were self-test code, so they widened the production API and added
+writes to hardware and lock hot paths without changing production behavior.
+
+**Decision.** A machine-only observer and every write that exists solely to
+feed it compile only with `selftest`. Normal EOI, recovery, reclaim and both
+`VERW` operations and the lock count that guards context changes remain in
+shipped code. A compiler probe requires the exact absence of thirty-three `wost`
+observers from the shipped graph. Source contracts pin 96 dedicated evidence
+identifiers beneath exact self-test gates: 79 in the kernel, sixteen
+Rust-managed tallies, fields or helpers in `wost`, plus the
+assembly-visible `BUFFER_CLEARS` state. Both `VERW` tally increments are behind
+the same self-test selector; the routed-GSI evidence parameter and call
+argument are absent from the shipped graph. Mapping injection and optional EOI
+reclamation also compile away as whole branches, leaving direct shipped
+operations. Release-ELF inspection
+independently found none of that evidence state. The unsafe inventory remains
+377 lines in 149 blocks and 39 declarations, with every affected fingerprint
+re-reviewed.
+
+**Alternatives and evidence.** Keeping private release counters was rejected:
+an uncallable observer still changes the executable path it claims merely to
+measure. Relying on optimization was rejected because the source and public
+contract would still be wider. Exposing `SAVED_FRAME_BYTES` without its feature
+gate made the exact shipped-graph contract red; that defect remains mutation
+1,314. Forcing the assembly selector to one remains mutation 1,315. Ungating a
+kernel tally remains mutation 1,316; bypassing each assembly path's guard
+remains mutations 1,317 and 1,318. Exposing the free-frame and framebuffer-MMIO
+base observers remains mutations 1,319 and 1,320; exposing the owned-segment
+reader or unmapped-range user bit remains mutations 1,321 and 1,322. The
+slab-evidence call and both routed-GSI argument gates remain mutations
+1,323 through 1,325. Restoring either no-op shipped branch remains mutations
+1,326 and 1,327. Current API audit, Clippy and machine gates remain
+PW-525/PW-532's integrated proof.
+
+## D-291 Generic trait dispatch is credited only at its exact declaration — Status: Accepted (2026-09-06), amends D-275; advances PW-544
+
+**Context.** The first current full API audit refused valid generic calls such
+as `<T as Trait>::member` because rustc can identify the trait declaration but
+cannot name one implementation while type-checking the generic body. The same
+run exposed the opposite error in the external-trait fallback: an untyped
+method call could activate an unrelated local implementation merely because
+its member had the same name. Treating every generic diagnostic as trusted
+would have hidden the ambiguous receiver cases D-275 intentionally refuses.
+
+**Decision.** Every dispatch records compiler evidence separately for the
+callee and the syntactic `Self` locations. A type-qualified static call prefers
+the exact non-alias nominal type in its callee over argument zero and carries
+that one resolved type into implementation matching; the evidence set cannot
+cross-product two independently mentioned types.
+
+One declaration-only route exists for explicit qualified calls whose `T` is a
+lexical type parameter with that direct trait bound, either on the parameter or
+in its `where` clause. The direct path keeps its complete module qualifier while
+stripping only the terminal trait's generic arguments. Compiler evidence must
+name exactly that audited trait-member declaration and no concrete self type or
+implementation. The route credits the declaration but activates no
+implementation body. Indirect supertraits, higher-ranked bounds, aliases,
+associated or parameterized `Self` types, and every other ambiguous shape
+retain D-275's exact-one rule and fail closed when it cannot be met.
+
+For an explicit qself path call, argument zero is an ordinary argument and
+never receiver-type evidence. A full trait path is never reduced to its
+terminal name. An exact local type may credit the one selected local default
+only when no applicable or unresolved override exists. A compiler-selected
+inherent method or free function suppresses unrelated trait routing. An
+external trait implementation requires direct implementation evidence or an
+exact `Self` together with an explicit trait qualifier; bare method syntax and
+a matching member name are insufficient. One `DispatchResolution` value drives
+both liveness and refusal reporting so the two consumers cannot disagree.
+
+**Alternatives and proof obligation.** Per-site allowlists and replacing the
+type-safe generic APIs with concrete wrappers were rejected because they move
+an audit limitation into production design. Activating every candidate was
+rejected because it would turn uncertainty into false reachability. Focused
+fixtures cover direct and `where` bounds, parameterized direct bounds, the
+static-associated-function argument trap, concrete evidence at a generic site,
+rejected indirect and non-parameter shapes, a local default beside a sibling
+override, inherent/free-function collisions, explicit and untyped external
+dispatch, and the earlier ambiguity/specialization refusals. They also drive
+the shared resolution through both liveness and failure reporting.
+
+Fifteen independent breaks each made its exact fixture red before restoration:
+qself argument zero, declaration-only routing, name-only activation, concrete
+Self admission, parameterized and full qualifiers, direct-bound membership,
+callee/Self evidence partition, local defaults, ordinary-call exclusion,
+external qualifier admission, both shared-resolution consumers, callee
+priority and same-terminal trait paths. Those defects remain mutations 1,328
+through 1,342. Earlier dispatch and constructor-span mutations whose anchors
+moved were re-anchored and re-proven rather than dropped. The complete 123-test
+debug API family passes. The release family, real API audit and full current CI
+remain required; no result from the failed run is promoted to passing evidence.
+
+## D-292 The orchestrator binary is optimized; the graphs it audits are not — Status: Accepted (2026-09-06), amends D-17 and D-213
+
+**Context.** `cargo xtask` built the orchestrator with the plain `dev`
+profile. The API audit hashes a 119 MB materialized registry and parses the
+whole workspace with `syn` many times per gate; unoptimized, one audit ran for
+more than two and a half hours without finishing, and the ordinary gate could
+not complete. Optimizing the `dev` profile for the orchestrator package
+instead made every audited test harness and every host-test rebuild in the
+mutation sweep carry optimized codegen, which moved the cost rather than
+removing it.
+
+**Decision.** `Cargo.toml` declares an `xtask` profile that inherits `dev`
+and sets `opt-level = 3`. Only the `cargo xtask` alias selects it. Host tests,
+the audited graphs, the mutation workspace and every kernel build keep the
+profiles they had, and the tool's own debug assertions and overflow checks
+stay on because the profile inherits them. The audit's discovery stage fell
+from more than ten minutes to about thirty-five seconds.
+
+**Alternatives.** A per-package `dev` override was measured first and
+rejected for the reason above. Building the tool with `--release` was
+rejected because that profile enables LTO and would make every tool edit
+cost a full relink.
+
+## D-293 Every static lock in `wost` is reclaimed by the panic path, and a contract says so — Status: Accepted (2026-09-06), amends D-41 and D-67
+
+**Context.** `wost::panic::reclaim` force-unlocks the locks a panic may have
+interrupted so the reporter can use them. Its comment said that every lock in
+a `static` inside the crate belongs in that list and that nothing but the
+comment would catch an omission. Three statics had already been omitted: the
+paging module's retained-stack ledgers and the PCI configuration lock. The
+reporter does not take them today, so no panic deadlocked, but the obligation
+was a comment and the comment was false.
+
+**Decision.** Each `wost` module that owns a static `SpinLock` or
+`ThreadLock` exposes one `force_unlock(&PanicToken)` that reclaims every such
+static, and `panic::reclaim` calls each module's door. A source contract in
+`xtask/src/contracts.rs` parses every `wost` source file, collects the static
+locks per module, and requires the module door to name each of them and the
+panic path to name each module. Adding a static lock without extending the
+door, or a door without extending the panic path, fails the host gate.
+
+**Proof.** Two retained mutations delete one module door call and one static
+from a door; each reds only the contract. The reclaim order is unchanged and
+force-unlock remains sound for the reason `SpinLock::force_unlock` states:
+the interrupted holder never resumes.
+
+## D-294 The audited registry is rebound once per compiler round — Status: Accepted (2026-09-06), amends D-263 and D-275
+
+**Context.** The API audit materializes the locked registry into a private
+Cargo home and proves it unchanged by hashing every file it holds. D-275's
+implementation repeated that proof after every compiler graph: forty-four
+graphs per round, nineteen rounds, each proof reading 6,853 files and 119 MB.
+The source copy and the original tree are small and stay cheap to rebind, but
+the registry proof alone cost more per round than the compilation it guarded.
+
+**Decision.** `compile_graph` still rebinds the copied and original source
+trees after every graph, before any diagnostic is read. The registry is
+rebound once after the pristine round and once after every instrumented
+round, before that round's target libraries are rechecked and before any
+verdict is derived. Cargo metadata discovery keeps its own registry proof.
+
+**Why this loses nothing.** Neither placement observes a change made and
+reverted inside one compilation; both detect a change that persists to the
+next proof. Under either placement no verdict is derived from diagnostics
+whose inputs failed a proof, because a failed proof ends the audit. What the
+per-round proof changes is the number of graphs whose diagnostics are
+discarded together when tampering is found, which is not a property the
+verdict depends on.
+
+**Proof.** The retained copied-source and original-source rebind mutations
+were re-anchored to the new guard block and still red their exact shape
+tests; a new mutation deleting the per-round registry proof reds the shape
+test that requires it before the round's target-library recheck.
+
+## D-295 A type-qualified external-trait call is resolved by its callee type's one audited implementation — Status: Accepted (2026-09-06), amends D-291; advances PW-544
+
+**Context.** The first optimized full audit refused thirteen live sites of
+the form `Type::from(value)`: `wost::mm::DmaSegment::from`,
+`mm::USegment::from` and `EnableFailure::from` in the kernel, its self-tests
+and `pci-config`. Each names an exact audited type in its callee path and
+calls a `core::convert::From` implementation that the audited crate declares
+exactly once for that type. D-291 admitted an external trait implementation
+only with an explicit `<Type as Trait>::member` qualifier, because bare method
+syntax can auto-reference into a different implementation and a matching
+member name alone is not evidence. A static path call has neither weakness:
+the compiler resolves `Type::member` against that one type's inherent items
+and then the traits implemented for it, and an inherent or free selection is
+already visible to the audit and already excludes trait routing.
+
+**Decision.** At a static path call whose callee path names an exact,
+non-alias, non-generic audited type and carries no explicit `qself`, an
+external-trait activation for that same type is matched exactly as the
+explicitly qualified form is; the type's audited implementation inventory
+supplies the qualifier. D-275's exact-one rule then decides: one matching
+implementation is credited, and two implementations of one generic trait for
+one type still fail closed until the call site is written in the qualified
+form. Method syntax, explicit `qself` without a trait, aliased callees and
+generic callee arguments keep D-291's refusal, and argument zero never
+supplies the `Self` of a path call whose callee could not, so an aliased
+callee fails closed instead of borrowing its argument's type.
+
+**Why this is exact.** Two different external traits offering one member
+name for one type make `Type::member` a compile error, so they cannot reach
+the audit. The remaining competitor is a `core` blanket implementation of the
+same trait for every type. The reflexive `From` and `TryFrom` conversions
+cannot survive the gate because clippy's `useless_conversion` is denied, and
+the `Into`, `TryInto`, `ToOwned`, `ToString` and `Borrow` blankets can only
+mis-credit a site whose audited crate implements that trait directly beside a
+second conversion to the same type, which no audited crate does. The
+qualified form of D-291 does not compare trait generic arguments either, so
+this route is neither wider nor narrower than it.
+
+**Alternatives.** Rewriting the thirteen sites as `<Type as From<_>>::from`
+was rejected because it changes production source to fit an audit
+limitation, the reason D-291 itself refused per-site allowlists. Crediting
+every candidate was rejected because it turns an ambiguity into false
+reachability. Crediting by member name without the callee's type evidence was
+rejected because it is the D-291 defect in another form.
+
+**Proof.** Three fixtures cover the admitted call, a two-implementation
+refusal that counts both candidates, and an aliased callee that refuses
+rather than borrowing argument zero. Two manual breaks each reddened only
+their own fixture before restoration and remain mutations 1,352 and 1,353;
+the two D-291 mutations whose anchor this decision moved were re-anchored and
+re-proven. The real audit and the complete gate on the unchanged tree remain
+PW-544's closing evidence.
+
+## D-296 A refused BAR bind returns its reason, and a retained authority keeps no retry accessor — Status: Accepted (2026-09-06), amends D-249 and D-285; closes PW-546
+
+**Context.** The first complete audit after D-291 and D-295, with every
+dispatch resolved, reported three public items with no caller:
+`BarAuthorityFailure::reason` and `BarAuthorityFailure::into_authority` in
+`pci-config`, and `BarBindFailure::into_range` in `wost`. D-285 moved the
+kernel to retaining a refused BAR-authority release whole, in its bounded
+quarantine, so nothing reads the reason or recovers the authority for a retry
+that no pre-Wizzy path makes. A refused bind carried the admitted device
+range back to the kernel, which discarded it: `AdmittedDeviceRange` is a
+proof this CPU derives from the immutable boot map and its own width, holds
+no ledger entry and has no `Drop`, so keeping it buys nothing and dropping it
+loses nothing.
+
+**Decision.** `wost::arch::x86_64::pci::bind_memory_bar` returns
+`Result<AdmittedBar, BarBindError>`; the `BarBindFailure` wrapper is gone and
+the kernel maps the error directly. `BarAuthorityFailure` keeps its private
+reason and authority, its `Display` and `Error` implementations, and loses
+both accessors. The quarantine still holds the authority, so a future reclaim
+path adds its accessor together with its caller, which is the only order the
+audit admits.
+
+**Alternatives.** Manufacturing a caller, such as logging the reason at the
+quarantine, was rejected because a log line is not a design need and would
+hide the next dead accessor behind the same trick. Keeping the range in the
+bind refusal under a retained-owner name was rejected because a re-derivable
+proof is not an owner, and calling it one would misstate what a refusal can
+lose.
+
+**Proof.** The audit that found the three items is the check; its two
+retained mutations already prove it can fail. Clippy on every registered
+graph, the seventy-two `pci-config` tests and the reviewed-unsafe inventory
+pass after the removal, and the complete gate on the unchanged tree closes
+PW-546.

@@ -56,11 +56,9 @@ pub fn page_size_definitions(root: &Path) -> Result<Vec<Definition>> {
     for tree in ROOTS {
         let mut pending = vec![root.join(tree)];
         while let Some(next) = pending.pop() {
-            let entries =
-                std::fs::read_dir(&next).with_context(|| format!("reading {}", next.display()))?;
-            for entry in entries {
-                let path = entry?.path();
-                if path.is_dir() {
+            for entry in crate::paths::directory_entries(&next)? {
+                let path = entry.path();
+                if entry.is_dir() {
                     pending.push(path);
                     continue;
                 }
@@ -120,7 +118,7 @@ fn literal(text: &str) -> Option<u64> {
     let text = text.replace('_', "");
     match text.strip_prefix("0x") {
         Some(hex) => u64::from_str_radix(hex, 16).ok(),
-        None => text.parse().ok(),
+        None => <u64 as core::str::FromStr>::from_str(&text).ok(),
     }
 }
 
@@ -164,9 +162,8 @@ mod tests {
             );
         }
 
-        // And it is the page size the hardware has, not merely a number five
-        // files agree on — which is what they would also be if all five were
-        // wrong together.
+        // The hardware's page size, not merely a number five files agree on:
+        // they would agree if all five were wrong together.
         assert_eq!(first.value, 4096, "a page is 4096 bytes on x86-64");
     }
 

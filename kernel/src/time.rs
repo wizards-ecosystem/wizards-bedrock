@@ -26,7 +26,6 @@ use x86_pit::calibrate::WatchdogVerdict;
 use x86_pit::{CRYSTAL_HZ, calibrate, elapsed_ticks};
 
 use crate::arch::current::pit::Pit;
-use crate::arch::current::vector;
 
 /// Nanoseconds in a millisecond.
 pub(crate) const NANOSECONDS_PER_MS: u64 = 1_000_000;
@@ -112,8 +111,11 @@ static TSC_TO_NANOSECONDS: AtomicU64 = AtomicU64::new(0);
 /// calibration succeeds, and [`arm_at`] declines to arm anything through it.
 static NANOSECONDS_TO_APIC: AtomicU64 = AtomicU64::new(0);
 
-/// Both measured rates, kept for reporting only.
+/// The measured counter rate used by the watchdog and time page.
 static TSC_HZ: AtomicU64 = AtomicU64::new(0);
+
+/// The measured APIC rate observed by the self-test.
+#[cfg(feature = "selftest")]
 static APIC_HZ: AtomicU64 = AtomicU64::new(0);
 
 /// Nanoseconds at which the timing subsystem was revoked.
@@ -125,9 +127,12 @@ static SCHEDULER_NOW_NS: AtomicU64 = AtomicU64::new(0);
 /// Why the live timing subsystem was revoked; zero means it remains active.
 static REVOCATION: AtomicUsize = AtomicUsize::new(0);
 
-/// Last live watchdog operands, retained for post-trap diagnosis.
+/// Last live watchdog operands observed by the self-test.
+#[cfg(feature = "selftest")]
 static LAST_WATCHDOG_TSC: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "selftest")]
 static LAST_WATCHDOG_PIT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "selftest")]
 static LAST_WATCHDOG_EXPECTED: AtomicU64 = AtomicU64::new(0);
 
 /// Consecutive conclusive watchdog disagreements.
@@ -175,10 +180,7 @@ impl Revocation {
     }
 }
 
-/// Timer interrupts taken since the clock started.
-///
-/// The evidence for D-57: this used to climb a hundred times a second
-/// whatever the machine was doing, and now counts events somebody asked for.
+#[cfg(feature = "selftest")]
 static EXPIRIES: AtomicU64 = AtomicU64::new(0);
 
 /// Why the clock could not be started.
@@ -186,6 +188,8 @@ static EXPIRIES: AtomicU64 = AtomicU64::new(0);
 pub(crate) enum TimeError {
     /// The interval timer's ports are already claimed.
     PitUnavailable,
+    /// The local APIC timer would not enter its required state.
+    LocalTimer(apic::TimerError),
     /// Every measurement produced numbers outside the believable range.
     Implausible,
 }
@@ -193,13 +197,13 @@ pub(crate) enum TimeError {
 impl fmt::Display for TimeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PitUnavailable => f.write_str("the interval timer's ports are already claimed"),
+            Self::PitUnavailable => {
+                core::fmt::Write::write_str(f, "the interval timer's ports are already claimed")
+            }
+            Self::LocalTimer(reason) => write!(f, "the local timer refused setup: {reason}"),
             Self::Implausible => {
-                // **Which guard, and what it saw.** "No believable rate" is
-                // true of six different failures and points at the one they
-                // are least often — a rate out of range — so a reader takes
-                // the wrong turn. The numbers come with it because "which
-                // number was wrong" is the rest of the diagnosis (D-176).
+                // Include the failed guard and values so calibration refusals
+                // are actionable (D-176).
                 let (tsc, apic) = last_measurement();
                 write!(
                     f,
@@ -254,6 +258,11 @@ impl Calibration {
     pub(crate) const fn counter_is_invariant(self) -> bool {
         self.invariant
     }
+
+    /// Rate of the APIC timer's source before the programmed divisor.
+    pub(crate) const fn apic_source_hz(self) -> u64 {
+        self.apic_hz * DIVIDE.factor() as u64
+    }
 }
 
 /// Whether two measurements of one clock are within [`AGREEMENT_DIVISOR`].
@@ -265,14 +274,14 @@ impl fmt::Display for Calibration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "tickless: counter at {} hz{}, apic timer at {} hz",
+            "tickless: counter at {} hz{}, divided apic timer at {} hz",
             self.tsc_hz,
             if self.invariant { " (invariant)" } else { "" },
-            self.apic_hz * u64::from(DIVIDE.factor()),
+            self.apic_hz,
         )?;
         match self.source {
-            CalibrationSource::Pit => f.write_str(", measured against pit")?,
-            CalibrationSource::Cpuid => f.write_str(", tsc from cpuid")?,
+            CalibrationSource::Pit => core::fmt::Write::write_str(f, ", measured against pit")?,
+            CalibrationSource::Cpuid => core::fmt::Write::write_str(f, ", tsc from cpuid")?,
         }
         if let Some(cpuid_hz) = self.cpuid_tsc_hz {
             write!(f, ", cpuid tsc {cpuid_hz} hz")?;
@@ -301,9 +310,9 @@ impl fmt::Display for Calibration {
 ///
 /// # Errors
 ///
-/// [`TimeError::PitUnavailable`] if the reference is already claimed, and
-/// [`TimeError::Implausible`] if neither PIT measurement nor an invariant,
-/// complete CPUID ratio produced two agreeing, believable windows.
+/// [`TimeError::PitUnavailable`] if the reference is already claimed,
+/// [`TimeError::Implausible`] if neither timing source produces two agreeing,
+/// believable windows, or [`TimeError::LocalTimer`] if final timer setup fails.
 pub(crate) fn init() -> Result<Calibration, TimeError> {
     assert!(
         !interrupt::are_enabled(),
@@ -340,9 +349,8 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
         };
         calibration
     } else {
-        // Windows that each looked fine and never agreed is a seventh way to
-        // reach this line, and the one an emulated crystal reaches first
-        // (D-176).
+        // Distinguish individually plausible but mutually inconsistent
+        // windows (D-176).
         if measured_windows > 0 {
             LAST_REFUSAL.store(Refusal::Disagreed as usize, Ordering::Relaxed);
         }
@@ -351,8 +359,6 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
     };
     calibration.cpuid_tsc_hz = frequency.tsc_hz();
     calibration.cpuid_base_hz = frequency.base_hz();
-    // Both conversions exist for any rate inside the believable ranges; the
-    // arithmetic refuses only ratios no pair of clocks produces.
     let (Some(elapsed), Some(countdown)) = (
         Timebase::nanoseconds(calibration.tsc_hz),
         Timebase::ticks(calibration.apic_hz),
@@ -361,18 +367,26 @@ pub(crate) fn init() -> Result<Calibration, TimeError> {
         return Err(TimeError::Implausible);
     };
 
-    // Stopped before unmasked, in that order: the free-running countdown the
-    // last window left behind would otherwise deliver an interrupt when it
-    // happened to reach zero.
-    apic::disarm_timer();
-    apic::set_timer_one_shot(vector::TIMER);
+    // Stopped before unmasked: the countdown the last window left running
+    // would otherwise interrupt when it reached zero.
+    let disarmed = match apic::disarm_timer() {
+        Ok(disarmed) => disarmed,
+        Err(reason) => {
+            pit.park();
+            return Err(TimeError::LocalTimer(reason));
+        }
+    };
+    if let Err(reason) = apic::set_timer_one_shot(disarmed) {
+        pit.park();
+        return Err(TimeError::LocalTimer(reason));
+    }
 
     TSC_HZ.store(calibration.tsc_hz, Ordering::Relaxed);
+    #[cfg(feature = "selftest")]
     APIC_HZ.store(calibration.apic_hz, Ordering::Relaxed);
     NANOSECONDS_TO_APIC.store(countdown.to_bits(), Ordering::Relaxed);
-    // Origin before the conversion that makes it readable, so no reader can
-    // see a live conversion against an origin of zero and report the age of
-    // the machine as the age of the kernel.
+    // Origin before the conversion that makes it readable, or a reader could
+    // report the age of the machine as the age of the kernel.
     ORIGIN.store(cpu::timestamp(), Ordering::Relaxed);
     TSC_TO_NANOSECONDS.store(elapsed.to_bits(), Ordering::Relaxed);
     *HARDWARE.lock_leaf() = ClockHardware {
@@ -489,15 +503,25 @@ pub(crate) enum Refusal {
 impl core::fmt::Display for Refusal {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::None => f.write_str("nothing was measured"),
-            Self::CrystalStepped => f.write_str("the crystal stepped backwards or too far"),
-            Self::NeverClosed => {
-                f.write_str("the window never closed; the crystal may not be counting")
+            Self::None => core::fmt::Write::write_str(f, "nothing was measured"),
+            Self::CrystalStepped => {
+                core::fmt::Write::write_str(f, "the crystal stepped backwards or too far")
             }
-            Self::CounterWentBack => f.write_str("a counter read backwards across the window"),
-            Self::Overshot => f.write_str("the window overshot its bound"),
-            Self::NotBelievable => f.write_str("a measured rate is outside belief"),
-            Self::Disagreed => f.write_str("believable windows that never agreed with each other"),
+            Self::NeverClosed => core::fmt::Write::write_str(
+                f,
+                "the window never closed; the crystal may not be counting",
+            ),
+            Self::CounterWentBack => {
+                core::fmt::Write::write_str(f, "a counter read backwards across the window")
+            }
+            Self::Overshot => core::fmt::Write::write_str(f, "the window overshot its bound"),
+            Self::NotBelievable => {
+                core::fmt::Write::write_str(f, "a measured rate is outside belief")
+            }
+            Self::Disagreed => core::fmt::Write::write_str(
+                f,
+                "believable windows that never agreed with each other",
+            ),
         }
     }
 }
@@ -617,9 +641,8 @@ fn measured(pit: &mut Pit) -> Result<Calibration, Refusal> {
 
     let apic_hz = calibrate::measured_hz(apic_counted, pit_ticks);
     let tsc_hz = calibrate::measured_hz(tsc_counted, pit_ticks);
-    // Recorded whether or not they are believed, because "which number was
-    // wrong" is the whole of the diagnosis and a refusal that keeps it to
-    // itself costs another boot to learn.
+    // Recorded whether or not believed: which number was wrong is the whole
+    // diagnosis, and learning it otherwise costs another boot.
     LAST_APIC_HZ.store(apic_hz, Ordering::Relaxed);
     LAST_TSC_HZ.store(tsc_hz, Ordering::Relaxed);
     if !BELIEVABLE_APIC_HZ.contains(&apic_hz) || !BELIEVABLE_TSC_HZ.contains(&tsc_hz) {
@@ -729,6 +752,10 @@ pub(crate) fn without_calibration_for_test<T>(check: impl FnOnce() -> T) -> T {
 /// Does nothing before the alarm is calibrated. After public-clock revocation
 /// it continues to provide bounded scheduler progress against the retained
 /// PIT, but it admits no new timing promise.
+///
+/// # Panics
+///
+/// If an admitted local timer refuses to stop.
 pub(crate) fn arm_at(deadline_ns: u64) {
     let countdown = Timebase::from_bits(NANOSECONDS_TO_APIC.load(Ordering::Relaxed));
     if !countdown.is_calibrated() {
@@ -748,7 +775,7 @@ pub(crate) fn arm_at(deadline_ns: u64) {
     };
     let mut hardware = HARDWARE.lock_leaf();
     let Some(pit) = hardware.pit.as_mut() else {
-        apic::disarm_timer();
+        stop_apic_timer();
         return;
     };
     pit.start_measurement();
@@ -763,15 +790,32 @@ pub(crate) fn arm_at(deadline_ns: u64) {
 }
 
 /// Stop the timer. Nothing is waiting, so nothing needs waking.
+///
+/// # Panics
+///
+/// If an admitted local timer refuses to stop.
 pub(crate) fn disarm() {
     HARDWARE.lock_leaf().armed = None;
-    apic::disarm_timer();
+    stop_apic_timer();
+}
+
+fn stop_apic_timer() {
+    // No conversion means no APIC countdown was admitted. Losing the timer
+    // after publishing one remains a fatal hardware-authority contradiction.
+    match apic::disarm_timer() {
+        Ok(_) => {}
+        Err(apic::TimerError::Unavailable)
+            if !Timebase::from_bits(NANOSECONDS_TO_APIC.load(Ordering::Relaxed))
+                .is_calibrated() => {}
+        Err(reason) => panic!("the local timer would not stop: {reason}"),
+    }
 }
 
 /// One expiry — and nothing else, because this runs in trap context, where
 /// D-31 and D-34 still bind: no locks, no logging. What to do about it is the
 /// scheduler's, and it is called next.
 pub(crate) fn on_expiry() {
+    #[cfg(feature = "selftest")]
     EXPIRIES.fetch_add(1, Ordering::Relaxed);
     let apic_remaining = apic::timer_current_count();
     let tsc_end = cpu::timestamp();
@@ -786,9 +830,13 @@ pub(crate) fn on_expiry() {
         let pit_ticks = elapsed_ticks(arm.pit_start, pit.count());
         let verdict = match tsc_end.checked_sub(arm.tsc_start) {
             Some(tsc_ticks) => {
-                LAST_WATCHDOG_TSC.store(tsc_ticks, Ordering::Relaxed);
-                LAST_WATCHDOG_PIT.store(u64::from(pit_ticks), Ordering::Relaxed);
-                LAST_WATCHDOG_EXPECTED.store(u64::from(arm.expected_pit_ticks), Ordering::Relaxed);
+                #[cfg(feature = "selftest")]
+                {
+                    LAST_WATCHDOG_TSC.store(tsc_ticks, Ordering::Relaxed);
+                    LAST_WATCHDOG_PIT.store(u64::from(pit_ticks), Ordering::Relaxed);
+                    LAST_WATCHDOG_EXPECTED
+                        .store(u64::from(arm.expected_pit_ticks), Ordering::Relaxed);
+                }
                 calibrate::watchdog_verdict(
                     apic_remaining,
                     tsc_ticks,
@@ -813,9 +861,14 @@ fn advance_scheduler(pit_ticks: u16) {
         return;
     };
     let elapsed = conversion.convert(u64::from(pit_ticks.max(1)));
-    let _ = SCHEDULER_NOW_NS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |now| {
-        Some(now.saturating_add(elapsed))
-    });
+    assert!(
+        SCHEDULER_NOW_NS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |now| {
+                Some(now.saturating_add(elapsed))
+            })
+            .is_ok(),
+        "the scheduler clock refused an unconditional advance"
+    );
 }
 
 fn act_on_watchdog(verdict: WatchdogVerdict) {
@@ -852,7 +905,9 @@ fn revoke(reason: Revocation) -> bool {
         return false;
     }
     disarm();
-    crate::timepage::publish(crate::timepage::MODE_NONE, origin_ticks(), conversion());
+    match crate::timepage::publish(crate::timepage::MODE_NONE, origin_ticks(), conversion()) {
+        crate::timepage::Publication::Published | crate::timepage::Publication::Deferred => {}
+    }
     true
 }
 
@@ -873,7 +928,11 @@ pub(crate) fn with_watchdog_disagreement_for_test<T>(check: impl FnOnce() -> T) 
     let result = check();
     WATCHDOG_DISAGREEMENTS.store(0, Ordering::Release);
     REVOCATION.store(Revocation::None as usize, Ordering::Release);
-    crate::timepage::publish(crate::timepage::MODE_COUNTER, origin_ticks(), conversion());
+    assert_eq!(
+        crate::timepage::publish(crate::timepage::MODE_COUNTER, origin_ticks(), conversion(),),
+        crate::timepage::Publication::Published,
+        "the restored time page refused the live clock"
+    );
     disabled.restore();
     result
 }

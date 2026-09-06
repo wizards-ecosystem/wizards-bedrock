@@ -1,29 +1,20 @@
-//! Configuration space, through the two ports that have been there since 1992.
+//! Legacy CF8/CFC PCI configuration-space access.
 //!
-//! The instruction half of PCI. `libs/pci-config` owns every number — the
-//! address encoding, the header offsets, the class codes, the BAR decoding —
-//! and what is here is the pair of ports and the two accesses that drive them.
-//!
-//! **CF8/CFC rather than ECAM**, and not out of nostalgia. ECAM needs an MCFG
-//! table; QEMU's i440fx publishes none and VMware emulates a 440BX, so this is
-//! the only mechanism guaranteed present on **both** boot targets D-18 makes
-//! this project answer to. It reaches every byte a read-only driver needs, and
-//! an ECAM path later is purely additive (`012` §2).
-//!
-//! **The two ports are claimed together or not at all.** A configuration
-//! access is a write to one and a read from the other, so a claim that took
-//! the address port and lost the data port would have foreclosed the first for
-//! the life of the boot and left the mechanism unbuildable — which is exactly
-//! what D-138 made `claim_pair` for.
-//!
-//! **The pair is held under one lock for the whole access.** Address and data
-//! are two instructions with a window between them, and a second caller that
-//! wrote its own address into that window would be answered with somebody
-//! else's register. On one CPU the guard's cleared interrupt flag is what
-//! closes it; on two it will be the lock itself.
+//! `pci-config` owns the encoding and decoding. This module owns the ports,
+//! claimed atomically and locked across each address/data pair. CF8/CFC is the
+//! common mechanism on the QEMU i440fx and VMware 440BX targets (D-18, D-138).
 
-use pci_config::{Address, ProbeAccess, ProbeError, ProbedBars, header};
+use nvme::{ControllerStateError, DisabledRegisters, register};
+use pci_config::{
+    Address, Bar, BarAuthority, BarAuthorityError, BarAuthorityFailure, BarEnableAccess,
+    BarEnableError as ConfigBarEnableError, CommandAccess, CommandState, EnableError,
+    FunctionAuthority, FunctionClaimError, FunctionClaims, FunctionReleaseError, HeaderType,
+    ProbeAccess, ProbeError, ProbeFailure, ProbeRetry, ProbedBars, RestoreFailure, StagedProbe,
+    Window, header,
+};
 
+use crate::arch::current::paging::{AdmittedDeviceRange, DeviceMapping, ReleasableDevice};
+use crate::mmio::MmioError;
 use crate::sync::SpinLock;
 
 use super::port::{self, Port};
@@ -34,39 +25,56 @@ const ADDRESS_PORT: u16 = 0x0CF8;
 /// The data port: the register itself.
 const DATA_PORT: u16 = 0x0CFC;
 
-/// The claimed pair, once. `None` until [`init`], and for good if it declined.
-static PORTS: SpinLock<Option<(Port<u32>, Port<u32>)>> = SpinLock::new(None);
+/// Functions that may be held by drivers at once.
+const FUNCTION_CLAIMS: usize = 8;
+
+struct Configuration {
+    ports: Option<(Port<u32>, Port<u32>)>,
+    functions: FunctionClaims<FUNCTION_CLAIMS>,
+}
+
+impl Configuration {
+    const fn new() -> Self {
+        Self {
+            ports: None,
+            functions: FunctionClaims::new(),
+        }
+    }
+}
+
+/// The claimed pair and every live command transition under one ownership lock.
+static CONFIGURATION: SpinLock<Configuration> = SpinLock::new(Configuration::new());
+
+/// Reclaim the configuration registry on the terminal panic path.
+pub(crate) fn force_unlock(panic: &crate::panic::PanicToken) {
+    CONFIGURATION.force_unlock(panic);
+}
 
 /// Claim the two ports, or report that something else already has them.
 ///
 /// Idempotent: a second caller finds the pair already claimed and returns
 /// `true` having done nothing, because the question it is really asking is
 /// "can configuration space be reached", and it can.
+#[must_use = "a refused PCI initialization left configuration space unavailable"]
 pub fn init() -> bool {
     if is_available() {
         return true;
     }
-    // The claim happens **outside** this module's guard, and it has to: the
-    // port registry has a leaf of its own, and taking it under this one is the
-    // nesting `lock_leaf` forbids. The first version did exactly that and the
-    // machine check caught it on its first boot (D-168).
+    // Claim before taking this module's leaf guard to preserve lock order.
     let Some(pair) = port::claim_pair::<u32, u32>(ADDRESS_PORT, DATA_PORT) else {
-        // Either another caller of this function got there first — in which
-        // case configuration space is reachable and the answer is yes — or
-        // something that is not this module holds the ports, and it is no.
         return is_available();
     };
 
-    let mut ports = PORTS.lock_leaf();
-    if ports.is_none() {
-        *ports = Some(pair);
+    let mut configuration = CONFIGURATION.lock_leaf();
+    if configuration.ports.is_none() {
+        configuration.ports = Some(pair);
     }
     true
 }
 
 /// Whether configuration space can be reached at all.
 pub fn is_available() -> bool {
-    PORTS.lock_leaf().is_some()
+    CONFIGURATION.lock_leaf().ports.is_some()
 }
 
 /// Read the dword at `at`.
@@ -75,54 +83,609 @@ pub fn is_available() -> bool {
 /// an error**: the bus answers all ones for one that is not there, so
 /// `0xFFFF_FFFF` is a value and `pci_config::is_absent` is what reads it.
 pub fn read(at: Address) -> Option<u32> {
-    let mut ports = PORTS.lock_leaf();
-    let (address, data) = ports.as_mut()?;
-    address.write(at.bits());
-    Some(data.read())
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let (address, data) = configuration.ports.as_mut()?;
+    Port::write(address, at.bits());
+    Some(Port::read(data))
 }
 
-/// Write the command halfword at `at` without echoing status bits.
+/// The exclusive right to mutate one function's configuration registers.
 ///
-/// `false` only when the ports were never claimed.
-///
-/// PCI status bits share the dword and many are write-one-to-clear. Writing a
-/// previously read dword would acknowledge every pending condition it named.
-pub fn write_command(at: Address, value: u16) -> bool {
-    let mut ports = PORTS.lock_leaf();
-    let Some((address, data)) = ports.as_mut() else {
-        return false;
-    };
-    address.write(at.bits());
-    data.write(u32::from(value));
-    true
+/// Only [`claim_function`] constructs one, after reading and validating the
+/// function's own identity and header through this module's claimed ports.
+/// Dropping it retains the global claim rather than making another caller's
+/// raw address authoritative.
+#[derive(Debug)]
+#[must_use = "dropping PCI function authority permanently retains its claim"]
+pub struct FunctionClaim {
+    authority: FunctionAuthority,
+    identity: u32,
 }
 
-/// Probe every BAR while decode is off, then restore the function exactly.
+/// A page-safe physical range bound to one live function and memory BAR.
+#[derive(Debug)]
+pub struct AdmittedBar {
+    pub(super) authority: BarAuthority,
+    pub(super) range: AdmittedDeviceRange,
+}
+
+impl AdmittedBar {
+    /// Rounded physical pages and the runtime width that admitted them.
+    pub const fn physical_admission(&self) -> (u64, u64, u8) {
+        (
+            self.range.page_start(),
+            self.range.page_end(),
+            self.range.physical_bits(),
+        )
+    }
+}
+
+/// A BAR authority whose pages are installed but not yet exposed as registers.
+#[derive(Debug)]
+pub struct BarMapping {
+    pub(super) authority: BarAuthority,
+    pub(super) mapping: DeviceMapping,
+}
+
+/// A mapped BAR kept inaccessible until memory decode is verified.
+#[derive(Debug)]
+pub struct DisabledBar {
+    authority: BarAuthority,
+    region: ReleasableDevice,
+}
+
+/// Register access retaining the exact function generation and BAR identity.
+#[derive(Debug)]
+pub struct MappedBar {
+    authority: BarAuthority,
+    region: ReleasableDevice,
+}
+
+/// Fresh NVMe quiescence observed through one exact function-bound BAR.
+#[derive(Debug)]
+#[must_use = "NVMe quiescence authority must be consumed by DMA admission"]
+pub struct NvmeBusMasterAuthority<'bar> {
+    bar: &'bar MappedBar,
+    _observed: DisabledRegisters,
+}
+
+/// Why a mapped BAR could not prove that its NVMe controller is disabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NvmeObservationError {
+    /// NVMe controller registers must come from BAR0.
+    WrongBar(usize),
+    /// A register access was outside or misaligned within the mapped BAR.
+    Access(MmioError),
+    /// `CC.EN` or `CSTS.RDY` remained set.
+    State(ControllerStateError),
+}
+
+impl core::fmt::Display for NvmeObservationError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::WrongBar(index) => write!(formatter, "NVMe registers came from BAR{index}"),
+            Self::Access(reason) => write!(formatter, "NVMe register access: {reason}"),
+            Self::State(reason) => core::fmt::Display::fmt(reason, formatter),
+        }
+    }
+}
+
+impl core::error::Error for NvmeObservationError {}
+
+/// A mapped BAR converted back into exact unmap authority.
+#[derive(Debug)]
+pub struct ReleasableBar {
+    pub(super) authority: BarAuthority,
+    pub(super) region: ReleasableDevice,
+}
+
+impl BarMapping {
+    /// Claim inaccessible register storage after its pages become live.
+    ///
+    /// # Errors
+    ///
+    /// Returns the complete mapping if the running root no longer contains it.
+    pub fn claim_disabled(self) -> Result<DisabledBar, Self> {
+        let Self { authority, mapping } = self;
+        match mapping.claim_releasable() {
+            Ok(region) => Ok(DisabledBar { authority, region }),
+            Err(mapping) => Err(Self { authority, mapping }),
+        }
+    }
+}
+
+impl DisabledBar {
+    /// Recover exact unmap authority while register access remains hidden.
+    pub fn into_releasable(self) -> ReleasableBar {
+        ReleasableBar {
+            authority: self.authority,
+            region: self.region,
+        }
+    }
+}
+
+impl MappedBar {
+    /// Where the registers are mapped in the running address space.
+    pub const fn address(&self) -> u64 {
+        self.region.address()
+    }
+
+    /// Read one register word.
+    pub fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
+        ReleasableDevice::read_u32(&self.region, offset)
+    }
+
+    /// Write one register word.
+    pub fn write_u32(&mut self, offset: usize, value: u32) -> Result<(), MmioError> {
+        ReleasableDevice::write_u32(&mut self.region, offset, value)
+    }
+
+    /// Observe the two live NVMe registers required before DMA admission.
+    ///
+    /// The returned authority borrows this mapping, preventing another safe
+    /// register write before it is consumed by [`admit_bus_master`].
+    ///
+    /// # Errors
+    ///
+    /// Refuses a non-BAR0 mapping, either inaccessible register, or a set
+    /// `CC.EN` or `CSTS.RDY` bit.
+    pub fn observe_nvme_disabled(
+        &self,
+    ) -> Result<NvmeBusMasterAuthority<'_>, NvmeObservationError> {
+        if self.authority.index() != 0 {
+            return Err(NvmeObservationError::WrongBar(self.authority.index()));
+        }
+        let cc = self
+            .read_u32(register::CC)
+            .map_err(NvmeObservationError::Access)?;
+        let csts = self
+            .read_u32(register::CSTS)
+            .map_err(NvmeObservationError::Access)?;
+        let observed =
+            DisabledRegisters::from_bits(cc, csts).map_err(NvmeObservationError::State)?;
+        Ok(NvmeBusMasterAuthority {
+            bar: self,
+            _observed: observed,
+        })
+    }
+
+    /// Recover exact unmap authority for a rejected controller.
+    pub fn into_releasable(self) -> ReleasableBar {
+        ReleasableBar {
+            authority: self.authority,
+            region: self.region,
+        }
+    }
+}
+
+impl NvmeBusMasterAuthority<'_> {
+    /// The live register values carried by this authority.
+    #[cfg(feature = "selftest")]
+    pub fn observation_for_test(&self) -> (u32, u32) {
+        self._observed.bits()
+    }
+}
+
+/// Why a CPU-admitted physical range could not bind to one probed BAR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BarBindError {
+    /// The physical base or length differs from the probed BAR window.
+    Range,
+    /// Function generation, BAR kind, or exclusive ownership was refused.
+    Authority(BarAuthorityError),
+}
+
+impl core::fmt::Display for BarBindError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Range => {
+                core::fmt::Write::write_str(f, "the admitted range differs from the BAR")
+            }
+            Self::Authority(reason) => write!(f, "BAR authority: {reason}"),
+        }
+    }
+}
+
+impl core::error::Error for BarBindError {}
+
+/// A refused decode transition retaining the mapping and any command owner.
+#[derive(Debug)]
+pub struct BarEnableFailure {
+    reason: ConfigBarEnableError,
+    bar: DisabledBar,
+}
+
+/// Result of exposing a mapped BAR through memory decode.
+#[derive(Debug)]
+#[must_use = "a refused decode transition retains mapping and restoration authority"]
+pub enum BarEnableOutcome {
+    /// The BAR is accessible and the command transition remains owned.
+    Enabled(MappedBar),
+    /// Decode was refused with every remaining owner intact.
+    Refused(BarEnableFailure),
+}
+
+impl BarEnableFailure {
+    /// Why memory decode did not become usable.
+    pub const fn reason(&self) -> ConfigBarEnableError {
+        self.reason
+    }
+
+    /// Recover the inaccessible mapping for exact retirement.
+    pub fn into_bar(self) -> DisabledBar {
+        self.bar
+    }
+}
+
+impl FunctionClaim {
+    /// The claimed bus/device/function identity, with register offset zero.
+    pub const fn address(&self) -> Address {
+        self.authority.address()
+    }
+
+    /// The vendor and device word read while the function was claimed.
+    pub const fn identity(&self) -> (u16, u16) {
+        (self.identity as u16, (self.identity >> 16) as u16)
+    }
+}
+
+/// Why exclusive function authority could not be established.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ClaimError {
+    /// Configuration space is unavailable.
+    Unavailable,
+    /// The function does not exist.
+    Absent,
+    /// Another live authority already owns the function.
+    Taken,
+    /// The bounded registry has no free slot.
+    NoRoom,
+    /// Registry identity or generation space is exhausted.
+    Exhausted,
+    /// The function reports an unsupported header layout.
+    Header(u8),
+}
+
+impl core::fmt::Display for ClaimError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unavailable => {
+                core::fmt::Write::write_str(f, "configuration space is unavailable")
+            }
+            Self::Absent => core::fmt::Write::write_str(f, "the function is absent"),
+            Self::Taken => core::fmt::Write::write_str(f, "the function is already claimed"),
+            Self::NoRoom => core::fmt::Write::write_str(f, "the function registry is full"),
+            Self::Exhausted => {
+                core::fmt::Write::write_str(f, "function claim generations are exhausted")
+            }
+            Self::Header(layout) => write!(f, "header layout {layout} is unsupported"),
+        }
+    }
+}
+
+impl core::error::Error for ClaimError {}
+
+/// Claim one present function after verifying its header layout.
+///
+/// Read-only enumeration remains address based. This is the sole door from an
+/// address into configuration-write authority.
+///
+/// # Errors
+///
+/// See [`ClaimError`]. Every refusal leaves the function registry unchanged.
+pub fn claim_function(at: Address) -> Result<FunctionClaim, ClaimError> {
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let Configuration {
+        ports, functions, ..
+    } = &mut *configuration;
+    let (address, data) = ports.as_mut().ok_or(ClaimError::Unavailable)?;
+    let at = at.function_base();
+    Port::write(address, at.bits());
+    let identity = Port::read(data);
+    if pci_config::is_absent(identity as u16) {
+        return Err(ClaimError::Absent);
+    }
+    let header_at = at.at(header::HEADER_TYPE).ok_or(ClaimError::Unavailable)?;
+    Port::write(address, header_at.bits());
+    let header = HeaderType::from_bits((Port::read(data) >> 16) as u8);
+    let authority = functions.claim(at, header).map_err(|reason| match reason {
+        FunctionClaimError::Taken => ClaimError::Taken,
+        FunctionClaimError::NoRoom => ClaimError::NoRoom,
+        FunctionClaimError::Exhausted => ClaimError::Exhausted,
+        FunctionClaimError::Header(layout) => ClaimError::Header(layout),
+        _ => ClaimError::Unavailable,
+    })?;
+    Ok(FunctionClaim {
+        authority,
+        identity,
+    })
+}
+
+/// A refused function-authority release with the unchanged claim.
+#[derive(Debug)]
+pub struct ReleaseFailure {
+    reason: FunctionReleaseError,
+    function: FunctionClaim,
+}
+
+impl ReleaseFailure {
+    /// Recover the exact function authority for retry.
+    pub fn into_function(self) -> FunctionClaim {
+        self.function
+    }
+}
+
+impl core::fmt::Display for ReleaseFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.reason {
+            FunctionReleaseError::Active => {
+                core::fmt::Write::write_str(f, "the function still has a configuration sublease")
+            }
+            FunctionReleaseError::Stale => {
+                core::fmt::Write::write_str(f, "the function authority is foreign or stale")
+            }
+            _ => core::fmt::Write::write_str(f, "the function authority could not be released"),
+        }
+    }
+}
+
+impl core::error::Error for ReleaseFailure {}
+
+/// Return function authority after every configuration sublease has settled.
+///
+/// # Errors
+///
+/// Returns the unchanged claim while command or BAR restoration authority is
+/// live, or if the token is no longer this registry's exact generation.
+pub fn release_function(function: FunctionClaim) -> Result<(), ReleaseFailure> {
+    let FunctionClaim {
+        authority,
+        identity,
+    } = function;
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let functions = &mut configuration.functions;
+    pci_config::release_function(functions, authority).map_err(|failure| ReleaseFailure {
+        reason: failure.reason(),
+        function: FunctionClaim {
+            authority: failure.into_authority(),
+            identity,
+        },
+    })
+}
+
+/// Admit DMA through freshly observed, function-bound NVMe registers.
+///
+/// # Errors
+///
+/// Refuses a stale BAR or command owner and every configuration access or
+/// exact-readback failure without consuming the command state.
+pub fn admit_bus_master(
+    authority: NvmeBusMasterAuthority<'_>,
+    state: &mut CommandState,
+) -> Result<(), EnableError> {
+    let NvmeBusMasterAuthority { bar, _observed: _ } = authority;
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let Configuration { ports, functions } = &mut *configuration;
+    pci_config::admit_mapped_bus_master(functions, &bar.authority, state, |at, access| {
+        let (address, data) = ports.as_mut()?;
+        Port::write(address, at.bits());
+        match access {
+            CommandAccess::Read => Some(Port::read(data)),
+            CommandAccess::Write(value) => {
+                Port::write(data, u32::from(value));
+                Some(0)
+            }
+        }
+    })
+}
+
+/// Restore a captured command word as one verified transaction.
+pub fn restore_command(
+    function: &FunctionClaim,
+    state: CommandState,
+) -> Result<(), RestoreFailure> {
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let Configuration { ports, functions } = &mut *configuration;
+    if !functions.holds(&function.authority) {
+        return pci_config::restore_command(functions, &function.authority, state, |_, _| None);
+    }
+    pci_config::restore_command(functions, &function.authority, state, |at, access| {
+        let (address, data) = ports.as_mut()?;
+        Port::write(address, at.bits());
+        match access {
+            CommandAccess::Read => Some(Port::read(data)),
+            CommandAccess::Write(value) => {
+                Port::write(data, u32::from(value));
+                Some(0)
+            }
+        }
+    })
+}
+
+/// Finish a permanent command transition after exact readback.
+pub fn commit_command(function: &FunctionClaim, state: CommandState) -> Result<(), RestoreFailure> {
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let Configuration { ports, functions } = &mut *configuration;
+    if !functions.holds(&function.authority) {
+        return pci_config::commit_command(functions, &function.authority, state, |_, _| None);
+    }
+    pci_config::commit_command(functions, &function.authority, state, |at, access| {
+        let (address, data) = ports.as_mut()?;
+        Port::write(address, at.bits());
+        match access {
+            CommandAccess::Read => Some(Port::read(data)),
+            CommandAccess::Write(value) => {
+                Port::write(data, u32::from(value));
+                Some(0)
+            }
+        }
+    })
+}
+
+/// Probe every BAR with decode and DMA off, retaining exact command restoration.
 ///
 /// `pci-config` supplies the host-tested ordering and rollback; this adapter
 /// only performs each requested cycle. The whole algorithm runs under one
 /// hold of the pair, so nobody can see a probe value or replace CF8 between a
 /// cycle's address and data instructions.
-pub fn probe_bars(at: Address, registers: usize) -> Result<ProbedBars, ProbeError<()>> {
-    let mut ports = PORTS.lock_leaf();
-    let (address, data) = ports.as_mut().ok_or(ProbeError::Access(()))?;
-    let function = at.function_base();
-
-    pci_config::probe_bars(registers, |access| {
-        let (offset, write) = match access {
-            ProbeAccess::ReadCommand => (header::COMMAND, None),
-            ProbeAccess::WriteCommand(value) => (header::COMMAND, Some(u32::from(value))),
-            ProbeAccess::ReadBar(index) => (header::BAR0 + index as u16 * 4, None),
-            ProbeAccess::WriteBar(index, value) => (header::BAR0 + index as u16 * 4, Some(value)),
-        };
-        let register = function.at(offset).ok_or(())?;
-        address.write(register.bits());
-        match write {
-            Some(value) => {
-                data.write(value);
-                Ok(0)
-            }
-            None => Ok(data.read()),
-        }
+pub fn probe_bars(function: &FunctionClaim) -> Result<StagedProbe, ProbeFailure<()>> {
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let Configuration { ports, functions } = &mut *configuration;
+    if !functions.holds(&function.authority) {
+        return Err(ProbeFailure::unavailable(EnableError::Stale));
+    }
+    pci_config::probe_bars(functions, &function.authority, |at, access| {
+        configuration_cycle(ports, at, access)
     })
+}
+
+/// Bind one CPU-admitted physical range to its exact probed memory BAR.
+///
+/// # Errors
+///
+/// Refuses a range whose base or length differs, a probe from another function
+/// generation, or a BAR that already has a live mapping. The admitted range is
+/// a proof this CPU can re-derive, so a refusal keeps nothing.
+pub fn bind_memory_bar(
+    function: &FunctionClaim,
+    bars: &ProbedBars,
+    index: usize,
+    range: AdmittedDeviceRange,
+) -> Result<AdmittedBar, BarBindError> {
+    let matches = bars.window(index).is_some_and(|window| {
+        matches!(
+            window,
+            Window {
+                bar: Bar::Memory { address, .. },
+                size,
+            } if address == range.physical() && usize::try_from(size).ok() == Some(range.len())
+        )
+    });
+    if !matches {
+        return Err(BarBindError::Range);
+    }
+
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let authority = match pci_config::bind_memory_bar(
+        &mut configuration.functions,
+        &function.authority,
+        bars,
+        index,
+    ) {
+        Ok(authority) => authority,
+        Err(reason) => return Err(BarBindError::Authority(reason)),
+    };
+    Ok(AdmittedBar { authority, range })
+}
+
+/// Enable memory decode for an already mapped, freshly unchanged BAR.
+///
+/// Returns the inaccessible mapping and any exact command restoration owner
+/// after identity or command refusal.
+pub fn enable_memory_bar(
+    function: &FunctionClaim,
+    bar: DisabledBar,
+    state: &mut CommandState,
+) -> BarEnableOutcome {
+    let DisabledBar { authority, region } = bar;
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let Configuration { ports, functions } = &mut *configuration;
+    let result = pci_config::enable_memory_bar(
+        functions,
+        &function.authority,
+        &authority,
+        state,
+        |at, access| {
+            let (address, data) = ports.as_mut()?;
+            Port::write(address, at.bits());
+            match access {
+                BarEnableAccess::ReadBar(_) | BarEnableAccess::Command(CommandAccess::Read) => {
+                    Some(Port::read(data))
+                }
+                BarEnableAccess::Command(CommandAccess::Write(value)) => {
+                    Port::write(data, u32::from(value));
+                    Some(0)
+                }
+            }
+        },
+    );
+    match result {
+        Ok(()) => BarEnableOutcome::Enabled(MappedBar { authority, region }),
+        Err(reason) => BarEnableOutcome::Refused(BarEnableFailure {
+            reason,
+            bar: DisabledBar { authority, region },
+        }),
+    }
+}
+
+/// Return a BAR authority only after its device pages have been unmapped.
+///
+/// # Errors
+///
+/// Returns the unchanged authority if its function generation or BAR slot is
+/// no longer live.
+pub fn release_memory_bar(authority: BarAuthority) -> Result<(), BarAuthorityFailure> {
+    pci_config::release_memory_bar(&mut CONFIGURATION.lock_leaf().functions, authority)
+}
+
+/// Return a BAR authority whose page-table mapping never began.
+///
+/// # Errors
+///
+/// Returns the authority refusal if its function generation is no longer live.
+pub fn release_admitted_bar(admitted: AdmittedBar) -> Result<(), BarAuthorityFailure> {
+    release_memory_bar(admitted.authority)
+}
+
+/// Retry an uncertain BAR restoration without releasing its function lease.
+pub fn retry_probe(function: &FunctionClaim, retry: ProbeRetry) -> Result<(), ProbeFailure<()>> {
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let Configuration { ports, functions } = &mut *configuration;
+    if !functions.holds(&function.authority) {
+        return Err(ProbeFailure::with_retry(
+            ProbeError::Unavailable(EnableError::Stale),
+            retry,
+        ));
+    }
+    pci_config::retry_probe(functions, &function.authority, retry, |at, access| {
+        configuration_cycle(ports, at, access)
+    })
+}
+
+/// Whether any offset of `at` is claimed by a live function authority.
+#[cfg(feature = "selftest")]
+pub fn is_claimed(at: Address) -> bool {
+    CONFIGURATION.lock_leaf().functions.is_claimed(at)
+}
+
+/// Function authorities retained at this instant.
+#[cfg(feature = "selftest")]
+pub fn claims() -> usize {
+    CONFIGURATION.lock_leaf().functions.len()
+}
+
+fn configuration_cycle(
+    ports: &mut Option<(Port<u32>, Port<u32>)>,
+    function: Address,
+    access: ProbeAccess,
+) -> Result<u32, ()> {
+    let (address, data) = ports.as_mut().ok_or(())?;
+    let (offset, write) = match access {
+        ProbeAccess::ReadCommand => (header::COMMAND, None),
+        ProbeAccess::WriteCommand(value) => (header::COMMAND, Some(u32::from(value))),
+        ProbeAccess::ReadBar(index) => (header::BAR0 + index as u16 * 4, None),
+        ProbeAccess::WriteBar(index, value) => (header::BAR0 + index as u16 * 4, Some(value)),
+    };
+    let register = function.at(offset).ok_or(())?;
+    Port::write(address, register.bits());
+    match write {
+        Some(value) => {
+            Port::write(data, value);
+            Ok(0)
+        }
+        None => Ok(Port::read(data)),
+    }
 }

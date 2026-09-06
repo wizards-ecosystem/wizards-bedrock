@@ -18,7 +18,7 @@
 use port_space::{PORT_COUNT, PortSpace};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
-use proptest::test_runner::{Config, TestRunner};
+use proptest::test_runner::TestRunner;
 
 /// The window generated requests reach, plus a margin either side, so a
 /// snapshot can see a span that ran past what was asked for.
@@ -149,10 +149,7 @@ proptest! {
 #[test]
 fn the_reservation_properties_reach_both_grants_and_refusals() {
     const SAMPLES: usize = 4096;
-    let mut runner = TestRunner::new(Config {
-        cases: SAMPLES as u32,
-        ..Config::default()
-    });
+    let mut runner = TestRunner::deterministic();
     let mut granted = 0usize;
     let mut refused = 0usize;
 

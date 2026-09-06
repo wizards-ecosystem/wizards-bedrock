@@ -7,6 +7,26 @@
 //! bounds at both ends: zero stops the hardware rather than firing it soon,
 //! and thirty-two bits is as far ahead as it can be asked to look.
 
+use crate::local_vector::{DeliverableVector, Entry};
+
+/// Why a one-shot timer entry cannot be published yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OneShotError {
+    /// The current countdown has not stopped.
+    Running,
+}
+
+/// Plan the sole register write that unmasks a one-shot timer.
+pub const fn one_shot_entry(
+    current_count: u32,
+    vector: DeliverableVector,
+) -> Result<Entry, OneShotError> {
+    if current_count != 0 {
+        return Err(OneShotError::Running);
+    }
+    Ok(Entry::one_shot(vector.get()))
+}
+
 /// How the bus clock is divided before it drives the timer's countdown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Divide {
@@ -78,12 +98,14 @@ pub const fn initial_count(ticks: u64) -> u32 {
     ticks as u32
 }
 
-/// The longest wait one arming can express, in ticks of the divided clock.
-pub const MAX_TICKS: u64 = u32::MAX as u64;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vector::InterruptVector;
+
+    fn vector(raw: u8) -> InterruptVector {
+        InterruptVector::new(raw).expect("test vector is assignable")
+    }
 
     const ALL: &[Divide] = &[
         Divide::By1,
@@ -163,7 +185,7 @@ mod tests {
     fn a_wait_inside_the_counter_is_the_count() {
         assert_eq!(initial_count(1), 1);
         assert_eq!(initial_count(3_000_000), 3_000_000);
-        assert_eq!(initial_count(MAX_TICKS), u32::MAX);
+        assert_eq!(initial_count(u64::from(u32::MAX)), u32::MAX);
     }
 
     /// The clamp that matters: a scheduler asking for a deadline that has
@@ -178,7 +200,44 @@ mod tests {
     /// as far ahead as it goes, and the caller re-arms for the remainder.
     #[test]
     fn a_wait_past_the_counter_is_the_counter() {
-        assert_eq!(initial_count(MAX_TICKS + 1), u32::MAX);
+        assert_eq!(initial_count(u64::from(u32::MAX) + 1), u32::MAX);
         assert_eq!(initial_count(u64::MAX), u32::MAX);
+    }
+
+    #[test]
+    fn one_shot_publication_requires_a_stopped_distinct_source() {
+        let vector = DeliverableVector::configured(vector(0x41), vector(0xff)).unwrap();
+        assert_eq!(one_shot_entry(1, vector), Err(OneShotError::Running));
+        assert!(DeliverableVector::configured(self::vector(0xff), self::vector(0xff)).is_none());
+        assert_eq!(
+            one_shot_entry(0, vector),
+            Ok(Entry::one_shot(self::vector(0x41)))
+        );
+    }
+
+    #[test]
+    fn refused_one_shot_plans_perform_no_fake_register_write() {
+        for (count, vector) in [(1, 0x41), (u32::MAX, 0x41), (0, 0xff), (0, 17)] {
+            let mut writes = 0;
+            if InterruptVector::new(vector)
+                .and_then(|vector| DeliverableVector::configured(vector, self::vector(0xff)))
+                .is_some_and(|vector| one_shot_entry(count, vector).is_ok())
+            {
+                writes += 1;
+            }
+            assert_eq!(writes, 0, "count {count}, vector {vector}");
+        }
+    }
+
+    #[test]
+    fn configured_timer_delivery_exhausts_the_vector_domain() {
+        const SPURIOUS: u8 = 0xff;
+        for vector in u8::MIN..=u8::MAX {
+            let writes = InterruptVector::new(vector)
+                .and_then(|vector| DeliverableVector::configured(vector, self::vector(SPURIOUS)))
+                .is_some_and(|vector| one_shot_entry(0, vector).is_ok());
+            let expected = vector >= 0x30 && vector != SPURIOUS;
+            assert_eq!(writes, expected, "vector {vector}");
+        }
     }
 }

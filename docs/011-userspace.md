@@ -2,7 +2,7 @@
 
 The phase that gives the kernel someone to serve. Ring 3, a handle table that
 is a process's external-object authority, `spawn` in place of `fork`, ELF
-images loaded from an initrd, channels that carry authority, and the
+images loaded from an initrd, an opaque bootstrap identity, and the
 submission/completion rings the native ABI is made of — closing with a stub
 mlibc sysdep whose only job is to find out whether a POSIX libc can sit on this
 ABI while the ABI is still cheap to change (D-74).
@@ -39,6 +39,15 @@ measurements. The phase-close total is the total at the end of Phase 5, not a
 promise that later phases retain it; `014-storage.md` owns the checked current
 gate totals.
 
+**Current-state correction (D-248).** The channel and Event sections below are
+the historical Phase 5 record, not the current implementation inventory. The
+kernel now retains one counted, opaque `Channel` identity solely because every
+spawned program starts with one typed bootstrap handle. It has no paired end,
+message buffer, send/receive, wait, backpressure or orphan semantics. `Event`
+and the duplicate HandleTable-level channel/close operations were removed
+until a concrete post-gate caller fixes their contracts. The queue's direct
+`Duplicate` operation and `WaitQueue::wait_unless` lost-wakeup proof remain.
+
 ## What earlier phases left owing
 
 Every debt below is on the record elsewhere; this table is where a future
@@ -57,7 +66,7 @@ presenting the old premise as current.
 | The untyped split `UFrame`, "absent on purpose" until something can map a frame into a second address space | D-44; `wost/src/mm/mod.rs` | Slice 3 gives it its first real caller |
 | Port claims prove exclusivity but not device entitlement | D-77 | **Not this phase.** The user-memory half is slice 3's; the device half is Phase 6's, with PCI discovery |
 | XSAVE, deferred until "there is a scheduler" | D-29 | Slice 5: eager, compacted, boot-sized, with the offset arithmetic in `libs/` |
-| `swapgs` and the GS base, left for ring 3 | D-29 | Slice 5, which is where `arch::percpu` gets its first real caller |
+| `swapgs` and the GS base, left for ring 3 | D-29 | Phase 5 chose D-96's interrupt gate and added neither; D-154 later supplied the structural `arch::percpu` seam, while a `gs:` accessor and `swapgs` still wait for SMP or a measured `syscall` path |
 | There are no ring-3 descriptors | `006` | Slice 5 |
 | The lock discipline belongs in the borrow checker — 13 statics, 73 call sites | D-69 | ✅ Slice 2, first, so nothing in this phase was written twice — and D-85 records where its shape was wrong |
 | There is no preempt-disable mechanism; `SpinLock`'s `cli` is doing that job | D-70 rule 2 | A preempt-only lock, with its first caller: every lock a handler can reach must keep disabling interrupts, and today that is all of them |
@@ -86,12 +95,12 @@ message shape. mlibc needs an ABI to sit on.
 |---|---|---|
 | 1 | This charter: the handle-table layout and lifetime rules, the queue layout and wakeup semantics, the signal answer, and the ADRs that cost no code | ✅ 2026-08-24 |
 | 2 | The lock discipline in the borrow checker (D-69): `SpinLock::lock` borrows the context, and the leaf acquisition a `Drop` can take | ✅ 2026-08-24 |
-| 3 | The address space that grows: two-way mapping, mappings that carry their evidence, unmap returning a flush token, the double-fault stack guarded | ✅ 2026-08-24 |
+| 3 | The address space that grows: two-way mapping, mappings that carry their evidence, synchronous unmap invalidation with a frame-ownership token, the double-fault stack guarded | ✅ 2026-08-24; TLB lifetime amended 2026-08-30 |
 | 4 | Trap entry, FRED-shaped: `libs/trap-cause` and table dispatch, the boot thread's own guarded stack, eIBRS and the speculation report, x2APIC as a checked precondition | ✅ 2026-08-24 |
 | 5 | Ring 3: user descriptors, one gate at DPL 3, the SMAP copy guard, `VERW` on the way out, the XSAVE layout in `libs/x86-cpuid` | ✅ 2026-08-24 |
 | 6 | The handle table: `libs/handle-space`, rights in one `u32`, a refcounted table, the object header, per-process quota | ✅ 2026-08-24 |
 | 7 | Memory objects, spawn, ELF loading, initrd: `libs/elf64`, a second address space, `UFrame`, per-thread `RSP0` and eager XSAVE, stacks that arrive with their thread, two processes, exactly one handle each at spawn, and `THREADS` split into a thread table and a run queue | ✅ 2026-08-24 |
-| 8 | Channels: bytes and handles, attenuate-on-send, rights declared per field with no defaults | ✅ 2026-08-24 |
+| 8 | Historical channel implementation; retired to one opaque bootstrap identity by D-248 | ✅ 2026-08-24; superseded 2026-08-30 |
 | 9 | The async queue ABI: the model before the protocol, `libs/ring-proto` under shuttle and proptest, reservation backpressure, exactly one terminal completion | ✅ 2026-08-24 |
 | 10 | The stub mlibc sysdep (D-74): written and analysed, not compiled — the toolchain wall is recorded in D-114 | ✅ 2026-08-24 |
 | 11 | Phase close: the VMware boot (D-18), the adversarial audit (D-77), the roadmap and this file's closing section | ✅ 2026-08-24 |
@@ -218,8 +227,9 @@ synchronous will deliver the 1.06×.
   literally "always use `READ_ONCE()` to read ring pointers." This is enforced
   by the shape of the API, not by discipline — the validated copy is the only
   thing the kernel can reach. D-221 later closes the distinct ordering half:
-  acquire the producer's atomic tail, volatile-copy once, then release the
-  consumer head after use.
+  acquire the producer's tail, volatile-copy once, then release the consumer
+  head after use. D-282 keeps those externally writable words outside Rust's
+  atomic-object model while preserving the same x86 ordering.
 
 **Ports and completion queues are the same shape; build one.** A Zircon port
 *is* a completion queue whose entries are events. Building both gives userspace
@@ -375,11 +385,13 @@ its own scheduling points under sequential consistency and cannot answer a
 weak-memory question. D-221 replaces that false oracle with an explicit event
 order model bound to the actual `wost` acquire/release methods; weakening
 either edge admits the published-index/old-payload outcome and fails its exact
-host witness.
+host witness. D-282 replaces the intervening Rust atomic object with the exact
+aligned x86 access because ring 3 is a hostile machine-code participant, not a
+Rust atomic peer.
 
 Expected machine checks, refined per slice: a preempt-only lock is held across
-a delivered interrupt; a mapping into a live address space is readable and
-survives unmap only until its flush token is spent; a write into the boot
+a delivered interrupt; a mapping into the active address space is replaced
+only after its cleared translation has been synchronously invalidated; a write into the boot
 stack's guard faults and so does one into the double-fault stack's; a ring-3
 thread runs, syscalls, and returns with ring 3 in the trap record; a ring-3
 read of a kernel address faults; extended state survives a switch between
@@ -521,16 +533,12 @@ rather than to an API:
   processes give the table a second reason to change and the split happens
   once rather than twice.
 
-**Still owed by this slice's neighbours.** The compile-time property has no
-automated check and cannot have one where it lives: `wost` is cross-compiled,
-so a `compile_fail` doctest cannot run against it (D-41), and a copy in `libs/`
-would drift. It is verified by hand, recorded in D-85, and re-verifying it is a
-manual step when the guard types change.
-
-D-223 closes the distinct D-68 auto-trait debt without copying a guard into
-`libs/`: a host compile-fail crate imports the actual `wost` types and requires
-rustc to reject both as `Send`. The borrow/`Drop` property above remains the
-separate manual check this paragraph records.
+**Closed by D-247.** A `compile_fail` doctest still cannot run where the
+cross-compiled types live (D-41), and a copy in `libs/` would still drift.
+D-223 supplied the durable alternative: a host harness cross-compiles probes
+against the actual `wost`. D-247 extends it to require the two live-guard
+programs to fail with exactly `E0499`, require the explicit-drop control to
+compile, and retain removal of `SpinLockGuard`'s `Drop` impl as the mutation.
 
 ## Slice 3 — the address space that grows (2026-08-24)
 
@@ -565,14 +573,14 @@ map and the kernel image are nobody's frames — firmware placed them — so
 demanding ownership there would be a fiction. What can honestly be demanded is
 that the handoff described them, which is the bound D-64 gave physical reads.
 
-**Unmap gives frames back, and the token owns them until it has flushed**
-(D-88). A CPU may still hold a cached translation to a cleared entry, so the
-allocator must not see the frame first; the frames therefore live *inside* the
-token and leave only through `flush` or the `Drop` that does the same work.
-That also survives Rust's leak rule, which is the part that decides the design:
-`mem::forget` on a token costs the frames and not correctness, so no soundness
-argument rests on `Drop` running. It is the same reasoning D-79 applies to ring
-buffers, in the other direction.
+**Unmap pays translation debt before returning frame ownership.** A CPU may
+still hold a cached translation to a cleared entry, so every leaf removed from
+the current root is invalidated synchronously. Inactive roots contain no
+caller-selected global leaves and this kernel keeps PCID disabled, so their
+next `CR3` load flushes every cached mutable translation. The returned token
+therefore retains only the frames and their user provenance: forgetting it
+leaks those frames but cannot preserve a stale mapping (PW-131, amending
+D-88's deferred-flush mechanism).
 
 Provenance is bit 9 of the page entry, one of the three the architecture leaves
 to software. A frame the allocator handed out must come back and one the
@@ -732,8 +740,9 @@ of its own compatibility layer. `Arc` is the refcount: D-78 wants
 `inc_not_zero` from day one, and `Weak::upgrade` is that operation with the
 atomics already audited.
 
-**`Event` is the first object** — no memory, no address space — so it exercises
-the table, rights, refcounting and lifetime without waiting on ring 3.
+**`Event` was the first object** — no memory, no address space — and exercised
+the table, rights, refcounting and lifetime without waiting on ring 3. D-248
+removed it after the caller audit found that only its own checks reached it.
 
 **Building it found a bug in Phase 4** (D-93). `unblock` changed who was
 runnable and armed no timer, which this kernel's own module doc forbids. Nobody
@@ -764,13 +773,12 @@ most likely to be silently unfailable — *the invalid value never decodes* and
 more than I have" into a silent success, and `contains`, whose any-of form
 reads identically to subset and grants everything.
 
-**Still owed by this slice's neighbours.** `mod handle` and `mod object` are
-`#[cfg(feature = "selftest")]`: they are built and proven and nothing ships
-them, because the first shipped caller is `spawn`. The gate comes off in slice
-7 with it. And `NotYours` versus `Stale` is an occupancy oracle over a global
-arena — a table can learn which slots another holds. Zircon collapses both to
-one error for that reason, and it is a decision for the slice that has a
-syscall to surface them through.
+**What this slice still owed at the time.** `mod handle` and `mod object` were
+`#[cfg(feature = "selftest")]` until `spawn` became their first shipped caller
+in slice 7. D-248 later reduced that shipped object surface to the opaque
+bootstrap identity. `NotYours` versus `Stale` was also an occupancy oracle over
+a global arena — a table could learn which slots another held. Zircon
+collapses both to one error for that reason, and D-222 later did the same here.
 
 D-222 closes that owed decision before a direct Wizzy handle operation can
 freeze it. One exact slot-generation probe formerly returned `NotYours` for a
@@ -800,6 +808,21 @@ the comparison means something.
 Exactly one gate admits ring 3, and it is named rather than defaulted. Every
 other vector faults when user code says `int`, because a device's line is not a
 service.
+
+**Shared kernel mappings have their own admission proof** (D-250). D-81's
+statement that the target processor reports `RDCL_NO` did not prove the
+processor actually running this image, and D-91 already established that an
+absent capability word says nothing. A native processor or ordinary virtual
+machine now enters ring 3 only after an affirmative `RDCL_NO`. The controlled
+QEMU development machine has one narrow exception because TCG does not model
+`IA32_ARCH_CAPABILITIES`: the guest must observe the hypervisor bit and the
+exact QEMU TCG CPUID base tuple, while the host runner pins TCG and consumes the
+guest's exact policy marker. That tuple is trusted development configuration,
+not attestation; no generic hypervisor, QEMU or VMware signature is accepted.
+Without either proof the kernel may continue diagnostic service, but process
+construction returns a typed refusal before allocating anything. KPTI remains
+the trigger when supported native hardware without `RDCL_NO` must run user
+programs.
 
 **`enter_user` is safe because it checks** (D-96). `iretq` will send the CPU to
 an unmapped address in a privilege level that cannot report it, so the tables,
@@ -884,7 +907,7 @@ says where it went.
 | No ring-3 descriptors | **Paid.** D-96 |
 | The lock discipline in the borrow checker | **Paid.** D-85, first, so nothing here was written twice |
 | No preempt-disable mechanism | **Not paid, and it should be said plainly.** Every lock a trap handler can reach still disables interrupts, which is correct and is not what D-70 rule 2 asked for. A preempt-only lock has no caller that would benefit on one CPU, and building one without a caller is how an abstraction gets the wrong shape. Phase 12 |
-| The per-CPU word widens | **Not paid**, with `swapgs`, and for the same reason |
+| The per-CPU word widens | **Structural seam paid by D-154; GS-backed CPU selection not paid.** One CPU and D-96's interrupt gate need neither a `gs:` accessor nor `swapgs`; both remain with SMP in Phase 12 |
 | Per-process quota | **Paid at the handle layer** (D-111: 64 handles per process). **Not paid** for frames or for per-message allocation, which is D-44's other half and needs an accounting owner |
 | A wait with a timeout, and a wait on two queues | **Half paid.** D-164 made `RingWait` sleep until the earliest operation deadline. A wait on multiple queues remains absent because nothing calls for one |
 | The thread cap of sixteen is a real cap | **Not paid.** D-86 and D-88 made stack mappings follow spawn and exit, but the arena remains a fixed sixteen slots. That is a ceiling, not a dynamic-stack implementation; PW-701 names the trigger for changing it |
@@ -990,10 +1013,10 @@ Nothing here is a surprise; each is named in the ADR that created it.
 - ~~A fault during a user copy is still terminal.~~ **Closed by D-120.** The
   copy is assembly with its faulting instructions between named labels, a page
   fault in that range resumes at a fixup, and the caller gets a count of what
-  did not move. The trap dispatch D-81 built is what consults it. What it buys
-  beyond the hole: dereferencing an arbitrary *user* address is now memory-safe,
-  so `copy_from_user_unwalked` exists and is what Linux's `copy_from_user`
-  has always been.
+  did not move. The trap dispatch D-81 built is what consults it. D-279 later
+  removed the safe general unwalked door because a lower-half leaf can still be
+  supervisor-only. Production copy now walks user permission first; only a
+  fixed, selftest-only driver exercises the unwalked recovery assembly (PW-538).
 - ~~`xtask/src/elf.rs` carries its own transcription of the ELF header
   offsets.~~ **Closed by D-158**, which moved the builder to `libs/elf64`.
 - ~~No completion carries a handle.~~ **Closed by D-163** for same-object

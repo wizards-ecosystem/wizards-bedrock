@@ -24,13 +24,16 @@
 //! assert_eq!(PAGE_SIZE, 4096);
 //!
 //! let range = MappingRange::new(0xffff_8000_0000_0000, 0, PAGE_SIZE).unwrap();
-//! assert_eq!(range.pages(), 1);
+//! assert_eq!(range.len(), PAGE_SIZE);
 //! ```
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 use core::fmt;
+
+pub mod activation;
+pub mod device;
 
 /// Bytes in the smallest page.
 pub const PAGE_SIZE: u64 = 4096;
@@ -209,6 +212,23 @@ impl core::ops::BitOr for Flags {
     }
 }
 
+/// Whether one walk found the exact expected four-kilobyte leaf.
+///
+/// Accessed and dirty are omitted from identity because hardware may set them
+/// without changing the mapping's physical target or policy.
+pub const fn page_identity_matches(
+    mapped: u64,
+    flags: Flags,
+    span: u64,
+    expected: u64,
+    expected_flags: Flags,
+) -> bool {
+    let volatile = Flags::ACCESSED.union(Flags::DIRTY);
+    mapped == expected
+        && span == PAGE_SIZE
+        && flags.difference(volatile).bits() == expected_flags.difference(volatile).bits()
+}
+
 impl fmt::Debug for Flags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut separator = "";
@@ -223,15 +243,16 @@ impl fmt::Debug for Flags {
             (Self::HUGE, "huge"),
             (Self::GLOBAL, "global"),
             (Self::NO_EXECUTE, "no-execute"),
+            (Self::OWNED, "owned"),
         ] {
             if self.contains(flag) {
-                f.write_str(separator)?;
-                f.write_str(name)?;
+                core::fmt::Write::write_str(f, separator)?;
+                core::fmt::Write::write_str(f, name)?;
                 separator = " ";
             }
         }
         if separator.is_empty() {
-            f.write_str("none")?;
+            core::fmt::Write::write_str(f, "none")?;
         }
         Ok(())
     }
@@ -258,7 +279,7 @@ impl fmt::Display for EntryError {
             Self::OutOfRange(address) => write!(f, "{address:#x} does not fit 52 bits"),
             Self::CannotMapPage(level) => write!(f, "{level:?} cannot map a page"),
             Self::HugeFlagIsDerived => {
-                f.write_str("the huge-page flag is derived from the leaf level")
+                core::fmt::Write::write_str(f, "the huge-page flag is derived from the leaf level")
             }
         }
     }
@@ -272,9 +293,6 @@ impl core::error::Error for EntryError {}
 pub struct Entry(u64);
 
 impl Entry {
-    /// An absent entry — every bit zero.
-    pub const EMPTY: Self = Self(0);
-
     /// Rebuild an entry from the word a table holds.
     pub const fn from_bits(bits: u64) -> Self {
         Self(bits)
@@ -363,6 +381,17 @@ impl Entry {
         self.flags().contains(Flags::HUGE)
     }
 
+    /// Whether another intermediate entry names the same table with the same
+    /// software-selected policy.
+    ///
+    /// Hardware may set [`Flags::ACCESSED`] during a page walk. Every other
+    /// bit, including the physical address, remains part of the identity.
+    pub const fn table_identity_matches(self, found: Self) -> bool {
+        self.address() == found.address()
+            && self.flags().difference(Flags::ACCESSED).bits()
+                == found.flags().difference(Flags::ACCESSED).bits()
+    }
+
     const fn encode(address: u64, alignment: u64, flags: Flags) -> Result<Self, EntryError> {
         if !address.is_multiple_of(alignment) {
             return Err(EntryError::Misaligned(address));
@@ -377,7 +406,7 @@ impl Entry {
 impl fmt::Debug for Entry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if !self.is_present() {
-            return f.write_str("Entry(absent)");
+            return core::fmt::Write::write_str(f, "Entry(absent)");
         }
         write!(f, "Entry({:#x} {:?})", self.address(), self.flags())
     }
@@ -409,16 +438,6 @@ pub enum Level {
 impl Level {
     /// Every level, top down — the order a walk visits them.
     pub const WALK: [Self; 4] = [Self::Pml4, Self::Pdpt, Self::Pd, Self::Pt];
-
-    /// The level below this one, or `None` at [`Pt`](Self::Pt).
-    pub const fn below(self) -> Option<Self> {
-        match self {
-            Self::Pml4 => Some(Self::Pdpt),
-            Self::Pdpt => Some(Self::Pd),
-            Self::Pd => Some(Self::Pt),
-            Self::Pt => None,
-        }
-    }
 
     /// The lowest bit of the virtual address this level's index occupies.
     ///
@@ -457,9 +476,27 @@ pub const fn is_canonical(address: u64) -> bool {
     sign_extended == address
 }
 
-/// Sign-extend a 48-bit address into canonical form.
-pub const fn canonicalise(address: u64) -> u64 {
-    ((address as i64) << 16 >> 16) as u64
+/// A virtual address whose upper bits are the sign extension of bit 47.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CanonicalAddress(u64);
+
+impl CanonicalAddress {
+    /// The canonical null address.
+    pub const ZERO: Self = Self(0);
+
+    /// Admit a value the processor accepts as a virtual address.
+    pub const fn new(address: u64) -> Option<Self> {
+        if is_canonical(address) {
+            Some(Self(address))
+        } else {
+            None
+        }
+    }
+
+    /// Return the admitted address.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
 }
 
 /// A mapping range whose complete arithmetic has been checked up front.
@@ -472,8 +509,6 @@ pub struct MappingRange {
     virtual_base: u64,
     physical_base: u64,
     len: u64,
-    last_virtual: u64,
-    last_physical: u64,
 }
 
 /// Why a complete mapping range cannot be represented safely.
@@ -503,7 +538,7 @@ pub enum MappingRangeError {
 impl fmt::Display for MappingRangeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::ZeroLength => f.write_str("mapping length is zero"),
+            Self::ZeroLength => core::fmt::Write::write_str(f, "mapping length is zero"),
             Self::MisalignedVirtualBase(address) => {
                 write!(f, "virtual base {address:#x} is not page-aligned")
             }
@@ -513,13 +548,17 @@ impl fmt::Display for MappingRangeError {
             Self::MisalignedLength(len) => {
                 write!(f, "mapping length {len} is not page-aligned")
             }
-            Self::VirtualEndOverflow => f.write_str("virtual mapping end overflows"),
-            Self::PhysicalEndOverflow => f.write_str("physical mapping end overflows"),
+            Self::VirtualEndOverflow => {
+                core::fmt::Write::write_str(f, "virtual mapping end overflows")
+            }
+            Self::PhysicalEndOverflow => {
+                core::fmt::Write::write_str(f, "physical mapping end overflows")
+            }
             Self::NonCanonicalVirtual(address) => {
                 write!(f, "virtual address {address:#x} is not canonical")
             }
             Self::CrossesCanonicalHole => {
-                f.write_str("virtual mapping crosses the noncanonical hole")
+                core::fmt::Write::write_str(f, "virtual mapping crosses the noncanonical hole")
             }
             Self::PhysicalOutOfRange(address) => {
                 write!(f, "physical address {address:#x} does not fit 52 bits")
@@ -583,8 +622,6 @@ impl MappingRange {
             virtual_base,
             physical_base,
             len,
-            last_virtual,
-            last_physical,
         })
     }
 
@@ -599,28 +636,12 @@ impl MappingRange {
     }
 
     /// Bytes in the range.
+    #[expect(
+        clippy::len_without_is_empty,
+        reason = "construction refuses zero-length mapping ranges"
+    )]
     pub const fn len(self) -> u64 {
         self.len
-    }
-
-    /// Whether the range is empty. A checked mapping range never is.
-    pub const fn is_empty(self) -> bool {
-        false
-    }
-
-    /// Number of pages in the range.
-    pub const fn pages(self) -> u64 {
-        self.len / PAGE_SIZE
-    }
-
-    /// Last virtual byte included in the range.
-    pub const fn last_virtual(self) -> u64 {
-        self.last_virtual
-    }
-
-    /// Last physical byte included in the range.
-    pub const fn last_physical(self) -> u64 {
-        self.last_physical
     }
 }
 
@@ -650,6 +671,67 @@ mod tests {
         assert_eq!(ADDRESS_MASK.trailing_zeros(), 12);
         assert_eq!(ADDRESS_MASK.count_ones(), 40, "51 - 12 + 1 bits");
         assert_eq!(ADDRESS_MASK.leading_zeros(), 12, "bits 63:52 are flags");
+    }
+
+    #[test]
+    fn union_is_idempotent_when_the_sets_overlap() {
+        assert_eq!(Flags::PRESENT.union(Flags::PRESENT), Flags::PRESENT);
+        assert_eq!(
+            Flags::PRESENT.union(Flags::WRITABLE).union(Flags::PRESENT),
+            Flags::PRESENT.union(Flags::WRITABLE)
+        );
+    }
+
+    #[test]
+    fn page_identity_ignores_only_hardware_observation_bits() {
+        let expected = Flags::PRESENT
+            .union(Flags::WRITABLE)
+            .union(Flags::NO_EXECUTE)
+            .union(Flags::NO_CACHE);
+        for observed in [
+            Flags::NONE,
+            Flags::ACCESSED,
+            Flags::DIRTY,
+            Flags::ACCESSED.union(Flags::DIRTY),
+        ] {
+            assert!(page_identity_matches(
+                0x3000,
+                expected.union(observed),
+                PAGE_SIZE,
+                0x3000,
+                expected,
+            ));
+        }
+
+        for (mapped, flags, span) in [
+            (0x4000, expected, PAGE_SIZE),
+            (0x3000, expected.difference(Flags::NO_CACHE), PAGE_SIZE),
+            (0x3000, expected.union(Flags::WRITE_THROUGH), PAGE_SIZE),
+            (0x3000, expected, LARGE_PAGE_SIZE),
+        ] {
+            assert!(!page_identity_matches(
+                mapped, flags, span, 0x3000, expected,
+            ));
+        }
+    }
+
+    #[test]
+    fn table_identity_ignores_only_accessed() {
+        let expected = Entry::table(0x3000, TablePrivilege::Supervisor).unwrap();
+        let accessed = Entry::from_bits(expected.bits() | Flags::ACCESSED.bits());
+        assert!(expected.table_identity_matches(accessed));
+        assert!(accessed.table_identity_matches(expected));
+
+        for bit in 0..u64::BITS {
+            if bit == Flags::ACCESSED.bits().trailing_zeros() {
+                continue;
+            }
+            let drifted = Entry::from_bits(expected.bits() ^ (1_u64 << bit));
+            assert!(
+                !expected.table_identity_matches(drifted),
+                "bit {bit} was omitted from table identity"
+            );
+        }
     }
 
     #[test]
@@ -689,9 +771,9 @@ mod tests {
 
     #[test]
     fn an_empty_entry_is_absent() {
-        assert!(!Entry::EMPTY.is_present());
-        assert_eq!(Entry::EMPTY.address(), 0);
-        assert_eq!(Entry::EMPTY.flags(), Flags::NONE);
+        assert!(!Entry::ABSENT.is_present());
+        assert_eq!(Entry::ABSENT.address(), 0);
+        assert_eq!(Entry::ABSENT.flags(), Flags::NONE);
     }
 
     #[test]
@@ -772,14 +854,12 @@ mod tests {
 
     #[test]
     fn the_walk_descends_one_level_at_a_time() {
-        assert_eq!(Level::WALK[0], Level::Pml4);
-        assert_eq!(Level::Pml4.below(), Some(Level::Pdpt));
-        assert_eq!(Level::Pdpt.below(), Some(Level::Pd));
-        assert_eq!(Level::Pd.below(), Some(Level::Pt));
-        assert_eq!(Level::Pt.below(), None);
+        assert_eq!(
+            Level::WALK,
+            [Level::Pml4, Level::Pdpt, Level::Pd, Level::Pt]
+        );
 
         for pair in Level::WALK.windows(2) {
-            assert_eq!(pair[0].below(), Some(pair[1]));
             assert!(pair[0] > pair[1], "the walk goes downward");
         }
     }
@@ -803,10 +883,6 @@ mod tests {
         assert_eq!(range.virtual_base(), 0xffff_8000_0000_0000);
         assert_eq!(range.physical_base(), MAX_PHYSICAL - 2 * PAGE_SIZE);
         assert_eq!(range.len(), 2 * PAGE_SIZE);
-        assert!(!range.is_empty());
-        assert_eq!(range.pages(), 2);
-        assert_eq!(range.last_virtual(), 0xffff_8000_0000_1fff);
-        assert_eq!(range.last_physical(), MAX_PHYSICAL - 1);
 
         let low_edge = MappingRange::new(0x0000_7fff_ffff_f000, 0, PAGE_SIZE);
         assert!(low_edge.is_ok(), "the last canonical low page is mappable");
@@ -915,19 +991,20 @@ mod tests {
     }
 
     #[test]
-    fn canonicalise_is_the_identity_on_canonical_addresses() {
-        for address in [
-            0,
-            0x0000_7fff_ffff_ffff,
-            0xffff_8000_0000_0000,
-            0xffff_ffff_8000_0000,
-            u64::MAX,
-        ] {
-            assert_eq!(canonicalise(address), address);
-            assert!(is_canonical(canonicalise(address)));
+    fn canonical_address_admission_covers_both_sides_of_the_hole() {
+        const LOW_END: u64 = 0x0000_7fff_ffff_ffff;
+        const HIGH_START: u64 = 0xffff_8000_0000_0000;
+
+        assert_eq!(CanonicalAddress::ZERO.get(), 0);
+        for address in [0, LOW_END, HIGH_START, u64::MAX] {
+            assert_eq!(
+                CanonicalAddress::new(address).map(CanonicalAddress::get),
+                Some(address)
+            );
         }
-        // A 48-bit address with bit 47 set sign-extends into the high half.
-        assert_eq!(canonicalise(0x0000_8000_0000_0000), 0xffff_8000_0000_0000);
+        for address in [LOW_END + 1, 0x7fff_ffff_ffff_ffff, HIGH_START - 1] {
+            assert_eq!(CanonicalAddress::new(address), None, "{address:#x}");
+        }
     }
 
     #[test]
@@ -992,11 +1069,81 @@ mod tests {
         extern crate std;
         use std::format;
 
-        assert_eq!(format!("{:?}", Entry::EMPTY), "Entry(absent)");
+        assert_eq!(format!("{:?}", Entry::ABSENT), "Entry(absent)");
         let entry =
             Entry::page(Level::Pt, 0x1000, Flags::PRESENT | Flags::NO_EXECUTE).expect("aligned");
         assert_eq!(format!("{entry:?}"), "Entry(0x1000 present no-execute)");
+        assert_eq!(
+            format!("{:?}", Flags::PRESENT | Flags::WRITABLE | Flags::OWNED),
+            "present writable owned"
+        );
         assert_eq!(format!("{:?}", Flags::NONE), "none");
+    }
+
+    #[test]
+    fn entry_errors_name_the_refused_value_or_rule() {
+        let cases = [
+            (EntryError::Misaligned(0x1001), "0x1001 is not page-aligned"),
+            (
+                EntryError::OutOfRange(0x1234),
+                "0x1234 does not fit 52 bits",
+            ),
+            (
+                EntryError::CannotMapPage(Level::Pml4),
+                "Pml4 cannot map a page",
+            ),
+            (
+                EntryError::HugeFlagIsDerived,
+                "the huge-page flag is derived from the leaf level",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn mapping_range_errors_name_the_refused_value_or_rule() {
+        let cases = [
+            (MappingRangeError::ZeroLength, "mapping length is zero"),
+            (
+                MappingRangeError::MisalignedVirtualBase(0x1001),
+                "virtual base 0x1001 is not page-aligned",
+            ),
+            (
+                MappingRangeError::MisalignedPhysicalBase(0x2001),
+                "physical base 0x2001 is not page-aligned",
+            ),
+            (
+                MappingRangeError::MisalignedLength(0x3001),
+                "mapping length 12289 is not page-aligned",
+            ),
+            (
+                MappingRangeError::VirtualEndOverflow,
+                "virtual mapping end overflows",
+            ),
+            (
+                MappingRangeError::PhysicalEndOverflow,
+                "physical mapping end overflows",
+            ),
+            (
+                MappingRangeError::NonCanonicalVirtual(0x8000_0000_0000),
+                "virtual address 0x800000000000 is not canonical",
+            ),
+            (
+                MappingRangeError::CrossesCanonicalHole,
+                "virtual mapping crosses the noncanonical hole",
+            ),
+            (
+                MappingRangeError::PhysicalOutOfRange(0x10_0000_0000_0000),
+                "physical address 0x10000000000000 does not fit 52 bits",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
     }
 
     /// The owned bit is software-only: the CPU never sees it, and it survives

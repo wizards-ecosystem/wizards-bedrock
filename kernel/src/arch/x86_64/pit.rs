@@ -3,8 +3,8 @@
 //! The kernel measures the APIC timer against a crystal whose rate has been
 //! fixed since 1981, then retains the claimed chip to validate APIC-delivered
 //! clock windows. It is never an interrupt source: counter 0's output goes to
-//! a legacy controller slice 2 masked, so each bounded window can count
-//! without anything hearing it.
+//! a masked legacy controller, so each bounded window can count without
+//! generating an interrupt.
 
 use core::fmt;
 
@@ -45,7 +45,9 @@ pub(crate) enum PitError {
 impl fmt::Display for PitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PortsUnavailable => f.write_str("its ports are already claimed"),
+            Self::PortsUnavailable => {
+                core::fmt::Write::write_str(f, "its ports are already claimed")
+            }
         }
     }
 }
@@ -82,17 +84,18 @@ impl Pit {
     pub(crate) fn start_measurement(&mut self) {
         const LOAD_ATTEMPTS: u32 = 1_000;
 
-        self.registers.write(register::CONTROL, MEASURE.bits());
+        PortBlock::write(&mut self.registers, register::CONTROL, MEASURE.bits());
         let count = FULL_SPAN.to_le_bytes();
-        self.registers.write(register::CHANNEL_0, count[0]);
-        self.registers.write(register::CHANNEL_0, count[1]);
+        PortBlock::write(&mut self.registers, register::CHANNEL_0, count[0]);
+        PortBlock::write(&mut self.registers, register::CHANNEL_0, count[1]);
 
         for _ in 0..LOAD_ATTEMPTS {
-            self.registers.write(
+            PortBlock::write(
+                &mut self.registers,
                 register::CONTROL,
                 ControlWord::read_back_status(Channel::Zero).bits(),
             );
-            let status = self.registers.read::<u8>(register::CHANNEL_0);
+            let status = PortBlock::read::<u8>(&mut self.registers, register::CHANNEL_0);
             if status & STATUS_NULL_COUNT == 0 {
                 return;
             }
@@ -101,10 +104,13 @@ impl Pit {
 
     /// Where counter 0 stands, latched so the two byte reads cohere.
     pub(crate) fn count(&mut self) -> u16 {
-        self.registers
-            .write(register::CONTROL, ControlWord::latch(Channel::Zero).bits());
-        let low = self.registers.read::<u8>(register::CHANNEL_0);
-        let high = self.registers.read::<u8>(register::CHANNEL_0);
+        PortBlock::write(
+            &mut self.registers,
+            register::CONTROL,
+            ControlWord::latch(Channel::Zero).bits(),
+        );
+        let low = PortBlock::read::<u8>(&mut self.registers, register::CHANNEL_0);
+        let high = PortBlock::read::<u8>(&mut self.registers, register::CHANNEL_0);
         u16::from_le_bytes([low, high])
     }
 
@@ -115,6 +121,6 @@ impl Pit {
     /// driver, and the port claim it held is permanent, so nothing can ever
     /// program the chip again.
     pub(crate) fn park(mut self) {
-        self.registers.write(register::CONTROL, MEASURE.bits());
+        PortBlock::write(&mut self.registers, register::CONTROL, MEASURE.bits());
     }
 }

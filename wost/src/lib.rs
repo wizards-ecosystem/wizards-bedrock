@@ -4,14 +4,8 @@
 //! other kernel crate is safe Rust built on the abstractions exported here.
 //! See `docs/002-architecture.md` pillar 5 and `docs/005-code-conventions.md`.
 
-// `wost` is the exception the workspace default exists to make visible: the
-// deny lives in `Cargo.toml`, and this is the one place it is lifted (D-67).
-//
-// `allow` and not `expect`, deliberately, where D-131 converted every other
-// suppression in this crate. An `expect` here would assert that `wost`
-// *contains* unsafe; the rule is that `wost` is the only crate that **may**.
-// A refactor that emptied it would be the framekernel's best day and would
-// fail this build.
+// This is the workspace's sole unsafe exception (D-67). `allow` is deliberate:
+// `expect` would make removing the final unsafe operation a build failure.
 #![allow(unsafe_code)]
 #![deny(clippy::expect_used, clippy::unwrap_used)]
 #![no_std]

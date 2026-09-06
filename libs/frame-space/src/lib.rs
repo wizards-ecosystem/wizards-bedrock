@@ -194,7 +194,10 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
 
         // The wrap pass reaches `count - 1` past the hint, so a free run
         // straddling it is still found.
-        let wrap_end = self.hint.saturating_add(count - 1).min(Self::FRAME_COUNT);
+        let wrap_end = self
+            .hint
+            .saturating_add(count.saturating_sub(1))
+            .min(Self::FRAME_COUNT);
         let found = self
             .search(self.hint, Self::FRAME_COUNT, count, align)
             .or_else(|| self.search(0, wrap_end, count, align))?;
@@ -203,7 +206,7 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
         for frame in found..end {
             self.take(frame);
         }
-        self.hint = end % Self::FRAME_COUNT;
+        self.hint = end;
         Some(found)
     }
 
@@ -215,8 +218,8 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     /// back.
     ///
     /// A run that overflows or runs off the end reports the first frame past
-    /// the space rather than a frame inside it — the earlier version named
-    /// `FRAME_COUNT`, which is a ceiling and not an offending frame (D-105).
+    /// the space because `FRAME_COUNT` is a ceiling, not an offending frame
+    /// (D-105).
     pub fn free_contiguous(&mut self, first: usize, count: usize) -> Result<(), FreeError> {
         if count == 0 {
             return Ok(());
@@ -224,14 +227,10 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
         if first >= Self::FRAME_COUNT {
             return Err(FreeError::NotManaged(first));
         }
-        let Some(end) = first.checked_add(count) else {
-            return Err(FreeError::NotManaged(Self::FRAME_COUNT));
+        let end = match first.checked_add(count) {
+            Some(end) if end <= Self::FRAME_COUNT => end,
+            _ => return Err(FreeError::NotManaged(Self::FRAME_COUNT)),
         };
-        if end > Self::FRAME_COUNT {
-            // The first frame of the run that is not ours, which is where the
-            // space ends when the run starts inside it.
-            return Err(FreeError::NotManaged(Self::FRAME_COUNT));
-        }
 
         for frame in first..end {
             self.check_releasable(frame)?;
@@ -281,7 +280,7 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
     /// The first aligned run of `count` free frames in `from..to`.
     fn search(&self, from: usize, to: usize, count: usize, align: usize) -> Option<usize> {
         let mut start = align_up(from, align)?;
-        loop {
+        for _ in 0..=Self::FRAME_COUNT {
             let end = start.checked_add(count)?;
             if end > to {
                 return None;
@@ -291,9 +290,16 @@ impl<const WORDS: usize> FrameSpace<WORDS> {
                 None => return Some(start),
                 // Resume past the blocker: no run can straddle it, so the
                 // windows in between cannot succeed either.
-                Some(blocker) => start = align_up(blocker.checked_add(1)?, align)?,
+                Some(blocker) => {
+                    let next = align_up(blocker.checked_add(1)?, align)?;
+                    if next <= blocker {
+                        return None;
+                    }
+                    start = next;
+                }
             }
         }
+        None
     }
 }
 
@@ -335,6 +341,21 @@ mod tests {
     /// between them — the arithmetic most likely to be wrong.
     type TwoWord = FrameSpace<2>;
 
+    fn fully_managed() -> Small {
+        let mut space = Small::new();
+        space.insert(0, Small::CEILING);
+        space
+    }
+
+    fn drain<const WORDS: usize>(space: &mut FrameSpace<WORDS>) -> usize {
+        for taken in 0..=FrameSpace::<WORDS>::FRAME_COUNT {
+            if space.allocate().is_none() {
+                return taken;
+            }
+        }
+        panic!("allocation did not stop after the complete frame domain");
+    }
+
     #[test]
     fn words_for_converts_bytes_to_bitmap_words() {
         assert_eq!(words_for(FRAME_SIZE * 64), 1);
@@ -353,6 +374,55 @@ mod tests {
         assert_eq!(space.managed_count(), 0);
         assert!(!space.is_managed(0));
         assert!(!space.is_free(0));
+    }
+
+    #[test]
+    fn membership_stops_at_the_bitmap_ceiling() {
+        let space = fully_managed();
+        assert!(space.is_managed(Small::FRAME_COUNT - 1));
+        assert!(space.is_free(Small::FRAME_COUNT - 1));
+        assert!(!space.is_managed(Small::FRAME_COUNT));
+        assert!(!space.is_free(Small::FRAME_COUNT));
+        assert!(!space.is_managed(usize::MAX));
+        assert!(!space.is_free(usize::MAX));
+    }
+
+    #[test]
+    fn allocation_count_distinguishes_the_complete_domain_from_too_many() {
+        let mut exact = fully_managed();
+        assert_eq!(exact.allocate_contiguous(Small::FRAME_COUNT, 1), Some(0));
+
+        let mut oversized = fully_managed();
+        assert_eq!(
+            oversized.allocate_contiguous(Small::FRAME_COUNT + 1, 1),
+            None
+        );
+        assert_eq!(oversized.allocate_contiguous(usize::MAX, 1), None);
+    }
+
+    #[test]
+    fn release_errors_name_the_frame_and_ownership_failure() {
+        let foreign = FreeError::NotManaged(17).to_string();
+        assert!(
+            foreign.contains("17") && foreign.contains("not managed"),
+            "{foreign}"
+        );
+        let duplicate = FreeError::AlreadyFree(23).to_string();
+        assert!(
+            duplicate.contains("23") && duplicate.contains("already free"),
+            "{duplicate}"
+        );
+    }
+
+    #[test]
+    fn debug_reports_both_ledger_counts() {
+        let mut space = Small::new();
+        space.insert(0, FRAME_SIZE * 3);
+        assert_eq!(space.allocate(), Some(0));
+        let report = format!("{space:?}");
+        assert!(report.contains("FrameSpace"), "{report}");
+        assert!(report.contains("managed: 3"), "{report}");
+        assert!(report.contains("free: 2"), "{report}");
     }
 
     #[test]
@@ -447,6 +517,15 @@ mod tests {
         for frame in run..run + 4 {
             assert!(!space.is_free(frame));
         }
+    }
+
+    #[test]
+    fn search_treats_its_upper_frame_as_exclusive() {
+        let mut space = Small::new();
+        space.insert(FRAME_SIZE * 8, FRAME_SIZE * 4);
+
+        assert_eq!(space.search(0, 8, 4, 1), None);
+        assert_eq!(space.search(0, 12, 4, 1), Some(8));
     }
 
     #[test]
@@ -568,7 +647,7 @@ mod tests {
         space.insert(0, Small::CEILING);
         // Drain everything so the hint wraps to zero, then leave the hint in
         // the middle of a free run.
-        while space.allocate().is_some() {}
+        assert_eq!(drain(&mut space), Small::FRAME_COUNT);
         for frame in 30..34 {
             space.free(frame).expect("allocated");
         }
@@ -601,10 +680,7 @@ mod tests {
 
         // Drain it entirely, then give it all back, and require the counts to
         // land exactly where they started.
-        let mut taken = 0;
-        while space.allocate().is_some() {
-            taken += 1;
-        }
+        let taken = drain(&mut space);
         assert_eq!(taken, TwoWord::FRAME_COUNT);
         assert_eq!(space.free_count(), 0);
 

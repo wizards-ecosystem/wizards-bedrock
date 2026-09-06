@@ -17,8 +17,13 @@
 //! bytes[15] = 2; // revision 2 — the XSDT is present
 //! bytes[20..24].copy_from_slice(&36u32.to_le_bytes());
 //! bytes[24..32].copy_from_slice(&0xdead_0000u64.to_le_bytes());
-//! acpi_tables::fix_checksum(&mut bytes[..20], 9);
-//! acpi_tables::fix_checksum(&mut bytes, 32);
+//! fn fix_checksum(bytes: &mut [u8], index: usize) {
+//!     bytes[index] = 0;
+//!     let sum = bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+//!     bytes[index] = sum.wrapping_neg();
+//! }
+//! fix_checksum(&mut bytes[..20], 9);
+//! fix_checksum(&mut bytes, 32);
 //!
 //! let rsdp = Rsdp::parse(&bytes).expect("well formed");
 //! assert_eq!(rsdp.xsdt(), Some(0xdead_0000));
@@ -73,6 +78,13 @@ pub enum AcpiError {
         /// Bytes left after the last complete entry.
         trailing: usize,
     },
+    /// A root table names more tables than boot discovery will inspect.
+    TooManyTables {
+        /// Pointers listed by the root table.
+        listed: usize,
+        /// Maximum accepted pointer count.
+        limit: usize,
+    },
     /// A MADT entry has a length that cannot describe the bytes it names.
     MalformedEntry {
         /// Byte offset of the entry in the table.
@@ -92,8 +104,12 @@ impl fmt::Display for AcpiError {
             Self::TooShort { needed, available } => {
                 write!(f, "table needs {needed} bytes and {available} are readable")
             }
-            Self::BadSignature(_) => f.write_str("table signature is not the expected one"),
-            Self::BadChecksum => f.write_str("table checksum does not sum to zero"),
+            Self::BadSignature(_) => {
+                core::fmt::Write::write_str(f, "table signature is not the expected one")
+            }
+            Self::BadChecksum => {
+                core::fmt::Write::write_str(f, "table checksum does not sum to zero")
+            }
             Self::BadLength(length) => write!(f, "table length {length} is impossible"),
             Self::TooLong { declared, limit } => {
                 write!(
@@ -108,6 +124,12 @@ impl fmt::Display for AcpiError {
                 f,
                 "table has {trailing} trailing bytes after {width}-byte entries"
             ),
+            Self::TooManyTables { listed, limit } => {
+                write!(
+                    f,
+                    "root table lists {listed} pointers, above the {limit}-pointer limit"
+                )
+            }
             Self::MalformedEntry {
                 offset,
                 length,
@@ -126,7 +148,7 @@ impl fmt::Display for AcpiError {
 impl core::error::Error for AcpiError {}
 
 /// Whether `bytes` sums to zero in eight-bit arithmetic, as ACPI requires.
-pub fn checksum_is_valid(bytes: &[u8]) -> bool {
+fn checksum_is_valid(bytes: &[u8]) -> bool {
     bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)) == 0
 }
 
@@ -137,19 +159,18 @@ pub fn checksum_is_valid(bytes: &[u8]) -> bool {
 /// # Panics
 ///
 /// Panics if `index` is outside `bytes`.
-pub fn fix_checksum(bytes: &mut [u8], index: usize) {
+#[cfg(test)]
+fn fix_checksum(bytes: &mut [u8], index: usize) {
     bytes[index] = 0;
     let sum = bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
     bytes[index] = sum.wrapping_neg();
 }
 
-/// Read a little-endian `u32` at `offset`, or `None` past the end.
 fn u32_at(bytes: &[u8], offset: usize) -> Option<u32> {
     let field = bytes.get(offset..offset + 4)?;
     Some(u32::from_le_bytes(field.try_into().ok()?))
 }
 
-/// Read a little-endian `u64` at `offset`, or `None` past the end.
 fn u64_at(bytes: &[u8], offset: usize) -> Option<u64> {
     let field = bytes.get(offset..offset + 8)?;
     Some(u64::from_le_bytes(field.try_into().ok()?))
@@ -223,8 +244,9 @@ impl Rsdp {
     ///
     /// # Errors
     ///
-    /// [`AcpiError::TooShort`], [`AcpiError::BadSignature`] or
-    /// [`AcpiError::BadChecksum`].
+    /// [`AcpiError::TooShort`], [`AcpiError::BadSignature`],
+    /// [`AcpiError::BadChecksum`], [`AcpiError::BadLength`] or
+    /// [`AcpiError::UnsupportedRevision`].
     pub fn parse(bytes: &[u8]) -> Result<Self, AcpiError> {
         let head = bytes.get(..Self::V1_LEN).ok_or(AcpiError::TooShort {
             needed: Self::V1_LEN,
@@ -267,11 +289,6 @@ impl Rsdp {
         })
     }
 
-    /// The ACPI revision this pointer declares.
-    pub const fn revision(self) -> u8 {
-        self.revision
-    }
-
     /// The 64-bit XSDT address, if this RSDP has one.
     ///
     /// Preferred over the RSDT wherever present: the RSDT's entries are 32-bit
@@ -299,7 +316,6 @@ impl Rsdp {
 pub struct Sdt {
     signature: [u8; 4],
     length: u32,
-    revision: u8,
 }
 
 impl Sdt {
@@ -380,7 +396,6 @@ impl Sdt {
         Ok(Self {
             signature: head[..4].try_into().map_err(|_| AcpiError::BadChecksum)?,
             length,
-            revision: head[8],
         })
     }
 
@@ -395,40 +410,24 @@ impl Sdt {
     }
 }
 
-/// The most table pointers a root table may list before the rest are ignored.
+/// The most table pointers a root table may list.
 ///
-/// The header's own length already makes the sequence finite — but finite at
-/// the firmware's discretion. A root table filled to a one-megabyte ceiling
-/// lists 131,072 eight-byte pointers, and the kernel does real work per entry:
-/// two firmware reads that copy a byte at a time, a heap allocation, a zeroing
-/// and a checksum. That is tens of gigabytes of single-byte volatile reads
-/// before interrupts are on, chosen by the firmware rather than by this
-/// kernel.
-///
-/// Every other wait in this kernel carries an explicit cap — the 8042's
-/// response attempts, the UART's, the timer's polls, the input batches. This
-/// walk carried none. Real machines list a few dozen tables; 256 is generous
-/// by an order of magnitude and bounds the work at something a boot can spend.
-pub const MAX_TABLES: usize = 256;
+/// A valid root can otherwise choose unbounded pre-interrupt reads and
+/// allocations. Real machines list only a few dozen tables, so 256 preserves
+/// ample headroom while bounding firmware-controlled work.
+const MAX_TABLES: usize = 256;
 
 /// The table addresses an XSDT or RSDT lists.
 ///
-/// Yielded rather than collected so no allocation is needed. Bounded twice:
-/// by the header's own length, so a corrupt table cannot produce an endless
-/// sequence, and by [`MAX_TABLES`], so a *valid* table cannot produce an
-/// unaffordable one. [`listed`](Self::listed) reports how many were really
-/// there, so a caller past the cap can say so rather than silently walking
-/// part of the firmware's list.
+/// Construction refuses a root above the fixed boot-discovery bound.
 #[derive(Debug)]
 pub struct SdtPointers<'a> {
     body: &'a [u8],
     width: usize,
     offset: usize,
-    yielded: usize,
 }
 
 impl<'a> SdtPointers<'a> {
-    /// Validate the table and bind its entry width to its signature.
     fn new(table: &'a [u8], expected: [u8; 4], width: usize) -> Result<Self, AcpiError> {
         let header = Sdt::parse(table)?;
         if header.signature() != expected {
@@ -442,28 +441,26 @@ impl<'a> SdtPointers<'a> {
         if trailing != 0 {
             return Err(AcpiError::PartialEntry { width, trailing });
         }
+        let listed = (length - Sdt::LEN) / width;
+        if listed > MAX_TABLES {
+            return Err(AcpiError::TooManyTables {
+                listed,
+                limit: MAX_TABLES,
+            });
+        }
         Ok(Self {
             body: &table[..length],
             width,
             offset: Sdt::LEN,
-            yielded: 0,
         })
-    }
-
-    /// How many pointers the table lists, cap or no cap.
-    ///
-    /// Compare against [`MAX_TABLES`]: more means this iterator will stop
-    /// short, and a caller that cares should report it.
-    pub const fn listed(&self) -> usize {
-        (self.body.len() - Sdt::LEN) / self.width
     }
 
     /// The entries of a validated XSDT.
     ///
     /// # Errors
     ///
-    /// If the table fails validation, is not an XSDT, or ends in a partial
-    /// eight-byte pointer.
+    /// If the table fails validation, is not an XSDT, exceeds the discovery
+    /// bound, or ends in a partial eight-byte pointer.
     pub fn xsdt(table: &'a [u8]) -> Result<Self, AcpiError> {
         Self::new(table, Sdt::XSDT, 8)
     }
@@ -472,8 +469,8 @@ impl<'a> SdtPointers<'a> {
     ///
     /// # Errors
     ///
-    /// If the table fails validation, is not an RSDT, or ends in a partial
-    /// four-byte pointer.
+    /// If the table fails validation, is not an RSDT, exceeds the discovery
+    /// bound, or ends in a partial four-byte pointer.
     pub fn rsdt(table: &'a [u8]) -> Result<Self, AcpiError> {
         Self::new(table, Sdt::RSDT, 4)
     }
@@ -483,15 +480,11 @@ impl Iterator for SdtPointers<'_> {
     type Item = u64;
 
     fn next(&mut self) -> Option<u64> {
-        if self.yielded >= MAX_TABLES {
-            return None;
-        }
         let address = match self.width {
             8 => u64_at(self.body, self.offset)?,
             _ => u32_at(self.body, self.offset)? as u64,
         };
         self.offset += self.width;
-        self.yielded += 1;
         Some(address)
     }
 }
@@ -611,11 +604,6 @@ impl<'a> MadtEntries<'a> {
             offset: Self::HEADER,
         })
     }
-
-    /// The physical address of the local APIC, as the MADT reports it.
-    pub fn local_apic_address(&self) -> u32 {
-        u32_at(self.body, Sdt::LEN).unwrap_or(0)
-    }
 }
 
 impl Iterator for MadtEntries<'_> {
@@ -685,6 +673,24 @@ pub enum InterruptError {
         /// Number of descriptions the caller permitted.
         limit: usize,
     },
+    /// An interrupt source override did not describe the ISA bus.
+    NonIsaOverride {
+        /// Firmware bus identifier.
+        bus: u8,
+        /// Source IRQ named by the entry.
+        source: u8,
+    },
+    /// An interrupt source override names an IRQ outside the ISA domain.
+    InvalidOverrideSource(u8),
+    /// More than one override names the same source IRQ.
+    DuplicateOverride(u8),
+    /// The MPS INTI polarity or trigger field has a reserved encoding.
+    ReservedOverrideFlags {
+        /// Source IRQ named by the entry.
+        source: u8,
+        /// Raw MPS INTI flags.
+        flags: u16,
+    },
 }
 
 impl fmt::Display for InterruptError {
@@ -694,20 +700,27 @@ impl fmt::Display for InterruptError {
             Self::TooManyIoApics { limit } => {
                 write!(f, "madt describes more than {limit} i/o apics")
             }
+            Self::NonIsaOverride { bus, source } => {
+                write!(f, "madt override for irq {source} names non-ISA bus {bus}")
+            }
+            Self::InvalidOverrideSource(source) => {
+                write!(f, "madt override names non-ISA irq {source}")
+            }
+            Self::DuplicateOverride(source) => {
+                write!(f, "madt repeats the override for irq {source}")
+            }
+            Self::ReservedOverrideFlags { source, flags } => write!(
+                f,
+                "madt override for irq {source} has reserved flags {flags:#x}"
+            ),
         }
     }
 }
 
 impl core::error::Error for InterruptError {}
 
-impl From<AcpiError> for InterruptError {
-    fn from(error: AcpiError) -> Self {
-        Self::Table(error)
-    }
-}
-
 /// A complete, fixed-capacity view of MADT interrupt routing.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MadtInterrupts<const IO_APICS: usize> {
     io_apics: [Option<IoApic>; IO_APICS],
     io_apic_count: usize,
@@ -719,18 +732,19 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
     ///
     /// # Errors
     ///
-    /// [`InterruptError::Table`] for a malformed MADT, or
-    /// [`InterruptError::TooManyIoApics`] rather than returning a truncated
-    /// inventory.
+    /// [`InterruptError::Table`] for a malformed MADT, a typed override error
+    /// for contradictory routing, or [`InterruptError::TooManyIoApics`]
+    /// rather than returning a truncated inventory.
     pub fn parse(table: &[u8]) -> Result<Self, InterruptError> {
-        let entries = MadtEntries::new(table)?;
+        let mut entries = MadtEntries::new(table).map_err(InterruptError::Table)?;
         let mut model = Self {
             io_apics: [None; IO_APICS],
             io_apic_count: 0,
             overrides: [None; 16],
         };
 
-        for entry in entries {
+        let mut next = core::iter::Iterator::next(&mut entries);
+        while let Some(entry) = next {
             match entry {
                 MadtEntry::IoApic {
                     id,
@@ -748,14 +762,30 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
                     model.io_apic_count += 1;
                 }
                 MadtEntry::InterruptSourceOverride {
-                    source, gsi, flags, ..
+                    bus,
+                    source,
+                    gsi,
+                    flags,
                 } => {
-                    if let Some(slot) = model.overrides.get_mut(source as usize) {
-                        *slot = Some((gsi, flags));
+                    if bus != 0 {
+                        return Err(InterruptError::NonIsaOverride { bus, source });
                     }
+                    let Some(slot) = model.overrides.get_mut(source as usize) else {
+                        return Err(InterruptError::InvalidOverrideSource(source));
+                    };
+                    let polarity = flags & 0b11;
+                    let trigger = (flags >> 2) & 0b11;
+                    if flags & !0xf != 0 || polarity == 0b10 || trigger == 0b10 {
+                        return Err(InterruptError::ReservedOverrideFlags { source, flags });
+                    }
+                    if slot.is_some() {
+                        return Err(InterruptError::DuplicateOverride(source));
+                    }
+                    *slot = Some((gsi, flags));
                 }
                 _ => {}
             }
+            next = core::iter::Iterator::next(&mut entries);
         }
         Ok(model)
     }
@@ -794,7 +824,6 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
 mod tests {
     use super::*;
 
-    /// A well-formed RSDP at the given revision.
     fn rsdp(revision: u8) -> Vec<u8> {
         let mut bytes = vec![0u8; Rsdp::V2_LEN];
         bytes[..8].copy_from_slice(&Rsdp::SIGNATURE);
@@ -807,7 +836,6 @@ mod tests {
         bytes
     }
 
-    /// A table with `signature`, `body` after the header, and a valid checksum.
     fn table(signature: &[u8; 4], body: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0u8; Sdt::LEN];
         bytes[..4].copy_from_slice(signature);
@@ -818,27 +846,82 @@ mod tests {
         bytes
     }
 
-    /// A root table listing more pointers than anyone can afford yields the
-    /// cap and says how many there really were.
-    ///
-    /// The firmware chooses this number. A one-megabyte root table lists
-    /// 131,072 pointers, and the kernel does two byte-at-a-time firmware
-    /// reads, a heap allocation and a checksum per entry — so "finite" was
-    /// not the same as "affordable", and the doc claimed only the first.
-    /// Every MADT entry kind is refused below the length its fields need.
-    ///
-    /// Only kind 1's minimum was pinned. Lower kind 2's from 10 to 8 and the
-    /// suite stays green — and `next` then reads `entry[9]` for an eight-byte
-    /// entry, which is an **index-out-of-bounds panic on firmware input**, the
-    /// one thing this module's doc says it will not do (D-142).
-    ///
-    /// The numbers are ACPI 6.5 table 5-22's structure lengths, transcribed:
-    /// a processor local APIC is 8, an I/O APIC 12, an interrupt source
-    /// override 10, and any structure at all carries its type and length.
+    #[test]
+    fn errors_name_the_refused_table_property() {
+        let cases = [
+            (
+                AcpiError::TooShort {
+                    needed: 36,
+                    available: 20,
+                },
+                "table needs 36 bytes and 20 are readable",
+            ),
+            (
+                AcpiError::BadSignature(*b"NOT ACPI"),
+                "table signature is not the expected one",
+            ),
+            (
+                AcpiError::BadChecksum,
+                "table checksum does not sum to zero",
+            ),
+            (AcpiError::BadLength(12), "table length 12 is impossible"),
+            (
+                AcpiError::TooLong {
+                    declared: 4097,
+                    limit: 4096,
+                },
+                "table declares 4097 bytes, above the 4096-byte limit",
+            ),
+            (
+                AcpiError::WrongTable {
+                    expected: *b"XSDT",
+                    found: *b"APIC",
+                },
+                "table signature [65, 80, 73, 67] does not match [88, 83, 68, 84]",
+            ),
+            (
+                AcpiError::PartialEntry {
+                    width: 8,
+                    trailing: 3,
+                },
+                "table has 3 trailing bytes after 8-byte entries",
+            ),
+            (
+                AcpiError::MalformedEntry {
+                    offset: 44,
+                    length: 12,
+                    available: 4,
+                },
+                "entry at byte 44 declares 12 bytes with 4 available",
+            ),
+            (
+                AcpiError::UnsupportedRevision(7),
+                "table revision 7 is not read by this kernel",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn interrupt_errors_name_the_table_or_inventory_bound() {
+        assert_eq!(
+            InterruptError::Table(AcpiError::BadChecksum).to_string(),
+            "madt is unusable: table checksum does not sum to zero"
+        );
+        assert_eq!(
+            InterruptError::TooManyIoApics { limit: 16 }.to_string(),
+            "madt describes more than 16 i/o apics"
+        );
+    }
+
     #[test]
     fn a_madt_entry_shorter_than_its_fields_is_refused_not_read() {
+        // Independent minima from ACPI 6.5 table 5-22 keep the bounds from
+        // merely restating the parser (D-142).
         for (kind, minimum) in [(0u8, 8usize), (1, 12), (2, 10), (0x80, 2)] {
-            // One byte short of what the fields need.
             let short = minimum - 1;
             let mut madt = madt_with_entry(kind, short);
             assert!(
@@ -846,16 +929,12 @@ mod tests {
                 "kind {kind} accepted {short} bytes, one short of {minimum}"
             );
 
-            // And exactly enough is accepted, so the bound is the length and
-            // not a blanket refusal.
             madt = madt_with_entry(kind, minimum);
             let entries = MadtEntries::new(&madt).expect("a long-enough entry");
-            // Walking it must not panic — which is the whole point.
             assert_eq!(entries.count(), 1);
         }
     }
 
-    /// A MADT holding one entry of `kind` and `len` bytes, checksum correct.
     fn madt_with_entry(kind: u8, len: usize) -> Vec<u8> {
         const MADT_HEADER: usize = Sdt::LEN + 8;
 
@@ -864,8 +943,6 @@ mod tests {
         let length = u32::try_from(table.len()).expect("fits");
         table[4..8].copy_from_slice(&length.to_le_bytes());
         table[8] = 1;
-        // Only what fits: an entry shorter than two bytes cannot carry its own
-        // length, which is itself a shape the walk must refuse.
         if let Some(slot) = table.get_mut(MADT_HEADER) {
             *slot = kind;
         }
@@ -878,9 +955,8 @@ mod tests {
     }
 
     #[test]
-    fn a_root_table_longer_than_the_cap_is_walked_only_to_it() {
-        // Twice the cap, so the truncation is unambiguous.
-        const LISTED: usize = MAX_TABLES * 2;
+    fn a_root_table_above_the_cap_cannot_hide_a_tail_madt() {
+        const LISTED: usize = MAX_TABLES + 1;
 
         let mut table = vec![0u8; Sdt::LEN + LISTED * 8];
         table[..4].copy_from_slice(&Sdt::XSDT);
@@ -889,25 +965,49 @@ mod tests {
         table[8] = 1;
         for index in 0..LISTED {
             let at = Sdt::LEN + index * 8;
-            table[at..at + 8].copy_from_slice(&(0x1000u64 + index as u64).to_le_bytes());
+            let address = if index == MAX_TABLES {
+                0xfeed_cafe
+            } else {
+                0x1000u64 + index as u64
+            };
+            table[at..at + 8].copy_from_slice(&address.to_le_bytes());
         }
         let checksum = table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
         table[9] = table[9].wrapping_sub(checksum);
 
-        let pointers = SdtPointers::xsdt(&table).expect("a valid xsdt");
-        assert_eq!(pointers.listed(), LISTED, "the table lists what it lists");
-        assert!(
-            pointers.listed() > MAX_TABLES,
-            "the caller can see it will be truncated"
-        );
-        let walked: Vec<u64> = pointers.collect();
-        assert_eq!(walked.len(), MAX_TABLES, "and the walk stops at the cap");
-        // The ones it did walk are the first ones, not an arbitrary window.
-        assert_eq!(walked[0], 0x1000);
-        assert_eq!(walked[MAX_TABLES - 1], 0x1000 + MAX_TABLES as u64 - 1);
+        assert!(matches!(
+            SdtPointers::xsdt(&table),
+            Err(AcpiError::TooManyTables {
+                listed: LISTED,
+                limit: MAX_TABLES
+            })
+        ));
     }
 
-    /// A table inside the cap is walked whole and reports no truncation.
+    #[test]
+    fn a_root_table_at_the_cap_is_walked_whole() {
+        const LISTED: usize = MAX_TABLES;
+
+        let mut table = vec![0u8; Sdt::LEN + LISTED * 4];
+        table[..4].copy_from_slice(&Sdt::RSDT);
+        let length = u32::try_from(table.len()).expect("fits");
+        table[4..8].copy_from_slice(&length.to_le_bytes());
+        table[8] = 1;
+        for index in 0..LISTED {
+            let at = Sdt::LEN + index * 4;
+            table[at..at + 4].copy_from_slice(&(0x2000u32 + index as u32).to_le_bytes());
+        }
+        let checksum = table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+        table[9] = table[9].wrapping_sub(checksum);
+
+        let walked: Vec<_> = SdtPointers::rsdt(&table)
+            .expect("the exact pointer budget")
+            .collect();
+        assert_eq!(walked.len(), LISTED);
+        assert_eq!(walked[0], 0x2000);
+        assert_eq!(walked[LISTED - 1], 0x2000 + LISTED as u64 - 1);
+    }
+
     #[test]
     fn a_root_table_inside_the_cap_is_walked_whole() {
         const LISTED: usize = 3;
@@ -924,10 +1024,12 @@ mod tests {
         let checksum = table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
         table[9] = table[9].wrapping_sub(checksum);
 
-        let pointers = SdtPointers::xsdt(&table).expect("a valid xsdt");
-        assert_eq!(pointers.listed(), LISTED);
-        assert!(pointers.listed() <= MAX_TABLES, "nothing to truncate");
-        assert_eq!(pointers.count(), LISTED);
+        assert_eq!(
+            SdtPointers::xsdt(&table)
+                .expect("a valid xsdt")
+                .collect::<Vec<_>>(),
+            [0x2000, 0x2001, 0x2002]
+        );
     }
 
     #[test]
@@ -935,9 +1037,40 @@ mod tests {
         let bytes = rsdp(2);
         let parsed = Rsdp::parse(&bytes).expect("well formed");
 
-        assert_eq!(parsed.revision(), 2);
         assert_eq!(parsed.xsdt(), Some(0xdead_beef));
         assert_eq!(parsed.rsdt(), Some(0x1234));
+    }
+
+    #[test]
+    fn root_pointer_lengths_accept_their_exact_budget() {
+        let bytes = rsdp(2);
+        assert_eq!(Rsdp::parse_length(&bytes, Rsdp::V2_LEN), Ok(Rsdp::V2_LEN));
+        assert!(matches!(
+            Rsdp::parse_length(&bytes, Rsdp::V2_LEN - 1),
+            Err(AcpiError::TooLong { .. })
+        ));
+    }
+
+    #[test]
+    fn an_xsdt_requires_both_a_supporting_revision_and_a_nonzero_address() {
+        assert_eq!(
+            (Rsdp {
+                revision: 2,
+                rsdt: 0,
+                xsdt: 0,
+            })
+            .xsdt(),
+            None
+        );
+        assert_eq!(
+            (Rsdp {
+                revision: 0,
+                rsdt: 0,
+                xsdt: 0x1_0000_0000,
+            })
+            .xsdt(),
+            None
+        );
     }
 
     #[test]
@@ -978,7 +1111,6 @@ mod tests {
             Rsdp::parse(&rsdp(2)[..10]),
             Err(AcpiError::TooShort { .. })
         ));
-        // Long enough for revision 0, too short for the extended structure.
         assert!(matches!(
             Rsdp::parse(&rsdp(2)[..Rsdp::V1_LEN]),
             Err(AcpiError::TooShort { .. })
@@ -1059,7 +1191,6 @@ mod tests {
     fn a_length_can_be_read_before_the_table_is_validated() {
         let bytes = table(&Sdt::MADT, &[1, 2, 3, 4]);
         assert_eq!(Sdt::parse_length(&bytes, usize::MAX), Ok(Sdt::LEN + 4));
-        // Only the header is needed, which is the whole point.
         assert_eq!(
             Sdt::parse_length(&bytes[..Sdt::LEN], usize::MAX),
             Ok(Sdt::LEN + 4)
@@ -1075,6 +1206,20 @@ mod tests {
             Sdt::parse_length(&short, usize::MAX),
             Err(AcpiError::BadLength(8))
         );
+    }
+
+    #[test]
+    fn a_header_only_table_and_its_exact_budget_are_valid_lengths() {
+        let bytes = table(&Sdt::XSDT, &[]);
+        assert_eq!(Sdt::parse_length(&bytes, Sdt::LEN), Ok(Sdt::LEN));
+        assert_eq!(
+            Sdt::parse(&bytes).map(|header| header.length()),
+            Ok(Sdt::LEN as u32)
+        );
+        assert!(matches!(
+            Sdt::parse_length(&bytes, Sdt::LEN - 1),
+            Err(AcpiError::TooLong { .. })
+        ));
     }
 
     #[test]
@@ -1094,7 +1239,6 @@ mod tests {
     #[test]
     fn a_table_whose_body_is_missing_is_refused() {
         let bytes = table(&Sdt::MADT, &[1, 2, 3, 4]);
-        // The header claims more bytes than the buffer holds.
         assert!(matches!(
             Sdt::parse(&bytes[..Sdt::LEN + 2]),
             Err(AcpiError::TooShort { .. })
@@ -1125,6 +1269,18 @@ mod tests {
         let bytes = table(&Sdt::XSDT, &body);
         let pointers: Vec<_> = SdtPointers::xsdt(&bytes).expect("validated xsdt").collect();
         assert_eq!(pointers, [0x1000, 0x2000, 0x3000]);
+    }
+
+    #[test]
+    fn an_xsdt_pointer_keeps_its_high_thirty_two_bits() {
+        let address = 0x1234_5678_9abc_def0u64;
+        let bytes = table(&Sdt::XSDT, &address.to_le_bytes());
+        assert_eq!(
+            SdtPointers::xsdt(&bytes)
+                .expect("validated xsdt")
+                .collect::<Vec<_>>(),
+            [address]
+        );
     }
 
     #[test]
@@ -1166,8 +1322,6 @@ mod tests {
 
     #[test]
     fn a_pointer_list_stops_at_the_declared_length() {
-        // Trailing bytes beyond the header's length must not be read as an
-        // entry, even though the buffer holds them.
         let mut bytes = table(&Sdt::XSDT, &0x1000u64.to_le_bytes());
         bytes.extend_from_slice(&0xbadu64.to_le_bytes());
 
@@ -1194,14 +1348,7 @@ mod tests {
         body.extend_from_slice(&[4, 6, 0, 0, 0, 0]); // an NMI entry, not ours
 
         let bytes = table(&Sdt::MADT, &body);
-        let entries = MadtEntries::new(&bytes).expect("validated madt");
-
-        assert_eq!(
-            entries.local_apic_address(),
-            0xfee0_0000,
-            "the MADT's own header carries the local APIC address"
-        );
-        let entries: Vec<_> = entries.collect();
+        let entries: Vec<_> = MadtEntries::new(&bytes).expect("validated madt").collect();
         assert_eq!(
             entries,
             [
@@ -1224,6 +1371,66 @@ mod tests {
                 MadtEntry::Other { kind: 4 },
             ]
         );
+    }
+
+    #[test]
+    fn a_local_apic_without_the_enabled_bit_is_disabled() {
+        let bytes = madt_with_entry(0, 8);
+        assert_eq!(
+            core::iter::Iterator::next(&mut MadtEntries::new(&bytes).expect("valid madt")),
+            Some(MadtEntry::LocalApic {
+                processor: 0,
+                id: 0,
+                enabled: false,
+            })
+        );
+    }
+
+    #[test]
+    fn io_apic_accessors_return_each_firmware_field() {
+        let controller = IoApic {
+            id: 7,
+            address: 0xfec1_0000,
+            gsi_base: 24,
+        };
+        assert_eq!(controller.id(), 7);
+        assert_eq!(controller.address(), 0xfec1_0000);
+        assert_eq!(controller.gsi_base(), 24);
+    }
+
+    fn madt_with_overrides(overrides: &[(u8, u8, u32, u16)]) -> Vec<u8> {
+        let mut body = vec![0u8; 8];
+        for (bus, source, gsi, flags) in overrides {
+            body.extend_from_slice(&[2, 10, *bus, *source]);
+            body.extend_from_slice(&gsi.to_le_bytes());
+            body.extend_from_slice(&flags.to_le_bytes());
+        }
+        table(&Sdt::MADT, &body)
+    }
+
+    #[test]
+    fn interrupt_overrides_are_unique_isa_sources_with_defined_flags() {
+        for entries in [[(0, 1, 9, 0), (0, 1, 10, 0)], [(0, 1, 10, 0), (0, 1, 9, 0)]] {
+            assert_eq!(
+                MadtInterrupts::<1>::parse(&madt_with_overrides(&entries)),
+                Err(InterruptError::DuplicateOverride(1))
+            );
+        }
+
+        assert_eq!(
+            MadtInterrupts::<1>::parse(&madt_with_overrides(&[(1, 1, 9, 0)])),
+            Err(InterruptError::NonIsaOverride { bus: 1, source: 1 })
+        );
+        assert_eq!(
+            MadtInterrupts::<1>::parse(&madt_with_overrides(&[(0, 16, 9, 0)])),
+            Err(InterruptError::InvalidOverrideSource(16))
+        );
+        for flags in [0b0010, 0b1000, 0x0010] {
+            assert_eq!(
+                MadtInterrupts::<1>::parse(&madt_with_overrides(&[(0, 1, 9, flags)])),
+                Err(InterruptError::ReservedOverrideFlags { source: 1, flags })
+            );
+        }
     }
 
     #[test]
@@ -1324,7 +1531,6 @@ mod tests {
     #[test]
     fn a_madt_entry_running_past_the_table_invalidates_it() {
         let mut body = vec![0u8; 8];
-        // Claims 40 bytes, of which only four are present.
         body.extend_from_slice(&[1, 40, 0, 0]);
         let bytes = table(&Sdt::MADT, &body);
         assert!(matches!(
@@ -1339,7 +1545,6 @@ mod tests {
 
     #[test]
     fn a_truncated_entry_of_a_known_kind_invalidates_the_table() {
-        // An I/O APIC entry two bytes short: its fields must not be read.
         let mut body = vec![0u8; 8];
         body.extend_from_slice(&[1, 10, 2, 0, 0, 0, 0, 0, 0, 0]);
         let bytes = table(&Sdt::MADT, &body);
@@ -1349,20 +1554,10 @@ mod tests {
         ));
     }
 
-    /// The ACPI header is thirty-six bytes, from the spec rather than from
-    /// itself.
-    ///
-    /// Every fixture is built as `vec![0u8; Sdt::LEN]` and every expectation
-    /// written `Sdt::LEN + n`, so the comparisons are `X == X` and shrinking
-    /// the constant survived them. It is load-bearing twice: the MADT's local
-    /// APIC address is read at a fixed offset from it, and the XSDT's entry
-    /// count is `(length - LEN) / width`. `Rsdp`'s equivalents were caught,
-    /// because that path transcribes its offsets (D-124).
     #[test]
     fn the_system_description_header_is_thirty_six_bytes() {
-        // ACPI 6.5 §5.2.6, table 5.4: signature 4, length 4, revision 1,
-        // checksum 1, OEM ID 6, OEM table ID 8, OEM revision 4, creator ID 4,
-        // creator revision 4.
+        // Independent field widths from ACPI 6.5 table 5.4 prevent a
+        // self-referential fixture from accepting a changed header size.
         assert_eq!(Sdt::LEN, 36);
         assert_eq!(4 + 4 + 1 + 1 + 6 + 8 + 4 + 4 + 4, Sdt::LEN);
     }

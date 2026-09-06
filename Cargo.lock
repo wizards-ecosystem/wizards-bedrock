@@ -226,6 +226,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
+name = "panic-record"
+version = "0.1.0"
+
+[[package]]
 name = "path-walk"
 version = "0.1.0"
 dependencies = [
@@ -665,10 +669,12 @@ dependencies = [
  "handle-space",
  "noto-sans-mono-bitmap",
  "nvme",
+ "panic-record",
  "path-walk",
  "pci-config",
  "ps2-keys",
  "ring-proto",
+ "slab-layout",
  "stack-layout",
  "timebase",
  "trap-cause",
@@ -691,11 +697,14 @@ dependencies = [
  "limine",
  "memory-map",
  "mmio-range",
+ "nvme",
  "pci-config",
  "pixel",
  "port-space",
+ "ring-proto",
  "slab-layout",
  "stack-layout",
+ "trap-cause",
  "x86-apic",
  "x86-cpuid",
  "x86-paging",
@@ -722,6 +731,9 @@ version = "0.1.0"
 [[package]]
 name = "x86-paging"
 version = "0.1.0"
+dependencies = [
+ "x86-cpuid",
+]
 
 [[package]]
 name = "x86-pit"
@@ -740,6 +752,7 @@ dependencies = [
  "fat32",
  "fatfs",
  "fscommon",
+ "panic-record",
  "proc-macro2",
  "syn",
  "wizzy-handoff",

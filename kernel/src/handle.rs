@@ -6,21 +6,14 @@
 //! arena, the lock, and the ownership comparison that turns a decoded slot
 //! into a permission.
 //!
-//! **One arena, not one array per table.** Zircon has no per-process handle
-//! array, and two independent lines of reasoning arrive at copying that: the
-//! generation tag kills use-after-free on reuse, and the non-dense encoding
-//! makes allocation commute, which is what lets this scale later without an
-//! interface change (D-70 rule 7).
+//! **One arena, not one array per table.** The generation tag rejects stale
+//! reuse, and the non-dense encoding lets allocation commute (D-70 rule 7).
 //!
-//! **A table is a refcounted object, not a field of a process.** Zircon's
-//! strict per-process invariant was the first casualty of its own
-//! compatibility layer, and sharing one later is free if nothing assumes
-//! otherwise now (D-78).
+//! **A table is a refcounted object, not a field of a process,** so authority
+//! may be shared without a per-process lifetime assumption (D-78).
 //!
-//! Lock order: `ARENA` is a leaf (D-85). Everything it does is
-//! take-mutate-return, and the object it drops on close is released *after*
-//! the guard is gone — because a `Drop` may reach the frame allocator, and a
-//! guard held across one is the shape this kernel does not have.
+//! Lock order: `ARENA` is a leaf (D-85). Objects released during table teardown
+//! are dropped only after its guard is gone.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -29,7 +22,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use handle_space::{Mixer, Quota, Rights, SLOTS, Slot};
 use wost::sync::SpinLock;
 
-use crate::object::{ObjectRef, ObjectType};
+use crate::object::ObjectRef;
+#[cfg(feature = "selftest")]
+use crate::object::ObjectType;
 
 /// Which table a slot belongs to.
 ///
@@ -66,16 +61,19 @@ pub(crate) enum HandleError {
 
 impl core::fmt::Display for HandleError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(match *self {
-            Self::Malformed => "not a handle",
-            Self::Stale => "handle names nothing live in this table",
-            Self::Denied => "handle does not carry the right",
-            Self::Meaningless => "right means nothing for this object type",
-            Self::QuotaExhausted => "handle quota exhausted",
-            Self::ArenaFull => "the handle arena is full",
-            Self::OutOfMemory => "no memory for the handle arena",
-            Self::IdentityExhausted => "handle table identities exhausted",
-        })
+        core::fmt::Write::write_str(
+            f,
+            match *self {
+                Self::Malformed => "not a handle",
+                Self::Stale => "handle names nothing live in this table",
+                Self::Denied => "handle does not carry the right",
+                Self::Meaningless => "right means nothing for this object type",
+                Self::QuotaExhausted => "handle quota exhausted",
+                Self::ArenaFull => "the handle arena is full",
+                Self::OutOfMemory => "no memory for the handle arena",
+                Self::IdentityExhausted => "handle table identities exhausted",
+            },
+        )
     }
 }
 
@@ -91,10 +89,8 @@ struct Entry {
 
 /// One slot of the global arena.
 ///
-/// The generation advances on every *close*, not on every open, so a value
-/// handed out is invalidated the moment its handle is closed rather than when
-/// the slot is next used. A slot that is freed and never reused still refuses
-/// its old handle.
+/// The generation advances whenever an entry is released, so table teardown
+/// invalidates a handle before its slot can be reused.
 #[derive(Debug)]
 struct ArenaSlot {
     generation: u32,
@@ -125,15 +121,8 @@ impl Arena {
 
     /// Take a free slot **and fill it** without allocating.
     ///
-    /// One call, under one guard, and that is the whole of the fix. `take`
-    /// used to find a slot and return its index without marking it, and
-    /// `insert` then dropped the guard and re-acquired it to write the entry.
-    /// Two callers interleaving in that window both received the same index —
-    /// `take` scans for `entry.is_none()`, which was still true — and the
-    /// second write **overwrote a live entry, dropping it in place under the
-    /// leaf guard**. An `ObjectRef` dropped there can reach `Channel::drop`
-    /// and then `THREADS`, which is the lock-under-a-leaf class D-121, D-126
-    /// and D-128 exist for (D-141).
+    /// Finding and filling happen under one guard, so two claimants cannot
+    /// choose the same free slot (D-141).
     ///
     /// The room was committed when the table was constructed: growing here
     /// would allocate in trap context and under the `ARENA` leaf (D-182).
@@ -158,9 +147,8 @@ impl Arena {
             }
         }
         if count >= SLOTS as usize || count == self.slots.capacity() {
-            // Reaching this after a quota charge violates the commitment
-            // invariant; the entry is returned so it can drop outside the
-            // leaf rather than making the invariant failure a lock inversion.
+            // Unreachable after a quota charge; the entry is returned so it
+            // drops outside the leaf rather than inverting a lock.
             return None;
         }
         self.slots.push(ArenaSlot {
@@ -224,9 +212,8 @@ fn commit_table(quota: usize) -> Result<TableId, HandleError> {
 
         let mut room = Vec::new();
         if room.try_reserve_exact(wanted).is_err() {
-            // Another constructor may have installed enough backing while
-            // this allocation was attempted. Recheck before reporting an
-            // exhaustion the machine has already resolved.
+            // Another constructor may have installed enough backing meanwhile;
+            // recheck before reporting an exhaustion already resolved.
             let mut arena = ARENA.lock_leaf();
             let (required, successor) = arena.table_requirement(quota)?;
             if arena.slots.capacity() >= required {
@@ -268,35 +255,16 @@ pub(crate) struct HandleTable {
     mixer: Mixer,
     quota: usize,
     /// Handles held and slots promised, packed by [`Quota`].
-    ///
-    /// An atomic rather than a plain field, and that is what makes the table
-    /// usable through an `Arc` after the program is running. Every method
-    /// below takes `&self`, so a completion can install a handle into a table
-    /// the spawner long since gave away — which is the whole of D-151 and was
-    /// impossible while the count needed `&mut` (D-163).
     counts: AtomicU64,
 }
 
-/// The half every spawned program uses: `user::spawn` builds a table and puts
-/// its bootstrap channel in one, and `user::orphan` asks what that handle named
-/// on the way out. It carried an `#[allow(dead_code)]` saying the shipped
-/// kernel reached none of this, which stopped being true when D-116 made the
-/// shipped kernel run a program — and an `allow` that stops being needed says
-/// nothing (D-130).
+/// The handle table used by spawned programs and ring completions.
 impl HandleTable {
     /// A table holding nothing, able to hold `quota` handles.
     ///
-    /// The quota is D-44's inherited obligation, answered here rather than at
-    /// the frame allocator: a process's kernel memory is bounded by what its
-    /// table can name. It is a policy number and stays revisable, which is
-    /// exactly why D-44 refused to make it an ABI decision instead.
-    ///
-    /// The mixer is derived from the identity rather than from entropy: there
-    /// is no entropy source until `RDSEED` arrives with the drivers, and a
-    /// table-derived constant is what the property needs. Its 32 bits may
-    /// repeat while the 64-bit owner never does; it removes the accidental
-    /// case, while the owner comparison remains the authority boundary
-    /// (D-204).
+    /// The revisable quota bounds kernel memory a process can name (D-44).
+    /// The mixer deters accidental cross-table handles; the 64-bit owner is
+    /// still the authority boundary (D-204).
     ///
     /// # Errors
     ///
@@ -317,6 +285,7 @@ impl HandleTable {
     ///
     /// Held, not charged: a promise is not yet a handle, and a check counting
     /// what a program can *reach* must not count what it has been promised.
+    #[cfg(feature = "selftest")]
     pub(crate) fn live(&self) -> usize {
         Quota::live(self.counts.load(Ordering::Acquire)) as usize
     }
@@ -332,6 +301,7 @@ impl HandleTable {
     /// A compare-and-exchange loop because the two counts share a word: moving
     /// a promise to a handle is one write, so no reader ever sees a table that
     /// holds neither.
+    #[must_use = "a refused quota transition changed no count"]
     fn step(&self, transition: impl Fn(u64) -> Option<u64>) -> bool {
         let mut seen = self.counts.load(Ordering::Acquire);
         loop {
@@ -350,12 +320,8 @@ impl HandleTable {
 
     /// Promise a slot to an operation being admitted.
     ///
-    /// The reservation is a value with a destructor, so the promise is given
-    /// back on **every** path out — refused, cancelled, or dropped on the way
-    /// through a `?`. D-151 asks for exactly that and names io_uring's
-    /// `-ENFILE`-at-completion as the shape of getting it wrong; making it a
-    /// `Drop` obligation rather than a rule means the paths do not have to be
-    /// enumerated in order to be covered (D-163).
+    /// Dropping the returned value gives the promise back on every path that
+    /// does not install a handle (D-151, D-163).
     ///
     /// # Errors
     ///
@@ -379,8 +345,8 @@ impl HandleTable {
     /// # Errors
     ///
     /// [`HandleError::Meaningless`] for a right this object type makes no
-    /// distinction about, [`HandleError::QuotaExhausted`] if the table is full,
-    /// and [`HandleError::ArenaFull`] only if the backing invariant is broken.
+    /// distinction about or [`HandleError::QuotaExhausted`] if the table is
+    /// full.
     pub(crate) fn insert(&self, object: ObjectRef, rights: Rights) -> Result<u32, HandleError> {
         if !rights.are_meaningful_for(object.kind().per_type_rights()) {
             return Err(HandleError::Meaningless);
@@ -390,21 +356,15 @@ impl HandleTable {
         if !self.step(|bits| Quota::take(bits, self.quota)) {
             return Err(HandleError::QuotaExhausted);
         }
-        match self.fill(object, rights) {
-            Ok(handle) => Ok(handle),
-            Err(error) => {
-                self.step(Quota::close);
-                Err(error)
-            }
-        }
+        Ok(self.fill(object, rights))
     }
 
     /// Put `object` in a slot this table has already been charged for.
     ///
     /// Touches no count. Its two callers each own the accounting:
     /// [`insert`](Self::insert) has taken the room outright, and
-    /// [`install`](Self::install) holds a promise.
-    fn fill(&self, object: ObjectRef, rights: Rights) -> Result<u32, HandleError> {
+    /// [`SlotReservation::install`] holds a promise.
+    fn fill(&self, object: ObjectRef, rights: Rights) -> u32 {
         let entry = Entry {
             owner: self.id,
             object,
@@ -414,65 +374,17 @@ impl HandleTable {
             let mut arena = ARENA.lock_leaf();
             arena.claim(entry)
         };
-        debug_assert!(
-            claimed.is_ok(),
-            "a charged handle had no committed arena slot"
-        );
         let (index, generation) = match claimed {
             Ok(found) => found,
             Err(entry) => {
                 drop(entry);
-                return Err(HandleError::ArenaFull);
+                panic!("a charged handle had no committed arena slot");
             }
         };
 
-        let Some(named) = Slot::new(index as u32, generation) else {
-            // Unreachable: `take` bounds the index by `SLOTS` and the
-            // generation is masked on every advance. The recovery is to put
-            // the slot back — an earlier version called `close(0)`, which can
-            // only ever return `Malformed`, so the slot it claimed to free
-            // stayed occupied for ever (D-95).
-            let released = ARENA
-                .lock_leaf()
-                .slots
-                .get_mut(index)
-                .and_then(|slot| slot.entry.take());
-            drop(released);
-            return Err(HandleError::ArenaFull);
-        };
-        Ok(named.encode(self.mixer))
-    }
-
-    /// Install a handle into a slot promised earlier, attenuating on arrival.
-    ///
-    /// The receiving half of D-110's rule, applied to the ring: `offered` is
-    /// what the operation produced, `declared` is what the program said it was
-    /// willing to hold, and what lands is the **narrower of the two**. Without
-    /// it the ring would be the widening path around the discipline the
-    /// channels keep, which is the one thing that would make it worse than
-    /// them (D-151).
-    ///
-    /// # Errors
-    ///
-    /// [`HandleError::Denied`] if `declared` asks for more than was offered,
-    /// [`HandleError::Meaningless`] for a right the object makes no distinction
-    /// about, and [`HandleError::ArenaFull`] only if the backing invariant is
-    /// broken. On every refusal the promise goes back, because the reservation
-    /// is taken by value and its destructor runs.
-    pub(crate) fn install(
-        &self,
-        reservation: SlotReservation,
-        object: ObjectRef,
-        offered: Rights,
-        declared: Rights,
-    ) -> Result<u32, HandleError> {
-        let granted = offered.attenuate(declared).ok_or(HandleError::Denied)?;
-        if !granted.are_meaningful_for(object.kind().per_type_rights()) {
-            return Err(HandleError::Meaningless);
-        }
-        let handle = self.fill(object, granted)?;
-        reservation.keep();
-        Ok(handle)
+        let named = Slot::new(index as u32, generation)
+            .unwrap_or_else(|| panic!("a charged handle produced an invalid slot name"));
+        named.encode(self.mixer)
     }
 
     /// What `handle` names here, if it names anything of this table's.
@@ -510,6 +422,7 @@ impl HandleTable {
     /// # Errors
     ///
     /// As [`resolve`](Self::resolve), plus [`HandleError::Denied`].
+    #[cfg(feature = "selftest")]
     pub(crate) fn resolve_with(
         &self,
         handle: u32,
@@ -530,149 +443,17 @@ impl HandleTable {
     /// # Errors
     ///
     /// As [`resolve_with`](Self::resolve_with).
+    #[cfg(feature = "selftest")]
     pub(crate) fn kind_of(&self, handle: u32) -> Result<ObjectType, HandleError> {
         self.resolve_with(handle, Rights::INSPECT)
             .map(|object| object.kind())
     }
 }
 
-/// The delegation methods do not have one reachability state: Duplicate is a
-/// shipped ring opcode, while user close and channel transfer still have no
-/// ring-3 operations (D-181).
-#[cfg_attr(not(feature = "selftest"), expect(dead_code))]
-impl HandleTable {
-    /// Copy `handle` into a second handle carrying `wanted` or fewer rights.
-    ///
-    /// Needs `DUPLICATE`, and **attenuation only narrows**: asking for a right
-    /// the original does not hold is refused rather than clamped, because a
-    /// clamp turns "give me more than I have" into a silent success.
-    ///
-    /// # Errors
-    ///
-    /// As [`resolve`](Self::resolve), plus [`HandleError::Denied`] if
-    /// `DUPLICATE` is absent or `wanted` exceeds what is held, and
-    /// [`HandleError::QuotaExhausted`].
-    pub(crate) fn duplicate(&self, handle: u32, wanted: Rights) -> Result<u32, HandleError> {
-        let (object, rights) = self.resolve(handle)?;
-        if !rights.contains(Rights::DUPLICATE) {
-            return Err(HandleError::Denied);
-        }
-        let granted = rights.attenuate(wanted).ok_or(HandleError::Denied)?;
-        self.insert(object, granted)
-    }
-
-    /// Take `handle` out of this table to be sent, with `declared` rights.
-    ///
-    /// A **move**, not a copy: the entry is gone from this table when this
-    /// returns, and if the send that follows fails the object is dropped
-    /// rather than silently staying behind. A handle that survived a send
-    /// would make delegation into duplication, which is the property `002`'s
-    /// pillar 1 rests on.
-    ///
-    /// Three refusals, and each is a separate claim (D-110):
-    ///
-    /// - **`TRANSFER` is required.** Stripping it is how a holder is given
-    ///   authority it cannot pass on, which costs one bit and is the cheapest
-    ///   confinement this model has.
-    /// - **`declared` must be a subset of what is held.** Attenuation only
-    ///   narrows; a send cannot mint authority the sender never had.
-    /// - **`declared` must mean something for this object type.** D-78's rule
-    ///   checked at the boundary where it is easiest to violate.
-    ///
-    /// Refused at the **sender**, not at the receiver. A receiver that had to
-    /// police this would need to know what the sender held, which it cannot.
-    ///
-    /// # Errors
-    ///
-    /// [`HandleError::Denied`] for any of the first two, and
-    /// [`HandleError::Meaningless`] for the third.
-    pub(crate) fn send(
-        &self,
-        handle: u32,
-        declared: Rights,
-    ) -> Result<(ObjectRef, Rights), HandleError> {
-        let (object, held) = self.resolve(handle)?;
-        if !held.contains(Rights::TRANSFER) {
-            return Err(HandleError::Denied);
-        }
-        let granted = held.attenuate(declared).ok_or(HandleError::Denied)?;
-        if !granted.are_meaningful_for(object.kind().per_type_rights()) {
-            return Err(HandleError::Meaningless);
-        }
-        self.close(handle)?;
-        Ok((object, granted))
-    }
-
-    /// Take a handle that arrived in a message, with `declared` rights.
-    ///
-    /// The receiving half of the same rule, and the reason both ends declare
-    /// (managarm's `PushDescriptor`/`PullDescriptor`): a receiver states what
-    /// it is willing to hold, and gets the narrower of the two. Neither end
-    /// can be surprised by the other.
-    ///
-    /// # Errors
-    ///
-    /// [`HandleError::Denied`] if `declared` asks for more than was offered,
-    /// plus whatever [`insert`](Self::insert) refuses.
-    pub(crate) fn accept(
-        &self,
-        object: ObjectRef,
-        offered: Rights,
-        declared: Rights,
-    ) -> Result<u32, HandleError> {
-        let granted = offered.attenuate(declared).ok_or(HandleError::Denied)?;
-        self.insert(object, granted)
-    }
-
-    /// Close `handle`, dropping this table's reference to what it names.
-    ///
-    /// The generation advances here, so the value is dead the instant it is
-    /// closed rather than when the slot is next handed out. A slot freed and
-    /// never reused still refuses its old handle.
-    ///
-    /// The object is released **after** the arena's guard is gone: dropping
-    /// the last reference to one may reach the frame allocator, and a guard
-    /// held across that is the nesting this kernel does not have (D-85).
-    ///
-    /// # Errors
-    ///
-    /// As [`resolve`](Self::resolve).
-    pub(crate) fn close(&self, handle: u32) -> Result<(), HandleError> {
-        let named = Slot::decode(handle, self.mixer).ok_or(HandleError::Malformed)?;
-        let released = {
-            let mut arena = ARENA.lock_leaf();
-            let slot = arena
-                .slots
-                .get_mut(named.index() as usize)
-                .ok_or(HandleError::Stale)?;
-            if slot.generation != named.generation() {
-                return Err(HandleError::Stale);
-            }
-            match slot.entry.as_ref() {
-                None => return Err(HandleError::Stale),
-                Some(entry) if entry.owner != self.id => return Err(HandleError::Stale),
-                Some(_) => {}
-            }
-            slot.generation = named.reused().generation();
-            slot.entry.take()
-        };
-        self.step(Quota::close);
-        drop(released);
-        Ok(())
-    }
-}
-
 /// A slot promised to an operation that has been admitted and has not finished.
 ///
-/// Exists so that "the reservation is returned on every terminal path" is a
-/// property of the type rather than a rule the paths have to remember. There
-/// is no way to lose one silently: [`keep`](Self::keep) spends it, and every
-/// other end — a refusal, a cancellation, a `?` on the way through, the death
-/// of the program holding it — runs the destructor, which gives it back.
-///
-/// It holds an `Arc` to the table rather than a borrow, because the operation
-/// outlives the call that admitted it and may outlive the thread that made it
-/// (D-153 is slice 3, and this is the shape that makes it possible).
+/// It owns the table because an admitted operation may outlive its submitting
+/// thread. [`keep`](Self::keep) spends it; every other drop returns the slot.
 #[derive(Debug)]
 pub(crate) struct SlotReservation {
     table: Arc<HandleTable>,
@@ -680,11 +461,28 @@ pub(crate) struct SlotReservation {
 }
 
 impl SlotReservation {
+    /// Install into the table that issued this reservation.
+    pub(crate) fn install(
+        self,
+        object: ObjectRef,
+        offered: Rights,
+        declared: Rights,
+    ) -> Result<u32, HandleError> {
+        let granted = offered.attenuate(declared).ok_or(HandleError::Denied)?;
+        if !granted.are_meaningful_for(object.kind().per_type_rights()) {
+            return Err(HandleError::Meaningless);
+        }
+        let handle = self.table.fill(object, granted);
+        self.keep();
+        Ok(handle)
+    }
+
     /// Turn the promise into a held handle.
     ///
     /// By value, so a reservation cannot be kept twice.
     fn keep(mut self) {
-        self.table.step(Quota::commit);
+        let committed = self.table.step(Quota::commit);
+        assert!(committed, "a live reservation refused quota commit");
         self.spent = true;
     }
 }
@@ -692,7 +490,8 @@ impl SlotReservation {
 impl Drop for SlotReservation {
     fn drop(&mut self) {
         if !self.spent {
-            self.table.step(Quota::release);
+            let released = self.table.step(Quota::release);
+            assert!(released, "a live reservation refused quota release");
         }
     }
 }
@@ -754,11 +553,6 @@ impl HandleTable {
 }
 
 impl Drop for HandleTable {
-    /// A table's death closes everything it held.
-    ///
-    /// Which is the whole of a process's teardown, once there are processes:
-    /// its authority is its handles, so releasing them releases everything it
-    /// could reach.
     fn drop(&mut self) {
         // One at a time avoids a temporary allocation, and each object's
         // destructor runs after the arena leaf has gone (D-182).
@@ -788,16 +582,18 @@ impl Drop for HandleTable {
             }
         }
 
-        {
+        let commitment_held = {
             let mut arena = ARENA.lock_leaf();
-            debug_assert!(
-                arena.committed >= self.quota,
-                "a table released quota the arena had not committed"
-            );
-            if arena.committed >= self.quota {
+            let held = arena.committed >= self.quota;
+            if held {
                 arena.committed -= self.quota;
             }
-        }
+            held
+        };
+        assert!(
+            commitment_held,
+            "a table released quota the arena had not committed"
+        );
         self.counts.store(Quota::EMPTY, Ordering::Release);
     }
 }

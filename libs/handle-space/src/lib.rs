@@ -1,33 +1,9 @@
-//! How a handle value is made, and what it is evidence of.
+//! Opaque handle encoding and quota arithmetic.
 //!
-//! A process's external-object authority is exactly its handle table (`002`
-//! pillar 1), so the value a process holds is the most security-sensitive
-//! integer in this kernel. D-78 settled its shape; this crate is the arithmetic,
-//! beside `port_space` and `frame_space`, where `cargo test` can reach it. The
-//! arena and the lock are the kernel's.
-//!
-//! Three properties, each with a reason that is not obvious:
-//!
-//! - **The low two bits are reserved and always set.** That is what makes the
-//!   encoding *non-dense*, and a non-dense encoding is what lets the table
-//!   refuse to promise "lowest free handle" — the promise that serialises
-//!   allocation and, per the Scalable Commutativity Rule, is the difference
-//!   between an interface that scales and one that cannot. sv6 measured the
-//!   unordered alternative scaling linearly with **no single-core penalty**.
-//!   Zero is never a handle, whatever the mixer, which closes the commonest
-//!   way to fabricate one by accident. Small integers with the reserved bits
-//!   set — `3`, `7`, `11` — *do* decode, to slots that are almost never in
-//!   the arena; it is the bounds and generation checks that refuse them, not
-//!   the encoding. An earlier version of this sentence claimed otherwise
-//!   (D-95).
-//! - **A generation counter shares the word with the index.** Reusing a slot
-//!   changes the value, so a handle kept across a close does not name whatever
-//!   took the slot next. That is use-after-free turned into a decode failure.
-//! - **The value is mixed with a table-derived constant.** Nearby processes
-//!   holding the same slot see different integers, so a value guessed or
-//!   leaked from one is usually not even well formed in another. Mixers may
-//!   repeat; the kernel's non-repeating owner identity is the authority check
-//!   (D-204).
+//! A handle combines a slot index, generation, reserved bits, and table mixer.
+//! Generations reject common stale reuse; mixers make equal slots differ across
+//! tables but are not authority. The kernel's non-repeating table identity is
+//! the authority check (D-78, D-204).
 //!
 //! # Examples
 //!
@@ -53,10 +29,7 @@
 
 /// Bits at the bottom of every handle, always set, never part of the slot.
 ///
-/// Zircon's `0b11`, and the reason is not tagging: it is that an encoding with
-/// reserved bits cannot be dense, so no implementation of this interface can
-/// promise the lowest free handle even if a later author wanted to (D-70 rule
-/// 7). The constraint is in the format rather than in a comment.
+/// They keep zero invalid and the encoding non-dense (D-70 rule 7).
 pub const RESERVED_BITS: u32 = 2;
 
 /// The reserved pattern itself.
@@ -64,18 +37,12 @@ pub const RESERVED: u32 = 0b11;
 
 /// Bits of a handle naming which arena slot it is.
 ///
-/// 262,144 live handles across the system. The arena is global (D-78), so this
-/// is a system-wide ceiling rather than a per-process one, and it is a number
-/// to revisit with evidence rather than a format promise — every width here is
-/// checked by a host test rather than assumed.
+/// The global arena therefore has 262,144 slots (D-78).
 pub const INDEX_BITS: u32 = 18;
 
 /// Bits counting how many times a slot has been reused.
 ///
-/// 4,096 reuses before a slot's values repeat. That is not a security boundary
-/// on its own — it wraps — but it turns the overwhelmingly common
-/// use-after-close into an immediate decode failure rather than a silent
-/// reference to someone else's object.
+/// The counter rejects common stale handles but wraps after 4,096 generations.
 pub const GENERATION_BITS: u32 = 32 - INDEX_BITS - RESERVED_BITS;
 
 /// Slots the arena can hold.
@@ -95,18 +62,13 @@ pub const fn next_table_identity(identity: u64) -> Option<u64> {
 
 /// A table-derived constant that usually makes the same slot look different.
 ///
-/// Fuchsia mixes so that a handle value observed in one process is not a
-/// handle in another. It is not a secret and does not have to be: it removes
-/// the *accidental* case, where a value that leaked through a log or a shared
-/// buffer happens to name something.
+/// It is not a secret or an authority boundary; it prevents accidental reuse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mixer(u32);
 
 /// What a table number is multiplied by to become a mixer.
 ///
-/// The golden ratio scaled to thirty-two bits, and **odd**, which is the part
-/// that matters: an odd multiplier makes the map a bijection, so two table
-/// numbers cannot produce the same mixer before the reserved bits are cleared.
+/// Being odd makes multiplication a bijection over `u32`.
 const MULTIPLIER: u32 = 0x9E37_79B9;
 
 /// What is added after the multiply, so that table zero is not a fixed point.
@@ -115,30 +77,16 @@ const ADDEND: u32 = 0x7F4A_7C15;
 impl Mixer {
     /// A mixer built from `seed`.
     ///
-    /// The low [`RESERVED_BITS`] are cleared, because mixing them would break
-    /// the one property every decode checks first.
-    ///
-    /// A seed of zero yields the identity, which is a mixer that mixes
-    /// nothing — legal, and never what a table wants. [`for_table`] is the
-    /// constructor a table should use.
-    ///
-    /// [`for_table`]: Self::for_table
+    /// Reserved bits are cleared. Zero is the legal identity mixer; tables use
+    /// [`for_table`](Self::for_table) instead.
     pub const fn new(seed: u32) -> Self {
         Self(seed & !RESERVED)
     }
 
     /// A mixer for table number `id`, distinct and never the identity.
     ///
-    /// The kernel derived this itself and got `Mixer(0)` for the first table,
-    /// so its handles were unmixed and its first one was the literal integer
-    /// three (D-95). The odd constant is added *after* the multiply so that
-    /// `id` zero is not a fixed point.
-    ///
-    /// **"Never" is now true.** The multiplier is odd, so the multiply is a
-    /// bijection over the whole range — which means exactly four `id`s land in
-    /// `0..=RESERVED`, and [`new`](Self::new) clears those to zero. Four out of
-    /// four billion, so no kernel counting tables would ever reach one; that is
-    /// also what was true of `Mixer(0)` until the day it was not (D-132).
+    /// The odd multiply is bijective; a cleared result falls back to the odd
+    /// multiplier so no table receives the identity (D-95, D-132).
     pub const fn for_table(id: u32) -> Self {
         let mixed = Self::new(id.wrapping_mul(MULTIPLIER).wrapping_add(ADDEND));
         if mixed.is_identity() {
@@ -162,10 +110,7 @@ impl Mixer {
 
 /// Which arena slot a handle names, and which use of it.
 ///
-/// Not a handle: this is what a handle *decodes to*, and the kernel's side of
-/// the table is indexed by it. Keeping the two types apart is what stops a
-/// slot index being passed where a handle value belongs, which is the mistake
-/// a plain `u32` on both sides invites.
+/// This decoded value remains distinct from the encoded process-visible word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Slot {
     index: u32,
@@ -193,10 +138,7 @@ impl Slot {
 
     /// The next use of this slot, wrapping when the counter is exhausted.
     ///
-    /// Wrapping rather than saturating on purpose: a saturating counter would
-    /// make one slot's last generation permanent, so every later handle for it
-    /// would decode as valid forever — which is the failure this counter
-    /// exists to prevent, made permanent instead of transient.
+    /// Saturation would make the last generation permanently reusable.
     pub const fn reused(self) -> Self {
         Self {
             index: self.index,
@@ -212,14 +154,8 @@ impl Slot {
 
     /// What `value` names in the table `mixer` belongs to, if anything.
     ///
-    /// `None` when the reserved bits are not intact, which is every value that
-    /// was not produced by [`encode`](Self::encode) with this mixer — including
-    /// zero, every small integer, and any handle from another table whose
-    /// mixer differs in those bits.
-    ///
-    /// A `Some` here is **not** proof the handle is live. It says the value is
-    /// well formed and names a slot; whether that slot currently holds
-    /// anything, and whether its generation matches, is the arena's to answer.
+    /// `Some` proves only that the encoding is well formed; the arena still
+    /// validates occupancy and generation.
     pub const fn decode(value: u32, mixer: Mixer) -> Option<Self> {
         let base = value ^ mixer.bits();
         if base & RESERVED != RESERVED {
@@ -232,33 +168,18 @@ impl Slot {
 
 /// The generation a slot moves to when its handle is closed.
 ///
-/// Free-standing as well as on [`Slot`] because a table advancing a slot it is
-/// tearing down has a raw counter and no handle to reuse — and open-coding the
-/// wrap in two places is how the two stop agreeing.
+/// The free function also serves table teardown, which holds only a raw counter.
 pub const fn next_generation(generation: u32) -> u32 {
-    // Wrapping, not checked: this takes a *raw* counter from a caller that has
-    // no handle, so `u32::MAX` is a value it can be handed, and `+ 1` panics
-    // on it in a debug build — which is the profile D-65's second boot runs
-    // (D-105).
+    // Raw counters may be `u32::MAX`; checked addition would panic in debug.
     generation.wrapping_add(1) % GENERATIONS
 }
 
 /// A table's occupancy: handles it holds, and slots promised to operations
 /// that have not finished.
 ///
-/// D-78 made the quota the answer to kernel-memory exhaustion at the handle
-/// layer. Phase 6 makes an operation able to *produce* a handle, and that
-/// splits the count in two: a submission admitted now will need a slot later,
-/// and the only moment a program can be told "no room" and do something about
-/// it is at submission. So a slot is **reserved** when the operation is
-/// admitted and **committed** when the handle arrives, and the sum of the two
-/// is what the limit bounds.
-///
-/// Both counts live in one word so the transition between them is a single
-/// compare-and-exchange, which is what lets the kernel hold this in an atomic
-/// rather than behind a lock. The arithmetic is here because it is arithmetic,
-/// and because `reserve`-then-never-`release` is a leak that a host test can
-/// find and a machine cannot.
+/// Admission reserves capacity before an operation can produce a handle. Live
+/// plus reserved slots are bounded together, with both counters packed into
+/// one word for an atomic transition (D-78).
 ///
 /// # Examples
 ///
@@ -304,16 +225,8 @@ impl Quota {
 
     /// Promise a slot to an operation being admitted.
     ///
-    /// `None` when the table is full — which is the answer the program gets at
-    /// *submission*, the one moment it can choose a different operation.
-    /// `IORING_FILE_INDEX_ALLOC` reporting `-ENFILE` at completion instead is
-    /// the failure this shape exists to avoid (D-151).
-    /// The half being incremented is checked as well as the limit. A limit
-    /// larger than a `u32` cannot bound either count on its own, and the
-    /// addition below would carry a full promise half into the held half —
-    /// turning a full table into an empty one with a billion handles. Not a
-    /// state this kernel's limit of 64 can reach, which is why the arithmetic
-    /// has to be right on values it will not produce.
+    /// `None` when the combined quota or reserved half is full, before work is
+    /// accepted (D-151).
     pub const fn reserve(bits: u64, limit: usize) -> Option<u64> {
         if Self::reserved(bits) == u32::MAX || Self::charged(bits) >= limit as u64 {
             return None;
@@ -332,9 +245,6 @@ impl Quota {
     }
 
     /// Give a promise back unspent.
-    ///
-    /// The refused path, the cancelled path and the dead-program path all end
-    /// here, and there is no fourth.
     pub const fn release(bits: u64) -> Option<u64> {
         if Self::reserved(bits) == 0 {
             return None;
@@ -352,37 +262,12 @@ impl Quota {
         }
         Some(bits + 1)
     }
-
-    /// Give a held handle back.
-    ///
-    /// `None` if the table held none, which is a double close.
-    pub const fn close(bits: u64) -> Option<u64> {
-        if Self::live(bits) == 0 {
-            return None;
-        }
-        Some(bits - 1)
-    }
 }
 
 /// What a handle permits.
 ///
-/// D-78: sixteen to twenty-four rights in a single `u32`, universal split from
-/// per-type, under one rule that is easy to state and easy to violate:
-///
-/// > A right must correspond to a distinction the kernel actually makes about
-/// > that object — never to a syscall name.
-///
-/// That is the rule WASI's rights broke, and deleting them in Preview 2 was
-/// the cost. `READ` and `WRITE` describe object data; the concrete operation is
-/// type-specific, such as file bytes or channel receive/send. `EXECUTE` and
-/// `MAP` reserve the distinct future powers to execute bytes and place them in
-/// an address space.
-///
-/// The evidence for keeping the number small is one-directional. seL4 has 4,
-/// Zircon 25, CloudABI 31, Capsicum about 81 — and Capsicum's outgrew a machine
-/// word and broke its ABI, so `cap_rights_t` is now a multi-word struct
-/// spending seven of every sixty-four bits on metadata. managarm, adding
-/// fine-grained rights ten years in, landed on about fourteen.
+/// Rights name distinctions the kernel makes about an object, not syscall
+/// names; universal rights remain separate from per-type rights (D-78).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rights(u32);
 
@@ -431,28 +316,14 @@ impl Rights {
 
     /// May resolve a name inside this directory that the holder already knows.
     ///
-    /// **Distinct from [`ENUMERATE`](Self::ENUMERATE) on purpose**, and it is
-    /// the split `012` §4 calls the valuable one: "may resolve a name I know"
-    /// and "may list the names" are different powers, and they are a real
-    /// kernel distinction by D-78's rule because the *resolver* consults one
-    /// and `readdir` consults the other.
-    ///
-    /// Capsicum folds enumeration into read. WASI Preview 1 had both by
-    /// accident of being syscall-named, which is the failure D-78 exists to
-    /// prevent — these two are separate because the kernel behaves
-    /// differently, not because there are two calls.
+    /// Kept distinct from [`ENUMERATE`](Self::ENUMERATE): resolving a known
+    /// name does not confer directory discovery (`012` §4).
     pub const TRAVERSE: Self = Self(1 << 12);
 
     /// May list the names in this directory.
     pub const ENUMERATE: Self = Self(1 << 13);
 
     /// May change what names this directory holds.
-    ///
-    /// Nothing exercises it: this phase has no write path, and `014` carries
-    /// that as its largest deliberate hole. The bit is defined because
-    /// *leaving a gap* in a rights word is how a later addition renumbers the
-    /// ones above it — and D-78 requires the encoding to let an object type be
-    /// added without renumbering.
     pub const MODIFY: Self = Self(1 << 14);
 
     /// Rights from raw bits, or `None` if any undefined bit is set.
@@ -470,10 +341,7 @@ impl Rights {
 
     /// Every right this kernel defines.
     ///
-    /// The universal four, then the per-type ones. Written as the union of the
-    /// constants rather than as a literal, because a literal is a second copy
-    /// of the list and goes stale the moment a right is added — which is what
-    /// happened when the directory rights arrived (D-173).
+    /// The union avoids a second literal copy of the rights list (D-173).
     pub const ALL: Self = Self(
         Self::DUPLICATE.0
             | Self::TRANSFER.0
@@ -515,21 +383,11 @@ impl Rights {
 
     /// Whether every right here is one that can mean something for an object
     /// with `per_type` as its per-type set.
-    ///
-    /// D-78's rule is that a right names a distinction the kernel makes about
-    /// *that object*. Nothing enforced it, and the first object shipped with
-    /// `READ`, `WRITE`, `EXECUTE` and `MAP` granted on an `Event` — which has
-    /// no pages for any of them to mean anything about (D-95).
     pub const fn are_meaningful_for(self, per_type: Self) -> bool {
         self.difference(Self::UNIVERSAL).difference(per_type).0 == 0
     }
 
     /// Attenuate to `wanted`, or `None` if that asks for more than is held.
-    ///
-    /// The whole of rights attenuation, and it only ever narrows. Zircon's
-    /// `zx_channel_write_etc` can strip rights during a transfer — including
-    /// stripping `TRANSFER` itself — which costs about four percent and makes
-    /// least privilege the default rather than an option (D-78).
     pub const fn attenuate(self, wanted: Self) -> Option<Self> {
         if !self.contains(wanted) {
             return None;
@@ -545,23 +403,9 @@ mod tests {
     /// A mixer that is not zero, so the mixing is actually exercised.
     const MIXER: Mixer = Mixer::new(0x5A5A_1234);
 
-    /// The widths tile a 32-bit word exactly, with nothing spare and nothing
-    /// overlapping.
-    ///
-    /// Everything else here rests on this, and a silent overlap would make two
-    /// different slots encode to one handle.
-    /// A decoded slot's accessors give back the fields they name.
-    ///
-    /// `generation()` was pinned; `index()` was read by nothing. Derived
-    /// equality compares fields rather than accessors, so
-    /// `fn index(self) -> u32 { self.generation }` passed every test in this
-    /// crate — and `kernel/src/handle.rs` indexes the arena with it, so every
-    /// handle would have resolved to whichever slot the generation happened to
-    /// name, with the generation check still passing (D-136).
     #[test]
     fn a_decoded_slot_reports_the_index_and_generation_it_holds() {
-        // Distinct, and neither zero: equal values would let one accessor
-        // stand in for the other, which is the defect being tested for.
+        // Distinct values expose swapped accessors (D-136).
         const INDEX: u32 = 37;
         const GENERATION: u32 = 1234;
 
@@ -586,11 +430,7 @@ mod tests {
 
     #[test]
     fn the_widths_tile_the_word() {
-        // Transcribed, because the three assertions below are definitions:
-        // `GENERATION_BITS` *is* `32 - INDEX_BITS - RESERVED_BITS`, `SLOTS`
-        // *is* `1 << INDEX_BITS`, and `GENERATIONS` *is* `1 << GENERATION_BITS`
-        // — so the sum is `32 == 32` and the other two are `X == X` for every
-        // width. Narrowing `INDEX_BITS` to 17 survived them all (D-124).
+        // Pin the policy values, not only their internally consistent formulas.
         assert_eq!(RESERVED_BITS, 2, "the low two bits are reserved (D-78)");
         assert_eq!(INDEX_BITS, 18, "eighteen bits of arena index");
         assert_eq!(GENERATION_BITS, 12, "and twelve of generation");
@@ -603,7 +443,6 @@ mod tests {
         assert_eq!(GENERATIONS, 1 << GENERATION_BITS);
     }
 
-    /// Every slot round-trips, at the edges of both fields.
     #[test]
     fn a_slot_round_trips() {
         let corners = [0, 1, SLOTS / 2, SLOTS - 2, SLOTS - 1];
@@ -620,18 +459,8 @@ mod tests {
         }
     }
 
-    /// **The invalid value never decodes** — the first of the two checks D-28
-    /// singles out as most likely to be silently unfailable.
-    ///
-    /// Every value whose reserved bits are not intact must be refused, and the
-    /// ones that matter are the ones a bug produces by accident: zero, a small
-    /// count, a length, a negative-looking word.
     #[test]
     fn a_malformed_value_never_decodes() {
-        // Every value whose reserved bits are broken, and the `continue` that
-        // used to be here skipped exactly the ones where the property is
-        // interesting — so the cases it kept were the ones that could not
-        // fail (D-95). They are now asserted from the other side.
         for value in [0, 1, 2, 4, 8, 16, 100, u32::MAX / 2, u32::MAX - 1] {
             let broken = (value ^ MIXER.bits()) & RESERVED != RESERVED;
             assert_eq!(
@@ -641,7 +470,6 @@ mod tests {
             );
         }
 
-        // And exhaustively over the low bits, which is where the property is.
         for low in 0..(1u32 << 8) {
             let value = low ^ MIXER.bits();
             let intact = low & RESERVED == RESERVED;
@@ -653,10 +481,6 @@ mod tests {
         }
     }
 
-    /// Zero is never a handle, whatever the mixer.
-    ///
-    /// Worth its own check because zero is what uninitialised memory, a failed
-    /// allocation and a forgotten field all produce.
     #[test]
     fn zero_is_never_a_handle() {
         for seed in [0, 1, 0xFFFF_FFFF, 0x5A5A_1234, 0xDEAD_BEEF] {
@@ -669,11 +493,6 @@ mod tests {
         }
     }
 
-    /// **A reused slot never yields the same value twice** — the second of
-    /// D-28's two, and the one the generation counter exists for.
-    ///
-    /// Walked over a whole generation cycle for one slot: every value distinct
-    /// until the counter wraps, and the wrap is where it repeats.
     #[test]
     fn a_reused_slot_never_repeats_before_it_wraps() {
         let mut slot = Slot::new(9, 0).expect("within range");
@@ -697,7 +516,6 @@ mod tests {
         assert_eq!(slot.encode(MIXER), first, "the wrap is where it repeats");
     }
 
-    /// Two different slots never share a handle, whatever the mixer.
     #[test]
     fn no_two_slots_share_a_handle() {
         let mut seen = alloc_set();
@@ -712,7 +530,6 @@ mod tests {
         }
     }
 
-    /// The same slot in two tables is two different handles.
     #[test]
     fn a_handle_does_not_travel_between_tables() {
         let slot = Slot::new(3, 5).expect("within range");
@@ -720,36 +537,18 @@ mod tests {
         let there = Mixer::new(0x2222_2222);
         assert_ne!(slot.encode(here), slot.encode(there));
 
-        // And decoding one in the other names something else, or nothing —
-        // never the same slot.
         assert_ne!(Slot::decode(slot.encode(here), there), Some(slot));
     }
 
-    /// **No table number gets a mixer that mixes nothing**, the four that
-    /// nearly did included.
-    ///
-    /// D-95 is the whole reason `for_table` exists: the kernel derived its own
-    /// mixer, got `Mixer(0)` for the first table, and every handle in it came
-    /// out unmixed. `is_identity` was written to ask exactly that question, and
-    /// **nothing called it** — nor did any test here call `for_table` at all,
-    /// so D-95's fix had a name for its property and no check of it.
-    ///
-    /// The doc said "never the identity" and the arithmetic said almost: the
-    /// multiplier is odd, so the map is a bijection, so exactly four `id`s land
-    /// in `0..=RESERVED` and `new` clears them to zero (D-132).
     #[test]
     fn no_table_number_gets_a_mixer_that_mixes_nothing() {
-        // The multiplier's inverse mod 2^32, by Newton's iteration: each step
-        // doubles the number of correct bits, so five reach thirty-two.
-        // Computed rather than written down — a constant here would only equal
-        // itself, which is what D-124 was about.
+        // Newton iteration derives the inverse instead of restating it.
         let mut inverse = MULTIPLIER;
         for _ in 0..5 {
             inverse = inverse.wrapping_mul(2u32.wrapping_sub(MULTIPLIER.wrapping_mul(inverse)));
         }
         assert_eq!(MULTIPLIER.wrapping_mul(inverse), 1, "not an inverse");
 
-        // The four table numbers whose product lands where `new` clears.
         for cleared in 0..=RESERVED {
             let id = cleared.wrapping_sub(ADDEND).wrapping_mul(inverse);
             assert_eq!(
@@ -758,24 +557,22 @@ mod tests {
                 "the inverse did not name the id landing on {cleared}"
             );
             assert!(
-                !Mixer::for_table(id).is_identity(),
+                Mixer::for_table(id).bits() != 0,
                 "table {id} got a mixer that mixes nothing"
             );
         }
 
-        // And the ordinary ones, table zero — D-95's own — among them.
         for id in 0..1024 {
-            assert!(!Mixer::for_table(id).is_identity(), "table {id}");
+            assert!(Mixer::for_table(id).bits() != 0, "table {id}");
         }
     }
 
-    /// Two table numbers do not share a mixer, which is what the mixing is for.
-    ///
-    /// Only *nearly* true, and the bound is worth stating rather than
-    /// discovering: the multiply is a bijection, but `new` then clears two
-    /// bits, so mixers collide four ways. That is a property of the format and
-    /// not a fault — a table's identity is checked separately, and the mixer
-    /// only has to remove the accidental case (D-78).
+    #[test]
+    fn identity_detection_reads_the_mixer_bits() {
+        assert!(Mixer::new(0).is_identity());
+        assert!(!Mixer::new(1 << RESERVED_BITS).is_identity());
+    }
+
     #[test]
     fn table_numbers_spread_across_mixers() {
         let mut seen = Vec::new();
@@ -788,10 +585,6 @@ mod tests {
         assert_eq!(seen.len(), before, "two table numbers shared a mixer");
     }
 
-    /// A mixer cannot disturb the reserved bits, whatever seed it is given.
-    ///
-    /// If it could, a table would exist whose every handle failed to decode —
-    /// or, worse, one where malformed values decoded fine.
     #[test]
     fn a_mixer_cannot_break_the_reserved_bits() {
         for seed in [0, 1, 2, 3, 0xFFFF_FFFF, 0xDEAD_BEEF] {
@@ -802,7 +595,6 @@ mod tests {
         }
     }
 
-    /// Out-of-range halves are refused rather than silently truncated.
     #[test]
     fn an_out_of_range_slot_is_refused() {
         assert_eq!(Slot::new(SLOTS, 0), None);
@@ -811,14 +603,12 @@ mod tests {
         assert!(Slot::new(SLOTS - 1, GENERATIONS - 1).is_some());
     }
 
-    /// Table identities reach a terminal sentinel instead of becoming zero.
     #[test]
     fn table_identity_exhaustion_never_wraps() {
         assert_eq!(next_table_identity(u64::MAX - 1), Some(u64::MAX));
         assert_eq!(next_table_identity(u64::MAX), None);
     }
 
-    /// A tiny set, so the crate needs no dependency to test uniqueness.
     fn alloc_set() -> std::collections::HashSet<u32> {
         std::collections::HashSet::new()
     }
@@ -828,17 +618,9 @@ mod tests {
 mod rights_tests {
     use super::*;
 
-    /// The universal four and the per-type rights do not share a bit, and
-    /// `ALL` is exactly all of them.
-    ///
-    /// The list is **read out of this file** rather than restated here. A
-    /// restated list is a second copy that goes green on the day the two
-    /// disagree, which is what happened when the directory rights arrived and
-    /// this test was still naming eight (D-161, D-173).
     #[test]
     fn the_two_halves_do_not_overlap() {
-        // `pub const NAME: Self = Self(...)`, minus the ones that are unions
-        // of the others rather than rights in their own right.
+        // Read the domain from source instead of maintaining a second list.
         const COMPOSITE: [&str; 4] = ["NONE", "UNIVERSAL", "ALL", "EMPTY"];
         let named: Vec<&str> = include_str!("lib.rs")
             .lines()
@@ -865,13 +647,10 @@ mod rights_tests {
                 .split_once(" << ")
                 .unwrap_or_else(|| panic!("{name} is not a single bit: {inside}"));
             let _ = shift;
-            let place: u32 = inside
-                .split(" << ")
-                .nth(1)
-                .expect("a shift")
-                .trim()
-                .parse()
-                .expect("a bit position");
+            let place = <u32 as core::str::FromStr>::from_str(
+                inside.split(" << ").nth(1).expect("a shift").trim(),
+            )
+            .expect("a bit position");
             1 << place
         };
 
@@ -884,8 +663,6 @@ mod rights_tests {
         }
         assert_eq!(seen, Rights::ALL.bits(), "ALL is not every right");
 
-        // And the two halves are disjoint, which is what lets a universal
-        // right mean the same thing for every object type.
         assert_eq!(
             Rights::UNIVERSAL.bits() & (seen & !Rights::UNIVERSAL.bits()),
             0
@@ -893,15 +670,6 @@ mod rights_tests {
         assert_eq!(Rights::UNIVERSAL.bits().count_ones(), 4);
     }
 
-    /// An undefined bit is refused, not masked away.
-    ///
-    /// Masking would let a caller ask for a right this kernel does not have
-    /// yet and be told yes.
-    ///
-    /// The undefined bits are found rather than named: `1 << 12` used to be
-    /// one and became `TRAVERSE`, which turned this test red — correctly, and
-    /// as a reminder that a test naming a *gap* goes stale the moment the gap
-    /// is filled (D-173).
     #[test]
     fn an_undefined_right_is_refused() {
         let defined = Rights::ALL.bits();
@@ -921,23 +689,17 @@ mod rights_tests {
 
         assert_eq!(Rights::from_bits(defined), Some(Rights::ALL));
         assert_eq!(Rights::from_bits(0), Some(Rights::NONE));
-        // And a word that is mostly right is still refused whole.
         let first_undefined = (0..32u32)
             .find(|bit| defined & (1 << bit) == 0)
             .expect("some bit is undefined");
         assert_eq!(Rights::from_bits(defined | (1 << first_undefined)), None);
     }
 
-    /// Attenuation only ever narrows, and asking for more is refused rather
-    /// than clamped.
-    ///
-    /// Clamping would turn "give me more than I have" into a silent success,
-    /// which is the shape of every privilege-escalation bug that ever looked
-    /// like a convenience.
     #[test]
     fn attenuation_only_narrows() {
         let held = Rights::READ.union(Rights::WRITE).union(Rights::TRANSFER);
 
+        assert_eq!(held.union(Rights::READ), held, "union removed a held right");
         assert_eq!(held.attenuate(Rights::READ), Some(Rights::READ));
         assert_eq!(held.attenuate(Rights::NONE), Some(Rights::NONE));
         assert_eq!(held.attenuate(held), Some(held));
@@ -954,8 +716,6 @@ mod rights_tests {
             "gained a right by asking for everything plus one"
         );
 
-        // Whatever comes back is a subset of what was held — the invariant,
-        // over every combination of the defined rights.
         for bits in 0..=Rights::ALL.bits() {
             let Some(wanted) = Rights::from_bits(bits) else {
                 continue;
@@ -966,10 +726,6 @@ mod rights_tests {
         }
     }
 
-    /// Stripping `TRANSFER` yields a usable, non-delegatable handle.
-    ///
-    /// The one-bit version of a mechanism, and worth checking on its own
-    /// because it is the case D-78 cites for attenuate-on-send.
     #[test]
     fn transfer_can_be_stripped_on_its_own() {
         let held = Rights::READ.union(Rights::TRANSFER).union(Rights::WAIT);
@@ -980,10 +736,6 @@ mod rights_tests {
         assert_eq!(held.attenuate(confined), Some(confined));
     }
 
-    /// `contains` is subset, not intersection.
-    ///
-    /// The mistake that makes a check pass when *any* right matches instead of
-    /// all of them, which reads identically and grants everything.
     #[test]
     fn contains_means_every_one() {
         let held = Rights::READ.union(Rights::WRITE);
@@ -993,13 +745,8 @@ mod rights_tests {
         assert!(held.contains(Rights::NONE), "everything contains nothing");
     }
 
-    /// A right that means nothing for an object type is refused for it.
-    ///
-    /// The rule D-78 states and nothing checked: `READ` on an event is not a
-    /// narrower permission, it is a category error.
     #[test]
     fn a_right_that_means_nothing_for_a_type_is_not_meaningful() {
-        // An object with no per-type rights at all, which is what an event is.
         let none = Rights::NONE;
         assert!(Rights::UNIVERSAL.are_meaningful_for(none));
         assert!(Rights::DUPLICATE.are_meaningful_for(none));
@@ -1009,7 +756,6 @@ mod rights_tests {
         );
         assert!(!Rights::ALL.are_meaningful_for(none));
 
-        // One with the memory rights, which is what a memory object will be.
         let memory = Rights::READ
             .union(Rights::WRITE)
             .union(Rights::EXECUTE)
@@ -1019,15 +765,9 @@ mod rights_tests {
             "its own rights and the universal four"
         );
         assert!(Rights::READ.union(Rights::WAIT).are_meaningful_for(memory));
-        // **Not `ALL`.** This used to assert that every right this kernel
-        // defines is meaningful for a memory object, which was true only while
-        // `ALL` was exactly the universal four plus the memory ones. The
-        // directory rights arrived and it became false — correctly, because a
-        // memory object has no names in it (D-173).
         assert!(!Rights::ALL.are_meaningful_for(memory));
         assert!(!Rights::TRAVERSE.are_meaningful_for(memory));
 
-        // And a directory, which is the mirror: names but no bytes.
         let directory = Rights::TRAVERSE
             .union(Rights::ENUMERATE)
             .union(Rights::MODIFY);
@@ -1038,15 +778,11 @@ mod rights_tests {
         );
         assert!(!Rights::MAP.are_meaningful_for(directory));
 
-        // Universal rights are always meaningful, which is what makes them
-        // universal.
         assert!(Rights::UNIVERSAL.are_meaningful_for(Rights::NONE));
     }
 
     #[test]
     fn a_raw_counter_at_the_top_of_the_range_still_advances() {
-        // A caller with no handle has a bare `u32`; `+ 1` panicked on this one
-        // in the debug boot (D-105).
         assert_eq!(next_generation(u32::MAX), 0);
         assert_eq!(next_generation(GENERATIONS - 1), 0);
         assert_eq!(next_generation(GENERATIONS), 1);
@@ -1057,11 +793,6 @@ mod rights_tests {
 mod quota_tests {
     use super::Quota;
 
-    /// Reserving and committing costs the same one slot as taking outright.
-    ///
-    /// The two paths into a table must agree about what a handle costs, or the
-    /// limit means one thing for a handle that arrived by completion and
-    /// another for a handle that was inserted.
     #[test]
     fn a_reserved_slot_and_a_taken_slot_cost_the_same() {
         let limit = 4;
@@ -1076,12 +807,6 @@ mod quota_tests {
         assert_eq!(Quota::reserved(committed), 0);
     }
 
-    /// A promise occupies the table before the handle exists.
-    ///
-    /// The property the whole type is for: an operation admitted against the
-    /// last slot must make an ordinary insert fail *now*, not make the
-    /// completion fail later. Deleting `reserved` from `charged` leaves every
-    /// other test here green.
     #[test]
     fn a_promise_holds_the_last_slot_against_an_insert() {
         let limit = 1;
@@ -1098,14 +823,11 @@ mod quota_tests {
             "a second operation was promised the same slot"
         );
 
-        // And giving the promise back frees it again, which is the other half:
-        // a reservation that could not be released would be a slow leak.
         let released = Quota::release(promised).expect("a promise to give back");
         assert_eq!(released, Quota::EMPTY);
         assert!(Quota::take(released, limit).is_some());
     }
 
-    /// Releasing a promise does not disturb the handles already held.
     #[test]
     fn releasing_a_promise_leaves_the_held_handles_alone() {
         let limit = 8;
@@ -1121,30 +843,16 @@ mod quota_tests {
         assert_eq!(Quota::reserved(committed), 0);
     }
 
-    /// Spending what was never promised is refused rather than wrapped.
-    ///
-    /// Each of these would otherwise borrow from the other count: a `commit`
-    /// with nothing reserved subtracts one from the high half and lands a
-    /// billion promises in the low half's carry.
     #[test]
     fn spending_a_promise_that_was_not_made_is_refused() {
         assert!(Quota::commit(Quota::EMPTY).is_none());
         assert!(Quota::release(Quota::EMPTY).is_none());
-        assert!(Quota::close(Quota::EMPTY).is_none());
 
         let held = Quota::take(Quota::EMPTY, 4).expect("room");
         assert!(Quota::commit(held).is_none(), "nothing was promised");
         assert!(Quota::release(held).is_none(), "nothing was promised");
-        assert_eq!(Quota::close(held), Some(Quota::EMPTY));
     }
 
-    /// The limit check cannot be defeated by two counts that sum past a word.
-    ///
-    /// `charged` is `u64` for this: `live` and `reserved` are each a `u32`,
-    /// and adding them in `u32` wraps to a small number, which passes a limit
-    /// check that should have refused. Not a reachable state through this
-    /// API — the limit stops it long before — which is exactly why the
-    /// arithmetic has to be right on values the API will not produce.
     #[test]
     fn two_counts_that_sum_past_a_word_do_not_wrap_the_limit_check() {
         let brimming = u64::from(u32::MAX) | (u64::from(u32::MAX) << 32);
@@ -1157,10 +865,6 @@ mod quota_tests {
         assert!(Quota::take(brimming, usize::MAX).is_none());
     }
 
-    /// The two counts do not read each other's half of the word.
-    ///
-    /// Pairwise distinct on purpose (D-136): equal counts would let `live` and
-    /// `reserved` be swapped with every assertion above still passing.
     #[test]
     fn the_two_counts_do_not_read_each_others_bits() {
         let limit = 16;

@@ -21,6 +21,8 @@ const SHT_NOBITS: u32 = 8;
 /// Section flag: this section is part of the loaded image.
 const SHF_ALLOC: u64 = 1 << 1;
 
+const SECTION_HEADER_BYTES: usize = 64;
+
 /// Where the higher half begins — the base `kernel/linker.ld` links at, and
 /// the range the kernel code model can address.
 const HIGHER_HALF: u64 = 0xffff_ffff_8000_0000;
@@ -214,10 +216,8 @@ impl Image {
                     vaddr: segment.vaddr,
                 });
             }
-            // Reported rather than saturated over: `covers` checks only
-            // `vaddr + memory_size`, so a `p_filesz` past the end of the range
-            // walked past every fault and reached an unchecked addition
-            // downstream (D-105).
+            // Reported, not saturated: `covers` checks only `vaddr +
+            // memory_size`, so an oversized `p_filesz` reached an unchecked add (D-105).
             if segment.file_size > segment.memory_size
                 || segment.vaddr.checked_add(segment.file_size).is_none()
             {
@@ -237,10 +237,8 @@ impl Image {
                 });
                 continue;
             };
-            // File-backed bytes reaching past the section's start put it in
-            // the file, whether or not they cover the whole segment.
-            // Both operands are the file's; the unchecked add panicked the
-            // build on `p_filesz = u64::MAX` (D-105).
+            // Any file-backed byte past the section's start puts it in the
+            // file; the unchecked add panicked on `p_filesz = u64::MAX` (D-105).
             let file_end = segment.vaddr.saturating_add(segment.file_size);
             if section.is_nobits() && section.addr < file_end {
                 faults.push(ImageError::NobitsInFile {
@@ -331,6 +329,9 @@ fn parse_sections(bytes: &[u8], header: elf64::SectionTable) -> Result<Vec<Secti
     if count == 0 {
         return Ok(Vec::new());
     }
+    if stride != SECTION_HEADER_BYTES {
+        bail!("section headers of {stride} bytes are not ELF64 section headers");
+    }
     if names_index >= count {
         bail!("the section name table index is outside the section table");
     }
@@ -345,11 +346,8 @@ fn parse_sections(bytes: &[u8], header: elf64::SectionTable) -> Result<Vec<Secti
             let at = entry_at(table, index, stride)?;
             Ok(Section {
                 name: read_name(bytes, field(names, read_u32(bytes, at)? as usize)?)?,
-                // Through `field` like the segment walk, rather than raw
-                // addition. It was unreachable — the `name` field initialises
-                // first and bails on a large `at` — but that made the safety
-                // argument rest on Rust's struct-field initialisation order,
-                // which is not what D-105's fix was resting on (D-124).
+                // Check each field offset directly instead of relying on an
+                // earlier initializer to reject a large `at` (D-105, D-124).
                 kind: read_u32(bytes, field(at, 0x04)?)?,
                 flags: read_u64(bytes, field(at, 0x08)?)?,
                 addr: read_u64(bytes, field(at, 0x10)?)?,
@@ -656,9 +654,9 @@ mod tests {
     /// `sections`, so the parser is tested against bytes rather than against
     /// the struct it is supposed to produce.
     fn encode(image: &Image) -> Vec<u8> {
-        const HEADER: usize = 0x40;
-        const PH_STRIDE: usize = 0x38;
-        const SH_STRIDE: usize = 0x40;
+        const HEADER: usize = elf64::HEADER_BYTES;
+        const PH_STRIDE: usize = elf64::PROGRAM_HEADER_BYTES;
+        const SH_STRIDE: usize = SECTION_HEADER_BYTES;
 
         let mut names = vec![0u8];
         let mut name_offsets = Vec::new();
@@ -680,10 +678,14 @@ mod tests {
         out[..4].copy_from_slice(&elf64::MAGIC);
         out[4] = elf64::CLASS_64;
         out[5] = elf64::LITTLE_ENDIAN;
+        out[6] = 1;
+        out[0x10..0x12].copy_from_slice(&2u16.to_le_bytes());
         out[0x12..0x14].copy_from_slice(&elf64::MACHINE_X86_64.to_le_bytes());
+        out[0x14..0x18].copy_from_slice(&1u32.to_le_bytes());
         out[0x18..0x20].copy_from_slice(&image.entry.to_le_bytes());
         out[0x20..0x28].copy_from_slice(&(ph_table as u64).to_le_bytes());
         out[0x28..0x30].copy_from_slice(&(sh_table as u64).to_le_bytes());
+        out[0x34..0x36].copy_from_slice(&(HEADER as u16).to_le_bytes());
         out[0x36..0x38].copy_from_slice(&(PH_STRIDE as u16).to_le_bytes());
         out[0x38..0x3A].copy_from_slice(&(image.segments.len() as u16).to_le_bytes());
         out[0x3A..0x3C].copy_from_slice(&(SH_STRIDE as u16).to_le_bytes());
@@ -753,12 +755,8 @@ mod tests {
     fn a_file_that_is_not_an_elf_is_refused() {
         assert!(parse(b"").is_err());
         assert!(parse(b"MZ\x90\x00 a PE executable").is_err());
-        // Full-length identifiers, because `elf64` takes the whole 64-byte
-        // file header before it looks at the class or the endianness, and a
-        // short slice is refused for being short instead. The six- and
-        // eight-byte versions of these two lines said "32-bit" and
-        // "big-endian" while testing neither, and deleting both checks left
-        // them green (D-105).
+        // Full headers make rejection reach class/endianness; shorter fixtures
+        // stop at truncation (D-105).
         let mut thirty_two = encode(&good_image());
         thirty_two[4] = 1;
         let message = parse(&thirty_two).expect_err("32-bit").to_string();
@@ -805,14 +803,8 @@ mod tests {
         assert!(parse(&names).is_err(), "e_shstrndx = u16::MAX");
     }
 
-    /// The two refusals `libs/elf64` has, which this reader had fallen behind
-    /// on.
-    ///
-    /// The duplication D-105 recorded as owed is not merely still owed: a
-    /// repair to one copy left the other two validations short, which is the
-    /// duplication being a defect rather than a cost. `verify_file` runs after
-    /// every kernel build, so an aarch64 ELF passing it would have shipped
-    /// (D-124).
+    /// Keep the verifier's machine and header-shape refusals aligned with the
+    /// loader because `verify_file` judges every kernel image (D-105, D-124).
     #[test]
     fn an_image_for_another_machine_or_of_another_shape_is_refused() {
         let mut aarch64 = encode(&good_image());
@@ -827,12 +819,26 @@ mod tests {
         let message = parse(&wrong_stride).expect_err("stride").to_string();
         assert!(message.contains("program headers"), "said {message:?}");
 
-        // Both refusals are `elf64`'s now rather than transcriptions of it,
-        // which is what makes them impossible to fall behind on (D-158). The
-        // numbers are still asserted, because a crate-wide typo would move
-        // both readers together and neither would notice.
+        // Shared constants prevent reader drift; literal anchors still catch a
+        // crate-wide typo that would move both readers together (D-158).
         assert_eq!(elf64::PROGRAM_HEADER_BYTES, 56);
         assert_eq!(elf64::MACHINE_X86_64, 62);
+    }
+
+    #[test]
+    fn a_section_header_stride_is_exactly_elf64s() {
+        for stride in [0u16, 1, 63, 65, u16::MAX] {
+            let mut image = encode(&good_image());
+            image[0x3A..0x3C].copy_from_slice(&stride.to_le_bytes());
+            let message = parse(&image)
+                .expect_err("non-ELF64 section stride")
+                .to_string();
+            assert!(
+                message.contains("section headers") && message.contains(&stride.to_string()),
+                "stride {stride} said {message:?}"
+            );
+        }
+        assert!(parse(&encode(&good_image())).is_ok());
     }
 
     /// A segment whose file size runs off the end does not overflow the

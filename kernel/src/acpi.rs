@@ -5,10 +5,9 @@
 //! `acpi_tables`, host-tested; the bytes come through `wost`'s ACPI-only
 //! physical reader.
 //!
-//! Read before the page tables are built. That was forced while mapping was
-//! one-way (D-45, D-49); since D-86 it is merely the simplest order, because
-//! the bootloader's direct map still covers the tables at that point and
-//! nothing has had to be mapped to reach them.
+//! Read before the page tables are built because the bootloader's direct map
+//! already covers them without adding a mapping dependency (D-45, D-49,
+//! D-86).
 
 use acpi_tables::{MadtInterrupts, Rsdp, Sdt, SdtPointers};
 use alloc::vec::Vec;
@@ -31,9 +30,8 @@ pub(crate) type Interrupts = MadtInterrupts<MAX_IO_APICS>;
 /// `rsdp` is the *virtual* address the bootloader reported, which base
 /// revision 4 guarantees is inside the direct map.
 pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
-    // Each refusal says so: the reader only reaches ACPI storage, and a boot
-    // that lost its routing to that rule is otherwise a keyboard that stopped
-    // working for no stated reason.
+    // Each refusal says so: a boot that lost its routing to the ACPI-only
+    // reader is otherwise a keyboard that stopped for no stated reason.
     let Some(firmware) = mm::firmware_memory() else {
         warn!("acpi: no reader for firmware memory");
         return None;
@@ -59,12 +57,16 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
         }
     };
 
-    for io_apic in interrupts.io_apics() {
+    let mut io_apics = interrupts.io_apics();
+    let mut next_io_apic = core::iter::Iterator::next(&mut io_apics);
+    while let Some(io_apic) = next_io_apic {
+        next_io_apic = core::iter::Iterator::next(&mut io_apics);
+        let id = io_apic.id();
+        let address = io_apic.address();
+        let gsi_base = io_apic.gsi_base();
         debug!(
             "acpi: io apic {} at {:#x}, gsi base {}",
-            io_apic.id(),
-            io_apic.address(),
-            io_apic.gsi_base()
+            id, address, gsi_base
         );
     }
     for source in 0..16 {
@@ -105,7 +107,10 @@ fn find_madt(firmware: FirmwareMemory, root: Rsdp) -> Option<Vec<u8>> {
         }
     };
 
-    for entry in pointers {
+    let mut pointers = pointers;
+    let mut next_pointer = core::iter::Iterator::next(&mut pointers);
+    while let Some(entry) = next_pointer {
+        next_pointer = core::iter::Iterator::next(&mut pointers);
         let Some(table) = read_table(firmware, entry) else {
             continue;
         };
@@ -126,12 +131,12 @@ fn find_madt(firmware: FirmwareMemory, root: Rsdp) -> Option<Vec<u8>> {
 /// table, which is also what lets `Sdt::parse` checksum every byte.
 fn read_table(firmware: FirmwareMemory, address: u64) -> Option<Vec<u8>> {
     let mut header = [0; Sdt::LEN];
-    if !firmware.read(address, &mut header) {
+    if !FirmwareMemory::read(&firmware, address, &mut header) {
         return None;
     }
     let length = Sdt::parse_length(&header, MAX_FIRMWARE_TABLE_BYTES).ok()?;
     let mut table = zeroed(length)?;
-    firmware.read(address, &mut table).then_some(table)
+    FirmwareMemory::read(&firmware, address, &mut table).then_some(table)
 }
 
 /// Read the variable-length root pointer from its direct-map address.
@@ -139,12 +144,12 @@ fn read_root_pointer(firmware: FirmwareMemory, address: u64) -> Option<Vec<u8>> 
     let offset = mm::direct_map()?.offset();
     let physical = address.checked_sub(offset)?;
     let mut original = [0; Rsdp::V1_LEN];
-    if !firmware.read(physical, &mut original) {
+    if !FirmwareMemory::read(&firmware, physical, &mut original) {
         return None;
     }
     let length = if original[15] == 2 {
         let mut prefix = [0; 24];
-        if !firmware.read(physical, &mut prefix) {
+        if !FirmwareMemory::read(&firmware, physical, &mut prefix) {
             return None;
         }
         Rsdp::parse_length(&prefix, MAX_FIRMWARE_TABLE_BYTES).ok()?
@@ -152,7 +157,7 @@ fn read_root_pointer(firmware: FirmwareMemory, address: u64) -> Option<Vec<u8>> 
         Rsdp::parse_length(&original, MAX_FIRMWARE_TABLE_BYTES).ok()?
     };
     let mut bytes = zeroed(length)?;
-    firmware.read(physical, &mut bytes).then_some(bytes)
+    FirmwareMemory::read(&firmware, physical, &mut bytes).then_some(bytes)
 }
 
 /// Allocate a zeroed firmware buffer without invoking the allocation handler.

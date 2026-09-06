@@ -2,10 +2,8 @@
 
 /// One physical key, named for its US-layout legend.
 ///
-/// Identities, not characters: layout modules map these to text. A future
-/// input stack converts other buses' codes *to* this enum; inventing a
-/// numeric usage-code scheme before a second producer exists would be
-/// speculative API.
+/// Layout modules map identities to text, keeping wire decoding independent
+/// of keyboard layout.
 #[expect(missing_docs)] // the names are the documentation
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

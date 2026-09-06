@@ -4,7 +4,7 @@
 //! timer, its two local pins, its error line — all sharing a layout. An entry
 //! says which vector the source delivers on, or that it delivers nothing.
 
-use crate::FIRST_VECTOR;
+use crate::vector::InterruptVector;
 
 /// Bits 8–10: delivery mode. Zero is a plain vector delivered to this
 /// processor, which is the only mode this kernel programs. The others exist so
@@ -31,6 +31,25 @@ const TIMER_PERIODIC: u32 = 0b01 << 17;
 /// Bits 0–7: the vector.
 const VECTOR: u32 = 0xFF;
 
+/// A vector proven deliverable under one configured spurious source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeliverableVector(InterruptVector);
+
+impl DeliverableVector {
+    /// Admit a vector only when both sources are architectural and distinct.
+    pub const fn configured(vector: InterruptVector, spurious: InterruptVector) -> Option<Self> {
+        if vector.get() == spurious.get() {
+            return None;
+        }
+        Some(Self(vector))
+    }
+
+    /// The admitted vector.
+    pub const fn get(self) -> InterruptVector {
+        self.0
+    }
+}
+
 /// One local vector table entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Entry(u32);
@@ -45,17 +64,8 @@ impl Entry {
 
     /// Deliver `vector` to this processor whenever the source fires.
     ///
-    /// # Panics
-    ///
-    /// Panics if `vector` is below [`FIRST_VECTOR`]. The APIC would refuse it
-    /// too, by recording an illegal-vector error and delivering nothing, which
-    /// is a great deal harder to notice than a panic during boot.
-    pub const fn fixed(vector: u8) -> Self {
-        assert!(
-            vector >= FIRST_VECTOR,
-            "the local APIC will not deliver a vector below 16"
-        );
-        Self(vector as u32 | DELIVERY_FIXED)
+    pub const fn fixed(vector: InterruptVector) -> Self {
+        Self(vector.get() as u32 | DELIVERY_FIXED)
     }
 
     /// Deliver `vector` once when the timer's countdown reaches zero, and
@@ -65,11 +75,7 @@ impl Entry {
     /// scheduler asked for, and the timer does nothing again until it is
     /// armed for the next one.
     ///
-    /// # Panics
-    ///
-    /// Panics if `vector` is below [`FIRST_VECTOR`], for the same reason
-    /// [`fixed`](Self::fixed) does — whose guard this rides.
-    pub const fn one_shot(vector: u8) -> Self {
+    pub const fn one_shot(vector: InterruptVector) -> Self {
         Self(Self::fixed(vector).bits() | TIMER_ONE_SHOT)
     }
 
@@ -79,11 +85,7 @@ impl Entry {
     /// initial count with no software involved, which is what makes the tick
     /// periodic rather than re-armed.
     ///
-    /// # Panics
-    ///
-    /// Panics if `vector` is below [`FIRST_VECTOR`], for the same reason
-    /// [`fixed`](Self::fixed) does — whose guard this rides.
-    pub const fn periodic(vector: u8) -> Self {
+    pub const fn periodic(vector: InterruptVector) -> Self {
         Self(Self::fixed(vector).bits() | TIMER_PERIODIC)
     }
 
@@ -122,6 +124,10 @@ impl Entry {
 mod tests {
     use super::*;
 
+    fn vector(raw: u8) -> InterruptVector {
+        InterruptVector::new(raw).expect("test vector is assignable")
+    }
+
     /// SDM Vol. 3A §11.5.1: every local vector table entry resets to 0x00010000.
     #[test]
     fn a_masked_entry_is_the_value_the_processor_resets_to() {
@@ -131,7 +137,7 @@ mod tests {
 
     #[test]
     fn a_fixed_entry_delivers_its_vector_and_is_not_masked() {
-        let entry = Entry::fixed(0xFE);
+        let entry = Entry::fixed(vector(0xFE));
 
         assert_eq!(entry.vector(), 0xFE);
         assert!(!entry.is_masked());
@@ -152,7 +158,7 @@ mod tests {
 
     #[test]
     fn an_entry_read_back_round_trips() {
-        let written = Entry::fixed(0x40);
+        let written = Entry::fixed(vector(0x40));
 
         assert_eq!(Entry::from_bits(written.bits()), written);
     }
@@ -161,7 +167,7 @@ mod tests {
     /// vector in bits 0–7 and nothing else set.
     #[test]
     fn a_periodic_entry_is_its_vector_plus_the_mode_bit() {
-        let entry = Entry::periodic(0x41);
+        let entry = Entry::periodic(vector(0x41));
 
         assert_eq!(entry.bits(), 0x0002_0041);
         assert!(entry.is_periodic());
@@ -174,10 +180,10 @@ mod tests {
     /// property that lets every other local vector share this type.
     #[test]
     fn a_one_shot_entry_is_its_vector_and_nothing_else() {
-        let entry = Entry::one_shot(0x41);
+        let entry = Entry::one_shot(vector(0x41));
 
         assert_eq!(entry.bits(), 0x0000_0041);
-        assert_eq!(entry, Entry::fixed(0x41));
+        assert_eq!(entry, Entry::fixed(vector(0x41)));
         assert!(entry.is_one_shot());
         assert!(!entry.is_periodic());
         assert!(!entry.is_masked());
@@ -187,15 +193,37 @@ mod tests {
     /// one-shot by the same rule the processor resets it to.
     #[test]
     fn no_entry_is_both_modes_at_once() {
-        for entry in [Entry::one_shot(0x41), Entry::periodic(0x41), Entry::MASKED] {
+        for entry in [
+            Entry::one_shot(vector(0x41)),
+            Entry::periodic(vector(0x41)),
+            Entry::MASKED,
+        ] {
             assert!(entry.is_one_shot() != entry.is_periodic(), "{entry:?}");
         }
     }
 
     #[test]
     fn a_fixed_entry_is_one_shot() {
-        assert!(!Entry::fixed(0x40).is_periodic());
-        assert!(Entry::fixed(0x40).is_one_shot());
+        assert!(!Entry::fixed(vector(0x40)).is_periodic());
+        assert!(Entry::fixed(vector(0x40)).is_one_shot());
+    }
+
+    #[test]
+    fn configured_delivery_exhausts_both_vector_domains() {
+        for vector in u8::MIN..=u8::MAX {
+            for spurious in u8::MIN..=u8::MAX {
+                let admitted = InterruptVector::new(vector).and_then(|vector| {
+                    InterruptVector::new(spurious)
+                        .and_then(|spurious| DeliverableVector::configured(vector, spurious))
+                });
+                let expected = vector >= 0x30 && spurious >= 0x30 && vector != spurious;
+                assert_eq!(
+                    admitted.map(|vector| vector.get().get()),
+                    expected.then_some(vector),
+                    "vector {vector}, spurious {spurious}"
+                );
+            }
+        }
     }
 
     /// Re-masking the timer must also put its mode back to the reset value, or
@@ -208,27 +236,9 @@ mod tests {
 
     #[test]
     fn a_periodic_entry_round_trips() {
-        let written = Entry::periodic(0x41);
+        let written = Entry::periodic(vector(0x41));
 
         assert_eq!(Entry::from_bits(written.bits()), written);
-    }
-
-    #[test]
-    #[should_panic(expected = "below 16")]
-    fn an_entry_refuses_a_vector_the_apic_would_reject() {
-        let _ = Entry::fixed(15);
-    }
-
-    #[test]
-    #[should_panic(expected = "below 16")]
-    fn a_periodic_entry_refuses_a_vector_the_apic_would_reject() {
-        let _ = Entry::periodic(15);
-    }
-
-    #[test]
-    #[should_panic(expected = "below 16")]
-    fn a_one_shot_entry_refuses_a_vector_the_apic_would_reject() {
-        let _ = Entry::one_shot(15);
     }
 
     /// The timer-mode field is bits 18:17, both of them.

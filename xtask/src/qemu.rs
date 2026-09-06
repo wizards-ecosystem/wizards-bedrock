@@ -2,7 +2,7 @@
 
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -11,38 +11,63 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use panic_record::{COMPLETE_MARKER, OPEN_PREFIX};
 
-use crate::paths::{self, Paths};
+use crate::paths::Paths;
 use crate::qmp::Qmp;
 
 /// Default install location on Windows, checked before `PATH`.
 const WINDOWS_DEFAULT: &str = r"C:\Program Files\qemu";
 
-/// The machine both runners boot.
-///
-/// `-cpu max` rather than QEMU's default `qemu64`, which exposes neither SMEP,
-/// SMAP nor UMIP: the kernel would switch its security baseline on against a
-/// CPU that cannot enforce it, and the check that it did would pass vacuously.
-/// The VMware target of D-18 and the real machine both have all three.
+/// The q35 machine type shared by both runners.
 pub(crate) const MACHINE_TYPE: &str = "pc-q35-9.2";
 
+// Pin the CPU, TCG, and ambient configuration so protection checks cannot pass
+// under a weaker or different execution model (D-18).
 const MACHINE: &[&str] = &[
+    "-no-user-config",
+    "-accel",
+    "tcg",
     "-machine",
     MACHINE_TYPE,
     "-cpu",
-    "max",
+    "max,hypervisor=on,tcg-cpuid=on",
     "-m",
     "512M",
-    // A PCI-to-PCI bridge, and the bus behind it. q35 as QEMU ships it has
-    // none, so a kernel that scanned only bus zero would pass every check
-    // while being unable to find a controller on a real machine — VMware puts
-    // functions behind `pciBridge0`-`pciBridge7`, and D-18 makes VMware the
-    // phase's definition of done. The check that enumeration *descends* needs
-    // somewhere to descend to (D-168).
+    // Provide a downstream bus so a bus-zero-only scan fails as it would on
+    // VMware's bridged topology (D-168).
     "-device",
     "pci-bridge,id=behind,chassis_nr=1",
 ];
+
+fn validate_run_arguments(extra: &[OsString]) -> Result<()> {
+    for argument in extra {
+        let argument = argument.to_string_lossy();
+        let option = argument
+            .split_once('=')
+            .map_or(argument.as_ref(), |(name, _)| name);
+        if matches!(
+            option,
+            "-accel"
+                | "--accel"
+                | "-enable-kvm"
+                | "--enable-kvm"
+                | "-machine"
+                | "--machine"
+                | "-M"
+                | "-cpu"
+                | "--cpu"
+                | "-global"
+                | "--global"
+                | "-readconfig"
+                | "--readconfig"
+        ) {
+            bail!("QEMU argument {argument:?} conflicts with the fixed TCG machine profile");
+        }
+    }
+    Ok(())
+}
 
 /// Subdirectories of the QEMU installation that may hold firmware images.
 const FIRMWARE_DIRS: &[&str] = &["share", "share/qemu", "share/OVMF", "."];
@@ -128,8 +153,9 @@ pub(crate) fn installation() -> Result<Installation> {
     })
 }
 
-/// Boot `image` in QEMU, forwarding `extra` arguments verbatim.
+/// Boot `image` in QEMU with non-profile `extra` arguments.
 pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
+    validate_run_arguments(extra)?;
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
 
@@ -254,8 +280,7 @@ fn parse_debug_endpoint(report: &str) -> Result<String> {
         .map(|(_, tail)| tail)
         .context("QEMU's GDB chardev is not bound to IPv4 loopback")?;
     let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
-    let port = digits
-        .parse::<u16>()
+    let port = <u16 as core::str::FromStr>::from_str(&digits)
         .context("QEMU reported an invalid GDB port")?;
     if port == 0 {
         bail!("QEMU did not allocate a GDB port");
@@ -283,21 +308,30 @@ struct RunVars {
 
 impl RunVars {
     fn create(target: &Path, template: &Path) -> Result<Self> {
-        let directory = target.join(paths::QEMU_RUN_DIRECTORY);
-        std::fs::create_dir_all(&directory)
-            .with_context(|| format!("creating {}", directory.display()))?;
+        Self::create_with(target, template, |_| {})
+    }
+
+    fn create_with(
+        target: &Path,
+        template: &Path,
+        after_reservation: impl Fn(&Path),
+    ) -> Result<Self> {
+        let directory = crate::image::qemu_run_directory(target)?;
 
         for _ in 0..1024 {
             let sequence = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
             let path = directory.join(format!("efi-vars-{}-{sequence}.fd", std::process::id()));
-            let mut destination = match OpenOptions::new().write(true).create_new(true).open(&path)
-            {
+            let mut destination_options = OpenOptions::new();
+            OpenOptions::write(&mut destination_options, true);
+            OpenOptions::create_new(&mut destination_options, true);
+            let mut destination = match OpenOptions::open(&destination_options, &path) {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => {
                     return Err(error).with_context(|| format!("creating {}", path.display()));
                 }
             };
+            after_reservation(&path);
             let copied = (|| -> Result<()> {
                 let mut source = File::open(template)
                     .with_context(|| format!("opening {}", template.display()))?;
@@ -307,13 +341,37 @@ impl RunVars {
                 destination
                     .sync_all()
                     .with_context(|| format!("flushing {}", path.display()))?;
+                drop(destination);
+                crate::mutation_workspace::require_direct_file(
+                    &directory,
+                    &path,
+                    "private QEMU variable store",
+                )?;
+                ensure!(
+                    crate::mutation_workspace::canonical_existing_real_directory(
+                        &directory,
+                        "QEMU private run directory",
+                    )? == directory,
+                    "QEMU private run directory changed while copying firmware"
+                );
+                let source = crate::sha256::digest_reader(
+                    File::open(template)
+                        .with_context(|| format!("reopening {}", template.display()))?,
+                )
+                .with_context(|| format!("hashing private firmware {}", template.display()))?;
+                let copied = crate::sha256::digest_reader(
+                    File::open(&path).with_context(|| format!("reopening {}", path.display()))?,
+                )
+                .with_context(|| format!("hashing private firmware copy {}", path.display()))?;
+                ensure!(copied == source, "private firmware copy changed bytes");
                 Ok(())
             })();
-            if let Err(error) = copied {
-                drop(destination);
-                let _ = std::fs::remove_file(&path);
-                return Err(error);
-            }
+            crate::mutation_workspace::finish_staged_operation(
+                &directory,
+                &path,
+                "private QEMU variable store",
+                copied,
+            )?;
             return Ok(Self { path });
         }
         bail!("could not reserve a private QEMU variable store")
@@ -368,66 +426,54 @@ pub const NVME_VOLUME_SECTOR: u64 = 2048;
 const NVME_BYTES: u64 =
     NVME_VOLUME_SECTOR * NVME_BLOCK_BYTES as u64 + crate::image::corpus::VOLUME_BYTES as u64;
 
-/// A storage controller for the machine to find, and the file behind it.
+/// Build the streamed NVMe namespace shared by the QEMU and VMware runners.
 ///
-/// **virtio-blk is disqualified rather than deprioritised** (`012` §2): VMware
-/// exposes no virtio device of any kind, so under D-18 it could never close a
-/// phase, and none of the virtqueue work carries to a driver that could. NVMe
-/// is the only overlap between the two boot targets with a freely published
-/// specification.
-///
-/// The file is created here rather than by the image builder because it is a
-/// property of the *machine*, not of the disk image: nothing on it is ever
-/// booted, and the kernel writes nothing to it (D-169).
-/// Build the namespace's contents, and say where they are.
-///
-/// **Both runners use this.** `012` §2's whole argument for NVMe is that it is
-/// the one controller with a published specification that spans QEMU *and*
-/// VMware, and a controller given only to QEMU tests half of that (D-176).
+/// The namespace is machine state rather than boot-image content; its distinct
+/// block signatures and FAT corpus expose wrong-block and missing-read paths.
 ///
 /// # Errors
 ///
 /// If the file cannot be written, or the corpus cannot be built.
 pub fn nvme_image(root: &Path) -> Result<std::path::PathBuf> {
-    let backing = nvme_path(root);
-    std::fs::create_dir_all(backing.parent().context("NVMe image has no parent")?)
-        .with_context(|| format!("creating the directory for {}", backing.display()))?;
-    // Written whole rather than sized and left sparse: the first blocks carry
-    // a signature the block-layer checks read, and a FAT32 volume follows at
-    // `NVME_VOLUME_SECTOR`.
-    let mut content = vec![0u8; NVME_BYTES as usize];
-    for lba in 0..NVME_SIGNED_BLOCKS {
-        let at = lba as usize * NVME_BLOCK_BYTES;
-        content[at..at + 8].copy_from_slice(&nvme_signature(lba).to_le_bytes());
-    }
-    let volume = crate::image::corpus::build().context("building the corpus volume")?;
-    let at = NVME_VOLUME_SECTOR as usize * NVME_BLOCK_BYTES;
-    content[at..at + volume.len()].copy_from_slice(&volume);
-
-    let _lock = acquire_storage_lock(&backing.with_extension("lock"))?;
-    let current = std::fs::read(&backing).unwrap_or_default();
-    if !namespace_is_exact(&current, &content) {
-        std::fs::write(&backing, &content)
-            .with_context(|| format!("writing {}", backing.display()))?;
-    }
+    let (parent, backing) = storage_paths(root)?;
+    publish_namespace(&parent, &backing, write_nvme_namespace)?;
     Ok(backing)
 }
 
-const STORAGE_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+fn storage_paths(root: &Path) -> Result<(PathBuf, PathBuf)> {
+    let backing = nvme_path(root);
+    let parent = backing
+        .parent()
+        .context("NVMe image has no parent")?
+        .to_path_buf();
+    crate::mutation_workspace::prepare_real_directory_tree(&parent, "QEMU storage directory")?;
+    Ok((parent, backing))
+}
 
-fn acquire_storage_lock(path: &Path) -> Result<File> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)
-        .with_context(|| format!("opening storage build lock {}", path.display()))?;
+const STORAGE_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const STORAGE_STAGING_NAME: &str = "nvme.img.incomplete";
+const STORAGE_ZERO_CHUNK_BYTES: usize = 64 * 1024;
+
+fn acquire_storage_lock(parent: &Path, path: &Path, canonical_parent: &Path) -> Result<File> {
+    acquire_storage_lock_with(parent, path, canonical_parent, || {})
+}
+
+fn acquire_storage_lock_with(
+    parent: &Path,
+    path: &Path,
+    canonical_parent: &Path,
+    after_contention: impl FnOnce(),
+) -> Result<File> {
+    let file = open_storage_lock(parent, path, canonical_parent)?;
     let deadline = Instant::now() + STORAGE_LOCK_TIMEOUT;
+    let mut after_contention = Some(after_contention);
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(file),
             Err(TryLockError::WouldBlock) => {
+                if let Some(after_contention) = after_contention.take() {
+                    after_contention();
+                }
                 if Instant::now() >= deadline {
                     bail!("another runner did not release {}", path.display());
                 }
@@ -441,14 +487,258 @@ fn acquire_storage_lock(path: &Path) -> Result<File> {
     }
 }
 
+fn open_storage_lock(parent: &Path, path: &Path, canonical_parent: &Path) -> Result<File> {
+    open_storage_lock_with(parent, path, canonical_parent, |_| {})
+}
+
+fn open_storage_lock_with(
+    parent: &Path,
+    path: &Path,
+    canonical_parent: &Path,
+    after_open: impl FnOnce(&Path),
+) -> Result<File> {
+    require_storage_lock_path(parent, path, false)?;
+    let mut options = OpenOptions::new();
+    OpenOptions::create(&mut options, true);
+    OpenOptions::truncate(&mut options, false);
+    OpenOptions::read(&mut options, true);
+    OpenOptions::write(&mut options, true);
+    let file = OpenOptions::open(&options, path)
+        .with_context(|| format!("opening storage build lock {}", path.display()))?;
+    after_open(path);
+    require_storage_lock_path(parent, path, true)?;
+    ensure!(
+        crate::mutation_workspace::canonical_existing_real_directory(
+            parent,
+            "QEMU storage directory",
+        )? == canonical_parent,
+        "QEMU storage directory changed while opening its lock"
+    );
+    Ok(file)
+}
+
+fn require_storage_lock_path(parent: &Path, path: &Path, must_exist: bool) -> Result<()> {
+    ensure!(
+        path == parent.join("nvme.lock"),
+        "storage build lock is not the exact allowlisted path"
+    );
+    let present = crate::mutation_workspace::require_direct_file_if_present(
+        parent,
+        path,
+        "storage build lock",
+    )?;
+    ensure!(
+        !must_exist || present,
+        "storage build lock disappeared after it was opened: {}",
+        path.display()
+    );
+    Ok(())
+}
+
+fn publish_namespace(
+    parent: &Path,
+    backing: &Path,
+    write_expected: impl FnOnce(&mut File) -> Result<()>,
+) -> Result<()> {
+    ensure!(
+        backing == parent.join("nvme.img"),
+        "NVMe image is not the exact allowlisted storage path"
+    );
+    let canonical_parent = crate::mutation_workspace::canonical_existing_real_directory(
+        parent,
+        "QEMU storage directory",
+    )?;
+    let lock_path = parent.join("nvme.lock");
+    let _lock = acquire_storage_lock(parent, &lock_path, &canonical_parent)?;
+    crate::mutation_workspace::require_direct_file_if_present(
+        parent,
+        backing,
+        "existing NVMe image",
+    )?;
+
+    let staging = parent.join(STORAGE_STAGING_NAME);
+    if crate::mutation_workspace::require_direct_file_if_present(
+        parent,
+        &staging,
+        "NVMe staging image",
+    )? {
+        std::fs::remove_file(&staging)
+            .with_context(|| format!("removing stale NVMe stage {}", staging.display()))?;
+    }
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        OpenOptions::create_new(&mut options, true);
+        OpenOptions::read(&mut options, true);
+        OpenOptions::write(&mut options, true);
+        let mut file = OpenOptions::open(&options, &staging)
+            .with_context(|| format!("creating NVMe staging image {}", staging.display()))?;
+        write_expected(&mut file)?;
+        file.sync_all()
+            .with_context(|| format!("syncing NVMe staging image {}", staging.display()))?;
+        drop(file);
+
+        crate::mutation_workspace::require_direct_file(parent, &staging, "NVMe staging image")?;
+        ensure!(
+            crate::mutation_workspace::canonical_existing_real_directory(
+                parent,
+                "QEMU storage directory",
+            )? == canonical_parent,
+            "QEMU storage directory changed during image construction"
+        );
+        let expected = crate::sha256::digest_reader(
+            File::open(&staging)
+                .with_context(|| format!("opening NVMe staging image {}", staging.display()))?,
+        )
+        .with_context(|| format!("hashing NVMe staging image {}", staging.display()))?;
+
+        crate::mutation_workspace::publish_staged_file(
+            parent,
+            &staging,
+            backing,
+            "NVMe image",
+            |published| {
+                let digest =
+                    crate::sha256::digest_reader(File::open(published).with_context(|| {
+                        format!("opening published NVMe image {}", published.display())
+                    })?)
+                    .with_context(|| {
+                        format!("hashing published NVMe image {}", published.display())
+                    })?;
+                ensure!(
+                    digest == expected,
+                    "published NVMe image differs from its staged bytes"
+                );
+                Ok(())
+            },
+        )?;
+        Ok(())
+    })();
+    crate::mutation_workspace::finish_staged_operation(
+        parent,
+        &staging,
+        "NVMe staging image",
+        result,
+    )
+}
+
+fn write_nvme_namespace(file: &mut File) -> Result<()> {
+    let zeros = [0u8; STORAGE_ZERO_CHUNK_BYTES];
+    let mut remaining = NVME_BYTES;
+    while remaining != 0 {
+        let take = remaining.min(zeros.len() as u64) as usize;
+        file.write_all(&zeros[..take])
+            .context("streaming zeroed NVMe image bytes")?;
+        remaining -= take as u64;
+    }
+    for lba in 0..NVME_SIGNED_BLOCKS {
+        Seek::seek(file, SeekFrom::Start(lba * NVME_BLOCK_BYTES as u64))
+            .context("seeking to an NVMe signature block")?;
+        file.write_all(&nvme_signature(lba).to_le_bytes())
+            .context("writing an NVMe signature block")?;
+    }
+    let volume_start = NVME_VOLUME_SECTOR * NVME_BLOCK_BYTES as u64;
+    {
+        let mut volume = FileWindow::new(
+            file,
+            volume_start,
+            crate::image::corpus::VOLUME_BYTES as u64,
+        )?;
+        crate::image::corpus::populate(&mut volume).context("building the corpus volume")?;
+    }
+    ensure!(
+        Seek::seek(file, SeekFrom::End(0)).context("checking the NVMe image length")? == NVME_BYTES,
+        "streamed NVMe image has the wrong length"
+    );
+    Ok(())
+}
+
+struct FileWindow<'a> {
+    file: &'a mut File,
+    start: u64,
+    len: u64,
+    position: u64,
+}
+
+impl<'a> FileWindow<'a> {
+    fn new(file: &'a mut File, start: u64, len: u64) -> Result<Self> {
+        ensure!(
+            start.checked_add(len) == Some(NVME_BYTES),
+            "NVMe volume window does not cover the exact image tail"
+        );
+        Ok(Self {
+            file,
+            start,
+            len,
+            position: 0,
+        })
+    }
+
+    fn position_file(&mut self) -> std::io::Result<()> {
+        Seek::seek(&mut *self.file, SeekFrom::Start(self.start + self.position)).map(drop)
+    }
+}
+
+impl Read for FileWindow<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.position == self.len {
+            return Ok(0);
+        }
+        self.position_file()?;
+        let take = buffer.len().min((self.len - self.position) as usize);
+        let read = Read::read(&mut *self.file, &mut buffer[..take])?;
+        self.position += read as u64;
+        Ok(read)
+    }
+}
+
+impl Write for FileWindow<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        if self.position == self.len && !buffer.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "write escaped the NVMe volume window",
+            ));
+        }
+        self.position_file()?;
+        let take = buffer.len().min((self.len - self.position) as usize);
+        let written = Write::write(&mut *self.file, &buffer[..take])?;
+        self.position += written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Write::flush(&mut *self.file)
+    }
+}
+
+impl Seek for FileWindow<'_> {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        let (base, offset) = match position {
+            SeekFrom::Start(offset) => (0i128, i128::from(offset)),
+            SeekFrom::Current(offset) => (i128::from(self.position), i128::from(offset)),
+            SeekFrom::End(offset) => (i128::from(self.len), i128::from(offset)),
+        };
+        let Some(position) = base.checked_add(offset) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "NVMe volume seek overflowed",
+            ));
+        };
+        if position < 0 || position > i128::from(self.len) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "NVMe volume seek escaped its window",
+            ));
+        }
+        self.position = position as u64;
+        Ok(self.position)
+    }
+}
+
 pub(crate) fn nvme_path(root: &Path) -> PathBuf {
     root.join("target")
         .join("qemu storage,private")
         .join("nvme.img")
-}
-
-fn namespace_is_exact(current: &[u8], expected: &[u8]) -> bool {
-    current == expected
 }
 
 /// A storage controller for QEMU to find, and the file behind it.
@@ -479,18 +769,12 @@ pub(crate) const SELFTEST_VERDICT_PREFIX: &str = "selftest: verdict ";
 const SELFTEST_CHECK_PREFIX: &str = "selftest: ";
 const SELFTEST_CHECK_FAILED: &str = " FAILED";
 const SELFTEST_VERDICT_VERSION: &str = "v1";
+
+const QEMU_TCG_ISOLATION_MARKER: &str = "cpu: user isolation shared kernel mappings: qemu_tcg";
 /// Checks the self-test kernel must report, held independently of its own
 /// tally so a deleted or skipped one turns the verdict red.
-///
-/// **Changing this number is the moment a mutation is owed.** `AGENTS.md` says
-/// to add one whenever a check is added, and twice in one day it was not —
-/// five checks landed with a hand break-test and no entry in
-/// `xtask/src/mutate.rs`, by two sessions that had been citing D-119 all day.
-/// The rule was not forgotten; it was never *reached*, because adding a check
-/// is a thing you do inside a fix and the table is a different file. This line
-/// and its twin in `kernel/src/selftest.rs` are the two you have to touch
-/// either way, so the reminder goes where the hand already is (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 215;
+/// Changes require mutation evidence (D-28, D-119).
+const EXPECTED_SELFTEST_CHECKS: usize = 261;
 
 /// Prefix of the strict performance/resource record emitted by self-test.
 const BASELINE_PREFIX: &str = "selftest: baseline ";
@@ -505,17 +789,20 @@ const READY_MARKER: &str = "selftest: awaiting injected keystroke";
 /// Line the self-test prints before its second wait, with the controller made
 /// to translate. Kept in step with `kernel/src/selftest.rs`.
 ///
-/// Two rounds because the two scancode sets are two code paths, and the second
-/// one had never been exercised on any machine the harness could inject into
-/// (D-179).
+/// A second round reaches the distinct set-1 translation path (D-179).
 const TRANSLATED_MARKER: &str = "selftest: awaiting translated keystroke";
 
 /// Line the shipped kernel prints once it has finished booting and is doing
 /// the one thing it does. Kept in step with `kernel/src/main.rs`.
-const SETTLED_MARKER: &str = "kernel: reading the keyboard";
+const SETTLED_MARKER: &str = "kernel: reading the keyboard, uptime ";
 
 /// Proof that the shipped selector retired QEMU's first storage candidate.
 pub const NVME_FALLBACK_MARKER: &str = "nvme: candidate 1 retired cleanly; trying next";
+
+const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
+    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),
+    RequiredLogRecord::info(NVME_FALLBACK_MARKER),
+];
 
 /// A shipped kernel must take this interrupt after announcing its idle loop.
 const SHIPPED_CHALLENGE_QCODE: &str = "a";
@@ -523,8 +810,6 @@ const SHIPPED_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What a kernel that has given up says. Watched for rather than inferred
 /// from an exit code: a panicking kernel halts, it does not exit.
-const PANIC_MARKER: &str = "KERNEL PANIC";
-
 /// How a red self-test reports itself, and how a dead one does.
 ///
 /// Named rather than written twice because `cargo xtask mutate` has to tell a
@@ -544,10 +829,24 @@ pub enum SelftestOutcome {
     /// The kernel stopped before a verdict and carries its exact serial panic
     /// transcript plus every check that had already gone red.
     Panicked {
-        /// The panic line and its continuation.
+        /// The complete single-line panic body.
         transcript: String,
         /// Named failures printed before the terminal panic.
         failed: Vec<String>,
+    },
+}
+
+/// A complete degraded-boot outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DegradedOutcome {
+    /// Every required refusal and fallback marker preceded a settled boot.
+    Settled,
+    /// The kernel stopped before settling.
+    Panicked {
+        /// The complete single-line panic body.
+        transcript: String,
+        /// The no-x2APIC refusal appeared before the panic.
+        no_x2apic_diagnosed: bool,
     },
 }
 
@@ -581,66 +880,240 @@ pub(crate) struct PerformanceSample {
     pub(crate) counter_hz: u64,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct SerialObservation {
     verdict: Option<SelftestVerdict>,
     baseline: Option<PerformanceSample>,
-    /// Names of the checks that reported `FAILED`, in the order printed.
-    ///
-    /// Recorded so a failure can say *which* check went red rather than only
-    /// that one did. `cargo xtask mutate` is the caller that needs it: a
-    /// mutation reported "caught" because some check failed is a weaker claim
-    /// than one caught because *its* check failed, and the two came apart in
-    /// the table — mutation 4 reddens mutation 3's check, so deleting 4's own
-    /// target would leave it printing "caught" for ever (D-134).
+    qemu_tcg_isolation: bool,
+    /// Ordered failures, so mutation grading cannot accept an unrelated red
+    /// (D-134).
     failed: Vec<String>,
-    /// The serial panic line and any continuation the kernel printed.
     panic: Option<String>,
+    panic_complete: bool,
 }
 
-/// The check name in a `selftest: <name> FAILED` line, if it is one.
-///
-/// The line is trimmed first, and that is not tidiness: serial output arrives
-/// with a trailing carriage return, so matching the suffix against the raw
-/// line finds nothing. The first strict sweep reported eighteen survivors on boots that
-/// had reddened exactly the right check, because of that one carriage return
-/// (D-134).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct BootSerialObservation {
+    panic: Option<String>,
+    panic_complete: bool,
+    no_x2apic_before_panic: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanicTransition {
+    Unchanged,
+    Completed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+impl LogSeverity {
+    const fn prefix(self) -> &'static str {
+        match self {
+            Self::Info => "[info ] ",
+            Self::Warning => "[warn ] ",
+            Self::Error => "[error] ",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequiredLogRecord {
+    severity: LogSeverity,
+    message: &'static str,
+}
+
+impl RequiredLogRecord {
+    const fn info(message: &'static str) -> Self {
+        Self {
+            severity: LogSeverity::Info,
+            message,
+        }
+    }
+
+    const fn warning(message: &'static str) -> Self {
+        Self {
+            severity: LogSeverity::Warning,
+            message,
+        }
+    }
+}
+
+impl PanicTransition {
+    fn publish(self, panicked: &AtomicBool) {
+        if self == Self::Completed {
+            panicked.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn is_complete_panic_record(line: &str) -> bool {
+    terminated_serial_text(line).and_then(|line| line.strip_prefix("[error] "))
+        == Some(COMPLETE_MARKER)
+}
+
+fn terminated_serial_text(line: &str) -> Option<&str> {
+    let line = line.strip_suffix('\n')?;
+    let text = line.strip_suffix('\r').unwrap_or(line);
+    if text.contains('\r') || text.contains('\n') {
+        return None;
+    }
+    Some(text)
+}
+
+fn observe_panic_line(
+    panic: &mut Option<String>,
+    panic_complete: &mut bool,
+    line: &str,
+) -> Result<Option<PanicTransition>> {
+    if is_complete_panic_record(line) {
+        if panic.is_none() {
+            bail!("the kernel completed a panic record it never started");
+        }
+        if *panic_complete {
+            bail!("the kernel completed its panic record more than once");
+        }
+        *panic_complete = true;
+        return Ok(Some(PanicTransition::Completed));
+    }
+    if *panic_complete {
+        bail!("the kernel printed serial data after its terminal panic record");
+    }
+    if panic.is_some() && !*panic_complete {
+        bail!("the kernel continued a single-line panic record");
+    }
+    if line.starts_with(OPEN_PREFIX) {
+        let text = terminated_serial_text(line)
+            .context("the kernel printed an unterminated panic opening record")?;
+        *panic = Some(text.to_string());
+        return Ok(Some(PanicTransition::Unchanged));
+    }
+    Ok(None)
+}
+
+fn completed_panic(panic: Option<String>, panic_complete: bool) -> Result<Option<String>> {
+    match (panic, panic_complete) {
+        (None, false) => Ok(None),
+        (Some(transcript), true) => Ok(Some(transcript)),
+        (Some(_), false) => bail!("QEMU stopped with an incomplete serial panic record"),
+        (None, true) => bail!("QEMU observed a panic completion without its opening record"),
+    }
+}
+
+fn is_exact_no_x2apic_diagnosis(line: &str) -> bool {
+    is_exact_log_message(line, LogSeverity::Warning, NO_X2APIC_DIAGNOSIS)
+}
+
+fn observe_boot_line(
+    observation: &mut BootSerialObservation,
+    line: &str,
+) -> Result<PanicTransition> {
+    if let Some(transition) = observe_panic_line(
+        &mut observation.panic,
+        &mut observation.panic_complete,
+        line,
+    )? {
+        return Ok(transition);
+    }
+    if is_exact_no_x2apic_diagnosis(line) {
+        observation.no_x2apic_before_panic = true;
+    }
+    Ok(PanicTransition::Unchanged)
+}
+
 fn parse_failed_check(line: &str) -> Option<&str> {
-    let line = line.trim_end();
-    let at = line.find(SELFTEST_CHECK_PREFIX)?;
-    line[at + SELFTEST_CHECK_PREFIX.len()..].strip_suffix(SELFTEST_CHECK_FAILED)
+    let message = log_message(line, LogSeverity::Error)?;
+    let name = message
+        .strip_prefix(SELFTEST_CHECK_PREFIX)?
+        .strip_suffix(SELFTEST_CHECK_FAILED)?;
+    (!name.is_empty()).then_some(name)
 }
 
-/// The keys the harness injects, in order, once the marker appears.
-///
-/// `a` is what the keystroke check waits for. The two after it are the
-/// editing keys, which reached a user before they reached a test: backspace
-/// typed nothing at all, and Enter had no visible effect because the console
-/// drew no cursor. Both are checked on the machine now (D-51).
+fn is_exact_log_message(line: &str, severity: LogSeverity, expected: &str) -> bool {
+    log_message(line, severity) == Some(expected)
+}
+
+fn log_message(line: &str, severity: LogSeverity) -> Option<&str> {
+    terminated_serial_text(line).and_then(|line| line.strip_prefix(severity.prefix()))
+}
+
+fn is_required_boot_marker(line: &str, record: RequiredLogRecord) -> bool {
+    if record == NO_X2APIC_RECORD {
+        return is_exact_no_x2apic_diagnosis(line);
+    }
+    is_exact_log_message(line, record.severity, record.message)
+}
+
+pub(crate) fn canonical_decimal(text: &str) -> Option<u64> {
+    if text.is_empty()
+        || (text.len() > 1 && text.starts_with('0'))
+        || !text.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    <u64 as core::str::FromStr>::from_str(text).ok()
+}
+
+fn is_settled_record(line: &str) -> bool {
+    let Some(message) = log_message(line, LogSeverity::Info) else {
+        return false;
+    };
+    message
+        .strip_prefix(SETTLED_MARKER)
+        .and_then(|uptime| uptime.strip_suffix(" ms"))
+        .and_then(canonical_decimal)
+        .is_some()
+}
+
+// Cover ordinary input and both editing paths (D-51).
 const INJECTED_QCODES: &[&str] = &["a", "backspace", "ret"];
 
-/// The key used while the storage worker is held inside a command.
 const STORAGE_DELAY_QCODES: &[&str] = &["c"];
 
-/// The second round's keystroke, pressed once the controller is translating.
-///
-/// **`b`, and never `a`.** One key, because the round is about the numbering
-/// the bytes arrive in rather than the editing path the first round covers —
-/// but it has to be a key the first round did not press, or an `a` still
-/// sitting in the queue satisfies the wait and the set 1 tables are never
-/// consulted. Which is what happened: the first version of this round pressed
-/// `a` twice and stayed green with the set 1 code for `a` deliberately
-/// broken (D-155, D-179).
+// A distinct second key prevents a queued first-round key satisfying the
+// translated-path check (D-155, D-179).
 const TRANSLATED_QCODES: &[&str] = &["b"];
 
+const INTERACTIVE_MARKERS: &[RequiredLogRecord] = &[
+    RequiredLogRecord::info(STORAGE_DELAY_MARKER),
+    RequiredLogRecord::info(READY_MARKER),
+    RequiredLogRecord::info(TRANSLATED_MARKER),
+];
+
+fn observe_interactive_marker(line: &str, next: &mut usize) -> Result<bool> {
+    let Some(index) = INTERACTIVE_MARKERS
+        .iter()
+        .position(|record| is_required_boot_marker(line, *record))
+    else {
+        return Ok(false);
+    };
+    ensure!(
+        index == *next,
+        "self-test interactive marker {} arrived while waiting for {}",
+        index + 1,
+        *next + 1
+    );
+    *next += 1;
+    Ok(true)
+}
+
 fn parse_selftest_verdict(line: &str) -> Option<Result<SelftestVerdict>> {
-    let start = line.find(SELFTEST_VERDICT_PREFIX)?;
-    let mut fields = line[start + SELFTEST_VERDICT_PREFIX.len()..].split_whitespace();
-    let version = fields.next();
-    let status = fields.next();
-    let passed = fields.next();
-    let failed = fields.next();
-    let expected = fields.next();
+    let (severity, message) = log_message(line, LogSeverity::Info)
+        .map(|message| (LogSeverity::Info, message))
+        .or_else(|| {
+            log_message(line, LogSeverity::Error).map(|message| (LogSeverity::Error, message))
+        })?;
+    let mut fields = message.strip_prefix(SELFTEST_VERDICT_PREFIX)?.split(' ');
+    let version = core::iter::Iterator::next(&mut fields);
+    let status = core::iter::Iterator::next(&mut fields);
+    let passed = core::iter::Iterator::next(&mut fields);
+    let failed = core::iter::Iterator::next(&mut fields);
+    let expected = core::iter::Iterator::next(&mut fields);
 
     let parsed = (|| {
         if version != Some(SELFTEST_VERDICT_VERSION) {
@@ -651,7 +1124,15 @@ fn parse_selftest_verdict(line: &str) -> Option<Result<SelftestVerdict>> {
             Some("FAIL") => VerdictStatus::Fail,
             _ => bail!("invalid self-test verdict status"),
         };
-        if fields.next().is_some() {
+        ensure!(
+            matches!(
+                (severity, status),
+                (LogSeverity::Info, VerdictStatus::Pass)
+                    | (LogSeverity::Error, VerdictStatus::Fail)
+            ),
+            "self-test verdict status has the wrong log severity"
+        );
+        if core::iter::Iterator::next(&mut fields).is_some() {
             bail!("trailing fields in self-test verdict");
         }
 
@@ -666,42 +1147,65 @@ fn parse_selftest_verdict(line: &str) -> Option<Result<SelftestVerdict>> {
 }
 
 fn parse_verdict_count(field: Option<&str>, name: &str) -> Result<usize> {
-    field
+    let value = field
         .and_then(|field| field.strip_prefix(name))
-        .context("missing self-test verdict count")?
-        .parse()
-        .context("invalid self-test verdict count")
+        .context("missing self-test verdict count")?;
+    usize::try_from(canonical_decimal(value).context("invalid self-test verdict count")?)
+        .context("self-test verdict count does not fit usize")
 }
 
 fn parse_baseline_value(field: Option<&str>, name: &str) -> Result<u64> {
-    field
+    let value = field
         .and_then(|field| field.strip_prefix(name))
-        .with_context(|| format!("missing baseline field {name}"))?
-        .parse()
-        .with_context(|| format!("invalid baseline field {name}"))
+        .with_context(|| format!("missing baseline field {name}"))?;
+    canonical_decimal(value).with_context(|| format!("invalid baseline field {name}"))
 }
 
 fn parse_performance_sample(line: &str) -> Option<Result<PerformanceSample>> {
-    let start = line.find(BASELINE_PREFIX)?;
-    let mut fields = line[start + BASELINE_PREFIX.len()..].split_whitespace();
+    let message = log_message(line, LogSeverity::Info)?;
+    let mut fields = message.strip_prefix(BASELINE_PREFIX)?.split(' ');
     let parsed = (|| {
-        if fields.next() != Some("v1") {
+        if core::iter::Iterator::next(&mut fields) != Some("v1") {
             bail!("unsupported foundation baseline version");
         }
         let sample = PerformanceSample {
-            boot_ns: parse_baseline_value(fields.next(), "boot_ns=")?,
-            frames_free: parse_baseline_value(fields.next(), "frames_free=")?,
-            heap_slab: parse_baseline_value(fields.next(), "heap_slab=")?,
-            heap_large: parse_baseline_value(fields.next(), "heap_large=")?,
-            heap_live: parse_baseline_value(fields.next(), "heap_live=")?,
-            handles_committed: parse_baseline_value(fields.next(), "handles_committed=")?,
-            handles_live: parse_baseline_value(fields.next(), "handles_live=")?,
-            trap_ticks: parse_baseline_value(fields.next(), "trap_ticks=")?,
-            storage_bytes: parse_baseline_value(fields.next(), "storage_bytes=")?,
-            storage_ticks: parse_baseline_value(fields.next(), "storage_ticks=")?,
-            counter_hz: parse_baseline_value(fields.next(), "counter_hz=")?,
+            boot_ns: parse_baseline_value(core::iter::Iterator::next(&mut fields), "boot_ns=")?,
+            frames_free: parse_baseline_value(
+                core::iter::Iterator::next(&mut fields),
+                "frames_free=",
+            )?,
+            heap_slab: parse_baseline_value(core::iter::Iterator::next(&mut fields), "heap_slab=")?,
+            heap_large: parse_baseline_value(
+                core::iter::Iterator::next(&mut fields),
+                "heap_large=",
+            )?,
+            heap_live: parse_baseline_value(core::iter::Iterator::next(&mut fields), "heap_live=")?,
+            handles_committed: parse_baseline_value(
+                core::iter::Iterator::next(&mut fields),
+                "handles_committed=",
+            )?,
+            handles_live: parse_baseline_value(
+                core::iter::Iterator::next(&mut fields),
+                "handles_live=",
+            )?,
+            trap_ticks: parse_baseline_value(
+                core::iter::Iterator::next(&mut fields),
+                "trap_ticks=",
+            )?,
+            storage_bytes: parse_baseline_value(
+                core::iter::Iterator::next(&mut fields),
+                "storage_bytes=",
+            )?,
+            storage_ticks: parse_baseline_value(
+                core::iter::Iterator::next(&mut fields),
+                "storage_ticks=",
+            )?,
+            counter_hz: parse_baseline_value(
+                core::iter::Iterator::next(&mut fields),
+                "counter_hz=",
+            )?,
         };
-        if fields.next().is_some() {
+        if core::iter::Iterator::next(&mut fields).is_some() {
             bail!("trailing fields in foundation baseline");
         }
         Ok(sample)
@@ -709,42 +1213,56 @@ fn parse_performance_sample(line: &str) -> Option<Result<PerformanceSample>> {
     Some(parsed)
 }
 
-fn observe_selftest_line(observation: &mut SerialObservation, line: &str) -> Result<()> {
-    if let Some(panic) = &mut observation.panic {
-        panic.push('\n');
-        panic.push_str(line.trim_end());
-        return Ok(());
+fn observe_selftest_line(
+    observation: &mut SerialObservation,
+    line: &str,
+) -> Result<PanicTransition> {
+    if observation.verdict.is_some() {
+        bail!("the self-test kernel printed serial data after its final verdict");
     }
-    if line.contains(PANIC_MARKER) {
-        observation.panic = Some(line.trim_end().to_string());
-        return Ok(());
+    if let Some(transition) = observe_panic_line(
+        &mut observation.panic,
+        &mut observation.panic_complete,
+        line,
+    )? {
+        return Ok(transition);
     }
     if let Some(name) = parse_failed_check(line) {
+        if observation.failed.iter().any(|failed| failed == name) {
+            bail!("the self-test kernel named one failed check more than once");
+        }
         observation.failed.push(name.to_string());
-        return Ok(());
+        return Ok(PanicTransition::Unchanged);
+    }
+    if is_exact_log_message(line, LogSeverity::Info, QEMU_TCG_ISOLATION_MARKER) {
+        if observation.qemu_tcg_isolation {
+            bail!("the self-test kernel printed the TCG isolation decision more than once");
+        }
+        observation.qemu_tcg_isolation = true;
+        return Ok(PanicTransition::Unchanged);
     }
     if let Some(sample) = parse_performance_sample(line) {
         let sample = sample?;
         if observation.baseline.replace(sample).is_some() {
             bail!("the self-test kernel printed more than one foundation baseline");
         }
-        return Ok(());
+        return Ok(PanicTransition::Unchanged);
     }
     let Some(verdict) = parse_selftest_verdict(line) else {
-        return Ok(());
+        return Ok(PanicTransition::Unchanged);
     };
     let verdict = verdict?;
     if observation.verdict.replace(verdict).is_some() {
         bail!("the self-test kernel printed more than one final verdict");
     }
-    Ok(())
+    Ok(PanicTransition::Unchanged)
 }
 
 fn correlate_selftest(
     exit_code: Option<i32>,
     observation: SerialObservation,
 ) -> Result<SelftestOutcome> {
-    if let Some(transcript) = observation.panic {
+    if let Some(transcript) = completed_panic(observation.panic, observation.panic_complete)? {
         return Ok(SelftestOutcome::Panicked {
             transcript,
             failed: observation.failed,
@@ -781,6 +1299,9 @@ fn correlate_selftest(
             observation.failed.len()
         );
     }
+    if verdict.status == VerdictStatus::Pass && !observation.qemu_tcg_isolation {
+        bail!("self-test passed without consuming the exact QEMU TCG isolation policy");
+    }
 
     match (exit_code, verdict.status) {
         (Some(SELFTEST_PASSED), VerdictStatus::Pass) => Ok(SelftestOutcome::Passed),
@@ -795,14 +1316,7 @@ fn correlate_selftest(
     }
 }
 
-/// Boot `image` headless, wait for the kernel's verdict, and report it.
-///
-/// Report where the CPU was when the deadline ran out.
-///
-/// A hung kernel prints nothing, and a kernel that prints nothing is the one
-/// failure that cannot be read from the log. The monitor knows the
-/// instruction pointer and can disassemble around it, which is enough to name
-/// the loop: the interrupt flag in `RFLAGS` says whether it can ever end.
+// Monitor registers are the only hang evidence when the serial log is empty.
 fn report_hang(listener: &TcpListener) {
     let Ok(mut monitor) = Monitor::accept(listener, Instant::now() + MONITOR_TIMEOUT) else {
         println!("[xtask] no monitor: where the kernel hung is unknown");
@@ -897,9 +1411,7 @@ impl Monitor {
         let mut text = String::new();
         let mut buffer = [0u8; 4096];
         while !text.contains(MONITOR_PROMPT) {
-            let read = self
-                .reader
-                .read(&mut buffer)
+            let read = Read::read(&mut self.reader, &mut buffer)
                 .context("reading a QEMU monitor reply")?;
             if read == 0 {
                 bail!("QEMU monitor closed before completing its reply");
@@ -1032,7 +1544,7 @@ fn observe_selftest_run(
         std::thread::sleep(POLL_INTERVAL);
     };
 
-    // Trailing serial lines print before the verdict does.
+    // Drain serial before correlation so late failure lines are not lost.
     let observation = finish_selftest_serial(forwarder)?;
     finish_injector(injector, &injection_cancelled)?;
 
@@ -1070,6 +1582,7 @@ fn forward_serial(
         let mut reader = BufReader::new(stdout);
         let mut line = Vec::new();
         let mut observation = SerialObservation::default();
+        let mut next_interactive_marker = 0;
         loop {
             line.clear();
             let read = match reader.read_until(b'\n', &mut line) {
@@ -1091,20 +1604,24 @@ fn forward_serial(
                 } else {
                     println!("{text}");
                 }
-                let _ = std::io::stdout().flush();
+                let _ = Write::flush(&mut std::io::stdout());
             }
-            if text.contains(STORAGE_DELAY_MARKER)
-                || text.contains(READY_MARKER)
-                || text.contains(TRANSLATED_MARKER)
-            {
-                markers_seen.fetch_add(1, Ordering::Release);
-            }
-            if text.contains(PANIC_MARKER) {
-                panicked.store(true, Ordering::Release);
-            }
-            if let Err(error) = observe_selftest_line(&mut observation, &text) {
-                serial_failed.store(true, Ordering::Release);
-                return Err(error).context("reading the kernel's self-test verdict");
+            match observe_selftest_line(&mut observation, &text) {
+                Ok(transition) => {
+                    transition.publish(&panicked);
+                    match observe_interactive_marker(&text, &mut next_interactive_marker) {
+                        Ok(true) => markers_seen.store(next_interactive_marker, Ordering::Release),
+                        Ok(false) => {}
+                        Err(error) => {
+                            serial_failed.store(true, Ordering::Release);
+                            return Err(error).context("reading interactive serial evidence");
+                        }
+                    }
+                }
+                Err(error) => {
+                    serial_failed.store(true, Ordering::Release);
+                    return Err(error).context("reading the kernel's self-test verdict");
+                }
             }
         }
     })
@@ -1118,14 +1635,8 @@ fn finish_selftest_serial(
         .map_err(|_| anyhow!("the self-test serial reader panicked"))?
 }
 
-/// Press the key on a thread of its own: accept when QEMU dials in, wait for
-/// the kernel's marker, inject once, and report-and-retire on any failure —
-/// the kernel's bounded wait is what turns a missing key red.
-///
-/// A dedicated thread rather than steps woven into the poll loop, so that no
-/// QMP stall — a slow handshake, a peer dribbling bytes — can delay the loop
-/// that enforces the run's deadline. Accepting and marker waits share that
-/// deadline; every exit path cancels and joins the thread.
+/// Inject each key after its marker without letting a QMP stall delay the boot
+/// deadline; every exit path cancels and joins this dedicated thread.
 fn inject_on_marker(
     listener: TcpListener,
     markers_seen: Arc<AtomicUsize>,
@@ -1203,24 +1714,52 @@ fn accept_stream_before(
 /// How often to check whether QEMU has exited. Short enough that a passing run
 /// is not padded noticeably, long enough not to spin.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const QEMU_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn stop_qemu(child: &mut Child) -> Result<()> {
-    if child
-        .try_wait()
-        .context("checking whether QEMU exited")?
-        .is_none()
-    {
-        let killed = child.kill();
-        if let Err(error) = killed {
-            let status = child
-                .try_wait()
-                .context("checking QEMU after termination failed")?;
-            if status.is_none() {
-                return Err(error).context("terminating QEMU");
-            }
-        }
+    stop_qemu_with(child, child_exited, terminate_child, QEMU_STOP_TIMEOUT)
+}
+
+fn child_exited(child: &mut Child) -> std::io::Result<bool> {
+    Child::try_wait(child).map(|status| status.is_some())
+}
+
+fn terminate_child(child: &mut Child) -> std::io::Result<()> {
+    Child::kill(child)
+}
+
+fn stop_qemu_with<C>(
+    child: &mut C,
+    exited: fn(&mut C) -> std::io::Result<bool>,
+    terminate: fn(&mut C) -> std::io::Result<()>,
+    timeout: Duration,
+) -> Result<()> {
+    if exited(child).context("checking whether QEMU exited")? {
+        return Ok(());
     }
-    child.wait().context("reaping QEMU").map(drop)
+    if let Err(error) = terminate(child) {
+        if exited(child).context("checking QEMU after termination failed")? {
+            return Ok(());
+        }
+        return Err(error).context("terminating QEMU");
+    }
+
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .context("QEMU stop deadline is not representable")?;
+    loop {
+        if exited(child).context("polling terminated QEMU")? {
+            return Ok(());
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            bail!(
+                "QEMU did not exit within {} ms after termination",
+                timeout.as_millis()
+            );
+        }
+        std::thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(now)));
+    }
 }
 
 fn irq_count(report: &str, irq: u8) -> Option<u64> {
@@ -1235,10 +1774,12 @@ fn irq_count(report: &str, irq: u8) -> Option<u64> {
             continue;
         };
         let label = label.trim().strip_prefix("IRQ").unwrap_or(label.trim());
-        if label.trim().parse::<u8>().ok() != Some(irq) {
+        if <u8 as core::str::FromStr>::from_str(label.trim()).ok() != Some(irq) {
             continue;
         }
-        let count = count.split_whitespace().next()?.parse::<u64>().ok()?;
+        let mut fields = count.split_whitespace();
+        let count =
+            <u64 as core::str::FromStr>::from_str(core::iter::Iterator::next(&mut fields)?).ok()?;
         total = total.checked_add(count)?;
     }
     recognized.then_some(total)
@@ -1310,7 +1851,11 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
     let settled = Arc::new(AtomicBool::new(false));
     let panicked = Arc::new(AtomicBool::new(false));
     let serial_failed = Arc::new(AtomicBool::new(false));
-    let required = vec![(NVME_FALLBACK_MARKER, Arc::new(AtomicBool::new(false)))];
+    let required: Vec<_> = SHIPPED_REQUIRED_MARKERS
+        .iter()
+        .copied()
+        .map(|marker| (marker, Arc::new(AtomicBool::new(false))))
+        .collect();
     let forwarder = watch_serial(
         stdout,
         Arc::clone(&settled),
@@ -1319,8 +1864,6 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
         required.clone(),
     );
 
-    // Reach the idle loop, prove a fresh device interrupt wakes it, then keep
-    // watching it long enough to catch a delayed panic.
     let outcome = watch(
         &mut child,
         &panicked,
@@ -1345,19 +1888,19 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
     let serial_outcome = finish_boot_serial(forwarder);
 
     stop_outcome?;
-    serial_outcome?;
-    outcome?;
-    // Consulted once more after the join. `watch` returns as soon as the
-    // settle deadline passes, and `finish_boot_serial` reports only read
-    // errors — so a panic printed in the last poll interval, or between the
-    // deadline and the kill, was forwarded to the log and then reported as a
-    // clean boot (D-105).
-    if panicked.load(Ordering::Acquire) {
-        anyhow::bail!("the kernel panicked during the settle window");
+    let serial_observation = serial_outcome?;
+    if let Some(transcript) =
+        completed_panic(serial_observation.panic, serial_observation.panic_complete)?
+    {
+        bail!("the shipped kernel panicked during the settle window: {transcript}");
     }
-    for (marker, seen) in required {
+    outcome?;
+    for (record, seen) in required {
         if !seen.load(Ordering::Acquire) {
-            bail!("the shipped kernel settled without reporting {marker:?}");
+            bail!(
+                "the shipped kernel settled without reporting {:?}",
+                record.message
+            );
         }
     }
     println!("[xtask] shipped kernel falls back, boots, responds, and settles");
@@ -1374,30 +1917,50 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(180);
 /// A processor with no x2APIC or optional SMEP/SMAP/UMIP hardening.
 ///
 /// The last `-cpu` wins, so this overrides [`MACHINE`]'s.
-const DEGRADED_CPU: [&str; 2] = ["-cpu", "qemu64,-x2apic,-smep,-smap,-umip"];
+const DEGRADED_CPU: [&str; 2] = [
+    "-cpu",
+    "qemu64,-x2apic,-smep,-smap,-umip,hypervisor=on,tcg-cpuid=on",
+];
 
 /// What the kernel must say when it finds no x2APIC.
 ///
 /// The refusal D-33 chose and D-90 made a gate check: xAPIC needs page tables
 /// that do not exist when the APIC is brought up, so there is no fallback —
 /// only a diagnosis.
-const NO_X2APIC_MARKER: &str = "no x2apic mode";
+const NO_X2APIC_DIAGNOSIS: &str = "local apic: this processor has no x2apic mode, and xapic needs page tables; interrupts stay off";
+const NO_X2APIC_RECORD: RequiredLogRecord = RequiredLogRecord::warning(NO_X2APIC_DIAGNOSIS);
 
 /// The forced configuration-port refusal in the degraded image.
 const NO_PCI_MARKER: &str = "pci: the configuration ports are already claimed; no bus";
 
 /// The hardware-free namespace witness targeted by the PW-207 mutation.
-pub const DEGRADED_FILESYSTEM_MARKER: &str = "tmpfs:";
+pub const DEGRADED_FILESYSTEM_MARKER: &str = "tmpfs: 1 file(s) and 1 directory(ies) at the root";
 
 /// Both device names must resolve through devfs without a bus.
-const DEGRADED_STORAGE_MARKER: &str = "devfs: storage is";
-const DEGRADED_CONSOLE_MARKER: &str = "devfs: console is";
+const DEGRADED_STORAGE_MARKER: &str = "devfs: storage is a block device";
+const DEGRADED_CONSOLE_MARKER: &str = "devfs: console is a character device";
 
 /// Optional hardening is absent, while mandatory WP and NX remain active.
 const DEGRADED_PROTECTIONS_MARKER: &str = "cpu: protections wp nx";
 
-/// Without a clock, the supported diagnostic boot never opens ring three.
-pub const DEGRADED_USER_MARKER: &str = "user: no program: no calibrated clock; ring 3 is closed";
+/// The degraded CPU independently proves that extended state is unavailable.
+pub const DEGRADED_XSTATE_MARKER: &str = "cpu: extended state unavailable; ring 3 stays closed";
+
+/// Missing x2APIC leaves interrupts unadmitted, the first user-launch veto.
+pub const DEGRADED_USER_MARKER: &str =
+    "user: no program: maskable interrupts are not admitted; ring 3 is closed";
+
+const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
+    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),
+    NO_X2APIC_RECORD,
+    RequiredLogRecord::warning(NO_PCI_MARKER),
+    RequiredLogRecord::info(DEGRADED_FILESYSTEM_MARKER),
+    RequiredLogRecord::info(DEGRADED_STORAGE_MARKER),
+    RequiredLogRecord::info(DEGRADED_CONSOLE_MARKER),
+    RequiredLogRecord::info(DEGRADED_PROTECTIONS_MARKER),
+    RequiredLogRecord::warning(DEGRADED_XSTATE_MARKER),
+    RequiredLogRecord::warning(DEGRADED_USER_MARKER),
+];
 
 /// Boot with two independent platform prerequisites absent and require both.
 ///
@@ -1409,7 +1972,8 @@ pub const DEGRADED_USER_MARKER: &str = "user: no program: no calibrated clock; r
 /// The bar is deliberately not "it works": the kernel reports both refusals,
 /// exercises the namespaces which need neither facility, and still reaches
 /// its steady state rather than triple-faulting on a missing register.
-pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
+/// Boot the degraded image while preserving an exact terminal panic.
+pub fn observe_degraded(paths: &Paths, image: &Path, settle: Duration) -> Result<DegradedOutcome> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
 
@@ -1434,18 +1998,11 @@ pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Resu
     let settled = Arc::new(AtomicBool::new(false));
     let panicked = Arc::new(AtomicBool::new(false));
     let serial_failed = Arc::new(AtomicBool::new(false));
-    let required: Vec<_> = [
-        NO_X2APIC_MARKER,
-        NO_PCI_MARKER,
-        DEGRADED_FILESYSTEM_MARKER,
-        DEGRADED_STORAGE_MARKER,
-        DEGRADED_CONSOLE_MARKER,
-        DEGRADED_PROTECTIONS_MARKER,
-        DEGRADED_USER_MARKER,
-    ]
-    .into_iter()
-    .map(|marker| (marker, Arc::new(AtomicBool::new(false))))
-    .collect();
+    let required: Vec<_> = DEGRADED_REQUIRED_MARKERS
+        .iter()
+        .copied()
+        .map(|marker| (marker, Arc::new(AtomicBool::new(false))))
+        .collect();
     let forwarder = watch_serial(
         stdout,
         Arc::clone(&settled),
@@ -1454,30 +2011,81 @@ pub fn run_degraded_check(paths: &Paths, image: &Path, settle: Duration) -> Resu
         required.clone(),
     );
 
-    let outcome = watch(
-        &mut child,
-        &panicked,
-        &serial_failed,
-        BOOT_TIMEOUT,
-        Some(&settled),
-    )
-    .and_then(|()| watch(&mut child, &panicked, &serial_failed, settle, None));
+    let outcome = watch_degraded(&mut child, &panicked, &serial_failed, &settled, settle);
 
     let stop_outcome = stop_qemu(&mut child);
     let serial_outcome = finish_boot_serial(forwarder);
 
     stop_outcome?;
-    serial_outcome?;
     outcome?;
-    for (marker, seen) in required {
+    let serial_observation = serial_outcome?;
+    if let Some(transcript) =
+        completed_panic(serial_observation.panic, serial_observation.panic_complete)?
+    {
+        return Ok(DegradedOutcome::Panicked {
+            transcript,
+            no_x2apic_diagnosed: serial_observation.no_x2apic_before_panic,
+        });
+    }
+    for (record, seen) in required {
         if !seen.load(Ordering::Acquire) {
-            bail!("the degraded kernel settled without reporting {marker:?}");
+            bail!(
+                "the degraded kernel settled without reporting {:?}",
+                record.message
+            );
         }
     }
-    println!(
-        "[xtask] degraded kernel keeps optional protection fallback diagnostic-only and settles"
-    );
-    Ok(())
+    Ok(DegradedOutcome::Settled)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DegradedWatch {
+    Complete,
+    Panicked,
+}
+
+fn watch_degraded(
+    child: &mut Child,
+    panicked: &AtomicBool,
+    serial_failed: &AtomicBool,
+    settled: &AtomicBool,
+    settle: Duration,
+) -> Result<DegradedWatch> {
+    match watch_degraded_window(child, panicked, serial_failed, BOOT_TIMEOUT, Some(settled))? {
+        DegradedWatch::Panicked => Ok(DegradedWatch::Panicked),
+        DegradedWatch::Complete => {
+            watch_degraded_window(child, panicked, serial_failed, settle, None)
+        }
+    }
+}
+
+fn watch_degraded_window(
+    child: &mut Child,
+    panicked: &AtomicBool,
+    serial_failed: &AtomicBool,
+    window: Duration,
+    until: Option<&AtomicBool>,
+) -> Result<DegradedWatch> {
+    let deadline = Instant::now() + window;
+    while Instant::now() < deadline {
+        if panicked.load(Ordering::Acquire) {
+            return Ok(DegradedWatch::Panicked);
+        }
+        if let Some(status) = child.try_wait().context("waiting for QEMU")? {
+            bail!("QEMU exited before the degraded kernel settled: {status}");
+        }
+        if serial_failed.load(Ordering::Acquire) {
+            bail!("reading the degraded kernel's serial output failed");
+        }
+        if until.is_some_and(|marker| marker.load(Ordering::Acquire)) {
+            return Ok(DegradedWatch::Complete);
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+    match until {
+        Some(_) => bail!("the degraded kernel never reached its steady state ({SETTLED_MARKER:?})"),
+        None => Ok(DegradedWatch::Complete),
+    }
 }
 
 /// Watch the serial flags for `window`, failing on a panic or an early exit.
@@ -1519,11 +2127,12 @@ fn watch_serial(
     settled: Arc<AtomicBool>,
     panicked: Arc<AtomicBool>,
     serial_failed: Arc<AtomicBool>,
-    required: Vec<(&'static str, Arc<AtomicBool>)>,
-) -> JoinHandle<Result<()>> {
+    required: Vec<(RequiredLogRecord, Arc<AtomicBool>)>,
+) -> JoinHandle<Result<BootSerialObservation>> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut line = Vec::new();
+        let mut observation = BootSerialObservation::default();
         loop {
             line.clear();
             let read = match reader.read_until(b'\n', &mut line) {
@@ -1534,7 +2143,7 @@ fn watch_serial(
                 }
             };
             if read == 0 {
-                return Ok(());
+                return Ok(observation);
             }
             let text = String::from_utf8_lossy(&line);
             if text.ends_with('\n') {
@@ -1542,23 +2151,30 @@ fn watch_serial(
             } else {
                 println!("{text}");
             }
-            let _ = std::io::stdout().flush();
-            if text.contains(SETTLED_MARKER) {
+            let _ = Write::flush(&mut std::io::stdout());
+            if is_settled_record(&text) {
                 settled.store(true, Ordering::Release);
             }
-            for (marker, seen) in &required {
-                if text.contains(marker) {
+            for (record, seen) in &required {
+                let present = is_required_boot_marker(&text, *record);
+                if present {
                     seen.store(true, Ordering::Release);
                 }
             }
-            if text.contains(PANIC_MARKER) {
-                panicked.store(true, Ordering::Release);
+            match observe_boot_line(&mut observation, &text) {
+                Ok(transition) => transition.publish(&panicked),
+                Err(error) => {
+                    serial_failed.store(true, Ordering::Release);
+                    return Err(error).context("reading the kernel's boot transcript");
+                }
             }
         }
     })
 }
 
-fn finish_boot_serial(forwarder: JoinHandle<Result<()>>) -> Result<()> {
+fn finish_boot_serial(
+    forwarder: JoinHandle<Result<BootSerialObservation>>,
+) -> Result<BootSerialObservation> {
     forwarder
         .join()
         .map_err(|_| anyhow!("the shipped-kernel serial reader panicked"))?
@@ -1566,13 +2182,6 @@ fn finish_boot_serial(forwarder: JoinHandle<Result<()>>) -> Result<()> {
 #[cfg(test)]
 mod tests {
 
-    /// Three unanswered keystroke rounds still end as a red check, not a hang.
-    ///
-    /// The kernel's wait and the harness's patience are two numbers in two
-    /// crates with one relationship, and the wait was raised for the human
-    /// D-18 requires. If it ever grows past what this allows, an unanswered
-    /// round stops being the kernel's verdict and becomes a killed emulator,
-    /// which reports the same thing for a different reason (D-240).
     #[test]
     fn the_human_wait_fits_the_harness_patience() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1586,7 +2195,10 @@ mod tests {
                 line.trim()
                     .strip_prefix("pub(crate) const HUMAN_WAIT_MS: u64 = ")
             })
-            .and_then(|value| value.trim_end_matches(';').replace('_', "").parse().ok())
+            .and_then(|value| {
+                let digits = value.trim_end_matches(';').replace('_', "");
+                <u64 as core::str::FromStr>::from_str(&digits).ok()
+            })
             .expect("no HUMAN_WAIT_MS in input.rs");
 
         const ROUNDS: u64 = 3;
@@ -1597,6 +2209,328 @@ mod tests {
         );
     }
     use super::*;
+
+    #[test]
+    fn a_boot_panic_retains_its_transcript_and_prior_x2apic_refusal() {
+        let mut observation = BootSerialObservation::default();
+        let panicked = AtomicBool::new(false);
+        let diagnosis = format!("[warn ] {NO_X2APIC_DIAGNOSIS}\r\n");
+        observe_boot_line(&mut observation, &diagnosis)
+            .unwrap()
+            .publish(&panicked);
+        observe_boot_line(
+            &mut observation,
+            "[error] KERNEL PANIC on thread 'boot': exact cause\\nat source.rs:1 \t\r\n",
+        )
+        .unwrap()
+        .publish(&panicked);
+
+        assert!(observation.no_x2apic_before_panic);
+        assert!(!observation.panic_complete);
+        assert!(!panicked.load(Ordering::Acquire));
+        assert_eq!(
+            observation.panic.as_deref(),
+            Some("[error] KERNEL PANIC on thread 'boot': exact cause\\nat source.rs:1 \t")
+        );
+        assert!(completed_panic(observation.panic.clone(), observation.panic_complete).is_err());
+
+        assert!(observe_boot_line(&mut observation, "continuation\r\n").is_err());
+        assert!(
+            observe_boot_line(
+                &mut observation,
+                "[error] KERNEL PANIC on thread 'second': duplicate\r\n"
+            )
+            .is_err()
+        );
+
+        for near_miss in [
+            format!("[error] {COMPLETE_MARKER}"),
+            format!("[warn ] {COMPLETE_MARKER}\r\n"),
+            format!("[error] {COMPLETE_MARKER} trailing\r\n"),
+            format!("[error] {COMPLETE_MARKER}\r\r\n"),
+        ] {
+            assert!(!is_complete_panic_record(&near_miss), "{near_miss:?}");
+        }
+
+        let terminal = format!("[error] {COMPLETE_MARKER}\r\n");
+        let mut unopened = BootSerialObservation::default();
+        assert!(observe_boot_line(&mut unopened, &terminal).is_err());
+        let transition = observe_boot_line(&mut observation, &terminal).unwrap();
+        assert_eq!(transition, PanicTransition::Completed);
+        transition.publish(&panicked);
+        assert!(observation.panic_complete);
+        assert!(panicked.load(Ordering::Acquire));
+        assert_eq!(
+            completed_panic(observation.panic.clone(), observation.panic_complete).unwrap(),
+            Some(
+                "[error] KERNEL PANIC on thread 'boot': exact cause\\nat source.rs:1 \t"
+                    .to_string()
+            )
+        );
+        assert!(observe_boot_line(&mut observation, &terminal).is_err());
+        assert!(observe_boot_line(&mut observation, "after terminal\r\n").is_err());
+
+        let mut simultaneous = BootSerialObservation::default();
+        observe_boot_line(
+            &mut simultaneous,
+            "[error] KERNEL PANIC on thread 'boot': no x2apic mode is not a prior diagnosis\r\n",
+        )
+        .unwrap();
+        assert!(!simultaneous.no_x2apic_before_panic);
+
+        for near_miss in [
+            format!("[info ] {NO_X2APIC_DIAGNOSIS}\r\n"),
+            format!("[warn ] prefix {NO_X2APIC_DIAGNOSIS}\r\n"),
+            format!("[warn ] {NO_X2APIC_DIAGNOSIS} trailing\r\n"),
+            "[warn ] no x2apic mode\r\n".to_string(),
+            format!("[warn ] {NO_X2APIC_DIAGNOSIS}"),
+        ] {
+            let mut rejected = BootSerialObservation::default();
+            observe_boot_line(&mut rejected, &near_miss).unwrap();
+            assert!(!rejected.no_x2apic_before_panic, "accepted {near_miss:?}");
+        }
+
+        for near_miss in [
+            "KERNEL PANIC on thread 'boot': missing severity\r\n",
+            "[warn ] KERNEL PANIC on thread 'boot': wrong severity\r\n",
+            "prefix [error] KERNEL PANIC on thread 'boot': not at column zero\r\n",
+            "[error] KERNEL PANIC: missing thread prefix\r\n",
+        ] {
+            let mut rejected = BootSerialObservation::default();
+            assert_eq!(
+                observe_boot_line(&mut rejected, near_miss).unwrap(),
+                PanicTransition::Unchanged
+            );
+            assert!(rejected.panic.is_none(), "accepted {near_miss:?}");
+        }
+
+        let mut unterminated = BootSerialObservation::default();
+        assert!(
+            observe_boot_line(
+                &mut unterminated,
+                "[error] KERNEL PANIC on thread 'boot': missing newline"
+            )
+            .is_err()
+        );
+        assert!(unterminated.panic.is_none());
+
+        for malformed in [
+            "[error] KERNEL PANIC on thread 'boot': internal\rreturn\r\n",
+            "[error] KERNEL PANIC on thread 'boot': doubled ending\r\r\n",
+        ] {
+            let mut rejected = BootSerialObservation::default();
+            assert!(observe_boot_line(&mut rejected, malformed).is_err());
+            assert!(rejected.panic.is_none(), "accepted {malformed:?}");
+        }
+    }
+
+    #[test]
+    fn the_degraded_no_x2apic_requirement_uses_the_exact_warning_record() {
+        let required = NO_X2APIC_RECORD;
+        assert!(DEGRADED_REQUIRED_MARKERS.contains(&required));
+        assert!(
+            !DEGRADED_REQUIRED_MARKERS
+                .iter()
+                .any(|record| record.message == "no x2apic mode")
+        );
+
+        let exact = format!("[warn ] {NO_X2APIC_DIAGNOSIS}\r\n");
+        assert!(is_required_boot_marker(&exact, required));
+        for near_miss in [
+            format!("[info ] {NO_X2APIC_DIAGNOSIS}\r\n"),
+            format!("[warn ] prefix {NO_X2APIC_DIAGNOSIS}\r\n"),
+            format!("[warn ] {NO_X2APIC_DIAGNOSIS} trailing\r\n"),
+            "[warn ] no x2apic mode\r\n".to_string(),
+            format!("[warn ] {NO_X2APIC_DIAGNOSIS}"),
+        ] {
+            assert!(
+                !is_required_boot_marker(&near_miss, required),
+                "accepted {near_miss:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn required_boot_records_refuse_framing_and_message_near_misses() {
+        for record in SHIPPED_REQUIRED_MARKERS
+            .iter()
+            .chain(DEGRADED_REQUIRED_MARKERS)
+            .copied()
+        {
+            for ending in ["\n", "\r\n"] {
+                let exact = format!("{}{}{ending}", record.severity.prefix(), record.message);
+                assert!(
+                    is_required_boot_marker(&exact, record),
+                    "rejected {exact:?}"
+                );
+            }
+
+            let wrong_severity = if record.severity == LogSeverity::Info {
+                LogSeverity::Warning
+            } else {
+                LogSeverity::Info
+            };
+            for near_miss in [
+                format!("{}{}\r\n", wrong_severity.prefix(), record.message),
+                format!("prefix {}{}\r\n", record.severity.prefix(), record.message),
+                format!("{}{} suffix\r\n", record.severity.prefix(), record.message),
+                format!("{}{} \r\n", record.severity.prefix(), record.message),
+                format!("{}{}\t\r\n", record.severity.prefix(), record.message),
+                format!("{}{}\u{a0}\r\n", record.severity.prefix(), record.message),
+                format!("{}{}", record.severity.prefix(), record.message),
+                format!("{}{}\r\r\n", record.severity.prefix(), record.message),
+                format!("{}{}\rinside\r\n", record.severity.prefix(), record.message),
+            ] {
+                assert!(
+                    !is_required_boot_marker(&near_miss, record),
+                    "accepted {near_miss:?} for {record:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn failure_records_cannot_satisfy_required_boot_evidence() {
+        let cases = [
+            (
+                RequiredLogRecord::info("cpu: user isolation shared kernel mappings: qemu_tcg"),
+                "[warn ] cpu: user isolation shared kernel mappings: refused; ring 3 stays closed\r\n",
+            ),
+            (
+                RequiredLogRecord::info("nvme: candidate 1 retired cleanly; trying next"),
+                "[warn ] nvme: candidate 1 left uncertain controller state after reset\r\n",
+            ),
+            (
+                RequiredLogRecord::warning(
+                    "local apic: this processor has no x2apic mode, and xapic needs page tables; interrupts stay off",
+                ),
+                "[warn ] local apic: no x2apic mode\r\n",
+            ),
+            (
+                RequiredLogRecord::warning(
+                    "pci: the configuration ports are already claimed; no bus",
+                ),
+                "[warn ] pci: no storage controllers found\r\n",
+            ),
+            (
+                RequiredLogRecord::info("tmpfs: 1 file(s) and 1 directory(ies) at the root"),
+                "[warn ] tmpfs: the root would not list: NotFound\r\n",
+            ),
+            (
+                RequiredLogRecord::info("devfs: storage is a block device"),
+                "[warn ] devfs: a device would not resolve: NotFound\r\n",
+            ),
+            (
+                RequiredLogRecord::info("devfs: console is a character device"),
+                "[warn ] devfs: a device resolved to something with bytes in it\r\n",
+            ),
+            (
+                RequiredLogRecord::info("cpu: protections wp nx"),
+                "[info ] cpu: protections wp smep nx\r\n",
+            ),
+            (
+                RequiredLogRecord::warning("cpu: extended state unavailable; ring 3 stays closed"),
+                "[info ] cpu: extended state 832 bytes, xcr0 0x7, compacted\r\n",
+            ),
+            (
+                RequiredLogRecord::warning(
+                    "user: no program: maskable interrupts are not admitted; ring 3 is closed",
+                ),
+                "[info ] user: program running in slot 0\r\n",
+            ),
+        ];
+
+        for (record, failure) in cases {
+            assert!(
+                !is_required_boot_marker(failure, record),
+                "accepted failure producer {failure:?} for {record:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn steady_state_requires_one_exact_dynamic_info_record() {
+        for exact in [
+            "[info ] kernel: reading the keyboard, uptime 0 ms\n",
+            "[info ] kernel: reading the keyboard, uptime 1 ms\r\n",
+            "[info ] kernel: reading the keyboard, uptime 18446744073709551615 ms\r\n",
+        ] {
+            assert!(is_settled_record(exact), "rejected {exact:?}");
+        }
+
+        for near_miss in [
+            "[warn ] kernel: reading the keyboard, uptime 1 ms\r\n",
+            "prefix [info ] kernel: reading the keyboard, uptime 1 ms\r\n",
+            "[info ] prefix kernel: reading the keyboard, uptime 1 ms\r\n",
+            "[info ] kernel: reading the keyboard, uptime 1 ms trailing\r\n",
+            "[info ] kernel: reading the keyboard, uptime 1 ms",
+            "[info ] kernel: reading the keyboard, uptime 1 ms \r\n",
+            "[info ] kernel: reading the keyboard, uptime 1 ms\t\r\n",
+            "[info ] kernel: reading the keyboard, uptime 1 ms\u{a0}\r\n",
+            "[info ] kernel: reading the keyboard, uptime 01 ms\r\n",
+            "[info ] kernel: reading the keyboard, uptime +1 ms\r\n",
+            "[info ] kernel: reading the keyboard, uptime -1 ms\r\n",
+            "[info ] kernel: reading the keyboard, uptime \u{0661} ms\r\n",
+            "[info ] kernel: reading the keyboard, uptime 18446744073709551616 ms\r\n",
+            "[info ] kernel: reading the keyboard, uptime  ms\r\n",
+            "[info ] kernel: reading the keyboard, uptime 1\r\n",
+            "[info ] kernel: reading the keyboard, uptime 1\r ms\r\n",
+            "[info ] kernel: entering idle loop\r\n",
+        ] {
+            assert!(!is_settled_record(near_miss), "accepted {near_miss:?}");
+        }
+    }
+
+    #[test]
+    fn interactive_input_requires_exact_terminated_info_records() {
+        for record in INTERACTIVE_MARKERS {
+            let exact = format!("[info ] {}\r\n", record.message);
+            let mut next = INTERACTIVE_MARKERS
+                .iter()
+                .position(|candidate| candidate == record)
+                .unwrap();
+            assert!(observe_interactive_marker(&exact, &mut next).unwrap());
+
+            for near_miss in [
+                format!("[warn ] {}\r\n", record.message),
+                format!("[error] {}\r\n", record.message),
+                format!("prefix [info ] {}\r\n", record.message),
+                format!("[info ] prefix {}\r\n", record.message),
+                format!("[info ] {} suffix\r\n", record.message),
+                format!("[info ] {} \r\n", record.message),
+                format!("[info ] {}\t\r\n", record.message),
+                format!("[info ] {}\u{a0}\r\n", record.message),
+                format!("[info ] {}", record.message),
+                format!("[info ] {}\r\r\n", record.message),
+            ] {
+                let before = next;
+                assert!(
+                    !observe_interactive_marker(&near_miss, &mut next).unwrap(),
+                    "accepted {near_miss:?}"
+                );
+                assert_eq!(next, before);
+            }
+        }
+    }
+
+    #[test]
+    fn interactive_input_markers_are_unique_and_ordered() {
+        let records: Vec<String> = INTERACTIVE_MARKERS
+            .iter()
+            .map(|record| format!("[info ] {}\r\n", record.message))
+            .collect();
+        let mut next = 0;
+        assert!(observe_interactive_marker(&records[1], &mut next).is_err());
+        assert_eq!(next, 0);
+        assert!(observe_interactive_marker(&records[0], &mut next).unwrap());
+        assert_eq!(next, 1);
+        assert!(observe_interactive_marker(&records[0], &mut next).is_err());
+        assert_eq!(next, 1);
+        assert!(observe_interactive_marker(&records[1], &mut next).unwrap());
+        assert!(observe_interactive_marker(&records[2], &mut next).unwrap());
+        assert_eq!(next, INTERACTIVE_MARKERS.len());
+        assert!(!observe_interactive_marker("[info ] unrelated\r\n", &mut next).unwrap());
+    }
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -1626,6 +2560,91 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    fn create_file_symlink(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("creating storage file symlink");
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(target: &Path, link: &Path) {
+        std::os::windows::fs::symlink_file(target, link).expect("creating storage file symlink");
+    }
+
+    #[cfg(unix)]
+    fn create_directory_symlink(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("creating QEMU directory symlink");
+    }
+
+    #[cfg(windows)]
+    fn create_directory_symlink(target: &Path, link: &Path) {
+        std::os::windows::fs::symlink_dir(target, link).expect("creating QEMU directory symlink");
+    }
+
+    #[cfg(unix)]
+    fn remove_directory_symlink(path: &Path) {
+        std::fs::remove_file(path).expect("removing QEMU directory symlink");
+    }
+
+    #[cfg(windows)]
+    fn remove_directory_symlink(path: &Path) {
+        std::fs::remove_dir(path).expect("removing QEMU directory symlink");
+    }
+
+    fn publish_fixture(parent: &Path, bytes: &'static [u8]) -> Result<PathBuf> {
+        let backing = parent.join("nvme.img");
+        publish_namespace(parent, &backing, |file| {
+            file.write_all(bytes).context("writing fixture namespace")
+        })?;
+        Ok(backing)
+    }
+
+    struct FakeQemuChild {
+        exited: bool,
+        killed: bool,
+        reject_kill: bool,
+        exit_on_rejected_kill: bool,
+        polls_after_kill: usize,
+        exit_after_kill_polls: Option<usize>,
+    }
+
+    impl FakeQemuChild {
+        fn exited(&mut self) -> std::io::Result<bool> {
+            if self.exited || (self.reject_kill && self.exit_on_rejected_kill && self.killed) {
+                return Ok(true);
+            }
+            if self.killed && !self.reject_kill {
+                self.polls_after_kill += 1;
+                return Ok(self
+                    .exit_after_kill_polls
+                    .is_some_and(|limit| self.polls_after_kill >= limit));
+            }
+            Ok(false)
+        }
+
+        fn terminate(&mut self) -> std::io::Result<()> {
+            self.killed = true;
+            if self.reject_kill {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "fixture refused termination",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn fake_qemu() -> FakeQemuChild {
+        FakeQemuChild {
+            exited: false,
+            killed: false,
+            reject_kill: false,
+            exit_on_rejected_kill: false,
+            polls_after_kill: 0,
+            exit_after_kill_polls: Some(1),
+        }
+    }
+
     #[test]
     fn the_machine_type_is_a_versioned_q35_not_an_alias() {
         let Some(version) = MACHINE_TYPE.strip_prefix("pc-q35-") else {
@@ -1639,6 +2658,151 @@ mod tests {
                 && !minor.is_empty()
                 && major.bytes().all(|byte| byte.is_ascii_digit())
                 && minor.bytes().all(|byte| byte.is_ascii_digit())
+        );
+    }
+
+    #[test]
+    fn every_qemu_runner_pins_the_exact_tcg_profile() {
+        assert_eq!(
+            MACHINE
+                .iter()
+                .filter(|argument| **argument == "-no-user-config")
+                .count(),
+            1,
+            "ambient QEMU configuration can rewrite the fixed profile"
+        );
+
+        let accelerator: Vec<_> = MACHINE
+            .windows(2)
+            .filter_map(|pair| (pair[0] == "-accel").then_some(pair[1]))
+            .collect();
+        assert_eq!(accelerator, ["tcg"]);
+
+        let cpu: Vec<_> = MACHINE
+            .windows(2)
+            .filter_map(|pair| (pair[0] == "-cpu").then_some(pair[1]))
+            .collect();
+        assert_eq!(cpu, ["max,hypervisor=on,tcg-cpuid=on"]);
+        assert_eq!(
+            DEGRADED_CPU,
+            [
+                "-cpu",
+                "qemu64,-x2apic,-smep,-smap,-umip,hypervisor=on,tcg-cpuid=on"
+            ]
+        );
+
+        let source = include_str!("qemu.rs");
+        let command = ["Command::new", "(&installation.emulator)"].concat();
+        let profile = [".args", "(MACHINE)"].concat();
+        let commands = source.matches(&command).count();
+        assert_ne!(commands, 0, "no QEMU process construction was found");
+        assert_eq!(
+            source.matches(&profile).count(),
+            commands,
+            "a QEMU process bypasses the shared machine profile"
+        );
+    }
+
+    #[test]
+    fn interactive_arguments_cannot_replace_the_tcg_profile() {
+        for conflict in [
+            vec!["-accel", "whpx"],
+            vec!["-accel=whpx"],
+            vec!["--accel", "whpx"],
+            vec!["--accel=whpx"],
+            vec!["-enable-kvm"],
+            vec!["--enable-kvm=true"],
+            vec!["-machine", "pc-q35-9.2,accel=whpx"],
+            vec!["-machine", "accel=whpx"],
+            vec!["-machine=pc-q35-9.2,accel=whpx"],
+            vec!["--machine", "accel=whpx"],
+            vec!["--machine=pc-q35-9.2,accel=whpx"],
+            vec!["-M", "pc"],
+            vec!["-M", "accel=whpx"],
+            vec!["-M=pc"],
+            vec!["-cpu", "host"],
+            vec!["-cpu=host"],
+            vec!["--cpu", "host"],
+            vec!["--cpu=max,hv-vendor-id=TCGTCGTCGTCG"],
+            vec!["-global", "max-x86_64-cpu.hypervisor=off"],
+            vec!["-global=max-x86_64-cpu.tcg-cpuid=off"],
+            vec![
+                "--global",
+                "driver=max-x86_64-cpu,property=hypervisor,value=off",
+            ],
+            vec!["-readconfig", "hostile.cfg"],
+            vec!["-readconfig=hostile.cfg"],
+            vec!["--readconfig", "hostile.cfg"],
+        ] {
+            let conflict: Vec<_> = conflict.into_iter().map(OsString::from).collect();
+            let error = validate_run_arguments(&conflict).unwrap_err();
+            assert!(error.to_string().contains("fixed TCG machine profile"));
+        }
+
+        let diagnostic: Vec<_> = [
+            "-d",
+            "int",
+            "-display",
+            "gtk",
+            "-set",
+            "drive.disk.snapshot=on",
+            "--set",
+            "chardev.serial.logfile=serial.log",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        validate_run_arguments(&diagnostic).unwrap();
+
+        let source = include_str!("qemu.rs");
+        let start = source
+            .find("pub fn run(paths: &Paths, image: &Path, extra: &[OsString])")
+            .expect("interactive QEMU runner");
+        let run = &source[start..];
+        let validation = run
+            .find(&["validate_run_arguments", "(extra)?;"].concat())
+            .expect("interactive argument validation");
+        let installation = run.find("let installation = installation()?;").unwrap();
+        let forwarding = run.find(".args(extra)").unwrap();
+        assert!(validation < installation && installation < forwarding);
+    }
+
+    #[test]
+    fn automated_boots_require_the_exact_producer_records() {
+        assert_eq!(
+            INTERACTIVE_MARKERS,
+            &[
+                RequiredLogRecord::info("selftest: awaiting storage-delay keystroke"),
+                RequiredLogRecord::info("selftest: awaiting injected keystroke"),
+                RequiredLogRecord::info("selftest: awaiting translated keystroke"),
+            ]
+        );
+        assert_eq!(
+            SHIPPED_REQUIRED_MARKERS,
+            &[
+                RequiredLogRecord::info("cpu: user isolation shared kernel mappings: qemu_tcg"),
+                RequiredLogRecord::info("nvme: candidate 1 retired cleanly; trying next"),
+            ]
+        );
+        assert_eq!(
+            DEGRADED_REQUIRED_MARKERS,
+            &[
+                RequiredLogRecord::info("cpu: user isolation shared kernel mappings: qemu_tcg"),
+                RequiredLogRecord::warning(
+                    "local apic: this processor has no x2apic mode, and xapic needs page tables; interrupts stay off"
+                ),
+                RequiredLogRecord::warning(
+                    "pci: the configuration ports are already claimed; no bus"
+                ),
+                RequiredLogRecord::info("tmpfs: 1 file(s) and 1 directory(ies) at the root"),
+                RequiredLogRecord::info("devfs: storage is a block device"),
+                RequiredLogRecord::info("devfs: console is a character device"),
+                RequiredLogRecord::info("cpu: protections wp nx"),
+                RequiredLogRecord::warning("cpu: extended state unavailable; ring 3 stays closed"),
+                RequiredLogRecord::warning(
+                    "user: no program: maskable interrupts are not admitted; ring 3 is closed"
+                ),
+            ]
         );
     }
 
@@ -1783,28 +2947,93 @@ mod tests {
     }
 
     #[test]
+    fn private_firmware_refuses_a_redirected_run_root_before_writing() {
+        let fixture = QemuFixture::create();
+        let target = fixture.root.join("target");
+        let outside = fixture.root.join("outside");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("sentinel"), b"outside authority").unwrap();
+        let run_root = target.join(crate::paths::QEMU_RUN_DIRECTORY);
+        create_directory_symlink(&outside, &run_root);
+        let reserved_outside = std::cell::Cell::new(false);
+
+        assert!(
+            RunVars::create_with(&target, &fixture.template, |_| reserved_outside.set(true))
+                .is_err()
+        );
+        assert!(
+            !reserved_outside.get(),
+            "private firmware reserved an external output before refusal"
+        );
+        assert_eq!(
+            crate::paths::directory_entries(&outside).unwrap().len(),
+            1,
+            "private firmware creation escaped its configured target"
+        );
+        assert_eq!(
+            std::fs::read(outside.join("sentinel")).unwrap(),
+            b"outside authority"
+        );
+        remove_directory_symlink(&run_root);
+    }
+
+    #[test]
     fn storage_construction_is_serialized_across_runners() {
         let fixture = QemuFixture::create();
-        let lock_path = fixture.root.join("storage build,lock");
-        let held = acquire_storage_lock(&lock_path).expect("first storage builder");
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let lock_path = fixture.root.join("nvme.lock");
+        let canonical = crate::mutation_workspace::canonical_existing_real_directory(
+            &fixture.root,
+            "storage fixture",
+        )
+        .unwrap();
+        let held = acquire_storage_lock(&fixture.root, &lock_path, &canonical)
+            .expect("first storage builder");
+        let (contended_tx, contended_rx) = std::sync::mpsc::sync_channel(0);
+        let (continue_tx, continue_rx) = std::sync::mpsc::sync_channel(0);
         let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let parent = fixture.root.clone();
+        let canonical = canonical.clone();
         let contender = std::thread::spawn(move || {
-            started_tx.send(()).expect("announce contender");
-            let _lock = acquire_storage_lock(&lock_path).expect("second storage builder");
+            let _lock = acquire_storage_lock_with(&parent, &lock_path, &canonical, || {
+                contended_tx.send(()).expect("announce contention");
+                continue_rx.recv().expect("wait for release");
+            })
+            .expect("second storage builder");
             acquired_tx.send(()).expect("announce acquisition");
         });
 
-        started_rx.recv().expect("contender started");
-        assert_eq!(
-            acquired_rx.recv_timeout(Duration::from_millis(100)),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-        );
+        contended_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("contender observed the held lock");
         drop(held);
+        continue_tx.send(()).expect("permit retry after release");
         acquired_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("contender acquired released lock");
         contender.join().expect("storage contender");
+    }
+
+    #[test]
+    fn an_open_storage_lock_must_remain_at_its_name() {
+        let fixture = QemuFixture::create();
+        let lock_path = fixture.root.join("nvme.lock");
+        let canonical = crate::mutation_workspace::canonical_existing_real_directory(
+            &fixture.root,
+            "storage fixture",
+        )
+        .unwrap();
+
+        let error = open_storage_lock_with(&fixture.root, &lock_path, &canonical, |opened| {
+            std::fs::remove_file(opened).expect("unlink the opened lock")
+        })
+        .expect_err("an unlinked lock cannot serialize later builders");
+
+        assert!(
+            error
+                .to_string()
+                .contains("disappeared after it was opened")
+        );
     }
 
     #[test]
@@ -1821,10 +3050,192 @@ mod tests {
     }
 
     #[test]
-    fn a_same_sized_namespace_with_different_bytes_is_not_reused() {
-        assert!(namespace_is_exact(b"wizard", b"wizard"));
-        assert!(!namespace_is_exact(b"wizard", b"wIzard"));
-        assert!(!namespace_is_exact(b"wizard", b"wizard!"));
+    fn storage_publication_never_writes_through_an_external_link() {
+        let fixture = QemuFixture::create();
+        let parent = fixture.root.join("storage");
+        let outside = fixture.root.join("outside");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let sentinel = outside.join("sentinel");
+        let backing = parent.join("nvme.img");
+        let lock = parent.join("nvme.lock");
+        std::fs::write(&sentinel, b"outside authority").unwrap();
+
+        std::fs::hard_link(&sentinel, &backing).unwrap();
+        assert_eq!(publish_fixture(&parent, b"new namespace").unwrap(), backing);
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
+        assert_eq!(std::fs::read(&backing).unwrap(), b"new namespace");
+
+        std::fs::remove_file(&backing).unwrap();
+        std::fs::write(&sentinel, b"same namespace").unwrap();
+        std::fs::hard_link(&sentinel, &backing).unwrap();
+        publish_fixture(&parent, b"same namespace").unwrap();
+        std::fs::write(&backing, b"private namespace").unwrap();
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"same namespace");
+
+        std::fs::remove_file(&backing).unwrap();
+        std::fs::write(&sentinel, b"outside authority").unwrap();
+        create_file_symlink(&sentinel, &backing);
+        assert!(publish_fixture(&parent, b"forged").is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
+        std::fs::remove_file(&backing).unwrap();
+
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::hard_link(&sentinel, &lock).unwrap();
+        publish_fixture(&parent, b"lock hardlink").unwrap();
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
+        std::fs::remove_file(&backing).unwrap();
+        std::fs::remove_file(&lock).unwrap();
+
+        create_file_symlink(&sentinel, &lock);
+        assert!(publish_fixture(&parent, b"lock symlink").is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
+        std::fs::remove_file(&lock).unwrap();
+    }
+
+    #[test]
+    fn storage_creation_refuses_a_redirected_parent_before_writing() {
+        let fixture = QemuFixture::create();
+        let target = fixture.root.join("target");
+        let outside = fixture.root.join("outside-storage");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("sentinel"), b"outside authority").unwrap();
+        let storage = target.join("qemu storage,private");
+        create_directory_symlink(&outside, &storage);
+
+        assert!(storage_paths(&fixture.root).is_err());
+        assert_eq!(crate::paths::directory_entries(&outside).unwrap().len(), 1);
+        assert_eq!(
+            std::fs::read(outside.join("sentinel")).unwrap(),
+            b"outside authority"
+        );
+        remove_directory_symlink(&storage);
+    }
+
+    #[test]
+    fn a_failed_storage_stage_preserves_the_complete_authoritative_image() {
+        let fixture = QemuFixture::create();
+        let parent = fixture.root.join("storage");
+        std::fs::create_dir(&parent).unwrap();
+        let backing = publish_fixture(&parent, b"complete old image").unwrap();
+
+        let error = publish_namespace(&parent, &backing, |file| {
+            file.write_all(b"partial")?;
+            bail!("injected construction failure")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("injected construction failure"));
+        assert_eq!(std::fs::read(&backing).unwrap(), b"complete old image");
+        assert!(!parent.join(STORAGE_STAGING_NAME).exists());
+    }
+
+    #[test]
+    fn storage_staging_supports_read_modify_write_builders() {
+        let fixture = QemuFixture::create();
+        let parent = fixture.root.join("storage");
+        std::fs::create_dir(&parent).unwrap();
+        let backing = parent.join("nvme.img");
+
+        publish_namespace(&parent, &backing, |file| {
+            file.write_all(b"format input")?;
+            Seek::seek(&mut *file, SeekFrom::Start(0))?;
+            let mut observed = Vec::new();
+            file.read_to_end(&mut observed)?;
+            ensure!(observed == b"format input", "staging handle changed bytes");
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(backing).unwrap(), b"format input");
+    }
+
+    #[test]
+    fn the_nvme_namespace_is_streamed_to_its_exact_extent() {
+        let fixture = QemuFixture::create();
+        let path = fixture.root.join("streamed-nvme.img");
+        let mut options = OpenOptions::new();
+        OpenOptions::create_new(&mut options, true);
+        OpenOptions::read(&mut options, true);
+        OpenOptions::write(&mut options, true);
+        let mut file = OpenOptions::open(&options, &path).unwrap();
+        write_nvme_namespace(&mut file).unwrap();
+        assert_eq!(file.metadata().unwrap().len(), NVME_BYTES);
+        for lba in 0..NVME_SIGNED_BLOCKS {
+            let mut signature = [0u8; 8];
+            Seek::seek(&mut file, SeekFrom::Start(lba * NVME_BLOCK_BYTES as u64)).unwrap();
+            file.read_exact(&mut signature).unwrap();
+            assert_eq!(u64::from_le_bytes(signature), nvme_signature(lba));
+        }
+        let mut sector = [0u8; fat32::SECTOR_BYTES];
+        Seek::seek(
+            &mut file,
+            SeekFrom::Start(NVME_VOLUME_SECTOR * NVME_BLOCK_BYTES as u64),
+        )
+        .unwrap();
+        file.read_exact(&mut sector).unwrap();
+        fat32::Bpb::parse(&sector).expect("streamed FAT32 corpus");
+    }
+
+    #[test]
+    fn qemu_stop_polls_until_a_terminated_child_is_reaped() {
+        let mut child = fake_qemu();
+        child.exit_after_kill_polls = Some(3);
+        stop_qemu_with(
+            &mut child,
+            FakeQemuChild::exited,
+            FakeQemuChild::terminate,
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert!(child.killed);
+        assert_eq!(child.polls_after_kill, 3);
+
+        let mut exited = fake_qemu();
+        exited.exited = true;
+        stop_qemu_with(
+            &mut exited,
+            FakeQemuChild::exited,
+            FakeQemuChild::terminate,
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert!(!exited.killed);
+    }
+
+    #[test]
+    fn qemu_stop_refuses_timeout_and_a_live_child_after_kill_refusal() {
+        let mut stuck = fake_qemu();
+        stuck.exit_after_kill_polls = None;
+        let error = stop_qemu_with(
+            &mut stuck,
+            FakeQemuChild::exited,
+            FakeQemuChild::terminate,
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("did not exit"));
+
+        let mut refused = fake_qemu();
+        refused.reject_kill = true;
+        let error = stop_qemu_with(
+            &mut refused,
+            FakeQemuChild::exited,
+            FakeQemuChild::terminate,
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("terminating QEMU"));
+
+        let mut raced = fake_qemu();
+        raced.reject_kill = true;
+        raced.exit_on_rejected_kill = true;
+        stop_qemu_with(
+            &mut raced,
+            FakeQemuChild::exited,
+            FakeQemuChild::terminate,
+            Duration::ZERO,
+        )
+        .unwrap();
     }
 
     fn passing_verdict() -> SelftestVerdict {
@@ -1836,40 +3247,118 @@ mod tests {
         }
     }
 
-    /// A failing check's name is read off the line the kernel prints.
-    ///
-    /// Including the carriage return, which is the whole reason this test
-    /// exists: without the trim the parser matches nothing and every mutation
-    /// reports a survivor on a boot that went red correctly.
     #[test]
-    fn a_failing_check_is_named_even_with_the_carriage_return() {
-        assert_eq!(
-            parse_failed_check("[error] selftest: a bound space is not reclaimed FAILED\r"),
-            Some("a bound space is not reclaimed")
-        );
-        assert_eq!(
-            parse_failed_check("[error] selftest: a thing FAILED"),
-            Some("a thing")
-        );
-        // Not failures: the verdict line, a passing check, and unrelated text.
-        assert_eq!(
-            parse_failed_check("[error] selftest: verdict v1 FAIL passed=1 failed=0 expected=1"),
-            None
-        );
-        assert_eq!(parse_failed_check("[info ] selftest: a thing"), None);
-        assert_eq!(parse_failed_check("[info ] keyboard: up"), None);
+    fn a_failed_check_requires_one_exact_terminated_error_record() {
+        for exact in [
+            "[error] selftest: a bound space is not reclaimed FAILED\n",
+            "[error] selftest: a bound space is not reclaimed FAILED\r\n",
+        ] {
+            assert_eq!(
+                parse_failed_check(exact),
+                Some("a bound space is not reclaimed")
+            );
+        }
+        for near_miss in [
+            "[info ] selftest: a thing FAILED\r\n",
+            "[warn ] selftest: a thing FAILED\r\n",
+            "prefix [error] selftest: a thing FAILED\r\n",
+            "[error] prefix selftest: a thing FAILED\r\n",
+            "[error] selftest: a thing FAILED suffix\r\n",
+            "[error] selftest: a thing FAILED \r\n",
+            "[error] selftest: a thing FAILED\t\r\n",
+            "[error] selftest: a thing FAILED\u{a0}\r\n",
+            "[error] selftest: a thing FAILED",
+            "[error] selftest: a thing FAILED\r\r\n",
+            "[error] selftest: a thing FAILED\rinside\r\n",
+            "[error] selftest:  FAILED\r\n",
+            "[error] selftest: verdict v1 FAIL passed=1 failed=0 expected=1\r\n",
+            "[info ] selftest: a thing\r\n",
+            "[info ] keyboard: up\r\n",
+        ] {
+            assert_eq!(
+                parse_failed_check(near_miss),
+                None,
+                "accepted {near_miss:?}"
+            );
+        }
     }
 
     #[test]
-    fn versioned_verdict_is_parsed_from_a_log_record() {
-        let line = format!(
+    fn verdict_records_require_exact_framing_and_status_severity() {
+        let pass = format!(
             "[info ] selftest: verdict v1 PASS passed={} failed=0 expected={}\r\n",
             EXPECTED_SELFTEST_CHECKS, EXPECTED_SELFTEST_CHECKS
         );
         assert_eq!(
-            parse_selftest_verdict(&line).unwrap().unwrap(),
+            parse_selftest_verdict(&pass).unwrap().unwrap(),
             passing_verdict()
         );
+        let fail = format!(
+            "[error] selftest: verdict v1 FAIL passed={} failed=1 expected={}\n",
+            EXPECTED_SELFTEST_CHECKS - 1,
+            EXPECTED_SELFTEST_CHECKS
+        );
+        assert_eq!(
+            parse_selftest_verdict(&fail).unwrap().unwrap(),
+            SelftestVerdict {
+                status: VerdictStatus::Fail,
+                passed: EXPECTED_SELFTEST_CHECKS - 1,
+                failed: 1,
+                expected: EXPECTED_SELFTEST_CHECKS,
+            }
+        );
+
+        for near_miss in [
+            pass.trim_start_matches("[info ] ").to_string(),
+            pass.replacen("[info ]", "[warn ]", 1),
+            format!("prefix {pass}"),
+            pass.replacen("[info ] selftest:", "[info ] prefix selftest:", 1),
+            pass.trim_end_matches(['\r', '\n']).to_string(),
+            pass.replace("\r\n", "\r\r\n"),
+            pass.replacen("[info ]", "[error]", 1),
+            fail.replacen("[error]", "[info ]", 1),
+        ] {
+            assert!(
+                !matches!(parse_selftest_verdict(&near_miss), Some(Ok(_))),
+                "accepted {near_miss:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn verdict_fields_require_single_ascii_spaces() {
+        let exact = "[info ] selftest: verdict v1 PASS passed=1 failed=0 expected=1\r\n";
+        assert!(matches!(parse_selftest_verdict(exact), Some(Ok(_))));
+        for near_miss in [
+            exact.replace("v1 PASS", "v1  PASS"),
+            exact.replace("v1 PASS", "v1\tPASS"),
+            exact.replace("v1 PASS", "v1\u{a0}PASS"),
+            exact.replace(" expected=1", "  expected=1"),
+            exact.replace("\r\n", " \r\n"),
+            exact.replace("\r\n", "\t\r\n"),
+            exact.replace("\r\n", "\u{a0}\r\n"),
+        ] {
+            assert!(
+                !matches!(parse_selftest_verdict(&near_miss), Some(Ok(_))),
+                "accepted {near_miss:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn verdict_counts_use_canonical_decimals() {
+        for near_miss in [
+            "[info ] selftest: verdict v1 PASS passed=01 failed=0 expected=1\r\n",
+            "[info ] selftest: verdict v1 PASS passed=+1 failed=0 expected=1\r\n",
+            "[info ] selftest: verdict v1 PASS passed=-1 failed=0 expected=1\r\n",
+            "[info ] selftest: verdict v1 PASS passed=\u{0661} failed=0 expected=1\r\n",
+            "[info ] selftest: verdict v1 PASS passed=18446744073709551616 failed=0 expected=1\r\n",
+        ] {
+            assert!(
+                matches!(parse_selftest_verdict(near_miss), Some(Err(_))),
+                "accepted {near_miss:?}"
+            );
+        }
     }
 
     fn baseline_line() -> &'static str {
@@ -1898,7 +3387,7 @@ mod tests {
             baseline_line().replace("v1", "v2"),
             baseline_line().replace("boot_ns=11 frames_free=12", "frames_free=12 boot_ns=11"),
             baseline_line().replace(" counter_hz=20", ""),
-            format!("{} trailing=true", baseline_line().trim_end()),
+            baseline_line().replace("\r\n", " trailing=true\r\n"),
         ] {
             assert!(parse_performance_sample(&line).unwrap().is_err(), "{line}");
         }
@@ -1909,18 +3398,85 @@ mod tests {
     }
 
     #[test]
+    fn baseline_records_require_exact_info_framing() {
+        for near_miss in [
+            baseline_line().trim_start_matches("[info ] ").to_string(),
+            baseline_line().replacen("[info ]", "[warn ]", 1),
+            baseline_line().replacen("[info ]", "[error]", 1),
+            format!("prefix {}", baseline_line()),
+            baseline_line().replacen("selftest:", "prefix selftest:", 1),
+            baseline_line().trim_end_matches(['\r', '\n']).to_string(),
+            baseline_line().replace("\r\n", "\r\r\n"),
+        ] {
+            assert!(
+                !matches!(parse_performance_sample(&near_miss), Some(Ok(_))),
+                "accepted {near_miss:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn baseline_fields_require_single_ascii_spaces() {
+        for near_miss in [
+            baseline_line().replace("v1 boot_ns", "v1  boot_ns"),
+            baseline_line().replace("v1 boot_ns", "v1\tboot_ns"),
+            baseline_line().replace("v1 boot_ns", "v1\u{a0}boot_ns"),
+            baseline_line().replace(" frames_free", "  frames_free"),
+            baseline_line().replace("\r\n", " \r\n"),
+            baseline_line().replace("\r\n", "\t\r\n"),
+            baseline_line().replace("\r\n", "\u{a0}\r\n"),
+        ] {
+            assert!(
+                matches!(parse_performance_sample(&near_miss), Some(Err(_))),
+                "accepted {near_miss:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn baseline_values_use_canonical_decimals() {
+        for near_miss in [
+            baseline_line().replace("boot_ns=11", "boot_ns=011"),
+            baseline_line().replace("boot_ns=11", "boot_ns=+11"),
+            baseline_line().replace("boot_ns=11", "boot_ns=-11"),
+            baseline_line().replace("boot_ns=11", "boot_ns=\u{0661}\u{0661}"),
+            baseline_line().replace("boot_ns=11", "boot_ns=18446744073709551616"),
+        ] {
+            assert!(
+                matches!(parse_performance_sample(&near_miss), Some(Err(_))),
+                "accepted {near_miss:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_panic_outcome_preserves_earlier_failures_and_its_exact_transcript() {
-        let failed = "[error] selftest: an earlier ownership check FAILED\r";
-        let line = "[error] KERNEL PANIC on thread 'boot': panicked at source\r";
-        let continuation = "exact cause\r";
+        let failed = "[error] selftest: an earlier ownership check FAILED\r\n";
+        let line = "[error] KERNEL PANIC on thread 'boot': panicked at source\\nexact cause \t\r\n";
         let mut observation = SerialObservation::default();
-        observe_selftest_line(&mut observation, failed).unwrap();
-        observe_selftest_line(&mut observation, line).unwrap();
-        observe_selftest_line(&mut observation, continuation).unwrap();
+        let panicked = AtomicBool::new(false);
+        observe_selftest_line(&mut observation, failed)
+            .unwrap()
+            .publish(&panicked);
+        observe_selftest_line(&mut observation, line)
+            .unwrap()
+            .publish(&panicked);
+        assert!(!observation.panic_complete);
+        assert!(!panicked.load(Ordering::Acquire));
+        assert!(correlate_selftest(None, observation.clone()).is_err());
+        assert!(observe_selftest_line(&mut observation, "continuation\r\n").is_err());
+
+        let terminal = format!("[error] {COMPLETE_MARKER}\r\n");
+        let transition = observe_selftest_line(&mut observation, &terminal).unwrap();
+        assert_eq!(transition, PanicTransition::Completed);
+        transition.publish(&panicked);
+        assert!(panicked.load(Ordering::Acquire));
         assert_eq!(
             correlate_selftest(None, observation).unwrap(),
             SelftestOutcome::Panicked {
-                transcript: format!("{}\n{}", line.trim_end(), continuation.trim_end()),
+                transcript:
+                    "[error] KERNEL PANIC on thread 'boot': panicked at source\\nexact cause \t"
+                        .to_string(),
                 failed: vec!["an earlier ownership check".to_string()],
             }
         );
@@ -1936,8 +3492,10 @@ mod tests {
                 expected: EXPECTED_SELFTEST_CHECKS,
             }),
             baseline: None,
+            qemu_tcg_isolation: true,
             failed: Vec::new(),
             panic: None,
+            panic_complete: false,
         };
         let error = correlate_selftest(Some(SELFTEST_FAILED), observation).unwrap_err();
         assert!(error.to_string().contains("counted 1 failures but named 0"));
@@ -1946,10 +3504,10 @@ mod tests {
     #[test]
     fn malformed_or_unknown_verdicts_are_rejected() {
         for line in [
-            "selftest: verdict v2 PASS passed=76 failed=0 expected=76",
-            "selftest: verdict v1 MAYBE passed=76 failed=0 expected=76",
-            "selftest: verdict v1 PASS passed=many failed=0 expected=76",
-            "selftest: verdict v1 PASS passed=76 failed=0 expected=76 trailing",
+            "[info ] selftest: verdict v2 PASS passed=76 failed=0 expected=76\r\n",
+            "[info ] selftest: verdict v1 MAYBE passed=76 failed=0 expected=76\r\n",
+            "[info ] selftest: verdict v1 PASS passed=many failed=0 expected=76\r\n",
+            "[info ] selftest: verdict v1 PASS passed=76 failed=0 expected=76 trailing\r\n",
         ] {
             assert!(parse_selftest_verdict(line).unwrap().is_err(), "{line}");
         }
@@ -1958,7 +3516,7 @@ mod tests {
     #[test]
     fn a_second_final_verdict_is_rejected() {
         let line = format!(
-            "selftest: verdict v1 PASS passed={} failed=0 expected={}",
+            "[info ] selftest: verdict v1 PASS passed={} failed=0 expected={}\r\n",
             EXPECTED_SELFTEST_CHECKS, EXPECTED_SELFTEST_CHECKS
         );
         let mut observation = SerialObservation::default();
@@ -1967,12 +3525,31 @@ mod tests {
     }
 
     #[test]
+    fn failed_check_names_are_unique_and_precede_the_terminal_verdict() {
+        let failed = "[error] selftest: exact failed check FAILED\r\n";
+        let mut duplicate = SerialObservation::default();
+        observe_selftest_line(&mut duplicate, failed).unwrap();
+        assert!(observe_selftest_line(&mut duplicate, failed).is_err());
+
+        let verdict = format!(
+            "[info ] selftest: verdict v1 PASS passed={} failed=0 expected={}\r\n",
+            EXPECTED_SELFTEST_CHECKS, EXPECTED_SELFTEST_CHECKS
+        );
+        let mut terminal = SerialObservation::default();
+        observe_selftest_line(&mut terminal, &verdict).unwrap();
+        assert!(observe_selftest_line(&mut terminal, failed).is_err());
+        assert!(observe_selftest_line(&mut terminal, "[info ] after verdict\r\n").is_err());
+    }
+
+    #[test]
     fn a_valid_serial_pass_must_match_debug_exit() {
         let observation = SerialObservation {
             failed: Vec::new(),
             verdict: Some(passing_verdict()),
             baseline: None,
+            qemu_tcg_isolation: true,
             panic: None,
+            panic_complete: false,
         };
         assert!(correlate_selftest(Some(SELFTEST_PASSED), observation).is_ok());
 
@@ -1980,10 +3557,52 @@ mod tests {
             failed: Vec::new(),
             verdict: Some(passing_verdict()),
             baseline: None,
+            qemu_tcg_isolation: true,
             panic: None,
+            panic_complete: false,
         };
         let error = correlate_selftest(Some(SELFTEST_FAILED), observation).unwrap_err();
         assert!(error.to_string().contains("debug-exit"));
+    }
+
+    #[test]
+    fn a_passing_selftest_requires_the_exact_consumed_tcg_policy() {
+        let without_policy = SerialObservation {
+            failed: Vec::new(),
+            verdict: Some(passing_verdict()),
+            baseline: None,
+            qemu_tcg_isolation: false,
+            panic: None,
+            panic_complete: false,
+        };
+        let error = correlate_selftest(Some(SELFTEST_PASSED), without_policy).unwrap_err();
+        assert!(error.to_string().contains("without consuming"));
+
+        for near_miss in [
+            QEMU_TCG_ISOLATION_MARKER.to_string(),
+            format!("[warn ] {QEMU_TCG_ISOLATION_MARKER}"),
+            format!("[info ] {QEMU_TCG_ISOLATION_MARKER} trailing"),
+            "[info ] cpu: user isolation shared kernel mappings: qemu-tcg".to_string(),
+        ] {
+            assert!(!is_exact_log_message(
+                &near_miss,
+                LogSeverity::Info,
+                QEMU_TCG_ISOLATION_MARKER
+            ));
+        }
+
+        let exact = format!("[info ] {QEMU_TCG_ISOLATION_MARKER}\r\n");
+        let mut observation = SerialObservation::default();
+        observe_selftest_line(&mut observation, &exact).unwrap();
+        observation.verdict = Some(passing_verdict());
+        assert_eq!(
+            correlate_selftest(Some(SELFTEST_PASSED), observation).unwrap(),
+            SelftestOutcome::Passed
+        );
+
+        let mut duplicate = SerialObservation::default();
+        observe_selftest_line(&mut duplicate, &exact).unwrap();
+        assert!(observe_selftest_line(&mut duplicate, &exact).is_err());
     }
 
     #[test]
@@ -1998,7 +3617,9 @@ mod tests {
                     expected: EXPECTED_SELFTEST_CHECKS,
                 }),
                 baseline: None,
+                qemu_tcg_isolation: true,
                 panic: None,
+                panic_complete: false,
             };
             let error = correlate_selftest(Some(SELFTEST_PASSED), observation).unwrap_err();
             assert!(error.to_string().contains("counted"));
@@ -2015,7 +3636,9 @@ mod tests {
                 ..passing_verdict()
             }),
             baseline: None,
+            qemu_tcg_isolation: true,
             panic: None,
+            panic_complete: false,
         };
         let error = correlate_selftest(Some(SELFTEST_PASSED), observation).unwrap_err();
         assert!(error.to_string().contains("harness requires"));
@@ -2030,7 +3653,9 @@ mod tests {
                 ..passing_verdict()
             }),
             baseline: None,
+            qemu_tcg_isolation: true,
             panic: None,
+            panic_complete: false,
         };
         let error = correlate_selftest(Some(SELFTEST_FAILED), observation).unwrap_err();
         assert!(error.to_string().contains("contradicts its counts"));
@@ -2055,36 +3680,8 @@ mod tests {
         assert_eq!(irq_count("unknown command: info irq\r\n(qemu)", 1), None);
     }
 
-    /// Every constant this module shares with the kernel is read back out of
-    /// the kernel's own source.
-    ///
-    /// Four contracts are written twice — the check count, the verdict
-    /// version, the two serial markers and the panic marker — and nothing
-    /// checked the copies agreed. A count drift is invisible to `cargo test`
-    /// and surfaces only after a sixty-second boot; a marker drift makes the
-    /// harness wait for a line that will never come. This is the shape
-    /// `paths.rs`'s `default-members` test exists for, applied to the other
-    /// four lists (D-105).
-    /// The exit codes the harness waits for are the kernel's, doubled.
-    ///
-    /// `SELFTEST_PASSED`/`SELFTEST_FAILED` are a twin of `debug_exit.rs`'s
-    /// `PASSED`/`FAILED`, and were "kept in step" by a comment saying so.
-    /// Nothing compared them, and the serial-contract test beside this one
-    /// reads `selftest.rs`, `main.rs` and `panic.rs` — not the file that
-    /// writes the port.
-    ///
-    /// What that bought: change `FAILED` to `0x12` and `cargo xtask ci` stays
-    /// green, because every boot in the gate is a *passing* one. But every
-    /// mutation reports "inconclusive", because `mutate` can no longer tell a
-    /// red verdict from a broken build — one character disables the tool that
-    /// keeps D-28 true, and the gate says nothing (D-135).
-    ///
-    /// Derived, not restated: the harness value is computed from the kernel's
-    /// by QEMU's own `(value << 1) | 1`, so this cannot drift by agreeing with
-    /// itself.
     #[test]
     fn the_exit_codes_are_the_kernels_doubled() {
-        /// What QEMU's `isa-debug-exit` does to the value written.
         fn qemu_exit_code(written: i32) -> i32 {
             (written << 1) | 1
         }
@@ -2120,21 +3717,334 @@ mod tests {
             SELFTEST_FAILED,
             "the kernel's FAILED does not arrive as the code the harness waits for"
         );
-        // And they are distinguishable, which is the whole point of two.
         assert_ne!(SELFTEST_PASSED, SELFTEST_FAILED);
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct DevfsEntry {
+        variant: String,
+        name: Vec<u8>,
+        description: String,
+    }
+
+    fn device_variant(path: &syn::Path, owner: &str) -> Result<String> {
+        ensure!(
+            path.segments.len() == 2
+                && path.segments[0].ident == owner
+                && path
+                    .segments
+                    .iter()
+                    .all(|segment| segment.arguments.is_empty()),
+            "expected {owner}::Variant"
+        );
+        Ok(path.segments[1].ident.to_string())
+    }
+
+    fn devfs_method<'a>(syntax: &'a syn::File, name: &str) -> Result<&'a syn::ImplItemFn> {
+        let methods = syntax
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Impl(item) if item.trait_.is_none() => Some(item),
+                _ => None,
+            })
+            .filter(|item| {
+                matches!(
+                    item.self_ty.as_ref(),
+                    syn::Type::Path(path)
+                        if path.qself.is_none() && path.path.is_ident("Device")
+                )
+            })
+            .flat_map(|item| &item.items)
+            .filter_map(|item| match item {
+                syn::ImplItem::Fn(method) if method.sig.ident == name => Some(method),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        ensure!(methods.len() == 1, "expected one Device::{name} method");
+        Ok(methods[0])
+    }
+
+    fn devfs_match<T>(
+        syntax: &syn::File,
+        method: &str,
+        literal: impl Fn(&syn::Lit) -> Option<T>,
+    ) -> Result<std::collections::BTreeMap<String, T>> {
+        let body = &devfs_method(syntax, method)?.block.stmts;
+        let [syn::Stmt::Expr(syn::Expr::Match(matched), None)] = body.as_slice() else {
+            bail!("Device::{method} must contain exactly one match expression");
+        };
+        ensure!(
+            matches!(
+                matched.expr.as_ref(),
+                syn::Expr::Path(path) if path.qself.is_none() && path.path.is_ident("self")
+            ),
+            "Device::{method} must match self"
+        );
+
+        let mut values = std::collections::BTreeMap::new();
+        for arm in &matched.arms {
+            ensure!(arm.guard.is_none(), "Device::{method} has a guarded arm");
+            let syn::Pat::Path(pattern) = &arm.pat else {
+                bail!("Device::{method} has a non-variant pattern");
+            };
+            ensure!(
+                pattern.qself.is_none(),
+                "Device::{method} has a qualified pattern"
+            );
+            let variant = device_variant(&pattern.path, "Self")?;
+            let syn::Expr::Lit(value) = arm.body.as_ref() else {
+                bail!("Device::{method}::{variant} is not a literal");
+            };
+            let value = literal(&value.lit).with_context(|| {
+                format!("Device::{method}::{variant} has the wrong literal kind")
+            })?;
+            ensure!(
+                values.insert(variant.clone(), value).is_none(),
+                "Device::{method} repeats {variant}"
+            );
+        }
+        Ok(values)
+    }
+
+    fn devfs_contract(source: &str) -> Result<Vec<DevfsEntry>> {
+        let syntax = syn::parse_file(source).context("parsing kernel/src/devfs.rs")?;
+        let enums = syntax
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Enum(item) if item.ident == "Device" => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        ensure!(enums.len() == 1, "expected one Device enum");
+
+        let mut variants = std::collections::BTreeSet::new();
+        for variant in &enums[0].variants {
+            ensure!(
+                matches!(variant.fields, syn::Fields::Unit),
+                "Device::{} is not a unit variant",
+                variant.ident
+            );
+            ensure!(
+                variants.insert(variant.ident.to_string()),
+                "Device repeats {}",
+                variant.ident
+            );
+        }
+
+        let declarations = syntax
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Const(item) if item.ident == "DEVICES" => Some(item),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        ensure!(declarations.len() == 1, "expected one DEVICES constant");
+        let syn::Expr::Array(array) = declarations[0].expr.as_ref() else {
+            bail!("DEVICES is not an array literal");
+        };
+        let mut listed = Vec::new();
+        for element in &array.elems {
+            let syn::Expr::Path(path) = element else {
+                bail!("DEVICES contains a non-variant expression");
+            };
+            ensure!(
+                path.qself.is_none(),
+                "DEVICES contains a qualified expression"
+            );
+            listed.push(device_variant(&path.path, "Device")?);
+        }
+        let listed_set = listed
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        ensure!(
+            listed.len() == listed_set.len(),
+            "DEVICES contains a duplicate variant"
+        );
+        ensure!(
+            listed_set == variants,
+            "DEVICES does not match Device variants: listed {listed_set:?}, declared {variants:?}"
+        );
+
+        let mut names = devfs_match(&syntax, "name", |literal| match literal {
+            syn::Lit::ByteStr(value) => Some(value.value()),
+            _ => None,
+        })?;
+        let mut descriptions = devfs_match(&syntax, "describes", |literal| match literal {
+            syn::Lit::Str(value) => Some(value.value()),
+            _ => None,
+        })?;
+        ensure!(
+            names
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                == variants,
+            "Device::name does not match Device variants"
+        );
+        ensure!(
+            descriptions
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                == variants,
+            "Device::describes does not match Device variants"
+        );
+
+        let mut unique_names = std::collections::BTreeSet::new();
+        listed
+            .into_iter()
+            .map(|variant| {
+                let name = names
+                    .remove(&variant)
+                    .context("a listed device has no name")?;
+                let description = descriptions
+                    .remove(&variant)
+                    .context("a listed device has no description")?;
+                ensure!(!name.is_empty(), "Device::{variant} has an empty name");
+                ensure!(
+                    unique_names.insert(name.clone()),
+                    "Device::{variant} repeats a device name"
+                );
+                ensure!(
+                    !description.is_empty(),
+                    "Device::{variant} has an empty description"
+                );
+                Ok(DevfsEntry {
+                    variant,
+                    name,
+                    description,
+                })
+            })
+            .collect()
+    }
+
+    fn devfs_fixture(variants: &str, listed: &str, names: &str, descriptions: &str) -> String {
+        format!(
+            "enum Device {{ {variants} }}\n\
+             impl Device {{\n\
+                 fn name(self) -> &'static [u8] {{ match self {{ {names} }} }}\n\
+                 fn describes(self) -> &'static str {{ match self {{ {descriptions} }} }}\n\
+             }}\n\
+             const DEVICES: [Device; 3] = [{listed}];\n"
+        )
+    }
+
+    #[test]
+    fn a_complete_devfs_inventory_is_accepted() {
+        let fixture = devfs_fixture(
+            "Storage, Console, Timer",
+            "Device::Storage, Device::Console, Device::Timer",
+            "Self::Storage => b\"storage\", Self::Console => b\"console\", Self::Timer => b\"timer\",",
+            "Self::Storage => \"block\", Self::Console => \"character\", Self::Timer => \"clock\",",
+        );
+        assert_eq!(
+            devfs_contract(&fixture).expect("complete inventory").len(),
+            3
+        );
+    }
+
+    #[test]
+    fn a_devfs_variant_omitted_from_the_listing_is_refused() {
+        let fixture = devfs_fixture(
+            "Storage, Console, Timer",
+            "Device::Storage, Device::Console",
+            "Self::Storage => b\"storage\", Self::Console => b\"console\", Self::Timer => b\"timer\",",
+            "Self::Storage => \"block\", Self::Console => \"character\", Self::Timer => \"clock\",",
+        );
+        let error = devfs_contract(&fixture).expect_err("Timer is absent from DEVICES");
+        assert!(error.to_string().contains("DEVICES does not match"));
+    }
+
+    #[test]
+    fn a_devfs_variant_omitted_from_either_description_is_refused() {
+        for (names, descriptions, expected) in [
+            (
+                "Self::Storage => b\"storage\", Self::Console => b\"console\",",
+                "Self::Storage => \"block\", Self::Console => \"character\", Self::Timer => \"clock\",",
+                "Device::name",
+            ),
+            (
+                "Self::Storage => b\"storage\", Self::Console => b\"console\", Self::Timer => b\"timer\",",
+                "Self::Storage => \"block\", Self::Console => \"character\",",
+                "Device::describes",
+            ),
+        ] {
+            let fixture = devfs_fixture(
+                "Storage, Console, Timer",
+                "Device::Storage, Device::Console, Device::Timer",
+                names,
+                descriptions,
+            );
+            assert!(
+                devfs_contract(&fixture)
+                    .expect_err("a descriptive match omitted Timer")
+                    .to_string()
+                    .contains(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_devfs_authority_is_refused() {
+        let duplicate_listing = devfs_fixture(
+            "Storage, Console",
+            "Device::Storage, Device::Console, Device::Storage",
+            "Self::Storage => b\"storage\", Self::Console => b\"console\",",
+            "Self::Storage => \"block\", Self::Console => \"character\",",
+        );
+        assert!(
+            devfs_contract(&duplicate_listing)
+                .expect_err("duplicate listing")
+                .to_string()
+                .contains("duplicate variant")
+        );
+
+        let duplicate_name = devfs_fixture(
+            "Storage, Console, Timer",
+            "Device::Storage, Device::Console, Device::Timer",
+            "Self::Storage => b\"device\", Self::Console => b\"console\", Self::Timer => b\"device\",",
+            "Self::Storage => \"block\", Self::Console => \"character\", Self::Timer => \"clock\",",
+        );
+        assert!(
+            devfs_contract(&duplicate_name)
+                .expect_err("duplicate name")
+                .to_string()
+                .contains("repeats a device name")
+        );
+    }
+
+    #[test]
+    fn the_devfs_source_inventory_matches_every_variant() {
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let source =
+            std::fs::read_to_string(repository.join("kernel/src/devfs.rs")).expect("devfs.rs");
+        devfs_contract(&source).expect("complete devfs source inventory");
     }
 
     #[test]
     fn the_serial_contract_matches_the_kernel_source() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .expect("xtask sits below the workspace root")
-            .join("kernel")
-            .join("src");
+            .expect("xtask sits below the workspace root");
+        let root = repository.join("kernel").join("src");
         let selftest = std::fs::read_to_string(root.join("selftest.rs")).expect("selftest.rs");
         let main = std::fs::read_to_string(root.join("main.rs")).expect("main.rs");
         let devfs = std::fs::read_to_string(root.join("devfs.rs")).expect("devfs.rs");
+        let tmpfs = std::fs::read_to_string(root.join("tmpfs.rs")).expect("tmpfs.rs");
         let panic = std::fs::read_to_string(root.join("panic.rs")).expect("panic.rs");
+        let user = std::fs::read_to_string(root.join("user.rs")).expect("user.rs");
+        let apic = std::fs::read_to_string(repository.join("wost/src/arch/x86_64/apic.rs"))
+            .expect("wost apic.rs");
+        let cpu = std::fs::read_to_string(repository.join("wost/src/arch/x86_64/cpu.rs"))
+            .expect("wost cpu.rs");
+        let cpuid = std::fs::read_to_string(repository.join("libs/x86-cpuid/src/lib.rs"))
+            .expect("x86-cpuid lib.rs");
 
         let constant = |source: &str, name: &str| -> String {
             source
@@ -2155,56 +4065,197 @@ mod tests {
             "the verdict version drifted"
         );
         assert!(
-            selftest.contains(SELFTEST_VERDICT_PREFIX.trim_end()),
-            "the kernel does not print {SELFTEST_VERDICT_PREFIX:?}"
+            selftest.contains("info!(\"selftest: {name}\");")
+                && selftest.contains("error!(\"selftest: {name} FAILED\");"),
+            "the exact self-test check records drifted from their producer"
         );
         assert!(
-            selftest.contains(STORAGE_DELAY_MARKER),
-            "the kernel does not print {STORAGE_DELAY_MARKER:?}"
+            selftest.contains("\"selftest: verdict v{} PASS passed={} failed={} expected={}\"")
+                && selftest
+                    .contains("\"selftest: verdict v{} FAIL passed={} failed={} expected={}\""),
+            "the exact self-test verdict records drifted from their producers"
         );
         assert!(
-            selftest.contains(READY_MARKER),
-            "the kernel does not print {READY_MARKER:?}"
-        );
-        // Both markers, or the second injection round waits for a line that
-        // never comes and the translated keystroke is red for the harness's
-        // reason rather than the kernel's (D-179).
-        assert!(
-            selftest.contains(TRANSLATED_MARKER),
-            "the kernel does not print {TRANSLATED_MARKER:?}"
+            selftest.contains(
+                "\"selftest: baseline v1 boot_ns={} frames_free={} heap_slab={} heap_large={} heap_live={} handles_committed={} handles_live={} trap_ticks={} storage_bytes={} storage_ticks={} counter_hz={}\""
+            ),
+            "the exact self-test baseline record drifted from its producer"
         );
         assert!(
-            main.contains(SETTLED_MARKER),
-            "the kernel does not print {SETTLED_MARKER:?}"
+            selftest.contains("fn awaiting(marker: &str, press: &str) {\n    info!(\"{marker}\");")
+                && selftest
+                    .contains("awaiting(\n        \"selftest: awaiting storage-delay keystroke\",")
+                && selftest
+                    .contains("awaiting(\n        \"selftest: awaiting injected keystroke\",")
+                && selftest
+                    .contains("awaiting(\n        \"selftest: awaiting translated keystroke\","),
+            "the exact interactive info records drifted from their producer"
         );
         assert!(
-            main.contains(NO_PCI_MARKER),
-            "the kernel does not print {NO_PCI_MARKER:?}"
+            main.contains("\"kernel: reading the keyboard, uptime {} ms\"")
+                && SETTLED_MARKER == "kernel: reading the keyboard, uptime ",
+            "the exact steady-state record drifted from its producer"
         );
         assert!(
-            main.contains(DEGRADED_FILESYSTEM_MARKER),
-            "the kernel does not print {DEGRADED_FILESYSTEM_MARKER:?}"
+            main.contains("info!(\"cpu: user isolation shared kernel mappings: {reason}\")")
+                && cpuid.contains("SharedKernelMappingReasonKind::QemuTcg => \"qemu_tcg\"")
+                && QEMU_TCG_ISOLATION_MARKER
+                    == "cpu: user isolation shared kernel mappings: qemu_tcg",
+            "the exact QEMU TCG evidence drifted from its producers"
         );
         assert!(
-            main.contains("devfs: {} is {}")
-                && devfs.contains("storage")
-                && devfs.contains("console"),
+            main.contains("info!(\"nvme: candidate {ordinal} retired cleanly; trying next\")")
+                && NVME_FALLBACK_MARKER == "nvme: candidate 1 retired cleanly; trying next",
+            "the exact first-candidate retirement record drifted from its producer"
+        );
+        let qemu = include_str!("qemu.rs");
+        let storage = qemu
+            .split_once("fn storage(root: &Path)")
+            .expect("the QEMU storage profile")
+            .1
+            .split_once("const SELFTEST_PASSED")
+            .expect("the end of the QEMU storage profile")
+            .0;
+        assert!(
+            storage.find("nvme,serial=wizard-empty")
+                < storage.find("nvme,serial=wizard0,drive=wizardnvm")
+                && main.contains(
+                    "storage += 1;\n            if matches!(selection, StorageSelection::Seeking) {\n                selection = try_controller(function.at, storage);"
+                ),
+            "QEMU's deliberately empty controller is no longer candidate 1"
+        );
+        assert!(
+            main.contains("warn!(\"pci: the configuration ports are already claimed; no bus\")"),
+            "the exact no-PCI warning drifted from its producer"
+        );
+        let no_x2apic_reason = NO_X2APIC_DIAGNOSIS
+            .strip_prefix("local apic: ")
+            .and_then(|message| message.strip_suffix("; interrupts stay off"))
+            .expect("the no-x2APIC diagnosis has the canonical envelope");
+        assert!(
+            main.contains("warn!(\"local apic: {reason}; interrupts stay off\")")
+                && apic.contains(&format!(
+                    "Self::NoExtendedMode => core::fmt::Write::write_str(\n                f,\n                \"{no_x2apic_reason}\",\n            ),"
+                )),
+            "the exact no-x2APIC diagnosis drifted from its two producers"
+        );
+        assert!(
+            main.contains("warn!(\"cpu: extended state unavailable; ring 3 stays closed\")"),
+            "the exact extended-state warning drifted from its producer"
+        );
+        let user_reason = DEGRADED_USER_MARKER
+            .strip_prefix("user: no program: ")
+            .expect("the degraded user marker has the boot prefix");
+        assert!(
+            main.contains("Err(reason) => warn!(\"user: no program: {reason}\")")
+                && user.contains(user_reason),
+            "the kernel does not compose {DEGRADED_USER_MARKER:?}"
+        );
+        assert_eq!(
+            DEGRADED_FILESYSTEM_MARKER,
+            "tmpfs: 1 file(s) and 1 directory(ies) at the root"
+        );
+        assert!(
+            main.contains(
+                "info!(\"tmpfs: {files} file(s) and {directories} directory(ies) at the root\")"
+            ) && tmpfs.contains(
+                "add(\n        &mut arena,\n        ROOT,\n        b\"MOTD\",\n        Some("
+            ) && tmpfs.contains("let notes = add(&mut arena, ROOT, b\"NOTES\", None);")
+                && tmpfs.matches("        ROOT,\n").count() == 1
+                && tmpfs.matches("add(&mut arena, ROOT,").count() == 1,
+            "the exact degraded tmpfs success record drifted from its producers"
+        );
+        let devices = devfs_contract(&devfs).expect("complete devfs source inventory");
+        let storage = devices
+            .iter()
+            .find(|device| device.variant == "Storage")
+            .expect("a Storage device");
+        let console = devices
+            .iter()
+            .find(|device| device.variant == "Console")
+            .expect("a Console device");
+        let storage_record = format!(
+            "devfs: {} is {}",
+            core::str::from_utf8(&storage.name).expect("an ASCII storage name"),
+            storage.description
+        );
+        let console_record = format!(
+            "devfs: {} is {}",
+            core::str::from_utf8(&console.name).expect("an ASCII console name"),
+            console.description
+        );
+        assert!(
+            main.contains("Ok(vfs::Node::Device(found)) => info!(")
+                && main.contains("\"devfs: {} is {}\"")
+                && storage_record == DEGRADED_STORAGE_MARKER
+                && console_record == DEGRADED_CONSOLE_MARKER,
             "the devfs degraded markers no longer compose from the kernel sources"
         );
         assert!(
-            panic.contains(PANIC_MARKER),
-            "the kernel does not print {PANIC_MARKER:?}"
+            main.contains("info!(\"cpu: protections {protections}\")")
+                && cpu.contains(
+                    "(self.write_protect, \"wp\"),\n            (self.smep, \"smep\"),\n            (self.smap, \"smap\"),\n            (self.umip, \"umip\"),\n            (self.nx, \"nx\"),"
+                )
+                && DEGRADED_PROTECTIONS_MARKER == "cpu: protections wp nx",
+            "the degraded protection record drifted from its ordered producer"
+        );
+        let watcher = qemu
+            .split_once("fn watch_serial(")
+            .expect("the serial watcher")
+            .1
+            .split_once("fn finish_boot_serial(")
+            .expect("the end of the serial watcher")
+            .0;
+        assert!(
+            watcher.contains("if is_settled_record(&text)")
+                && watcher.contains("is_required_boot_marker(&text, *record)")
+                && !watcher.contains("text.contains(SETTLED_MARKER)"),
+            "the serial watcher bypasses exact boot-record matching"
+        );
+        let forwarder = qemu
+            .split_once("fn forward_serial(")
+            .expect("the self-test serial forwarder")
+            .1
+            .split_once("fn finish_selftest_serial(")
+            .expect("the end of the self-test serial forwarder")
+            .0;
+        assert!(
+            forwarder
+                .contains("match observe_interactive_marker(&text, &mut next_interactive_marker)")
+                && forwarder
+                    .contains("markers_seen.store(next_interactive_marker, Ordering::Release)")
+                && !forwarder.contains("text.contains(STORAGE_DELAY_MARKER)")
+                && !forwarder.contains("text.contains(READY_MARKER)")
+                && !forwarder.contains("text.contains(TRANSLATED_MARKER)"),
+            "the self-test forwarder bypasses ordered exact interactive records"
+        );
+        assert!(
+            panic.contains("use panic_record::write_record;")
+                && panic.contains("let _ = write_record(uart, thread, info);"),
+            "the kernel does not consume the shared panic-record contract"
         );
     }
 
-    /// The signature the namespace carries is the one the kernel looks for.
-    ///
-    /// Two transcriptions of one table again (D-158): `xtask` writes the
-    /// backing file and `selftest.rs` checks what comes back. They agree today
-    /// and nothing compared them, which is how a check that proves a disk read
-    /// happened becomes a check that proves two constants were edited
-    /// together — or, worse, silently stops proving anything when only one is
-    /// (D-169).
+    #[test]
+    fn the_uart_reports_every_refused_byte_to_its_formatter() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits below the workspace root");
+        let uart = std::fs::read_to_string(root.join("kernel/src/arch/x86_64/uart.rs"))
+            .expect("kernel uart.rs");
+
+        assert!(
+            uart.contains(
+                "fn write_byte(&mut self, byte: u8) -> fmt::Result {\n        if !self.wait_for(line_status::TRANSMIT_HOLDING_EMPTY) {\n            return Err(fmt::Error);\n        }\n        PortBlock::write(&mut self.registers, register::DATA, byte);\n        Ok(())\n    }"
+            ),
+            "the UART can report success after refusing a byte"
+        );
+        assert!(
+            uart.contains("self.write_byte(b'\\r')?;") && uart.contains("self.write_byte(byte)?;"),
+            "the UART formatter discards a byte-write refusal"
+        );
+    }
+
     #[test]
     fn the_namespaces_signature_is_the_one_the_kernel_looks_for() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2222,8 +4273,6 @@ mod tests {
             "the kernel's signature is not the base value ored with the block"
         );
 
-        // And the base itself, from this file's own function rather than from
-        // a literal repeated here.
         assert_eq!(super::nvme_signature(0), 0x5749_5A44_0000_0000);
         for lba in [0u64, 1, 3, 7, super::NVME_SIGNED_BLOCKS - 1] {
             assert_eq!(
@@ -2232,9 +4281,7 @@ mod tests {
                 "block {lba}"
             );
         }
-        // Every signed block differs from every other, which is the property
-        // that makes a read of block three distinguishable from a read of
-        // block zero.
+        // Distinct signatures expose an LBA ignored by the reader.
         for lba in 0..super::NVME_SIGNED_BLOCKS {
             for earlier in 0..lba {
                 assert_ne!(super::nvme_signature(lba), super::nvme_signature(earlier));
@@ -2242,35 +4289,73 @@ mod tests {
         }
     }
 
-    /// Queue addresses have a cleanup owner before the controller sees them.
     #[test]
-    fn nvme_cleanup_ownership_precedes_the_enable_write() {
+    fn nvme_cleanup_and_bus_master_authority_precede_the_enable_write() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask sits below the workspace root");
-        let source =
-            std::fs::read_to_string(root.join("kernel/src/nvme.rs")).expect("kernel nvme source");
+        let source = rust_without_comments(
+            &std::fs::read_to_string(root.join("kernel/src/nvme.rs")).expect("kernel nvme source"),
+        );
+        let preparation = source
+            .find("let preparation = ControllerPreparation::new(registers);")
+            .expect("no preparation owner for the mapped controller");
         let owner = source
-            .find("let mut controller = Controller {")
+            .find("let controller = Controller {")
             .expect("no cleanup-owning controller construction");
-        let enable = source
-            .find("register::CC, cc")
-            .expect("no controller enable write");
+        let prepared = source
+            .find("PrepareOutcome::Prepared(DisabledController {\n        controller,")
+            .expect("the cleanup owner is not retained by the disabled controller");
+        let admission = source
+            .find("match device.admit_bus_master(authority) {")
+            .expect("no verified bus-master transition");
+        let mint = source
+            .find("Ok(()) => BusMasterAdmission::Admitted(BusMasterAdmittedController(self))")
+            .expect("successful bus-master admission does not mint start authority");
+        let start = source
+            .find("pub(crate) fn start(")
+            .expect("no typed controller start door");
+        let consume = source[start..]
+            .find("let BusMasterAdmittedController(DisabledController {")
+            .map(|offset| start + offset)
+            .expect("controller start does not consume admitted ownership");
+        let enable = source[start..]
+            .find("write(registers, register::CC, configuration)")
+            .map(|offset| start + offset)
+            .expect("no controller enable write through the cleanup owner");
 
         assert!(
-            owner < enable,
-            "the controller can see host queue addresses before cleanup owns them"
+            preparation < owner
+                && owner < prepared
+                && prepared < start
+                && start < consume
+                && consume < enable,
+            "controller enable is not ordered after typed cleanup ownership"
+        );
+        assert!(
+            source
+                .contains("pub(crate) fn admit_bus_master(self, device: &mut crate::pci::Device)")
+                && source.contains(") -> BusMasterAdmission")
+                && source
+                    .matches(
+                        "Ok(()) => BusMasterAdmission::Admitted(BusMasterAdmittedController(self))"
+                    )
+                    .count()
+                    == 1
+                && admission < mint
+                && source[start..].contains("prepared: BusMasterAdmittedController")
+                && !source[start..consume].contains("prepared: DisabledController"),
+            "controller start can bypass consumed bus-master admission authority"
+        );
+        assert!(
+            source
+                .matches("write(registers, register::CC, configuration)")
+                .count()
+                == 1,
+            "controller enable is not confined to the cleanup-owning start path"
         );
     }
 
-    /// The corpus the kernel looks for is the corpus `xtask` writes.
-    ///
-    /// Three transcriptions meet here: the names and contents live in
-    /// `image/corpus.rs`, the kernel's checks name them again, and the volume's
-    /// base sector is stated in both `qemu.rs` and `kernel/src/fs.rs`. Two
-    /// copies of one table is what D-158 exists about, and a check that reads
-    /// a file the host never wrote would fail loudly — while a check that read
-    /// the *wrong* file would quietly pass on whatever happened to be there.
     #[test]
     fn the_corpus_the_kernel_looks_for_is_the_one_that_is_written() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2281,7 +4366,6 @@ mod tests {
         let fs = std::fs::read_to_string(root.join("kernel/src/fs.rs")).expect("fs.rs");
         use crate::image::corpus;
 
-        // The base sector, stated twice.
         let kernel_base = fs
             .lines()
             .find_map(|line| {
@@ -2292,7 +4376,6 @@ mod tests {
             .expect("no VOLUME_SECTOR in fs.rs");
         assert_eq!(kernel_base, super::NVME_VOLUME_SECTOR.to_string());
 
-        // Every name and every content, as the kernel spells them.
         for (constant, expected) in [
             ("SMALL_NAME", corpus::SMALL_NAME.to_string()),
             ("LARGE_NAME", corpus::LARGE_NAME.to_string()),
@@ -2310,7 +4393,6 @@ mod tests {
             assert_eq!(declared, expected, "{constant} drifted");
         }
 
-        // The large file's size, and the function that fills it.
         assert!(
             selftest.contains(&format!(
                 "const LARGE_BYTES: usize = {} * 1024;",
@@ -2322,8 +4404,7 @@ mod tests {
             selftest.contains("((index as u32).wrapping_mul(2_654_435_761) >> 13) as u8"),
             "the kernel fills the large file differently from xtask"
         );
-        // And that function really is the one `corpus` uses, rather than a
-        // literal repeated in this test.
+        // Compare the independent literal with the corpus implementation too.
         for index in [0usize, 1, 511, 4096, corpus::LARGE_BYTES - 1] {
             assert_eq!(
                 corpus::large_byte(index),
@@ -3309,6 +5390,111 @@ mod tests {
             .unwrap_or_else(|error| panic!("unparsed `{declaration}`: {error}"))
     }
 
+    fn rust_initializer(source: &str, declaration: &str) -> String {
+        let source = rust_without_comments(source);
+        let prefix = format!("{declaration} = ");
+        let matches: Vec<_> = source.match_indices(&prefix).collect();
+        assert_eq!(matches.len(), 1, "expected one `{declaration}` declaration");
+        let at = matches[0].0;
+        assert_unconditional_rust_line(&source, at, 0, declaration);
+        let value_start = at + prefix.len();
+        let bytes = source.as_bytes();
+        let mut depth = [0usize; 3];
+        let mut value_end = None;
+        for (offset, byte) in bytes.iter().copied().enumerate().skip(value_start) {
+            match byte {
+                b'{' => depth[0] += 1,
+                b'}' => {
+                    depth[0] = depth[0]
+                        .checked_sub(1)
+                        .unwrap_or_else(|| panic!("unmatched brace in `{declaration}`"));
+                }
+                b'(' => depth[1] += 1,
+                b')' => {
+                    depth[1] = depth[1]
+                        .checked_sub(1)
+                        .unwrap_or_else(|| panic!("unmatched parenthesis in `{declaration}`"));
+                }
+                b'[' => depth[2] += 1,
+                b']' => {
+                    depth[2] = depth[2]
+                        .checked_sub(1)
+                        .unwrap_or_else(|| panic!("unmatched bracket in `{declaration}`"));
+                }
+                b';' if depth == [0, 0, 0] => {
+                    value_end = Some(offset);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let value_end = value_end.unwrap_or_else(|| panic!("unterminated `{declaration}`"));
+        source[value_start..value_end].trim().to_string()
+    }
+
+    fn rust_interrupt_vector(source: &str, name: &str) -> u64 {
+        const ASSIGNMENT_PREFIX: &str = "const SOURCES: [InterruptVector; ";
+
+        let source = rust_without_comments(source);
+        let assignments: Vec<_> = source.match_indices(ASSIGNMENT_PREFIX).collect();
+        assert_eq!(assignments.len(), 1, "expected one typed vector assignment");
+        let assignment_at = assignments[0].0;
+        assert_unconditional_rust_line(&source, assignment_at, 0, "typed vector assignment");
+        let length_start = assignment_at + ASSIGNMENT_PREFIX.len();
+        let length_end = source[length_start..]
+            .find(']')
+            .map(|offset| length_start + offset)
+            .expect("unterminated typed vector array type");
+        let length_literal = &source[length_start..length_end];
+        let declared_length = usize::try_from(
+            parse_rust_uint(length_literal)
+                .unwrap_or_else(|error| panic!("unparsed vector count: {error}")),
+        )
+        .expect("typed vector count does not fit in usize");
+        let declaration = format!("{ASSIGNMENT_PREFIX}{length_literal}]");
+        let initializer = rust_initializer(&source, &declaration);
+        let compact: String = initializer
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        let (literals, success_and_failure) = compact
+            .strip_prefix("matchAssignment::new([")
+            .and_then(|rest| rest.split_once("]){"))
+            .expect("typed vectors do not come directly from Assignment::new");
+        assert_eq!(
+            success_and_failure, "Some(assignment)=>assignment.into_array(),None=>panic!(),}",
+            "typed vector assignment does not return the admitted array"
+        );
+        let mut vectors = Vec::new();
+        for literal in literals.split(',') {
+            let value = parse_rust_uint(literal)
+                .unwrap_or_else(|error| panic!("unparsed interrupt vector: {error}"));
+            let value = u8::try_from(value).expect("interrupt vector does not fit in u8");
+            vectors.push(u64::from(value));
+        }
+        assert_eq!(
+            vectors.len(),
+            declared_length,
+            "typed vector count differs from its array type"
+        );
+
+        let declaration = format!("pub(crate) const {name}: InterruptVector");
+        let expression = rust_expression(&source, &declaration);
+        let compact: String = expression
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        let index = compact
+            .strip_prefix("SOURCES[")
+            .and_then(|value| value.strip_suffix(']'))
+            .and_then(|value| parse_rust_uint(value).ok())
+            .and_then(|value| usize::try_from(value).ok())
+            .expect("typed vector is not a direct SOURCES index");
+        *vectors
+            .get(index)
+            .unwrap_or_else(|| panic!("typed vector index {index} is out of bounds"))
+    }
+
     fn rust_negated_errno(source: &str, name: &str) -> u64 {
         let expression = rust_expression(source, &format!("const {name}: u64"));
         let compact: String = expression
@@ -3433,8 +5619,7 @@ mod tests {
                 !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()),
                 "decoder pattern `{number}` is not one decimal literal"
             );
-            let number = number
-                .parse::<u64>()
+            let number = <u64 as core::str::FromStr>::from_str(number)
                 .unwrap_or_else(|_| panic!("decoder number `{number}` does not fit in u64"));
             assert!(
                 !target.is_empty()
@@ -3913,11 +6098,12 @@ mod tests {
             let (field, value) = rest
                 .split_once(": usize = ")
                 .unwrap_or_else(|| panic!("unparsed offset `{line}`"));
-            let value = value
-                .strip_suffix(';')
-                .unwrap_or_else(|| panic!("unterminated offset `{line}`"))
-                .parse()
-                .unwrap_or_else(|_| panic!("non-numeric offset `{line}`"));
+            let value = <usize as core::str::FromStr>::from_str(
+                value
+                    .strip_suffix(';')
+                    .unwrap_or_else(|| panic!("unterminated offset `{line}`")),
+            )
+            .unwrap_or_else(|_| panic!("non-numeric offset `{line}`"));
             assert!(
                 offsets.insert(field.to_string(), value).is_none(),
                 "duplicate Rust offset {field}"
@@ -4222,6 +6408,32 @@ fn live() {
     }
 
     #[test]
+    fn typed_vector_witnesses_follow_the_checked_assignment() {
+        let valid = concat!(
+            "const SOURCES: [InterruptVector; 2] = match Assignment::new([0x40, 0x80]) {\n",
+            "    Some(assignment) => assignment.into_array(),\n",
+            "    None => panic!(\"invalid\"),\n",
+            "};\n",
+            "pub(crate) const SYSCALL: InterruptVector = SOURCES[1];\n",
+        );
+        assert_eq!(rust_interrupt_vector(valid, "SYSCALL"), 0x80);
+        for corrupted in [
+            valid.replace("const SOURCES", "#[cfg(any())]\nconst SOURCES"),
+            format!("mod hidden {{\n{valid}}}\n"),
+            format!("{valid}{valid}"),
+            valid.replace("SYSCALL: InterruptVector", "SYSCALL: u8"),
+            valid.replace("SOURCES[1]", "SOURCES[2]"),
+            valid.replace("assignment.into_array()", "SOURCES"),
+            valid.replace("[InterruptVector; 2]", "[InterruptVector; 3]"),
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| rust_interrupt_vector(&corrupted, "SYSCALL")).is_err(),
+                "accepted a hidden, duplicate, mistyped or diverted typed vector"
+            );
+        }
+    }
+
+    #[test]
     fn rust_status_inventory_rejects_hidden_or_noncanonical_items() {
         let valid = concat!(
             "pub(crate) const STATUS_OK: u32 = 0;\n",
@@ -4344,7 +6556,6 @@ const LIVE: u32 = 7;
         );
     }
 
-    /// Every active sysdep definition has one registered and truthful body state.
     #[test]
     fn every_sysdep_definition_agrees_with_its_register_row() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -4438,7 +6649,7 @@ const LIVE: u32 = 7;
             &std::fs::read_to_string(root.join("kernel/src/arch/x86_64/vector.rs"))
                 .expect("vector.rs"),
         );
-        let syscall = u8::try_from(rust_uint(&vectors, "pub(crate) const SYSCALL: u8"))
+        let syscall = u8::try_from(rust_interrupt_vector(&vectors, "SYSCALL"))
             .expect("the syscall vector fits in an interrupt immediate");
         assert_eq!(
             compact_cpp(bodies["call1"].0),
@@ -4686,10 +6897,9 @@ const LIVE: u32 = 7;
         let objects = rust_without_comments(
             &std::fs::read_to_string(root.join("kernel/src/object.rs")).expect("object.rs"),
         );
-        assert_eq!(remainder("sys_close"), "PARTIAL");
-        assert!(handles.contains("pub(crate) fn close(&self, handle: u32)"));
-        assert!(handles.contains("drop(released);"));
-        assert!(objects.contains("Shared(Arc<Object>)"));
+        assert_eq!(remainder("sys_close"), "MISSING");
+        assert!(!handles.contains("pub(crate) fn close(&self, handle: u32)"));
+        assert!(objects.contains("Channel(Arc<Channel>)"));
         assert!(!queue.contains("=> Self::Close"));
 
         assert_eq!(remainder("sys_write"), "MISSING");
@@ -4736,12 +6946,6 @@ const LIVE: u32 = 7;
         assert!(!exit.contains("frame.rdi"));
     }
 
-    /// The C pressure-test transcription agrees with the active Rust ABI.
-    ///
-    /// This discovers the complete call and opcode domains, inventories every
-    /// `WIZ_*` macro, checks the named wire declarations, and derives their
-    /// offsets, widths and sizes. The emitted ring program is compared through
-    /// its actual instruction operands rather than source constants (D-181).
     #[test]
     fn the_c_header_and_the_kernel_agree_about_the_abi() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -4956,7 +7160,7 @@ const LIVE: u32 = 7;
             "WIZ_TIME_MODE_COUNTER",
             rust_uint(&timepage_source, "pub(crate) const MODE_COUNTER: u32")
         );
-        let syscall_number = rust_uint(&vectors_source, "pub(crate) const SYSCALL: u8");
+        let syscall_number = rust_interrupt_vector(&vectors_source, "SYSCALL");
         expect_macro!("WIZ_SYSCALL_VECTOR", syscall_number);
         expect_macro!(
             "WIZ_USER_END",
@@ -4969,10 +7173,8 @@ const LIVE: u32 = 7;
             "the complete C macro inventory differs from the kernel ABI"
         );
 
-        // The complete opcode domain, discovered on both sides. Checking seven
-        // named members would accept an eighth kernel operation missing from
-        // the C consumer just as readily as it once accepted speculative C
-        // operations missing from the kernel.
+        // Complete domains keep new members from hiding outside a
+        // hand-maintained list.
         let declared_opcodes: std::collections::BTreeMap<_, _> = declared_macros
             .iter()
             .filter(|(name, _)| name.starts_with("WIZ_OP_"))
@@ -4987,9 +7189,8 @@ const LIVE: u32 = 7;
             "the C opcode domain differs from Opcode::decode"
         );
 
-        // The complete entry layouts. Kernel parsing, serialization and test
-        // support all consume these offset modules; the C declarations and
-        // emitted instructions are independent transcriptions.
+        // The complete entry layouts; the C declarations and emitted
+        // instructions are independent transcriptions of them.
         let process_entry_fields = c_struct_fields(&header, "wiz_entry_block");
         assert_eq!(
             c_layout(&process_entry_fields),
@@ -5117,12 +7318,11 @@ const LIVE: u32 = 7;
             "the emitted program assumes eight submissions"
         );
 
-        let image = crate::image::program::build();
+        let image = crate::image::program::build().expect("building the emitted program");
         let elf = elf64::Elf::parse(&image).expect("the emitted program is ELF64");
-        let segment = elf
-            .segments()
-            .next()
-            .expect("the emitted program has a segment");
+        let mut segments = elf.segments();
+        let segment =
+            core::iter::Iterator::next(&mut segments).expect("the emitted program has a segment");
         let start = segment.offset() as usize;
         let end = start + segment.file_size() as usize;
         let code = &image[start..end];
@@ -5234,8 +7434,8 @@ const LIVE: u32 = 7;
             [entries_at + submission_layout["OFFSET"] as u32],
             "the measured delta does not use the consumed submission's offset field"
         );
-        let duplicate_rights = u32::try_from(declared_macros["WIZ_RIGHT_READ"])
-            .expect("Channel READ fits in the emitted imm32");
+        let duplicate_rights = u32::try_from(declared_macros["WIZ_RIGHT_INSPECT"])
+            .expect("INSPECT fits in the emitted imm32");
         assert_eq!(
             operands.writes64_from_imm32,
             [
@@ -5292,14 +7492,10 @@ const LIVE: u32 = 7;
             "the emitted program does not distinguish the duplicate from its source handle"
         );
 
-        // The time page. Its address is the one number that, if it drifted,
-        // would have a program reading the clock out of an unmapped page — and
-        // its layout is a second transcription of `timepage.rs`'s offsets,
-        // which is exactly the arrangement this test exists for (D-166).
         let timepage = &timepage_source;
 
-        // A field moved in either language is a different wire layout. Derive
-        // the C offsets from its declared types and compare both complete maps.
+        // Compare complete layouts: address drift can unmap the page, and field
+        // drift changes the wire ABI (D-166).
         let constants_fields = c_struct_fields(&header, "wiz_time_constants");
         let clock_fields = c_struct_fields(&header, "wiz_time_clock");
         assert_eq!(
@@ -5325,9 +7521,6 @@ const LIVE: u32 = 7;
         );
         assert_eq!(c_size(&clock_fields), 48, "C clock struct size");
 
-        // Every call number, against the kernel's own decoder. Equality of
-        // the whole header set matters: checking four known members did not
-        // reject the eight speculative members D-181 removed.
         let checked_declared_calls = c_enum_values(&active_header, "wiz_call");
         let checked_expected_calls: std::collections::BTreeMap<_, _> = decoded_call_arms
             .iter()
@@ -5358,11 +7551,6 @@ const LIVE: u32 = 7;
         );
     }
 
-    /// And the count the kernel declares is the number of checks it runs.
-    ///
-    /// `EXPECTED_CHECKS` is deliberately independent of the running tally, so
-    /// the two can disagree — and the boot that finds out costs a minute
-    /// (D-105).
     #[test]
     fn the_expected_count_is_the_number_of_checks_registered() {
         let selftest = std::fs::read_to_string(

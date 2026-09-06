@@ -22,6 +22,46 @@ fn pages(max: u64) -> impl Strategy<Value = u64> {
     (1u64..=max).prop_map(|count| count * PAGE_SIZE)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Contact {
+    Crosses,
+    Adjacent,
+    OnePast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Below,
+    Above,
+}
+
+/// Ranges deliberately placed at both ends of a reference range.
+fn touching_pair() -> impl Strategy<Value = (u64, u64, u64, u64, Contact, Side)> {
+    (
+        64u64..1024,
+        1u64..32,
+        1u64..32,
+        prop_oneof![
+            Just(Contact::Crosses),
+            Just(Contact::Adjacent),
+            Just(Contact::OnePast),
+        ],
+        prop_oneof![Just(Side::Below), Just(Side::Above)],
+    )
+        .prop_map(|(base, len, other_len, contact, side)| {
+            let end = base + len;
+            let other_base = match (side, contact) {
+                (Side::Above, Contact::Crosses) => end - 1,
+                (Side::Above, Contact::Adjacent) => end,
+                (Side::Above, Contact::OnePast) => end + 1,
+                (Side::Below, Contact::Crosses) => base + 1 - other_len,
+                (Side::Below, Contact::Adjacent) => base - other_len,
+                (Side::Below, Contact::OnePast) => base - 1 - other_len,
+            };
+            (base, len, other_base, other_len, contact, side)
+        })
+}
+
 /// A window, a stack size, a guard size and a slot count.
 fn layout() -> impl Strategy<Value = (u64, u64, u64, usize)> {
     (pages(64), pages(8), pages(4), 1usize..12)
@@ -35,21 +75,29 @@ proptest! {
         prop_assert!(!ranges_overlap(a, len, b, 0), "an empty right range overlapped");
     }
 
-    /// Overlap is symmetric, because the doc names the relation "overlap".
+    /// "Whether two half-open byte ranges overlap."
     ///
-    /// An asymmetric answer would make the guard check depend on which side a
-    /// caller happened to pass first, which no caller could be expected to know.
+    /// The three placements differ by one byte at an exclusive end: crossing
+    /// shares one byte, while adjacency and one-past share none. Both argument
+    /// orders must have the same answer.
     #[test]
-    fn overlapping_is_symmetric(
-        a in any::<u64>(),
-        alen in any::<u64>(),
-        b in any::<u64>(),
-        blen in any::<u64>(),
+    fn half_open_ranges_distinguish_crossing_adjacent_and_one_past(
+        (a, alen, b, blen, contact, side) in touching_pair(),
     ) {
+        let expected = contact == Contact::Crosses;
         prop_assert_eq!(
             ranges_overlap(a, alen, b, blen),
+            expected,
+            "{:?} range on the {:?} side had the wrong overlap answer",
+            contact,
+            side
+        );
+        prop_assert_eq!(
             ranges_overlap(b, blen, a, alen),
-            "overlap disagreed with itself when the arguments were swapped"
+            expected,
+            "{:?} range on the {:?} side changed when arguments were swapped",
+            contact,
+            side
         );
     }
 
@@ -102,8 +150,13 @@ proptest! {
                     j
                 );
                 prop_assert!(
-                    !left.stack_overlaps(right.guard_base(), guard),
-                    "slot {} stack runs into slot {} guard",
+                    !ranges_overlap(
+                        left.stack_base(),
+                        left.stack_len(),
+                        right.guard_base(),
+                        guard
+                    ),
+                    "slot {}'s stack occupies slot {}'s guard",
                     i,
                     j
                 );
@@ -136,6 +189,53 @@ proptest! {
             );
         }
     }
+}
+
+#[test]
+fn the_half_open_property_reaches_every_boundary_class() {
+    const SAMPLES: usize = 4096;
+    let mut runner = TestRunner::new(Config {
+        cases: SAMPLES as u32,
+        ..Config::default()
+    });
+    let mut crossing = 0usize;
+    let mut adjacent = 0usize;
+    let mut one_past = 0usize;
+    let mut below = 0usize;
+    let mut above = 0usize;
+
+    for _ in 0..SAMPLES {
+        let (_, _, _, _, contact, side) = touching_pair()
+            .new_tree(&mut runner)
+            .expect("a boundary pair")
+            .current();
+        match contact {
+            Contact::Crosses => crossing += 1,
+            Contact::Adjacent => adjacent += 1,
+            Contact::OnePast => one_past += 1,
+        }
+        match side {
+            Side::Below => below += 1,
+            Side::Above => above += 1,
+        }
+    }
+
+    println!(
+        "stack-layout boundaries: {crossing} crossing, {adjacent} adjacent, \
+         {one_past} one-past; {below} below and {above} above"
+    );
+    for (name, reached) in [
+        ("crossing", crossing),
+        ("adjacent", adjacent),
+        ("one-past", one_past),
+    ] {
+        assert!(
+            reached > SAMPLES / 5,
+            "only {reached} of {SAMPLES} pairs reached {name}"
+        );
+    }
+    assert!(below > SAMPLES / 3, "only {below} pairs reached below");
+    assert!(above > SAMPLES / 3, "only {above} pairs reached above");
 }
 
 /// How often the constructor accepts, and how often it yields more than one

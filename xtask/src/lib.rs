@@ -13,18 +13,22 @@
 pub mod api;
 pub mod baseline;
 pub mod boundary;
+mod bounded_process;
 pub mod cargo;
 pub mod cli;
 #[cfg(test)]
 mod contracts;
 mod debugger;
 pub mod decisions;
+#[cfg(test)]
+mod dma_contracts;
 pub mod elf;
 mod evidence;
 mod gate;
 #[cfg(test)]
 mod handoff;
 pub mod image;
+mod json;
 pub mod machine;
 pub mod model;
 pub mod mutate;
@@ -36,9 +40,15 @@ mod publication;
 pub mod qemu;
 pub mod qmp;
 mod qualification;
+#[cfg(test)]
+mod recovery_contracts;
+#[cfg(test)]
+mod routing_contracts;
 pub mod sha256;
 pub mod supply_chain;
 pub mod tasks;
+#[cfg(test)]
+mod typed_arguments;
 pub mod unsafety;
 pub mod vendor;
 pub mod vmware;
@@ -63,12 +73,12 @@ pub fn run(task: Task) -> Result<()> {
             qemu::run(&paths, image.path(), &qemu_args)
         }
         Task::Vmware { profile, kernel } => {
-            // Self-test remains the default. This built the shipped kernel
-            // until D-135, so D-18's phase gate ran none of its checks. The
-            // explicit shipped selector exists for the separate PW-004 round.
+            qualification::invalidate_vmware(&paths, kernel)?;
+            vmware::invalidate_generation(&paths, kernel)?;
             let image = image::build(&paths, profile, kernel)?;
             vmware::generate(&paths, &image, kernel)
         }
+        Task::QualifyVmware { kernel } => vmware::qualify(&paths, kernel),
         Task::Check { message_format } => tasks::check(&paths, message_format.as_deref()),
         Task::ApiAudit => api::check(&paths),
         Task::Clippy => tasks::clippy(&paths),
@@ -88,6 +98,7 @@ pub fn run(task: Task) -> Result<()> {
         Task::Ci => tasks::ci(&paths),
         Task::Evidence => evidence::create(&paths),
         Task::VerifyEvidence => evidence::verify(&paths),
+        Task::QualifyAdvisory => qualification::qualify_advisory(&paths),
         Task::Clean(scope) => tasks::clean(&paths, scope),
     }
 }

@@ -77,22 +77,24 @@ first-class compatibility contract, valuable in its own right but not the
 native ABI. "Native userland" therefore does not force "native codegen first."
 
 The kernel must not acquire a Wizzy parser, evaluator, scheduler, allocator
-policy, or type checker. It loads images, maps memory, moves messages and
-handles, and will eventually report process outcomes. Language semantics stay
-in userland.
+policy, or type checker. It loads images and maps memory today; the post-gate
+protocol will move messages and handles and eventually report process
+outcomes. Language semantics stay in userland.
 
 ## Evidence at the decision point
 
 ### What the OS has
 
 - an ELF64 loader, separate address spaces, ring 3, guarded stacks, and W^X;
-- one handle table per process, rights attenuation, and channels that transfer
-  bytes and handles inside the kernel;
+- one handle table per process, rights attenuation, and one opaque counted
+  bootstrap identity per child; channel transport is intentionally absent
+  until slice 3 (D-248);
 - a submission/completion ring with echo, uptime, duplication, timers,
   cancellation, `OpenAt`, and `Read`;
 - a global read-only monotonic time page;
 - NVMe, read-only FAT32, a VFS, tmpfs, and devfs;
-- a spawn-only kernel model in which a child starts with one bootstrap channel;
+- a spawn-only kernel model in which a child starts with one typed,
+  bootstrap-channel identity;
 - retirement which keeps in-flight work away from reclaimed ring pages.
 
 ### What the OS does not have
@@ -224,10 +226,11 @@ checkout.
 ## Entry gates
 
 Phase 6's planned slices are complete but the phase is not closed under D-18
-or D-184. The current interactive VMware run, full mutation sweep and audited
-kernel-foundation rows are recorded in `016-pre-wizzy-foundation.md`. Those
-results come before Phase 7 implementation. Writing this design while they are
-open is harmless; claiming the next phase has started is not.
+or D-184. The current status and outstanding requirements for VMware, the full
+mutation sweep and audited kernel-foundation rows are recorded in
+`016-pre-wizzy-foundation.md`. Those results come before Phase 7
+implementation. Writing this design while they are open is harmless; claiming
+the next phase has started is not.
 
 D-183 adds the second entry gate: the compiler-readiness table above must read
 **OPEN** under a decision that records the evidence. Closing Phase 6 does not
@@ -307,19 +310,20 @@ process and this phase does not pretend otherwise. Wall time remains absent.
 
 ### Channels and rings
 
-Channel traffic is data and encounters backpressure, so send and receive use
-the ring rather than the synchronous call numbers sketched by the Phase 5 C
-header. Receive reserves room for every transferred handle before accepting
-the operation, the same rule D-151 established for completions. Message bytes
-and handle fields are versioned and bounded.
+Future channel traffic is data and encounters backpressure, so send and
+receive use the ring rather than the synchronous call numbers sketched by the
+Phase 5 C header. Receive reserves room for every transferred handle before
+accepting the operation, the same rule D-151 established for completions.
+Message bytes and handle fields are versioned and bounded.
 
-The existing channel holds sixteen messages and only a receiver can wait.
-Slice 3 must choose either a pending asynchronous send or an explicit
-would-block result plus a waitable writable event; retry spinning is rejected.
-Its machine proof fills the channel, demonstrates bounded progress when a
-receiver frees space, then covers peer close, cancellation, sender retirement,
-exactly-one completion, reservation return and rights attenuation. A
-one-message happy path proves none of those semantics.
+The current `Channel` is only an opaque bootstrap identity: it has no peer,
+message buffer, waiter or close state (D-248). Slice 3 must choose either a
+pending asynchronous send or an explicit would-block result plus a waitable
+writable event; retry spinning is rejected. Its machine proof must fill the
+chosen channel, demonstrate bounded progress when a receiver frees space, then
+cover peer close, cancellation, sender retirement, exactly-one completion,
+reservation return and rights attenuation. A one-message happy path proves
+none of those semantics.
 
 The runtime owns raw ring layout and volatile access. Wizzy application code
 sees typed operations and completion tokens, not pointers, indices, or handle
@@ -333,7 +337,8 @@ ordering. Each direction is SPSC. The producer volatile-writes an entry and
 any data it names, then release-stores the aligned 32-bit tail. The consumer
 acquire-loads the tail, volatile-copies the entry exactly once, and
 release-stores its head only after consumption; the producer acquire-loads
-that head before slot reuse. The four indices are the synchronizing atomics.
+that head before slot reuse. The four indices are publication words reached by
+fixed x86 acquire/release operations; they are not Rust atomic objects.
 Volatile payload copies preserve external accesses but do not create a
 happens-before edge, and a fence around an ordinary index access is not a
 substitute. The Wizzy runtime seam must expose these fixed operations without
@@ -387,9 +392,10 @@ deferred ring/service work, or an explicitly re-audited trap invariant—rather
 than exposing `map_user` and calling the operation complete.
 
 The same constraint applies to teardown. Closing the last handle reference can
-deallocate, and unmap/free carry flush and reclamation obligations. D-182
-therefore records those sysdeps as PARTIAL rather than treating an existing
-internal method as a user door that only needs a number.
+deallocate, and D-248 removed the unused table-level shortcut; `sys_close` is
+therefore MISSING until a real caller owns that lifetime contract. Mapping and
+unmapping remain PARTIAL because their flush, allocation and reclamation paths
+are not yet trap-safe user operations (D-182).
 
 ### The ABI transcription is not yet the source
 
@@ -432,12 +438,12 @@ way.
 
 ### Lifecycle
 
-The current kernel function named `spawn` loads one global image and returns
-the far end of a bootstrap channel to kernel code. The userland operation must
-instead name an executable object or file handle, create a process object, and
-return observable authority to the parent. Exit status belongs to that object
-or another explicitly chosen protocol; silently discarding it cannot support a
-shell.
+The current kernel function named `spawn` loads one global image and installs
+one opaque bootstrap identity in the child's table; it creates no fictional
+parent peer (D-248). The userland operation must instead name an executable
+object or file handle, create a process object, and return observable authority
+to the parent. Exit status belongs to that object or another explicitly chosen
+protocol; silently discarding it cannot support a shell.
 
 A File currently makes no `EXECUTE` distinction. Slice 7 must either introduce
 a loader-minted executable object or add a real executable-file right with a
