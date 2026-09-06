@@ -30,7 +30,7 @@ to get wrong:
 
 - `wost/` is the **only** crate that may write `unsafe`. `kernel/` carries
   `#![deny(unsafe_code)]`. If something needs a raw pointer or instruction, the
-  safe abstraction goes in `wost` — do not reach for `#[allow(unsafe_code)]`.
+  safe abstraction goes in `wost`. Do not reach for `#[allow(unsafe_code)]`.
   There are exactly three valid reasons to write `unsafe` at all (D-41): a
   novel abstraction, a measured performance need, or FFI/the platform.
 - **Few comments.** Comments explain *why*, never *what*. The mandatory prose
@@ -38,17 +38,17 @@ to get wrong:
   enforce both. One unsafe operation per block.
 - **Pure arithmetic goes to a `libs/` crate**, where `cargo test` can reach it
   on the host. If a bound needs arithmetic to check, the arithmetic moves and
-  `wost` keeps only the lock and the instruction — `port_space::PortSpace` and
+  `wost` keeps only the lock and the instruction: `port_space::PortSpace` and
   `frame_space::FrameSpace` are the worked examples.
 
 ## Commits
 
-**Commit at meaningful checkpoints as you go** — a finished slice, a decision
+**Commit at meaningful checkpoints as you go**: a finished slice, a decision
 recorded, a subsystem that boots. Do not save everything for the end of a
 session, and do not leave a green gate uncommitted. Each commit should be a
 thing that works: `cargo xtask ci` passes at every commit.
 
-Match the existing log's voice — a short declarative line saying what changed
+Match the existing log's voice: a short declarative line saying what changed
 and what it bought, not a changelog entry. `git log --oneline` shows the
 register.
 
@@ -58,22 +58,22 @@ defer the merge that is coming anyway. Do not create one unless Isaac asks.
 
 ## Commands
 
-`cargo xtask ci` is the gate — run it before claiming work is done. `cargo
+`cargo xtask ci` is the gate. Run it before claiming work is done. `cargo
 xtask help` lists every task. The README's [Development](README.md#development)
 section covers the two
 non-obvious rules (`cargo build --workspace` cannot work here; never set
-`RUSTFLAGS`) — read it before reaching for a bare cargo command.
+`RUSTFLAGS`). Read it before reaching for a bare cargo command.
 
 Hardware behaviour is verified by booting, not by tests: `cargo xtask run`
 for QEMU, and a VMware boot as every phase's definition of done (D-18). The
-VMware boot is not decoration — it reaches SMEP/SMAP/UMIP, the compacted
+VMware boot is not decoration: it reaches SMEP/SMAP/UMIP, the compacted
 `XSAVEC` path, a real x2APIC and a processor that reports `MD_CLEAR`, none of
 which the gate's QEMU does.
 
 **`cargo xtask mutate` is how D-28 is kept true over time.** Breaking a check
 by hand happens once, when it is written; a check that *stops* being able to
 fail is invisible from then on. The task applies known defects and requires a
-check to go red for each. Add a mutation whenever you add a check — `cargo
+check to go red for each. Add a mutation whenever you add a check. `cargo
 test` verifies every mutation still matches its source, so a rotted one is
 caught in milliseconds even though each machine mutation still costs a boot.
 
@@ -96,11 +96,11 @@ crate and runs under `cargo test`; anything needing a real machine goes to
 
 **Break every new check once and watch the harness go red** (D-28). This is not
 ceremony. A check written in slice 1 of Phase 3 passed with the code it tested
-deleted, because two early returns made its failure path unreachable — and
+deleted, because two early returns made its failure path unreachable, and
 nothing but breaking it would have found that. A check that cannot fail is
 worth less than no check, because it is also a claim.
 
 Doctests run in `libs/` crates and nowhere else (D-41): those carry
 `#![cfg_attr(not(test), no_std)]` and build for the host, so examples there are
 executable checks. `wost` and `kernel` are cross-compiled, so examples in them
-would rot unrun — leave them out.
+would rot unrun, so leave them out.

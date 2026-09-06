@@ -6,16 +6,16 @@ record is `inventory.txt`.
 
 The shipped image contains these third-party components:
 
-- Limine Rust crate 0.5.0 — MIT selected from MIT OR Apache-2.0. Copyright
+- Limine Rust crate 0.5.0: MIT selected from MIT OR Apache-2.0. Copyright
   (c) 2021 Anhad Singh, 2024 Lysander Mealy.
-- bitflags 2.13.1 — MIT selected from MIT OR Apache-2.0. Copyright (c) 2014
+- bitflags 2.13.1: MIT selected from MIT OR Apache-2.0. Copyright (c) 2014
   The Rust Project Developers.
-- noto-sans-mono-bitmap 0.3.2 — MIT for crate code, copyright (c) 2022
+- noto-sans-mono-bitmap 0.3.2: MIT for crate code, copyright (c) 2022
   Philipp Schuster. Its embedded Noto Sans Mono glyph data is licensed under
   SIL Open Font License 1.1 (`OFL-1.1`), copyright 2022 The Noto Project
   Authors (https://github.com/notofonts/latin-greek-cyrillic). The complete
   font license is in `licenses/OFL-1.1.txt`.
-- Limine `BOOTX64.EFI`, inventory version `v10.x-binary-2026-07-18` —
+- Limine `BOOTX64.EFI`, inventory version `v10.x-binary-2026-07-18`:
   BSD-2-Clause; the
   upstream copyright and license text are in `boot/limine/LICENSE`.
 

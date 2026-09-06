@@ -1,4 +1,4 @@
-# 005 — Code Conventions
+# 005 - Code conventions
 
 How this repository is written. Adopted 2026-08-12 alongside the framekernel
 crate split (D-21); the lint policy behind it is D-22.
@@ -17,12 +17,12 @@ rest is written down here.** Where a convention could be a lint, it is one.
 
 | Crate | May write `unsafe`? | Purpose |
 |---|---|---|
-| `wost/` | **yes — and nowhere else does** | Privileged framework: boot handoff, port I/O, MMIO, CPU control, locking. The kernel's memory-safety TCB. |
+| `wost/` | **yes, and nowhere else does** | Privileged framework: boot handoff, port I/O, MMIO, CPU control, locking. The kernel's memory-safety TCB. |
 | `kernel/` | no (`#![deny(unsafe_code)]`) | The kernel binary: drivers, console, logging, panic reporting, scheduler, and eventually VFS. |
 | `libs/` | no (`#![forbid(unsafe_code)]`) | Pure, hardware-free logic, host-testable. |
 | `xtask/` | no | Host build tooling. Not part of the kernel. |
 
-**What may go in `wost`:** an operation that cannot be expressed safely — a
+**What may go in `wost`:** an operation that cannot be expressed safely: a
 raw instruction, a raw pointer, a hardware register. Nothing else. If a
 function touches no hardware and holds no raw pointer, it does not belong in
 `wost`; it belongs in `kernel/` or, better, in a `libs/` crate where it can be
@@ -31,10 +31,10 @@ unit-tested on the host.
 That test is a judgement, so it is backed by a closed list. **The only valid
 reasons to write `unsafe` are** (Pragmatic Rust Guidelines, D-41):
 
-1. **a novel abstraction** the language cannot express — a frame type, an
+1. **a novel abstraction** the language cannot express: a frame type, an
    allocator, a page table;
 2. **performance**, where a checked form exists and measurably costs too much;
-3. **FFI or the platform** — an instruction, a register, a bootloader ABI.
+3. **FFI or the platform**: an instruction, a register, a bootloader ABI.
 
 Anything else is a defect, not a trade-off. Reason 2 is the one that needs a
 number attached before it counts, and so far nothing in this kernel has used
@@ -53,7 +53,7 @@ questions alongside settled rules; cite the Nomicon or the reference, not it.
 
 **No speculative API.** Do not add an operation because a subsystem will
 plausibly want it later. This matters most in `wost`, where an unused
-`pub unsafe fn` carries a safety contract nobody can check — `enable_interrupts`
+`pub unsafe fn` carries a safety contract nobody can check. `enable_interrupts`
 was written and then removed for exactly this reason: its contract has to talk
 about an IDT, and until one exists the contract is a guess. Write it alongside
 its first caller, when the obligation is real and testable. The exception is
@@ -63,7 +63,7 @@ and 32 bits because a sealed trait with one impl is not an abstraction.
 **What `wost` owes its callers:** every abstraction it exports must make the
 unsafe operation underneath it *checkable*, not merely *wrapped*.
 `MmioRegion` bounds- and alignment-checks. `port::claim` records ownership in a
-registry so exclusivity is verified rather than promised — over the span an
+registry so exclusivity is verified rather than promised, over the span an
 access *reaches*, not the port it names, which is the distinction Phase 2 got
 wrong and D-39 fixed. A spin lock's recovery operation and its proof value are
 crate-private, and only the non-returning panic boundary can reach them. A
@@ -74,7 +74,7 @@ one, never retrofitted.
 
 A bound stated in prose is not a bound. Where the checkable form needs
 arithmetic, the arithmetic goes to a `libs/` crate and `wost` keeps only the
-lock and the instruction — `port_space::PortSpace` under
+lock and the instruction. `port_space::PortSpace` under
 `arch::x86_64::port` is the pattern to copy.
 
 **The panic path never blocks on a kernel lock.** A fault is not masked by the
@@ -97,18 +97,18 @@ with no entry glue use `forbid`.
 - A module that names an external protocol or vendor crate should be the *only*
   one that does. `wost::boot::limine_glue` is the whole of the bootloader
   dependency; swapping bootloaders touches one file.
-- In a binary crate, items are `pub(crate)`, not `pub` — `unreachable_pub`
-  enforces it.
+- In a binary crate, items are `pub(crate)` rather than `pub`, and
+  `unreachable_pub` enforces it.
 
 ## Naming
 
 - Conventional Rust throughout. The wizard theme lives in product-facing
-  strings — banners, app names, shell personality — and never in identifiers
+  strings (banners, app names, shell personality) and never in identifiers
   (D-19).
 - Spell things out: `registers`, `intensity`, `framebuffer`. Established
   systems jargon stays short: `uart`, `mmio`, `lba`, `bpp`, `esp`.
 - Constants replace literals. A bare `0xC7` in a driver is a defect; a
-  `fifo_control::ENABLE | fifo_control::CLEAR_RECEIVE | …` is the same byte
+  `fifo_control::ENABLE | fifo_control::CLEAR_RECEIVE | ...` is the same byte
   and says what it means.
 - **Never repeat a namespace inside an identifier** (Rust for Linux). The module
   path already carries it: `register::LINE_STATUS`, not `UART_REGISTER_LINE_STATUS`.
@@ -116,17 +116,17 @@ with no entry glue use `forbid`.
 - Casing per RFC 430, and `as_` / `to_` / `into_` used with their standard
   meanings (C-CASE, C-CONV).
 - Consistent word order across an API (C-WORD-ORDER): verb then noun, and the
-  same verb for the same operation — `fill_rows` / `copy_rows`, `write_u32` /
+  same verb for the same operation: `fill_rows` / `copy_rows`, `write_u32` /
   `read_u32`. The example here used to be `write_pixel` / `read_pixel`; there
   is no `read_pixel` and there is not meant to be, because framebuffer memory
   is uncached and reading it is what the back buffer exists to avoid.
 - **Arguments convey meaning through types, not `bool`** (C-CUSTOM-TYPE).
   `fmt(paths, true)` says nothing; `fmt(paths, FmtMode::Check)` says everything.
-  This applies hardest to two adjacent parameters of the same type — hence
+  This applies hardest to two adjacent parameters of the same type, hence
   `Palette` rather than a `(background, foreground)` pair the compiler would
   happily let you swap.
 - Imports in three blocks, blank-line separated: `core`/`std`, external crates,
-  then `crate`. This is convention, not configuration — rustfmt's
+  then `crate`. This is convention rather than configuration: rustfmt's
   `group_imports` is nightly-only and stable `cargo fmt` ignores it silently.
   Rust for Linux's one-item-per-line import layout is **not** adopted: it
   contradicts the rustfmt defaults this project formats with.
@@ -134,7 +134,7 @@ with no entry glue use `forbid`.
 ## Comments
 
 **Few comments. A comment explains WHY, never WHAT.** If a comment restates
-the code, delete one of them — usually the comment.
+the code, delete one of them, usually the comment.
 
 Exactly two kinds of prose are mandatory, and both are enforced:
 
@@ -153,19 +153,19 @@ evidence.
 Beyond that: `//!` on every module saying what it is for and what it assumes;
 `///` on public items, whose first line is a single sentence saying what the
 item does (`missing_docs`, at warn); `# Panics` on anything that can panic
-(C-FAILURE). `missing_docs_in_private_items` is deliberately **not** enabled —
-it manufactures noise on every helper.
+(C-FAILURE). `missing_docs_in_private_items` is deliberately **not** enabled,
+because it manufactures noise on every helper.
 
 C-EXAMPLE is adopted **only in `libs/`**, and the split is a fact about where
 doctests can run rather than a preference (D-41). The floor is one runnable
-example per `libs/` crate — on the module doc or its central item — and all
+example per `libs/` crate (on the module doc or its central item), and all
 current crates carry one; more go on any item whose encoding an example states
 better than prose. Not "an
 example on every item", which the rule used to say and no crate has ever
 done. `wost` and `kernel` are `no_std` and cross-compiled, so their doctests
 cannot execute and an unrunnable example rots unnoticed. A `libs/` crate
 carries `#![cfg_attr(not(test), no_std)]` precisely so `cargo test` builds it
-for the host — where its doctests *do* compile and run, under the bare
+for the host, where its doctests *do* compile and run, under the bare
 `cargo test` that `default-members` already scopes. There an example is an
 executable check, and for an encoding API it is the clearest statement of the
 encoding there is: `libs/x86-paging`'s entry bits are the worked case.
@@ -174,8 +174,8 @@ Two rustdoc conventions that go with it:
 
 - The first line is the module listing and the search result, so it is one
   sentence, ends in a period, and stays under about fifteen words.
-- Sections appear in the conventional order — summary, body, `# Examples`,
-  `# Errors`, `# Panics`, `# Safety` — because that is the order every
+- Sections appear in the conventional order (summary, body, `# Examples`,
+  `# Errors`, `# Panics`, `# Safety`) because that is the order every
   experienced reader scans for.
 - `#[doc(hidden)]` on items that are `pub` only for a technical reason.
   `boot::__macro` is the case: `entry!` needs those names in scope in the
@@ -193,7 +193,7 @@ crate, why a non-zero QEMU exit is not an error.
   runtime. Return `Result` where a caller can do something, or an `Option`
   where absence is ordinary.
 - `assert!` is for invariants that are genuinely unrecoverable, and its message
-  says what was violated — a rejected bootloader base revision, a register
+  says what was violated: a rejected bootloader base revision, a register
   index outside its block.
 - Make total what can be made total. Glyph lookup falls back rather than
   unwrapping; a pixel outside the visible area is clipped rather than checked
@@ -201,7 +201,7 @@ crate, why a non-zero QEMU exit is not an error.
 - Error types are enums, never strings, and they are **well-behaved**
   (C-GOOD-ERR): `Debug`, `Display`, and `core::error::Error`, which is available
   in `core` since Rust 1.81 and needs no crate. `Display` writes a lowercase
-  clause with no trailing period, so it reads correctly inside a sentence —
+  clause with no trailing period, so it reads correctly inside a sentence:
   `"no serial log: no controller answered the loopback probe"`.
 - Error enums carry `#[non_exhaustive]`. A new variant is then not a breaking
   change, and every `match` on one is written to survive growth.
@@ -209,7 +209,7 @@ crate, why a non-zero QEMU exit is not an error.
   `Debug` on everything public, enforced by `missing_debug_implementations`, plus
   `Clone`/`Copy`/`PartialEq`/`Eq` on plain data. `Debug` matters more here than
   in most Rust: serial output is the only debugger there is. A `Debug` impl must
-  never block — `SpinLock`'s uses `try_lock` and prints `<locked>` rather than
+  never block. `SpinLock`'s uses `try_lock` and prints `<locked>` rather than
   spinning, because the context most likely to print one is the panic handler.
 
 **xtask:** `anyhow` with `.context(...)` on **every** fallible call, phrased so
@@ -223,13 +223,13 @@ preference:
 
 | The thing under test | Where it goes | How it runs |
 |---|---|---|
-| Arithmetic, bit layout, parsing — no hardware | a `libs/` crate | `cargo test` |
+| Arithmetic, bit layout, parsing, with no hardware | a `libs/` crate | `cargo test` |
 | Anything needing a real machine | `kernel/src/selftest.rs` | `cargo xtask test-boot` |
 | **What this repository says about itself** | a host test in `xtask/` | `cargo test` |
 
 The third row is the newest and the least obvious. A document that names a
-crate, a constant that states a count, a comment that claims a privilege — each
-is an assertion about the tree, and each was found wrong during the Phase 0–6
+crate, a constant that states a count, a comment that claims a privilege: each
+is an assertion about the tree, and each was found wrong during the Phase 0-6
 sweep. So they are checked like any other: `xtask/src/decisions.rs` requires
 every `D-NNN` cited anywhere to name an entry the log defines and the log to
 have no gaps; `xtask/src/prose.rs` requires every `libs/` crate the documents
@@ -239,7 +239,7 @@ unsafe line count rather than only capping it; `xtask/src/qemu.rs` compares the
 C header against the kernel's own constants, discovers every active sysdep,
 checks its BODY evidence, and checks its two-axis source marker against the exact
 register in `userland/README.md`. Prose that cannot be
-checked should not state a number — point at the place that can (D-124).
+checked should not state a number: point at the place that can (D-124).
 
 If a check fits none of the three, that is usually a sign the logic should be
 split so that the interesting half fits the first row. `libs/pixel` exists because the
@@ -252,7 +252,7 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
 - Pure logic gets extracted to `libs/` crates carrying
   `#![cfg_attr(not(test), no_std)]`, where `cargo test` runs it on the host.
   `libs/pixel` is the worked example: colour, channel packing, and framebuffer
-  offset arithmetic — the code that carried a live out-of-bounds bug while it
+  offset arithmetic: the code that carried a live out-of-bounds bug while it
   was buried in the kernel. `libs/x86-tables` is the second: GDT, IDT and TSS
   encoding, where the host test is the only thing that can check a bit position
   against the manual. `libs/x86-apic` and `libs/x86-pit` follow on the same
@@ -288,7 +288,7 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   and in `HOST_PACKAGES` in `xtask/src/paths.rs` so `cargo xtask ci` does too.
 - `xtask` logic is unit-tested directly, in-module. Anything touching the
   filesystem is driven through a `Cursor` rather than a real file.
-- Constructors that read the environment are split from pure ones —
+- Constructors that read the environment are split from pure ones:
   `Paths::new` takes everything explicitly, `Paths::discover` reads env and
   delegates. `std::env::set_var` is `unsafe` in edition 2024 and unsound across
   test threads, so tests never touch the environment.
@@ -296,14 +296,14 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   `selftest` feature and run by `cargo xtask test-boot`, which boots the kernel
   headless and reads its verdict from QEMU's exit code (D-28). Keep each check
   small, named as the property it asserts, and free of side effects on the
-  running kernel — they execute against a live machine, not a fixture.
+  running kernel. They execute against a live machine rather than a fixture.
 - A check that cannot fail is worth **less than no check**, because it is also
   a claim. When adding one, break it once and confirm the harness goes red
   before trusting it green (D-28).
 
   Two things the sweeps since have added to that rule, both learned the hard
   way. **Breaking it by hand happens once**, at the moment the check is
-  written, and never again — so a check that *stops* being able to fail,
+  written, and never again, so a check that *stops* being able to fail,
   because the code around it moved, is invisible from then on. `cargo xtask
   mutate` is that rule made repeatable: each entry is a real defect applied to
   the tree, and a boot must go red (D-119). And **write the check from the
@@ -324,14 +324,14 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
 
   Two rules follow, and they are the same rule from opposite ends: **make the
   values pairwise distinct**, so no field or constant can stand in for another
-  (D-136); and **check the claim, not the trick** — "the multiplier is the
+  (D-136); and **check the claim, not the trick**: "the multiplier is the
   nearest integer to the ratio" is testable against both neighbours without
   ever mentioning the `+ denominator / 2` that achieves it.
 
 - **A break is only red if the thing that went red is a check.** Absence of a
   pass is not a failure: a build error, a harness crash, a timeout and a red
   check all produce no verdict, and only one of them is evidence. A break
-  script that greps for the absence of success is measuring the wrong thing —
+  script that greps for the absence of success is measuring the wrong thing,
   and a break that cannot run produces the *appearance* of having verified
   something, which is what does the damage (D-175).
 
@@ -341,12 +341,12 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   refusal under test is the second thing that could go wrong, the input has to
   get past the first. A check for "a promised handle slot is given back on
   every refusal" used a table with no room, so every refusal happened at the
-  reservation and no promise was ever made — it passed with the destructor that
+  reservation and no promise was ever made. It passed with the destructor that
   returns promises deleted, and nothing about the assertion looked wrong,
   because the assertion was not wrong (D-165).
 
 - **A check that quantifies must read its domain.** If the name begins
-  "every", "all" or "no", the body enumerates the domain — it does not name
+  "every", "all" or "no", the body enumerates the domain rather than naming
   its members. A list restated beside its source is a second copy with a
   test-shaped wrapper, and it passes on the day the two disagree, which is the
   failure it was written to catch. `vendor.rs` is the shape: it walks the tree
@@ -357,7 +357,7 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   here that was learned twice in a day, in opposite directions, and it is
   narrower and more useful than "check your assumptions".
 
-  `#[expect(lint)]` fails the build when the suppression stops being needed —
+  `#[expect(lint)]` fails the build when the suppression stops being needed,
   except inside a macro expansion, where `unfulfilled_lint_expectations` never
   fires. Converting a macro's attributes therefore produces something that
   *reads as checked* and is exactly as unfalsifiable as the `allow` it
@@ -369,7 +369,7 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
   verdict check it replaced. Serial lines carry a trailing `
 `, so it matched
   nothing, and the first strict run reported **eighteen survivors on boots that
-  had each reddened exactly the right check** — a stricter-looking tool that
+  had each reddened exactly the right check**: a stricter-looking tool that
   was strictly worse, reporting failure for defects that were caught (D-134).
 
   Both were ten minutes to measure and would have been a phase to find. The
@@ -384,9 +384,9 @@ nightly's `custom_test_frameworks`, which D-01 rules out. So:
 
 ## Building
 
-`cargo xtask ci` is the gate, and the only one (D-26). The mechanics —
-why `cargo build --workspace` cannot work, the `k*` aliases that reach the
-kernel crates, and why `RUSTFLAGS` must never be set here — are in the README's
+`cargo xtask ci` is the gate, and the only one (D-26). The mechanics (why
+`cargo build --workspace` cannot work, the `k*` aliases that reach the
+kernel crates, and why `RUSTFLAGS` must never be set here) are in the README's
 Development section rather than repeated.
 
 Two conventions that belong with the code rather than the README:
@@ -396,36 +396,36 @@ Two conventions that belong with the code rather than the README:
   `cargo metadata` to see it.
 - Anything host-specific stays out of `rust-toolchain.toml`. Every host reads
   that file, and rustup resolves `components` against whichever one it is
-  running on — naming a Windows-only component breaks every other host (D-24).
+  running on. Naming a Windows-only component breaks every other host (D-24).
 
 ## Sources
 
-- [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) — the
+- [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/): the
   default standard; `C-XXX` above are its
   [checklist](https://rust-lang.github.io/api-guidelines/checklist.html) items.
-- [Rust for Linux coding guidelines](https://docs.kernel.org/rust/coding-guidelines.html)
-  — the `// SAFETY:` / `# Safety` distinction, the doc-comment first-sentence
+- [Rust for Linux coding guidelines](https://docs.kernel.org/rust/coding-guidelines.html):
+  the `// SAFETY:` / `# Safety` distinction, the doc-comment first-sentence
   rule, and the ban on repeating a namespace inside an identifier.
-- [Asterinas OSTD](https://asterinas.github.io/book/ostd/) — the privileged
+- [Asterinas OSTD](https://asterinas.github.io/book/ostd/): the privileged
   framework this project's `wost` follows: a ~10k-line minimal core whose safe
   APIs cover memory, tasks, user space, interrupts, timers, drivers, boot, and
-  synchronisation. Its stated posture on soundness — argue the high-level design
-  and rely on review rather than waiting for formal verification — is the one
+  synchronisation. Its stated posture on soundness (argue the high-level design
+  and rely on review rather than waiting for formal verification) is the one
   taken here.
-- [Oxide's Hubris](https://github.com/oxidecomputer/hubris) — precedent for
+- [Oxide's Hubris](https://github.com/oxidecomputer/hubris): precedent for
   `xtask` over bare cargo in a multi-target embedded build, and for its driver
   naming (`SYSTEM-DEVICE` libraries, `SYSTEM-DEVICE-server` binaries) worth
   copying when `drv/` crates arrive.
-- [`rust-osdev/volatile`](https://github.com/rust-osdev/volatile) — the design
+- [`rust-osdev/volatile`](https://github.com/rust-osdev/volatile): the design
   argument behind `MmioRegion`: declare a region safe to access with a specific
   set of operations and give it a type, rather than casting raw pointers at the
   point of use.
 - [Pragmatic Rust Guidelines](https://microsoft.github.io/rust-guidelines/)
-  (Microsoft) — the closed taxonomy of valid reasons to write `unsafe` in the
+  (Microsoft): the closed taxonomy of valid reasons to write `unsafe` in the
   crate-boundaries section above, and the recommendation to enable
   `unsafe_op_in_unsafe_fn`, which this workspace already denies (D-41).
-- [Rustonomicon — Working with Unsafe](https://doc.rust-lang.org/nomicon/working-with-unsafe.html)
-  — the sound-wrapper principle every `wost` export is held to. The
+- [Rustonomicon, Working with Unsafe](https://doc.rust-lang.org/nomicon/working-with-unsafe.html):
+  the sound-wrapper principle every `wost` export is held to. The
   [Unsafe Code Guidelines Reference](https://rust-lang.github.io/unsafe-code-guidelines/)
   is deliberately *not* listed as an authority: it is advisory and partly
   historical by its own description.

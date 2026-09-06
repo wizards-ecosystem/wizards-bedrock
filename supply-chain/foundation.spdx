@@ -1,21 +1,21 @@
 SPDXVersion: SPDX-2.3
 DataLicense: CC0-1.0
 SPDXID: SPDXRef-DOCUMENT
-DocumentName: the-wizards-os-foundation
-DocumentNamespace: https://github.com/limbwizard/the-wizards-os/sbom/eb28ab330811256cd14600de90acbd68e156ae5dd480f8b464228d3a12fdbdd7
+DocumentName: wizards-os-foundation
+DocumentNamespace: https://github.com/wizards-ecosystem/wizards-os/sbom/eb28ab330811256cd14600de90acbd68e156ae5dd480f8b464228d3a12fdbdd7
 Creator: Organization: The Wizard's OS
 Created: 2026-08-29T00:00:00Z
 
-PackageName: the-wizards-os
-SPDXID: SPDXRef-Package-the-wizards-os
+PackageName: wizards-os
+SPDXID: SPDXRef-Package-wizards-os
 PackageVersion: 0.1.0
-PackageDownloadLocation: https://github.com/limbwizard/the-wizards-os
+PackageDownloadLocation: https://github.com/wizards-ecosystem/wizards-os
 FilesAnalyzed: false
 PackageLicenseConcluded: MIT
 PackageLicenseDeclared: MIT
 PackageCopyrightText: NOASSERTION
 PackageComment: runtime; project package
-Relationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package-the-wizards-os
+Relationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package-wizards-os
 
 PackageName: boot/limine/BOOTX64.EFI
 SPDXID: SPDXRef-Artifact-boot-limine-BOOTX64.EFI-v10.x-binary-2026-07-18
@@ -27,7 +27,7 @@ PackageLicenseConcluded: BSD-2-Clause
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: runtime; Limine UEFI binary
-Relationship: SPDXRef-Package-the-wizards-os CONTAINS SPDXRef-Artifact-boot-limine-BOOTX64.EFI-v10.x-binary-2026-07-18
+Relationship: SPDXRef-Package-wizards-os CONTAINS SPDXRef-Artifact-boot-limine-BOOTX64.EFI-v10.x-binary-2026-07-18
 
 PackageName: tools/fat32-corpus/foreign-fat32.sparse
 SPDXID: SPDXRef-Artifact-tools-fat32-corpus-foreign-fat32.sparse-2026-08-28
@@ -39,7 +39,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; project-authored generated filesystem corpus
-Relationship: SPDXRef-Package-the-wizards-os CONTAINS SPDXRef-Artifact-tools-fat32-corpus-foreign-fat32.sparse-2026-08-28
+Relationship: SPDXRef-Package-wizards-os CONTAINS SPDXRef-Artifact-tools-fat32-corpus-foreign-fat32.sparse-2026-08-28
 
 PackageName: tools/tla/tla2tools.jar
 SPDXID: SPDXRef-Artifact-tools-tla-tla2tools.jar-1.8.0
@@ -51,7 +51,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; TLA+ tools and TLC
-Relationship: SPDXRef-Package-the-wizards-os CONTAINS SPDXRef-Artifact-tools-tla-tla2tools.jar-1.8.0
+Relationship: SPDXRef-Package-wizards-os CONTAINS SPDXRef-Artifact-tools-tla-tla2tools.jar-1.8.0
 
 PackageName: anyhow
 SPDXID: SPDXRef-Crate-anyhow-1.0.104
@@ -63,7 +63,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-anyhow-1.0.104
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-anyhow-1.0.104
 
 PackageName: assoc
 SPDXID: SPDXRef-Crate-assoc-0.1.3
@@ -75,7 +75,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-assoc-0.1.3
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-assoc-0.1.3
 
 PackageName: autocfg
 SPDXID: SPDXRef-Crate-autocfg-1.5.1
@@ -87,7 +87,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from Apache-2.0 OR MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-autocfg-1.5.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-autocfg-1.5.1
 
 PackageName: bitflags
 SPDXID: SPDXRef-Crate-bitflags-1.3.2
@@ -99,7 +99,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-bitflags-1.3.2
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-bitflags-1.3.2
 
 PackageName: bitflags
 SPDXID: SPDXRef-Crate-bitflags-2.13.1
@@ -111,7 +111,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: runtime; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-bitflags-2.13.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-bitflags-2.13.1
 
 PackageName: bitvec
 SPDXID: SPDXRef-Crate-bitvec-1.1.1
@@ -123,7 +123,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-bitvec-1.1.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-bitvec-1.1.1
 
 PackageName: byteorder
 SPDXID: SPDXRef-Crate-byteorder-1.5.0
@@ -135,7 +135,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from Unlicense OR MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-byteorder-1.5.0
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-byteorder-1.5.0
 
 PackageName: cfg-if
 SPDXID: SPDXRef-Crate-cfg-if-1.0.4
@@ -147,7 +147,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-cfg-if-1.0.4
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-cfg-if-1.0.4
 
 PackageName: const-siphasher
 SPDXID: SPDXRef-Crate-const-siphasher-1.0.2
@@ -159,7 +159,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-const-siphasher-1.0.2
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-const-siphasher-1.0.2
 
 PackageName: corosensei
 SPDXID: SPDXRef-Crate-corosensei-0.3.4
@@ -171,7 +171,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-corosensei-0.3.4
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-corosensei-0.3.4
 
 PackageName: fatfs
 SPDXID: SPDXRef-Crate-fatfs-0.3.6
@@ -183,7 +183,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-fatfs-0.3.6
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-fatfs-0.3.6
 
 PackageName: fscommon
 SPDXID: SPDXRef-Crate-fscommon-0.1.1
@@ -195,7 +195,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-fscommon-0.1.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-fscommon-0.1.1
 
 PackageName: funty
 SPDXID: SPDXRef-Crate-funty-2.0.0
@@ -207,7 +207,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-funty-2.0.0
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-funty-2.0.0
 
 PackageName: getrandom
 SPDXID: SPDXRef-Crate-getrandom-0.2.17
@@ -219,7 +219,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-getrandom-0.2.17
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-getrandom-0.2.17
 
 PackageName: getrandom
 SPDXID: SPDXRef-Crate-getrandom-0.3.1
@@ -231,7 +231,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-getrandom-0.3.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-getrandom-0.3.1
 
 PackageName: hex
 SPDXID: SPDXRef-Crate-hex-0.4.3
@@ -243,7 +243,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-hex-0.4.3
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-hex-0.4.3
 
 PackageName: libc
 SPDXID: SPDXRef-Crate-libc-0.2.189
@@ -255,7 +255,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-libc-0.2.189
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-libc-0.2.189
 
 PackageName: limine
 SPDXID: SPDXRef-Crate-limine-0.5.0
@@ -267,7 +267,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: runtime; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-limine-0.5.0
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-limine-0.5.0
 
 PackageName: log
 SPDXID: SPDXRef-Crate-log-0.4.33
@@ -279,7 +279,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-log-0.4.33
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-log-0.4.33
 
 PackageName: noto-sans-mono-bitmap
 SPDXID: SPDXRef-Crate-noto-sans-mono-bitmap-0.3.2
@@ -291,7 +291,7 @@ PackageLicenseConcluded: MIT AND OFL-1.1
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: runtime; MIT crate code and OFL-1.1 Noto glyph data
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-noto-sans-mono-bitmap-0.3.2
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-noto-sans-mono-bitmap-0.3.2
 
 PackageName: num-traits
 SPDXID: SPDXRef-Crate-num-traits-0.2.19
@@ -303,7 +303,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-num-traits-0.2.19
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-num-traits-0.2.19
 
 PackageName: once_cell
 SPDXID: SPDXRef-Crate-once-cell-1.21.4
@@ -315,7 +315,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-once-cell-1.21.4
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-once-cell-1.21.4
 
 PackageName: owo-colors
 SPDXID: SPDXRef-Crate-owo-colors-4.3.0
@@ -327,7 +327,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-owo-colors-4.3.0
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-owo-colors-4.3.0
 
 PackageName: pin-project-lite
 SPDXID: SPDXRef-Crate-pin-project-lite-0.2.17
@@ -339,7 +339,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from Apache-2.0 OR MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-pin-project-lite-0.2.17
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-pin-project-lite-0.2.17
 
 PackageName: ppv-lite86
 SPDXID: SPDXRef-Crate-ppv-lite86-0.2.21
@@ -351,7 +351,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-ppv-lite86-0.2.21
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-ppv-lite86-0.2.21
 
 PackageName: proc-macro2
 SPDXID: SPDXRef-Crate-proc-macro2-1.0.107
@@ -363,7 +363,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-proc-macro2-1.0.107
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-proc-macro2-1.0.107
 
 PackageName: proptest
 SPDXID: SPDXRef-Crate-proptest-1.11.0
@@ -375,7 +375,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-proptest-1.11.0
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-proptest-1.11.0
 
 PackageName: quote
 SPDXID: SPDXRef-Crate-quote-1.0.47
@@ -387,7 +387,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-quote-1.0.47
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-quote-1.0.47
 
 PackageName: radium
 SPDXID: SPDXRef-Crate-radium-0.7.0
@@ -399,7 +399,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-radium-0.7.0
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-radium-0.7.0
 
 PackageName: rand
 SPDXID: SPDXRef-Crate-rand-0.8.7
@@ -411,7 +411,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-0.8.7
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-rand-0.8.7
 
 PackageName: rand
 SPDXID: SPDXRef-Crate-rand-0.9.5
@@ -423,7 +423,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-0.9.5
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-rand-0.9.5
 
 PackageName: rand_chacha
 SPDXID: SPDXRef-Crate-rand-chacha-0.3.1
@@ -435,7 +435,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-chacha-0.3.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-rand-chacha-0.3.1
 
 PackageName: rand_chacha
 SPDXID: SPDXRef-Crate-rand-chacha-0.9.0
@@ -447,7 +447,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-chacha-0.9.0
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-rand-chacha-0.9.0
 
 PackageName: rand_core
 SPDXID: SPDXRef-Crate-rand-core-0.6.4
@@ -459,7 +459,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-core-0.6.4
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-rand-core-0.6.4
 
 PackageName: rand_core
 SPDXID: SPDXRef-Crate-rand-core-0.9.5
@@ -471,7 +471,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-core-0.9.5
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-rand-core-0.9.5
 
 PackageName: rand_pcg
 SPDXID: SPDXRef-Crate-rand-pcg-0.3.1
@@ -483,7 +483,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-pcg-0.3.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-rand-pcg-0.3.1
 
 PackageName: rand_xorshift
 SPDXID: SPDXRef-Crate-rand-xorshift-0.4.0
@@ -495,7 +495,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-rand-xorshift-0.4.0
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-rand-xorshift-0.4.0
 
 PackageName: regex-syntax
 SPDXID: SPDXRef-Crate-regex-syntax-0.8.11
@@ -507,7 +507,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-regex-syntax-0.8.11
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-regex-syntax-0.8.11
 
 PackageName: scoped-tls
 SPDXID: SPDXRef-Crate-scoped-tls-1.0.1
@@ -519,7 +519,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-scoped-tls-1.0.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-scoped-tls-1.0.1
 
 PackageName: scopeguard
 SPDXID: SPDXRef-Crate-scopeguard-1.2.0
@@ -531,7 +531,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-scopeguard-1.2.0
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-scopeguard-1.2.0
 
 PackageName: shuttle
 SPDXID: SPDXRef-Crate-shuttle-0.9.3
@@ -543,7 +543,7 @@ PackageLicenseConcluded: Apache-2.0
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-shuttle-0.9.3
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-shuttle-0.9.3
 
 PackageName: shuttle-engine
 SPDXID: SPDXRef-Crate-shuttle-engine-0.1.1
@@ -555,7 +555,7 @@ PackageLicenseConcluded: Apache-2.0
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-shuttle-engine-0.1.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-shuttle-engine-0.1.1
 
 PackageName: shuttle-schedulers
 SPDXID: SPDXRef-Crate-shuttle-schedulers-0.1.1
@@ -567,7 +567,7 @@ PackageLicenseConcluded: Apache-2.0
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-shuttle-schedulers-0.1.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-shuttle-schedulers-0.1.1
 
 PackageName: shuttle-std
 SPDXID: SPDXRef-Crate-shuttle-std-0.1.1
@@ -579,7 +579,7 @@ PackageLicenseConcluded: Apache-2.0
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-shuttle-std-0.1.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-shuttle-std-0.1.1
 
 PackageName: smallvec
 SPDXID: SPDXRef-Crate-smallvec-1.15.2
@@ -591,7 +591,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-smallvec-1.15.2
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-smallvec-1.15.2
 
 PackageName: syn
 SPDXID: SPDXRef-Crate-syn-2.0.119
@@ -603,7 +603,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-syn-2.0.119
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-syn-2.0.119
 
 PackageName: tap
 SPDXID: SPDXRef-Crate-tap-1.0.1
@@ -615,7 +615,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-tap-1.0.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-tap-1.0.1
 
 PackageName: tracing
 SPDXID: SPDXRef-Crate-tracing-0.1.44
@@ -627,7 +627,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-tracing-0.1.44
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-tracing-0.1.44
 
 PackageName: tracing-core
 SPDXID: SPDXRef-Crate-tracing-core-0.1.36
@@ -639,7 +639,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-tracing-core-0.1.36
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-tracing-core-0.1.36
 
 PackageName: unarray
 SPDXID: SPDXRef-Crate-unarray-0.1.4
@@ -651,7 +651,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-unarray-0.1.4
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-unarray-0.1.4
 
 PackageName: unicode-ident
 SPDXID: SPDXRef-Crate-unicode-ident-1.0.24
@@ -663,7 +663,7 @@ PackageLicenseConcluded: MIT AND Unicode-3.0
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected MIT plus required Unicode-3.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-unicode-ident-1.0.24
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-unicode-ident-1.0.24
 
 PackageName: wasi
 SPDXID: SPDXRef-Crate-wasi-0.11.1-wasi-snapshot-preview1
@@ -675,7 +675,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-wasi-0.11.1-wasi-snapshot-preview1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-wasi-0.11.1-wasi-snapshot-preview1
 
 PackageName: wasi
 SPDXID: SPDXRef-Crate-wasi-0.13.3-wasi-0.2.2
@@ -687,7 +687,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-wasi-0.13.3-wasi-0.2.2
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-wasi-0.13.3-wasi-0.2.2
 
 PackageName: windows_aarch64_gnullvm
 SPDXID: SPDXRef-Crate-windows-aarch64-gnullvm-0.52.6
@@ -699,7 +699,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-aarch64-gnullvm-0.52.6
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-windows-aarch64-gnullvm-0.52.6
 
 PackageName: windows_aarch64_msvc
 SPDXID: SPDXRef-Crate-windows-aarch64-msvc-0.52.6
@@ -711,7 +711,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-aarch64-msvc-0.52.6
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-windows-aarch64-msvc-0.52.6
 
 PackageName: windows_i686_gnu
 SPDXID: SPDXRef-Crate-windows-i686-gnu-0.52.6
@@ -723,7 +723,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-i686-gnu-0.52.6
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-windows-i686-gnu-0.52.6
 
 PackageName: windows_i686_gnullvm
 SPDXID: SPDXRef-Crate-windows-i686-gnullvm-0.52.6
@@ -735,7 +735,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-i686-gnullvm-0.52.6
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-windows-i686-gnullvm-0.52.6
 
 PackageName: windows_i686_msvc
 SPDXID: SPDXRef-Crate-windows-i686-msvc-0.52.6
@@ -747,7 +747,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-i686-msvc-0.52.6
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-windows-i686-msvc-0.52.6
 
 PackageName: windows_x86_64_gnu
 SPDXID: SPDXRef-Crate-windows-x86-64-gnu-0.52.6
@@ -759,7 +759,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-x86-64-gnu-0.52.6
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-windows-x86-64-gnu-0.52.6
 
 PackageName: windows_x86_64_gnullvm
 SPDXID: SPDXRef-Crate-windows-x86-64-gnullvm-0.52.6
@@ -771,7 +771,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-x86-64-gnullvm-0.52.6
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-windows-x86-64-gnullvm-0.52.6
 
 PackageName: windows_x86_64_msvc
 SPDXID: SPDXRef-Crate-windows-x86-64-msvc-0.52.6
@@ -783,7 +783,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-x86-64-msvc-0.52.6
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-windows-x86-64-msvc-0.52.6
 
 PackageName: windows-sys
 SPDXID: SPDXRef-Crate-windows-sys-0.59.0
@@ -795,7 +795,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-sys-0.59.0
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-windows-sys-0.59.0
 
 PackageName: windows-targets
 SPDXID: SPDXRef-Crate-windows-targets-0.52.6
@@ -807,7 +807,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-windows-targets-0.52.6
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-windows-targets-0.52.6
 
 PackageName: wit-bindgen-rt
 SPDXID: SPDXRef-Crate-wit-bindgen-rt-0.33.0
@@ -819,7 +819,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-wit-bindgen-rt-0.33.0
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-wit-bindgen-rt-0.33.0
 
 PackageName: wyz
 SPDXID: SPDXRef-Crate-wyz-0.5.1
@@ -831,7 +831,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-wyz-0.5.1
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-wyz-0.5.1
 
 PackageName: zerocopy
 SPDXID: SPDXRef-Crate-zerocopy-0.8.56
@@ -843,7 +843,7 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from BSD-2-Clause OR Apache-2.0 OR MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-zerocopy-0.8.56
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-zerocopy-0.8.56
 
 PackageName: zerocopy-derive
 SPDXID: SPDXRef-Crate-zerocopy-derive-0.8.56
@@ -855,4 +855,4 @@ PackageLicenseConcluded: MIT
 PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from BSD-2-Clause OR Apache-2.0 OR MIT
-Relationship: SPDXRef-Package-the-wizards-os DEPENDS_ON SPDXRef-Crate-zerocopy-derive-0.8.56
+Relationship: SPDXRef-Package-wizards-os DEPENDS_ON SPDXRef-Crate-zerocopy-derive-0.8.56

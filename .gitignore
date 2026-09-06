@@ -26,3 +26,14 @@
 /models/states/
 /models/*_TTrace_*.tla
 /models/*_TTrace_*.bin
+
+# Agent tooling state. This lived in a machine-local global ignore, which does
+# not survive a clone: on a public repository that is how someone else's
+# settings file gets committed.
+/.claude/
+
+# The shared ecosystem working note. Local to this machine, not a repo artifact.
+/ecosystem_todo.md
+
+# Task handoff note for agents picking up in-flight work. Local, not a product.
+/HANDOFF.md

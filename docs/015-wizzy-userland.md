@@ -1,4 +1,4 @@
-# 015 — Wizzy-first userland: compiler readiness and the Phase 7 plan
+# 015 - Wizzy-first userland: compiler readiness and the Phase 7 plan
 
 D-183 settles the language boundary. The kernel and its in-kernel modules stay
 Rust. Every feasible first-party program, service, library, shell, tool and
@@ -16,8 +16,8 @@ OS repository may still do before this gate opens. It records the kernel
 correctness and qualification work, the compiler-repository work, and the
 trigger-only/post-gate boundary; it does not change the language choice here.
 
-The language implementation is
-[`limbwizard/wizards-ink`](https://github.com/limbwizard/wizards-ink). Its
+The language implementation is `wizards-ink`, a separate repository that is not
+yet public. Its
 tracked `docs/os-userland.md`, `docs/design/authority.md`, and `ROADMAP.md` are
 the evidence used here, read from the clean tree at commit
 `9035c2e8f78ee64fa1db2b24c3bfc2ff7a6c5e8e`. At this decision point that commit
@@ -44,7 +44,7 @@ all of these:
 2. an artifact that can be loaded without retaining the compiler, checked AST,
    compiler maps or host services;
 3. a separable execution runtime that builds with `no_std + alloc` and exposes
-   a host-independent platform seam—the Wizard's OS adapter behind that seam
+   a host-independent platform seam: the Wizard's OS adapter behind that seam
    remains post-gate integration work; and
 4. two clean builds from pinned compiler/runtime revisions and locked
    dependencies that produce byte-identical artifacts.
@@ -106,7 +106,7 @@ outcomes. Language semantics stay in userland.
 - a user-facing spawn operation or a way to select among executable images;
 - an observable child status or process object;
 - a versioned bootstrap message;
-- a compiled userland crate—the shipped ELF is emitted machine code whose job
+- a compiled userland crate: the shipped ELF is emitted machine code whose job
   is to test the loader and boundary;
 - a decision reconciling a user runtime's platform `unsafe` with the current
   rule that `wost` is the only crate in this repository permitted to write it;
@@ -127,11 +127,11 @@ a dependency chain through channels, bootstrap, memory, images and lifecycle.
 ### What Wizzy does not have
 
 - `wzi build` or a stable serialized program artifact;
-- a separable VM artifact—the current VM retains checked compiler structures;
+- a separable VM artifact: the current VM retains checked compiler structures;
 - a `no_std + alloc` runtime separated from the `std` compiler;
 - a platform seam replacing host filesystem, environment, clock, sleep and
   console calls;
-- runtime capability values—the tracked authority design schedules them for
+- runtime capability values: the tracked authority design schedules them for
   v0.3;
 - a settled byte-buffer representation for page-sized I/O;
 - a Wasm backend, scheduled for v0.3;
@@ -166,7 +166,7 @@ while reusing the execution engine that exists. A direct-Rust witness may cost
 the runtime boundary, but it is not a competing implementation of `init` or a
 tool. The first post-gate slice records image bytes, private startup pages, peak
 heap and retained dependencies. A route that cannot run four simultaneous
-Wizzy processes—the minimum for `init`, a shell and a two-stage pipeline—fails
+Wizzy processes (the minimum for `init`, a shell and a two-stage pipeline) fails
 the density requirement and sends work back to the runtime; it does not select
 a different first-party language.
 
@@ -387,8 +387,8 @@ enter `ThreadContext` or blocking-lock paths. D-164's audited
 `wait_from_trap` scheduler yield is the existing narrow exception; it switches
 through the saved frame rather than blocking an ordinary kernel context.
 Page-table growth, anonymous frames and virtual-address selection can require
-more. Slice 5 therefore chooses and proves an execution model—pre-reservation,
-deferred ring/service work, or an explicitly re-audited trap invariant—rather
+more. Slice 5 therefore chooses and proves an execution model (pre-reservation,
+deferred ring/service work, or an explicitly re-audited trap invariant) rather
 than exposing `map_user` and calling the operation complete.
 
 The same constraint applies to teardown. Closing the last handle reference can
@@ -516,8 +516,8 @@ D-180's system-program route is qualified only when the Phase 7 proof:
 6. starts one successful and one deliberately failing child, observes both
    statuses, and reclaims both;
 7. agrees with the host semantic backend and exits with observable status; and
-8. runs four simultaneous Wizzy processes—the `init`, shell and two pipeline
-   stages used to set the route threshold—within the measured memory budget.
+8. runs four simultaneous Wizzy processes (the `init`, shell and two pipeline
+   stages used to set the route threshold) within the measured memory budget.
 
 Failure is informative, but it does not reopen the first-party language. If the
 runtime cannot remain separated from the compiler or another one of the four
@@ -539,7 +539,7 @@ an interpreter into the kernel, or disguise POSIX as native.
 - the Component Model, still D-72's watch item;
 - graphics and the document-web integration phases.
 
-The claim is not that Wizzy is the first code to cross the boundary—D-116's
+The claim is not that Wizzy is the first code to cross the boundary: D-116's
 emitted probe already did that. The stronger result is that the first real
 first-party system program is Wizzy, carried by a runtime that reaches the same
 boundary without POSIX, WASI or new ambient handles; D-152's global time-page

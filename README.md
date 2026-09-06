@@ -6,10 +6,12 @@
 
 A from-scratch operating system: Rust kernel, x86_64, UEFI, booted by
 [Limine](https://github.com/limine-bootloader/limine). **Capability-based
-and async-first** — handles + submission/completion queues are the native
-ABI (POSIX is just a translation layer for ports), `spawn()` not `fork()`,
-CoW checksummed filesystem (WizFS), WebAssembly + `wasip1` as first-class
-apps (D-72). D-183 fixes the language boundary: the kernel remains Rust, and
+and async-first**: handles + submission/completion queues are the native
+ABI (POSIX is just a translation layer for ports), `spawn()` not `fork()`.
+A CoW checksummed filesystem (WizFS) and WebAssembly with `wasip1` as a
+first-class app format are designed and not built (D-72, D-73); storage today
+is a read-only third-party FAT32.
+D-183 fixes the language boundary: the kernel remains Rust, and
 every feasible first-party target-side non-kernel component is written in
 Wizzy once its compiler-readiness gate opens. Phase 7 product userland stops at
 that gate; the OS may specify and validate the route-neutral handoff, while the
@@ -24,7 +26,25 @@ Multi-year project; destination: a full userspace with our own compositor,
 a ported Python, and NetSurf rendering the document web (D-75).
 See [docs/002-architecture.md](docs/002-architecture.md).
 
-Design docs live in [docs/](docs/) — one per subsystem, written before the
+## Status
+
+Working, and unfinished. The kernel boots on UEFI, brings up descriptor tables,
+x2APIC, paging and an EEVDF scheduler, reaches ring 3 with a handle table and an
+async queue ABI, claims a PCI NVMe device, and mounts read-only FAT32 over a
+VFS. It then settles at a prompt that echoes keystrokes. There is no `init`, no
+shell and no user programs: that is Phase 7, and it is gated.
+
+| Phases 0 to 5 | Closed, each by a dated VMware boot. Last close 2026-08-24 |
+| --- | --- |
+| Phase 6, VFS and storage | Slices landed 2026-08-25. **Not closed**: qualification evidence is still open |
+| Phase 7, userland | **Gated** on the Wizzy compiler-readiness gate (D-183), which is CLOSED |
+
+[docs/000-vision.md](docs/000-vision.md) carries the phase-by-phase ledger, and
+the D-184 [pre-Wizzy foundation register](docs/016-pre-wizzy-foundation.md) is
+the only current backlog. `wizards-ink`, which owns the Wizzy compiler, is a
+separate repository and is not yet public.
+
+Design docs live in [docs/](docs/), one per subsystem, written before the
 code (design-first). Start with the
 [decision log](docs/004-decision-log.md) (every choice, its alternatives,
 and rationale) and the [architecture](docs/002-architecture.md). Research
@@ -36,7 +56,7 @@ annotate corrections to the earlier historical snapshots.
 
 ## Building & running
 
-Everything is self-contained on Windows — no WSL, no external imaging tools.
+Everything is self-contained on Windows: no WSL, no external imaging tools.
 Prerequisites: [rustup](https://rustup.rs) (GNU host toolchain:
 `rustup-init -y --default-host x86_64-pc-windows-gnu`, no Visual Studio
 needed) and [QEMU](https://www.qemu.org/)
@@ -47,7 +67,7 @@ after installing rustup so `cargo` is on PATH; the pinned toolchain and
 
 ```
 cargo xtask build              # compile the kernel (x86_64-unknown-none)
-cargo xtask image              # build target/wizard-os.img — bootable UEFI disk image
+cargo xtask image              # build target/wizard-os.img, a bootable UEFI disk image
 cargo xtask run                # boot it in QEMU (serial output on stdio)
 cargo xtask vmware             # generate the self-test VM in vm/self-test/
 cargo xtask vmware --shipped   # generate the user-facing VM in vm/shipped/
@@ -167,7 +187,7 @@ changing schema (D-218, D-244).
 `selftest` feature headless in QEMU, injects a keystroke over QMP when the
 kernel asks for one (D-38), and reads the verdict from the exit code, which
 is how anything needing a real machine gets tested (D-28). `doc` exists to
-make the rustdoc link lints fire — nothing else in the gate runs rustdoc, so
+make the rustdoc link lints fire: nothing else in the gate runs rustdoc, so
 without it a doc link can rot unnoticed (D-22).
 
 `api-audit` builds every registered target graph offline and requires an exact
@@ -183,7 +203,7 @@ dead constants once rode a release image out. Adding a build-only feature
 means adding its graph to `xtask/src/gate.rs`.
 
 Every kernel build is read back and checked against what `kernel/linker.ld` is
-written to produce — entry in the higher half, no orphan sections, no segment
+written to produce: entry in the higher half, no orphan sections, no segment
 both writable and executable, `.bss` costing no file space (D-40).
 
 **`cargo build --workspace` does not work, and cannot on stable.** The kernel
@@ -205,7 +225,7 @@ plain `dev` profile (D-292).
 
 **Never set the `RUSTFLAGS` environment variable here.** It replaces the
 `[target.x86_64-unknown-none]` rustflags in `.cargo/config.toml`, and the
-kernel would link without `code-model=kernel` — a broken higher-half image
+kernel would link without `code-model=kernel`: a broken higher-half image
 with no build error. Pass lint flags after `--` instead.
 
 For the same reason, `.vscode/settings.json` points rust-analyzer at
@@ -215,7 +235,7 @@ triple and reports phantom errors across every kernel file.
 ## Layout
 
 ```
-wost/       privileged kernel framework — the only crate that may write `unsafe`
+wost/       privileged kernel framework, the only crate that may write `unsafe`
 kernel/     the kernel binary (no_std, #![deny(unsafe_code)], higher-half)
 libs/       shared no_std crates: pure logic, host-testable (including
             memory-map, frame-space, ring-proto, and architecture encodings)
@@ -223,6 +243,10 @@ xtask/      build orchestrator: pure-Rust disk imaging, QEMU/VMware runners
 boot/       limine.conf + vendored Limine UEFI binary (digest-pinned)
 handoff/    synthetic route-neutral envelope/payload fixtures, not Wizzy source
 docs/       design docs (design-first: docs before code)
+models/     TLA+ ring-protocol specs, plus four deliberate mutant configs that
+            must each fail, checked by `cargo xtask model-check` (D-112)
+tools/      pinned TLA+ jar and the foreign FAT32 corpus, both digest-checked
+supply-chain/  SBOM, third-party notices and license texts
 userland/   native ABI header + the uncompiled mlibc pressure test from Phase 5
 ports/      (future) recipes for mlibc, CPython, links, NetSurf
 ```

@@ -126,7 +126,7 @@ pub fn locate() -> Result<PathBuf> {
             .parent()
             .map(Path::to_path_buf)
             .with_context(|| format!("{} has no parent directory", found.display())),
-        None => bail!("QEMU not found — set QEMU_DIR, or put {emulator} on PATH"),
+        None => bail!("QEMU not found: set QEMU_DIR, or put {emulator} on PATH"),
     }
 }
 
@@ -817,7 +817,7 @@ const SHIPPED_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(5);
 /// the first is the mutation being caught and the second proves nothing
 /// (D-119).
 pub const SELFTEST_FAILURE: &str = "self-test reported failures - see the log above";
-pub const PANIC_FAILURE: &str = "the self-test kernel panicked — see the log above";
+pub const PANIC_FAILURE: &str = "the self-test kernel panicked: see the log above";
 
 /// A complete, structurally valid self-test machine outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2102,7 +2102,7 @@ fn watch(
     let deadline = Instant::now() + window;
     while Instant::now() < deadline {
         if panicked.load(Ordering::Acquire) {
-            bail!("the shipped kernel panicked — see the log above");
+            bail!("the shipped kernel panicked: see the log above");
         }
         if let Some(status) = child.try_wait().context("waiting for QEMU")? {
             bail!("the shipped kernel stopped early ({status})");

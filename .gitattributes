@@ -1,9 +1,11 @@
-# Keep LF everywhere, including Windows working trees — rustc, lld linker
+# Keep LF everywhere, including Windows working trees: rustc, lld linker
 # scripts, and all our tooling handle LF natively, and this kills the
 # CRLF-conversion warnings and cross-machine diff noise.
 * text=auto eol=lf
 
-# Binary artifacts — never touch.
+# Binary artifacts, never touched.
+*.jar binary
+*.sparse binary
 *.EFI binary
 *.efi binary
 *.img binary

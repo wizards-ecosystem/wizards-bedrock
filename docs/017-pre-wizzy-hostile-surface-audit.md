@@ -19,10 +19,10 @@ self-test-only observation seams have no independent input surface. They are
 covered at the first consumer that accepts bytes, state or authority rather
 than receiving duplicate rows here.
 
-In the tables, “machine checks” means the checked registry in
-[`kernel/src/selftest.rs`](../kernel/src/selftest.rs); “source contracts” means
-[`xtask/src/contracts.rs`](../xtask/src/contracts.rs); “API audit” means
-[`xtask/src/api.rs`](../xtask/src/api.rs); and “TLA models” means
+In the tables, "machine checks" means the checked registry in
+[`kernel/src/selftest.rs`](../kernel/src/selftest.rs); "source contracts" means
+[`xtask/src/contracts.rs`](../xtask/src/contracts.rs); "API audit" means
+[`xtask/src/api.rs`](../xtask/src/api.rs); and "TLA models" means
 [`Ring.tla`](../models/Ring.tla) and [`RingMemory.tla`](../models/RingMemory.tla)
 through the bounded [`model` observer](../xtask/src/model.rs).
 

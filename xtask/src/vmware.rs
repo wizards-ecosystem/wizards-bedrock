@@ -199,7 +199,7 @@ pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
     );
     match kernel {
         Kernel::SelfTest => {
-            println!("[xtask] this is the self-test kernel — four things to do:");
+            println!("[xtask] this is the self-test kernel, four things to do:");
             println!("        1. press `c` at `selftest: awaiting storage-delay keystroke`");
             println!(
                 "        2. press `a`, Backspace, Enter at `selftest: awaiting injected keystroke`"
@@ -208,7 +208,7 @@ pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
             println!("        4. look for `selftest: verdict` in the fresh serial log");
         }
         Kernel::Shipped => {
-            println!("[xtask] this is the shipped kernel — verify its fresh serial log:");
+            println!("[xtask] this is the shipped kernel, verify its fresh serial log:");
             println!("        1. storage reaches `nvme: up` and `fat32: mounted`");
             println!("        2. tmpfs and devfs complete their namespace survey");
             println!("        3. ring 3 launches and `kernel: reading the keyboard` settles");

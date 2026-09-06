@@ -20,7 +20,7 @@ against them. D-114 recorded this dated measurement:
 
 | | |
 |---|---|
-| C compiler on this machine | none — no `clang`, `gcc`, `cc`, or `cl` at that measurement |
+| C compiler on this machine | none: no `clang`, `gcc`, `cc`, or `cl` at that measurement |
 | LLVM 19.1.7 Windows release | **845 MB** compressed, ~3 GB extracted |
 | ...and it is the **MSVC** build | needs MSVC headers and libs, so not self-contained (D-16) |
 | mlibc's build system | meson + ninja, neither present at that measurement |
@@ -99,7 +99,7 @@ only a POSIX consumer would have looked there.
    `CR3` (D-106) and the extended state (D-108) all lived in `task::prepare`
    and this did not, because nothing native has thread-local storage and so
    nothing native had asked. `sys_tcb_set` is now WIRED with no remaining
-   platform gap, and the kernel range-checks the base — a `wrmsr` of a
+   platform gap, and the kernel range-checks the base: a `wrmsr` of a
    non-canonical value is a fault in kernel context, which would be a program
    crashing the handler rather than itself.
 

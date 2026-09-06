@@ -4750,7 +4750,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "supply-chain/foundation.spdx",
-        find: "DocumentName: the-wizards-os-foundation",
+        find: "DocumentName: wizards-os-foundation",
         replace: "DocumentName: unrelated-foundation",
         breaks: "the committed SBOM differs from its deterministic source facts",
         reddens: Caught::HostTest {
@@ -14155,7 +14155,7 @@ pub fn run(paths: &Paths) -> Result<()> {
     }
     for (mutation, error) in &inconclusive {
         println!(
-            "[xtask] inconclusive: {} ({}) — {error}",
+            "[xtask] inconclusive: {} ({}): {error}",
             mutation.breaks, mutation.file
         );
     }
