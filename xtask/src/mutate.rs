@@ -85,8 +85,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1353 registered; 285 in the last successful complete sweep; 296 in a newer failed complete sweep; 1057 registered after that failed sweep, with a fresh complete sweep still required |",
-        replace: "| Mutations | 1353 registered; 285 in a successful complete sweep; 296 in a newer failed complete sweep; 1057 registered after that failed sweep, with a fresh complete sweep still required |\n<!-- last successful complete sweep -->",
+        find: "| Mutations | 1357 registered; 285 in the last successful complete sweep; 296 in a newer failed complete sweep; 1061 registered after that failed sweep, with a fresh complete sweep still required |",
+        replace: "| Mutations | 1357 registered; 285 in a successful complete sweep; 296 in a newer failed complete sweep; 1061 registered after that failed sweep, with a fresh complete sweep still required |\n<!-- last successful complete sweep -->",
         breaks: "the phase-close table borrows its successful-sweep label from unrelated prose",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -325,7 +325,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/qualification.rs",
-        find: "    ensure!(\n        json_u64(json_field(database, \"advisory-count\")?, \"advisory-count\")? != 0,\n        \"cargo-audit report names an empty advisory database\"\n    );",
+        find: "    ensure!(\n        advisory_count != 0,\n        \"cargo-audit report names an empty advisory database\"\n    );",
         replace: "    let _unchecked_advisory_count = database;",
         breaks: "an empty advisory database can qualify a locked graph",
         reddens: Caught::HostTest {
@@ -335,8 +335,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/qualification.rs",
-        find: "    ensure!(\n        json_string(json_field(database, \"last-commit\")?, \"last-commit\")? == database_revision,\n        \"cargo-audit report belongs to another advisory database revision\"\n    );",
-        replace: "    let _unchecked_report_revision = database_revision;",
+        find: "            ensure!(\n                commit == database_revision,\n                \"cargo-audit report belongs to another advisory database revision\"\n            );",
+        replace: "            let _unchecked_report_revision = database_revision;",
         breaks: "a cargo-audit report can name another advisory database revision",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -345,8 +345,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/qualification.rs",
-        find: "    ensure!(\n        is_rfc3339_timestamp(last_updated),\n        \"cargo-audit report has no RFC3339 database update time\"\n    );",
-        replace: "    let _unchecked_advisory_update_time = last_updated;",
+        find: "            ensure!(\n                is_rfc3339_timestamp(updated),\n                \"cargo-audit report has no RFC3339 database update time\"\n            );",
+        replace: "            let _unchecked_advisory_update_time = updated;",
         breaks: "an advisory report can omit a real database update time",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -13972,6 +13972,46 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "api::tests::an_aliased_callee_does_not_borrow_argument_zero_for_an_external_trait",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qualification.rs",
+        find: "        (DatabaseBinding::Pinned, JsonValue::Null, JsonValue::Null) => None,",
+        replace: "        (_, JsonValue::Null, JsonValue::Null) => None,",
+        breaks: "a population report can omit the database identity cargo-audit fetched",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::a_population_transcript_without_database_identity_is_rejected",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qualification.rs",
+        find: "    ensure!(\n        audited.advisory_count == fetched.advisory_count,\n        \"the pinned audit and the population run saw different advisory databases\"\n    );",
+        replace: "    let _unchecked_database_agreement = (audited.advisory_count, fetched.advisory_count);",
+        breaks: "the pinned audit can see a different advisory database than the population run attested",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::the_pinned_audit_must_see_the_population_runs_database",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qualification.rs",
+        find: "        ensure!(\n            is_rfc3339_timestamp(record.get(\"database.last-updated\")?),\n            \"advisory qualification names no RFC3339 database update time\"\n        );",
+        replace: "        let _unchecked_database_update_time = record.get(\"database.last-updated\")?;",
+        breaks: "an advisory record can carry a malformed database update time",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::advisory_schema_binds_database_time_command_and_tool_identity",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qualification.rs",
+        find: "        ensure!(\n            record.get(\"database.last-updated\")? == attestation.last_updated,\n            \"advisory record names another database update time\"\n        );",
+        replace: "        let _unchecked_attested_update_time = attestation.last_updated;",
+        breaks: "an advisory record can name an update time its population transcript does not attest",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::an_advisory_record_must_repeat_the_attested_database_update_time",
         },
     },
 ];

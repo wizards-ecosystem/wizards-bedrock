@@ -15,8 +15,7 @@ use anyhow::{Context, Result, bail, ensure};
 use crate::image::Kernel;
 use crate::json::{
     JsonValue, json_array as parse_json_array, json_field as parse_json_field, json_object,
-    json_string as parse_json_string, json_string_array as parse_json_string_array,
-    json_u64 as parse_json_u64, require_json_fields,
+    json_string_array as parse_json_string_array, json_u64 as parse_json_u64, require_json_fields,
 };
 use crate::mutation_workspace::{CurrentPass, PassEvidence};
 use crate::paths::Paths;
@@ -37,6 +36,7 @@ const ADVISORY_DATABASE: &str = "database";
 const ADVISORY_DATABASE_URL: &str = "https://github.com/RustSec/advisory-db.git";
 const ADVISORY_TOOL_VERSION: &str = "cargo-audit-audit 0.22.2";
 const ADVISORY_TRANSCRIPT: &str = "cargo-audit.transcript";
+const ADVISORY_REFRESH_TRANSCRIPT: &str = "cargo-audit-refresh.transcript";
 const ADVISORY_TRANSCRIPT_FORMAT: &str = "wizard-cargo-audit-transcript-v1";
 const ADVISORY_REFRESH_COMMAND: &str = "cargo-audit audit --color never --db <empty-qualification-database> --deny warnings --file <exact-repository-Cargo.lock> --json --url https://github.com/RustSec/advisory-db.git";
 const ADVISORY_COMMAND: &str = "cargo-audit audit --color never --db <refreshed-qualification-database> --deny warnings --file <exact-repository-Cargo.lock> --json --no-fetch --url https://github.com/RustSec/advisory-db.git";
@@ -382,6 +382,10 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
         relative: "qualification/advisory/cargo-audit.transcript",
     },
     BundleFile {
+        prefix: "qualification.advisory.refresh-transcript",
+        relative: "qualification/advisory/cargo-audit-refresh.transcript",
+    },
+    BundleFile {
         prefix: "qualification.mutation.record",
         relative: "qualification/mutation/record",
     },
@@ -656,6 +660,11 @@ impl AdvisoryAttempt {
             advisory_input_record(&self.paths, &self.tool)? == self.record,
             "source, Cargo.lock, policy or cargo-audit changed during advisory refresh"
         );
+        let refresh_transcript = render_advisory_transcript(
+            &refresh,
+            &database_identity.revision,
+            DatabaseBinding::Fetched,
+        )?;
         let command = advisory_command(&self.tool, &directory, &database, &lock, false);
         let output = crate::bounded_process::output(
             command,
@@ -671,7 +680,19 @@ impl AdvisoryAttempt {
             advisory_database_identity(&directory, &database)? == database_identity,
             "advisory database changed during the revision-pinned audit"
         );
-        let transcript = render_advisory_transcript(&output, &database_identity.revision)?;
+        let transcript = render_advisory_transcript(
+            &output,
+            &database_identity.revision,
+            DatabaseBinding::Pinned,
+        )?;
+        let refresh_transcript_path = directory.join(ADVISORY_REFRESH_TRANSCRIPT);
+        write_new_file(&refresh_transcript_path, &refresh_transcript)?;
+        add_artifact(
+            &mut self.record,
+            "artifact.refresh-transcript",
+            ADVISORY_REFRESH_TRANSCRIPT,
+            &refresh_transcript_path,
+        )?;
         let transcript_path = directory.join(ADVISORY_TRANSCRIPT);
         write_new_file(&transcript_path, &transcript)?;
         add_artifact(
@@ -700,6 +721,15 @@ impl AdvisoryAttempt {
             advisory_database_identity(&directory, &database)? == database_identity,
             "advisory database changed after cargo-audit completed"
         );
+        let published_refresh = read_bounded_file(
+            &refresh_transcript_path,
+            MAX_ADVISORY_TRANSCRIPT_BYTES,
+            "cargo-audit population transcript",
+        )?;
+        ensure!(
+            published_refresh == refresh_transcript,
+            "cargo-audit population transcript changed during qualification publication"
+        );
         let published = read_bounded_file(
             &transcript_path,
             MAX_ADVISORY_TRANSCRIPT_BYTES,
@@ -709,7 +739,13 @@ impl AdvisoryAttempt {
             published == transcript,
             "cargo-audit transcript changed during qualification publication"
         );
-        verify_advisory_transcript(&published, &database_identity.revision)?;
+        let attestation = verify_advisory_transcripts(
+            &published_refresh,
+            &published,
+            &database_identity.revision,
+        )?;
+        self.record
+            .insert("database.last-updated", &attestation.last_updated)?;
         self.record.insert("result", PASS)?;
         commit_record(&self.paths, Kind::Advisory, &self.record)
     }
@@ -1119,6 +1155,7 @@ fn verify_support(paths: &Paths, record: &Record, kind: Kind, root: &Path) -> Re
     let artifacts: Vec<(&str, &str)> = match kind {
         Kind::Advisory => vec![
             ("artifact.policy", ADVISORY_POLICY_PATH),
+            ("artifact.refresh-transcript", ADVISORY_REFRESH_TRANSCRIPT),
             ("artifact.transcript", ADVISORY_TRANSCRIPT),
         ],
         Kind::Mutation => vec![("artifact.report", MUTATION_REPORT)],
@@ -1168,14 +1205,25 @@ fn verify_support(paths: &Paths, record: &Record, kind: Kind, root: &Path) -> Re
                 "advisory policy differs from the no-ignore phase-close policy"
             );
         }
-        if kind == Kind::Advisory && *name == ADVISORY_TRANSCRIPT {
-            let bytes = read_bounded_file(
-                &path,
-                MAX_ADVISORY_TRANSCRIPT_BYTES,
-                "cargo-audit transcript",
-            )?;
-            verify_advisory_transcript(&bytes, record.get("database.revision")?)?;
-        }
+    }
+    if kind == Kind::Advisory {
+        let directory = root.join(kind.slug());
+        let refresh = read_bounded_file(
+            &directory.join(ADVISORY_REFRESH_TRANSCRIPT),
+            MAX_ADVISORY_TRANSCRIPT_BYTES,
+            "cargo-audit population transcript",
+        )?;
+        let pinned = read_bounded_file(
+            &directory.join(ADVISORY_TRANSCRIPT),
+            MAX_ADVISORY_TRANSCRIPT_BYTES,
+            "cargo-audit transcript",
+        )?;
+        let attestation =
+            verify_advisory_transcripts(&refresh, &pinned, record.get("database.revision")?)?;
+        ensure!(
+            record.get("database.last-updated")? == attestation.last_updated,
+            "advisory record names another database update time"
+        );
     }
     if matches!(kind, Kind::VmwareSelfTest | Kind::VmwareShipped) {
         verify_vmware_observer(paths, record, kind, root)?;
@@ -1909,6 +1957,7 @@ fn validate_record(record: &Record, kind: Kind) -> Result<()> {
         Kind::Advisory => {
             add_tool_keys(&mut expected, "input.cargo-audit");
             expected.extend([
+                "database.last-updated".to_string(),
                 "database.revision".to_string(),
                 "database.tree".to_string(),
                 "database.url".to_string(),
@@ -1921,6 +1970,7 @@ fn validate_record(record: &Record, kind: Kind) -> Result<()> {
                 "observation.utc-unix-seconds".to_string(),
             ]);
             add_artifact_keys(&mut expected, "artifact.policy");
+            add_artifact_keys(&mut expected, "artifact.refresh-transcript");
             add_artifact_keys(&mut expected, "artifact.transcript");
         }
         Kind::Mutation => {
@@ -1983,6 +2033,10 @@ fn validate_record(record: &Record, kind: Kind) -> Result<()> {
                 && is_git_id(record.get("database.revision")?)
                 && is_git_id(record.get("database.tree")?),
             "advisory qualification database identity is malformed"
+        );
+        ensure!(
+            is_rfc3339_timestamp(record.get("database.last-updated")?),
+            "advisory qualification names no RFC3339 database update time"
         );
         ensure!(
             record.get("execution.command")? == ADVISORY_COMMAND
@@ -2330,6 +2384,7 @@ fn artifact_size_policy(kind: Kind, name: &str) -> Result<(u64, bool)> {
         Kind::Advisory => match name {
             ADVISORY_POLICY_PATH => (MAX_ADVISORY_POLICY_BYTES, false),
             ADVISORY_TRANSCRIPT => (MAX_ADVISORY_TRANSCRIPT_BYTES, false),
+            ADVISORY_REFRESH_TRANSCRIPT => (MAX_ADVISORY_TRANSCRIPT_BYTES, false),
             _ => bail!("unregistered advisory artifact `{name}`"),
         },
         Kind::Mutation => (MAX_MUTATION_REPORT_BYTES, false),
@@ -2604,20 +2659,30 @@ fn utc_unix_seconds() -> Result<u64> {
         .map(|elapsed| elapsed.as_secs())
 }
 
-fn render_advisory_transcript(output: &Output, database_revision: &str) -> Result<Vec<u8>> {
-    render_advisory_transcript_with_limit(output, database_revision, MAX_ADVISORY_TRANSCRIPT_BYTES)
+fn render_advisory_transcript(
+    output: &Output,
+    database_revision: &str,
+    binding: DatabaseBinding,
+) -> Result<Vec<u8>> {
+    render_advisory_transcript_with_limit(
+        output,
+        database_revision,
+        binding,
+        MAX_ADVISORY_TRANSCRIPT_BYTES,
+    )
 }
 
 fn render_advisory_transcript_with_limit(
     output: &Output,
     database_revision: &str,
+    binding: DatabaseBinding,
     maximum: u64,
 ) -> Result<Vec<u8>> {
     ensure!(
         output.status.code() == Some(0),
         "only a successful cargo-audit result can be recorded"
     );
-    verify_advisory_report(&output.stdout, database_revision)?;
+    verify_advisory_report(&output.stdout, database_revision, binding)?;
     let diagnostic = std::str::from_utf8(&output.stderr)
         .context("cargo-audit diagnostic output is not UTF-8")?;
     ensure!(
@@ -2647,10 +2712,37 @@ fn render_advisory_transcript_with_limit(
     Ok(transcript)
 }
 
-fn verify_advisory_transcript(transcript: &[u8], database_revision: &str) -> Result<()> {
+/// The population run's attestation, once the pinned verdict agrees with it.
+struct AdvisoryAttestation {
+    last_updated: String,
+}
+
+fn verify_advisory_transcripts(
+    refresh: &[u8],
+    pinned: &[u8],
+    database_revision: &str,
+) -> Result<AdvisoryAttestation> {
+    let fetched = verify_advisory_transcript(refresh, database_revision, DatabaseBinding::Fetched)?;
+    let audited = verify_advisory_transcript(pinned, database_revision, DatabaseBinding::Pinned)?;
+    ensure!(
+        audited.advisory_count == fetched.advisory_count,
+        "the pinned audit and the population run saw different advisory databases"
+    );
+    let last_updated = fetched
+        .last_updated
+        .context("a fetched cargo-audit report names its database update time")?;
+    Ok(AdvisoryAttestation { last_updated })
+}
+
+fn verify_advisory_transcript(
+    transcript: &[u8],
+    database_revision: &str,
+    binding: DatabaseBinding,
+) -> Result<AdvisoryFacts> {
     verify_advisory_transcript_with_limit(
         transcript,
         database_revision,
+        binding,
         MAX_ADVISORY_TRANSCRIPT_BYTES,
     )
 }
@@ -2658,8 +2750,9 @@ fn verify_advisory_transcript(transcript: &[u8], database_revision: &str) -> Res
 fn verify_advisory_transcript_with_limit(
     transcript: &[u8],
     database_revision: &str,
+    binding: DatabaseBinding,
     maximum: u64,
-) -> Result<()> {
+) -> Result<AdvisoryFacts> {
     ensure!(
         transcript.len() as u64 <= maximum,
         "cargo-audit transcript exceeds its bounded artifact limit"
@@ -2706,14 +2799,14 @@ fn verify_advisory_transcript_with_limit(
         sha256::hex(&sha256::digest(stderr)) == stderr_digest,
         "cargo-audit stderr digest differs"
     );
-    verify_advisory_report(stdout, database_revision)?;
+    let facts = verify_advisory_report(stdout, database_revision, binding)?;
     let diagnostic =
         std::str::from_utf8(stderr).context("cargo-audit transcript stderr is not UTF-8")?;
     ensure!(
         !diagnostic.contains('\0'),
         "cargo-audit transcript stderr contains NUL"
     );
-    Ok(())
+    Ok(facts)
 }
 
 fn canonical_usize_field(line: &str, prefix: &str) -> Result<usize> {
@@ -2740,7 +2833,28 @@ fn digest_field<'a>(line: &'a str, prefix: &str) -> Result<&'a str> {
     Ok(value)
 }
 
-fn verify_advisory_report(bytes: &[u8], database_revision: &str) -> Result<()> {
+/// How a cargo-audit report can name the database it audited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DatabaseBinding {
+    /// The run fetched, so cargo-audit itself names the commit it audited.
+    Fetched,
+    /// The run was `--no-fetch`; cargo-audit learns the commit only from a
+    /// fetch, so the report carries null identity and Git binds it (D-297).
+    Pinned,
+}
+
+/// What one verified cargo-audit report says about its database.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdvisoryFacts {
+    advisory_count: u64,
+    last_updated: Option<String>,
+}
+
+fn verify_advisory_report(
+    bytes: &[u8],
+    database_revision: &str,
+    binding: DatabaseBinding,
+) -> Result<AdvisoryFacts> {
     let report = parse_json(bytes)?;
     let report = json_object(&report, "cargo-audit report")?;
     require_json_fields(
@@ -2761,19 +2875,30 @@ fn verify_advisory_report(bytes: &[u8], database_revision: &str) -> Result<()> {
         &["advisory-count", "last-commit", "last-updated"],
         "cargo-audit database",
     )?;
+    let advisory_count = json_u64(json_field(database, "advisory-count")?, "advisory-count")?;
     ensure!(
-        json_u64(json_field(database, "advisory-count")?, "advisory-count")? != 0,
+        advisory_count != 0,
         "cargo-audit report names an empty advisory database"
     );
-    ensure!(
-        json_string(json_field(database, "last-commit")?, "last-commit")? == database_revision,
-        "cargo-audit report belongs to another advisory database revision"
-    );
-    let last_updated = json_string(json_field(database, "last-updated")?, "last-updated")?;
-    ensure!(
-        is_rfc3339_timestamp(last_updated),
-        "cargo-audit report has no RFC3339 database update time"
-    );
+    let last_updated = match (
+        binding,
+        json_field(database, "last-commit")?,
+        json_field(database, "last-updated")?,
+    ) {
+        (_, JsonValue::String(commit), JsonValue::String(updated)) => {
+            ensure!(
+                commit == database_revision,
+                "cargo-audit report belongs to another advisory database revision"
+            );
+            ensure!(
+                is_rfc3339_timestamp(updated),
+                "cargo-audit report has no RFC3339 database update time"
+            );
+            Some(updated.clone())
+        }
+        (DatabaseBinding::Pinned, JsonValue::Null, JsonValue::Null) => None,
+        _ => bail!("cargo-audit report has no usable advisory database identity"),
+    };
 
     let lockfile = json_object(json_field(report, "lockfile")?, "cargo-audit lockfile")?;
     require_json_fields(lockfile, &["dependency-count"], "cargo-audit lockfile")?;
@@ -2832,7 +2957,10 @@ fn verify_advisory_report(bytes: &[u8], database_revision: &str) -> Result<()> {
         warnings.is_empty(),
         "cargo-audit report contains a dependency warning"
     );
-    Ok(())
+    Ok(AdvisoryFacts {
+        advisory_count,
+        last_updated,
+    })
 }
 
 fn is_rfc3339_timestamp(value: &str) -> bool {
@@ -2916,10 +3044,6 @@ fn parse_json(bytes: &[u8]) -> Result<JsonValue> {
 
 fn json_array<'a>(value: &'a JsonValue, label: &str) -> Result<&'a [JsonValue]> {
     parse_json_array(value, &format!("cargo-audit `{label}`"))
-}
-
-fn json_string<'a>(value: &'a JsonValue, label: &str) -> Result<&'a str> {
-    parse_json_string(value, &format!("cargo-audit `{label}`"))
 }
 
 fn json_string_array<'a>(value: &'a JsonValue, label: &str) -> Result<Vec<&'a str>> {
@@ -3276,6 +3400,9 @@ mod tests {
                 record.insert("database.revision", "d".repeat(40)).unwrap();
                 record.insert("database.tree", "e".repeat(40)).unwrap();
                 record
+                    .insert("database.last-updated", "2026-08-30T12:00:00Z")
+                    .unwrap();
+                record
                     .insert("database.url", ADVISORY_DATABASE_URL)
                     .unwrap();
                 record
@@ -3291,6 +3418,11 @@ mod tests {
                     .unwrap();
                 fixture_artifact(&mut record, "artifact.policy", ADVISORY_POLICY_PATH);
                 fixture_artifact(&mut record, "artifact.transcript", ADVISORY_TRANSCRIPT);
+                fixture_artifact(
+                    &mut record,
+                    "artifact.refresh-transcript",
+                    ADVISORY_REFRESH_TRANSCRIPT,
+                );
             }
             Kind::Mutation => {
                 record.insert("input.mutations", "1").unwrap();
@@ -3435,8 +3567,20 @@ mod tests {
             stderr: b"Fetching advisory database\n".to_vec(),
         };
         std::fs::write(
+            directory.join(ADVISORY_REFRESH_TRANSCRIPT),
+            render_advisory_transcript(&output, &database_revision, DatabaseBinding::Fetched)
+                .unwrap(),
+        )
+        .unwrap();
+        let pinned = Output {
+            status: success_status(),
+            stdout: pinned_advisory_report(),
+            stderr: Vec::new(),
+        };
+        std::fs::write(
             directory.join(ADVISORY_TRANSCRIPT),
-            render_advisory_transcript(&output, &database_revision).unwrap(),
+            render_advisory_transcript(&pinned, &database_revision, DatabaseBinding::Pinned)
+                .unwrap(),
         )
         .unwrap();
         let mut record = complete_record(Kind::Advisory);
@@ -3449,6 +3593,10 @@ mod tests {
             .insert("input.cargo-lock.sha256".to_string(), lock.sha256);
         for (prefix, path) in [
             ("artifact.policy", directory.join(ADVISORY_POLICY_PATH)),
+            (
+                "artifact.refresh-transcript",
+                directory.join(ADVISORY_REFRESH_TRANSCRIPT),
+            ),
             ("artifact.transcript", directory.join(ADVISORY_TRANSCRIPT)),
         ] {
             let digest = digest_file(&path).unwrap();
@@ -3472,6 +3620,14 @@ mod tests {
             "{{\"database\":{{\"advisory-count\":1,\"last-commit\":\"{database_revision}\",\"last-updated\":\"2026-08-30T12:00:00Z\"}},\"lockfile\":{{\"dependency-count\":1}},\"settings\":{{\"target_arch\":[],\"target_os\":[],\"severity\":null,\"ignore\":[],\"informational_warnings\":[\"unmaintained\",\"unsound\",\"notice\"]}},\"vulnerabilities\":{{\"found\":false,\"count\":0,\"list\":[]}},\"warnings\":{{}}}}\n"
         )
         .into_bytes()
+    }
+
+    fn pinned_advisory_report() -> Vec<u8> {
+        String::from_utf8(clean_advisory_report(&"d".repeat(40)))
+            .unwrap()
+            .replace(&format!("\"{}\"", "d".repeat(40)), "null")
+            .replace("\"2026-08-30T12:00:00Z\"", "null")
+            .into_bytes()
     }
 
     fn unchecked_advisory_transcript(stdout: &[u8]) -> Vec<u8> {
@@ -3562,13 +3718,19 @@ mod tests {
 
     #[test]
     fn advisory_schema_binds_database_time_command_and_tool_identity() {
-        for field in ["database", "time", "command", "tool"] {
+        for field in ["database", "database-time", "time", "command", "tool"] {
             let mut record = complete_record(Kind::Advisory);
             match field {
                 "database" => {
                     record
                         .fields
                         .insert("database.revision".to_string(), "forged".to_string());
+                }
+                "database-time" => {
+                    record.fields.insert(
+                        "database.last-updated".to_string(),
+                        "not-a-time".to_string(),
+                    );
                 }
                 "time" => {
                     record
@@ -3795,6 +3957,97 @@ mod tests {
     }
 
     #[test]
+    fn a_pinned_audit_report_carries_null_database_identity_by_tool_design() {
+        let revision = "d".repeat(40);
+        let facts = verify_advisory_report(
+            &pinned_advisory_report(),
+            &revision,
+            DatabaseBinding::Pinned,
+        )
+        .unwrap();
+        assert_eq!(facts.advisory_count, 1);
+        assert_eq!(facts.last_updated, None);
+        let fetched = verify_advisory_report(
+            &clean_advisory_report(&revision),
+            &revision,
+            DatabaseBinding::Fetched,
+        )
+        .unwrap();
+        assert_eq!(
+            fetched.last_updated.as_deref(),
+            Some("2026-08-30T12:00:00Z")
+        );
+        let error = verify_advisory_report(
+            &pinned_advisory_report(),
+            &revision,
+            DatabaseBinding::Fetched,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("no usable advisory database identity"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_population_transcript_without_database_identity_is_rejected() {
+        let (fixture, paths, root, source) = advisory_fixture("null-population");
+        let refresh = root
+            .join(Kind::Advisory.slug())
+            .join(ADVISORY_REFRESH_TRANSCRIPT);
+        std::fs::write(
+            &refresh,
+            unchecked_advisory_transcript(&pinned_advisory_report()),
+        )
+        .unwrap();
+        rebind_advisory_artifact(&root, "artifact.refresh-transcript", &refresh);
+        let error = verify_advisory_qualification(&paths, &root, &source)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("no usable advisory database identity"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn the_pinned_audit_must_see_the_population_runs_database() {
+        let (fixture, paths, root, source) = advisory_fixture("count-drift");
+        let refresh = root
+            .join(Kind::Advisory.slug())
+            .join(ADVISORY_REFRESH_TRANSCRIPT);
+        let drifted = String::from_utf8(clean_advisory_report(&"d".repeat(40)))
+            .unwrap()
+            .replace("\"advisory-count\":1", "\"advisory-count\":2");
+        std::fs::write(&refresh, unchecked_advisory_transcript(drifted.as_bytes())).unwrap();
+        rebind_advisory_artifact(&root, "artifact.refresh-transcript", &refresh);
+        let error = verify_advisory_qualification(&paths, &root, &source)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("different advisory databases"), "{error}");
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn an_advisory_record_must_repeat_the_attested_database_update_time() {
+        let (fixture, paths, root, source) = advisory_fixture("update-time");
+        let record_path = root.join(Kind::Advisory.slug()).join(RECORD);
+        let mut record = read_record(&record_path, Kind::Advisory).unwrap();
+        record.fields.insert(
+            "database.last-updated".to_string(),
+            "2026-08-31T12:00:00Z".to_string(),
+        );
+        std::fs::write(&record_path, record.render()).unwrap();
+        let error = verify_advisory_qualification(&paths, &root, &source)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("another database update time"), "{error}");
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
     fn advisory_transcript_rendering_refuses_output_beyond_its_ceiling() {
         let revision = "d".repeat(40);
         let output = Output {
@@ -3802,9 +4055,10 @@ mod tests {
             stdout: clean_advisory_report(&revision),
             stderr: Vec::new(),
         };
-        let error = render_advisory_transcript_with_limit(&output, &revision, 1)
-            .unwrap_err()
-            .to_string();
+        let error =
+            render_advisory_transcript_with_limit(&output, &revision, DatabaseBinding::Fetched, 1)
+                .unwrap_err()
+                .to_string();
 
         assert!(
             error.contains("cargo-audit transcript exceeds its bounded artifact limit"),
@@ -3820,10 +4074,12 @@ mod tests {
             stdout: clean_advisory_report(&revision),
             stderr: Vec::new(),
         };
-        let transcript = render_advisory_transcript(&output, &revision).unwrap();
+        let transcript =
+            render_advisory_transcript(&output, &revision, DatabaseBinding::Fetched).unwrap();
         let error = verify_advisory_transcript_with_limit(
             &transcript,
             &revision,
+            DatabaseBinding::Fetched,
             transcript.len() as u64 - 1,
         )
         .unwrap_err()
@@ -4204,6 +4460,14 @@ mod tests {
                 Kind::Advisory,
                 "transcript",
                 "cargo-audit.transcript",
+                16_781_312,
+                false,
+            ),
+            artifact(
+                "advisory",
+                Kind::Advisory,
+                "refresh-transcript",
+                "cargo-audit-refresh.transcript",
                 16_781_312,
                 false,
             ),

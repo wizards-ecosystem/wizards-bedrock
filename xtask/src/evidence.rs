@@ -13,7 +13,7 @@ use crate::cargo::Profile;
 use crate::paths::Paths;
 use crate::{bounded_process, gate, image, mutate, qemu, qualification, sha256, tasks, vendor};
 
-const FORMAT: &str = "wizard-evidence-v5";
+const FORMAT: &str = "wizard-evidence-v6";
 const MANIFEST_NAME: &str = "MANIFEST";
 const MANIFEST_TEMP: &str = "MANIFEST.incomplete";
 const PASS: &str = "pass";
@@ -1715,6 +1715,7 @@ mod tests {
             bundled,
             BTreeSet::from([
                 "qualification/advisory/.cargo/audit.toml",
+                "qualification/advisory/cargo-audit-refresh.transcript",
                 "qualification/advisory/cargo-audit.transcript",
                 "qualification/advisory/record",
                 "qualification/model/record",

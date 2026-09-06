@@ -156,7 +156,7 @@ deterministic bundle under `target/evidence/`; `cargo xtask verify-evidence`
 then rechecks its source identity, installed tool and firmware identities,
 vendored and machine inputs, artifact hashes, reproducibility result and boot
 result without network access. The QEMU hardware ABI is pinned to
-`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v5 requires
+`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v6 requires
 source-bound records for the current mutation sweep, the fresh RustSec review,
 all model runs and both generated-and-booted VMware selectors, plus fixed-shape
 Java and VMware tool identities. Verification therefore rejects an
