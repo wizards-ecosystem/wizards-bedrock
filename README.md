@@ -1,4 +1,4 @@
-<h1>
+<h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/os-logo-dark.svg">
     <img src="docs/assets/os-logo.svg" alt="The Wizard's OS" width="420">
