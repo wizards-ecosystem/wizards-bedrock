@@ -1,8 +1,9 @@
-<p align="center">
-  <img src="docs/assets/os-header.png" alt="The Wizard's OS" width="100%">
-</p>
-
-# The Wizard's OS 🧙
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/os-logo-dark.svg">
+    <img src="docs/assets/os-logo.svg" alt="The Wizard's OS" width="420">
+  </picture>
+</h1>
 
 A from-scratch operating system: Rust kernel, x86_64, UEFI, booted by
 [Limine](https://github.com/limine-bootloader/limine). **Capability-based
