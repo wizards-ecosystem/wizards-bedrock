@@ -85,8 +85,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1357 registered; 285 in the last successful complete sweep; 296 in a newer failed complete sweep; 1061 registered after that failed sweep, with a fresh complete sweep still required |",
-        replace: "| Mutations | 1357 registered; 285 in a successful complete sweep; 296 in a newer failed complete sweep; 1061 registered after that failed sweep, with a fresh complete sweep still required |\n<!-- last successful complete sweep -->",
+        find: "| Mutations | 1358 registered; 285 in the last successful complete sweep; 296 in a newer failed complete sweep; 1062 registered after that failed sweep, with a fresh complete sweep still required |",
+        replace: "| Mutations | 1358 registered; 285 in a successful complete sweep; 296 in a newer failed complete sweep; 1062 registered after that failed sweep, with a fresh complete sweep still required |\n<!-- last successful complete sweep -->",
         breaks: "the phase-close table borrows its successful-sweep label from unrelated prose",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -14012,6 +14012,16 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "qualification::tests::an_advisory_record_must_repeat_the_attested_database_update_time",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutation_workspace.rs",
+        find: "            ensure!(\n                previous < raw,\n                \"Git tracked paths are not unique and sorted\"\n            );",
+        replace: "            ensure!(\n                previous != raw,\n                \"Git tracked paths are not unique and sorted\"\n            );",
+        breaks: "a reversed Git tracked-path inventory is accepted as sorted",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::tracked_path_order_refuses_duplicates_and_reversals",
         },
     },
 ];

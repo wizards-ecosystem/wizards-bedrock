@@ -597,6 +597,33 @@ struct Baseline {
     index_digest: String,
 }
 
+fn parse_tracked_paths(listed: &[u8]) -> Result<Vec<PathBuf>> {
+    let mut tracked = Vec::new();
+    let mut previous = None;
+    for raw in listed
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        if let Some(previous) = previous {
+            ensure!(
+                previous < raw,
+                "Git tracked paths are not unique and sorted"
+            );
+        }
+        previous = Some(raw);
+        let text = std::str::from_utf8(raw).context("a tracked path is not UTF-8")?;
+        validate_relative(text)?;
+        tracked.push(PathBuf::from(text));
+    }
+    ensure!(!tracked.is_empty(), "Git reports no tracked files");
+    ensure!(
+        tracked.len() <= MAX_TRACKED_FILES,
+        "Git reports {} tracked files, exceeding the {MAX_TRACKED_FILES}-file mutation limit",
+        tracked.len()
+    );
+    Ok(tracked)
+}
+
 impl Baseline {
     fn discover(root: &Path) -> Result<Self> {
         let status = git(
@@ -623,25 +650,7 @@ impl Baseline {
             MAX_TRACKED_PATH_BYTES,
             "mutation tracked-path inventory",
         )?;
-        let mut tracked = Vec::new();
-        for raw in listed
-            .split(|byte| *byte == 0)
-            .filter(|path| !path.is_empty())
-        {
-            let text = std::str::from_utf8(raw).context("a tracked path is not UTF-8")?;
-            validate_relative(text)?;
-            tracked.push(PathBuf::from(text));
-        }
-        ensure!(!tracked.is_empty(), "Git reports no tracked files");
-        ensure!(
-            tracked.len() <= MAX_TRACKED_FILES,
-            "Git reports {} tracked files, exceeding the {MAX_TRACKED_FILES}-file mutation limit",
-            tracked.len()
-        );
-        ensure!(
-            tracked.windows(2).all(|pair| pair[0] < pair[1]),
-            "Git tracked paths are not unique and sorted"
-        );
+        let tracked = parse_tracked_paths(&listed)?;
 
         let index_name = git_text(
             root,
@@ -2131,6 +2140,24 @@ mod tests {
             index_path: PathBuf::from("fixture-index"),
             index_digest: journal.index_digest.clone(),
         }
+    }
+
+    #[test]
+    fn git_path_order_is_not_component_order() {
+        let listed = b"boot/limine.conf\0boot/limine/BOOTX64.EFI\0";
+        assert_eq!(
+            parse_tracked_paths(listed).unwrap(),
+            [
+                PathBuf::from("boot/limine.conf"),
+                PathBuf::from("boot/limine/BOOTX64.EFI")
+            ]
+        );
+    }
+
+    #[test]
+    fn tracked_path_order_refuses_duplicates_and_reversals() {
+        assert!(parse_tracked_paths(b"alpha\0alpha\0").is_err());
+        assert!(parse_tracked_paths(b"bravo\0alpha\0").is_err());
     }
 
     #[test]
