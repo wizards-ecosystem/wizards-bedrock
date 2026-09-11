@@ -4338,10 +4338,24 @@ mod tests {
 
     #[test]
     fn streamed_model_tree_digest_preserves_the_length_delimited_schema() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let observed = tracked_tree_digest(root, "models").unwrap();
+        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "wizard-model-digest-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("models/nested")).unwrap();
+        run_git(&root, &["init", "--quiet"]);
+        for (path, contents) in [
+            ("models/a.tla", b"short".as_slice()),
+            ("models/nested/longer.cfg", b"different bytes".as_slice()),
+        ] {
+            std::fs::write(root.join(path), contents).unwrap();
+        }
+        run_git(&root, &["add", "models"]);
+
+        let observed = tracked_tree_digest(&root, "models").unwrap();
         let listing = git_output_bytes(
-            root,
+            &root,
             &["ls-files", "-z", "--", "models"],
             MAX_MODEL_PATH_LIST_BYTES,
             "model digest compatibility fixture",
@@ -4366,6 +4380,7 @@ mod tests {
         assert_eq!(observed.files, paths.len());
         assert_eq!(observed.bytes, bytes);
         assert_eq!(observed.sha256, sha256::hex(&sha256::digest(&legacy)));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
