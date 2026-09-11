@@ -95,7 +95,7 @@ impl Probe {
             .current_dir(&self.root)
             .env(
                 "CARGO_TARGET_DIR",
-                paths.target_dir().join("guard-contracts"),
+                crate::cargo::child_process_path(&paths.target_dir().join("guard-contracts")),
             )
             .args([
                 "check",

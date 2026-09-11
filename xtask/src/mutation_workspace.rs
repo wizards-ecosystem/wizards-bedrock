@@ -3078,7 +3078,10 @@ mod tests {
     fn observed(paths: &Paths) -> String {
         let output = Command::new(env!("CARGO"))
             .current_dir(paths.root())
-            .env("CARGO_TARGET_DIR", paths.target_dir())
+            .env(
+                "CARGO_TARGET_DIR",
+                crate::cargo::child_process_path(paths.target_dir()),
+            )
             .args(["run", "--quiet", "--package", "app"])
             .output()
             .expect("running the fixture application");

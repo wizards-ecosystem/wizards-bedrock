@@ -6660,41 +6660,6 @@ impl AuditWorkspace {
     }
 }
 
-#[cfg(windows)]
-fn child_process_path(path: &Path) -> PathBuf {
-    use std::ffi::OsString;
-    use std::os::windows::ffi::{OsStrExt, OsStringExt};
-
-    const VERBATIM: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
-    const VERBATIM_UNC: &[u16] = &[
-        b'\\' as u16,
-        b'\\' as u16,
-        b'?' as u16,
-        b'\\' as u16,
-        b'U' as u16,
-        b'N' as u16,
-        b'C' as u16,
-        b'\\' as u16,
-    ];
-
-    let wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
-    let normal = if let Some(rest) = wide.strip_prefix(VERBATIM_UNC) {
-        let mut normal = vec![b'\\' as u16, b'\\' as u16];
-        normal.extend_from_slice(rest);
-        normal
-    } else if let Some(rest) = wide.strip_prefix(VERBATIM) {
-        rest.to_vec()
-    } else {
-        return path.to_path_buf();
-    };
-    PathBuf::from(OsString::from_wide(&normal))
-}
-
-#[cfg(not(windows))]
-fn child_process_path(path: &Path) -> PathBuf {
-    path.to_path_buf()
-}
-
 fn open_audit_lock(state: &Path) -> Result<File> {
     let lock_path = state.join("LOCK");
     crate::mutation_workspace::require_direct_file_if_present(state, &lock_path, "API audit lock")?;
@@ -7753,7 +7718,7 @@ fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> {
         host_linker.starts_with(&sysroot),
         "the API audit host linker escaped the compiler sysroot"
     );
-    let host_linker = child_process_path(&host_linker);
+    let host_linker = crate::cargo::child_process_path(&host_linker);
     let tool_path = std::env::join_paths([compiler
         .parent()
         .context("the API audit compiler has no binary directory")?])
@@ -8534,7 +8499,7 @@ fn graph_build_directory(build: &Path, graph: usize) -> Result<PathBuf> {
         &directory,
         "API audit graph build directory",
     )?;
-    Ok(child_process_path(&directory))
+    Ok(crate::cargo::child_process_path(&directory))
 }
 
 fn build_script_authority_snapshot(root: &Path) -> Result<BTreeMap<PathBuf, [u8; 32]>> {
@@ -9070,19 +9035,6 @@ dependencies = [
             );
             std::fs::remove_dir_all(root).expect("remove registry marker fixture");
         }
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn cargo_never_receives_a_windows_verbatim_target_path() {
-        assert_eq!(
-            child_process_path(Path::new(r"\\?\C:\repo\target\api-audit\build")),
-            PathBuf::from(r"C:\repo\target\api-audit\build")
-        );
-        assert_eq!(
-            child_process_path(Path::new(r"\\?\UNC\server\share\build")),
-            PathBuf::from(r"\\server\share\build")
-        );
     }
 
     #[test]

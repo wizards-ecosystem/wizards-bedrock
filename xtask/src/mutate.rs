@@ -85,8 +85,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1358 registered; 285 in the last successful complete sweep; 296 in a newer failed complete sweep; 1062 registered after that failed sweep, with a fresh complete sweep still required |",
-        replace: "| Mutations | 1358 registered; 285 in a successful complete sweep; 296 in a newer failed complete sweep; 1062 registered after that failed sweep, with a fresh complete sweep still required |\n<!-- last successful complete sweep -->",
+        find: "| Mutations | 1359 registered; 285 in the last successful complete sweep; 296 in a newer failed complete sweep; 1063 registered after that failed sweep, with a fresh complete sweep still required |",
+        replace: "| Mutations | 1359 registered; 285 in a successful complete sweep; 296 in a newer failed complete sweep; 1063 registered after that failed sweep, with a fresh complete sweep still required |\n<!-- last successful complete sweep -->",
         breaks: "the phase-close table borrows its successful-sweep label from unrelated prose",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -3749,7 +3749,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/cargo.rs",
-        find: "        .env(\"CARGO_TARGET_DIR\", paths.target_dir());",
+        find: "        .env(\"CARGO_TARGET_DIR\", child_process_path(paths.target_dir()));",
         replace: "        .env_remove(\"CARGO_TARGET_DIR\");",
         breaks: "isolated cargo builds write outside their private target directory",
         reddens: Caught::HostTest {
@@ -10469,8 +10469,8 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         file: "xtask/src/api.rs",
-        find: "fn graph_build_directory(build: &Path, graph: usize) -> Result<PathBuf> {\n    let directory = build.join(format!(\"graph-{graph}\"));\n    let directory = crate::mutation_workspace::prepare_real_child(\n        build,\n        &directory,\n        \"API audit graph build directory\",\n    )?;\n    Ok(child_process_path(&directory))\n}",
-        replace: "fn graph_build_directory(build: &Path, _graph: usize) -> Result<PathBuf> {\n    Ok(child_process_path(build))\n}",
+        find: "fn graph_build_directory(build: &Path, graph: usize) -> Result<PathBuf> {\n    let directory = build.join(format!(\"graph-{graph}\"));\n    let directory = crate::mutation_workspace::prepare_real_child(\n        build,\n        &directory,\n        \"API audit graph build directory\",\n    )?;\n    Ok(crate::cargo::child_process_path(&directory))\n}",
+        replace: "fn graph_build_directory(build: &Path, _graph: usize) -> Result<PathBuf> {\n    Ok(crate::cargo::child_process_path(build))\n}",
         breaks: "mutually exclusive compiler graphs share incremental artifacts and lose cached diagnostics",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -10768,13 +10768,13 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
-        file: "xtask/src/api.rs",
-        find: "#[cfg(windows)]\nfn child_process_path(path: &Path) -> PathBuf {\n    use std::ffi::OsString;",
-        replace: "#[cfg(windows)]\nfn child_process_path(path: &Path) -> PathBuf {\n    return path.to_path_buf();\n    use std::ffi::OsString;",
+        file: "xtask/src/cargo.rs",
+        find: "            Prefix::VerbatimDisk(drive) => PathBuf::from(format!(\"{}:\\\\\", char::from(drive))),",
+        replace: "            Prefix::VerbatimDisk(_) => return path.to_path_buf(),",
         breaks: "Cargo receives a Windows verbatim target path it cannot use",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "api::tests::cargo_never_receives_a_windows_verbatim_target_path",
+            name: "cargo::tests::a_cargo_command_sheds_the_windows_verbatim_target_prefix",
         },
     },
     Mutation {
@@ -14024,6 +14024,22 @@ fn mint_stopped<'controller>(
             name: "mutation_workspace::tests::tracked_path_order_refuses_duplicates_and_reversals",
         },
     },
+    Mutation {
+        file: "xtask/src/cargo.rs",
+        find: r#"            Prefix::VerbatimUNC(server, share) => {
+                let mut root = OsString::from(r"\\");
+                root.push(server);
+                root.push(r"\");
+                root.push(share);
+                PathBuf::from(root)
+            }"#,
+        replace: "            Prefix::VerbatimUNC(_, _) => return path.to_path_buf(),",
+        breaks: "a Windows verbatim UNC target path reaches a GNU toolchain subprocess",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cargo::tests::a_cargo_command_sheds_the_windows_verbatim_unc_target_prefix",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -14451,7 +14467,10 @@ where
     let mut command = Command::new(env!("CARGO"));
     command
         .current_dir(paths.root())
-        .env("CARGO_TARGET_DIR", paths.target_dir())
+        .env(
+            "CARGO_TARGET_DIR",
+            crate::cargo::child_process_path(paths.target_dir()),
+        )
         .args(["test", "--package", package, name, "--", "--exact"]);
     let label = format!("host mutation test {package}::{name}");
     let output = run(command, HOST_TEST_TIMEOUT, &label)?;

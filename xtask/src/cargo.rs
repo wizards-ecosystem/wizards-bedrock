@@ -1,7 +1,7 @@
 //! Driving cargo.
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
@@ -56,8 +56,43 @@ fn command(paths: &Paths) -> Command {
     let mut command = Command::new(env!("CARGO"));
     command
         .current_dir(paths.root())
-        .env("CARGO_TARGET_DIR", paths.target_dir());
+        .env("CARGO_TARGET_DIR", child_process_path(paths.target_dir()));
     command
+}
+
+/// Return an equivalent path that command-line toolchains can consume.
+pub(crate) fn child_process_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::ffi::OsString;
+        use std::path::{Component, Prefix};
+
+        let mut components = path.components();
+        let Some(Component::Prefix(prefix)) = components.next() else {
+            return path.to_path_buf();
+        };
+        let mut ordinary = match prefix.kind() {
+            Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:\\", char::from(drive))),
+            Prefix::VerbatimUNC(server, share) => {
+                let mut root = OsString::from(r"\\");
+                root.push(server);
+                root.push(r"\");
+                root.push(share);
+                PathBuf::from(root)
+            }
+            _ => return path.to_path_buf(),
+        };
+        for component in components {
+            if !matches!(component, Component::RootDir) {
+                ordinary.push(component.as_os_str());
+            }
+        }
+        ordinary
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
 }
 
 /// Expand `packages` into the `--package NAME` pairs cargo expects.
@@ -139,6 +174,36 @@ mod tests {
         assert_eq!(command.get_current_dir(), Some(paths.root()));
         assert!(command.get_envs().any(|(name, value)| {
             name == "CARGO_TARGET_DIR" && value == Some(paths.target_dir().as_os_str())
+        }));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_cargo_command_sheds_the_windows_verbatim_target_prefix() {
+        let paths = Paths::new(
+            PathBuf::from(r"\\?\C:\repo"),
+            Some(std::path::Path::new(r"\\?\C:\repo\private-build")),
+        );
+        let command = command(&paths);
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "CARGO_TARGET_DIR"
+                && value == Some(std::ffi::OsStr::new(r"C:\repo\private-build"))
+        }));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_cargo_command_sheds_the_windows_verbatim_unc_target_prefix() {
+        let paths = Paths::new(
+            PathBuf::from(r"\\?\UNC\server\share\repo"),
+            Some(std::path::Path::new(
+                r"\\?\UNC\server\share\repo\private-build",
+            )),
+        );
+        let command = command(&paths);
+        assert!(command.get_envs().any(|(name, value)| {
+            name == "CARGO_TARGET_DIR"
+                && value == Some(std::ffi::OsStr::new(r"\\server\share\repo\private-build"))
         }));
     }
 }
