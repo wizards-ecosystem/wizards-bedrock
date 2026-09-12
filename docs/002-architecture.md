@@ -267,6 +267,10 @@ Compositor speaks `Channel` + shared `MemoryObject` buffers (Wayland's
 model, our protocol). Rendering is GPU-first (wgpu/vello-style compute 2D)
 targeting virtio-gpu in VMs, with a dumb-framebuffer fallback.
 
+The shell model, the compositor-drawn chrome and the toolkit's token contract
+are fixed in `019-userland.md` and `020-style-guide.md` (D-318, D-321);
+the CPU rendering fallback covers the toolkit as well as the framebuffer.
+
 ## Open questions (future docs)
 
 Still open:

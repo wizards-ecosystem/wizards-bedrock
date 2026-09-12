@@ -631,7 +631,7 @@ mod tests {
     /// Current-facing plans cannot quietly turn D-183 back into an experiment.
     #[test]
     fn wizzy_is_the_first_party_target_and_its_compiler_gate_is_closed() {
-        const CURRENT_PLANS: [&str; 7] = [
+        const CURRENT_PLANS: [&str; 9] = [
             "AGENTS.md",
             "README.md",
             "docs/000-vision.md",
@@ -639,6 +639,8 @@ mod tests {
             "docs/013-application-platform.md",
             "docs/015-wizzy-userland.md",
             "docs/016-pre-wizzy-foundation.md",
+            "docs/019-userland.md",
+            "docs/020-style-guide.md",
         ];
         const RETIRED_WORDING: [&str; 5] = [
             "provisionally Wizzy",
@@ -752,6 +754,8 @@ mod tests {
             "docs/002-architecture.md",
             "docs/013-application-platform.md",
             "docs/015-wizzy-userland.md",
+            "docs/019-userland.md",
+            "docs/020-style-guide.md",
         ] {
             let document =
                 std::fs::read_to_string(root.join(path)).unwrap_or_else(|_| panic!("{path}"));

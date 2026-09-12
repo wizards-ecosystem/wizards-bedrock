@@ -338,6 +338,11 @@ where rendering is headed.
 **Consequences.** GUI phase depends on memory objects + channels being
 solid; a terminal emulator is the first GUI client.
 
+**Amended by D-318 and D-321.** The shell model over this compositor is
+the strip with snap semantics under compositor-drawn chrome (D-318), and the
+toolkit is GPU-first with a CPU fallback, drawing from one token document
+(D-321).
+
 ---
 
 ## D-12 Security baseline from day one — Status: Accepted
@@ -503,6 +508,10 @@ throughout. Docs are numbered in creation order and never renumbered.
 **Rationale.** Multi-year projects survive on re-enterable context;
 docs-before-code makes every subsystem resumable after months away.
 Theme-in-code ages badly; theme-in-product is charm.
+
+**Amended by D-314.** Product names are plain instrument words and apps are
+named by function; the wizard identity stays in the ecosystem brand, the boot
+messages and the copy voice, and code stays conventional.
 
 ---
 
@@ -18364,3 +18373,431 @@ recursion made `nested_inherent_methods_remain_visible_to_api_contracts` lose
 the nested method. All four exact tests pass after restoration; the registry
 source and check-name proofs pass. The remaining complete-report outcomes and
 a clean successor sweep stay in PW-001.
+
+## D-312 A proof fixture reaches the predicate it names — Status: Accepted (2026-09-12), amends D-244 and D-301; advances PW-001
+
+**Context.** Five complete-sweep survivors remained in host checks whose broad
+fixtures stopped before, or passed around, the changed predicate. The NVMe
+source-order witness bounded the whole preparation path and therefore accepted
+a register write inside final construction before the cleanup owner existed.
+Qualified workspace type matching had a second path predicate which implied the
+one mutated. Three copies of the kernel-entry grammar could disagree, while the
+alternate fixture renamed only the macro argument and was rejected earlier for
+having no matching handler. Unknown item-macro shadowing and active dependency
+build-script rejection were each credited through integrated callers with
+other refusal doors.
+
+**Decision.** Bound the NVMe order proof to `finish_preparation` and require no
+register write before its `Controller` cleanup owner. Remove the redundant
+qualified-type clause. Parse the exact kernel-entry grammar once, retain the
+parsed handler in `EntrySpec`, and resolve that retained name; the alternate
+fixture changes both declaration and invocation so only the `kernel_main`
+identity guard can refuse it. Exercise item-macro shadow policy and active
+build-script validation directly before their integrated callers.
+
+Keeping broader fixtures as the only witnesses was rejected because their
+verdicts do not identify which contract refused the input. Retaining duplicate
+type and entry predicates was rejected because no mutation of one redundant
+layer can prove it is load-bearing.
+
+**Proof.** Injecting the early NVMe write failed
+`nvme_cleanup_and_bus_master_authority_precede_the_enable_write`. Discarding
+workspace-qualified identity failed
+`workspace_qualified_trait_implementations_bind_to_the_declaring_crate`.
+Admitting a different entry handler failed
+`exact_kernel_entry_reaches_its_handler_without_trusting_other_macro_tokens`.
+Trusting an unknown item macro and omitting active build scripts respectively
+failed
+`an_item_macro_disables_unqualified_transparency_across_its_caller_target` and
+`unreviewed_dependency_build_scripts_are_outside_the_audit_authority` at their
+new direct assertions. Each exact mutation was restored and its focused test
+passed; registry applicability and named-check validation passed. The successor
+sweep remains PW-001.
+
+## D-313 Mutation witnesses observe the changed state — Status: Accepted (2026-09-12), amends D-28, D-48, D-126, D-239, D-257, D-276 and D-301; advances PW-001
+
+**Context.** The last six survivors mixed redundant defenses with witnesses
+which observed a different transaction phase. Fabricating user-copy `CS` still
+left the ring-3 page-fault bit to reject recovery. Cursor removal deleted both
+hide and show, but scrolling cleared the old mark and the check never required
+a new one. Translation's later deliberate wrong-numbering seed inverted a stale
+decoder into the expected one. A one-word-short framebuffer shadow never
+accessed its terminal word during the boot. The I/O-APIC fixture ignored the
+initial mask write, so the first readback refused before the mutated final
+destination-clear check. The APIC failure observer never executed the successful
+commit whose Ready/interrupt-restoration order had changed.
+
+**Decision.** Bind the saved code selector through the existing exact
+architectural-adapter source contract. Make the cursor mutation remove only the
+new cursor publication and require both that the old mark is absent and the new
+underline is visible. Check decoder/identity agreement immediately after the
+translation transaction, before deliberately perturbing the decoder. Define a
+complete framebuffer shadow as an exact nonempty word count. Add an I/O-APIC
+takeover case which accepts the mask and ignores only the destination clear.
+Require the successful APIC commit's Release publication to precede interrupt
+restoration in the existing ordered-publication contract.
+
+Forcing unrelated machine paths to reach a terminal framebuffer word or turning
+a successful APIC commit into a failure probe was rejected because those would
+test incidental workload shape. Removing the independent page-fault privilege
+or first I/O-APIC readback defenses was rejected because witness repair must not
+weaken the boundary it proves.
+
+**Proof.** The exact user-copy and APIC-order mutations failed
+`each_recovery_adapter_binds_the_live_architectural_values` and
+`apic_ready_publication_precedes_dependent_vector_reads`. Four release QEMU
+breaks failed exactly `a scroll moves one visible cursor`, `translation updates
+the decoder from the controller identity`, `the console has a complete shadow
+to scroll from`, and `a refused keyboard route restores configuration, masking
+and mappings`, each at 260/261 with no second failure. After restoration the
+combined release image passed 261/261. Together D-302 through D-313 now repair
+all 34 survivors in the `f28428a` report; its 24 inconclusive outcomes and the
+clean complete successor sweep remain PW-001.
+
+## D-314 The userland is designed before its compiler, as a specification — Status: Accepted (2026-09-12), refines D-19, D-183 and D-184
+
+**Context.** D-183 closed the compiler-readiness gate and stopped Phase 7
+product implementation; D-184 made `016-pre-wizzy-foundation.md` the only
+pre-gate backlog so that kernel polish could not become userland design before
+a real compiler artifact exists. Neither said when the userland's design is
+written. The four earlier research passes cover the kernel, Rust practice,
+POSIX and storage and nothing above them; the vision names a compositor, a
+toolkit, a shell and a terminal but no interaction model, no file model, no
+service model and no style. Meanwhile the language repository's roadmap homes
+the OS userland at its last milestone and asks, in `os-userland.md`, what the
+OS needs from the platform seam. The owner asked on 2026-09-12 for the
+userland to be researched and designed now, as if Wizzy were complete, for one
+developer at a keyboard-first desktop.
+
+**Decision.** `018-research-notes-5.md` records the research pass,
+`019-userland.md` designs the userland and `020-style-guide.md` fixes its
+visual and interaction language. All three are specification: they add no
+target-side code, no consumer scaffolding and no register rows, they state
+the gate's standing in one paragraph each, and they assume a complete Wizzy so
+that the design is made once rather than shaped by whichever compiler feature
+lands first. Their handoff is two ledgers in `019` section 15: the kernel
+prerequisites the design forces, each with its Wizzy caller, and the language
+milestones it stands on, mapped to the language repository's own rows. Product
+names are plain instrument words (the bench, the rail, the strip, the palette,
+places, the ledger, the works) and apps are named by function; the wizard
+identity lives in the ecosystem brand, the boot messages and the copy voice,
+which refines D-19's theme sentence without changing its rule that code stays
+conventional.
+
+**Rationale.** A design document is the "specification" work D-183 admits,
+and writing it while the gate is closed is what `015` calls harmless. Every
+desktop in `018` that designed each surface when its phase arrived grew two of
+everything: two settings applications, two menus, three theming systems, two
+workspace concepts. Designing the whole userland at once is the only way to
+have one of each. Assuming a complete language is not a claim that it exists:
+the assumptions are enumerated so the language repository can price them.
+
+**Alternatives.** Designing each piece as its phase arrives was rejected for
+the reason above. Waiting for the gate to open was rejected because the
+compiler repository is asking now what the OS needs, and an answer derived
+from a design is worth more than one derived from the kernel's current shape.
+Writing scaffolding behind the gate was rejected by D-183 and stays rejected.
+
+**Consequences.** The repository check that keeps D-183's wording honest lists
+`019` and `020` among the current-facing plans, so both must name the
+governing decisions and neither may restore the retired language-selection
+wording. The three documents are numbered in creation order after `017`.
+Nothing in `016` changes: the kernel prerequisites in `019` are post-gate items
+with named callers, exactly as `016`'s "Explicitly after the compiler gate"
+classifies such work, and they enter the register only when the gate opens and
+a caller exists.
+
+**Proof.** Removing the literal `D-183` from `019-userland.md` made
+`wizzy_is_the_first_party_target_and_its_compiler_gate_is_closed` fail naming
+that file; restoring it passed, with the register-shape, link and citation
+checks green beside it.
+
+## D-315 One command registry serves every surface — Status: Accepted (2026-09-12)
+
+**Context.** A desktop has at least six ways to invoke an action: a menu, a
+context menu, a shortcut, a launcher, a script and an assistive technology.
+Windows, macOS and every Linux desktop built them separately and are now
+retrofitting palettes, automation and accessibility one at a time (`018`
+sections 2 and 7). This OS has one toolkit and one language, so it can pay for
+the unification once.
+
+**Decision.** Every action a program offers is a command record: an id in
+`noun.verb` form, typed parameters, the effect set the action needs, a default
+binding, a menu placement, a context predicate and, where one exists, an
+inverse. The toolkit registers a program's table and exports it over a typed
+interface; the bench merges every table. Window menus and context menus are
+rendered from the registry, the palette searches it, the shell calls it,
+scripts and agents invoke it, jump lists are its pinned entries, the
+accessibility tree exposes it as actions, and the test harness drives programs
+through it rather than through synthesized input. `019` section 6 has the
+details, the palette and the bench key map.
+
+**Rationale.** One inventory means one place for bindings, one place for
+discoverability, and one place for automation and accessibility to attach.
+macOS's menu discipline (every command in a menu with its shortcut) is the
+part worth keeping; rendering the menus in the window and searching the same
+inventory from a palette is the Windows-leaning half.
+
+**Alternatives.** Per-app menus plus a launcher that indexes desktop files was
+rejected because it is what every platform is now replacing. A scripting
+layer that synthesizes input was rejected because it is brittle, invisible to
+accessibility and unauditable.
+
+**Consequences.** The toolkit cannot draw a control that invokes an
+unregistered action, and the test harness for first-party apps is written
+against ids. Teach-me mode and type-to-jump (`019` sections 6.3 and 6.4) are
+experiments built on the registry and carry kill criteria.
+
+## D-316 Designation is authorization, and requirements and grants are two documents — Status: Accepted (2026-09-12), refines D-111 and D-183; resolves the placement fork in `013-application-platform.md`
+
+**Context.** D-111 gives a program exactly one handle at birth. `013` reserved
+an ELF note namespace for what a program requires and left open whether a
+program's requirements and a deployment's grants are one document or two,
+because no package format existed. `015` fixed that effects are requests and
+never grants. Three independent traditions in `018` section 3.4 (the powerbox,
+Access Control Gadgets, Sculpt's component graph) reached the same rule for
+the user interface: derive authority from what the user is already doing and
+show the graph, never ask. Fuchsia's manifest-only routing, which asks nobody,
+is documented to encourage over-permissioning; macOS's re-consent prompts are
+documented to loop.
+
+**Decision.** Requirements are derived by the compiler, carried in the D-226
+envelope as `effects.required`, copied into the package manifest, and never
+hand-edited past the image build. Grants are the user's decision, kept by the
+bench in a per-program grant document that names the artifact digest it was
+made against. The ELF `PT_NOTE` reservation stays empty. A first launch, or a
+version whose requirements changed, shows the difference against the grant
+document and records the answer; a non-interactive session refuses instead.
+At run time there are no prompts: a missing holding is a typed refusal that
+the toolkit turns into the gesture that would grant it. The gestures that
+grant are the bench-drawn picker, a drop from Files, a plumbing message
+carrying an attenuated holding, and, as an experiment, a drop of one window
+onto another. The compositor draws a trust label in every window's title bar
+and owns that region. The Ledger app lists holdings, grants and refusals per
+program; its revoke ends the program until the kernel has epoch revocation,
+which `019` section 15 names as a prerequisite with the Ledger as caller. A
+component that acts without a user in the loop is marked `agent`, runs in
+restricted mode, is logged under its own identity and cannot grant to itself.
+
+**Rationale.** Two documents because they are two things: a claim a program
+makes about itself and a decision its user made. Deltas because lists get
+rubber-stamped and deltas get read. No prompts because a prompt asks the
+user about authority instead of deriving it from designation, and the
+evidence that this fails is thirty years old.
+
+**Alternatives.** Requirements in the executable alone were rejected because a
+deployment's policy must be able to differ from a build. Runtime prompts were
+rejected on the evidence above. A single merged document was rejected because
+a program could then edit its own grant.
+
+**Consequences.** `013`'s decision 5 is resolved. The bench needs a picker, a
+drop protocol and a label region before any app; the plumber attenuates.
+Kernel epoch revocation is a named post-gate prerequisite.
+
+## D-317 The shell is typed and effect-previewed, and the terminal is a record protocol — Status: Accepted (2026-09-12), refines D-10 and D-183
+
+**Context.** `015` slice 8 requires a TTY protocol, a line editor, a shell and
+pipelines made from explicit channels with no `fork` and no inherited
+descriptors. `018` section 4 found the structured shells proven with one
+recurring failure (type inference that passes on the first rows and fails on
+the stream), the structured-shell interoperation tax concentrated at the byte
+boundary, every successful terminal extending VT100 toward records, and the
+critics of VT100 right about the cause. A compiler on the target is
+deliberately later.
+
+**Decision.** The shell speaks Wizzy's expression syntax over Wizzy's values
+and evaluates a bounded command sublanguage itself, single-pass and without
+macro processing; larger programs compile where the compiler runs. Pipes carry
+values encoded in one canonical, versioned, streaming wire format,
+`wizard-wire-v1`, defined in a host-testable crate before the shell; `bytes`
+is the explicit escape hatch and the annex always speaks bytes. A stage
+declares its output type or declares it unknown; a consumer that needs a known
+type refuses an unknown one. Before a line runs the shell shows the union of
+its stages' declared requirements narrowed by the holdings it will pass, which
+needs manifests, not a compiler. A pipeline is a job with a scope; cancel uses
+the ring's Cancel opcode. The terminal is a session protocol whose unit is a
+record (prompt, command, output chunk, status, input, resize, focus) with a
+grid per command; keyboard input carries press, repeat, release and alternates;
+images, text sizes, hyperlinks and typed clipboard entries are native. VT100
+is a compatibility component that decodes a foreign program's bytes into the
+same records inside the annex. `019` sections 7 and 8 have the details.
+
+**Rationale.** Typed inside is what a single-language OS can afford and what
+every shell user wanted from nushell without the breakage; bytes at the
+boundary is YSH's exterior-first rule and D-10's translation-layer rule
+applied to pipes. Records are where Warp, Ghostty and tmux are already going
+one escape sequence at a time.
+
+**Alternatives.** Byte pipes with structure at the edges were rejected because
+they put the type errors where users are. A VT100 terminal as the native
+surface was rejected because it would make the annex the whole system.
+Inferring types from the first records was rejected on the evidence.
+
+**Consequences.** The wire format and the session protocol are the first two
+host-testable crates of Phase 7 after the runtime shim, and `015` slice 8's
+TTY protocol is the session protocol. The Phase 7 console renderer is
+disposable; the records are not.
+
+## D-318 The bench is a strip with snap semantics and a complete rail — Status: Accepted (2026-09-12), amends D-11
+
+**Context.** D-11 chose an own compositor over a Wayland-shaped protocol and
+named a terminal as the first client, and said nothing about how windows are
+arranged. The owner's answer for the window model was a creative combination
+of a scrollable strip and floating with snap, leaning towards the strip, for
+a keyboard-first desktop. `018` found the strip to be the first tiling model
+that never resizes what is being read, stacks to be a compositor primitive
+worth having, Windows' snap fractions and taskbar to be what its users will
+not give up, and the taskbar's five-year restoration to be the anti-example.
+
+**Decision.** Each output is an infinite horizontal strip of columns; a column
+is a stack of windows shown as tabs; widths snap to a third, a half, two
+thirds and full; a new window opens at natural width beside the focused column
+and never resizes it; a bay is a named strip segment recalled from the rail;
+floating is one key away with Mosaic placement and the same snap fractions,
+and may be set as the default for new windows. Workspaces stack per output and
+there is exactly one organising hierarchy. The rail is complete on the first
+day: labelled and ungrouped by default, any edge, pinned slots, jump lists
+from the registry, a strict background-program area with no pixmaps, visible
+when a column is filled. The compositor draws all chrome to the numbers in
+`020` section 9, with 0 px corners in the strip and 8 px floating, a trust
+label and a kill switch for a hung window; focus is click-through. Session
+restore is a compositor primitive from the first release; the greeter runs the
+bench's own code path; a safe mode boots with every user layer disabled. The
+privileged parts of the protocol are separate interfaces granted by capability
+to bench components. `019` section 9 has the details.
+
+**Rationale.** The strip's one rule is what makes keyboard-first tiling
+livable, and keeping the snap fractions, the rail and click-through focus
+whole is what makes it Windows-leaning rather than a tiling lifestyle. Floating
+as a mode of the same shell rather than a second shell is the fusion the owner
+asked for.
+
+**Alternatives.** Floating-first with a tiling mode was rejected as the
+default because it makes the strip's rule an option nobody discovers.
+Tiling-first with automatic layouts was rejected because automatic layouts
+resize what is being read. Activities or spaces beside workspaces were
+rejected on KDE's evidence.
+
+**Consequences.** D-11's graphics direction is amended to name the shell
+model and the compositor-drawn chrome; its terminal-first client order stands.
+The compositor needs restore tokens, the label region and the capability-gated
+privileged interfaces before the first app.
+
+## D-319 The works are a static, verified, supervised and lazily started component graph — Status: Accepted (2026-09-12), refines D-14 and D-111
+
+**Context.** `002` pillar 4 says no daemons by default and pillar 6 says
+services are supervised, not unwound; D-14 chose supervision on Theseus's
+evidence; D-111 gives every program one handle. `015` slice 7 will add
+process objects and exit status. `018` section 6 found the pieces proven
+separately: a service database compiled and verified offline (s6-rc), typed
+dependency edges with readiness (dinit), on-demand start from a declared
+endpoint (launchd), a fixed task set with no fork (Hubris), and the runtime
+graph as the admin view with parents paying for children (Genode, Sculpt).
+Nothing ships the combination.
+
+**Decision.** A component is one Wizzy program plus a manifest naming its
+artifact, its derived requirements, the interfaces it exposes, its
+dependencies with a readiness kind, its start policy, its supervision policy
+and its quota. The base system's components, edges and routes are compiled at
+image build into the works file and verified there: acyclic, every dependency
+present, every route provided at its version, every quota inside its parent's,
+every unmet requirement marked degraded rather than hidden. init builds the
+supervisor from that file and does nothing else; the supervisor owns every
+lifetime, applies policies and logs every failure with an incarnation. A
+`lazy` component starts on the first message to a front door the supervisor
+holds and may retire when idle. Quotas flow down and an over-quota child is
+refused before it exists. The Works app draws the live graph, and editing a
+route edits the works file, which applies when written. Log records carry
+supervisor-asserted fields apart from program-written ones. `019` section 3
+has the details.
+
+**Rationale.** A base system whose component set is fixed cannot accrete
+daemons, a graph verified offline fails at build time, and a graph that is
+also the admin view is how sandboxing becomes legible instead of prompt-heavy.
+User-installed programs stay dynamic leaves under the bench.
+
+**Alternatives.** A dynamic service manager with units was rejected because
+flexibility in the base system is how daemons accrete. Unsupervised services
+with restart scripts were rejected by D-14 already.
+
+**Consequences.** PW-700's quota accounting has its caller. Process objects,
+exit status and a multi-program image are prerequisites named in `019`
+section 15. The boot self-test reads the works file back.
+
+## D-320 Artifacts and packages are hash-addressed and reproducible, with generations, A/B images and a safe mode — Status: Accepted (2026-09-12), refines D-73 and D-226
+
+**Context.** D-226 gave the Wizzy handoff a route-neutral envelope carrying a
+digest and provenance; `015` requires two clean builds to agree byte for byte
+and keeps package installation behind WizFS (D-73). `018` sections 1.5, 3.7
+and 6 found content-addressed stores with generations to be the only rollback
+story users understand, A/B images with a fallback boot to be settled
+practice, and image-based desktops to cost their users a safe mode and an
+inventory when they lack one.
+
+**Decision.** A program ships as a reproducible artifact in the D-226
+envelope; a package is an immutable, content-addressed set of components with
+a signed provenance record and the derived manifests of D-319; the store is
+addressed by digest. Until WizFS the image is read-only and the store ships
+inside it. Installation, when it arrives, is profile mutation: a profile is a
+document naming a user's components and grant documents, every change is a new
+generation, and generations of the profile and of the base image are the two
+axes of one Updates panel showing current, previous and rollback. The image is
+A/B with a verified inactive slot and a fallback boot; safe mode boots the
+current image with every user layer disabled.
+
+**Rationale.** The envelope already carries the digest, so addressing the
+store by it costs nothing and makes reproducibility a property of the package
+format rather than a later audit. Deciding the shape now keeps the image build
+honest about what it consumes.
+
+**Alternatives.** A mutable package database was rejected because rollback
+then means backup. Application bundles without a store were rejected because
+they cannot deduplicate or verify. Deferring the decision to Phase 13 was
+rejected because the image build consumes artifacts in Phase 7.
+
+**Consequences.** The image build's digest check is the first half of this
+decision and exists; the profile and the Updates panel wait for WizFS. `019`
+section 11 has the details.
+
+## D-321 One toolkit and one style source, with tokens as the OS API — Status: Accepted (2026-09-12), amends D-11 and refines D-19
+
+**Context.** D-11 chose a GPU-first native toolkit and said nothing about its
+style. `.github/BRAND.md` fixed the ecosystem's palette, typefaces, voice and
+interface rules on 2026-09-08. `018` found every desktop that grew a second
+toolkit or theming system paying for it for years, Windows' three UI
+generations and macOS's Liquid Glass as the current cautionary examples, and
+the Design Tokens format, OKLCH, libadwaita's accent derivation, Windows'
+contrast themes and base24 as settled practice.
+
+**Decision.** One toolkit draws every first-party surface from one token
+document per theme in the Design Tokens format with OKLCH values, resolved
+global to semantic to component; a theme may set semantic tokens only and is
+validated for contrast before use. The brand's palette and faces are the OS's
+own: Instrument Sans for the interface, Newsreader for reading, JetBrains
+Mono for code, Atkinson Hyperlegible Next for accessibility, all OFL; Tabler
+outlines for system icons; the brand's instrument style for program icons.
+Appearance, contrast and motion are three independent preferences; the
+contrast theme is a separate 7:1 palette with eight roles; reduced motion and
+reduced transparency are hard switches. The base material is opaque and
+tinted, translucency is confined to transient surfaces, radii are three fixed
+tokens, a stroke replaces the key shadow, and the type ramp, spacing grid,
+elevation levels, motion curves and chrome measures are the ones
+`020-style-guide.md` records. The toolkit's renderer has a CPU backend beside
+the GPU one so the bench runs before a GPU driver exists, which amends D-11's
+GPU-first sentence into GPU-first with a CPU fallback for the toolkit as well
+as the framebuffer.
+
+**Rationale.** A tiny vocabulary is what let Windows' new surfaces feel like
+one product cheaply and what let libadwaita apps look like they belong; the
+failure in both cases was covering only part of the system. A first-party
+toolkit used by every first-party app, with tokens third parties inherit, is
+the only design that covers all of it.
+
+**Alternatives.** Per-app themes were rejected on the evidence. A cascading
+style system was rejected because the cascade is where consistency goes to
+die and where layout becomes circular. Choosing faces outside the OFL was
+rejected because the image must bundle them.
+
+**Consequences.** The token document and its contrast checks are host-tested
+before the toolkit exists. `020` is listed with `019` among the current-facing
+plans. D-11 and D-19 gain amendment notes.

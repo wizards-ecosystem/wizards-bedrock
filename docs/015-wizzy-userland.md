@@ -539,6 +539,10 @@ an interpreter into the kernel, or disguise POSIX as native.
 - the Component Model, still D-72's watch item;
 - graphics and the document-web integration phases.
 
+The userland those phases build is designed in `019-userland.md` and
+`020-style-guide.md` (D-314). That design is a specification: it moves
+none of the items above and adds nothing to the register.
+
 The claim is not that Wizzy is the first code to cross the boundary: D-116's
 emitted probe already did that. The stronger result is that the first real
 first-party system program is Wizzy, carried by a runtime that reaches the same

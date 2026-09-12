@@ -51,7 +51,8 @@ code (design-first). Start with the
 and rationale) and the [architecture](docs/002-architecture.md). Research
 evidence behind them is in [the founding pass](docs/003-research-notes.md),
 [the second pass](docs/008-research-notes-2.md), and
-[the foundation-verification pass](docs/010-research-notes-3.md); later passes
+[the foundation-verification pass](docs/010-research-notes-3.md) and
+[the userland pass](docs/018-research-notes-5.md); later passes
 annotate corrections to the earlier historical snapshots.
 [Code conventions](docs/005-code-conventions.md) covers how the code is written.
 

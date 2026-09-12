@@ -121,7 +121,8 @@ reference, not followed linearly). Docs are numbered in creation order.
    runtime and platform preparation needed to open the compiler-readiness gate
    in `015-wizzy-userland.md`; product `init`, TTY, shell and tmpfs-backed tools
    wait at that gate and are then written in Wizzy. Core Wasm + `wasip1`
-   remains a first-class app format (D-72). AOT is not assumed
+   remains a first-class app format (D-72). AOT is not assumed. The userland
+   itself is designed in `019-userland.md` and `020-style-guide.md` (D-314)
 8. Network: Rust kernel-side NIC and async-socket work, third-party `smoltcp`
    and `rustls`, and a Wizzy-first capability-native client/service (D-183)
 9. POSIX gateway and compatibility runtimes: mlibc grown from Phase 5's

@@ -296,6 +296,8 @@ each one names is the reason the answer is not obvious.
 5. **Requirements in the image or in a package.** Deferred above; recorded here
    so the deferral is on the record rather than in a paragraph.
 
-   **Still deferred, deliberately.** There is no package format to put them
-   in, and `PT_NOTE` is reserved either way. Fuchsia, Android and macOS all
-   chose the package, and all three had one.
+   **Resolved by D-316.** Requirements are derived into the package
+   manifest and grants are the bench's per-program document; the note
+   namespace stays empty. The deferral read: there is no package format to
+   put them in, and `PT_NOTE` is reserved either way; Fuchsia, Android and
+   macOS all chose the package, and all three had one.
