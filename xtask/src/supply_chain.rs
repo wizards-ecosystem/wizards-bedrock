@@ -1062,7 +1062,7 @@ mod tests {
     }
 
     #[test]
-    fn supply_chain_text_never_follows_a_file_redirect() {
+    fn supply_chain_text_rejects_a_redirect_before_opening() {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1076,9 +1076,51 @@ mod tests {
         std::fs::create_dir(&fixture).unwrap();
         std::fs::write(&source, b"outside authority").unwrap();
         create_file_symlink(&source, &redirected);
+        let opened = std::cell::Cell::new(false);
 
-        assert!(read(redirected, MAX_INVENTORY_BYTES, "fixture inventory").is_err());
+        assert!(
+            read_with(redirected, MAX_INVENTORY_BYTES, "fixture inventory", || {
+                opened.set(true);
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!opened.get(), "a redirected file was opened before refusal");
         assert_eq!(std::fs::read(&source).unwrap(), b"outside authority");
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn supply_chain_text_revalidates_its_path_after_reading() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let fixture = std::env::temp_dir().join(format!(
+            "wizard-supply-text-revalidation-{}-{nonce}",
+            std::process::id()
+        ));
+        let path = fixture.join("inventory.txt");
+        let outside = fixture.join("outside");
+        std::fs::create_dir(&fixture).unwrap();
+        std::fs::write(&path, b"original authority").unwrap();
+        std::fs::write(&outside, b"outside authority").unwrap();
+        let replacement = path.clone();
+        let substituted = std::cell::Cell::new(false);
+
+        let result = read_with(path, MAX_INVENTORY_BYTES, "fixture inventory", || {
+            std::fs::remove_file(&replacement)?;
+            create_file_symlink(&outside, &replacement);
+            substituted.set(true);
+            Ok(())
+        });
+
+        assert!(
+            substituted.get(),
+            "the pathname substitution fixture did not run"
+        );
+        assert!(result.is_err(), "a substituted pathname was not refused");
+        assert_eq!(std::fs::read(&outside).unwrap(), b"outside authority");
         std::fs::remove_dir_all(fixture).unwrap();
     }
 

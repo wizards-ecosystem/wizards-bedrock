@@ -75,6 +75,10 @@ pub(crate) fn output_with_limit(
     let status = poll_child_with(child, Child::try_wait, Child::kill, timeout, label, || {
         capture.require_within_limit(capture_limit)
     })?;
+    collect_output(&capture, status, capture_limit)
+}
+
+fn collect_output(capture: &Capture, status: ExitStatus, capture_limit: usize) -> Result<Output> {
     capture.collect_with_limit(status, capture_limit)
 }
 
@@ -628,7 +632,7 @@ mod tests {
         std::fs::write(&capture.stdout.path, b"four").unwrap();
         std::fs::write(&capture.stderr.path, b"two").unwrap();
 
-        let error = capture.collect_with_limit(success_status(), 5).unwrap_err();
+        let error = collect_output(&capture, success_status(), 5).unwrap_err();
         assert!(format!("{error:#}").contains("exceeded 5 bytes"));
     }
 
@@ -699,6 +703,8 @@ mod tests {
     #[ignore]
     fn noisy_capture_fixture_child() {
         std::io::stdout().write_all(&[b'x'; 4096]).unwrap();
+        std::io::stdout().flush().unwrap();
+        std::thread::sleep(Duration::from_secs(10));
     }
 
     #[test]
@@ -726,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn a_caller_specific_capture_limit_stops_a_noisy_child() {
+    fn a_caller_specific_capture_limit_is_polled_while_the_child_is_live() {
         let mut command = Command::new(std::env::current_exe().unwrap());
         command.args([
             "--exact",

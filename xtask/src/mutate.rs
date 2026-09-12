@@ -8919,7 +8919,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "child polling ignores its caller-specific capture ceiling",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "bounded_process::tests::a_caller_specific_capture_limit_stops_a_noisy_child",
+            name: "bounded_process::tests::a_caller_specific_capture_limit_is_polled_while_the_child_is_live",
         },
     },
     Mutation {
@@ -8929,7 +8929,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "completed child collection ignores its caller-specific capture ceiling",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "bounded_process::tests::a_caller_specific_capture_limit_stops_a_noisy_child",
+            name: "bounded_process::tests::captured_output_cannot_grow_collection_memory_past_its_limit",
         },
     },
     Mutation {
@@ -9079,7 +9079,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "supply-chain text follows a redirected file before opening it",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "supply_chain::tests::supply_chain_text_never_follows_a_file_redirect",
+            name: "supply_chain::tests::supply_chain_text_rejects_a_redirect_before_opening",
         },
     },
     Mutation {
@@ -9089,7 +9089,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         breaks: "supply-chain text does not revalidate its direct file after reading",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "supply_chain::tests::supply_chain_text_never_follows_a_file_redirect",
+            name: "supply_chain::tests::supply_chain_text_revalidates_its_path_after_reading",
         },
     },
     Mutation {
