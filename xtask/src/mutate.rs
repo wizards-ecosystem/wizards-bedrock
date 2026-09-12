@@ -906,9 +906,9 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/qualification.rs",
-        find: "            .rfind(\"let qualification_attempt = qualification::begin_mutation\")",
-        replace: "            .find(\"let qualification_attempt = qualification::begin_mutation\")",
-        breaks: "the exceptional-order check reads its registry fixture instead of production",
+        find: "        let mutation_start = mutation_source\n            .rfind(\"\\npub fn run(paths: &Paths) -> Result<()> {\")\n            .unwrap();",
+        replace: "        let mutation_start = 0;",
+        breaks: "the exceptional-order check admits mutation registry fixtures as production markers",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "qualification::tests::exceptional_tasks_commit_only_after_their_terminal_verdict",
@@ -1318,10 +1318,10 @@ pub const MUTATIONS: &[Mutation] = &[
         file: "xtask/src/vmware.rs",
         find: "        !text.contains('\\0'),",
         replace: "        true,",
-        breaks: "a transcript containing a NUL byte qualifies",
+        breaks: "a NUL transcript reaches canonical-text validation",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "vmware::tests::a_vmware_selftest_transcript_is_complete_current_and_unambiguous",
+            name: "vmware::tests::a_nul_transcript_is_rejected_before_canonical_text_validation",
         },
     },
     Mutation {

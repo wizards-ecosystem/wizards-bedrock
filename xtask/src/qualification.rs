@@ -5484,11 +5484,18 @@ mod tests {
         record
             .insert("input.tlc-jar.sha256", "e".repeat(64))
             .unwrap();
+        for artifact in crate::model::TRANSCRIPT_ARTIFACTS {
+            fixture_artifact(&mut record, artifact.prefix, artifact.name);
+        }
         record.insert("result", PASS).unwrap();
         invalidate(&paths, Kind::Model).unwrap();
         std::fs::write(repository.join("tracked"), "changed\n").unwrap();
 
-        assert!(commit_record(&paths, Kind::Model, &record).is_err());
+        let error = commit_record(&paths, Kind::Model, &record).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("qualification requires a stable clean checkout"),
+            "{error:#}"
+        );
         assert!(
             !kind_directory(&paths, Kind::Model)
                 .unwrap()
@@ -5588,18 +5595,29 @@ mod tests {
             .unwrap();
         assert!(begin < preflight && preflight < runs && runs < capture && capture < pass);
 
-        let mutation = include_str!("mutate.rs");
-        let begin = mutation
-            .rfind("let qualification_attempt = qualification::begin_mutation")
+        let mutation_source = include_str!("mutate.rs");
+        let mutation_start = mutation_source
+            .rfind("\npub fn run(paths: &Paths) -> Result<()> {")
             .unwrap();
-        let open = mutation.rfind("let mut session = Session::open").unwrap();
-        let complete = mutation.rfind("let outcomes = session.complete").unwrap();
-        let current = mutation
-            .rfind("let pass = crate::mutation_workspace::current_pass")
-            .unwrap();
-        let pass = mutation
-            .rfind("qualification_attempt.pass(&pass)?;")
-            .unwrap();
+        let mutation_end = mutation_source[mutation_start..]
+            .find("\npub(crate) fn registry_fingerprint")
+            .unwrap()
+            + mutation_start;
+        let mutation = &mutation_source[mutation_start..mutation_end];
+        let unique = |marker| {
+            let occurrences: Vec<_> = mutation.match_indices(marker).collect();
+            assert_eq!(
+                occurrences.len(),
+                1,
+                "mutation run marker `{marker}` is not unique"
+            );
+            occurrences[0].0
+        };
+        let begin = unique("let qualification_attempt = qualification::begin_mutation");
+        let open = unique("let mut session = Session::open");
+        let complete = unique("let outcomes = session.complete");
+        let current = unique("let pass = crate::mutation_workspace::current_pass");
+        let pass = unique("qualification_attempt.pass(&pass)?;");
         assert!(begin < open && open < complete && complete < current && current < pass);
 
         let start = qualification.find("impl VmwareAttempt").unwrap();

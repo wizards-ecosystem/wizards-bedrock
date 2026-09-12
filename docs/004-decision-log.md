@@ -18170,3 +18170,93 @@ snapshot's contained-file check made
 complete linked tree. Each exact test passes with its guard restored; the
 registry source and check-name proofs pass. The remaining complete-report
 outcomes and a clean successor sweep stay in PW-001.
+
+## D-306 Commit-time source witnesses pass every earlier record contract — Status: Accepted (2026-09-12), amends D-244 and D-301; advances PW-001
+
+**Context.** Complete-sweep mutation 47 removed the final source recheck before
+a qualification record is renamed into authority, but its named test survived.
+The model-record schema had gained six transcript artifacts since that fixture
+was authored. Its handcrafted record omitted all six, so `validate_record`
+refused it before the test could dirty the source and reach the mutated check.
+A broad error assertion credited the earlier schema failure.
+
+**Decision.** The fixture authors a complete current model record, including
+every registered transcript artifact, while retaining the real commit and tree
+captured from its private Git repository. After changing a tracked file, it
+requires the specific stable-clean-checkout error from the immediate pre-rename
+source capture. Production source binding and the retained mutation are
+unchanged.
+
+Weakening record validation for this test was rejected because a commit-time
+witness must first satisfy every contract that precedes commit. Checking only
+that no final record exists was rejected because any early return could satisfy
+that consequence without exercising source identity.
+
+**Proof.** With the final `require_current_source` call removed exactly as
+mutation 47 specifies, `commit_record` returned success and
+`source_is_rechecked_immediately_before_a_record_commits` failed at its required
+error. With the guard restored, the complete fixture reaches and reports the
+specific dirty-checkout refusal. The registry source and check-name proofs pass;
+the remaining complete-report outcomes and a clean successor sweep stay in
+PW-001.
+
+## D-307 Source-order witnesses are confined to the executable body — Status: Accepted (2026-09-12), amends D-244 and D-301; advances PW-001
+
+**Context.** Complete-sweep mutation 85 changed the mutation-lifecycle order
+test from its last `begin_mutation` marker to its first, but survived. The test
+searched all of `mutate.rs`; the persistent mutation registry necessarily
+quotes production source, so the first marker belonged to a registry fixture.
+The other markers still came from the executable function, and their numeric
+offsets remained ordered. The assertion therefore accepted a sequence assembled
+from two different source regions.
+
+**Decision.** The order witness first isolates the exact `mutate::run` body
+between its public signature and the next item, then requires each lifecycle
+marker to occur exactly once inside that body before comparing offsets. The
+non-load-bearing mutation is replaced by removing the production-body anchor,
+which admits registry literals and directly violates the stated invariant.
+
+Escaping or renaming registry strings was rejected because persistent mutations
+must continue quoting exact source. Retaining `rfind` over the whole file was
+rejected because incidental item order, rather than an executable-body boundary,
+would remain part of the proof.
+
+**Proof.** Replacing the production-body offset with zero made
+`exceptional_tasks_commit_only_after_their_terminal_verdict` find three
+`begin_mutation` markers and fail its uniqueness requirement. With the anchor
+restored, all five lifecycle markers are unique and ordered. The replacement
+mutation matches once and its named check exists; the remaining report outcomes
+and a clean successor sweep stay in PW-001.
+
+## D-308 Transcript witnesses preserve every contract except the one under test — Status: Accepted (2026-09-12), amends D-244 and D-301; advances PW-001
+
+**Context.** Complete-sweep mutations 122, 126 and 127 weakened canonical VMware
+transcript validation but survived one integrated test. The duplicate-marker
+fixture placed two messages on one line, yielding zero canonical occurrences
+instead of two. The NUL fixture was also rejected by the following general
+control-character check. The invalid UTF-8 byte followed the terminal newline,
+so lossy decoding still produced text without a terminal newline. Each broad
+error assertion was satisfied outside the check its mutation removed.
+
+**Decision.** Duplicate one complete canonical info record, place invalid UTF-8
+inside an otherwise complete additional record, and observe the explicit NUL
+check immediately before general canonical-text validation. The NUL and control
+checks remain independent: the former rejects a format-significant sentinel
+explicitly, while the latter closes the complete control-character class.
+
+Dropping either redundant character check was rejected because a masked witness
+does not make its production defense unnecessary. Combining marker text on one
+line and appending poison after the transcript terminator were rejected because
+those fixtures violate unrelated grammar before reaching multiplicity or
+decoding policy.
+
+**Proof.** Accepting any nonempty marker population made the canonical duplicate
+record pass and failed
+`a_vmware_selftest_transcript_is_complete_current_and_unambiguous`. Replacing
+the NUL predicate with true made
+`a_nul_transcript_is_rejected_before_canonical_text_validation` reach its next
+layer and fail. Replacing strict UTF-8 with lossy decoding accepted the interior
+invalid byte and failed the integrated self-test transcript witness. All three
+exact tests pass with production checks restored; registry source and check-name
+proofs pass. The remaining report outcomes and a clean successor sweep stay in
+PW-001.

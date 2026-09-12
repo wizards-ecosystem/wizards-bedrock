@@ -251,11 +251,24 @@ pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
 }
 
 pub(crate) fn verify_transcript(root: &Path, kernel: Kernel, bytes: &[u8]) -> Result<()> {
+    verify_transcript_with(root, kernel, bytes, || Ok(()))
+}
+
+fn verify_transcript_with<F>(
+    root: &Path,
+    kernel: Kernel,
+    bytes: &[u8],
+    after_nul_check: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
     let text = std::str::from_utf8(bytes).context("VMware transcript is not UTF-8")?;
     ensure!(
         !text.contains('\0'),
         "VMware transcript contains a NUL byte"
     );
+    after_nul_check()?;
     ensure!(
         text.ends_with('\n')
             && text
@@ -934,13 +947,10 @@ mod tests {
                 marker.example()
             );
         }
+        let marker_record = format!("[info ] {}\n", SELFTEST_MARKERS[0].example());
         let duplicated_marker = valid.replacen(
-            SELFTEST_MARKERS[0].example(),
-            &format!(
-                "{} {}",
-                SELFTEST_MARKERS[0].example(),
-                SELFTEST_MARKERS[0].example()
-            ),
+            &marker_record,
+            &format!("{marker_record}{marker_record}"),
             1,
         );
         assert!(verify_transcript(&root, Kernel::SelfTest, duplicated_marker.as_bytes()).is_err());
@@ -964,8 +974,6 @@ mod tests {
         assert!(verify_transcript(&root, Kernel::SelfTest, panicked.as_bytes()).is_err());
         let failed = format!("{valid}[error] selftest: injected defect FAILED\n");
         assert!(verify_transcript(&root, Kernel::SelfTest, failed.as_bytes()).is_err());
-        let with_nul = format!("{valid}\0");
-        assert!(verify_transcript(&root, Kernel::SelfTest, with_nul.as_bytes()).is_err());
         for poisoned in [
             valid.trim_end_matches('\n').to_string(),
             valid.replacen("[info ]", "[info\r ]", 1),
@@ -977,9 +985,27 @@ mod tests {
                 "accepted a partial or terminal-active transcript: {poisoned:?}"
             );
         }
-        let mut invalid_utf8 = valid.into_bytes();
+        let mut invalid_utf8 = b"[info ] invalid byte: ".to_vec();
         invalid_utf8.push(0xff);
+        invalid_utf8.push(b'\n');
+        invalid_utf8.extend_from_slice(valid.as_bytes());
         assert!(verify_transcript(&root, Kernel::SelfTest, &invalid_utf8).is_err());
+    }
+
+    #[test]
+    fn a_nul_transcript_is_rejected_before_canonical_text_validation() {
+        let root = repository_root();
+        let with_nul = format!("{}\0", selftest_transcript());
+        let canonical_validation_started = std::cell::Cell::new(false);
+
+        assert!(
+            verify_transcript_with(&root, Kernel::SelfTest, with_nul.as_bytes(), || {
+                canonical_validation_started.set(true);
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!canonical_validation_started.get());
     }
 
     #[test]
