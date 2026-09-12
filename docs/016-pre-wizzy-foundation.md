@@ -18,9 +18,10 @@ admission reasons.
 
 The planned Phase 6 slices are landed, but the phase and polished foundation
 are **not closed**. `014-storage.md` owns the source totals. Historical green
-evidence remains historical: after the rejected handoff was written, the
-durable 296-entry run on `a58bc97` completed with two survivors and fifteen
-inconclusive outcomes. The adversarial re-audit also found new safe-boundary,
+evidence remains historical. The clean complete 1,359-entry sweep on
+`f28428a` caught 1,301 mutations and produced 34 survivors and 24 inconclusive
+outcomes. D-301 makes that report the current repair inventory; it is not a
+passing qualification. The adversarial re-audit also found new safe-boundary,
 hostile-layout and qualification defects, all recorded below. VMware waits for
 a frozen candidate after the non-machine source and manual-red gaps close; its
 fresh boots are themselves required to close the machine-dependent rows.
@@ -39,7 +40,7 @@ The OS-side foundation closes only when:
 
 That closes the kernel foundation; it does not authorize Wizzy work here.
 
-## Status at the 2026-09-06 handoff
+## Status after the 2026-09-11 complete sweep
 
 `main` is a clean baseline: every commit from `e4e269a` onward passed the
 local gate or a stage-equivalent re-run, and the tree carries no uncommitted
@@ -62,12 +63,13 @@ work. The day's work, in the order it landed:
 What remains, and exactly how to run it:
 
 1. **PW-001, the registry sweep.** `cargo xtask mutate` from a clean
-   checkout. It journals every outcome and resumes after interruption, and
-   about 209 of the 1,359 mutations boot QEMU, so plan for most of a day and
-   do not run anything CPU-heavy beside it. Its pass closes the 35 `READY`
-   rows that wait only on retained-mutation reds (PW-029, PW-117 to PW-133,
-   PW-206, PW-212, PW-213, PW-309, PW-518 to PW-526, PW-535 to PW-543 and
-   PW-011).
+   checkout. The clean `f28428a` run completed with 1,301 caught, 34 survivors
+   and 24 inconclusive outcomes. Repair that exact inventory, then repeat on a
+   clean closing commit. The runner journals every outcome and resumes after
+   interruption, and about 209 mutations boot QEMU, so do not run anything
+   CPU-heavy beside it. Its pass closes the 35 `READY` rows that wait only on
+   retained-mutation reds (PW-029, PW-117 to PW-133, PW-206, PW-212, PW-213,
+   PW-309, PW-518 to PW-526, PW-535 to PW-543 and PW-011).
 2. **PW-025, the `xtask` grade.** The 26 libraries are graded and
    adjudicated; `xtask` itself has about 3,460 mutants that each rebuild and
    run its 622-test suite, roughly a day at four jobs:
@@ -121,7 +123,7 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 
 | ID | State | Priority | Why this is live | Deliverable | Proof required to close |
 |---|---|---|---|---|---|
-| PW-001 | REQUIRED | P0 | The durable 296-entry journal on `a58bc97` finished with 279 caught, 15 inconclusive and 2 equivalent survivors after the handoff claimed green | Repair the invalid mutations and inconclusive observers, then run `cargo xtask mutate` from a clean closing commit | A complete current-registry sweep catches every load-bearing mutation through its named witness with no survivor or inconclusive outcome; the journal records an explicit failing or passing summary |
+| PW-001 | REQUIRED | P0 | The clean complete 1,359-entry sweep on `f28428a` caught 1,301 mutations and left 34 survivors plus 24 inconclusive outcomes | D-301 classifies the report as the exact repair inventory: fix real proof gaps, replace non-load-bearing defects, repair compile-invalid mutations and make machine observations reach their named witnesses; then repeat from a clean closing commit | A complete current-registry sweep catches every load-bearing mutation through its named witness with no survivor or inconclusive outcome; the report records an explicit passing summary |
 | PW-002 | DONE | P0 | The ring model is a phase-close gate outside CI, and its last green result predates this adversarial repair series | Re-run `cargo xtask model-check` on the closing commit | 2026-09-06 `cargo xtask model-check` passed on commit d87f632 under OpenJDK 21.0.5: `Ring.tla` and `RingMemory.tla` ran clean, and the store-relaxed, load-relaxed, no-reservation and duplicate-terminal mutations each violated exactly `NoStalePayload`, `NoStalePayload`, `ReservationsAreLive` and `OneCompletionPerOperation`; the record binds the commit, the TLC jar digest and all six transcripts, and PW-013 states the external-process trust limit |
 | PW-003 | REQUIRED | P0 | The dated VMware result predates D-181/D-182 and covered 182/187, not the current image | Generate `cargo xtask vmware`, boot its identified self-test image and perform every human keyboard round | A dated zero-failure fresh transcript at the verdict's expected total, including image digest, WP, SMEP/SMAP/UMIP/NX, compacted XSAVE, x2APIC, calibrated time, an accepted `rdcl_no` mapping reason before user launch, storage and input evidence |
 | PW-004 | REQUIRED | P1 | A self-test image is not the image users boot | Generate `cargo xtask vmware --shipped` and boot its separately identified machine after PW-003 | Its fresh transcript reaches its prompt, storage/VFS survey and user boundary without panic; record image digest and VM/tool version |
@@ -423,7 +425,8 @@ review limit states exactly what automation still cannot decide.
 
 ## What is left
 
-The rejected handoff and failed 296-entry journal reopened code and proof work.
+The failed complete 1,359-entry `f28428a` report is the current code and proof
+repair inventory.
 The finite order is now:
 
 1. Close every source, proof and manual-red gap that does not depend on final

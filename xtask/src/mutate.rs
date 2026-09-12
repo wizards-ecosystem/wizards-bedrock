@@ -85,8 +85,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1359 registered; 285 in the last successful complete sweep; 296 in a newer failed complete sweep; 1063 registered after that failed sweep, with a fresh complete sweep still required |",
-        replace: "| Mutations | 1359 registered; 285 in a successful complete sweep; 296 in a newer failed complete sweep; 1063 registered after that failed sweep, with a fresh complete sweep still required |\n<!-- last successful complete sweep -->",
+        find: "| Mutations | 1359 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
+        replace: "| Mutations | 1359 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
         breaks: "the phase-close table borrows its successful-sweep label from unrelated prose",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -95,9 +95,9 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "296 in a newer failed complete sweep",
-        replace: "285 in a newer failed complete sweep",
-        breaks: "the phase-close history hides the newer failed mutation sweep",
+        find: "the current complete sweep caught 1301",
+        replace: "the current complete sweep caught 285",
+        breaks: "the phase-close table hides the current failed mutation sweep behind an older pass",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "prose::tests::the_phase_close_says_what_the_source_says",
@@ -3569,12 +3569,12 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "libs/fat32/src/lib.rs",
-        find: "        let active_fat = if extended_flags & MIRRORING_DISABLED == 0 {",
-        replace: "        let active_fat = if false && extended_flags & MIRRORING_DISABLED == 0 {",
-        breaks: "mirrored FAT32 volumes obey an inactive-table selector",
+        find: "            || (extended_flags & MIRRORING_DISABLED == 0 && selector != 0)",
+        replace: "            || false",
+        breaks: "a mirrored FAT32 volume accepts a meaningless inactive-table selector",
         reddens: Caught::HostTest {
             package: "fat32",
-            name: "tests::extended_flags_choose_the_fat_that_is_read",
+            name: "tests::extended_flags_reject_reserved_bits_and_meaningless_selectors",
         },
     },
     Mutation {
@@ -5796,7 +5796,7 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a port span touching above another is mistaken for overlap",
         reddens: Caught::HostTest {
             package: "port-space",
-            name: "tests::overlap_is_refused_from_either_side_and_adjacency_is_not",
+            name: "tests::a_request_that_overlaps_itself_is_refused",
         },
     },
     Mutation {

@@ -361,30 +361,24 @@ mod tests {
         let mutation_numbers = table_numbers(&storage, "Mutations");
         assert_eq!(
             mutation_numbers.len(),
-            4,
-            "the mutation row must state the total, last successful sweep, newer failed sweep and post-failure count"
+            5,
+            "the mutation row must state the total, last successful sweep and current caught, survived and inconclusive counts"
         );
         let last_successful_sweep = mutation_numbers[1];
-        let failed_sweep = mutation_numbers[2];
-        let registered_after_failure = mutation_numbers[3];
         assert_eq!(
             last_successful_sweep, 285,
             "the last successful complete sweep is a historical result"
         );
         assert_eq!(
-            failed_sweep, 296,
-            "the newer failed complete sweep is a historical result"
+            &mutation_numbers[2..],
+            &[1301, 34, 24],
+            "the current complete sweep totals drifted"
         );
         let mutation_cell = table_cell(&storage, "Mutations");
         assert!(
             mutation_cell.contains("last successful complete sweep")
-                && mutation_cell.contains("newer failed complete sweep"),
-            "the mutation row does not distinguish successful and failed history"
-        );
-        assert_eq!(
-            mutation_numbers[0] - failed_sweep,
-            registered_after_failure,
-            "`014`'s later-mutation count is not total minus the newer failed sweep"
+                && mutation_cell.contains("current complete sweep"),
+            "the mutation row does not distinguish successful history from the current failure"
         );
 
         let decisions =
