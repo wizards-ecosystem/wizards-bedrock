@@ -3957,6 +3957,20 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_advisory_database_cannot_author_a_qualification() {
+        let revision = "d".repeat(40);
+        let report = String::from_utf8(clean_advisory_report(&revision))
+            .unwrap()
+            .replace("\"advisory-count\":1", "\"advisory-count\":0");
+
+        let error = verify_advisory_report(report.as_bytes(), &revision, DatabaseBinding::Fetched)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("empty advisory database"), "{error}");
+    }
+
+    #[test]
     fn a_pinned_audit_report_carries_null_database_identity_by_tool_design() {
         let revision = "d".repeat(40);
         let facts = verify_advisory_report(

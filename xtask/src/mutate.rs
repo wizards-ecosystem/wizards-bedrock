@@ -330,7 +330,7 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "an empty advisory database can qualify a locked graph",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qualification::tests::forged_green_advisory_json_is_rejected_semantically",
+            name: "qualification::tests::an_empty_advisory_database_cannot_author_a_qualification",
         },
     },
     Mutation {
