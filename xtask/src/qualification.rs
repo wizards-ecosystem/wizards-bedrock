@@ -4855,9 +4855,7 @@ mod tests {
         snapshot.verify_unchanged().unwrap();
         let model = root.join(Kind::Model.slug());
         let alternate = root.join("model-alternate");
-        std::fs::create_dir(&alternate).unwrap();
-        std::fs::copy(model.join(RECORD), alternate.join(RECORD)).unwrap();
-        std::fs::remove_dir_all(&model).unwrap();
+        std::fs::rename(&model, &alternate).unwrap();
         create_directory_symlink(&alternate, &model);
 
         assert!(snapshot.verify_unchanged().is_err());

@@ -573,7 +573,19 @@ fn verify_qualification_artifact_identity_with_sizes(
 }
 
 fn verified_qualification_digest(root: &Path, spec: &qualification::BundleFile) -> Result<Digest> {
+    verified_qualification_digest_with(root, spec, || Ok(()))
+}
+
+fn verified_qualification_digest_with<F>(
+    root: &Path,
+    spec: &qualification::BundleFile,
+    after_path_check: F,
+) -> Result<Digest>
+where
+    F: FnOnce() -> Result<()>,
+{
     let path = checked_bundle_file(root, spec.relative, spec.prefix)?;
+    after_path_check()?;
     let (maximum, exact) = qualification::bundle_file_size_policy(spec)?;
     if exact {
         digest_file_exact(&path, maximum, spec.prefix)
@@ -1775,7 +1787,7 @@ mod tests {
     }
 
     #[test]
-    fn a_bundle_parent_link_cannot_substitute_qualification_bytes() {
+    fn a_bundle_parent_link_is_rejected_before_qualification_hashing() {
         let root = std::env::temp_dir().join(format!(
             "wizard-evidence-parent-link-{}",
             std::process::id()
@@ -1783,17 +1795,26 @@ mod tests {
         if root.exists() {
             std::fs::remove_dir_all(&root).unwrap();
         }
-        write_qualification_bundle_fixture(&root);
-        let mut record = Record::default();
-        add_qualification_files(&mut record, &root).unwrap();
+        let spec = qualification::BUNDLE_FILES
+            .iter()
+            .find(|spec| spec.relative == "qualification/model/record")
+            .unwrap();
         let model = root.join("qualification/model");
         let alternate = root.join("qualification/model-alternate");
-        std::fs::create_dir(&alternate).unwrap();
-        std::fs::copy(model.join("record"), alternate.join("record")).unwrap();
-        std::fs::remove_dir_all(&model).unwrap();
+        std::fs::create_dir_all(&model).unwrap();
+        std::fs::write(model.join("record"), spec.prefix).unwrap();
+        std::fs::rename(&model, &alternate).unwrap();
         create_directory_symlink(&alternate, &model);
+        let hashing_started = std::cell::Cell::new(false);
 
-        assert!(verify_qualification_files(&record, &root).is_err());
+        assert!(
+            verified_qualification_digest_with(&root, spec, || {
+                hashing_started.set(true);
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!hashing_started.get());
         std::fs::remove_dir_all(root).unwrap();
     }
 

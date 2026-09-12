@@ -478,10 +478,10 @@ pub const MUTATIONS: &[Mutation] = &[
         file: "xtask/src/evidence.rs",
         find: "    let path = checked_bundle_file(root, spec.relative, spec.prefix)?;",
         replace: "    let path = root.join(spec.relative);",
-        breaks: "a qualification bundle parent link can substitute identical bytes",
+        breaks: "qualification hashing can start through a linked bundle parent",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "evidence::tests::a_bundle_parent_link_cannot_substitute_qualification_bytes",
+            name: "evidence::tests::a_bundle_parent_link_is_rejected_before_qualification_hashing",
         },
     },
     Mutation {
