@@ -379,7 +379,6 @@ struct SourceFile {
     crate_name: String,
     origin: CargoTarget,
     text: String,
-    reexports: Vec<SourceRange>,
     non_call_uses: Vec<SourceRange>,
     macro_syntax: Vec<SourceRange>,
     transparent_macros: Vec<SourceRange>,
@@ -1591,14 +1590,13 @@ impl Inventory {
             let mut value_constructions = ValueConstructions::default();
             value_constructions.visit_file(&syntax);
             let trait_imports = TraitImports::collect_in_scope(&syntax.items, &context.scope);
-            let reexports = {
+            {
                 let mut collector = Collector {
                     audit: audited.contains(&path),
                     file,
                     relative: &relative,
                     nodes: &mut nodes,
                     trait_imports: &trait_imports,
-                    reexports: Vec::new(),
                     unsupported_macros: Vec::new(),
                     entry_specs: &mut entry_specs,
                     scope: context.scope.clone(),
@@ -1617,14 +1615,12 @@ impl Inventory {
                     relative.display(),
                     collector.unsupported_macros.join(", ")
                 );
-                collector.reexports
-            };
+            }
             files.push(SourceFile {
                 relative,
                 crate_name: context.crate_name.clone(),
                 origin: (*origin).clone(),
                 text,
-                reexports,
                 non_call_uses: non_call_uses.ranges,
                 macro_syntax: macro_syntax.ranges,
                 transparent_macros: macro_syntax.transparent,
@@ -1734,13 +1730,6 @@ impl Inventory {
             .filter(|node| node.file == file && node.range.contains(at))
             .min_by_key(|node| node.range.extent())
             .map(|node| node.id)
-    }
-
-    fn is_reexport(&self, file: usize, at: LineColumn) -> bool {
-        self.files[file]
-            .reexports
-            .iter()
-            .any(|range| range.contains(at))
     }
 
     fn is_non_call_use(&self, file: usize, at: LineColumn) -> bool {
@@ -4468,7 +4457,6 @@ struct Collector<'a> {
     relative: &'a Path,
     nodes: &'a mut Vec<Node>,
     trait_imports: &'a TraitImports,
-    reexports: Vec<SourceRange>,
     unsupported_macros: Vec<String>,
     entry_specs: &'a mut Vec<EntrySpec>,
     scope: Vec<String>,
@@ -4883,9 +4871,6 @@ impl Collector<'_> {
                 true,
                 RootSet::default(),
             ),
-            Item::Use(item) if public(&item.vis) => {
-                self.reexports.push(range(item.span()));
-            }
             _ => {}
         }
     }
@@ -6011,9 +5996,6 @@ impl Uses {
         } = observation;
         validate_marker_round(id, inventory, instrumentation)?;
         let at = corrected_marker_location(file, source_line, column, instrumentation)?;
-        if inventory.is_reexport(file, at) {
-            return Ok(());
-        }
         if inventory.is_non_call_use(file, at) {
             return Ok(());
         }
@@ -10912,10 +10894,11 @@ mod api {
     pub mod nested { pub fn same_name() {} }
 }
 pub use api::{reexport_only, reexported as public_name};
-use api::import_only as unused_import;
 /// Mentions [`api::documented`] but does not call it.
 fn docs_only() {}
 fn main() {
+    use api::import_only as unused_import;
+
     api::direct();
     public_name();
     api::nested::same_name();

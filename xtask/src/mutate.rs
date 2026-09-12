@@ -4389,9 +4389,9 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/api.rs",
-        find: "        if inventory.is_reexport(file, at) {\n            return Ok(());\n        }",
-        replace: "        if false && inventory.is_reexport(file, at) {\n            return Ok(());\n        }",
-        breaks: "a public re-export is mistaken for an executable caller",
+        find: "        if inventory.is_non_call_use(file, at) {\n            return Ok(());\n        }",
+        replace: "        if false && inventory.is_non_call_use(file, at) {\n            return Ok(());\n        }",
+        breaks: "a non-call use is required to provide an executable caller",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "api::tests::reexports_docs_and_same_names_are_resolved_by_the_compiler",
@@ -4580,12 +4580,12 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/mutate.rs",
-        find: "            package: \"eevdf\",\n            name: \"tests::a_thread_past_its_deadline_has_no_slice_left\",",
-        replace: "            package: \"xtask\",\n            name: \"tests::a_thread_past_its_deadline_has_no_slice_left\",",
-        breaks: "a pure host crate can lose its only persistent source mutation",
+        find: "                    mutation.reddens,\n                    Caught::HostTest {\n                        package: actual,\n                        ..\n                    } if actual == package",
+        replace: "                    mutation.reddens,\n                    Caught::HostTest { .. }",
+        breaks: "a foreign package's witness counts as source-mutation coverage",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "mutate::tests::every_host_library_has_a_persistent_source_mutation",
+            name: "mutate::tests::a_foreign_host_witness_cannot_cover_a_librarys_source_mutation",
         },
     },
     Mutation {
@@ -14858,21 +14858,44 @@ mod tests {
             if package == "xtask" {
                 continue;
             }
-            let source = format!("libs/{package}/src/");
             assert!(
-                MUTATIONS.iter().any(|mutation| {
-                    mutation.file.starts_with(&source)
-                        && matches!(
-                            mutation.reddens,
-                            Caught::HostTest {
-                                package: actual,
-                                ..
-                            } if actual == package
-                        )
-                }),
+                host_library_has_persistent_source_mutation(package, MUTATIONS),
                 "{package} has no persistent production-source mutation"
             );
         }
+    }
+
+    fn host_library_has_persistent_source_mutation(package: &str, mutations: &[Mutation]) -> bool {
+        let source = format!("libs/{package}/src/");
+        mutations.iter().any(|mutation| {
+            mutation.file.starts_with(&source)
+                && matches!(
+                    mutation.reddens,
+                    Caught::HostTest {
+                        package: actual,
+                        ..
+                    } if actual == package
+                )
+        })
+    }
+
+    #[test]
+    fn a_foreign_host_witness_cannot_cover_a_librarys_source_mutation() {
+        let mutation = Mutation {
+            file: "libs/eevdf/src/lib.rs",
+            find: "old",
+            replace: "new",
+            breaks: "synthetic host coverage defect",
+            reddens: Caught::HostTest {
+                package: "xtask",
+                name: "tests::synthetic",
+            },
+        };
+
+        assert!(!host_library_has_persistent_source_mutation(
+            "eevdf",
+            &[mutation]
+        ));
     }
 
     #[test]
