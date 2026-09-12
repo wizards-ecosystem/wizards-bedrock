@@ -6608,9 +6608,9 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/api.rs",
-        find: "        let target = crate::mutation_workspace::prepare_real_directory_tree(\n            paths.target_dir(),\n            \"API audit target directory\",\n        )?;",
-        replace: "        let target = paths.target_dir().to_path_buf();\n        std::fs::create_dir_all(&target)\n            .with_context(|| format!(\"creating {}\", target.display()))?;",
-        breaks: "a redirected target receives API audit state before its ancestry is refused",
+        find: "fn prepare_audit_target(paths: &Paths) -> Result<PathBuf> {\n    crate::mutation_workspace::prepare_real_directory_tree(\n        paths.target_dir(),\n        \"API audit target directory\",\n    )\n}",
+        replace: "fn prepare_audit_target(paths: &Paths) -> Result<PathBuf> {\n    let target = paths.target_dir().to_path_buf();\n    std::fs::create_dir_all(&target)\n        .with_context(|| format!(\"creating {}\", target.display()))?;\n    Ok(target)\n}",
+        breaks: "a redirected target is accepted before API audit state creation",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "api::tests::redirected_api_audit_paths_are_refused_without_touching_outside_bytes",
@@ -6688,9 +6688,9 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/model.rs",
-        find: "            ensure!(\n                canonical.parent() == Some(root.as_path()),\n                \"model-check scratch directory escaped its state root\"\n            );",
-        replace: "            let _unchecked_scratch_parent = canonical.parent();",
-        breaks: "a redirected TLC metadir can become an external recursive-delete target",
+        find: "fn canonical_model_scratch(scratch: &Path) -> Result<PathBuf> {\n    crate::mutation_workspace::canonical_existing_real_directory(\n        scratch,\n        \"model-check scratch directory\",\n    )\n}",
+        replace: "fn canonical_model_scratch(scratch: &Path) -> Result<PathBuf> {\n    std::fs::canonicalize(scratch)\n        .with_context(|| format!(\"canonicalizing {}\", scratch.display()))\n}",
+        breaks: "a redirected TLC metadir is accepted as recursive-reset authority",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "model::tests::a_redirected_model_scratch_is_refused_without_touching_outside_bytes",
@@ -7748,7 +7748,7 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "command restoration accepts a write the device ignored",
         reddens: Caught::HostTest {
             package: "pci-config",
-            name: "tests::ignored_bar_and_command_restore_writes_retain_retry_authority",
+            name: "tests::an_ignored_final_probe_command_restore_retains_retry_authority",
         },
     },
     Mutation {

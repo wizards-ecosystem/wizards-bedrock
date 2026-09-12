@@ -6516,16 +6516,20 @@ struct AuditWorkspace {
     source: BTreeMap<PathBuf, [u8; 32]>,
 }
 
+fn prepare_audit_target(paths: &Paths) -> Result<PathBuf> {
+    crate::mutation_workspace::prepare_real_directory_tree(
+        paths.target_dir(),
+        "API audit target directory",
+    )
+}
+
 impl AuditWorkspace {
     fn create(paths: &Paths) -> Result<Self> {
         let source_root = crate::mutation_workspace::canonical_existing_real_directory(
             paths.root(),
             "API audit source repository",
         )?;
-        let target = crate::mutation_workspace::prepare_real_directory_tree(
-            paths.target_dir(),
-            "API audit target directory",
-        )?;
+        let target = prepare_audit_target(paths)?;
         let state = crate::mutation_workspace::prepare_real_child(
             &target,
             &target.join("api-audit"),
@@ -10635,7 +10639,7 @@ harness = false
         std::fs::create_dir_all(&outside).unwrap();
         create_directory_symlink(&outside, &target);
         let paths = Paths::new(root.join("repository"), Some(&target));
-        assert!(AuditWorkspace::create(&paths).is_err());
+        assert!(prepare_audit_target(&paths).is_err());
         assert!(!outside.join("api-audit").exists());
         std::fs::remove_dir_all(&root).unwrap();
 

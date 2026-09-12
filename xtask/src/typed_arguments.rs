@@ -253,7 +253,8 @@ fn trait_methods_do_not_satisfy_inherent_api_contracts() {
 #[test]
 fn nested_inherent_methods_remain_visible_to_api_contracts() {
     let syntax = syn::parse_file(
-        "struct Boundary; mod nested { impl super::Boundary { fn close(&mut self) {} } }",
+        "struct Boundary; struct Outer; \
+         impl Outer { fn define() { impl Boundary { fn close(&mut self) {} } } }",
     )
     .expect("valid nested inherent-method witness");
     assert!(optional_method(&syntax, "Boundary", "close").is_some());

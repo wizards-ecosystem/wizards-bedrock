@@ -4249,6 +4249,29 @@ mod tests {
     }
 
     #[test]
+    fn an_ignored_final_probe_command_restore_retains_retry_authority() {
+        let mut fake = FakeConfig::device();
+        let original = fake.clone();
+        let staged = probe_bars_unleased(BARS, |event| fake.access(event))
+            .expect("a valid probe reaches its final command restore");
+        fake.ignore_write_at = Some(fake.calls);
+
+        let failure = restore_staged_probe(staged, &mut |event| fake.access(event))
+            .expect_err("an ignored final command write cannot complete restoration");
+        assert_eq!(failure.reason, ProbeError::RestoreChanged);
+        let restore = failure
+            .restore
+            .expect("the failed readback retains restoration authority");
+        assert_eq!(fake.command, original.command & !PROBE_DISABLED);
+
+        fake.ignore_write_at = None;
+        finish_probe_restoration(restore, &mut |event| fake.access(event))
+            .expect("the retained authority retries the final command restore");
+        assert_eq!(fake.command, original.command);
+        assert_eq!(fake.bars, original.bars);
+    }
+
+    #[test]
     fn a_wide_bar_in_the_final_slot_is_refused_before_mutation() {
         let mut fake = FakeConfig::device();
         fake.bars[0] = 0x0000_C001;

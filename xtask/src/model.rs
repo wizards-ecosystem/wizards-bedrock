@@ -423,14 +423,7 @@ fn prepare_scratch(paths: &Paths, run: &Run) -> Result<PathBuf> {
     let scratch = root.join(run.config);
     match std::fs::symlink_metadata(&scratch) {
         Ok(_) => {
-            let canonical = crate::mutation_workspace::canonical_existing_real_directory(
-                &scratch,
-                "model-check scratch directory",
-            )?;
-            ensure!(
-                canonical.parent() == Some(root.as_path()),
-                "model-check scratch directory escaped its state root"
-            );
+            let canonical = canonical_model_scratch(&scratch)?;
             std::fs::remove_dir_all(&canonical)
                 .with_context(|| format!("resetting model scratch {}", canonical.display()))?;
         }
@@ -440,6 +433,13 @@ fn prepare_scratch(paths: &Paths, run: &Run) -> Result<PathBuf> {
         }
     }
     crate::mutation_workspace::prepare_real_child(&root, &scratch, "model-check scratch directory")
+}
+
+fn canonical_model_scratch(scratch: &Path) -> Result<PathBuf> {
+    crate::mutation_workspace::canonical_existing_real_directory(
+        scratch,
+        "model-check scratch directory",
+    )
 }
 
 fn bounded_output(command: Command, timeout: Duration, label: &str) -> Result<Output> {
@@ -681,6 +681,7 @@ mod tests {
         create_directory_symlink(&outside, &state.join(RUNS[0].config));
         let paths = Paths::new(repository, Some(&target));
 
+        assert!(canonical_model_scratch(&state.join(RUNS[0].config)).is_err());
         assert!(prepare_scratch(&paths, &RUNS[0]).is_err());
         assert_eq!(
             std::fs::read(&sentinel).expect("outside sentinel survives"),
