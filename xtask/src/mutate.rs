@@ -1600,8 +1600,11 @@ pub const MUTATIONS: &[Mutation] = &[
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "        code_selector: frame.code_selector(),",
         replace: "        code_selector: 0,",
-        breaks: "a user copy is only recovered when the kernel was the one copying",
-        reddens: Caught::Check("a program cannot aim at the copy window"),
+        breaks: "the user-copy recovery adapter fabricates its saved code selector",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "recovery_contracts::each_recovery_adapter_binds_the_live_architectural_values",
+        },
     },
     Mutation {
         file: "wost/src/arch/x86_64/paging.rs",
@@ -1719,10 +1722,11 @@ pub const MUTATIONS: &[Mutation] = &[
         self.put(text);
         self.newline();
         self.show_cursor();",
-        replace: "        self.put(text);
+        replace: "        self.hide_cursor();
+        self.put(text);
         self.newline();",
-        breaks: "a line break happens with the cursor down",
-        reddens: Caught::Check("a scroll leaves no cursor behind"),
+        breaks: "a line break leaves its new cursor hidden",
+        reddens: Caught::Check("a scroll moves one visible cursor"),
     },
     Mutation {
         file: "kernel/src/dev.rs",
@@ -2908,8 +2912,8 @@ pub const MUTATIONS: &[Mutation] = &[
         file: "kernel/src/input.rs",
         find: "    keyboard.decoder = decoder_for(&mut keyboard.controller);",
         replace: "    let _ = &mut keyboard.controller;",
-        breaks: "the decoder is re-derived when translation changes",
-        reddens: Caught::Check("a translated keystroke decodes to the same key"),
+        breaks: "translation leaves the decoder on its previous numbering",
+        reddens: Caught::Check("translation updates the decoder from the controller identity"),
     },
     // Seeding against the stream makes an unadopted numbering change observable.
     Mutation {
@@ -5915,10 +5919,7 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "        let words = self.words();",
         replace: "        let words = self.words() - 1;",
         breaks: "a nonempty framebuffer shadow omits its terminal device word",
-        reddens: Caught::Panic {
-            marker: "framebuffer shadow is shorter than its validated mapping",
-            why: "the device write already succeeded, so silently omitting its shadow word would make later reads diverge from the displayed framebuffer",
-        },
+        reddens: Caught::Check("the console has a complete shadow to scroll from"),
     },
     Mutation {
         file: "libs/elf64/src/lib.rs",
@@ -8333,7 +8334,7 @@ pub const MUTATIONS: &[Mutation] = &[
         file: "kernel/src/arch/x86_64/ioapic.rs",
         find: "        if low != entry::MASKED || high != 0 {\n            return Err(MaskError::Refused { low, high });\n        }",
         replace: "        let _ = (low, high);",
-        breaks: "an ignored takeover mask write is accepted",
+        breaks: "an ignored takeover destination clear is accepted",
         reddens: Caught::Check(
             "a refused keyboard route restores configuration, masking and mappings",
         ),
@@ -8448,7 +8449,10 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "        self.controller.state.store(ready.bits(), Ordering::Release);\n        if let Some(interrupts) = self.interrupts.take() {\n            interrupts.restore();\n        }",
         replace: "        if let Some(interrupts) = self.interrupts.take() {\n            interrupts.restore();\n        }\n        self.controller.state.store(ready.bits(), Ordering::Release);",
         breaks: "APIC readiness publishes after initialization interrupt exclusion unwinds",
-        reddens: Caught::Check("apic refusal defers a live interrupt until exclusion unwinds"),
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::apic_ready_publication_precedes_dependent_vector_reads",
+        },
     },
     Mutation {
         file: "wost/src/arch/x86_64/apic.rs",
@@ -10789,9 +10793,9 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         file: "xtask/src/api.rs",
-        find: "source_item_path(&files[candidate.file], &candidate.symbol) == name",
-        replace: "source_item_path(&files[candidate.file], &candidate.symbol) == \"not_a_type\"",
-        breaks: "qualified concrete-type identity is discarded while binding workspace trait implementations",
+        find: "workspace_type_matches(&files[candidate.file], &candidate.symbol, name)",
+        replace: "false",
+        breaks: "workspace-qualified concrete-type identity is discarded while binding trait implementations",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "api::tests::workspace_qualified_trait_implementations_bind_to_the_declaring_crate",
@@ -10859,8 +10863,8 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         file: "xtask/src/api.rs",
-        find: "            || handler.segments[0].ident != \"kernel_main\"",
-        replace: "",
+        find: "            && handler.segments[0].ident == \"kernel_main\"",
+        replace: "            && true",
         breaks: "a different kernel entry macro argument is trusted as kernel_main",
         reddens: Caught::HostTest {
             package: "xtask",

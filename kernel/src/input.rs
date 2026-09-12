@@ -571,6 +571,20 @@ pub(crate) fn set_translation(translation: crate::arch::current::i8042::Translat
     stuck
 }
 
+/// Whether the configured decoder matches the controller's opening identity.
+#[cfg(feature = "selftest")]
+pub(crate) fn decoder_matches_identity() -> bool {
+    let mut guard = KEYBOARD.lock_leaf();
+    let Some(keyboard) = guard.as_mut() else {
+        return false;
+    };
+    match keyboard.controller.identity() {
+        Some(crate::arch::current::i8042::TRANSLATED_MF2) => keyboard.decoder.reads_translated(),
+        Some(crate::arch::current::i8042::UNTRANSLATED_MF2) => !keyboard.decoder.reads_translated(),
+        Some(_) | None => false,
+    }
+}
+
 /// Seed the numbering the *other* way and let the stream put it right.
 ///
 /// Marks an incorrect guess settled so the stream must exercise its correction

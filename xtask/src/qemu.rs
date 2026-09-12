@@ -4297,6 +4297,18 @@ mod tests {
         let source = rust_without_comments(
             &std::fs::read_to_string(root.join("kernel/src/nvme.rs")).expect("kernel nvme source"),
         );
+        let finish = source
+            .split_once("fn finish_preparation(")
+            .and_then(|(_, source)| source.split_once("fn retire_disabled("))
+            .map(|(source, _)| source)
+            .expect("no bounded controller-preparation completion body");
+        let finish_owner = finish
+            .find("let controller = Controller {")
+            .expect("no cleanup owner in controller-preparation completion");
+        assert!(
+            !finish[..finish_owner].contains("write("),
+            "controller preparation writes hardware before cleanup owns every published queue"
+        );
         let preparation = source
             .find("let preparation = ControllerPreparation::new(registers);")
             .expect("no preparation owner for the mapped controller");

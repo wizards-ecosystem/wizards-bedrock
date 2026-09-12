@@ -6705,7 +6705,7 @@ fn a_leaf_guard_is_the_last_lock() -> bool {
     }
 }
 
-fn a_scroll_leaves_no_cursor_behind() -> bool {
+fn a_scroll_moves_one_visible_cursor() -> bool {
     const AT_X: usize = crate::console::MARGIN;
 
     let Some(((_, mut cursor_y), (_, line_height))) = dev::console_cursor() else {
@@ -6733,10 +6733,19 @@ fn a_scroll_leaves_no_cursor_behind() -> bool {
     let Some(probe_y) = scrolled_from.and_then(|y| y.checked_sub(1)) else {
         return false;
     };
-    let Some((pixel, foreground, _)) = dev::console_probe(AT_X, probe_y) else {
+    let Some((old_pixel, foreground, _)) = dev::console_probe(AT_X, probe_y) else {
         return false;
     };
-    pixel != foreground
+    let Some(((cursor_x, cursor_y), (_, cursor_height))) = dev::console_cursor() else {
+        return false;
+    };
+    let Some(cursor_y) = cursor_y.checked_add(cursor_height - 1) else {
+        return false;
+    };
+    let Some((cursor_pixel, cursor_foreground, _)) = dev::console_probe(cursor_x, cursor_y) else {
+        return false;
+    };
+    old_pixel != foreground && cursor_pixel == cursor_foreground
 }
 
 fn a_stack_stops_being_installed_when_it_is_unmapped() -> bool {
@@ -8247,8 +8256,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_large_allocation_takes_and_returns_frames(),
     );
     report.check(
-        "the console has a shadow to scroll from",
-        dev::console_has_back_buffer(),
+        "the console has a complete shadow to scroll from",
+        dev::console_has_complete_back_buffer(),
     );
 
     report.check("threads are available", thread::is_available());
@@ -8525,8 +8534,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         input::set_translation(crate::arch::current::i8042::Translation::Enabled),
     );
     report.check(
-        "a translating controller rewrites the identity too",
-        input::identity() == Some(TRANSLATED_MF2),
+        "translation updates the decoder from the controller identity",
+        input::decoder_matches_identity(),
     );
     // Seeded against the stream on purpose: the round can succeed only by
     // reading the bytes, as VMware forces (D-239).
@@ -8587,8 +8596,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
 
     // Last because it moves the console contents other checks inspect.
     report.check(
-        "a scroll leaves no cursor behind",
-        a_scroll_leaves_no_cursor_behind(),
+        "a scroll moves one visible cursor",
+        a_scroll_moves_one_visible_cursor(),
     );
 
     report.check(

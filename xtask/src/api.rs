@@ -387,12 +387,13 @@ struct SourceFile {
     value_constructions: Vec<ValueConstruction>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct EntrySpec {
     file: usize,
     invocation: SourceRange,
     macro_path: SourceRange,
     argument: SourceRange,
+    handler: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1886,7 +1887,7 @@ fn resolve_entry_link(
             .iter()
             .filter(|node| {
                 node.file == spec.file
-                    && node.symbol == "kernel_main"
+                    && node.symbol == spec.handler
                     && !node.type_declaration
                     && !node.macro_declaration
             })
@@ -2717,7 +2718,6 @@ fn matching_type_nodes(
             candidate.type_declaration
                 && ((files[candidate.file].origin == files[reference.file].origin
                     && candidate.symbol == name)
-                    || source_item_path(&files[candidate.file], &candidate.symbol) == name
                     || workspace_type_matches(&files[candidate.file], &candidate.symbol, name))
         })
         .map(|candidate| candidate.id)
@@ -3275,14 +3275,19 @@ fn use_tree_may_bind_wost(tree: &UseTree) -> bool {
 }
 
 fn exact_kernel_entry_invocation(item: &syn::ItemMacro) -> bool {
-    item.attrs.is_empty()
-        && exact_path(&item.mac.path, &["wost", "entry"])
-        && item.mac.parse_body::<syn::Path>().is_ok_and(|handler| {
-            handler.leading_colon.is_none()
-                && handler.segments.len() == 1
-                && handler.segments[0].arguments.is_empty()
-                && handler.segments[0].ident == "kernel_main"
-        })
+    exact_kernel_entry_handler(item).is_some()
+}
+
+fn exact_kernel_entry_handler(item: &syn::ItemMacro) -> Option<syn::Path> {
+    if !item.attrs.is_empty() || !exact_path(&item.mac.path, &["wost", "entry"]) {
+        return None;
+    }
+    item.mac.parse_body::<syn::Path>().ok().filter(|handler| {
+        handler.leading_colon.is_none()
+            && handler.segments.len() == 1
+            && handler.segments[0].arguments.is_empty()
+            && handler.segments[0].ident == "kernel_main"
+    })
 }
 
 fn audited_source(root: &Path, path: &Path) -> bool {
@@ -3848,17 +3853,10 @@ fn approved_item_macro_for_shadow_policy(
         || relative != context.target_root
         || relative != Path::new("kernel/src/main.rs")
         || !context.scope.is_empty()
-        || !item.attrs.is_empty()
-        || !exact_path(&item.mac.path, &["wost", "entry"])
     {
         return false;
     }
-    item.mac.parse_body::<syn::Path>().is_ok_and(|handler| {
-        handler.leading_colon.is_none()
-            && handler.segments.len() == 1
-            && handler.segments[0].arguments.is_empty()
-            && handler.segments[0].ident == "kernel_main"
-    })
+    exact_kernel_entry_handler(item).is_some()
 }
 
 fn use_tree_shadows_standard_macro(tree: &UseTree, root: Option<&str>, shadows: &mut bool) {
@@ -4888,26 +4886,18 @@ impl Collector<'_> {
             || self.relative != Path::new("kernel/src/main.rs")
             || !self.scope.is_empty()
             || self.lexical_item_depth != 0
-            || !item.attrs.is_empty()
-            || !exact_path(&item.mac.path, &["wost", "entry"])
         {
             return false;
         }
-        let Ok(handler) = item.mac.parse_body::<syn::Path>() else {
+        let Some(handler) = exact_kernel_entry_handler(item) else {
             return false;
         };
-        if handler.leading_colon.is_some()
-            || handler.segments.len() != 1
-            || !handler.segments[0].arguments.is_empty()
-            || handler.segments[0].ident != "kernel_main"
-        {
-            return false;
-        }
         self.entry_specs.push(EntrySpec {
             file: self.file,
             invocation: range(item.span()),
             macro_path: range(item.mac.path.span()),
             argument: range(handler.span()),
+            handler: handler.segments[0].ident.to_string(),
         });
         true
     }
@@ -9346,6 +9336,19 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 "#,
         )
         .expect("fixture lockfile");
+
+        let active = BTreeSet::from(["evil-id".to_string()]);
+        let scripts = BTreeMap::from([(
+            "evil-id".to_string(),
+            DependencyBuildScript {
+                name: "evil-build".to_string(),
+                version: "0.1.0".to_string(),
+                registry: false,
+            },
+        )]);
+        let direct_error = validate_dependency_build_scripts(&root, &active, &scripts)
+            .expect_err("an active non-registry build script must be refused directly");
+        assert!(format!("{direct_error:#}").contains("not a checksum-bound crates.io package"));
 
         let canonical = std::fs::canonicalize(&root).expect("canonical fixture root");
         let source = std::fs::canonicalize(root.join("libs/fixture/src/main.rs"))
@@ -14227,6 +14230,20 @@ pub fn run() {
                 executable: true,
             },
         ];
+        let context = targets[1].context();
+        let syntax =
+            syn::parse_file("manufacture_shadow!();\n").expect("unknown item-macro policy fixture");
+        let mut policy = MacroShadowPolicy {
+            shadows_standard: false,
+            reserved_root_rebinding: None,
+            context: &context,
+            relative: &context.target_root,
+        };
+        policy.visit_file(&syntax);
+        assert!(
+            policy.shadows_standard,
+            "an unknown item macro preserved unqualified standard-macro trust"
+        );
         let inventory = Inventory::discover_with_targets(&root, &targets)
             .expect("caller macro fixture inventory");
         let file = inventory
@@ -14520,11 +14537,11 @@ fn kernel_main(_: wost::boot::BootInfo) -> ! {
         assert!(live.contains(&entry.macro_declaration));
         assert!(live.contains(&foundation.id));
 
-        std::fs::write(
-            root.join("kernel/src/main.rs"),
-            kernel.replace("entry!(kernel_main)", "entry!(other)"),
-        )
-        .expect("malformed kernel entry fixture");
+        let alternate = kernel
+            .replace("entry!(kernel_main)", "entry!(other)")
+            .replace("fn kernel_main", "fn other");
+        std::fs::write(root.join("kernel/src/main.rs"), alternate)
+            .expect("malformed kernel entry fixture");
         let error = Inventory::discover_from_catalog(&root, &catalog)
             .expect_err("a different macro argument must not become an entry root");
         assert!(

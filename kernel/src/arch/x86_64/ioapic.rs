@@ -547,6 +547,19 @@ pub(crate) fn ignored_writes_are_refused_for_test() -> bool {
         _ => false,
     };
 
+    let takeover_refused_without_destination_clear =
+        match IoApic::take(FakeRegisters::stale(Some((redirection(0) + 1, 0))), 0) {
+            Err(TakeFailure {
+                registers,
+                reason: TakeError::MaskRefused { line: 0, .. },
+            }) => {
+                registers.low == entry::MASKED
+                    && registers.high == 0xAB00_0000
+                    && registers.high_write_while_unmasked.is_none()
+            }
+            _ => false,
+        };
+
     let Ok(mut controller) = IoApic::take(FakeRegisters::stale(None), 0) else {
         return false;
     };
@@ -596,6 +609,7 @@ pub(crate) fn ignored_writes_are_refused_for_test() -> bool {
         && controller.registers.high == 0
         && controller.registers.high_write_while_unmasked.is_none();
     takeover_refused_without_destination_write
+        && takeover_refused_without_destination_clear
         && takeover_is_inert
         && route_refused
         && destination_refused_before_unmask

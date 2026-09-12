@@ -119,15 +119,15 @@ pub(crate) fn attach_back_buffer() {
     }
 }
 
-/// Whether the console scrolls out of RAM rather than out of device memory.
+/// Whether the console has RAM for every framebuffer word it may scroll.
 ///
 /// Read only by the boot-time check, so it exists only where that does.
 #[cfg(feature = "selftest")]
-pub(crate) fn console_has_back_buffer() -> bool {
+pub(crate) fn console_has_complete_back_buffer() -> bool {
     CONSOLE
         .lock()
         .as_ref()
-        .is_some_and(|console| console.has_back_buffer())
+        .is_some_and(|console| console.has_complete_back_buffer())
 }
 
 /// The I/O APIC, once a line has been routed through it.

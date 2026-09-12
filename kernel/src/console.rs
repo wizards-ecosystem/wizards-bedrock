@@ -74,10 +74,10 @@ impl Console {
         self.framebuffer.attach_back_buffer()
     }
 
-    /// Whether scrolling reads RAM rather than the device.
+    /// Whether every framebuffer word scrolling may read has a shadow.
     #[cfg(feature = "selftest")]
-    pub(crate) fn has_back_buffer(&self) -> bool {
-        self.framebuffer.has_back_buffer()
+    pub(crate) fn has_complete_back_buffer(&self) -> bool {
+        self.framebuffer.has_complete_back_buffer()
     }
 
     /// Where the next character would be drawn.

@@ -83,6 +83,10 @@ mod reply {
 /// bit is not what the driver asks (D-178).
 pub(crate) const TRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);
 
+/// An MF2 keyboard's identity when the controller does not rewrite its reply.
+#[cfg(feature = "selftest")]
+pub(crate) const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x83);
+
 /// Controller-side scancode translation requested by a self-test transaction.
 #[cfg(feature = "selftest")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

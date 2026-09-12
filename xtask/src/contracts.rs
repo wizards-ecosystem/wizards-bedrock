@@ -569,6 +569,16 @@ fn apic_ready_publication_precedes_dependent_vector_reads() {
         commit.contains("self.controller.state.store(ready.bits(), Ordering::Release);"),
         "APIC readiness lost its Release publication"
     );
+    let ready = commit
+        .find("self.controller.state.store(ready.bits(), Ordering::Release);")
+        .expect("APIC Ready publication");
+    let restore = commit
+        .find("interrupts.restore();")
+        .expect("APIC initialization interrupt restoration");
+    assert!(
+        ready < restore,
+        "APIC initialization restores interrupts before publishing Ready"
+    );
     let lifecycle = between("fn lifecycle_at(state: &AtomicU8)", "fn admission_error");
     assert!(
         lifecycle.contains("state.load(Ordering::Acquire)"),

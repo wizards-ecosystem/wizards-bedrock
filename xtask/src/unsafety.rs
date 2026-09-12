@@ -218,7 +218,7 @@ mod tests {
             "wost/src/boot/mod.rs",
             0,
             1,
-            "b31351b0f3cc42a6bb2a6444dcb11f7d3687c819130dd3722f1eb9eff8441964",
+            "0287d36428d671cd920730c7306035d316e668d4a144db17e3d3d7026d6b931b",
         ),
         (
             "wost/src/cell.rs",

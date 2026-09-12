@@ -121,10 +121,10 @@ impl Framebuffer {
         self.layout.span()
     }
 
-    /// Whether writes are being shadowed.
+    /// Whether every framebuffer word has a shadow.
     #[cfg(feature = "selftest")]
-    pub fn has_back_buffer(&self) -> bool {
-        !self.back.is_empty()
+    pub fn has_complete_back_buffer(&self) -> bool {
+        !self.back.is_empty() && self.back.len() == self.words()
     }
 
     /// Words in the shadow: the device's stride times its visible height.
