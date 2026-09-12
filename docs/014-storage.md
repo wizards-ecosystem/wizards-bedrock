@@ -978,7 +978,7 @@ first, because a caller freezes the interface it uses.
 | Machine checks | 261 |
 | Mutations | 1359 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-308 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-309 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but that proves registration rather than a current full

@@ -4605,7 +4605,7 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a later evidence field silently replaces an earlier claim",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "evidence::tests::a_manifest_rejects_duplicate_keys",
+            name: "evidence::tests::a_duplicate_evidence_key_is_rejected_before_canonical_rendering",
         },
     },
     Mutation {
@@ -5221,7 +5221,7 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "the expected TLC invariant marker hides a second unrelated error",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "model::tests::a_tlc_verdict_is_complete_unambiguous_and_exact",
+            name: "model::tests::an_unrelated_tlc_error_is_rejected_before_verdict_shape_validation",
         },
     },
     Mutation {
@@ -5231,7 +5231,7 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a plausible TLC verdict can hide a Java throwable or fatal worker record",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "model::tests::a_tlc_verdict_is_complete_unambiguous_and_exact",
+            name: "model::tests::a_tlc_runtime_failure_is_rejected_before_verdict_shape_validation",
         },
     },
     Mutation {

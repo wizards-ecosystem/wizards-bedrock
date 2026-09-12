@@ -961,6 +961,31 @@ mod tests {
     }
 
     #[test]
+    fn an_unrelated_tlc_error_is_rejected_before_verdict_shape_validation() {
+        let transcript = format!(
+            "Starting...\n{CLEAN}\nError: disk failed\n1 states generated.\n\
+             Finished in 00s at (2026-08-30 00:00:00)\n"
+        );
+
+        let error = classify(&transcript, "").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "TLC reported an unrelated error beside its verdict"
+        );
+    }
+
+    #[test]
+    fn a_tlc_runtime_failure_is_rejected_before_verdict_shape_validation() {
+        let transcript = format!(
+            "Starting...\n{CLEAN}\njava.lang.AssertionError: forged\n1 states generated.\n\
+             Finished in 00s at (2026-08-30 00:00:00)\n"
+        );
+
+        let error = classify(&transcript, "").unwrap_err();
+        assert_eq!(error.to_string(), "TLC reported a runtime failure");
+    }
+
+    #[test]
     fn qualified_transcripts_bind_every_registered_run_and_stream() {
         let transcripts = fixture_transcripts();
         require_complete_transcripts(&transcripts).unwrap();

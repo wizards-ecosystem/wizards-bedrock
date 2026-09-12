@@ -1245,9 +1245,12 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_rejects_duplicate_keys() {
-        let text = format!("{FORMAT}\nsource.commit=one\nsource.commit=two\n");
-        assert!(parse_manifest(&text).is_err());
+    fn a_duplicate_evidence_key_is_rejected_before_canonical_rendering() {
+        let mut record = Record::default();
+        record.insert("source.commit", "one").unwrap();
+
+        let error = record.insert("source.commit", "two").unwrap_err();
+        assert_eq!(error.to_string(), "duplicate evidence key `source.commit`");
     }
 
     #[test]
