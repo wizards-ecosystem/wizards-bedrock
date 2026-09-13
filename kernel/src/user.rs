@@ -550,7 +550,7 @@ pub(crate) fn maximum_cleanup_ledger_is_total_for_test() -> bool {
     let stack = 0x9000_0000;
     remember(&mut regions, &mut used, stack, USER_STACK_BYTES).is_ok()
         && used == MAX_REGIONS
-        && regions[MAX_SEGMENTS] == (stack, USER_STACK_BYTES)
+        && regions.get(MAX_SEGMENTS) == Some(&(stack, USER_STACK_BYTES))
         && matches!(
             remember(&mut regions, &mut used, stack + PAGE_SIZE, PAGE_SIZE),
             Err(SpawnError::TooManyMappings)

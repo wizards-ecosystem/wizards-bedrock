@@ -3,9 +3,10 @@
 //! The cheap gate requires every source pattern to occur exactly once. The
 //! complete task applies each mutation in a clean, commit-pinned, journaled
 //! workspace, proves the witness class green first, and then requires the
-//! mutation's exact check, panic marker, boot marker or host-test verdict to go
-//! red. Another failure is inconclusive, and a selected-zero-tests host command
-//! proves nothing. Machine entries stay outside CI because each costs a boot.
+//! mutation's exact check, terminal marker or timeout, boot marker, or host-test
+//! verdict to go red. Another failure is inconclusive, and a selected-zero-tests
+//! host command proves nothing. Machine entries stay outside CI because each
+//! costs a boot.
 
 use anyhow::{Context, Result, bail, ensure};
 use std::process::{Command, Output};
@@ -64,6 +65,13 @@ pub enum Caught {
         /// Why a terminal outcome is the defect's expected witness.
         why: &'static str,
     },
+    /// The defect prevents the machine from reaching any terminal verdict.
+    Timeout {
+        /// Exact observation deadline whose expiry is the witness.
+        seconds: u64,
+        /// Why this defect necessarily exhausts that deadline.
+        why: &'static str,
+    },
 }
 
 /// The defects, each of which some check must notice.
@@ -85,8 +93,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1359 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
-        replace: "| Mutations | 1359 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
+        find: "| Mutations | 1362 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
+        replace: "| Mutations | 1362 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
         breaks: "the phase-close table borrows its successful-sweep label from unrelated prose",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1500,7 +1508,7 @@ pub const MUTATIONS: &[Mutation] = &[
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            flags.difference(NOT_THE_CALLERS),
             Grain::Largest,",
-        replace: "            flags,
+        replace: "            flags.difference(Flags::HUGE.union(Flags::GLOBAL)),
             Grain::Largest,",
         breaks: "a boot mapping cannot launder a frame into the allocator",
         reddens: Caught::Check("a boot mapping cannot claim ownership"),
@@ -1823,7 +1831,10 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "        let id = commit_table(quota)?;",
         replace: "        let id = commit_table(quota.saturating_sub(1))?;",
         breaks: "a table's final quota slot is backed before any trap can use it",
-        reddens: Caught::Check("the handle arena backs a table's whole quota"),
+        reddens: Caught::Panic {
+            marker: "a charged handle had no committed arena slot",
+            why: "the first charged handle reaches the missing arena slot before a verdict",
+        },
     },
     Mutation {
         file: "kernel/src/handle.rs",
@@ -1871,7 +1882,11 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "    pub(super) const ARGUMENT: usize = 24;",
         replace: "    pub(super) const ARGUMENT: usize = 8;",
         breaks: "the emitted program and kernel use one submission layout",
-        reddens: Caught::Check("a program drives its own ring"),
+        reddens: Caught::Timeout {
+            seconds: 60,
+            why: "the mismatched submission layout leaves the target program waiting on an echo \
+                  argument the kernel never received",
+        },
     },
     // Skipping release leaks one promised handle slot after every refusal.
     Mutation {
@@ -1902,7 +1917,10 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "        if false && !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
             // The cancellation itself still gets the completion reserved for",
         breaks: "a cancelled operation still gets its own completion",
-        reddens: Caught::Check("a cancelled operation and its cancellation complete separately"),
+        reddens: Caught::Panic {
+            marker: "a reserved completion slot was not there",
+            why: "the skipped settlement consumes the cancellation's reserved slot before a verdict",
+        },
     },
     // A plausible shifted clock is exposed only by comparing both publication doors.
     Mutation {
@@ -1966,7 +1984,10 @@ pub const MUTATIONS: &[Mutation] = &[
             spent: false,
         })",
         breaks: "a promise holds the table it is against",
-        reddens: Caught::Check("a promise outlives the program that made it"),
+        reddens: Caught::Panic {
+            marker: "a live reservation refused quota release",
+            why: "the foreign table keeps the reservation live when its real table drops before a verdict",
+        },
     },
     // Q35 leaves a bus-zero-only walk looking plausible, so the proof counts
     // buses rather than functions (D-168).
@@ -2607,7 +2628,10 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "        let index = (cluster - FIRST_DATA_CLUSTER) as u64;",
         replace: "        let index = cluster as u64;",
         breaks: "a cluster number is biased by two",
-        reddens: Caught::Check("the kernel reads the file the host wrote"),
+        reddens: Caught::HostTest {
+            package: "fat32",
+            name: "tests::a_clusters_sector_is_biased_by_two",
+        },
     },
     // A read bounded by the cluster rather than by the file, which hands back
     // the last cluster's tail: its previous occupant's data.
@@ -2905,7 +2929,10 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "        0x30 => Key::B,",
         replace: "        0x30 => Key::Pause,",
         breaks: "set 1's numbering is the specification's",
-        reddens: Caught::Check("a translated keystroke decodes to the same key"),
+        reddens: Caught::HostTest {
+            package: "ps2-keys",
+            name: "set1::tests::the_letter_rows_are_contiguous_runs",
+        },
     },
     // QEMU makes the bit and identity agree, so only omitted re-derivation is observable.
     Mutation {
@@ -2921,7 +2948,11 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "        if translated != self.decoder.reads_translated() {",
         replace: "        if false && translated != self.decoder.reads_translated() {",
         breaks: "the numbering the stream proved is the one the decoder adopts",
-        reddens: Caught::Check("the keyboard's numbering and the decoder's are the same"),
+        reddens: Caught::Timeout {
+            seconds: 60,
+            why: "the unadopted stream numbering prevents the translated key from completing its \
+                  bounded interactive sequence",
+        },
     },
     Mutation {
         file: "libs/ps2-keys/src/arriving.rs",
@@ -3066,10 +3097,7 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "        let stack_index = table.slots[slot].stack_index;\n        table.slots[slot] = Slot {\n            stack_index,\n            ..Slot::VACANT\n        };",
         replace: "        table.slots[slot] = Slot::VACANT;",
         breaks: "a retired construction preserves its reusable kernel stack",
-        reddens: Caught::Panic {
-            marker: "address 0xffffffffffffffe8",
-            why: "the second fabrication writes through the zeroed stack top before a verdict",
-        },
+        reddens: Caught::Check("an exited slot is reused"),
     },
     // Return after the first injected retirement refusal without completing
     // the task-table retirement or publishing the scheduler slot.
@@ -5967,7 +5995,11 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "pub(crate) fn take_interrupts() {\n    assert!(\n        INTERRUPT_DRIVEN.claim(),\n        \"the keyboard interrupt handoff happened more than once\"\n    );\n}",
         replace: "pub(crate) fn take_interrupts() {}",
         breaks: "the routed keyboard never records its interrupt-driven handoff",
-        reddens: Caught::Check("keystrokes arrive as interrupts"),
+        reddens: Caught::Timeout {
+            seconds: 60,
+            why: "the unrecorded handoff leaves the routed controller and polling fallback in \
+                  incompatible ownership modes, so input never completes",
+        },
     },
     Mutation {
         file: "kernel/src/time.rs",
@@ -6440,7 +6472,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         file: "xtask/src/mutation_workspace.rs",
         find: "        let path = require_confined_file(&self.snapshot, relative, \"mutation source file\")?;",
-        replace: "        let path = checked_join(&self.snapshot, relative)?;",
+        replace: "        let path = self.snapshot.join(relative);",
         breaks: "a substituted snapshot parent can author the mutation input after session open",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -6450,7 +6482,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         file: "xtask/src/mutation_workspace.rs",
         find: "        let path =\n            require_confined_file(self.workspace.root(), relative, \"mutation workspace file\")?;",
-        replace: "        let path = checked_join(self.workspace.root(), relative)?;",
+        replace: "        let path = self.workspace.root().join(relative);",
         breaks: "a substituted workspace parent can redirect a mutation write after session open",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -6500,7 +6532,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         file: "xtask/src/qualification.rs",
         find: "            transcript.source.file_name().and_then(|name| name.to_str())\n                == Some(generation_transcript_name(generation)?.as_str()),",
-        replace: "            true,",
+        replace: "            generation_record_from_digests(source, kind, generation, &digests).is_ok(),",
         breaks: "a transcript path from another valid VMware generation enters the capture",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -7051,7 +7083,11 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "            if zombies.settling[slot] {\n                return None;\n            }",
         replace: "            if false && zombies.settling[slot] {\n                return None;\n            }",
         breaks: "the same zombie can acquire a second settlement collector",
-        reddens: Caught::Check("one zombie has one settlement collector"),
+        reddens: Caught::Timeout {
+            seconds: 60,
+            why: "the duplicate settlement collector prevents zombie ownership from converging, \
+                  so the self-test cannot reach a terminal verdict",
+        },
     },
     Mutation {
         file: "libs/x86-cpuid/src/xstate.rs",
@@ -7476,8 +7512,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "libs/pci-config/src/lib.rs",
-        find: "        let Some(slot) = self.slots.iter_mut().find(|held| **held == Some(lease)) else {",
-        replace: "        let Some(slot) = self.slots.iter_mut().find(|held| {\n            held.is_some_and(|held| {\n                held.at == lease.at && held.generation == lease.generation\n            })\n        }) else {",
+        find: "    fn holds_function(&self, function: FunctionLease, lease: CommandLease) -> bool {\n        lease.function == function && self.slots.iter().flatten().any(|held| *held == lease)\n    }\n\n    fn release(&mut self, lease: CommandLease) -> bool {\n        let Some(slot) = self.slots.iter_mut().find(|held| **held == Some(lease)) else {",
+        replace: "    fn holds_function(&self, function: FunctionLease, lease: CommandLease) -> bool {\n        lease.function == function\n            && self.slots.iter().flatten().any(|held| {\n                held.function == lease.function && held.generation == lease.generation\n            })\n    }\n\n    fn release(&mut self, lease: CommandLease) -> bool {\n        let Some(slot) = self.slots.iter_mut().find(|held| {\n            held.is_some_and(|held| {\n                held.function == lease.function && held.generation == lease.generation\n            })\n        }) else {",
         breaks: "a BAR probe token can release the matching generation from a different registry",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -7703,7 +7739,10 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "    if space.is_reclaimed() {",
         replace: "    if false && space.is_reclaimed() {",
         breaks: "paging activation reads a root from an already reclaimed address space",
-        reddens: Caught::Check("a reclaimed space answers nothing"),
+        reddens: Caught::Panic {
+            marker: "a reclaimed address space has no root",
+            why: "activation reads the removed root before the first self-test verdict",
+        },
     },
     Mutation {
         file: "wost/src/arch/x86_64/cpu.rs",
@@ -8478,7 +8517,7 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "        matches!(self.lifecycle(), Lifecycle::Initializing | Lifecycle::Ready)\n            .then_some(Registers)",
         breaks: "the central APIC register gate admits an unpublished initializing controller",
         reddens: Caught::Check(
-            "local apic initialization stayed unpublished and interrupt-excluded",
+            "every late or ignored-write apic refusal stays unavailable and terminal",
         ),
     },
     Mutation {
@@ -10674,7 +10713,7 @@ fn mint_stopped<'controller>(
     Mutation {
         file: "xtask/src/api.rs",
         find: "        let declared_path = literal_module_path(&module.attrs, source, module.ident.span())?;",
-        replace: "        let declared_path = None;",
+        replace: "        let declared_path = None::<PathBuf>;",
         breaks: "declared module path authority is ignored during source routing",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -12728,13 +12767,17 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         file: "xtask/src/qemu.rs",
-        find: r#"    ensure!(
-        index == *next,
+        find: r#"    let ordered = match order {
+        InteractiveMarkerOrder::Strict => index == *next,
+        InteractiveMarkerOrder::Mutation => index >= *next,
+    };
+    ensure!(
+        ordered,
         "self-test interactive marker {} arrived while waiting for {}",
         index + 1,
         *next + 1
     );"#,
-        replace: r#"    let _unchecked_index = index;"#,
+        replace: r#"    let _unchecked_order = order;"#,
         breaks: "interactive QMP injection accepts duplicate or out-of-order marker records",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -12743,7 +12786,31 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         file: "xtask/src/qemu.rs",
-        find: r#"                    match observe_interactive_marker(&text, &mut next_interactive_marker) {
+        find: "        InteractiveMarkerOrder::Mutation => index >= *next,",
+        replace: "        InteractiveMarkerOrder::Mutation => index == *next,",
+        breaks: "mutation observation stops at an earlier stage's missing interaction marker",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::interactive_input_markers_are_unique_and_ordered",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: "    } else if observed == round {\n        InjectionAction::Inject",
+        replace: "    } else if observed >= round {\n        InjectionAction::Inject",
+        breaks: "a skipped interaction stage injects its stale keystrokes into the next stage",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::interactive_input_markers_are_unique_and_ordered",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qemu.rs",
+        find: r#"                    match observe_interactive_marker(
+                        &text,
+                        &mut next_interactive_marker,
+                        marker_order,
+                    ) {
                         Ok(true) => markers_seen.store(next_interactive_marker, Ordering::Release),
                         Ok(false) => {}
                         Err(error) => {
@@ -14044,6 +14111,16 @@ fn mint_stopped<'controller>(
             name: "cargo::tests::a_cargo_command_sheds_the_windows_verbatim_unc_target_prefix",
         },
     },
+    Mutation {
+        file: "xtask/src/mutate.rs",
+        find: "    let expected = format!(\"self-test did not finish within {seconds} seconds\");\n    if error.to_string() == expected {\n        Ok(true)",
+        replace: "    let expected = format!(\"self-test did not finish within {seconds} seconds\");\n    if error.to_string() != expected {\n        Ok(true)",
+        breaks: "a foreign machine error can masquerade as the registered terminal timeout",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::a_timeout_requires_its_exact_deadline_and_terminal_rationale",
+        },
+    },
 ];
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -14060,7 +14137,9 @@ fn baselines_for(mutations: &[Mutation]) -> Baselines {
         match mutation.reddens {
             Caught::HostTest { .. } => baselines.host = true,
             Caught::ApiAudit(_) => baselines.api = true,
-            Caught::Check(_) | Caught::Panic { .. } => baselines.selftest = true,
+            Caught::Check(_) | Caught::Panic { .. } | Caught::Timeout { .. } => {
+                baselines.selftest = true;
+            }
             Caught::BootMarker(_) | Caught::DegradedPanic { .. } => {
                 baselines.degraded = true;
             }
@@ -14247,6 +14326,11 @@ pub(crate) fn registry_fingerprint() -> String {
                 field(&mut material, marker);
                 field(&mut material, why);
             }
+            Caught::Timeout { seconds, why } => {
+                field(&mut material, "timeout");
+                field(&mut material, &seconds.to_string());
+                field(&mut material, why);
+            }
         }
     }
     sha256::hex(&sha256::digest(&material))
@@ -14338,7 +14422,11 @@ fn qualify_machine_mutation(
 ) -> Result<bool> {
     let mut first_error = None;
     for attempt in 1..=MACHINE_OBSERVATIONS {
-        match observe().and_then(|observed| assess_selftest(wanted, observed)) {
+        let assessment = match observe() {
+            Ok(observed) => assess_selftest(wanted, observed),
+            Err(error) => assess_machine_error(wanted, error),
+        };
+        match assessment {
             Ok(caught) => return Ok(caught),
             Err(error) if attempt < MACHINE_OBSERVATIONS => {
                 let report = format!("{error:#}");
@@ -14356,6 +14444,18 @@ fn qualify_machine_mutation(
         }
     }
     unreachable!("the bounded observation loop returns on every outcome")
+}
+
+fn assess_machine_error(wanted: Caught, error: anyhow::Error) -> Result<bool> {
+    let Caught::Timeout { seconds, .. } = wanted else {
+        return Err(error);
+    };
+    let expected = format!("self-test did not finish within {seconds} seconds");
+    if error.to_string() == expected {
+        Ok(true)
+    } else {
+        bail!("mutation expected timeout {expected:?}, but observed: {error:#}")
+    }
 }
 
 fn qualify_degraded_mutation(
@@ -14444,6 +14544,15 @@ fn assess_selftest(wanted: Caught, observed: qemu::SelftestOutcome) -> Result<bo
             "mutation expected panic marker {marker:?}, but checks failed: {}",
             failed.join("; ")
         ),
+        (Caught::Timeout { seconds, .. }, qemu::SelftestOutcome::Failed(failed)) => bail!(
+            "mutation expected a {seconds}-second timeout, but checks failed: {}",
+            failed.join("; ")
+        ),
+        (Caught::Timeout { seconds, .. }, qemu::SelftestOutcome::Panicked { transcript, .. }) => {
+            bail!(
+                "mutation expected a {seconds}-second timeout, but the kernel panicked: {transcript}"
+            )
+        }
         (
             Caught::HostTest { .. }
             | Caught::ApiAudit(_)
@@ -14831,7 +14940,7 @@ mod tests {
                         mutation.breaks
                     );
                 }
-                Caught::DegradedPanic { .. } | Caught::Panic { .. } => {}
+                Caught::DegradedPanic { .. } | Caught::Panic { .. } | Caught::Timeout { .. } => {}
             }
         }
     }
@@ -14968,6 +15077,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_timeout_requires_its_exact_deadline_and_terminal_rationale() {
+        for mutation in MUTATIONS {
+            if let Caught::Timeout { seconds, why } = mutation.reddens {
+                assert_eq!(seconds, 60, "`{}` uses a foreign deadline", mutation.breaks);
+                assert!(
+                    why.len() > 40,
+                    "`{}` does not explain its terminal wait",
+                    mutation.breaks
+                );
+            }
+        }
+
+        let wanted = Caught::Timeout {
+            seconds: 60,
+            why: "this fixture explains why the machine cannot reach an ordinary terminal verdict",
+        };
+        assert!(
+            assess_machine_error(
+                wanted,
+                anyhow::anyhow!("self-test did not finish within 60 seconds")
+            )
+            .is_ok_and(|caught| caught)
+        );
+        assert!(
+            assess_machine_error(
+                wanted,
+                anyhow::anyhow!("self-test did not finish within 59 seconds")
+            )
+            .is_err()
+        );
+        assert!(assess_machine_error(wanted, anyhow::anyhow!("the emulator disappeared")).is_err());
+        assert!(
+            assess_selftest(
+                wanted,
+                qemu::SelftestOutcome::Failed(vec!["another check".to_string()])
+            )
+            .is_err()
+        );
     }
 
     #[test]

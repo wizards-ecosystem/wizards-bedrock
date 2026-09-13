@@ -5985,11 +5985,14 @@ fn a_boot_mapping_cannot_claim_ownership() -> bool {
         {
             return false;
         }
+        let provenance_removed = space
+            .lookup(PROBE)
+            .is_some_and(|(_, flags)| !flags.contains(Flags::OWNED));
         let before = mm::free_frames();
         // With the bit stripped, `unmap` sees a mapping nothing owns and
         // refuses, rather than minting a second owner of a boot frame.
         let refused = space.unmap(PROBE, PAGE_SIZE).err() == Some(MapError::NotOwned(PROBE));
-        refused && mm::free_frames() == before
+        provenance_removed && refused && mm::free_frames() == before
     })
 }
 
@@ -7907,6 +7910,41 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         thread_local_storage_follows_the_thread(),
     );
     report.check(
+        "device window reuses arbitrary-order gaps",
+        device_window_reuses_arbitrary_order_gaps(),
+    );
+    let device_liveness = device_liveness_covers_the_current_root_and_extent();
+    report.check(
+        "late device mappings reach earlier user roots",
+        device_liveness
+            .as_ref()
+            .is_some_and(|probe| probe.shared_topology),
+    );
+    report.check(
+        "a stale shared root cannot authenticate a device mapping",
+        device_liveness
+            .as_ref()
+            .is_some_and(|probe| probe.stale_root),
+    );
+    report.check(
+        "a device mapping checks its first leaf",
+        device_liveness.as_ref().is_some_and(|probe| probe.first),
+    );
+    report.check(
+        "a device mapping checks its middle leaf",
+        device_liveness.as_ref().is_some_and(|probe| probe.middle),
+    );
+    report.check(
+        "a device mapping checks its last leaf",
+        device_liveness.as_ref().is_some_and(|probe| probe.last),
+    );
+    report.check(
+        "a device mapping checks its cache policy",
+        device_liveness
+            .as_ref()
+            .is_some_and(|probe| probe.cache_policy),
+    );
+    report.check(
         "a bound space is not reclaimed",
         a_bound_space_is_not_reclaimed(),
     );
@@ -8186,41 +8224,6 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "malformed device extents are refused",
         malformed_device_extents_are_refused(),
-    );
-    report.check(
-        "device window reuses arbitrary-order gaps",
-        device_window_reuses_arbitrary_order_gaps(),
-    );
-    let device_liveness = device_liveness_covers_the_current_root_and_extent();
-    report.check(
-        "late device mappings reach earlier user roots",
-        device_liveness
-            .as_ref()
-            .is_some_and(|probe| probe.shared_topology),
-    );
-    report.check(
-        "a stale shared root cannot authenticate a device mapping",
-        device_liveness
-            .as_ref()
-            .is_some_and(|probe| probe.stale_root),
-    );
-    report.check(
-        "a device mapping checks its first leaf",
-        device_liveness.as_ref().is_some_and(|probe| probe.first),
-    );
-    report.check(
-        "a device mapping checks its middle leaf",
-        device_liveness.as_ref().is_some_and(|probe| probe.middle),
-    );
-    report.check(
-        "a device mapping checks its last leaf",
-        device_liveness.as_ref().is_some_and(|probe| probe.last),
-    );
-    report.check(
-        "a device mapping checks its cache policy",
-        device_liveness
-            .as_ref()
-            .is_some_and(|probe| probe.cache_policy),
     );
     report.check(
         "active device tables cannot be reclaimed",

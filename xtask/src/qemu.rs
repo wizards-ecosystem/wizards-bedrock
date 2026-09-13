@@ -1085,20 +1085,51 @@ const INTERACTIVE_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::info(TRANSLATED_MARKER),
 ];
 
-fn observe_interactive_marker(line: &str, next: &mut usize) -> Result<bool> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InteractiveMarkerOrder {
+    Strict,
+    Mutation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InjectionAction {
+    Wait,
+    Inject,
+    Skip,
+}
+
+const fn injection_action(observed: usize, round: usize) -> InjectionAction {
+    if observed < round {
+        InjectionAction::Wait
+    } else if observed == round {
+        InjectionAction::Inject
+    } else {
+        InjectionAction::Skip
+    }
+}
+
+fn observe_interactive_marker(
+    line: &str,
+    next: &mut usize,
+    order: InteractiveMarkerOrder,
+) -> Result<bool> {
     let Some(index) = INTERACTIVE_MARKERS
         .iter()
         .position(|record| is_required_boot_marker(line, *record))
     else {
         return Ok(false);
     };
+    let ordered = match order {
+        InteractiveMarkerOrder::Strict => index == *next,
+        InteractiveMarkerOrder::Mutation => index >= *next,
+    };
     ensure!(
-        index == *next,
+        ordered,
         "self-test interactive marker {} arrived while waiting for {}",
         index + 1,
         *next + 1
     );
-    *next += 1;
+    *next = index + 1;
     Ok(true)
 }
 
@@ -1442,13 +1473,23 @@ const MONITOR_CLIENT_SUFFIX: &str = ",server=off";
 /// here: the missing keystroke turns the kernel's own bounded check red, so
 /// the verdict stays the kernel's.
 pub fn run_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<()> {
-    require_selftest(observe_selftest(paths, image, timeout)?)
+    let (outcome, _) =
+        observe_selftest_run(paths, image, timeout, true, InteractiveMarkerOrder::Strict)?;
+    require_selftest(outcome)
 }
 
 /// Boot `image` headless and preserve a valid red or panic outcome for a
-/// mutation caller.
+/// mutation caller. A missing earlier interaction may be skipped so its later
+/// exact verdict remains observable; ordinary self-test boots stay strict.
 pub fn observe_selftest(paths: &Paths, image: &Path, timeout: Duration) -> Result<SelftestOutcome> {
-    observe_selftest_run(paths, image, timeout, true).map(|(outcome, _)| outcome)
+    observe_selftest_run(
+        paths,
+        image,
+        timeout,
+        true,
+        InteractiveMarkerOrder::Mutation,
+    )
+    .map(|(outcome, _)| outcome)
 }
 
 /// Boot a self-test image and require its one versioned baseline record.
@@ -1457,7 +1498,8 @@ pub(crate) fn measure_performance(
     image: &Path,
     timeout: Duration,
 ) -> Result<PerformanceSample> {
-    let (outcome, baseline) = observe_selftest_run(paths, image, timeout, false)?;
+    let (outcome, baseline) =
+        observe_selftest_run(paths, image, timeout, false, InteractiveMarkerOrder::Strict)?;
     require_selftest(outcome)?;
     baseline.context("a clean self-test boot emitted no foundation baseline")
 }
@@ -1467,6 +1509,7 @@ fn observe_selftest_run(
     image: &Path,
     timeout: Duration,
     echo_serial: bool,
+    marker_order: InteractiveMarkerOrder,
 ) -> Result<(SelftestOutcome, Option<PerformanceSample>)> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
@@ -1503,6 +1546,7 @@ fn observe_selftest_run(
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
         echo_serial,
+        marker_order,
     );
     let deadline = Instant::now() + timeout;
     let injection_cancelled = Arc::new(AtomicBool::new(false));
@@ -1577,6 +1621,7 @@ fn forward_serial(
     panicked: Arc<AtomicBool>,
     serial_failed: Arc<AtomicBool>,
     echo: bool,
+    marker_order: InteractiveMarkerOrder,
 ) -> JoinHandle<Result<SerialObservation>> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
@@ -1609,7 +1654,11 @@ fn forward_serial(
             match observe_selftest_line(&mut observation, &text) {
                 Ok(transition) => {
                     transition.publish(&panicked);
-                    match observe_interactive_marker(&text, &mut next_interactive_marker) {
+                    match observe_interactive_marker(
+                        &text,
+                        &mut next_interactive_marker,
+                        marker_order,
+                    ) {
                         Ok(true) => markers_seen.store(next_interactive_marker, Ordering::Release),
                         Ok(false) => {}
                         Err(error) => {
@@ -1647,12 +1696,18 @@ fn inject_on_marker(
         let outcome = accept_stream_before(&listener, deadline, Some(&cancelled))
             .and_then(Qmp::handshake)
             .and_then(|mut qmp| {
+                let mut injected = 0;
                 for (round, keys) in [
                     (1, STORAGE_DELAY_QCODES),
                     (2, INJECTED_QCODES),
                     (3, TRANSLATED_QCODES),
                 ] {
-                    while markers_seen.load(Ordering::Acquire) < round {
+                    let action = loop {
+                        let observed = markers_seen.load(Ordering::Acquire);
+                        let action = injection_action(observed, round);
+                        if action != InjectionAction::Wait {
+                            break action;
+                        }
                         if cancelled.load(Ordering::Acquire) {
                             bail!("QMP injection was cancelled");
                         }
@@ -1660,16 +1715,17 @@ fn inject_on_marker(
                             bail!("QMP injection reached the run deadline");
                         }
                         std::thread::sleep(POLL_INTERVAL);
+                    };
+                    if action == InjectionAction::Skip {
+                        continue;
                     }
                     keys.iter().try_for_each(|qcode| qmp.inject_key(qcode))?;
+                    injected += keys.len();
                 }
-                Ok(())
+                Ok(injected)
             });
         match outcome {
-            Ok(()) => println!(
-                "[xtask] qmp: {} keystrokes injected across three rounds",
-                STORAGE_DELAY_QCODES.len() + INJECTED_QCODES.len() + TRANSLATED_QCODES.len()
-            ),
+            Ok(injected) => println!("[xtask] qmp: {injected} keystrokes injected"),
             Err(reason) => {
                 println!("[xtask] qmp: {reason:#}; the keystroke check will report it");
             }
@@ -2489,7 +2545,10 @@ mod tests {
                 .iter()
                 .position(|candidate| candidate == record)
                 .unwrap();
-            assert!(observe_interactive_marker(&exact, &mut next).unwrap());
+            assert!(
+                observe_interactive_marker(&exact, &mut next, InteractiveMarkerOrder::Strict)
+                    .unwrap()
+            );
 
             for near_miss in [
                 format!("[warn ] {}\r\n", record.message),
@@ -2505,7 +2564,12 @@ mod tests {
             ] {
                 let before = next;
                 assert!(
-                    !observe_interactive_marker(&near_miss, &mut next).unwrap(),
+                    !observe_interactive_marker(
+                        &near_miss,
+                        &mut next,
+                        InteractiveMarkerOrder::Strict,
+                    )
+                    .unwrap(),
                     "accepted {near_miss:?}"
                 );
                 assert_eq!(next, before);
@@ -2520,16 +2584,68 @@ mod tests {
             .map(|record| format!("[info ] {}\r\n", record.message))
             .collect();
         let mut next = 0;
-        assert!(observe_interactive_marker(&records[1], &mut next).is_err());
+        assert!(
+            observe_interactive_marker(&records[1], &mut next, InteractiveMarkerOrder::Strict,)
+                .is_err()
+        );
         assert_eq!(next, 0);
-        assert!(observe_interactive_marker(&records[0], &mut next).unwrap());
+        assert!(
+            observe_interactive_marker(&records[0], &mut next, InteractiveMarkerOrder::Strict,)
+                .unwrap()
+        );
         assert_eq!(next, 1);
-        assert!(observe_interactive_marker(&records[0], &mut next).is_err());
+        assert!(
+            observe_interactive_marker(&records[0], &mut next, InteractiveMarkerOrder::Strict,)
+                .is_err()
+        );
         assert_eq!(next, 1);
-        assert!(observe_interactive_marker(&records[1], &mut next).unwrap());
-        assert!(observe_interactive_marker(&records[2], &mut next).unwrap());
+        assert!(
+            observe_interactive_marker(&records[1], &mut next, InteractiveMarkerOrder::Strict,)
+                .unwrap()
+        );
+        assert!(
+            observe_interactive_marker(&records[2], &mut next, InteractiveMarkerOrder::Strict,)
+                .unwrap()
+        );
         assert_eq!(next, INTERACTIVE_MARKERS.len());
-        assert!(!observe_interactive_marker("[info ] unrelated\r\n", &mut next).unwrap());
+        assert!(
+            !observe_interactive_marker(
+                "[info ] unrelated\r\n",
+                &mut next,
+                InteractiveMarkerOrder::Strict,
+            )
+            .unwrap()
+        );
+
+        let mut mutation_next = 0;
+        assert!(
+            observe_interactive_marker(
+                &records[1],
+                &mut mutation_next,
+                InteractiveMarkerOrder::Mutation,
+            )
+            .unwrap()
+        );
+        assert_eq!(mutation_next, 2);
+        assert!(
+            observe_interactive_marker(
+                &records[0],
+                &mut mutation_next,
+                InteractiveMarkerOrder::Mutation,
+            )
+            .is_err()
+        );
+        assert!(
+            observe_interactive_marker(
+                &records[2],
+                &mut mutation_next,
+                InteractiveMarkerOrder::Mutation,
+            )
+            .unwrap()
+        );
+        assert_eq!(injection_action(0, 1), InjectionAction::Wait);
+        assert_eq!(injection_action(1, 1), InjectionAction::Inject);
+        assert_eq!(injection_action(2, 1), InjectionAction::Skip);
     }
 
     static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -4220,8 +4336,9 @@ mod tests {
             .expect("the end of the self-test serial forwarder")
             .0;
         assert!(
-            forwarder
-                .contains("match observe_interactive_marker(&text, &mut next_interactive_marker)")
+            forwarder.contains("match observe_interactive_marker(")
+                && forwarder.contains("&mut next_interactive_marker,")
+                && forwarder.contains("marker_order,")
                 && forwarder
                     .contains("markers_seen.store(next_interactive_marker, Ordering::Release)")
                 && !forwarder.contains("text.contains(STORAGE_DELAY_MARKER)")
