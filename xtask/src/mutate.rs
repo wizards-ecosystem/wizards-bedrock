@@ -6532,7 +6532,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         file: "xtask/src/qualification.rs",
         find: "            transcript.source.file_name().and_then(|name| name.to_str())\n                == Some(generation_transcript_name(generation)?.as_str()),",
-        replace: "            generation_record_from_digests(source, kind, generation, &digests).is_ok(),",
+        replace: "            true,",
         breaks: "a transcript path from another valid VMware generation enters the capture",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -6542,7 +6542,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         file: "xtask/src/qualification.rs",
         find: "            receipt == generation_record_from_digests(source, kind, generation, &digests)?,",
-        replace: "            true,",
+        replace: "            generation_record_from_digests(source, kind, generation, &digests).is_ok(),",
         breaks: "machine bytes from multiple VMware generations share one captured receipt",
         reddens: Caught::HostTest {
             package: "xtask",
