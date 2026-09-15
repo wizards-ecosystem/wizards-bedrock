@@ -1174,6 +1174,100 @@ fn rust_sources_below(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 #[derive(Default)]
+struct PublicErrorContracts {
+    enums: BTreeMap<String, bool>,
+    displays: BTreeSet<String>,
+    errors: BTreeSet<String>,
+}
+
+fn nominal_type_name(ty: &Type) -> Option<String> {
+    let Type::Path(path) = ty else {
+        return None;
+    };
+    path.path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+}
+
+impl<'ast> Visit<'ast> for PublicErrorContracts {
+    fn visit_item_enum(&mut self, item: &'ast ItemEnum) {
+        let name = item.ident.to_string();
+        if matches!(item.vis, syn::Visibility::Public(_)) && name.ends_with("Error") {
+            let extensible = item
+                .attrs
+                .iter()
+                .any(|attribute| attribute.path().is_ident("non_exhaustive"));
+            assert!(
+                self.enums.insert(name.clone(), extensible).is_none(),
+                "duplicate public error enum {name} in one source file"
+            );
+        }
+        visit::visit_item_enum(self, item);
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        let Some((_, trait_path, _)) = &item.trait_ else {
+            visit::visit_item_impl(self, item);
+            return;
+        };
+        let Some(name) = nominal_type_name(&item.self_ty) else {
+            visit::visit_item_impl(self, item);
+            return;
+        };
+        match trait_path.segments.last().map(|segment| &segment.ident) {
+            Some(trait_name) if trait_name == "Display" => {
+                self.displays.insert(name);
+            }
+            Some(trait_name) if trait_name == "Error" => {
+                self.errors.insert(name);
+            }
+            _ => {}
+        }
+        visit::visit_item_impl(self, item);
+    }
+}
+
+#[test]
+fn public_error_enums_have_stable_standard_contracts() {
+    let paths = Paths::discover().expect("workspace paths");
+    let mut violations = Vec::new();
+    for root in ["kernel/src", "libs", "wost/src"] {
+        for source in rust_sources_below(&paths.root().join(root)) {
+            let relative = source.strip_prefix(paths.root()).unwrap_or(&source);
+            let text = std::fs::read_to_string(&source)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", relative.display()));
+            let syntax = syn::parse_file(&text)
+                .unwrap_or_else(|error| panic!("parsing {}: {error}", relative.display()));
+            let mut contracts = PublicErrorContracts::default();
+            contracts.visit_file(&syntax);
+            for (name, extensible) in contracts.enums {
+                if !extensible {
+                    violations.push(format!(
+                        "{}::{name} is missing #[non_exhaustive]",
+                        relative.display()
+                    ));
+                }
+                if !contracts.displays.contains(&name) {
+                    violations.push(format!("{}::{name} is missing Display", relative.display()));
+                }
+                if !contracts.errors.contains(&name) {
+                    violations.push(format!(
+                        "{}::{name} is missing core::error::Error",
+                        relative.display()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "public error contracts changed:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[derive(Default)]
 struct UnrestrictedUnsafeFunctions(Vec<String>);
 
 impl UnrestrictedUnsafeFunctions {

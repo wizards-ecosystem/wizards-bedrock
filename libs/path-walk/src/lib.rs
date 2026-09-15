@@ -59,6 +59,7 @@ pub const MAX_NAME: usize = 255;
 
 /// Why a path could not be split.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PathError {
     /// The path is empty, which names nothing.
     Empty,
@@ -82,6 +83,24 @@ pub enum PathError {
     /// work bounded by the caller's buffer and not by the path's length.
     TooDeep,
 }
+
+impl core::fmt::Display for PathError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Write::write_str(
+            f,
+            match self {
+                Self::Empty => "the path is empty",
+                Self::Absolute => "the path is absolute",
+                Self::Escapes => "the path escapes its starting directory",
+                Self::NameTooLong => "a path component is too long",
+                Self::BadName => "a path component contains an invalid byte",
+                Self::TooDeep => "the path exceeds the component capacity",
+            },
+        )
+    }
+}
+
+impl core::error::Error for PathError {}
 
 /// Split `path` into components, resolving `.` and `..` as it goes.
 ///
@@ -162,6 +181,32 @@ fn is_a_name(component: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_path_error_describes_its_cause() {
+        fn assert_error<T: core::error::Error>() {}
+
+        assert_error::<PathError>();
+        for (error, expected) in [
+            (PathError::Empty, "the path is empty"),
+            (PathError::Absolute, "the path is absolute"),
+            (
+                PathError::Escapes,
+                "the path escapes its starting directory",
+            ),
+            (PathError::NameTooLong, "a path component is too long"),
+            (
+                PathError::BadName,
+                "a path component contains an invalid byte",
+            ),
+            (
+                PathError::TooDeep,
+                "the path exceeds the component capacity",
+            ),
+        ] {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
 
     /// Split `path` into a fresh buffer, for tests that want the answer.
     fn components(path: &[u8]) -> Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, PathError> {

@@ -43,6 +43,7 @@ pub const PUBLICATION_WORD_BYTES: usize = size_of::<u32>();
 
 /// Why a shared-ring layout cannot partition one allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SharedLayoutError {
     /// An allocation with no bytes cannot hold a ring.
     Empty,

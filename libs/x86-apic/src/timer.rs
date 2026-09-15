@@ -11,10 +11,19 @@ use crate::local_vector::{DeliverableVector, Entry};
 
 /// Why a one-shot timer entry cannot be published yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OneShotError {
     /// The current countdown has not stopped.
     Running,
 }
+
+impl core::fmt::Display for OneShotError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Write::write_str(f, "the local APIC timer is still running")
+    }
+}
+
+impl core::error::Error for OneShotError {}
 
 /// Plan the sole register write that unmasks a one-shot timer.
 pub const fn one_shot_entry(
@@ -105,6 +114,17 @@ mod tests {
 
     fn vector(raw: u8) -> InterruptVector {
         InterruptVector::new(raw).expect("test vector is assignable")
+    }
+
+    #[test]
+    fn one_shot_error_is_a_standard_error() {
+        fn assert_error<T: core::error::Error>() {}
+
+        assert_error::<OneShotError>();
+        assert_eq!(
+            OneShotError::Running.to_string(),
+            "the local APIC timer is still running"
+        );
     }
 
     const ALL: &[Divide] = &[

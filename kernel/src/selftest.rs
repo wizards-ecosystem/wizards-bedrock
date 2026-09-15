@@ -6840,6 +6840,9 @@ fn stack_liveness_covers_the_current_root_and_extent() -> Option<StackLiveness> 
             }
             return None;
         }
+        Some(Err(reason)) => {
+            panic!("stack liveness fixture refused with an unknown cleanup state: {reason}");
+        }
     };
 
     let live_before = paging::translate(slot.stack_base());

@@ -727,6 +727,7 @@ pub fn set_timer_one_shot(_disarmed: DisarmedTimer) -> Result<(), TimerError> {
     let entry = match x86_apic::timer::one_shot_entry(timer_current_count(), vector) {
         Ok(entry) => entry,
         Err(x86_apic::timer::OneShotError::Running) => return Err(TimerError::StillRunning),
+        Err(_) => return Err(TimerError::InvalidConfiguration),
     };
     write(register::LVT_TIMER, entry.bits().into());
     Ok(())

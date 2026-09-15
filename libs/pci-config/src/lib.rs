@@ -1693,6 +1693,7 @@ fn admit_memory_space_with_leases<const N: usize>(
 
 /// Why a BAR-probe transaction could not produce windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProbeError<E> {
     /// The function or command-transition reservation was unavailable.
     Unavailable(EnableError),
@@ -1708,6 +1709,42 @@ pub enum ProbeError<E> {
     Malformed,
     /// A device returned a mask or base that cannot describe its window.
     InvalidWindow,
+}
+
+impl<E: core::fmt::Display> core::fmt::Display for ProbeError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unavailable(reason) => {
+                write!(f, "bar probe authority is unavailable: {reason}")
+            }
+            Self::Access(reason) => write!(f, "configuration access failed: {reason}"),
+            Self::Refused(observed) => write!(
+                f,
+                "command register refused decode-off value and read back {observed:#06x}"
+            ),
+            Self::Restore(reason) => write!(f, "configuration restoration failed: {reason}"),
+            Self::RestoreChanged => core::fmt::Write::write_str(
+                f,
+                "configuration restoration changed the captured register state",
+            ),
+            Self::Malformed => {
+                core::fmt::Write::write_str(f, "the function has an unsupported BAR layout")
+            }
+            Self::InvalidWindow => {
+                core::fmt::Write::write_str(f, "a BAR returned an invalid memory window")
+            }
+        }
+    }
+}
+
+impl<E: core::error::Error + 'static> core::error::Error for ProbeError<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Unavailable(reason) => Some(reason),
+            Self::Access(reason) | Self::Restore(reason) => Some(reason),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2237,6 +2274,66 @@ pub const fn secondary_bus(bits: u32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct TestAccessError;
+
+    impl core::fmt::Display for TestAccessError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            core::fmt::Write::write_str(f, "test access failure")
+        }
+    }
+
+    impl core::error::Error for TestAccessError {}
+
+    #[test]
+    fn every_probe_error_describes_and_exposes_its_cause() {
+        fn assert_error<T: core::error::Error>() {}
+
+        assert_error::<ProbeError<TestAccessError>>();
+        for (error, expected) in [
+            (
+                ProbeError::Unavailable(EnableError::Stale),
+                "bar probe authority is unavailable: the command lease is no longer current",
+            ),
+            (
+                ProbeError::Access(TestAccessError),
+                "configuration access failed: test access failure",
+            ),
+            (
+                ProbeError::Refused(0x00a5),
+                "command register refused decode-off value and read back 0x00a5",
+            ),
+            (
+                ProbeError::Restore(TestAccessError),
+                "configuration restoration failed: test access failure",
+            ),
+            (
+                ProbeError::RestoreChanged,
+                "configuration restoration changed the captured register state",
+            ),
+            (
+                ProbeError::Malformed,
+                "the function has an unsupported BAR layout",
+            ),
+            (
+                ProbeError::InvalidWindow,
+                "a BAR returned an invalid memory window",
+            ),
+        ] {
+            assert_eq!(error.to_string(), expected);
+        }
+
+        assert!(
+            core::error::Error::source(&ProbeError::<TestAccessError>::Unavailable(
+                EnableError::Stale
+            ))
+            .is_some()
+        );
+        assert!(core::error::Error::source(&ProbeError::Access(TestAccessError)).is_some());
+        assert!(core::error::Error::source(&ProbeError::Restore(TestAccessError)).is_some());
+        assert!(core::error::Error::source(&ProbeError::<TestAccessError>::Malformed).is_none());
+    }
 
     const TRACE_CAPACITY: usize = 96;
     const COMMAND_TRACE_CAPACITY: usize = 16;

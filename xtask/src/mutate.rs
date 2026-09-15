@@ -93,8 +93,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1362 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
-        replace: "| Mutations | 1362 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
+        find: "| Mutations | 1367 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
+        replace: "| Mutations | 1367 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
         breaks: "the phase-close table borrows its successful-sweep label from unrelated prose",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -14119,6 +14119,56 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "mutate::tests::a_timeout_requires_its_exact_deadline_and_terminal_rationale",
+        },
+    },
+    Mutation {
+        file: "libs/fat32/src/lib.rs",
+        find: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n#[non_exhaustive]\npub enum FatError {",
+        replace: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum FatError {",
+        breaks: "a public error enum can regain an exhaustive downstream variant contract",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::public_error_enums_have_stable_standard_contracts",
+        },
+    },
+    Mutation {
+        file: "libs/fat32/src/lib.rs",
+        find: "            Self::Unreadable => core::fmt::Write::write_str(f, \"the sector source refused a read\"),",
+        replace: "            Self::Unreadable => core::fmt::Write::write_str(f, \"unreadable\"),",
+        breaks: "a FAT refusal loses its actionable sector-source cause",
+        reddens: Caught::HostTest {
+            package: "fat32",
+            name: "tests::every_fat_error_describes_its_cause",
+        },
+    },
+    Mutation {
+        file: "libs/path-walk/src/lib.rs",
+        find: "                Self::Empty => \"the path is empty\",",
+        replace: "                Self::Empty => \"empty\",",
+        breaks: "a path refusal loses the argument it describes",
+        reddens: Caught::HostTest {
+            package: "path-walk",
+            name: "tests::every_path_error_describes_its_cause",
+        },
+    },
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "            Self::Access(reason) => write!(f, \"configuration access failed: {reason}\"),",
+        replace: "            Self::Access(reason) => core::fmt::Display::fmt(reason, f),",
+        breaks: "a BAR-probe refusal hides the configuration-access operation that failed",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::every_probe_error_describes_and_exposes_its_cause",
+        },
+    },
+    Mutation {
+        file: "libs/x86-apic/src/timer.rs",
+        find: "        core::fmt::Write::write_str(f, \"the local APIC timer is still running\")",
+        replace: "        core::fmt::Write::write_str(f, \"timer error\")",
+        breaks: "a one-shot refusal no longer identifies the still-running timer",
+        reddens: Caught::HostTest {
+            package: "x86-apic",
+            name: "timer::tests::one_shot_error_is_a_standard_error",
         },
     },
 ];

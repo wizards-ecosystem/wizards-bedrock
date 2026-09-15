@@ -577,6 +577,7 @@ pub(crate) fn map_guarded_stack(
         Err(reason @ StackMapError::Rollback { .. }) => {
             panic!("stacks: {reason}");
         }
+        Err(reason) => panic!("stacks: {reason}"),
     }
 }
 
@@ -675,6 +676,7 @@ pub(crate) fn init_paging(
         Err(reason @ StackMapError::Rollback { .. }) => {
             panic!("threads: {reason}");
         }
+        Err(reason) => panic!("threads: {reason}"),
     };
 
     // Before the switch: the CR3 load is the flush the PAT rewrite needs.
@@ -724,6 +726,7 @@ pub(crate) fn init_paging(
         Err(reason @ StackMapError::Rollback { .. }) => {
             panic!("faults: {reason}");
         }
+        Err(reason) => panic!("faults: {reason}"),
     }
 
     if let Some(slots) = thread_slots {

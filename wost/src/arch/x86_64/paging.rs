@@ -207,6 +207,7 @@ impl core::error::Error for StackRollback {}
 
 /// Why guarded-stack construction could not finish atomically.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StackMapError {
     /// Construction stopped without leaving a stack mapping behind.
     Mapping(MapError),

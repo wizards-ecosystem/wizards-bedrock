@@ -93,6 +93,7 @@ pub trait Sectors {
 
 /// Why a volume could not be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FatError {
     /// The source refused a read.
     Unreadable,
@@ -115,6 +116,36 @@ pub enum FatError {
     /// The entry found is not the kind asked for.
     WrongKind,
 }
+
+impl core::fmt::Display for FatError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::Unreadable => core::fmt::Write::write_str(f, "the sector source refused a read"),
+            Self::NotABootSector => {
+                core::fmt::Write::write_str(f, "the boot sector signature is missing")
+            }
+            Self::SectorSize(bytes) => write!(f, "sector size {bytes} is unsupported"),
+            Self::ClusterSize(sectors) => write!(f, "cluster size {sectors} is invalid"),
+            Self::Malformed => core::fmt::Write::write_str(f, "the FAT32 layout is malformed"),
+            Self::BadCluster(cluster) => {
+                write!(f, "cluster {cluster} is outside the data area")
+            }
+            Self::Unbounded => {
+                core::fmt::Write::write_str(f, "the cluster chain did not terminate")
+            }
+            Self::Truncated => core::fmt::Write::write_str(
+                f,
+                "the cluster chain ended before the advertised file size",
+            ),
+            Self::NotFound => core::fmt::Write::write_str(f, "the directory entry was not found"),
+            Self::WrongKind => {
+                core::fmt::Write::write_str(f, "the directory entry has the wrong kind")
+            }
+        }
+    }
+}
+
+impl core::error::Error for FatError {}
 
 /// The BIOS parameter block, which is the only thing that says where anything
 /// is.
@@ -887,6 +918,42 @@ impl<S: Sectors> Volume<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_fat_error_describes_its_cause() {
+        fn assert_error<T: core::error::Error>() {}
+
+        assert_error::<FatError>();
+        for (error, expected) in [
+            (FatError::Unreadable, "the sector source refused a read"),
+            (
+                FatError::NotABootSector,
+                "the boot sector signature is missing",
+            ),
+            (
+                FatError::SectorSize(4096),
+                "sector size 4096 is unsupported",
+            ),
+            (FatError::ClusterSize(3), "cluster size 3 is invalid"),
+            (FatError::Malformed, "the FAT32 layout is malformed"),
+            (
+                FatError::BadCluster(17),
+                "cluster 17 is outside the data area",
+            ),
+            (FatError::Unbounded, "the cluster chain did not terminate"),
+            (
+                FatError::Truncated,
+                "the cluster chain ended before the advertised file size",
+            ),
+            (FatError::NotFound, "the directory entry was not found"),
+            (
+                FatError::WrongKind,
+                "the directory entry has the wrong kind",
+            ),
+        ] {
+            assert_eq!(error.to_string(), expected);
+        }
+    }
 
     fn boot_sector() -> [u8; SECTOR_BYTES] {
         let mut sector = [0u8; SECTOR_BYTES];
