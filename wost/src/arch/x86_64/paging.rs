@@ -454,6 +454,7 @@ impl core::error::Error for ReclaimError {}
 
 /// A refused table reclaim and any one-shot release evidence still usable for retry.
 #[derive(Debug)]
+#[must_use = "a refused address-space reclaim may return release authority"]
 pub struct ReclaimFailure {
     /// Why the tables remained owned.
     pub reason: ReclaimError,
@@ -479,6 +480,7 @@ pub struct AdmittedDeviceRange {
 
 /// A refused PCI BAR map with its unchanged function-bound authority.
 #[derive(Debug)]
+#[must_use = "a refused BAR map returns its mapping authority"]
 pub struct BarMapFailure {
     /// Why no mapping was installed.
     pub reason: MapError,
@@ -488,6 +490,7 @@ pub struct BarMapFailure {
 
 /// A refused PCI BAR unmap with its unchanged register and BAR authority.
 #[derive(Debug)]
+#[must_use = "a refused BAR unmap returns its cleanup authority"]
 pub struct BarUnmapFailure {
     /// Why no mapping was removed.
     pub reason: MapError,
@@ -3711,6 +3714,7 @@ pub struct ReleasableDevice {
 
 /// A refused device unmap with its unchanged retry authority.
 #[derive(Debug)]
+#[must_use = "a refused device unmap returns its cleanup authority"]
 pub struct DeviceUnmapFailure {
     /// Why no leaf or ownership record changed.
     pub reason: MapError,

@@ -154,6 +154,7 @@ pub struct PortSpan {
 
 /// A refused all-or-none span return with every capability unchanged.
 #[derive(Debug)]
+#[must_use = "a refused span release returns every reserved span"]
 pub struct SpanReleaseFailure<const N: usize> {
     /// The exact spans still reserved in the registry.
     pub spans: [Option<PortSpan>; N],

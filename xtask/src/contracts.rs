@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use syn::visit::{self, Visit};
 use syn::{
     Expr, ExprCall, ExprMatch, Fields, GenericArgument, GenericParam, Item, ItemEnum, ItemFn,
-    Macro, Pat, PathArguments, Type,
+    ItemStruct, Macro, Pat, PathArguments, Type,
 };
 
 use crate::paths::{KERNEL_TARGET, Paths};
@@ -1263,6 +1263,64 @@ fn public_error_enums_have_stable_standard_contracts() {
     assert!(
         violations.is_empty(),
         "public error contracts changed:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[derive(Default)]
+struct PublicFailures(Vec<String>);
+
+impl<'ast> Visit<'ast> for PublicFailures {
+    fn visit_item_struct(&mut self, item: &'ast ItemStruct) {
+        let name = item.ident.to_string();
+        if matches!(item.vis, syn::Visibility::Public(_))
+            && name.ends_with("Failure")
+            && !item.attrs.iter().any(|attribute| {
+                if !attribute.path().is_ident("must_use") {
+                    return false;
+                }
+                let syn::Meta::NameValue(meta) = &attribute.meta else {
+                    return false;
+                };
+                let Expr::Lit(value) = &meta.value else {
+                    return false;
+                };
+                let syn::Lit::Str(reason) = &value.lit else {
+                    return false;
+                };
+                !reason.value().trim().is_empty()
+            })
+        {
+            self.0.push(name);
+        }
+        visit::visit_item_struct(self, item);
+    }
+}
+
+#[test]
+fn public_failure_wrappers_are_must_use() {
+    let paths = Paths::discover().expect("workspace paths");
+    let mut violations = Vec::new();
+    for root in ["kernel/src", "libs", "wost/src"] {
+        for source in rust_sources_below(&paths.root().join(root)) {
+            let relative = source.strip_prefix(paths.root()).unwrap_or(&source);
+            let text = std::fs::read_to_string(&source)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", relative.display()));
+            let syntax = syn::parse_file(&text)
+                .unwrap_or_else(|error| panic!("parsing {}: {error}", relative.display()));
+            let mut failures = PublicFailures::default();
+            failures.visit_file(&syntax);
+            violations.extend(
+                failures
+                    .0
+                    .into_iter()
+                    .map(|name| format!("{}::{name}", relative.display())),
+            );
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "public failure wrappers missing #[must_use = \"reason\"]:\n{}",
         violations.join("\n")
     );
 }

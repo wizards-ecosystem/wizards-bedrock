@@ -782,6 +782,7 @@ impl core::error::Error for FunctionReleaseError {}
 
 /// A refused function release with unchanged retry authority.
 #[derive(Debug, PartialEq, Eq)]
+#[must_use = "a refused function release returns its authority for retry"]
 pub struct FunctionReleaseFailure {
     reason: FunctionReleaseError,
     authority: FunctionAuthority,
@@ -854,6 +855,7 @@ pub struct CommandProbe(CommandLease);
 
 /// A refused command enablement, including cleanup authority when uncertain.
 #[derive(Debug, PartialEq, Eq)]
+#[must_use = "a refused command transition may retain restoration authority"]
 pub struct EnableFailure {
     reason: EnableError,
     state: Option<CommandState>,
@@ -882,6 +884,7 @@ impl From<EnableError> for EnableFailure {
 
 /// A refused command restoration with the unchanged retry state.
 #[derive(Debug, PartialEq, Eq)]
+#[must_use = "a refused command restoration returns its state for retry"]
 pub struct RestoreFailure {
     reason: EnableError,
     state: CommandState,
@@ -1390,6 +1393,7 @@ impl core::error::Error for BarAuthorityError {}
 
 /// A refused BAR-authority return with the unchanged token.
 #[derive(Debug, PartialEq, Eq)]
+#[must_use = "a refused BAR release returns its authority for retry"]
 pub struct BarAuthorityFailure {
     reason: BarAuthorityError,
     authority: BarAuthority,

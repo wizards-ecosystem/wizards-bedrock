@@ -292,6 +292,7 @@ impl core::error::Error for BarBindError {}
 
 /// A refused decode transition retaining the mapping and any command owner.
 #[derive(Debug)]
+#[must_use = "a refused decode transition retains mapping authority"]
 pub struct BarEnableFailure {
     reason: ConfigBarEnableError,
     bar: DisabledBar,
@@ -406,6 +407,7 @@ pub fn claim_function(at: Address) -> Result<FunctionClaim, ClaimError> {
 
 /// A refused function-authority release with the unchanged claim.
 #[derive(Debug)]
+#[must_use = "a refused function release returns its claim for retry"]
 pub struct ReleaseFailure {
     reason: FunctionReleaseError,
     function: FunctionClaim,

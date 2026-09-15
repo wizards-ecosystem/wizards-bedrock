@@ -93,8 +93,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1367 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
-        replace: "| Mutations | 1367 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
+        find: "| Mutations | 1368 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
+        replace: "| Mutations | 1368 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
         breaks: "the phase-close table borrows its successful-sweep label from unrelated prose",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -14169,6 +14169,16 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "x86-apic",
             name: "timer::tests::one_shot_error_is_a_standard_error",
+        },
+    },
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "#[derive(Debug, PartialEq, Eq)]\n#[must_use = \"a refused function release returns its authority for retry\"]\npub struct FunctionReleaseFailure {",
+        replace: "#[derive(Debug, PartialEq, Eq)]\npub struct FunctionReleaseFailure {",
+        breaks: "a linear failure wrapper can be discarded without a compiler warning",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::public_failure_wrappers_are_must_use",
         },
     },
 ];

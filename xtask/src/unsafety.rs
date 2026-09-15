@@ -164,7 +164,7 @@ mod tests {
             "wost/src/arch/x86_64/paging.rs",
             11,
             0,
-            "d9e7fd867d69dca9a9e3cf831440d10cda0f79e003a5f8d6dbf787476eaeca9f",
+            "57e0d8d8cfa6b198bbec98b4fa7418a10112df22fa9aadc9c6c608517f0acaa6",
         ),
         (
             "wost/src/arch/x86_64/percpu.rs",
@@ -176,7 +176,7 @@ mod tests {
             "wost/src/arch/x86_64/port.rs",
             16,
             10,
-            "918184f055be60e5c615aa677a82135bbb10e53a4ef8d7e9e147fb79ddbb4dc0",
+            "406908a01fdfa893ebb43f5bd6968220f13c1eeeb48cea0ab2de72039469ab85",
         ),
         (
             "wost/src/arch/x86_64/segment.rs",
@@ -194,7 +194,7 @@ mod tests {
             "wost/src/arch/x86_64/task.rs",
             14,
             3,
-            "4cb31e68175ef216f0b8dceb1c761445decb79960bb4e4a925536a2ae5081ae1",
+            "f0f5560f023f3c7e56c266381a85f40388fcbbc41fad91007104e187c868c92c",
         ),
         (
             "wost/src/arch/x86_64/usercopy.rs",

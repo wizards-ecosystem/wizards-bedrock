@@ -190,6 +190,7 @@ static INIT: Once = Once::new();
 
 /// A task-table initialization refusal and the still-owned stack arena.
 #[derive(Debug)]
+#[must_use = "a refused task-table initialization returns its stack arena"]
 pub struct InitFailure {
     /// Why the task table refused the arena.
     pub reason: TaskError,
