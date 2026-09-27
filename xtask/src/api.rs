@@ -2049,16 +2049,28 @@ fn validate_wost_entry_contract(root: &Path) -> Result<[EntryContractUse; 4]> {
     .into_iter()
     .collect::<BTreeSet<_>>();
     let mut actual_statics = BTreeSet::new();
+    let mut signature = None;
+    let mut base_revision = None;
+    let mut entry_point = None;
     for item in &generated.items {
         match item {
             Item::Const(item)
                 if item.ident == "__WOST_ENTRY_SIGNATURE"
-                    && matches!(item.vis, Visibility::Inherited) => {}
+                    && matches!(item.vis, Visibility::Inherited) =>
+            {
+                signature = Some(item);
+            }
             Item::Static(item) if matches!(item.vis, Visibility::Inherited) => {
+                if item.ident == "__WOST_BASE_REVISION" {
+                    base_revision = Some(item);
+                }
                 actual_statics.insert(item.ident.to_string());
             }
             Item::Fn(item)
-                if item.sig.ident == "kmain" && matches!(item.vis, Visibility::Inherited) => {}
+                if item.sig.ident == "kmain" && matches!(item.vis, Visibility::Inherited) =>
+            {
+                entry_point = Some(item);
+            }
             _ => bail!("the `wost::entry` expansion contains an unapproved or visible item"),
         }
     }
@@ -2071,15 +2083,7 @@ fn validate_wost_entry_contract(root: &Path) -> Result<[EntryContractUse; 4]> {
                     .collect(),
         "the `wost::entry` expansion changed its exact request-item set"
     );
-    let signatures = generated
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Const(item) if item.ident == "__WOST_ENTRY_SIGNATURE" => Some(item),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let [signature] = signatures.as_slice() else {
+    let Some(signature) = signature else {
         bail!("the `wost::entry` expansion must bind one entry signature");
     };
     ensure!(
@@ -2087,15 +2091,7 @@ fn validate_wost_entry_contract(root: &Path) -> Result<[EntryContractUse; 4]> {
             && matches!(&*signature.expr, Expr::Path(path) if path.path.is_ident("kernel_main")),
         "the `wost::entry` signature must bind the supplied handler directly"
     );
-    let base_revisions = generated
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Static(item) if item.ident == "__WOST_BASE_REVISION" => Some(item),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let [base_revision] = base_revisions.as_slice() else {
+    let Some(base_revision) = base_revision else {
         bail!("the `wost::entry` expansion must define one base revision request");
     };
     ensure!(
@@ -2106,15 +2102,7 @@ fn validate_wost_entry_contract(root: &Path) -> Result<[EntryContractUse; 4]> {
                         && trait_path(&path.path) == "wost::boot::__macro::base_revision")),
         "the `wost::entry` base revision must use the audited constructor directly"
     );
-    let entry_points = generated
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Fn(item) if item.sig.ident == "kmain" => Some(item),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let [entry_point] = entry_points.as_slice() else {
+    let Some(entry_point) = entry_point else {
         bail!("the `wost::entry` expansion must define one `kmain`");
     };
     ensure!(
@@ -9366,7 +9354,11 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
         );
         let error = CargoCatalog::parse(&root, &root, metadata.as_bytes(), &["fixture"], true)
             .expect_err("unreviewed dependency build script must be refused");
-        assert!(format!("{error:#}").contains("not a checksum-bound crates.io package"));
+        assert!(
+            format!("{error:#}").contains(
+                "active dependency build script evil-build 0.1.0 is not a checksum-bound"
+            )
+        );
         std::fs::remove_dir_all(root).expect("remove dependency-build fixture");
     }
 
@@ -9439,6 +9431,251 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
             assert!(format!("{error:#}").contains(alias), "{error:#}");
         }
         std::fs::remove_dir_all(root).expect("remove reserved-root metadata fixture");
+    }
+
+    #[test]
+    fn direct_normal_dependencies_require_every_identity_and_kind() {
+        let target = |package: &str, package_id: &str| CargoTarget {
+            package: package.to_string(),
+            package_id: package_id.to_string(),
+            name: package.to_string(),
+            relative: PathBuf::from(format!("libs/{package}/src/lib.rs")),
+            kind: CargoTargetKind::Library,
+            test: true,
+            executable: false,
+        };
+        let catalog = CargoCatalog {
+            packages: BTreeMap::from([
+                ("root".to_string(), vec![target("root", "root-id")]),
+                (
+                    "dependency".to_string(),
+                    vec![target("dependency", "dependency-id")],
+                ),
+                ("other".to_string(), vec![target("other", "other-id")]),
+            ]),
+            resolved: BTreeMap::from([(
+                "root-id".to_string(),
+                vec![
+                    ResolvedDependency {
+                        name: "good".to_string(),
+                        package_id: "dependency-id".to_string(),
+                        normal: true,
+                        build: false,
+                        dev: false,
+                    },
+                    ResolvedDependency {
+                        name: "build-only".to_string(),
+                        package_id: "dependency-id".to_string(),
+                        normal: false,
+                        build: true,
+                        dev: false,
+                    },
+                    ResolvedDependency {
+                        name: "dev-only".to_string(),
+                        package_id: "dependency-id".to_string(),
+                        normal: false,
+                        build: false,
+                        dev: true,
+                    },
+                    ResolvedDependency {
+                        name: "wrong-package".to_string(),
+                        package_id: "other-id".to_string(),
+                        normal: true,
+                        build: false,
+                        dev: false,
+                    },
+                    ResolvedDependency {
+                        name: "wrong-alias".to_string(),
+                        package_id: "dependency-id".to_string(),
+                        normal: true,
+                        build: false,
+                        dev: false,
+                    },
+                ],
+            )]),
+        };
+
+        assert!(catalog.has_direct_normal_dependency("root", "good", "dependency"));
+        assert!(!catalog.has_direct_normal_dependency("missing", "good", "dependency"));
+        assert!(!catalog.has_direct_normal_dependency("root", "good", "missing"));
+        assert!(!catalog.has_direct_normal_dependency("root", "build-only", "dependency"));
+        assert!(!catalog.has_direct_normal_dependency("root", "dev-only", "dependency"));
+        assert!(!catalog.has_direct_normal_dependency("root", "wrong-package", "dependency"));
+        assert!(!catalog.has_direct_normal_dependency("root", "missing-alias", "dependency"));
+    }
+
+    #[test]
+    fn resolved_dependency_kinds_are_exact() {
+        let package_names = BTreeMap::from([
+            ("root-id".to_string(), "root".to_string()),
+            ("dependency-id".to_string(), "dependency".to_string()),
+        ]);
+        let parse = |kinds: &str| {
+            let metadata = format!(
+                "{{\"resolve\":{{\"nodes\":[{{\"id\":\"root-id\",\"dependencies\":[\"dependency-id\"],\"deps\":[{{\"name\":\"dependency\",\"pkg\":\"dependency-id\",\"dep_kinds\":{kinds}}}]}}]}}}}"
+            );
+            let value = crate::json::parse_json(metadata.as_bytes(), "dependency-kind fixture")?;
+            let document = crate::json::json_object(&value, "dependency-kind fixture")?;
+            parse_resolved_dependencies(document, &package_names)
+        };
+
+        let resolved = parse(r#"[{"kind":null},{"kind":"build"},{"kind":"dev"}]"#)
+            .expect("all supported dependency kinds");
+        assert_eq!(
+            resolved.get("root-id").expect("root dependency node"),
+            &[ResolvedDependency {
+                name: "dependency".to_string(),
+                package_id: "dependency-id".to_string(),
+                normal: true,
+                build: true,
+                dev: true,
+            }]
+        );
+
+        let unsupported = parse(r#"[{"kind":"unknown"}]"#)
+            .expect_err("an unknown dependency kind must be refused");
+        assert!(format!("{unsupported:#}").contains("unsupported dependency kind `unknown`"));
+        let non_string =
+            parse(r#"[{"kind":true}]"#).expect_err("a non-string dependency kind must be refused");
+        assert!(format!("{non_string:#}").contains("dependency kind is not null or a string"));
+        let absent = parse("[]").expect_err("an absent dependency kind must be refused");
+        assert!(format!("{absent:#}").contains("has no dependency kind"));
+    }
+
+    #[test]
+    fn dependency_activation_and_reserved_aliases_share_one_exact_policy() {
+        let dependency = |name: &str, package_id: &str, normal, build, dev| ResolvedDependency {
+            name: name.to_string(),
+            package_id: package_id.to_string(),
+            normal,
+            build,
+            dev,
+        };
+        let resolved = BTreeMap::from([
+            (
+                "root-id".to_string(),
+                vec![
+                    dependency("normal", "normal-id", true, false, false),
+                    dependency("build", "build-id", false, true, false),
+                    dependency("root-dev", "root-dev-id", false, false, true),
+                ],
+            ),
+            (
+                "normal-id".to_string(),
+                vec![dependency(
+                    "transitive-dev",
+                    "transitive-dev-id",
+                    false,
+                    false,
+                    true,
+                )],
+            ),
+            ("build-id".to_string(), Vec::new()),
+            ("root-dev-id".to_string(), Vec::new()),
+            ("transitive-dev-id".to_string(), Vec::new()),
+        ]);
+        let roots = BTreeSet::from(["root-id".to_string()]);
+        let package_names = BTreeMap::from([
+            ("root-id".to_string(), "root".to_string()),
+            ("normal-id".to_string(), "normal".to_string()),
+            ("build-id".to_string(), "build".to_string()),
+            ("root-dev-id".to_string(), "root-dev".to_string()),
+            (
+                "transitive-dev-id".to_string(),
+                "transitive-dev".to_string(),
+            ),
+        ]);
+
+        let production = active_resolved_packages(&resolved, &roots, false)
+            .expect("production dependency closure");
+        assert_eq!(
+            production,
+            BTreeSet::from([
+                "root-id".to_string(),
+                "normal-id".to_string(),
+                "build-id".to_string(),
+            ])
+        );
+        let verification = active_resolved_packages(&resolved, &roots, true)
+            .expect("verification dependency closure");
+        assert_eq!(
+            verification,
+            BTreeSet::from([
+                "root-id".to_string(),
+                "normal-id".to_string(),
+                "build-id".to_string(),
+                "root-dev-id".to_string(),
+            ])
+        );
+
+        let rejects = |owner: &str, alias: &str, include_root_dev_dependencies: bool| {
+            let mut candidate = resolved.clone();
+            candidate
+                .get_mut(owner)
+                .expect("dependency owner")
+                .iter_mut()
+                .find(|dependency| dependency.name == alias)
+                .expect("dependency alias")
+                .name = "core".to_string();
+            let active =
+                active_resolved_packages(&candidate, &roots, include_root_dev_dependencies)
+                    .expect("candidate dependency closure");
+            reject_reserved_dependency_roots(
+                &candidate,
+                &active,
+                &roots,
+                include_root_dev_dependencies,
+                &package_names,
+            )
+            .is_err()
+        };
+        assert!(rejects("root-id", "normal", false));
+        assert!(rejects("root-id", "build", false));
+        assert!(!rejects("root-id", "root-dev", false));
+        assert!(rejects("root-id", "root-dev", true));
+        assert!(!rejects("normal-id", "transitive-dev", true));
+    }
+
+    #[test]
+    fn dependency_build_script_lock_identity_requires_name_and_version() {
+        let root = fixture("fn main() {}\n");
+        std::fs::write(
+            root.join("Cargo.lock"),
+            r#"version = 4
+
+[[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
+name = "other"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[[package]]
+name = "anyhow"
+version = "9.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+"#,
+        )
+        .expect("identity fixture lockfile");
+        let active = BTreeSet::from(["anyhow-id".to_string()]);
+        let scripts = BTreeMap::from([(
+            "anyhow-id".to_string(),
+            DependencyBuildScript {
+                name: "anyhow".to_string(),
+                version: "1.0.104".to_string(),
+                registry: true,
+            },
+        )]);
+
+        validate_dependency_build_scripts(&root, &active, &scripts)
+            .expect("the exact reviewed lock identity");
+        std::fs::remove_dir_all(root).expect("remove lock identity fixture");
     }
 
     #[test]
@@ -9751,6 +9988,42 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
             "matching-origin diagnostics did not preserve legitimate liveness"
         );
         std::fs::remove_dir_all(root).expect("remove diagnostic-origin fixture");
+    }
+
+    #[test]
+    fn cargo_target_origins_require_every_identity_field() {
+        let root = fixture("pub fn first() {}\nfn main() {}\n");
+        let second = root.join("libs/second/src/main.rs");
+        std::fs::create_dir_all(second.parent().expect("second source parent"))
+            .expect("second target directory");
+        std::fs::write(&second, "pub fn second() {}\nfn main() {}\n")
+            .expect("second target source");
+        let target = |package: &str, package_id: &str, relative: &str| CargoTarget {
+            package: package.to_string(),
+            package_id: package_id.to_string(),
+            name: "shared-name".to_string(),
+            relative: PathBuf::from(relative),
+            kind: CargoTargetKind::Bin,
+            test: true,
+            executable: true,
+        };
+        let targets = [
+            target("fixture", "fixture-id", "libs/fixture/src/main.rs"),
+            target("second", "second-id", "libs/second/src/main.rs"),
+        ];
+
+        let inventory = Inventory::discover_with_targets(&root, &targets)
+            .expect("two same-kind targets retain exact origins");
+        assert_eq!(inventory.files.len(), 2);
+        assert_eq!(
+            inventory
+                .files
+                .iter()
+                .map(|file| file.origin.package.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["fixture", "second"])
+        );
+        std::fs::remove_dir_all(root).expect("remove target-origin fixture");
     }
 
     #[test]
@@ -10533,6 +10806,87 @@ harness = false
             .expect_err("a custom harness manifest must be refused");
         assert!(format!("{error:#}").contains("custom-harness"), "{error:#}");
         std::fs::remove_dir_all(root).expect("remove custom harness fixture");
+    }
+
+    #[test]
+    fn cargo_target_kinds_preserve_metadata_and_context() {
+        let cases = [
+            (
+                "lib",
+                CargoTargetKind::Library,
+                Availability::Production,
+                false,
+                false,
+            ),
+            (
+                "bin",
+                CargoTargetKind::Bin,
+                Availability::Production,
+                true,
+                true,
+            ),
+            (
+                "example",
+                CargoTargetKind::Example,
+                Availability::Production,
+                true,
+                true,
+            ),
+            (
+                "test",
+                CargoTargetKind::Test,
+                Availability::Verification,
+                false,
+                false,
+            ),
+            (
+                "bench",
+                CargoTargetKind::Bench,
+                Availability::Verification,
+                false,
+                false,
+            ),
+            (
+                "custom-build",
+                CargoTargetKind::CustomBuild,
+                Availability::Production,
+                true,
+                false,
+            ),
+        ];
+
+        for (metadata, kind, availability, language_main, executable) in cases {
+            assert_eq!(
+                CargoTargetKind::parse(&[metadata]).expect("supported target kind"),
+                kind
+            );
+            assert_eq!(kind.metadata_name(), metadata);
+            let context = CargoTarget {
+                package: "fixture".to_string(),
+                package_id: "fixture-id".to_string(),
+                name: "fixture-target".to_string(),
+                relative: PathBuf::from("libs/fixture/src/lib.rs"),
+                kind,
+                test: true,
+                executable,
+            }
+            .context();
+            assert_eq!(context.availability, availability);
+            assert_eq!(context.target_kind, kind);
+            assert_eq!(context.language_main, language_main);
+            assert_eq!(context.crate_name, "fixture_target");
+        }
+
+        let example = CargoTarget {
+            package: "fixture".to_string(),
+            package_id: "fixture-id".to_string(),
+            name: "example".to_string(),
+            relative: PathBuf::from("libs/fixture/examples/example.rs"),
+            kind: CargoTargetKind::Example,
+            test: false,
+            executable: false,
+        };
+        assert!(!example.context().language_main);
     }
 
     #[test]
@@ -14353,69 +14707,75 @@ fn main() {}
         let root = fixture("fn main() {}\n");
         std::fs::create_dir_all(root.join("wost/src/boot")).expect("entry fixture directory");
         let source = include_str!("../../wost/src/boot/mod.rs");
-        let changed = source.replacen(
+        let with_decoy = source.replacen(
+            "#[macro_export]\nmacro_rules! entry {",
+            "macro_rules! unrelated { () => {}; }\n\n#[macro_export]\nmacro_rules! entry {",
+            1,
+        );
+        assert_ne!(
+            source, with_decoy,
+            "unrelated macro insertion did not apply"
+        );
+        std::fs::write(root.join("wost/src/boot/mod.rs"), with_decoy)
+            .expect("entry fixture with unrelated macro");
+        validate_wost_entry_contract(&root).expect("an unrelated macro is not the entry contract");
+
+        let reject = |find: &str, replace: &str, failure: &str, expected: &str| {
+            let changed = source.replacen(find, replace, 1);
+            assert_ne!(source, changed, "{failure}: mutation did not apply");
+            std::fs::write(root.join("wost/src/boot/mod.rs"), changed)
+                .expect("mutated entry-contract fixture");
+            let error = validate_wost_entry_contract(&root).expect_err(failure);
+            let report = format!("{error:#}");
+            assert!(report.contains(expected), "{report}");
+        };
+        reject(
+            "        const __WOST_ENTRY_SIGNATURE:",
+            "        pub const __WOST_ENTRY_SIGNATURE:",
+            "a visible entry-signature constant must be refused",
+            "unapproved or visible",
+        );
+        reject(
+            "        static __WOST_REQUESTS_START:",
+            "        pub static __WOST_REQUESTS_START:",
+            "a visible request static must be refused",
+            "unapproved or visible",
+        );
+        reject(
+            "        extern \"C\" fn kmain() -> ! {",
+            "        pub extern \"C\" fn kmain() -> ! {",
+            "a visible linker entry must be refused",
+            "unapproved or visible",
+        );
+        reject(
             "#[unsafe(no_mangle)]",
             "#[unsafe(export_name = \"different_entry\")]",
-            1,
+            "a renamed linker entry must be refused",
+            "linker-visible",
         );
-        assert_ne!(source, changed, "entry contract mutation did not apply");
-        std::fs::write(root.join("wost/src/boot/mod.rs"), changed).expect("mutated entry fixture");
-        let error = validate_wost_entry_contract(&root)
-            .expect_err("a renamed linker entry must be refused");
-        assert!(format!("{error:#}").contains("linker-visible"), "{error:#}");
-
-        let expanded = source.replacen(
+        reject(
             "        extern \"C\" fn kmain() -> ! {",
             "        pub fn hidden_api() {}\n\n        extern \"C\" fn kmain() -> ! {",
-            1,
+            "an extra generated item must be refused",
+            "unapproved",
         );
-        assert_ne!(source, expanded, "entry expansion mutation did not apply");
-        std::fs::write(root.join("wost/src/boot/mod.rs"), expanded)
-            .expect("expanded entry fixture");
-        let error = validate_wost_entry_contract(&root)
-            .expect_err("an extra generated item must be refused");
-        assert!(format!("{error:#}").contains("unapproved"), "{error:#}");
-
-        let changed = source.replacen(
+        reject(
             "$crate::boot::__macro::base_revision();",
             "$crate::boot::__macro::BaseRevision::new();",
-            1,
+            "an indirect base-revision constructor must be refused",
+            "base revision",
         );
-        assert_ne!(source, changed, "base-revision mutation did not apply");
-        std::fs::write(root.join("wost/src/boot/mod.rs"), changed)
-            .expect("mutated base-revision fixture");
-        let error = validate_wost_entry_contract(&root)
-            .expect_err("an indirect base-revision constructor must be refused");
-        assert!(format!("{error:#}").contains("base revision"), "{error:#}");
-
-        let changed = source.replacen(
+        reject(
             "framebuffer: &__WOST_FRAMEBUFFER,",
             "framebuffer: &__WOST_MEMORY_MAP,",
-            1,
+            "a miswired request field must be refused",
+            "exact request block",
         );
-        assert_ne!(source, changed, "request-field mutation did not apply");
-        std::fs::write(root.join("wost/src/boot/mod.rs"), changed)
-            .expect("mutated request-block fixture");
-        let error = validate_wost_entry_contract(&root)
-            .expect_err("a miswired request field must be refused");
-        assert!(
-            format!("{error:#}").contains("exact request block"),
-            "{error:#}"
-        );
-
-        let changed = source.replacen(
+        reject(
             "        extern \"C\" fn kmain() -> ! {\n            $crate::boot::enter(",
             "        extern \"C\" fn kmain() -> ! {\n            let _unapproved_runtime_work = 1;\n            $crate::boot::enter(",
-            1,
-        );
-        assert_ne!(source, changed, "entry-body mutation did not apply");
-        std::fs::write(root.join("wost/src/boot/mod.rs"), changed)
-            .expect("mutated entry-body fixture");
-        let error = validate_wost_entry_contract(&root)
-            .expect_err("additional opaque runtime work must be refused");
-        assert!(
-            format!("{error:#}").contains("outside its exact audited contract"),
-            "{error:#}"
+            "additional opaque runtime work must be refused",
+            "outside its exact audited contract",
         );
         std::fs::remove_dir_all(root).expect("remove entry-contract fixture");
     }
@@ -14504,6 +14864,98 @@ fn kernel_main(_: wost::boot::BootInfo) -> ! {
             .iter()
             .find(|node| node.symbol == "boot::foundation")
             .expect("foundation API");
+        let mut decoy_nodes = inventory.nodes.clone();
+        let mut decoy = decoy_nodes[entry.invocation_node].clone();
+        decoy.id = decoy_nodes.len();
+        decoy.range = foundation.range;
+        decoy_nodes.push(decoy);
+        let mut declaration_decoy = decoy_nodes[entry.macro_declaration].clone();
+        declaration_decoy.id = decoy_nodes.len();
+        declaration_decoy.macro_declaration = false;
+        decoy_nodes.push(declaration_decoy);
+        let spec = EntrySpec {
+            file: entry.file,
+            invocation: entry.invocation,
+            macro_path: entry.macro_path,
+            argument: entry.argument,
+            handler: "kernel_main".to_string(),
+        };
+        let authority = EntryContractAuthority {
+            uses: validate_wost_entry_contract(&root).expect("entry fixture authority"),
+        };
+        let resolved = resolve_entry_link(
+            &decoy_nodes,
+            &inventory.files,
+            &[spec],
+            true,
+            Some(&authority),
+        )
+        .expect("same-symbol decoys outside their exact entry roles are ignored")
+        .expect("resolved entry link");
+        assert_eq!(resolved.invocation_node, entry.invocation_node);
+        assert_eq!(
+            inventory.exact_entry_invocation_caller(
+                entry.file,
+                entry.argument.start,
+                entry.function_node,
+            ),
+            Some(entry.invocation_node)
+        );
+        assert_eq!(
+            inventory.exact_entry_invocation_caller(
+                entry.file,
+                entry.macro_path.start,
+                entry.macro_declaration,
+            ),
+            Some(entry.invocation_node)
+        );
+        assert_eq!(
+            inventory.exact_entry_invocation_caller(
+                entry.file + 1,
+                entry.argument.start,
+                entry.function_node,
+            ),
+            None
+        );
+        assert_eq!(
+            inventory.exact_entry_invocation_caller(
+                entry.file,
+                entry.macro_path.start,
+                entry.function_node,
+            ),
+            None
+        );
+        assert_eq!(
+            inventory.exact_entry_invocation_caller(
+                entry.file,
+                entry.argument.start,
+                entry.macro_declaration,
+            ),
+            None
+        );
+        assert_eq!(
+            inventory.exact_entry_invocation_caller(
+                entry.file,
+                entry.macro_path.start,
+                foundation.id,
+            ),
+            None
+        );
+        assert!(inventory.is_direct_macro_call(
+            entry.file,
+            entry.macro_path.start,
+            entry.macro_declaration,
+        ));
+        assert!(!inventory.is_direct_macro_call(
+            entry.file,
+            entry.argument.start,
+            entry.macro_declaration,
+        ));
+        assert!(!inventory.is_direct_macro_call(
+            entry.file,
+            entry.macro_path.start,
+            entry.function_node,
+        ));
         let mut ids = BTreeSet::new();
         ids.extend([entry.function_node, entry.macro_declaration, foundation.id]);
         let diagnostic = |at: LineColumn, id| {
@@ -14707,6 +15159,51 @@ fn main() { call(); }
         );
 
         std::fs::remove_dir_all(&root).expect("remove fixture");
+    }
+
+    #[test]
+    fn instrumentation_rounds_select_their_exact_partition() {
+        let root = fixture(
+            "pub enum Choice { First, Second }\npub trait Contract { type Item; fn act(&self); }\nfn main() {}\n",
+        );
+        let inventory = Inventory::discover(&root).expect("partition fixture inventory");
+
+        let expected_antichain = inventory
+            .nodes
+            .iter()
+            .filter(|node| node.instrument && node.code & 1 != 0)
+            .map(|node| node.id)
+            .collect::<BTreeSet<_>>();
+        let antichain = inventory
+            .instrument(&root, 0)
+            .expect("first antichain round");
+        assert_eq!(antichain.ids, expected_antichain);
+
+        let expected_variants = inventory
+            .nodes
+            .iter()
+            .filter(|node| node.instrument && node.isolation == Some(Isolation::Variant))
+            .map(|node| node.id)
+            .collect::<BTreeSet<_>>();
+        let expected_trait_members = inventory
+            .nodes
+            .iter()
+            .filter(|node| node.instrument && node.isolation == Some(Isolation::TraitMember))
+            .map(|node| node.id)
+            .collect::<BTreeSet<_>>();
+        assert!(!expected_variants.is_empty());
+        assert!(!expected_trait_members.is_empty());
+        let variants = inventory
+            .instrument(&root, inventory.antichain_rounds)
+            .expect("variant isolation round");
+        let trait_members = inventory
+            .instrument(&root, inventory.antichain_rounds + 1)
+            .expect("trait-member isolation round");
+        assert_eq!(variants.ids, expected_variants);
+        assert_eq!(trait_members.ids, expected_trait_members);
+        assert!(variants.ids.is_disjoint(&trait_members.ids));
+
+        std::fs::remove_dir_all(root).expect("remove instrumentation partition fixture");
     }
 
     #[test]

@@ -83,6 +83,26 @@ pub enum Caught {
 pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         file: "docs/017-pre-wizzy-hostile-surface-audit.md",
+        find: "`OPEN`: `PW-519`",
+        replace: "`OPEN`: `PW-520`",
+        breaks: "the hostile-surface census advertises a completed register row as open work",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::every_live_register_row_has_a_hostile_surface_disposition",
+        },
+    },
+    Mutation {
+        file: "docs/017-pre-wizzy-hostile-surface-audit.md",
+        find: "| `PW-541` | Re-prove staged NVMe preparation stays within the guarded boot stack and preserves one owner through the current machine matrix. |",
+        replace: "| `PW-525` | Re-prove staged NVMe preparation stays within the guarded boot stack and preserves one owner through the current machine matrix. |",
+        breaks: "the hostile-surface census retains completed work as a live cross-cutting obligation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::every_live_register_row_has_a_hostile_surface_disposition",
+        },
+    },
+    Mutation {
+        file: "docs/017-pre-wizzy-hostile-surface-audit.md",
         find: "| `PW-006` | Re-attack the final P0/P1 source after the admitted fixes and bind every disposition, break-test and evidence artifact in the phase-close ADR. |",
         replace: "| `PW006` | Re-attack the final P0/P1 source after the admitted fixes and bind every disposition, break-test and evidence artifact in the phase-close ADR. |",
         breaks: "the hostile-surface census omits a live register obligation",
@@ -93,8 +113,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1368 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
-        replace: "| Mutations | 1368 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
+        find: "| Mutations | 1388 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
+        replace: "| Mutations | 1388 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
         breaks: "the phase-close table borrows its successful-sweep label from unrelated prose",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -14179,6 +14199,210 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "contracts::public_failure_wrappers_are_must_use",
+        },
+    },
+    Mutation {
+        file: "xtask/src/main.rs",
+        find: r#"fn main() -> ExitCode {
+    let args = std::env::args_os().skip(1);
+    match xtask::cli::parse(args) {
+        Ok(task) => match xtask::run(task) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("error: {error:?}");
+                ExitCode::FAILURE
+            }
+        },
+        Err(error) => {
+            eprintln!("error: {error}\n\n{}", xtask::cli::help());
+            ExitCode::from(2)
+        }
+    }
+}"#,
+        replace: "fn main() -> ExitCode {\n    ExitCode::default()\n}",
+        breaks: "the xtask process boundary reports success without parsing or dispatching its command",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "parse_refusals_fail_at_the_process_boundary",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "                custom_build |= kinds.contains(&\"custom-build\");",
+        replace: "                custom_build &= kinds.contains(&\"custom-build\");",
+        breaks: "an active external custom build target disappears from build-script review",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::unreviewed_dependency_build_scripts_are_outside_the_audit_authority",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: r#"    fn metadata_name(self) -> &'static str {
+        match self {
+            Self::Library => "lib",
+            Self::Bin => "bin",
+            Self::Example => "example",
+            Self::Test => "test",
+            Self::Bench => "bench",
+            Self::CustomBuild => "custom-build",
+        }
+    }"#,
+        replace: "    fn metadata_name(self) -> &'static str {\n        \"\"\n    }",
+        breaks: "Cargo target kinds lose their exact metadata identity",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::cargo_target_kinds_preserve_metadata_and_context",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "                dependency.normal\n                    && dependency.package_id == dependency_id\n                    && dependency.name == dependency_name",
+        replace: "                dependency.build\n                    && dependency.package_id == dependency_id\n                    && dependency.name == dependency_name",
+        breaks: "a direct build dependency substitutes for the required normal dependency",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::direct_normal_dependencies_require_every_identity_and_kind",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "                    crate::json::JsonValue::String(kind) if kind == \"build\" => build = true,",
+        replace: "                    crate::json::JsonValue::String(kind) if kind == \"build\" => dev = true,",
+        breaks: "Cargo build dependencies are classified as development dependencies",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::resolved_dependency_kinds_are_exact",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "            let enabled = dependency.normal\n                || dependency.build\n                || include_root_dev_dependencies && root_ids.contains(&package) && dependency.dev;\n            if enabled && active.insert(dependency.package_id.clone()) {",
+        replace: "            let enabled = dependency.normal\n                || dependency.build\n                || dependency.dev;\n            if enabled && active.insert(dependency.package_id.clone()) {",
+        breaks: "transitive development dependencies enter the active compiler closure",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::dependency_activation_and_reserved_aliases_share_one_exact_policy",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "            let enabled = dependency.normal\n                || dependency.build\n                || include_root_dev_dependencies && root_ids.contains(package) && dependency.dev;\n            if enabled && RESERVED_LANGUAGE_ROOTS.contains(&dependency.name.as_str()) {",
+        replace: "            let enabled = dependency.normal\n                || dependency.build\n                || dependency.dev;\n            if enabled && RESERVED_LANGUAGE_ROOTS.contains(&dependency.name.as_str()) {",
+        breaks: "reserved-root review applies a broader policy than dependency activation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::dependency_activation_and_reserved_aliases_share_one_exact_policy",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "            .filter(|package| package.name == script.name && package.version == script.version)",
+        replace: "            .filter(|package| package.name == script.name || package.version == script.version)",
+        breaks: "a colliding lockfile name or version satisfies build-script identity review",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::dependency_build_script_lock_identity_requires_name_and_version",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "                    target.package == context.package\n                        && target.relative == context.target_root\n                        && target.kind == context.target_kind\n                        && target.name.replace('-', \"_\") == context.crate_name",
+        replace: "                    target.package == context.package\n                        && target.relative == context.target_root\n                        || target.kind == context.target_kind\n                            && target.name.replace('-', \"_\") == context.crate_name",
+        breaks: "a same-kind target from another package and path becomes a compiler origin",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::cargo_target_origins_require_every_identity_field",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "                && if round < self.antichain_rounds {\n                    node.code & (1 << round) != 0\n                } else {\n                    node.isolation == Some(ISOLATIONS[round - self.antichain_rounds])\n                }",
+        replace: "                && if round <= self.antichain_rounds {\n                    node.code & (1 << round) != 0\n                } else {\n                    node.isolation == Some(ISOLATIONS[round - self.antichain_rounds])\n                }",
+        breaks: "the first isolation round is mistaken for an antichain bit",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::instrumentation_rounds_select_their_exact_partition",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "        (entry.file == file\n            && entry.invocation.contains(at)\n            && (used == entry.function_node && entry.argument.contains(at)\n                || used == entry.macro_declaration && entry.macro_path.contains(at)))",
+        replace: "        (entry.file == file\n            || entry.invocation.contains(at)\n                && (used == entry.function_node && entry.argument.contains(at)\n                    || used == entry.macro_declaration && entry.macro_path.contains(at)))",
+        breaks: "entry invocation credit no longer requires the exact source file",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::exact_kernel_entry_reaches_its_handler_without_trusting_other_macro_tokens",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "        self.nodes[used].macro_declaration\n            && self.files[file]\n                .macro_paths\n                .iter()\n                .any(|range| range.contains(at))",
+        replace: "        self.nodes[used].macro_declaration\n            || self.files[file]\n                .macro_paths\n                .iter()\n                .any(|range| range.contains(at))",
+        breaks: "a macro declaration or macro-path span alone receives direct-call credit",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::exact_kernel_entry_reaches_its_handler_without_trusting_other_macro_tokens",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "                node.file == spec.file\n                    && node.range == spec.invocation\n                    && node.symbol == \"entry\"\n                    && node.roots.production",
+        replace: "                node.file == spec.file\n                    && node.range == spec.invocation\n                    || node.symbol == \"entry\"\n                        && node.roots.production",
+        breaks: "a same-symbol production root outside the entry invocation range becomes its link",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::exact_kernel_entry_reaches_its_handler_without_trusting_other_macro_tokens",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "                node.macro_declaration\n                    && node.symbol == \"boot::entry\"\n                    && files[node.file].relative == Path::new(\"wost/src/boot/mod.rs\")",
+        replace: "                node.macro_declaration\n                    || node.symbol == \"boot::entry\"\n                        && files[node.file].relative == Path::new(\"wost/src/boot/mod.rs\")",
+        breaks: "a same-symbol item without macro-declaration identity becomes the entry macro",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::exact_kernel_entry_reaches_its_handler_without_trusting_other_macro_tokens",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "            Item::Macro(item) if item.ident.as_ref().is_some_and(|ident| ident == \"entry\") => {\n                Some(item)\n            }",
+        replace: "            Item::Macro(item) if true => Some(item),",
+        breaks: "an unrelated top-level macro becomes the audited entry contract",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::wost_entry_contract_binds_the_handler_to_the_linker_entry",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "                if item.ident == \"__WOST_ENTRY_SIGNATURE\"\n                    && matches!(item.vis, Visibility::Inherited) =>",
+        replace: "                if true =>",
+        breaks: "a visible or wrong-name constant receives entry-signature item authority",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::wost_entry_contract_binds_the_handler_to_the_linker_entry",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "            Item::Static(item) if matches!(item.vis, Visibility::Inherited) => {",
+        replace: "            Item::Static(item) if true => {",
+        breaks: "a visible request static receives private entry-contract item authority",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::wost_entry_contract_binds_the_handler_to_the_linker_entry",
+        },
+    },
+    Mutation {
+        file: "xtask/src/api.rs",
+        find: "                if item.sig.ident == \"kmain\" && matches!(item.vis, Visibility::Inherited) =>",
+        replace: "                if item.sig.ident == \"kmain\" || matches!(item.vis, Visibility::Inherited) =>",
+        breaks: "a visible linker entry or unrelated private function receives entry authority",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::wost_entry_contract_binds_the_handler_to_the_linker_entry",
         },
     },
 ];

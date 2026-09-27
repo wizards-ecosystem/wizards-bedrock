@@ -790,6 +790,7 @@ mod tests {
             .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
             .filter(|token| token.starts_with("PW-"))
             .collect::<BTreeSet<_>>();
+        let mut states = BTreeMap::new();
         let mut missing = Vec::new();
 
         for line in body.lines().filter(|line| line.starts_with("| PW-")) {
@@ -798,8 +799,11 @@ mod tests {
                 .split('|')
                 .map(str::trim)
                 .collect::<Vec<_>>();
-            if cells.len() == 6 && LIVE.contains(&cells[1]) && !audit_ids.contains(cells[0]) {
-                missing.push(cells[0]);
+            if cells.len() == 6 {
+                states.insert(cells[0], cells[1]);
+                if LIVE.contains(&cells[1]) && !audit_ids.contains(cells[0]) {
+                    missing.push(cells[0]);
+                }
             }
         }
 
@@ -807,6 +811,72 @@ mod tests {
             missing.is_empty(),
             "the hostile-surface audit omits live register rows: {}",
             missing.join(", ")
+        );
+
+        let mut stale = Vec::new();
+        for line in audit.lines().filter(|line| line.starts_with('|')) {
+            let cells = line
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect::<Vec<_>>();
+            let Some(proof) = cells.get(4) else {
+                continue;
+            };
+            let Some((_, open)) = proof.split_once("`OPEN`:") else {
+                continue;
+            };
+            let open = open.split(';').next().unwrap_or(open);
+            let open_ids = open
+                .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
+                .filter(|token| token.starts_with("PW-"))
+                .collect::<Vec<_>>();
+            assert!(
+                !open_ids.is_empty(),
+                "the hostile-surface audit has an `OPEN` label without a register row: {line}"
+            );
+            for id in open_ids {
+                if states.get(id).is_none_or(|state| !LIVE.contains(state)) {
+                    stale.push(format!("{id} ({})", states.get(id).unwrap_or(&"unknown")));
+                }
+            }
+        }
+
+        assert!(
+            stale.is_empty(),
+            "the hostile-surface audit labels non-live register rows `OPEN`: {}",
+            stale.join(", ")
+        );
+
+        let (_, cross_cutting) = audit
+            .split_once("## Cross-cutting closure obligations")
+            .expect("cross-cutting closure obligations heading");
+        let (cross_cutting, _) = cross_cutting
+            .split_once("## Stopped surfaces and audit limits")
+            .expect("stopped surfaces heading");
+        let mut stale_cross_cutting = Vec::new();
+        for line in cross_cutting.lines().filter(|line| line.starts_with('|')) {
+            let Some(id) = line
+                .trim_matches('|')
+                .split('|')
+                .next()
+                .map(str::trim)
+                .and_then(|cell| cell.strip_prefix('`'))
+                .and_then(|cell| cell.strip_suffix('`'))
+                .filter(|cell| cell.starts_with("PW-"))
+            else {
+                continue;
+            };
+            if states.get(id).is_none_or(|state| !LIVE.contains(state)) {
+                stale_cross_cutting
+                    .push(format!("{id} ({})", states.get(id).unwrap_or(&"unknown")));
+            }
+        }
+
+        assert!(
+            stale_cross_cutting.is_empty(),
+            "the hostile-surface audit lists non-live cross-cutting obligations: {}",
+            stale_cross_cutting.join(", ")
         );
     }
 
