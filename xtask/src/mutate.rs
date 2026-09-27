@@ -100,8 +100,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/017-pre-wizzy-hostile-surface-audit.md",
-        find: "| `PW-542` | Re-prove allocator conservation and exact zombie-incarnation cleanup with retained mutations and repeated boots. |",
-        replace: "| `PW-525` | Re-prove staged NVMe preparation stays within the guarded boot stack and preserves one owner through the current machine matrix. |",
+        find: "| `PW-543` | Re-prove live kernel `SS` independently from the saved user frame across privilege entry and a trap-side context switch. |",
+        replace: "| `PW-542` | Re-prove allocator conservation and exact zombie-incarnation cleanup with retained mutations and repeated boots. |",
         breaks: "the hostile-surface census retains completed work as a live cross-cutting obligation",
         reddens: Caught::HostTest {
             package: "xtask",
