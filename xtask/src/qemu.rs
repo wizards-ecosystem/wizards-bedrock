@@ -774,10 +774,15 @@ const QEMU_TCG_ISOLATION_MARKER: &str = "cpu: user isolation shared kernel mappi
 /// Checks the self-test kernel must report, held independently of its own
 /// tally so a deleted or skipped one turns the verdict red.
 /// Changes require mutation evidence (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 261;
+const EXPECTED_SELFTEST_CHECKS: usize = 262;
 
 /// Prefix of the strict performance/resource record emitted by self-test.
 const BASELINE_PREFIX: &str = "selftest: baseline ";
+
+/// Prefix and bounds of the retained linked NVMe preparation-stack record.
+const NVME_STACK_PREFIX: &str = "selftest: nvme-stack ";
+const NVME_STACK_CAPACITY: u64 = 32 * 1024;
+const NVME_STACK_MIN_HEADROOM: u64 = 2 * 4096;
 
 /// The worker has submitted an NVMe command but remains preemptible.
 const STORAGE_DELAY_MARKER: &str = "selftest: awaiting storage-delay keystroke";
@@ -880,10 +885,18 @@ pub(crate) struct PerformanceSample {
     pub(crate) counter_hz: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StackSample {
+    used: u64,
+    capacity: u64,
+    headroom: u64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct SerialObservation {
     verdict: Option<SelftestVerdict>,
     baseline: Option<PerformanceSample>,
+    nvme_stack: Option<StackSample>,
     qemu_tcg_isolation: bool,
     /// Ordered failures, so mutation grading cannot accept an unrelated red
     /// (D-134).
@@ -1244,6 +1257,26 @@ fn parse_performance_sample(line: &str) -> Option<Result<PerformanceSample>> {
     Some(parsed)
 }
 
+fn parse_stack_sample(line: &str) -> Option<Result<StackSample>> {
+    let message = log_message(line, LogSeverity::Info)?;
+    let mut fields = message.strip_prefix(NVME_STACK_PREFIX)?.split(' ');
+    let parsed = (|| {
+        if core::iter::Iterator::next(&mut fields) != Some("v1") {
+            bail!("unsupported NVMe stack record version");
+        }
+        let sample = StackSample {
+            used: parse_baseline_value(core::iter::Iterator::next(&mut fields), "used=")?,
+            capacity: parse_baseline_value(core::iter::Iterator::next(&mut fields), "capacity=")?,
+            headroom: parse_baseline_value(core::iter::Iterator::next(&mut fields), "headroom=")?,
+        };
+        if core::iter::Iterator::next(&mut fields).is_some() {
+            bail!("trailing fields in NVMe stack record");
+        }
+        Ok(sample)
+    })();
+    Some(parsed)
+}
+
 fn observe_selftest_line(
     observation: &mut SerialObservation,
     line: &str,
@@ -1276,6 +1309,13 @@ fn observe_selftest_line(
         let sample = sample?;
         if observation.baseline.replace(sample).is_some() {
             bail!("the self-test kernel printed more than one foundation baseline");
+        }
+        return Ok(PanicTransition::Unchanged);
+    }
+    if let Some(sample) = parse_stack_sample(line) {
+        let sample = sample?;
+        if observation.nvme_stack.replace(sample).is_some() {
+            bail!("the self-test kernel printed more than one NVMe stack record");
         }
         return Ok(PanicTransition::Unchanged);
     }
@@ -1332,6 +1372,25 @@ fn correlate_selftest(
     }
     if verdict.status == VerdictStatus::Pass && !observation.qemu_tcg_isolation {
         bail!("self-test passed without consuming the exact QEMU TCG isolation policy");
+    }
+    if verdict.status == VerdictStatus::Pass {
+        let sample = observation
+            .nvme_stack
+            .context("self-test passed without an NVMe stack record")?;
+        ensure!(
+            sample.capacity == NVME_STACK_CAPACITY,
+            "NVMe stack record named a {}-byte capacity, expected {NVME_STACK_CAPACITY}",
+            sample.capacity
+        );
+        ensure!(
+            sample.used.checked_add(sample.headroom) == Some(sample.capacity),
+            "NVMe stack record does not conserve its capacity"
+        );
+        ensure!(
+            sample.headroom >= NVME_STACK_MIN_HEADROOM,
+            "NVMe preparation retained only {} bytes of stack headroom",
+            sample.headroom
+        );
     }
 
     match (exit_code, verdict.status) {
@@ -3363,6 +3422,18 @@ mod tests {
         }
     }
 
+    fn passing_stack_sample() -> StackSample {
+        StackSample {
+            used: 22_000,
+            capacity: NVME_STACK_CAPACITY,
+            headroom: NVME_STACK_CAPACITY - 22_000,
+        }
+    }
+
+    fn stack_line() -> &'static str {
+        "[info ] selftest: nvme-stack v1 used=22000 capacity=32768 headroom=10768\r\n"
+    }
+
     #[test]
     fn a_failed_check_requires_one_exact_terminated_error_record() {
         for exact in [
@@ -3566,6 +3637,32 @@ mod tests {
     }
 
     #[test]
+    fn nvme_stack_record_is_versioned_ordered_canonical_and_unique() {
+        assert_eq!(
+            parse_stack_sample(stack_line()).unwrap().unwrap(),
+            passing_stack_sample()
+        );
+        for line in [
+            stack_line().replace("v1", "v2"),
+            stack_line().replace("used=22000 capacity=32768", "capacity=32768 used=22000"),
+            stack_line().replace("used=22000", "used=022000"),
+            stack_line().replace(" headroom=10768", ""),
+            stack_line().replace("\r\n", " trailing=true\r\n"),
+            stack_line().replacen("[info ]", "[warn ]", 1),
+            stack_line().trim_end_matches(['\r', '\n']).to_string(),
+        ] {
+            assert!(
+                !matches!(parse_stack_sample(&line), Some(Ok(_))),
+                "accepted {line:?}"
+            );
+        }
+
+        let mut observation = SerialObservation::default();
+        observe_selftest_line(&mut observation, stack_line()).unwrap();
+        assert!(observe_selftest_line(&mut observation, stack_line()).is_err());
+    }
+
+    #[test]
     fn a_panic_outcome_preserves_earlier_failures_and_its_exact_transcript() {
         let failed = "[error] selftest: an earlier ownership check FAILED\r\n";
         let line = "[error] KERNEL PANIC on thread 'boot': panicked at source\\nexact cause \t\r\n";
@@ -3608,6 +3705,7 @@ mod tests {
                 expected: EXPECTED_SELFTEST_CHECKS,
             }),
             baseline: None,
+            nvme_stack: None,
             qemu_tcg_isolation: true,
             failed: Vec::new(),
             panic: None,
@@ -3663,6 +3761,7 @@ mod tests {
             failed: Vec::new(),
             verdict: Some(passing_verdict()),
             baseline: None,
+            nvme_stack: Some(passing_stack_sample()),
             qemu_tcg_isolation: true,
             panic: None,
             panic_complete: false,
@@ -3673,6 +3772,7 @@ mod tests {
             failed: Vec::new(),
             verdict: Some(passing_verdict()),
             baseline: None,
+            nvme_stack: Some(passing_stack_sample()),
             qemu_tcg_isolation: true,
             panic: None,
             panic_complete: false,
@@ -3682,11 +3782,53 @@ mod tests {
     }
 
     #[test]
+    fn a_passing_selftest_requires_bounded_conservative_nvme_stack_evidence() {
+        for (sample, expected) in [
+            (None, "without an NVMe stack record"),
+            (
+                Some(StackSample {
+                    capacity: NVME_STACK_CAPACITY - 1,
+                    ..passing_stack_sample()
+                }),
+                "expected 32768",
+            ),
+            (
+                Some(StackSample {
+                    headroom: passing_stack_sample().headroom - 1,
+                    ..passing_stack_sample()
+                }),
+                "does not conserve",
+            ),
+            (
+                Some(StackSample {
+                    used: NVME_STACK_CAPACITY - NVME_STACK_MIN_HEADROOM + 1,
+                    headroom: NVME_STACK_MIN_HEADROOM - 1,
+                    ..passing_stack_sample()
+                }),
+                "retained only",
+            ),
+        ] {
+            let observation = SerialObservation {
+                failed: Vec::new(),
+                verdict: Some(passing_verdict()),
+                baseline: None,
+                nvme_stack: sample,
+                qemu_tcg_isolation: true,
+                panic: None,
+                panic_complete: false,
+            };
+            let error = correlate_selftest(Some(SELFTEST_PASSED), observation).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error:#}");
+        }
+    }
+
+    #[test]
     fn a_passing_selftest_requires_the_exact_consumed_tcg_policy() {
         let without_policy = SerialObservation {
             failed: Vec::new(),
             verdict: Some(passing_verdict()),
             baseline: None,
+            nvme_stack: Some(passing_stack_sample()),
             qemu_tcg_isolation: false,
             panic: None,
             panic_complete: false,
@@ -3710,6 +3852,7 @@ mod tests {
         let exact = format!("[info ] {QEMU_TCG_ISOLATION_MARKER}\r\n");
         let mut observation = SerialObservation::default();
         observe_selftest_line(&mut observation, &exact).unwrap();
+        observe_selftest_line(&mut observation, stack_line()).unwrap();
         observation.verdict = Some(passing_verdict());
         assert_eq!(
             correlate_selftest(Some(SELFTEST_PASSED), observation).unwrap(),
@@ -3733,6 +3876,7 @@ mod tests {
                     expected: EXPECTED_SELFTEST_CHECKS,
                 }),
                 baseline: None,
+                nvme_stack: Some(passing_stack_sample()),
                 qemu_tcg_isolation: true,
                 panic: None,
                 panic_complete: false,
@@ -3752,6 +3896,7 @@ mod tests {
                 ..passing_verdict()
             }),
             baseline: None,
+            nvme_stack: Some(passing_stack_sample()),
             qemu_tcg_isolation: true,
             panic: None,
             panic_complete: false,
@@ -3769,6 +3914,7 @@ mod tests {
                 ..passing_verdict()
             }),
             baseline: None,
+            nvme_stack: Some(passing_stack_sample()),
             qemu_tcg_isolation: true,
             panic: None,
             panic_complete: false,

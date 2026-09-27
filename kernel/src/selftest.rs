@@ -2503,6 +2503,22 @@ fn the_controller_was_read_rather_than_assumed() -> bool {
     nvme::controller_facts_hold_for_test() && nvme::bus_master_followed_disable_for_test()
 }
 
+fn nvme_preparation_preserves_boot_stack_headroom() -> bool {
+    const CAPACITY: u64 = 32 * 1024;
+    const MINIMUM_HEADROOM: u64 = 2 * PAGE_SIZE;
+
+    let Some(usage) = nvme::preparation_stack_usage_for_test() else {
+        return false;
+    };
+    info!(
+        "selftest: nvme-stack v1 used={} capacity={} headroom={}",
+        usage.used(),
+        usage.capacity(),
+        usage.headroom()
+    );
+    usage.capacity() == CAPACITY && usage.headroom() >= MINIMUM_HEADROOM
+}
+
 fn a_failed_bus_master_admission_stops_before_nvme_start() -> bool {
     crate::refused_bus_master_retires_before_nvme_start()
 }
@@ -7509,7 +7525,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 261;
+const EXPECTED_CHECKS: usize = 262;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -7767,6 +7783,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "the controller was read rather than assumed",
         the_controller_was_read_rather_than_assumed(),
+    );
+    report.check(
+        "nvme preparation preserves two pages of boot-stack headroom",
+        nvme_preparation_preserves_boot_stack_headroom(),
     );
     report.check(
         "a later nvme controller survives an earlier failure",

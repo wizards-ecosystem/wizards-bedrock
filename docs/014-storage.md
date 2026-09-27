@@ -212,11 +212,12 @@ recycle memory only through a linear stop token borrowing that controller's
 register mapping and DMA state after fresh reads prove both `CC.EN = 0` and
 `CSTS.RDY = 0`; otherwise queues and the current buffer remain retained.
 Preparation itself is split into capability, disable, allocation, programming
-and enable stages that carry one linear owner. Local post-split frame inspection
-reported a conservative linked debug-stack path of 22,980 bytes, leaving 9,788
-bytes on the guarded 32 KiB boot stack (D-287); PW-541 requires that measurement
-to be reproduced and retained before close. An individual function-frame
-ceiling could not have detected the original nested overflow.
+and enable stages that carry one linear owner. The retained live-leaf meter
+reports the largest linked path across both candidates and requires two pages
+of headroom on the guarded 32 KiB boot stack: current debug uses 22,480 bytes
+and release 9,496 (D-287, D-326). Calibrated live-frame defects cross the bound
+and fail only its named machine check. An individual function-frame ceiling
+could not have detected the original nested overflow.
 
 CF8/CFC rather than ECAM: it reaches everything a read-only driver needs, and
 it is the only mechanism guaranteed present on **both** boot targets: QEMU's
@@ -975,10 +976,10 @@ first, because a caller freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 261 |
-| Mutations | 1388 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |
+| Machine checks | 262 |
+| Mutations | 1389 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-325 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-326 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but that proves registration rather than a current full

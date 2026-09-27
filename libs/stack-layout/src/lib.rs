@@ -62,6 +62,30 @@ pub struct Slot {
     stack_len: u64,
 }
 
+/// Stack capacity split at one observed descending stack pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StackUsage {
+    capacity: u64,
+    used: u64,
+}
+
+impl StackUsage {
+    /// Bytes available in the complete stack slot.
+    pub const fn capacity(self) -> u64 {
+        self.capacity
+    }
+
+    /// Bytes between the observed pointer and the top of the stack.
+    pub const fn used(self) -> u64 {
+        self.used
+    }
+
+    /// Bytes between the bottom of the stack and the observed pointer.
+    pub const fn headroom(self) -> u64 {
+        self.capacity - self.used
+    }
+}
+
 impl Slot {
     /// First address of the guard gap. Never mapped.
     pub const fn guard_base(&self) -> u64 {
@@ -81,6 +105,21 @@ impl Slot {
     /// One past the stack's last byte — where a descending stack begins.
     pub const fn stack_top(&self) -> u64 {
         self.stack_base + self.stack_len
+    }
+
+    /// Split this stack's capacity at an observed descending stack pointer.
+    ///
+    /// The top itself represents an unused stack and the base represents a
+    /// completely used one. A pointer outside the checked slot has no usage
+    /// meaning and is refused.
+    pub const fn usage_at(&self, pointer: u64) -> Option<StackUsage> {
+        if pointer < self.stack_base || pointer > self.stack_top() {
+            return None;
+        }
+        Some(StackUsage {
+            capacity: self.stack_len,
+            used: self.stack_top() - pointer,
+        })
     }
 }
 
@@ -242,6 +281,32 @@ mod tests {
             assert_eq!(slot.stack_top() - slot.stack_base(), 16 * 1024);
             assert_eq!(slot.stack_len(), 16 * 1024);
         }
+    }
+
+    #[test]
+    fn a_live_pointer_splits_stack_capacity_exactly() {
+        let slot = layout().slot(0).expect("in range");
+        let at_top = slot.usage_at(slot.stack_top()).expect("top is valid");
+        assert_eq!(at_top.capacity(), 16 * 1024);
+        assert_eq!(at_top.used(), 0);
+        assert_eq!(at_top.headroom(), 16 * 1024);
+
+        let interior = slot
+            .usage_at(slot.stack_top() - 0x1234)
+            .expect("interior is valid");
+        assert_eq!(interior.used(), 0x1234);
+        assert_eq!(interior.headroom(), 16 * 1024 - 0x1234);
+
+        let at_base = slot.usage_at(slot.stack_base()).expect("base is valid");
+        assert_eq!(at_base.used(), 16 * 1024);
+        assert_eq!(at_base.headroom(), 0);
+    }
+
+    #[test]
+    fn a_pointer_outside_the_stack_has_no_usage() {
+        let slot = layout().slot(0).expect("in range");
+        assert_eq!(slot.usage_at(slot.stack_base() - 1), None);
+        assert_eq!(slot.usage_at(slot.stack_top() + 1), None);
     }
 
     /// `end()` and `last.stack_top()` are the same expression written twice,

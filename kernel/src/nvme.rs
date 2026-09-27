@@ -25,6 +25,9 @@
 //! capacity is `size - 1`. The arithmetic is shared through `libs/nvme`; the
 //! structure is not (D-169).
 
+#[cfg(feature = "selftest")]
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
 use nvme::{
     Capabilities, Capacity, Command, Completion, ControllerPreparation, DisabledPreparation,
     DisabledRegisters, DmaPublication, DmaState as DmaFlightState, NAMESPACE_IDENTIFY_BYTES,
@@ -32,17 +35,18 @@ use nvme::{
     configuration, register, status,
 };
 #[cfg(feature = "selftest")]
+use stack_layout::{Slot as StackSlot, StackUsage};
+#[cfg(feature = "selftest")]
 use wost::arch::current::cpu;
 use wost::arch::current::pci::MappedBar;
 use wost::mm::{self, DmaSegment};
 use wost::sync::ThreadLock;
 use x86_paging::PAGE_SIZE;
 
+#[cfg(feature = "selftest")]
+use crate::thread;
 use crate::thread::ThreadContext;
 use crate::{info, mem};
-
-#[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[cfg(feature = "selftest")]
 static BME_PRECEDING_CC: AtomicUsize = AtomicUsize::new(usize::MAX);
@@ -63,6 +67,30 @@ static START_ATTEMPTS: AtomicUsize = AtomicUsize::new(0);
 static SUBMISSION_DOORBELLS: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(feature = "selftest")]
+const STACK_METER_IDLE: usize = 0;
+#[cfg(feature = "selftest")]
+const STACK_METER_PREPARING: usize = 1;
+#[cfg(feature = "selftest")]
+const STACK_METER_ACTIVE: usize = 2;
+#[cfg(feature = "selftest")]
+const STACK_METER_OBSERVING: usize = 3;
+#[cfg(feature = "selftest")]
+const STACK_METER_FINISHING: usize = 4;
+
+#[cfg(feature = "selftest")]
+static STACK_METER_STATE: AtomicUsize = AtomicUsize::new(STACK_METER_IDLE);
+#[cfg(feature = "selftest")]
+static STACK_LOWEST: AtomicU64 = AtomicU64::new(u64::MAX);
+#[cfg(feature = "selftest")]
+static STACK_MAX_USED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "selftest")]
+static STACK_PREPARATIONS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "selftest")]
+static STACK_MEASUREMENTS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(feature = "selftest")]
+static STACK_MEASUREMENT_VALID: AtomicBool = AtomicBool::new(true);
+
+#[cfg(feature = "selftest")]
 fn count(observation: &AtomicUsize) {
     assert!(
         observation
@@ -72,6 +100,90 @@ fn count(observation: &AtomicUsize) {
             .is_ok(),
         "an NVMe self-test observation exhausted"
     );
+}
+
+#[cfg(feature = "selftest")]
+#[derive(Debug)]
+struct PreparationStackMeasurement {
+    slot: StackSlot,
+}
+
+#[cfg(feature = "selftest")]
+impl PreparationStackMeasurement {
+    fn begin() -> Option<Self> {
+        let slot = thread::boot_stack_layout()?.slot(0)?;
+        let pointer = cpu::stack_pointer();
+        slot.usage_at(pointer)?;
+        STACK_METER_STATE
+            .compare_exchange(
+                STACK_METER_IDLE,
+                STACK_METER_PREPARING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .ok()?;
+        STACK_LOWEST.store(pointer, Ordering::Relaxed);
+        STACK_METER_STATE.store(STACK_METER_ACTIVE, Ordering::Release);
+        Some(Self { slot })
+    }
+
+    fn finish(self) -> Option<StackUsage> {
+        STACK_METER_STATE
+            .compare_exchange(
+                STACK_METER_ACTIVE,
+                STACK_METER_FINISHING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .ok()?;
+        let usage = self.slot.usage_at(STACK_LOWEST.load(Ordering::Acquire));
+        STACK_METER_STATE.store(STACK_METER_IDLE, Ordering::Release);
+        usage
+    }
+}
+
+#[cfg(feature = "selftest")]
+#[inline(never)]
+fn observe_preparation_stack() {
+    if STACK_METER_STATE
+        .compare_exchange(
+            STACK_METER_ACTIVE,
+            STACK_METER_OBSERVING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return;
+    }
+    STACK_LOWEST.fetch_min(cpu::stack_pointer(), Ordering::AcqRel);
+    STACK_METER_STATE.store(STACK_METER_ACTIVE, Ordering::Release);
+}
+
+#[cfg(feature = "selftest")]
+fn finish_stack_measurement(measurement: Option<PreparationStackMeasurement>) {
+    let Some(usage) = measurement.and_then(PreparationStackMeasurement::finish) else {
+        STACK_MEASUREMENT_VALID.store(false, Ordering::Release);
+        return;
+    };
+    STACK_MAX_USED.fetch_max(usage.used(), Ordering::AcqRel);
+    count(&STACK_MEASUREMENTS);
+}
+
+#[cfg(feature = "selftest")]
+pub(crate) fn preparation_stack_usage_for_test() -> Option<StackUsage> {
+    let preparations = STACK_PREPARATIONS.load(Ordering::Acquire);
+    if !STACK_MEASUREMENT_VALID.load(Ordering::Acquire)
+        || preparations == 0
+        || STACK_MEASUREMENTS.load(Ordering::Acquire) != preparations
+    {
+        return None;
+    }
+    let slot = thread::boot_stack_layout()?.slot(0)?;
+    let pointer = slot
+        .stack_top()
+        .checked_sub(STACK_MAX_USED.load(Ordering::Acquire))?;
+    slot.usage_at(pointer)
 }
 
 /// Entries in the queues this driver builds.
@@ -531,6 +643,19 @@ impl StartFailure {
 /// The specification's initialisation sequence, in order, with the two waits
 /// bounded by `CAP.TO` rather than by a number chosen here.
 pub(crate) fn prepare(context: &mut ThreadContext, registers: MappedBar) -> PrepareOutcome {
+    #[cfg(feature = "selftest")]
+    count(&STACK_PREPARATIONS);
+    #[cfg(feature = "selftest")]
+    let stack_measurement = PreparationStackMeasurement::begin();
+
+    let outcome = prepare_stages(context, registers);
+
+    #[cfg(feature = "selftest")]
+    finish_stack_measurement(stack_measurement);
+    outcome
+}
+
+fn prepare_stages(context: &mut ThreadContext, registers: MappedBar) -> PrepareOutcome {
     #[cfg(feature = "selftest")]
     let observed_window = registers.address();
 
@@ -1550,10 +1675,14 @@ fn clock_ns() -> Option<u64> {
 }
 
 fn read(registers: &MappedBar, offset: usize) -> Result<u32, BringUpError> {
+    #[cfg(feature = "selftest")]
+    observe_preparation_stack();
     MappedBar::read_u32(registers, offset).map_err(|_| BringUpError::NotMapped)
 }
 
 fn write(registers: &mut MappedBar, offset: usize, value: u32) -> Result<(), BringUpError> {
+    #[cfg(feature = "selftest")]
+    observe_preparation_stack();
     MappedBar::write_u32(registers, offset, value).map_err(|_| BringUpError::NotMapped)
 }
 

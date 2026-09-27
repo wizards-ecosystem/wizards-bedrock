@@ -82,6 +82,13 @@ pub enum Caught {
 /// compile tests nothing.
 pub const MUTATIONS: &[Mutation] = &[
     Mutation {
+        file: "kernel/src/nvme.rs",
+        find: "    match disabled.access(|registers| write(registers, offset, value)) {",
+        replace: "    match disabled.access(|registers| {\n        #[cfg(debug_assertions)]\n        let stack_pressure = [0u8; 3072];\n        #[cfg(not(debug_assertions))]\n        let stack_pressure = [0u8; 16 * 1024];\n        core::hint::black_box(&stack_pressure);\n        let result = write(registers, offset, value);\n        core::hint::black_box(&stack_pressure);\n        result\n    }) {",
+        breaks: "NVMe preparation consumes the two-page boot-stack safety margin",
+        reddens: Caught::Check("nvme preparation preserves two pages of boot-stack headroom"),
+    },
+    Mutation {
         file: "docs/017-pre-wizzy-hostile-surface-audit.md",
         find: "`OPEN`: `PW-519`",
         replace: "`OPEN`: `PW-520`",
@@ -93,7 +100,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/017-pre-wizzy-hostile-surface-audit.md",
-        find: "| `PW-541` | Re-prove staged NVMe preparation stays within the guarded boot stack and preserves one owner through the current machine matrix. |",
+        find: "| `PW-542` | Re-prove allocator conservation and exact zombie-incarnation cleanup with retained mutations and repeated boots. |",
         replace: "| `PW-525` | Re-prove staged NVMe preparation stays within the guarded boot stack and preserves one owner through the current machine matrix. |",
         breaks: "the hostile-surface census retains completed work as a live cross-cutting obligation",
         reddens: Caught::HostTest {
@@ -113,8 +120,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1388 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
-        replace: "| Mutations | 1388 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
+        find: "| Mutations | 1389 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
+        replace: "| Mutations | 1389 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
         breaks: "the phase-close table borrows its successful-sweep label from unrelated prose",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -4161,8 +4168,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/qemu.rs",
-        find: "const EXPECTED_SELFTEST_CHECKS: usize = 261;",
-        replace: "const EXPECTED_SELFTEST_CHECKS: usize = 260;",
+        find: "const EXPECTED_SELFTEST_CHECKS: usize = 262;",
+        replace: "const EXPECTED_SELFTEST_CHECKS: usize = 261;",
         breaks: "the host accepts a different machine-check population than the kernel",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -4602,8 +4609,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Machine checks | 261 |",
-        replace: "| Machine checks | 260 |",
+        find: "| Machine checks | 262 |",
+        replace: "| Machine checks | 261 |",
         breaks: "the current documentation count disagrees with the machine oracle",
         reddens: Caught::HostTest {
             package: "xtask",
