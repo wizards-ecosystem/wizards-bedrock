@@ -884,10 +884,10 @@ mod tests {
     fn every_historical_handoff_has_one_current_disposition() {
         const TRIGGERS: [usize; 4] = [121, 129, 143, 154];
         const REVIEW_LIMITS: [usize; 5] = [124, 128, 134, 140, 150];
-        const READY: [usize; 4] = [125, 136, 142, 148];
-        const CLOSED_OR_SUPERSEDED: [usize; 28] = [
+        const READY: [usize; 3] = [125, 142, 148];
+        const CLOSED_OR_SUPERSEDED: [usize; 29] = [
             122, 123, 124, 126, 127, 128, 130, 131, 132, 133, 134, 135, 137, 138, 139, 140, 141,
-            144, 145, 146, 147, 149, 150, 151, 152, 153, 155, 156,
+            136, 144, 145, 146, 147, 149, 150, 151, 152, 153, 155, 156,
         ];
 
         let register = std::fs::read_to_string(root().join("docs/016-pre-wizzy-foundation.md"))

@@ -90,7 +90,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/017-pre-wizzy-hostile-surface-audit.md",
-        find: "`OPEN`: `PW-519`",
+        find: "`PW-519`'s exact dead-API reintroduction red with the restored 1,723-item compiler graph",
         replace: "`OPEN`: `PW-520`",
         breaks: "the hostile-surface census advertises a completed register row as open work",
         reddens: Caught::HostTest {
