@@ -4,6 +4,7 @@
 //! that is itself unit-testable, and this runs on every `cargo xtask`.
 
 use std::ffi::OsString;
+use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
@@ -39,6 +40,8 @@ QUALIFICATION TASKS:
     evidence          run CI, reproduce the release twice and write its evidence
     verify-evidence   verify the evidence bundle without network access
     qualify-advisory  fetch RustSec data and qualify the exact Cargo.lock
+    qualify-mutants-grade  begin or seal the independent xtask cargo-mutants grade
+    qualify-security-deep  begin or seal the managed Codex Security deep scan
     qualify-vmware    validate and preserve a fresh VMware serial transcript
     baseline          repeat debug/release foundation measurements in QEMU
     debug             open the debug kernel at kmain in native GDB
@@ -55,6 +58,8 @@ NOT IN CI (exceptional dependency, interaction, or runtime):
     mutate            break the kernel on purpose, once per known defect, and
                       require a check to go red (one QEMU boot each)
     qualify-advisory  as above (needs cargo-audit and fresh RustSec data)
+    qualify-mutants-grade  as above (a complete run can take several days)
+    qualify-security-deep  as above (the scan runs through Codex Security)
 
 HOUSEKEEPING:
     update-sbom       regenerate the SPDX SBOM from the reviewed inventory
@@ -66,6 +71,8 @@ OPTIONS:
     --check           fmt: do not rewrite; debug: run the bounded setup proof
     --all             clean only: also remove the generated vm/ directory
     --shipped         vmware tasks: select the image users boot, not self-test
+    --begin           external qualifications: write a source-bound request
+    --seal=<DIR>      seal one completed grade or canonical scan directory
     --message-format=<FMT>
                       check only: forwarded to cargo
     -h, --help        print this help
@@ -146,6 +153,10 @@ pub enum Task {
     VerifyEvidence,
     /// Qualify the locked dependency graph against fresh RustSec data.
     QualifyAdvisory,
+    /// Run or seal the independent cargo-mutants grade.
+    QualifyMutantsGrade(MutantsGradeAction),
+    /// Begin or seal the managed Codex Security deep scan.
+    QualifySecurityDeep(SecurityDeepAction),
     /// Validate and preserve one executed VMware machine.
     QualifyVmware {
         /// Which generated machine supplied the transcript.
@@ -153,6 +164,24 @@ pub enum Task {
     },
     /// Remove build output.
     Clean(CleanScope),
+}
+
+/// Which part of the external cargo-mutants qualification to perform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MutantsGradeAction {
+    /// Invalidate an older pass and write the exact D-324 run request.
+    Begin,
+    /// Validate and seal the artifacts in this directory.
+    Seal(PathBuf),
+}
+
+/// Which part of the external Codex Security qualification to perform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecurityDeepAction {
+    /// Invalidate an older pass and write a source-bound scan request.
+    Begin,
+    /// Validate and seal the canonical artifacts in this directory.
+    Seal(PathBuf),
 }
 
 /// Whether `fmt` rewrites files or just reports on them.
@@ -204,6 +233,8 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
     let mut check = false;
     let mut all = false;
     let mut shipped = false;
+    let mut begin = false;
+    let mut seal = None;
     let mut passthrough = Vec::new();
 
     let mut rest = args;
@@ -215,16 +246,39 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
             "--check" => check = true,
             "--all" => all = true,
             "--shipped" => shipped = true,
+            "--begin" => {
+                if begin {
+                    bail!("duplicate `--begin`");
+                }
+                begin = true;
+            }
             "-h" | "--help" => return Ok(Task::Help),
             "--" => {
                 passthrough.extend(rest.by_ref());
                 break;
             }
-            _ => match flag.strip_prefix("--message-format=") {
-                Some(value) => message_format = Some(value.to_string()),
-                None => bail!("unknown option `{flag}`"),
-            },
+            _ => {
+                if let Some(value) = flag.strip_prefix("--message-format=") {
+                    message_format = Some(value.to_string());
+                } else if let Some(value) = flag.strip_prefix("--seal=") {
+                    ensure_nonempty_path(value)?;
+                    if seal.is_some() {
+                        bail!("duplicate `--seal`");
+                    }
+                    seal = Some(PathBuf::from(value));
+                } else {
+                    bail!("unknown option `{flag}`");
+                }
+            }
         }
+    }
+
+    if !matches!(
+        name.as_str(),
+        "qualify-mutants-grade" | "qualify-security-deep"
+    ) && (begin || seal.is_some())
+    {
+        bail!("external qualification options do not apply to `{name}`");
     }
 
     match name.as_str() {
@@ -270,6 +324,20 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         "evidence" => Ok(Task::Evidence),
         "verify-evidence" => Ok(Task::VerifyEvidence),
         "qualify-advisory" => Ok(Task::QualifyAdvisory),
+        "qualify-mutants-grade" => match (begin, seal) {
+            (true, None) => Ok(Task::QualifyMutantsGrade(MutantsGradeAction::Begin)),
+            (false, Some(directory)) => Ok(Task::QualifyMutantsGrade(MutantsGradeAction::Seal(
+                directory,
+            ))),
+            _ => bail!("qualify-mutants-grade requires exactly one of `--begin` or `--seal=<DIR>`"),
+        },
+        "qualify-security-deep" => match (begin, seal) {
+            (true, None) => Ok(Task::QualifySecurityDeep(SecurityDeepAction::Begin)),
+            (false, Some(directory)) => Ok(Task::QualifySecurityDeep(SecurityDeepAction::Seal(
+                directory,
+            ))),
+            _ => bail!("qualify-security-deep requires exactly one of `--begin` or `--seal=<DIR>`"),
+        },
         "qualify-vmware" => Ok(Task::QualifyVmware {
             kernel: if shipped {
                 crate::image::Kernel::Shipped
@@ -284,6 +352,13 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Task> {
         })),
         other => bail!("unknown task `{other}`"),
     }
+}
+
+fn ensure_nonempty_path(value: &str) -> Result<()> {
+    if value.is_empty() {
+        bail!("`--seal` requires a directory");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -426,7 +501,7 @@ mod tests {
         // second handwritten task list.
         let names: Vec<&str> = include_str!("cli.rs")
             .lines()
-            .filter(|line| line.contains("=> Ok(Task::"))
+            .filter(|line| line.contains("=> Ok(Task::") || line.contains("=> match (begin, seal)"))
             .filter_map(|line| line.trim().strip_prefix('"'))
             .filter_map(|rest| rest.split_once('"').map(|(name, _)| name))
             .collect();
@@ -438,7 +513,12 @@ mod tests {
 
         let help = help();
         for name in names {
-            assert!(parse_args(&[name]).is_ok(), "{name} does not parse");
+            let arguments = if matches!(name, "qualify-mutants-grade" | "qualify-security-deep") {
+                vec![name, "--begin"]
+            } else {
+                vec![name]
+            };
+            assert!(parse_args(&arguments).is_ok(), "{name} does not parse");
             assert!(
                 help.contains(&format!("\n    {name} ")),
                 "{name} is missing from the help text"
@@ -449,6 +529,22 @@ mod tests {
     #[test]
     fn the_doc_task_parses() {
         assert_eq!(parse_args(&["doc"]).unwrap(), Task::Doc);
+    }
+
+    #[test]
+    fn external_qualification_actions_are_typed_and_task_local() {
+        assert_eq!(
+            parse_args(&["qualify-mutants-grade", "--begin"]).unwrap(),
+            Task::QualifyMutantsGrade(MutantsGradeAction::Begin)
+        );
+        assert_eq!(
+            parse_args(&["qualify-security-deep", "--seal=scan"]).unwrap(),
+            Task::QualifySecurityDeep(SecurityDeepAction::Seal(PathBuf::from("scan")))
+        );
+        assert!(parse_args(&["qualify-mutants-grade"]).is_err());
+        assert!(parse_args(&["qualify-security-deep", "--begin", "--seal=scan"]).is_err());
+        assert!(parse_args(&["qualify-mutants-grade", "--seal=one", "--seal=two"]).is_err());
+        assert!(parse_args(&["build", "--begin"]).is_err());
     }
 
     #[test]
@@ -475,6 +571,8 @@ mod tests {
                 "model-check",
                 "mutate",
                 "qualify-advisory",
+                "qualify-mutants-grade",
+                "qualify-security-deep",
                 "qualify-vmware",
                 "vmware",
             ])

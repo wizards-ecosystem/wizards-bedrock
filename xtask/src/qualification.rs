@@ -21,7 +21,7 @@ use crate::mutation_workspace::{CurrentPass, PassEvidence};
 use crate::paths::Paths;
 use crate::sha256;
 
-const FORMAT: &str = "wizard-qualification-v2";
+const FORMAT: &str = "wizard-qualification-v3";
 const RECORD: &str = "record";
 const RECORD_TEMP: &str = "record.incomplete";
 const PASS: &str = "pass";
@@ -61,6 +61,14 @@ const MAX_ADVISORY_POLICY_BYTES: u64 = 4096;
 const MAX_ADVISORY_TRANSCRIPT_BYTES: u64 = crate::bounded_process::MAX_CAPTURE_BYTES as u64 + 4096;
 const MAX_MODEL_TRANSCRIPT_BYTES: u64 = crate::bounded_process::MAX_CAPTURE_BYTES as u64 + 4096;
 const MAX_MUTATION_REPORT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_MUTANTS_JSON_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_MUTANTS_ADJUDICATION_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_EXTERNAL_RECEIPT_BYTES: u64 = 1024 * 1024;
+const MAX_SECURITY_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SECURITY_FINDINGS_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_SECURITY_COVERAGE_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_SECURITY_REPORT_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_SECURITY_REQUEST_BYTES: u64 = 256 * 1024;
 const MAX_VMWARE_TEXT_BYTES: u64 = 1024 * 1024;
 const MAX_VMWARE_TRANSCRIPT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_GIT_IDENTITY_BYTES: usize = 4096;
@@ -82,6 +90,8 @@ pub(crate) struct Tool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Mutation,
+    CargoMutantsGrade,
+    CodexSecurityDeep,
     Advisory,
     Model,
     VmwareSelfTest,
@@ -92,6 +102,8 @@ impl Kind {
     fn slug(self) -> &'static str {
         match self {
             Self::Mutation => "mutation",
+            Self::CargoMutantsGrade => "cargo-mutants-grade",
+            Self::CodexSecurityDeep => "codex-security-deep",
             Self::Advisory => "advisory",
             Self::Model => "model",
             Self::VmwareSelfTest => "vmware-self-test",
@@ -368,7 +380,261 @@ pub(crate) struct BundleFile {
     pub(crate) relative: &'static str,
 }
 
+#[derive(Debug)]
+pub(crate) enum ExternalArtifact {
+    MutantsRequest(Vec<u8>),
+    MutantsInventory(Vec<u8>),
+    MutantsCandidates(Vec<u8>),
+    MutantsOutcomes(Vec<u8>),
+    MutantsAdjudications(Vec<u8>),
+    MutantsDoctest(Vec<u8>),
+    SecurityRequest(Vec<u8>),
+    SecurityManifest(Vec<u8>),
+    SecurityFindings(Vec<u8>),
+    SecurityCoverage(Vec<u8>),
+    SecurityReport(Vec<u8>),
+}
+
+#[derive(Debug)]
+pub(crate) struct ExternalAttempt {
+    paths: Paths,
+    kind: Kind,
+    source: SourceIdentity,
+    directory: PathBuf,
+}
+
+impl ExternalAttempt {
+    pub(crate) fn source(&self) -> &SourceIdentity {
+        &self.source
+    }
+
+    pub(crate) fn directory(&self) -> &Path {
+        &self.directory
+    }
+
+    pub(crate) fn write_security_request(&self, bytes: &[u8]) -> Result<()> {
+        ensure!(
+            self.kind == Kind::CodexSecurityDeep,
+            "request belongs to another qualification kind"
+        );
+        ensure!(
+            bytes.len() as u64 <= MAX_SECURITY_REQUEST_BYTES,
+            "security request exceeds its size policy"
+        );
+        let directory = kind_directory(&self.paths, self.kind)?;
+        ensure!(
+            directory == self.directory,
+            "qualification directory changed during request publication"
+        );
+        write_new_file(&directory.join("request"), bytes)
+    }
+
+    pub(crate) fn write_mutants_request(&self, bytes: &[u8]) -> Result<()> {
+        ensure!(
+            self.kind == Kind::CargoMutantsGrade,
+            "request belongs to another qualification kind"
+        );
+        ensure!(
+            bytes.len() as u64 <= MAX_EXTERNAL_RECEIPT_BYTES,
+            "cargo-mutants request exceeds its size policy"
+        );
+        let directory = kind_directory(&self.paths, self.kind)?;
+        ensure!(
+            directory == self.directory,
+            "qualification directory changed during request publication"
+        );
+        write_new_file(&directory.join("request"), bytes)
+    }
+
+    pub(crate) fn seal(
+        self,
+        fields: &[(String, String)],
+        artifacts: Vec<ExternalArtifact>,
+    ) -> Result<()> {
+        invalidate(&self.paths, self.kind)?;
+        let directory = kind_directory(&self.paths, self.kind)?;
+        let mut record = base_record_for_source(self.kind, &self.source)?;
+        for (key, value) in fields {
+            record.insert(key, value)?;
+        }
+        let expected = match self.kind {
+            Kind::CargoMutantsGrade => 6,
+            Kind::CodexSecurityDeep => 5,
+            _ => unreachable!("externally sealed kind checked when the attempt began"),
+        };
+        ensure!(
+            artifacts.len() == expected,
+            "external qualification artifact set is incomplete"
+        );
+        let mut names = BTreeSet::new();
+        for artifact in &artifacts {
+            let (artifact_kind, prefix, name, bytes) = artifact.spec();
+            ensure!(
+                artifact_kind == self.kind,
+                "external artifact belongs to another qualification kind"
+            );
+            ensure!(names.insert(name), "duplicate external artifact `{name}`");
+            let (maximum, exact) = artifact_size_policy(self.kind, name)?;
+            ensure!(
+                (!exact && bytes.len() as u64 <= maximum)
+                    || (exact && bytes.len() as u64 == maximum),
+                "external artifact `{name}` violates its size policy"
+            );
+            let path = directory.join(name);
+            ensure!(
+                path.parent() == Some(directory.as_path()),
+                "external artifact escaped its qualification directory"
+            );
+            write_new_file(&path, bytes)?;
+            add_artifact(&mut record, prefix, name, &path)?;
+        }
+        record.insert("result", PASS)?;
+        verify_support(
+            &self.paths,
+            &record,
+            self.kind,
+            &qualification_root(&self.paths),
+        )?;
+        let derived = match self.kind {
+            Kind::CargoMutantsGrade => {
+                crate::mutants_grade::verify_sealed(&directory, &self.source)?
+            }
+            Kind::CodexSecurityDeep => {
+                crate::security_deep::verify_sealed(&directory, &self.source)?
+            }
+            _ => unreachable!("externally sealed kind checked when the attempt began"),
+        };
+        require_external_fields(&record, &derived)?;
+        commit_record(&self.paths, self.kind, &record)
+    }
+}
+
+impl ExternalArtifact {
+    fn spec(&self) -> (Kind, &'static str, &'static str, &[u8]) {
+        match self {
+            Self::MutantsRequest(bytes) => (
+                Kind::CargoMutantsGrade,
+                "artifact.request",
+                "request",
+                bytes,
+            ),
+            Self::MutantsInventory(bytes) => (
+                Kind::CargoMutantsGrade,
+                "artifact.inventory",
+                "inventory.json",
+                bytes,
+            ),
+            Self::MutantsCandidates(bytes) => (
+                Kind::CargoMutantsGrade,
+                "artifact.mutants",
+                "mutants.json",
+                bytes,
+            ),
+            Self::MutantsOutcomes(bytes) => (
+                Kind::CargoMutantsGrade,
+                "artifact.outcomes",
+                "outcomes.json",
+                bytes,
+            ),
+            Self::MutantsAdjudications(bytes) => (
+                Kind::CargoMutantsGrade,
+                "artifact.adjudications",
+                "adjudications.json",
+                bytes,
+            ),
+            Self::MutantsDoctest(bytes) => (
+                Kind::CargoMutantsGrade,
+                "artifact.doctest",
+                "doctest.transcript",
+                bytes,
+            ),
+            Self::SecurityRequest(bytes) => (
+                Kind::CodexSecurityDeep,
+                "artifact.request",
+                "request",
+                bytes,
+            ),
+            Self::SecurityManifest(bytes) => (
+                Kind::CodexSecurityDeep,
+                "artifact.manifest",
+                "scan-manifest.json",
+                bytes,
+            ),
+            Self::SecurityFindings(bytes) => (
+                Kind::CodexSecurityDeep,
+                "artifact.findings",
+                "findings.json",
+                bytes,
+            ),
+            Self::SecurityCoverage(bytes) => (
+                Kind::CodexSecurityDeep,
+                "artifact.coverage",
+                "coverage.json",
+                bytes,
+            ),
+            Self::SecurityReport(bytes) => (
+                Kind::CodexSecurityDeep,
+                "artifact.report",
+                "report.md",
+                bytes,
+            ),
+        }
+    }
+}
+
 pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
+    BundleFile {
+        prefix: "qualification.cargo-mutants-grade.record",
+        relative: "qualification/cargo-mutants-grade/record",
+    },
+    BundleFile {
+        prefix: "qualification.cargo-mutants-grade.request",
+        relative: "qualification/cargo-mutants-grade/request",
+    },
+    BundleFile {
+        prefix: "qualification.cargo-mutants-grade.inventory",
+        relative: "qualification/cargo-mutants-grade/inventory.json",
+    },
+    BundleFile {
+        prefix: "qualification.cargo-mutants-grade.mutants",
+        relative: "qualification/cargo-mutants-grade/mutants.json",
+    },
+    BundleFile {
+        prefix: "qualification.cargo-mutants-grade.outcomes",
+        relative: "qualification/cargo-mutants-grade/outcomes.json",
+    },
+    BundleFile {
+        prefix: "qualification.cargo-mutants-grade.adjudications",
+        relative: "qualification/cargo-mutants-grade/adjudications.json",
+    },
+    BundleFile {
+        prefix: "qualification.cargo-mutants-grade.doctest",
+        relative: "qualification/cargo-mutants-grade/doctest.transcript",
+    },
+    BundleFile {
+        prefix: "qualification.codex-security-deep.record",
+        relative: "qualification/codex-security-deep/record",
+    },
+    BundleFile {
+        prefix: "qualification.codex-security-deep.request",
+        relative: "qualification/codex-security-deep/request",
+    },
+    BundleFile {
+        prefix: "qualification.codex-security-deep.manifest",
+        relative: "qualification/codex-security-deep/scan-manifest.json",
+    },
+    BundleFile {
+        prefix: "qualification.codex-security-deep.findings",
+        relative: "qualification/codex-security-deep/findings.json",
+    },
+    BundleFile {
+        prefix: "qualification.codex-security-deep.coverage",
+        relative: "qualification/codex-security-deep/coverage.json",
+    },
+    BundleFile {
+        prefix: "qualification.codex-security-deep.report",
+        relative: "qualification/codex-security-deep/report.md",
+    },
     BundleFile {
         prefix: "qualification.advisory.record",
         relative: "qualification/advisory/record",
@@ -499,7 +765,26 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
 pub(crate) struct Snapshot {
     root: PathBuf,
     digests: Vec<Digest>,
-    _mutation: CurrentPass,
+    _mutation: RetainedMutationPass,
+}
+
+#[derive(Debug)]
+struct RetainedMutationPass {
+    evidence: PassEvidence,
+    _lock: Option<CurrentPass>,
+}
+
+impl RetainedMutationPass {
+    fn new(pass: CurrentPass) -> Self {
+        Self {
+            evidence: pass.evidence().clone(),
+            _lock: Some(pass),
+        }
+    }
+
+    fn evidence(&self) -> &PassEvidence {
+        &self.evidence
+    }
 }
 
 impl Snapshot {
@@ -559,6 +844,28 @@ pub(crate) fn begin_mutation(
     Ok(MutationAttempt {
         paths: paths.clone(),
         record,
+    })
+}
+
+pub(crate) fn begin_external(
+    paths: &Paths,
+    kind: Kind,
+    preserve_artifacts: bool,
+) -> Result<ExternalAttempt> {
+    ensure!(
+        matches!(kind, Kind::CargoMutantsGrade | Kind::CodexSecurityDeep),
+        "qualification kind is not externally sealed"
+    );
+    if preserve_artifacts {
+        invalidate_record(paths, kind)?;
+    } else {
+        invalidate(paths, kind)?;
+    }
+    Ok(ExternalAttempt {
+        paths: paths.clone(),
+        kind,
+        source: source_identity(paths.root())?,
+        directory: kind_directory(paths, kind)?,
     })
 }
 
@@ -1004,12 +1311,65 @@ pub(crate) fn invalidate_vmware(paths: &Paths, kernel: Kernel) -> Result<()> {
     invalidate(paths, Kind::vmware(kernel))
 }
 
-pub(crate) fn snapshot(paths: &Paths, registry: &str, mutation_count: usize) -> Result<Snapshot> {
+pub(crate) fn recorded_source(paths: &Paths) -> Result<SourceIdentity> {
     let root = qualification_root(paths);
-    let mutation = crate::mutation_workspace::current_pass(paths, registry, mutation_count)?;
+    require_real_root(&root, "qualification root")?;
+    let mut source = None;
+    for kind in [
+        Kind::Advisory,
+        Kind::Mutation,
+        Kind::CargoMutantsGrade,
+        Kind::CodexSecurityDeep,
+        Kind::Model,
+        Kind::VmwareSelfTest,
+        Kind::VmwareShipped,
+    ] {
+        let record = read_record(&checked_kind_directory(&root, kind)?.join(RECORD), kind)?;
+        let observed = SourceIdentity {
+            commit: record.get("source.commit")?.to_string(),
+            tree: record.get("source.tree")?.to_string(),
+        };
+        if let Some(expected) = &source {
+            ensure!(
+                *expected == observed,
+                "qualification records name different source identities"
+            );
+        } else {
+            source = Some(observed);
+        }
+    }
+    source.context("qualification bundle has no source identity")
+}
+
+pub(crate) fn snapshot(
+    paths: &Paths,
+    registry: &str,
+    mutation_count: usize,
+    source: &SourceIdentity,
+    require_current_mutation: bool,
+) -> Result<Snapshot> {
+    let root = qualification_root(paths);
+    let mutation = if require_current_mutation {
+        crate::mutation_workspace::current_pass(paths, registry, mutation_count)?
+    } else {
+        let directory = checked_kind_directory(&root, Kind::Mutation)?;
+        let record = read_record(&directory.join(RECORD), Kind::Mutation)?;
+        require_source(&record, source)?;
+        crate::mutation_workspace::recorded_pass(
+            paths,
+            &source.commit,
+            registry,
+            record.get("input.source.sha256")?,
+            record.get("input.index.sha256")?,
+            mutation_count,
+            record.get("artifact.report.sha256")?,
+        )?
+    };
+    let mutation = RetainedMutationPass::new(mutation);
     verify_records(
         paths,
         &root,
+        source,
         registry,
         mutation_count,
         Some(mutation.evidence()),
@@ -1018,7 +1378,8 @@ pub(crate) fn snapshot(paths: &Paths, registry: &str, mutation_count: usize) -> 
     for spec in BUNDLE_FILES {
         let path = root.join(bundle_tail(spec)?);
         require_bundle_file_size(spec, &path)?;
-        digests.push(digest_file(&path)?);
+        let (maximum, _) = bundle_file_size_policy(spec)?;
+        digests.push(digest_file_bounded(&path, maximum)?);
     }
     Ok(Snapshot {
         root,
@@ -1030,12 +1391,14 @@ pub(crate) fn snapshot(paths: &Paths, registry: &str, mutation_count: usize) -> 
 pub(crate) fn verify_bundle(
     paths: &Paths,
     evidence_root: &Path,
+    source: &SourceIdentity,
     registry: &str,
     mutation_count: usize,
 ) -> Result<()> {
     verify_records(
         paths,
         &evidence_root.join("qualification"),
+        source,
         registry,
         mutation_count,
         None,
@@ -1045,15 +1408,17 @@ pub(crate) fn verify_bundle(
 fn verify_records(
     paths: &Paths,
     root: &Path,
+    source: &SourceIdentity,
     registry: &str,
     mutation_count: usize,
     mutation: Option<&PassEvidence>,
 ) -> Result<()> {
     require_real_root(root, "qualification root")?;
-    let source = source_identity(paths.root())?;
-    verify_advisory_qualification(paths, root, &source)?;
+    verify_advisory_qualification(paths, root, source)?;
     for kind in [
         Kind::Mutation,
+        Kind::CargoMutantsGrade,
+        Kind::CodexSecurityDeep,
         Kind::Model,
         Kind::VmwareSelfTest,
         Kind::VmwareShipped,
@@ -1061,26 +1426,46 @@ fn verify_records(
         let directory = checked_kind_directory(root, kind)?;
         require_contained_real_directory(root, &directory, "qualification kind directory")?;
         let record = read_record(&directory.join(RECORD), kind)?;
-        require_source(&record, &source)?;
+        require_source(&record, source)?;
+        verify_support(paths, &record, kind, root)?;
         match kind {
             Kind::Mutation => {
                 require_mutation_inputs(&record, registry, mutation_count, mutation)?;
+                crate::mutation_workspace::verify_recorded_pass(
+                    &directory.join(MUTATION_REPORT),
+                    record.get("source.commit")?,
+                    registry,
+                    record.get("input.source.sha256")?,
+                    record.get("input.index.sha256")?,
+                    mutation_count,
+                )?;
+            }
+            Kind::CargoMutantsGrade => {
+                require_external_fields(
+                    &record,
+                    &crate::mutants_grade::verify_sealed(&directory, source)?,
+                )?;
+            }
+            Kind::CodexSecurityDeep => {
+                require_external_fields(
+                    &record,
+                    &crate::security_deep::verify_sealed(&directory, source)?,
+                )?;
             }
             Kind::Model => {
-                let expected = model_record(paths)?;
+                let expected = model_record_for_source(paths, source)?;
                 require_record_inputs(&record, &expected)?;
             }
             Kind::VmwareSelfTest | Kind::VmwareShipped => {
-                let expected = vmware_record(paths, kind)?;
+                let expected = vmware_record_for_source(paths, kind, source)?;
                 require_record_inputs(&record, &expected)?;
             }
             Kind::Advisory => bail!("advisory qualification was verified twice"),
         }
-        verify_support(paths, &record, kind, root)?;
         if matches!(kind, Kind::VmwareSelfTest | Kind::VmwareShipped) {
             let directory = root.join(kind.slug());
             let transcript = directory.join(VMWARE_TRANSCRIPT);
-            verify_generation_directory(paths, kind, &directory, &transcript)?;
+            verify_generation_with_source(source, kind, &directory, &transcript)?;
             let bytes = read_bounded_file(
                 &transcript,
                 MAX_VMWARE_TRANSCRIPT_BYTES,
@@ -1159,6 +1544,21 @@ fn verify_support(paths: &Paths, record: &Record, kind: Kind, root: &Path) -> Re
             ("artifact.transcript", ADVISORY_TRANSCRIPT),
         ],
         Kind::Mutation => vec![("artifact.report", MUTATION_REPORT)],
+        Kind::CargoMutantsGrade => vec![
+            ("artifact.request", "request"),
+            ("artifact.inventory", "inventory.json"),
+            ("artifact.mutants", "mutants.json"),
+            ("artifact.outcomes", "outcomes.json"),
+            ("artifact.adjudications", "adjudications.json"),
+            ("artifact.doctest", "doctest.transcript"),
+        ],
+        Kind::CodexSecurityDeep => vec![
+            ("artifact.request", "request"),
+            ("artifact.manifest", "scan-manifest.json"),
+            ("artifact.findings", "findings.json"),
+            ("artifact.coverage", "coverage.json"),
+            ("artifact.report", "report.md"),
+        ],
         Kind::Model => crate::model::TRANSCRIPT_ARTIFACTS
             .iter()
             .map(|artifact| (artifact.prefix, artifact.name))
@@ -1181,7 +1581,8 @@ fn verify_support(paths: &Paths, record: &Record, kind: Kind, root: &Path) -> Re
         let path = root.join(kind.slug()).join(name);
         require_regular_file(&path, prefix)?;
         require_artifact_size(kind, name, &path)?;
-        let digest = digest_file(&path)?;
+        let (maximum, _) = artifact_size_policy(kind, name)?;
+        let digest = digest_file_bounded(&path, maximum)?;
         ensure!(
             record.get(&format!("{prefix}.bytes"))? == digest.bytes.to_string(),
             "{prefix} length differs from its qualification record"
@@ -1231,6 +1632,16 @@ fn verify_support(paths: &Paths, record: &Record, kind: Kind, root: &Path) -> Re
     Ok(())
 }
 
+fn require_external_fields(record: &Record, expected: &[(String, String)]) -> Result<()> {
+    for (key, value) in expected {
+        ensure!(
+            record.get(key)? == value,
+            "external qualification field `{key}` differs from its sealed artifacts"
+        );
+    }
+    Ok(())
+}
+
 fn verify_vmware_observer(paths: &Paths, record: &Record, kind: Kind, root: &Path) -> Result<()> {
     ensure!(
         record.get("artifact.observer.path")? == VMWARE_OBSERVER,
@@ -1260,7 +1671,11 @@ fn verify_vmware_observer(paths: &Paths, record: &Record, kind: Kind, root: &Pat
     let selector = match kind {
         Kind::VmwareSelfTest => "self-test",
         Kind::VmwareShipped => "shipped",
-        Kind::Advisory | Kind::Mutation | Kind::Model => {
+        Kind::Advisory
+        | Kind::Mutation
+        | Kind::CargoMutantsGrade
+        | Kind::CodexSecurityDeep
+        | Kind::Model => {
             bail!("qualification kind has no VMware selector")
         }
     };
@@ -1314,7 +1729,11 @@ fn require_exact_vmware_directory(paths: &Paths, kind: Kind, directory: &Path) -
     let selector = match kind {
         Kind::VmwareSelfTest => "self-test",
         Kind::VmwareShipped => "shipped",
-        Kind::Advisory | Kind::Mutation | Kind::Model => {
+        Kind::Advisory
+        | Kind::Mutation
+        | Kind::CargoMutantsGrade
+        | Kind::CodexSecurityDeep
+        | Kind::Model => {
             bail!("qualification kind has no VMware directory")
         }
     };
@@ -1708,7 +2127,11 @@ fn kernel_for(kind: Kind) -> Result<Kernel> {
     match kind {
         Kind::VmwareSelfTest => Ok(Kernel::SelfTest),
         Kind::VmwareShipped => Ok(Kernel::Shipped),
-        Kind::Advisory | Kind::Mutation | Kind::Model => {
+        Kind::Advisory
+        | Kind::Mutation
+        | Kind::CargoMutantsGrade
+        | Kind::CodexSecurityDeep
+        | Kind::Model => {
             bail!("qualification kind has no VMware kernel")
         }
     }
@@ -1716,10 +2139,14 @@ fn kernel_for(kind: Kind) -> Result<Kernel> {
 
 fn base_record(paths: &Paths, kind: Kind) -> Result<Record> {
     let source = source_identity(paths.root())?;
+    base_record_for_source(kind, &source)
+}
+
+fn base_record_for_source(kind: Kind, source: &SourceIdentity) -> Result<Record> {
     let mut record = Record::default();
     record.insert("kind", kind.slug())?;
-    record.insert("source.commit", source.commit)?;
-    record.insert("source.tree", source.tree)?;
+    record.insert("source.commit", &source.commit)?;
+    record.insert("source.tree", &source.tree)?;
     Ok(record)
 }
 
@@ -1741,12 +2168,26 @@ fn advisory_input_record(paths: &Paths, tool: &Tool) -> Result<Record> {
 }
 
 fn model_record(paths: &Paths) -> Result<Record> {
+    let source = source_identity(paths.root())?;
+    model_record_for_source(paths, &source)
+}
+
+fn model_record_for_source(paths: &Paths, source: &SourceIdentity) -> Result<Record> {
     let java = java(paths.root())?.context("Java is unavailable; model evidence cannot verify")?;
-    model_record_with_tool(paths, &java)
+    model_record_with_tool_and_source(paths, &java, source)
 }
 
 fn model_record_with_tool(paths: &Paths, java: &Tool) -> Result<Record> {
-    let mut record = base_record(paths, Kind::Model)?;
+    let source = source_identity(paths.root())?;
+    model_record_with_tool_and_source(paths, java, &source)
+}
+
+fn model_record_with_tool_and_source(
+    paths: &Paths,
+    java: &Tool,
+    source: &SourceIdentity,
+) -> Result<Record> {
+    let mut record = base_record_for_source(Kind::Model, source)?;
     add_tool(&mut record, "input.java", java)?;
     add_digest(
         &mut record,
@@ -1760,8 +2201,12 @@ fn model_record_with_tool(paths: &Paths, java: &Tool) -> Result<Record> {
     Ok(record)
 }
 
-fn vmware_record(paths: &Paths, kind: Kind) -> Result<Record> {
-    current_vmware_record(paths, kind).map(|(_, record)| record)
+fn vmware_record_for_source(paths: &Paths, kind: Kind, source: &SourceIdentity) -> Result<Record> {
+    let vmrun =
+        vmrun(paths.root())?.context("vmrun is unavailable; VMware evidence cannot verify")?;
+    let mut record = base_record_for_source(kind, source)?;
+    add_tool(&mut record, "input.vmrun", &vmrun)?;
+    Ok(record)
 }
 
 fn current_vmware_record(paths: &Paths, kind: Kind) -> Result<(Tool, Record)> {
@@ -1777,12 +2222,12 @@ fn require_current_source(paths: &Paths, record: &Record) -> Result<()> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SourceIdentity {
-    commit: String,
-    tree: String,
+pub(crate) struct SourceIdentity {
+    pub(crate) commit: String,
+    pub(crate) tree: String,
 }
 
-fn source_identity(root: &Path) -> Result<SourceIdentity> {
+pub(crate) fn source_identity(root: &Path) -> Result<SourceIdentity> {
     let before_status = git_output(
         root,
         &["status", "--porcelain=v1", "--untracked-files=all"],
@@ -1872,6 +2317,41 @@ fn invalidate(paths: &Paths, kind: Kind) -> Result<()> {
         }
     }
     std::fs::create_dir(&directory).with_context(|| format!("creating {}", directory.display()))
+}
+
+fn invalidate_record(paths: &Paths, kind: Kind) -> Result<()> {
+    let root = crate::mutation_workspace::prepare_real_directory_tree(
+        &qualification_root(paths),
+        "qualification root",
+    )?;
+    let directory = checked_kind_directory(&root, kind)?;
+    match std::fs::symlink_metadata(&directory) {
+        Ok(metadata) => ensure!(
+            metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+            "qualification kind directory is redirected or not a directory"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(&directory)
+                .with_context(|| format!("creating {}", directory.display()))?;
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("inspecting {}", directory.display()));
+        }
+    }
+    require_contained_real_directory(&root, &directory, "qualification kind directory")?;
+    for name in [RECORD, RECORD_TEMP] {
+        let path = directory.join(name);
+        if crate::mutation_workspace::require_direct_file_if_present(
+            &directory,
+            &path,
+            "external qualification record",
+        )? {
+            std::fs::remove_file(&path).with_context(|| {
+                format!("invalidating stale qualification record {}", path.display())
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn commit_record(paths: &Paths, kind: Kind, record: &Record) -> Result<()> {
@@ -1981,6 +2461,59 @@ fn validate_record(record: &Record, kind: Kind) -> Result<()> {
                 "input.source.sha256".to_string(),
             ]);
             add_artifact_keys(&mut expected, "artifact.report");
+        }
+        Kind::CargoMutantsGrade => {
+            expected.extend([
+                "execution.authority".to_string(),
+                "grade.adjudicated".to_string(),
+                "grade.caught".to_string(),
+                "grade.missed".to_string(),
+                "grade.timeout".to_string(),
+                "grade.total".to_string(),
+                "grade.unviable".to_string(),
+                "tool.cargo-mutants.bytes".to_string(),
+                "tool.cargo-mutants.sha256".to_string(),
+                "tool.cargo-mutants.version".to_string(),
+                "tool.cargo-nextest.archive.sha256".to_string(),
+                "tool.cargo-nextest.bytes".to_string(),
+                "tool.cargo-nextest.commit".to_string(),
+                "tool.cargo-nextest.sha256".to_string(),
+                "tool.cargo-nextest.url".to_string(),
+                "tool.cargo-nextest.version".to_string(),
+            ]);
+            for prefix in [
+                "artifact.request",
+                "artifact.inventory",
+                "artifact.mutants",
+                "artifact.outcomes",
+                "artifact.adjudications",
+                "artifact.doctest",
+            ] {
+                add_artifact_keys(&mut expected, prefix);
+            }
+        }
+        Kind::CodexSecurityDeep => {
+            expected.extend([
+                "findings.critical".to_string(),
+                "findings.high".to_string(),
+                "findings.informational".to_string(),
+                "findings.low".to_string(),
+                "findings.medium".to_string(),
+                "findings.total".to_string(),
+                "scan.id".to_string(),
+                "scan.producer.name".to_string(),
+                "scan.producer.version".to_string(),
+                "scan.surfaces".to_string(),
+            ]);
+            for prefix in [
+                "artifact.request",
+                "artifact.manifest",
+                "artifact.findings",
+                "artifact.coverage",
+                "artifact.report",
+            ] {
+                add_artifact_keys(&mut expected, prefix);
+            }
         }
         Kind::Model => {
             add_tool_keys(&mut expected, "input.java");
@@ -2188,7 +2721,7 @@ fn digest_bytes(bytes: &[u8]) -> Digest {
     }
 }
 
-fn read_bounded_file(path: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
+pub(crate) fn read_bounded_file(path: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
     read_bounded_file_with(path, maximum, label, || Ok(()))
 }
 
@@ -2388,6 +2921,20 @@ fn artifact_size_policy(kind: Kind, name: &str) -> Result<(u64, bool)> {
             _ => bail!("unregistered advisory artifact `{name}`"),
         },
         Kind::Mutation => (MAX_MUTATION_REPORT_BYTES, false),
+        Kind::CargoMutantsGrade => match name {
+            "request" | "doctest.transcript" => (MAX_EXTERNAL_RECEIPT_BYTES, false),
+            "inventory.json" | "mutants.json" | "outcomes.json" => (MAX_MUTANTS_JSON_BYTES, false),
+            "adjudications.json" => (MAX_MUTANTS_ADJUDICATION_BYTES, false),
+            _ => bail!("unregistered cargo-mutants grade artifact `{name}`"),
+        },
+        Kind::CodexSecurityDeep => match name {
+            "request" => (MAX_SECURITY_REQUEST_BYTES, false),
+            "scan-manifest.json" => (MAX_SECURITY_MANIFEST_BYTES, false),
+            "findings.json" => (MAX_SECURITY_FINDINGS_BYTES, false),
+            "coverage.json" => (MAX_SECURITY_COVERAGE_BYTES, false),
+            "report.md" => (MAX_SECURITY_REPORT_BYTES, false),
+            _ => bail!("unregistered Codex Security artifact `{name}`"),
+        },
         Kind::Model => (MAX_MODEL_TRANSCRIPT_BYTES, false),
         Kind::VmwareSelfTest | Kind::VmwareShipped => match name {
             VMWARE_IMAGE => (boot_image_bytes(), true),
@@ -2446,6 +2993,16 @@ pub(crate) fn bundle_file_size_policy(spec: &BundleFile) -> Result<(u64, bool)> 
         Kind::Advisory
     } else if spec.prefix.starts_with("qualification.mutation.") {
         Kind::Mutation
+    } else if spec
+        .prefix
+        .starts_with("qualification.cargo-mutants-grade.")
+    {
+        Kind::CargoMutantsGrade
+    } else if spec
+        .prefix
+        .starts_with("qualification.codex-security-deep.")
+    {
+        Kind::CodexSecurityDeep
     } else if spec.prefix.starts_with("qualification.model.") {
         Kind::Model
     } else if spec.prefix.starts_with("qualification.vmware-self-test.") {
@@ -3435,6 +3992,72 @@ mod tests {
                 record.insert("input.index.sha256", "e".repeat(64)).unwrap();
                 fixture_artifact(&mut record, "artifact.report", MUTATION_REPORT);
             }
+            Kind::CargoMutantsGrade => {
+                for (key, value) in [
+                    ("execution.authority", "external-operator-v1"),
+                    ("grade.adjudicated", "0"),
+                    ("grade.caught", "1"),
+                    ("grade.missed", "0"),
+                    ("grade.timeout", "0"),
+                    ("grade.total", "1"),
+                    ("grade.unviable", "0"),
+                    ("tool.cargo-mutants.bytes", "1"),
+                    (
+                        "tool.cargo-mutants.sha256",
+                        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                    ),
+                    ("tool.cargo-mutants.version", "27.1.0"),
+                    (
+                        "tool.cargo-nextest.archive.sha256",
+                        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                    ),
+                    ("tool.cargo-nextest.bytes", "1"),
+                    ("tool.cargo-nextest.commit", "e"),
+                    (
+                        "tool.cargo-nextest.sha256",
+                        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                    ),
+                    ("tool.cargo-nextest.url", "https://example.invalid"),
+                    ("tool.cargo-nextest.version", "0.9.145"),
+                ] {
+                    record.insert(key, value).unwrap();
+                }
+                for (prefix, name) in [
+                    ("artifact.request", "request"),
+                    ("artifact.inventory", "inventory.json"),
+                    ("artifact.mutants", "mutants.json"),
+                    ("artifact.outcomes", "outcomes.json"),
+                    ("artifact.adjudications", "adjudications.json"),
+                    ("artifact.doctest", "doctest.transcript"),
+                ] {
+                    fixture_artifact(&mut record, prefix, name);
+                }
+            }
+            Kind::CodexSecurityDeep => {
+                for (key, value) in [
+                    ("findings.critical", "0"),
+                    ("findings.high", "0"),
+                    ("findings.informational", "0"),
+                    ("findings.low", "0"),
+                    ("findings.medium", "0"),
+                    ("findings.total", "0"),
+                    ("scan.id", "scan-fixture"),
+                    ("scan.producer.name", "codex-security-plugin"),
+                    ("scan.producer.version", "0.1.31"),
+                    ("scan.surfaces", "1"),
+                ] {
+                    record.insert(key, value).unwrap();
+                }
+                for (prefix, name) in [
+                    ("artifact.request", "request"),
+                    ("artifact.manifest", "scan-manifest.json"),
+                    ("artifact.findings", "findings.json"),
+                    ("artifact.coverage", "coverage.json"),
+                    ("artifact.report", "report.md"),
+                ] {
+                    fixture_artifact(&mut record, prefix, name);
+                }
+            }
             Kind::Model => {
                 fixture_tool(&mut record, "input.java");
                 record.insert("input.models.bytes", "1").unwrap();
@@ -3686,6 +4309,8 @@ mod tests {
         for kind in [
             Kind::Advisory,
             Kind::Mutation,
+            Kind::CargoMutantsGrade,
+            Kind::CodexSecurityDeep,
             Kind::Model,
             Kind::VmwareSelfTest,
             Kind::VmwareShipped,
@@ -3822,7 +4447,7 @@ mod tests {
         let implementation = include_str!("qualification.rs");
         let verification = implementation.find("fn verify_records(").unwrap();
         let advisory = implementation[verification..]
-            .find("verify_advisory_qualification(paths, root, &source)?;")
+            .find("verify_advisory_qualification(paths, root, source)?;")
             .unwrap();
         let loop_start = implementation[verification..]
             .find("for kind in [")
@@ -4475,6 +5100,96 @@ mod tests {
             };
 
         let mut expected = vec![
+            record("cargo-mutants-grade"),
+            artifact(
+                "cargo-mutants-grade",
+                Kind::CargoMutantsGrade,
+                "request",
+                "request",
+                1_048_576,
+                false,
+            ),
+            artifact(
+                "cargo-mutants-grade",
+                Kind::CargoMutantsGrade,
+                "inventory",
+                "inventory.json",
+                67_108_864,
+                false,
+            ),
+            artifact(
+                "cargo-mutants-grade",
+                Kind::CargoMutantsGrade,
+                "mutants",
+                "mutants.json",
+                67_108_864,
+                false,
+            ),
+            artifact(
+                "cargo-mutants-grade",
+                Kind::CargoMutantsGrade,
+                "outcomes",
+                "outcomes.json",
+                67_108_864,
+                false,
+            ),
+            artifact(
+                "cargo-mutants-grade",
+                Kind::CargoMutantsGrade,
+                "adjudications",
+                "adjudications.json",
+                16_777_216,
+                false,
+            ),
+            artifact(
+                "cargo-mutants-grade",
+                Kind::CargoMutantsGrade,
+                "doctest",
+                "doctest.transcript",
+                1_048_576,
+                false,
+            ),
+            record("codex-security-deep"),
+            artifact(
+                "codex-security-deep",
+                Kind::CodexSecurityDeep,
+                "request",
+                "request",
+                262_144,
+                false,
+            ),
+            artifact(
+                "codex-security-deep",
+                Kind::CodexSecurityDeep,
+                "manifest",
+                "scan-manifest.json",
+                4_194_304,
+                false,
+            ),
+            artifact(
+                "codex-security-deep",
+                Kind::CodexSecurityDeep,
+                "findings",
+                "findings.json",
+                33_554_432,
+                false,
+            ),
+            artifact(
+                "codex-security-deep",
+                Kind::CodexSecurityDeep,
+                "coverage",
+                "coverage.json",
+                4_194_304,
+                false,
+            ),
+            artifact(
+                "codex-security-deep",
+                Kind::CodexSecurityDeep,
+                "report",
+                "report.md",
+                33_554_432,
+                false,
+            ),
             record("advisory"),
             artifact(
                 "advisory",
@@ -4850,7 +5565,9 @@ mod tests {
         let snapshot = Snapshot {
             root: root.clone(),
             digests,
-            _mutation: CurrentPass::fixture(&root.join("mutation.lock")).unwrap(),
+            _mutation: RetainedMutationPass::new(
+                CurrentPass::fixture(&root.join("mutation.lock")).unwrap(),
+            ),
         };
         snapshot.verify_unchanged().unwrap();
         let model = root.join(Kind::Model.slug());
@@ -4881,13 +5598,16 @@ mod tests {
             .iter()
             .map(|spec| digest_file(&source.join(bundle_tail(spec).unwrap())).unwrap())
             .collect();
+        let mutation_lock = source.join("mutation.lock");
         let snapshot = Snapshot {
             root: source.clone(),
             digests,
-            _mutation: CurrentPass::fixture(&source.join("mutation.lock")).unwrap(),
+            _mutation: RetainedMutationPass::new(CurrentPass::fixture(&mutation_lock).unwrap()),
         };
+        assert!(CurrentPass::fixture(&mutation_lock).is_err());
 
         assert!(snapshot.install(&evidence).is_err());
+        assert!(CurrentPass::fixture(&mutation_lock).is_err());
         assert!(
             crate::paths::directory_entries(&outside)
                 .unwrap()
@@ -4896,6 +5616,37 @@ mod tests {
         );
 
         drop(snapshot);
+        drop(CurrentPass::fixture(&mutation_lock).unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn snapshot_retains_mutation_lock_through_install_refusal() {
+        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "wizard-qualification-install-lock-{}-{nonce}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        let evidence = root.join("not-a-directory");
+        write_snapshot_bundle(&source);
+        std::fs::write(&evidence, "occupied").unwrap();
+        let digests = BUNDLE_FILES
+            .iter()
+            .map(|spec| digest_file(&source.join(bundle_tail(spec).unwrap())).unwrap())
+            .collect();
+        let mutation_lock = source.join("mutation.lock");
+        let snapshot = Snapshot {
+            root: source,
+            digests,
+            _mutation: RetainedMutationPass::new(CurrentPass::fixture(&mutation_lock).unwrap()),
+        };
+
+        assert!(CurrentPass::fixture(&mutation_lock).is_err());
+        assert!(snapshot.install(&evidence).is_err());
+        assert!(CurrentPass::fixture(&mutation_lock).is_err());
+        drop(snapshot);
+        drop(CurrentPass::fixture(&mutation_lock).unwrap());
         std::fs::remove_dir_all(root).unwrap();
     }
 

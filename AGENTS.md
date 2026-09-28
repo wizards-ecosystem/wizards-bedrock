@@ -77,11 +77,13 @@ check to go red for each. Add a mutation whenever you add a check. `cargo
 test` verifies every mutation still matches its source, so a rotted one is
 caught in milliseconds even though each machine mutation still costs a boot.
 
-Seven supported tasks are deliberately **not** in ordinary `ci`: `debug`,
+Nine supported tasks are deliberately **not** in ordinary `ci`: `debug`,
 `baseline`, `vmware`, `qualify-vmware`, `model-check`, `mutate` and
-`qualify-advisory`. `vmware` generates each selected machine;
+`qualify-advisory`, plus the externally operated `qualify-mutants-grade` and
+`qualify-security-deep` begin/seal workflows. `vmware` generates each selected machine;
 `qualify-vmware` validates its fresh serial transcript after the human boot.
-VMware, model checking, the complete mutation sweep and the fresh RustSec review
+VMware, model checking, the complete mutation sweep, the independent mutation
+grade, the Deep security scan and the fresh RustSec review
 are phase-close qualifications whose records enter offline evidence. They need
 interactive/external tools, current network data or much longer machine runs,
 and putting them in the ordinary gate would make a missing tool look like a

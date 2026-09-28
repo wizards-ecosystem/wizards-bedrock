@@ -31,6 +31,7 @@ pub mod image;
 mod json;
 pub mod machine;
 pub mod model;
+mod mutants_grade;
 pub mod mutate;
 pub mod mutation_workspace;
 pub mod paths;
@@ -44,6 +45,7 @@ mod qualification;
 mod recovery_contracts;
 #[cfg(test)]
 mod routing_contracts;
+mod security_deep;
 pub mod sha256;
 pub mod supply_chain;
 pub mod tasks;
@@ -99,6 +101,8 @@ pub fn run(task: Task) -> Result<()> {
         Task::Evidence => evidence::create(&paths),
         Task::VerifyEvidence => evidence::verify(&paths),
         Task::QualifyAdvisory => qualification::qualify_advisory(&paths),
+        Task::QualifyMutantsGrade(action) => mutants_grade::run(&paths, action),
+        Task::QualifySecurityDeep(action) => security_deep::run(&paths, action),
         Task::Clean(scope) => tasks::clean(&paths, scope),
     }
 }

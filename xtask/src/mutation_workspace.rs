@@ -315,6 +315,92 @@ pub(crate) fn current_pass(
     })
 }
 
+pub(crate) fn recorded_pass(
+    paths: &Paths,
+    commit: &str,
+    registry: &str,
+    source_digest: &str,
+    index_digest: &str,
+    mutation_count: usize,
+    expected_report_digest: &str,
+) -> Result<CurrentPass> {
+    ensure!(is_hex(commit, 40), "recorded mutation commit is malformed");
+    ensure!(
+        is_digest(registry),
+        "recorded mutation registry is malformed"
+    );
+    let state_root = prepare_state_root(paths.target_dir())?;
+    let pass_lock = acquire_lock(&state_root.join(LOCK_NAME))?;
+    let key = format!("{}-{}", &commit[..12], &registry[..12]);
+    let state = state_root.join(key);
+    require_real_child(&state_root, &state, "recorded mutation state")?;
+    let store = JournalStore::new(state)?;
+    ensure!(
+        store.load()?.is_none(),
+        "the recorded mutation sweep is unfinished"
+    );
+    let (report_path, report) = store
+        .latest_report()?
+        .context("the recorded commit and registry have no completed sweep")?;
+    let report_text = read_state_text(&report_path, "recorded mutation report")?;
+    let report_digest = bind_current_report(&report, report_text.as_bytes())?;
+    ensure!(
+        report.commit == commit
+            && report.registry == registry
+            && report.source_digest == source_digest
+            && report.index_digest == index_digest
+            && report.outcomes.len() == mutation_count
+            && report_digest == expected_report_digest,
+        "newest recorded mutation report differs from the qualification record"
+    );
+    ensure!(
+        report.verdict == ReportVerdict::Pass
+            && report.caught == mutation_count
+            && report.survived == 0
+            && report.inconclusive == 0,
+        "the newest recorded mutation report did not pass"
+    );
+    Ok(CurrentPass {
+        evidence: PassEvidence {
+            commit: report.commit,
+            registry: report.registry,
+            source_digest: report.source_digest,
+            index_digest: report.index_digest,
+            mutation_count: report.outcomes.len(),
+            report_digest,
+            report_path,
+        },
+        _lock: pass_lock,
+    })
+}
+
+pub(crate) fn verify_recorded_pass(
+    path: &Path,
+    commit: &str,
+    registry: &str,
+    source_digest: &str,
+    index_digest: &str,
+    mutation_count: usize,
+) -> Result<()> {
+    let report = Report::parse(&read_state_text(path, "recorded mutation report")?)?;
+    ensure!(
+        report.commit == commit
+            && report.registry == registry
+            && report.source_digest == source_digest
+            && report.index_digest == index_digest
+            && report.outcomes.len() == mutation_count,
+        "recorded mutation report belongs to different qualification inputs"
+    );
+    ensure!(
+        report.verdict == ReportVerdict::Pass
+            && report.caught == mutation_count
+            && report.survived == 0
+            && report.inconclusive == 0,
+        "recorded mutation report did not pass"
+    );
+    Ok(())
+}
+
 fn bind_current_report(selected: &Report, bytes: &[u8]) -> Result<String> {
     let text = std::str::from_utf8(bytes).context("mutation report is not UTF-8")?;
     ensure!(
@@ -2238,6 +2324,51 @@ mod tests {
         );
         let last = std::fs::read_to_string(temp.0.join(LAST_RUN)).unwrap();
         assert_eq!(Report::parse(&last).unwrap(), failed);
+    }
+
+    #[test]
+    fn a_recorded_parent_pass_selects_the_newest_report_and_retains_the_sweep_lock() {
+        let temp = TempTree::new("recorded-parent-pass");
+        let paths = Paths::new(temp.0.join("repo"), Some(&temp.0.join("target")));
+        let state_root = prepare_state_root(paths.target_dir()).unwrap();
+        let mut journal = fixture_journal();
+        let key = format!("{}-{}", &journal.commit[..12], &journal.registry[..12]);
+        let state = state_root.join(key);
+        std::fs::create_dir(&state).unwrap();
+        let store = JournalStore::new(state).unwrap();
+        journal.completed = vec![Outcome::Caught];
+        let pass = store.save_report(Report::from(&journal)).unwrap();
+        let pass_path = store.directory.join(report_name(pass.sequence));
+        let pass_bytes = read_state_text(&pass_path, "fixture mutation report").unwrap();
+        let pass_digest = sha256::hex(&sha256::digest(pass_bytes.as_bytes()));
+
+        let current = recorded_pass(
+            &paths,
+            &journal.commit,
+            &journal.registry,
+            &journal.source_digest,
+            &journal.index_digest,
+            1,
+            &pass_digest,
+        )
+        .unwrap();
+        assert!(acquire_lock(&state_root.join(LOCK_NAME)).is_err());
+        drop(current);
+
+        journal.completed = vec![Outcome::Survived];
+        store.save_report(Report::from(&journal)).unwrap();
+        assert!(
+            recorded_pass(
+                &paths,
+                &journal.commit,
+                &journal.registry,
+                &journal.source_digest,
+                &journal.index_digest,
+                1,
+                &pass_digest,
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -82,6 +82,166 @@ pub enum Caught {
 /// compile tests nothing.
 pub const MUTATIONS: &[Mutation] = &[
     Mutation {
+        file: "xtask/src/mutants_grade.rs",
+        find: "const COMMAND: &str = \"cargo mutants -p xtask --output <source-bound-directory>/mutants.out --jobs 1 --jobserver-tasks 1 --test-tool nextest --timeout-multiplier 3 --no-shuffle\";",
+        replace: "const COMMAND: &str = \"cargo mutants -p xtask --output <source-bound-directory> --jobs 1 --jobserver-tasks 1 --test-tool nextest --timeout-multiplier 3 --no-shuffle\";",
+        breaks: "the published cargo-mutants command writes beside the directory the sealer reads",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::request_binds_source_command_concurrency_and_runner_provenance",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutants_grade.rs",
+        find: "        run == independent,",
+        replace: "        !run.is_empty() && !independent.is_empty(),",
+        breaks: "a subset cargo-mutants run can pose as the complete independently inventoried grade",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::independent_inventory_must_match_run_identities_and_diffs",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutants_grade.rs",
+        find: "        require_process_status(\n            json_field(phase, \"process_status\", \"cargo-mutants phase\")?,\n            expected_status,\n        )?;",
+        replace: "        let _unchecked_process_status = expected_status;",
+        breaks: "a cargo-mutants summary can contradict the recorded nextest phase result",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::phase_summary_requires_exact_order_status_and_nextest_argv",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutants_grade.rs",
+        find: "            !argv[0].is_empty() && arguments == expected_arguments,",
+        replace: "            !argv[0].is_empty(),",
+        breaks: "cargo-mutants phase evidence can name another runner command or package",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::phase_summary_requires_exact_order_status_and_nextest_argv",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutants_grade.rs",
+        find: "        ensure!(\n            fields.remove(key) == Some(value),\n            \"cargo-mutants request `{key}` differs from D-324\"\n        );",
+        replace: "        ensure!(fields.remove(key).is_some(), \"cargo-mutants request `{key}` is absent\");",
+        breaks: "the external grade request can weaken its exact command, environment, or pinned tools",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::request_binds_source_command_concurrency_and_runner_provenance",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutants_grade.rs",
+        find: "            line.starts_with(\"error:\") || line.contains(\"FAILED\")",
+        replace: "            line.starts_with(\"not-an-error:\") || line.contains(\"FAILED\")",
+        breaks: "a failed doctest command can retain a forged zero-test terminal summary",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::doctest_transcript_requires_only_successful_zero_test_summaries",
+        },
+    },
+    Mutation {
+        file: "xtask/src/security_deep.rs",
+        find: "    require_strict_scan_profile(scan)?;",
+        replace: "    let _unchecked_strict_scan_profile = scan;",
+        breaks: "a Deep aggregate can carry a foreign provider, reversed time or limiting caveat",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::strict_profile_rejects_provider_drift_reversed_time_and_caveats",
+        },
+    },
+    Mutation {
+        file: "xtask/src/security_deep.rs",
+        find: "    ensure!(\n        string(target, \"revision\", \"scan target\")? == source.commit,\n        \"Codex Security scan belongs to another commit\"\n    );",
+        replace: "    nonempty_string(target, \"revision\", \"scan target\")?;",
+        breaks: "a Deep scan from another source revision can qualify the current checkout",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::foreign_partial_and_high_finding_scans_are_refused",
+        },
+    },
+    Mutation {
+        file: "xtask/src/security_deep.rs",
+        find: "    ensure!(\n        counts.values().all(|count| *count == 0),\n        \"Codex Security scan has reportable findings without a repository disposition\"\n    );",
+        replace: "    let _unchecked_reportable_findings = &counts;",
+        breaks: "a completed Deep qualification can retain reportable findings",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::foreign_partial_and_high_finding_scans_are_refused",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "            digest: sha256::hex(&sha256::digest(raw)),",
+        replace: "            digest: sha256::hex(&sha256::digest(&[])),",
+        breaks: "the documentation-child relation digest stops binding changed blob identities",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::parent_docs_relation_accepts_only_exact_regular_file_modifications",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "    policy == \"same-commit\"",
+        replace: "    false && policy == \"same-commit\"",
+        breaks: "same-commit evidence no longer requires the live current mutation pass",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::same_commit_relation_requires_the_live_current_mutation_pass",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "        words == [evidence, qualified],",
+        replace: "        words.first() == Some(&evidence),",
+        breaks: "a merge or unrelated qualification source can pose as the direct parent",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::parent_docs_relation_requires_one_exact_direct_parent",
+        },
+    },
+    Mutation {
+        file: "xtask/src/evidence.rs",
+        find: "        ensure!(\n            ALLOWED.contains(&path),\n            \"parent-docs-only-v1 refuses `{path}`\"\n        );",
+        replace: "        let _unchecked_closure_path = path;",
+        breaks: "a source modification can enter the documentation-only closure commit",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::parent_docs_relation_accepts_only_exact_regular_file_modifications",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutation_workspace.rs",
+        find: "        Ok(reports\n            .into_iter()\n            .max_by_key(|(_, report)| report.sequence))",
+        replace: "        Ok(reports\n            .into_iter()\n            .min_by_key(|(_, report)| report.sequence))",
+        breaks: "a historical passing mutation report can outrank a newer failed parent sweep",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::a_recorded_parent_pass_selects_the_newest_report_and_retains_the_sweep_lock",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qualification.rs",
+        find: "            _lock: Some(pass),",
+        replace: "            _lock: {\n                drop(pass);\n                None\n            },",
+        breaks: "the selected mutation pass releases its global lock before evidence publication",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::snapshot_retains_mutation_lock_through_install_refusal",
+        },
+    },
+    Mutation {
+        file: "xtask/src/qualification.rs",
+        find: "    BundleFile {\n        prefix: \"qualification.codex-security-deep.findings\",\n        relative: \"qualification/codex-security-deep/findings.json\",\n    },\n",
+        replace: "",
+        breaks: "offline evidence omits the canonical Deep findings document",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::qualification_records_cannot_be_omitted_or_changed_offline",
+        },
+    },
+    Mutation {
         file: "kernel/src/nvme.rs",
         find: "    match disabled.access(|registers| write(registers, offset, value)) {",
         replace: "    match disabled.access(|registers| {\n        #[cfg(debug_assertions)]\n        let stack_pressure = [0u8; 3072];\n        #[cfg(not(debug_assertions))]\n        let stack_pressure = [0u8; 16 * 1024];\n        core::hint::black_box(&stack_pressure);\n        let result = write(registers, offset, value);\n        core::hint::black_box(&stack_pressure);\n        result\n    }) {",
@@ -120,8 +280,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1395 registered; complete-sweep verdicts live in source-bound qualification records |",
-        replace: "| Mutations | 1394 registered; complete-sweep verdicts live in source-bound qualification records |",
+        find: "| Mutations | 1411 registered; complete-sweep verdicts live in source-bound qualification records |",
+        replace: "| Mutations | 1410 registered; complete-sweep verdicts live in source-bound qualification records |",
         breaks: "the phase-close table understates the registered mutation source",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -190,8 +350,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/qualification.rs",
-        find: "    verify_advisory_qualification(paths, root, &source)?;",
-        replace: "    let _omitted_advisory_qualification = (&source, root);",
+        find: "    verify_advisory_qualification(paths, root, source)?;",
+        replace: "    let _omitted_advisory_qualification = (source, root);",
         breaks: "offline evidence can omit the required advisory qualification",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -1271,8 +1431,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/qualification.rs",
-        find: "            record.get(key)? == value,",
-        replace: "            record.fields.contains_key(key),",
+        find: "fn require_record_inputs(record: &Record, expected: &Record) -> Result<()> {\n    for (key, value) in &expected.fields {\n        ensure!(\n            record.get(key)? == value,",
+        replace: "fn require_record_inputs(record: &Record, expected: &Record) -> Result<()> {\n    for (key, value) in &expected.fields {\n        ensure!(\n            record.fields.contains_key(key),",
         breaks: "current TLC and VMware tool inputs are compared by name only",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -3778,8 +3938,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/mutation_workspace.rs",
-        find: "        _lock: pass_lock,",
-        replace: "        _lock: {\n            drop(pass_lock);\n            acquire_lock(&state_root.join(\"unrelated-lock\"))?\n        },",
+        find: "    let pass_lock = acquire_lock(&state_root.join(LOCK_NAME))?;\n    let baseline = Baseline::discover(paths.root())?;",
+        replace: "    let pass_lock = acquire_lock(&state_root.join(\"unrelated-lock\"))?;\n    let baseline = Baseline::discover(paths.root())?;",
         breaks: "a newer mutation sweep can supersede a pass while its consumer publishes it",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -6658,8 +6818,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "xtask/src/qualification.rs",
-        find: "    let root = crate::mutation_workspace::prepare_real_directory_tree(\n        &qualification_root(paths),\n        \"qualification root\",\n    )?;",
-        replace: "    let root = qualification_root(paths);\n    std::fs::create_dir_all(&root).with_context(|| format!(\"creating {}\", root.display()))?;",
+        find: "fn invalidate(paths: &Paths, kind: Kind) -> Result<()> {\n    let root = crate::mutation_workspace::prepare_real_directory_tree(\n        &qualification_root(paths),\n        \"qualification root\",\n    )?;",
+        replace: "fn invalidate(paths: &Paths, kind: Kind) -> Result<()> {\n    let root = qualification_root(paths);\n    std::fs::create_dir_all(&root).with_context(|| format!(\"creating {}\", root.display()))?;",
         breaks: "a redirected target receives qualification bytes before its ancestry is refused",
         reddens: Caught::HostTest {
             package: "xtask",

@@ -139,12 +139,15 @@ Ordered `cargo xtask ci` stages:
 processor with no x2APIC. It requires both refusals, the hardware-free tmpfs and
 devfs surveys, and a steady state rather than a triple fault.
 
-Seven tasks are deliberately **not** in `ci`: `debug` needs the pinned native
+Nine tasks are deliberately **not** in `ci`: `debug` needs the pinned native
 GDB and is normally interactive, `model-check` needs TLC and Java, `vmware`
 needs VMware Workstation to boot the result, `qualify-vmware` validates the
 fresh transcript after that human boot, `mutate` needs one QEMU boot per known
 defect, `baseline` needs six QEMU boots for descriptive measurements, and
-`qualify-advisory` needs `cargo-audit` plus fresh RustSec data. A gate step that
+`qualify-advisory` needs `cargo-audit` plus fresh RustSec data.
+`qualify-mutants-grade` and `qualify-security-deep` use explicit `--begin`
+and `--seal=RESULT_DIR` stages for externally operated, current-source campaigns.
+A gate step that
 fails for want of an exceptional tool or a long qualification teaches people
 to skip the gate.
 `model-check` prints the exact resolved Java identity before invoking it;
@@ -178,12 +181,27 @@ deterministic bundle under `target/evidence/`; `cargo xtask verify-evidence`
 then rechecks its source identity, installed tool and firmware identities,
 vendored and machine inputs, artifact hashes, reproducibility result and boot
 result without network access. The QEMU hardware ABI is pinned to
-`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v6 requires
-source-bound records for the current mutation sweep, the fresh RustSec review,
-all model runs and both generated-and-booted VMware selectors, plus fixed-shape
-Java and VMware tool identities. Verification therefore rejects an
+`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v7 requires
+source-bound records for the current mutation sweep, the independent
+`cargo-mutants` grade, the canonical Codex Security Deep artifacts, the fresh
+RustSec review, all model runs and both generated-and-booted VMware selectors,
+plus fixed-shape Java and VMware tool identities. It accepts either one exact
+source commit or a direct child which modifies only the five closure documents
+named by D-330 while retaining the locked newest passing parent mutation
+report. Verification therefore rejects an
 unavailable, stale, omitted or changed phase-close qualification rather than
-changing schema (D-218, D-244).
+changing schema (D-218, D-244, D-330).
+
+`qualify-mutants-grade --begin` publishes the exact source, inventory, grade,
+doctest, tool and environment request; `--seal=GRADE_DIR` imports the bounded
+inventory, outcomes, adjudications and the complete UTF-8 output of the
+zero-doctest command as `doctest.transcript`. The external
+operator is the declared execution authority: the record checks internal
+consistency and exact tool bytes but does not claim that `xtask` spawned or
+contained the multi-day process tree. `qualify-security-deep` likewise retains
+the provider's sealed manifest, findings and coverage plus its opaque UTF-8 report;
+the canonical close requires complete repository coverage, no exclusions,
+deferrals or open questions, and zero reportable findings.
 
 `test` runs the host suite; `test-boot` boots a kernel built with the
 `selftest` feature headless in QEMU, injects a keystroke over QMP when the

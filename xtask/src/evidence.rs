@@ -13,7 +13,7 @@ use crate::cargo::Profile;
 use crate::paths::Paths;
 use crate::{bounded_process, gate, image, mutate, qemu, qualification, sha256, tasks, vendor};
 
-const FORMAT: &str = "wizard-evidence-v6";
+const FORMAT: &str = "wizard-evidence-v7";
 const MANIFEST_NAME: &str = "MANIFEST";
 const MANIFEST_TEMP: &str = "MANIFEST.incomplete";
 const PASS: &str = "pass";
@@ -25,6 +25,7 @@ const QEMU_VERSION_DEADLINE: Duration = Duration::from_secs(5);
 const QEMU_VERSION_LABEL: &str = "QEMU version identity probe";
 const MAX_GIT_IDENTITY_BYTES: usize = 4096;
 const MAX_GIT_STATUS_BYTES: usize = 1024 * 1024;
+const MAX_GIT_DIFF_BYTES: usize = 1024 * 1024;
 const MAX_TOOL_VERSION_BYTES: usize = 64 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_SOURCE_LOCK_BYTES: u64 = 4 * 1024 * 1024;
@@ -69,6 +70,92 @@ struct Record {
     fields: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QualificationRelation {
+    qualified: qualification::SourceIdentity,
+    policy: &'static str,
+    files: Vec<String>,
+    digest: String,
+}
+
+impl QualificationRelation {
+    fn discover(paths: &Paths, qualified: &qualification::SourceIdentity) -> Result<Self> {
+        let (commit, tree) = clean_source(paths.root())?;
+        let evidence = qualification::SourceIdentity { commit, tree };
+        if evidence == *qualified {
+            return Ok(Self {
+                qualified: qualified.clone(),
+                policy: "same-commit",
+                files: Vec::new(),
+                digest: sha256::hex(&sha256::digest(&[])),
+            });
+        }
+
+        let parents = git_output(
+            paths.root(),
+            &["rev-list", "--parents", "-n", "1", "HEAD"],
+            MAX_GIT_IDENTITY_BYTES,
+            "evidence source parents",
+        )?;
+        require_single_direct_parent(&parents, &evidence.commit, &qualified.commit)?;
+        let parent_tree_selector = format!("{}^{{tree}}", qualified.commit);
+        let parent_tree = git_output(
+            paths.root(),
+            &["rev-parse", &parent_tree_selector],
+            MAX_GIT_IDENTITY_BYTES,
+            "qualification parent tree",
+        )?;
+        ensure!(
+            parent_tree == qualified.tree,
+            "qualification parent tree differs from its records"
+        );
+        let raw = git_output_bytes(
+            paths.root(),
+            &[
+                "diff-tree",
+                "--no-commit-id",
+                "--raw",
+                "-r",
+                "--no-renames",
+                "-z",
+                &qualified.commit,
+                &evidence.commit,
+                "--",
+            ],
+            MAX_GIT_DIFF_BYTES,
+            "parent documentation diff",
+        )?;
+        Self::from_parent_diff(qualified, &raw)
+    }
+
+    fn from_parent_diff(qualified: &qualification::SourceIdentity, raw: &[u8]) -> Result<Self> {
+        Ok(Self {
+            qualified: qualified.clone(),
+            policy: "parent-docs-only-v1",
+            files: parse_parent_docs_diff(raw)?,
+            digest: sha256::hex(&sha256::digest(raw)),
+        })
+    }
+
+    fn add_to(&self, record: &mut Record) -> Result<()> {
+        record.insert("qualification.source.commit", &self.qualified.commit)?;
+        record.insert("qualification.source.tree", &self.qualified.tree)?;
+        record.insert("qualification.relation", self.policy)?;
+        record.insert("qualification.closure.files", self.files.len().to_string())?;
+        record.insert("qualification.closure.paths", self.files.join(","))?;
+        record.insert("qualification.closure.sha256", &self.digest)
+    }
+}
+
+fn require_single_direct_parent(parents: &str, evidence: &str, qualified: &str) -> Result<()> {
+    let words: Vec<_> = parents.split_whitespace().collect();
+    ensure!(
+        words == [evidence, qualified],
+        "parent-docs-only-v1 requires the qualification source to be the single direct parent"
+    );
+    Ok(())
+}
+
 impl Record {
     fn insert(&mut self, key: impl Into<String>, value: impl Into<String>) -> Result<()> {
         let key = key.into();
@@ -107,13 +194,22 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
     println!("[xtask] qualifying a reproducible release from a clean checkout");
     qemu::nvme_image(paths.root()).context("materialising the deterministic NVMe input")?;
     vendor::verify(paths)?;
-    let before = input_record(paths)?;
+    let qualified_source = qualification::recorded_source(paths)?;
+    let relation = QualificationRelation::discover(paths, &qualified_source)?;
+    let mut before = input_record(paths)?;
+    relation.add_to(&mut before)?;
     let registry = mutate::registry_fingerprint();
-    let qualifications = qualification::snapshot(paths, &registry, mutate::MUTATIONS.len())?;
+    let qualifications = qualification::snapshot(
+        paths,
+        &registry,
+        mutate::MUTATIONS.len(),
+        &qualified_source,
+        relation_requires_current_mutation(relation.policy),
+    )?;
 
     tasks::ci(paths).context("release evidence stopped at the local gate")?;
     ensure!(
-        input_record(paths)? == before,
+        input_record_with_relation(paths, &qualified_source)? == before,
         "source, tools, firmware or boot inputs changed during qualification"
     );
 
@@ -165,7 +261,7 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
     remove_child(&root, "work-a")?;
     remove_child(&root, "work-b")?;
 
-    let mut record = input_record(paths)?;
+    let mut record = input_record_with_relation(paths, &qualified_source)?;
     ensure!(
         record == before,
         "source, tools, firmware or boot inputs changed during artifact reproduction"
@@ -187,6 +283,10 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
+fn relation_requires_current_mutation(policy: &str) -> bool {
+    policy == "same-commit"
+}
+
 /// Verify the evidence bundle against the current clean checkout and installed
 /// tools without contacting a network or rebuilding anything.
 pub(crate) fn verify(paths: &Paths) -> Result<()> {
@@ -204,7 +304,11 @@ pub(crate) fn verify(paths: &Paths) -> Result<()> {
 
 fn verify_record(paths: &Paths, root: &Path, record: &Record) -> Result<()> {
     vendor::verify(paths)?;
-    let observed = input_record(paths)?;
+    let qualified_source = qualification::SourceIdentity {
+        commit: record.get("qualification.source.commit")?.to_string(),
+        tree: record.get("qualification.source.tree")?.to_string(),
+    };
+    let observed = input_record_with_relation(paths, &qualified_source)?;
     let mut expected_keys: BTreeSet<String> = observed.fields.keys().cloned().collect();
     for spec in ARTIFACTS {
         expected_keys.insert(format!("{}.path", spec.prefix));
@@ -230,11 +334,21 @@ fn verify_record(paths: &Paths, root: &Path, record: &Record) -> Result<()> {
     qualification::verify_bundle(
         paths,
         root,
+        &qualified_source,
         &mutate::registry_fingerprint(),
         mutate::MUTATIONS.len(),
     )?;
     require_pass_results(record)?;
     Ok(())
+}
+
+fn input_record_with_relation(
+    paths: &Paths,
+    qualified: &qualification::SourceIdentity,
+) -> Result<Record> {
+    let mut record = input_record(paths)?;
+    QualificationRelation::discover(paths, qualified)?.add_to(&mut record)?;
+    Ok(record)
 }
 
 fn input_record(paths: &Paths) -> Result<Record> {
@@ -733,6 +847,72 @@ fn git_output(root: &Path, args: &[&str], maximum: usize, label: &str) -> Result
     let output = bounded_process::output_with_limit(command, IDENTITY_DEADLINE, label, maximum)
         .with_context(|| format!("running git {}", args.join(" ")))?;
     normalize_command_output(Path::new("git"), args, output)
+}
+
+fn git_output_bytes(root: &Path, args: &[&str], maximum: usize, label: &str) -> Result<Vec<u8>> {
+    let mut command = Command::new("git");
+    bounded_process::isolate_git_environment(&mut command);
+    command.current_dir(root).args(args);
+    let output = bounded_process::output_with_limit(command, IDENTITY_DEADLINE, label, maximum)
+        .with_context(|| format!("running git {}", args.join(" ")))?;
+    ensure!(
+        output.status.success() && output.stderr.is_empty(),
+        "git {} failed or wrote diagnostics",
+        args.join(" ")
+    );
+    Ok(output.stdout)
+}
+
+fn parse_parent_docs_diff(raw: &[u8]) -> Result<Vec<String>> {
+    const ALLOWED: &[&str] = &[
+        "README.md",
+        "docs/004-decision-log.md",
+        "docs/014-storage.md",
+        "docs/016-pre-wizzy-foundation.md",
+        "docs/017-pre-wizzy-hostile-surface-audit.md",
+    ];
+    ensure!(
+        !raw.is_empty() && raw.last() == Some(&0),
+        "parent documentation diff is empty or not NUL terminated"
+    );
+    let fields: Vec<_> = raw[..raw.len() - 1].split(|byte| *byte == 0).collect();
+    ensure!(
+        fields.len() % 2 == 0,
+        "parent documentation diff has an incomplete row"
+    );
+    let mut files = Vec::new();
+    for row in fields.chunks_exact(2) {
+        let header = std::str::from_utf8(row[0]).context("parent diff header is not UTF-8")?;
+        let path = std::str::from_utf8(row[1]).context("parent diff path is not UTF-8")?;
+        let fields: Vec<_> = header.split_whitespace().collect();
+        ensure!(
+            fields.len() == 5
+                && fields[0] == ":100644"
+                && fields[1] == "100644"
+                && fields[2].len() == 40
+                && fields[3].len() == 40
+                && fields[2].bytes().all(|byte| byte.is_ascii_hexdigit())
+                && fields[3].bytes().all(|byte| byte.is_ascii_hexdigit())
+                && fields[4] == "M",
+            "parent-docs-only-v1 permits only ordinary 100644 file modifications"
+        );
+        ensure!(
+            ALLOWED.contains(&path),
+            "parent-docs-only-v1 refuses `{path}`"
+        );
+        ensure!(
+            files
+                .last()
+                .is_none_or(|previous: &String| previous.as_str() < path),
+            "parent documentation paths are not unique and sorted"
+        );
+        files.push(path.to_string());
+    }
+    ensure!(
+        !files.is_empty(),
+        "parent-docs-only-v1 requires a nonempty closure diff"
+    );
+    Ok(files)
 }
 
 fn trusted_command_output(root: &Path, program: &Path, args: &[&str]) -> Result<String> {
@@ -1245,6 +1425,72 @@ mod tests {
     }
 
     #[test]
+    fn parent_docs_relation_accepts_only_exact_regular_file_modifications() {
+        let old = "1".repeat(40);
+        let new = "2".repeat(40);
+        let raw = format!(":100644 100644 {old} {new} M\0docs/016-pre-wizzy-foundation.md\0");
+        let qualified = qualification::SourceIdentity {
+            commit: "a".repeat(40),
+            tree: "b".repeat(40),
+        };
+        assert_eq!(
+            QualificationRelation::from_parent_diff(&qualified, raw.as_bytes())
+                .unwrap()
+                .files,
+            ["docs/016-pre-wizzy-foundation.md"]
+        );
+        let changed_blob = format!(
+            ":100644 100644 {old} {} M\0docs/016-pre-wizzy-foundation.md\0",
+            "3".repeat(40)
+        );
+        assert_ne!(
+            QualificationRelation::from_parent_diff(&qualified, raw.as_bytes())
+                .unwrap()
+                .digest,
+            QualificationRelation::from_parent_diff(&qualified, changed_blob.as_bytes())
+                .unwrap()
+                .digest,
+        );
+
+        let added = format!(":000000 100644 {} {new} A\0README.md\0", "0".repeat(40));
+        assert!(parse_parent_docs_diff(added.as_bytes()).is_err());
+        let source = format!(":100644 100644 {old} {new} M\0xtask/src/evidence.rs\0");
+        assert!(parse_parent_docs_diff(source.as_bytes()).is_err());
+        let empty = b"";
+        assert!(parse_parent_docs_diff(empty).is_err());
+    }
+
+    #[test]
+    fn same_commit_relation_requires_the_live_current_mutation_pass() {
+        assert!(relation_requires_current_mutation("same-commit"));
+        assert!(!relation_requires_current_mutation("parent-docs-only-v1"));
+    }
+
+    #[test]
+    fn parent_docs_relation_requires_one_exact_direct_parent() {
+        let evidence = "1".repeat(40);
+        let qualified = "2".repeat(40);
+        require_single_direct_parent(&format!("{evidence} {qualified}\n"), &evidence, &qualified)
+            .unwrap();
+        assert!(
+            require_single_direct_parent(
+                &format!("{evidence} {}\n", "3".repeat(40)),
+                &evidence,
+                &qualified
+            )
+            .is_err()
+        );
+        assert!(
+            require_single_direct_parent(
+                &format!("{evidence} {qualified} {}\n", "3".repeat(40)),
+                &evidence,
+                &qualified
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn a_duplicate_evidence_key_is_rejected_before_canonical_rendering() {
         let mut record = Record::default();
         record.insert("source.commit", "one").unwrap();
@@ -1729,6 +1975,19 @@ mod tests {
         assert_eq!(
             bundled,
             BTreeSet::from([
+                "qualification/cargo-mutants-grade/adjudications.json",
+                "qualification/cargo-mutants-grade/doctest.transcript",
+                "qualification/cargo-mutants-grade/inventory.json",
+                "qualification/cargo-mutants-grade/mutants.json",
+                "qualification/cargo-mutants-grade/outcomes.json",
+                "qualification/cargo-mutants-grade/record",
+                "qualification/cargo-mutants-grade/request",
+                "qualification/codex-security-deep/coverage.json",
+                "qualification/codex-security-deep/findings.json",
+                "qualification/codex-security-deep/record",
+                "qualification/codex-security-deep/report.md",
+                "qualification/codex-security-deep/request",
+                "qualification/codex-security-deep/scan-manifest.json",
                 "qualification/advisory/.cargo/audit.toml",
                 "qualification/advisory/cargo-audit-refresh.transcript",
                 "qualification/advisory/cargo-audit.transcript",
