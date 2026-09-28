@@ -977,17 +977,17 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 262 |
-| Mutations | 1391 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |
+| Mutations | 1395 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-328 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-329 |
 
 The two counts are **checked against the source at every commit**
-(`xtask/src/prose.rs`), but that proves registration rather than a current full
-sweep. The code registry carries the entries; this table's count is its checked
-restatement. A number copied anywhere else can disagree with both, which the
-per-slice lines above did, in seven places, and which is why they now say what
-the gate said rather than what was expected of it (D-175). The host-test count
-is deliberately absent: it changes with every
+(`xtask/src/prose.rs`), but mutation registration is not a current full-sweep
+verdict. Source-bound qualification records carry those outcomes; this table
+keeps only the registry's checked count. A number copied anywhere else can
+disagree with both, which the per-slice lines above did, in seven places, and
+which is why they now say what the gate said rather than what was expected of
+it (D-175). The host-test count is deliberately absent: it changes with every
 `libs/` crate and nothing would be learned from pinning it here.
 
 ### Every debt this file opened with

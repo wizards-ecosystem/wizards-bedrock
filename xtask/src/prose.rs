@@ -349,7 +349,7 @@ mod tests {
             "`014` must keep its closing table as the sole current numeric summary"
         );
 
-        // `| Mutations | 64, each caught ... |`
+        // `| Mutations | 64 registered; ... |`
         let claimed_mutations = table_number(&storage, "Mutations");
         assert_eq!(
             claimed_mutations,
@@ -360,25 +360,19 @@ mod tests {
 
         let mutation_numbers = table_numbers(&storage, "Mutations");
         assert_eq!(
-            mutation_numbers.len(),
-            5,
-            "the mutation row must state the total, last successful sweep and current caught, survived and inconclusive counts"
-        );
-        let last_successful_sweep = mutation_numbers[1];
-        assert_eq!(
-            last_successful_sweep, 285,
-            "the last successful complete sweep is a historical result"
-        );
-        assert_eq!(
-            &mutation_numbers[2..],
-            &[1301, 34, 24],
-            "the current complete sweep totals drifted"
+            mutation_numbers,
+            [crate::mutate::MUTATIONS.len()],
+            "the mutation row must state only its source-derived registry count"
         );
         let mutation_cell = table_cell(&storage, "Mutations");
         assert!(
-            mutation_cell.contains("last successful complete sweep")
-                && mutation_cell.contains("current complete sweep"),
-            "the mutation row does not distinguish successful history from the current failure"
+            mutation_cell.contains("registered")
+                && mutation_cell
+                    .contains("complete-sweep verdicts live in source-bound qualification records")
+                && ["caught", "surviv", "inconclusive"]
+                    .into_iter()
+                    .all(|claim| !mutation_cell.contains(claim)),
+            "the mutation row makes mutable prose authoritative for sweep verdicts"
         );
 
         let decisions =

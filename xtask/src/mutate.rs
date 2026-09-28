@@ -100,8 +100,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/017-pre-wizzy-hostile-surface-audit.md",
-        find: "| `PW-543` | Re-prove live kernel `SS` independently from the saved user frame across privilege entry and a trap-side context switch. |",
-        replace: "| `PW-542` | Re-prove allocator conservation and exact zombie-incarnation cleanup with retained mutations and repeated boots. |",
+        find: "## Cross-cutting closure obligations",
+        replace: "## Cross-cutting closure obligations\n\n| Register row | Cross-cutting obligation |\n|---|---|\n| `PW-542` | Re-prove allocator conservation and exact zombie-incarnation cleanup with retained mutations and repeated boots. |",
         breaks: "the hostile-surface census retains completed work as a live cross-cutting obligation",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -109,9 +109,9 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
-        file: "docs/017-pre-wizzy-hostile-surface-audit.md",
-        find: "| `PW-006` | Re-attack the final P0/P1 source after the admitted fixes and bind every disposition, break-test and evidence artifact in the phase-close ADR. |",
-        replace: "| `PW006` | Re-attack the final P0/P1 source after the admitted fixes and bind every disposition, break-test and evidence artifact in the phase-close ADR. |",
+        file: "docs/016-pre-wizzy-foundation.md",
+        find: "| PW-542 | DONE |",
+        replace: "| PW-542 | READY |",
         breaks: "the hostile-surface census omits a live register obligation",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -120,9 +120,9 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1391 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
-        replace: "| Mutations | 1391 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
-        breaks: "the phase-close table borrows its successful-sweep label from unrelated prose",
+        find: "| Mutations | 1395 registered; complete-sweep verdicts live in source-bound qualification records |",
+        replace: "| Mutations | 1394 registered; complete-sweep verdicts live in source-bound qualification records |",
+        breaks: "the phase-close table understates the registered mutation source",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "prose::tests::the_phase_close_says_what_the_source_says",
@@ -130,9 +130,9 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "the current complete sweep caught 1301",
-        replace: "the current complete sweep caught 285",
-        breaks: "the phase-close table hides the current failed mutation sweep behind an older pass",
+        find: "complete-sweep verdicts live in source-bound qualification records",
+        replace: "complete-sweep verdicts live in this prose table",
+        breaks: "the phase-close table makes mutable prose authoritative for sweep verdicts",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "prose::tests::the_phase_close_says_what_the_source_says",
@@ -14425,6 +14425,46 @@ fn mint_stopped<'controller>(
         replace: "    let this_child_called = call.count > before.count && call.slot != spawned.slot;",
         breaks: "the first ring-three crossing accepts only another thread's call record",
         reddens: Caught::Check("a thread crosses into ring three and calls back"),
+    },
+    Mutation {
+        file: "libs/pci-config/src/lib.rs",
+        find: "pub struct FunctionAuthority {\n    lease: FunctionLease,\n    registers: usize,\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\nstruct FunctionLease {",
+        replace: "pub struct FunctionAuthority {\n    pub lease: FunctionLease,\n    registers: usize,\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct FunctionLease {",
+        breaks: "pure PCI function authority exposes its private registry lease",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::pci_configuration_writes_require_function_authority",
+        },
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "pub struct FunctionClaim {\n    authority: FunctionAuthority,\n    identity: u32,\n}",
+        replace: "pub struct FunctionClaim {\n    authority: FunctionAuthority,\n    pub identity: u32,\n}",
+        breaks: "hardware PCI function authority exposes its private claim identity",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::pci_configuration_writes_require_function_authority",
+        },
+    },
+    Mutation {
+        file: "wost/src/mmio.rs",
+        find: "        self.write_values(offset, values.iter().copied())",
+        replace: "        // SAFETY: this weakened path assumes every supplied word is writable.\n        unsafe {\n            core::ptr::copy_nonoverlapping(\n                values.as_ptr(),\n                self.base.wrapping_add(offset).cast(),\n                values.len(),\n            )\n        };\n        Ok(())",
+        breaks: "framebuffer slice publication bypasses checked volatile MMIO with a raw copy",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit",
+        },
+    },
+    Mutation {
+        file: "wost/src/boot/mod.rs",
+        find: "                let Some(values) = span.source(&self.back) else {\n                    panic!(\"framebuffer shadow is shorter than its validated mapping\");\n                };\n                framebuffer_access(self.region.write_u32_slice(destination, values));\n                if span.copy_within(&mut self.back).is_none() {\n                    panic!(\"framebuffer shadow is shorter than its validated mapping\");\n                }",
+        replace: "                if span.copy_within(&mut self.back).is_none() {\n                    panic!(\"framebuffer shadow is shorter than its validated mapping\");\n                }\n                let Some(values) = span.source(&self.back) else {\n                    panic!(\"framebuffer shadow is shorter than its validated mapping\");\n                };\n                framebuffer_access(self.region.write_u32_slice(destination, values));",
+        breaks: "framebuffer shadow commits a row before device publication succeeds",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit",
+        },
     },
 ];
 

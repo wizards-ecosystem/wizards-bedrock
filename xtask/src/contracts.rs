@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use syn::visit::{self, Visit};
 use syn::{
-    Expr, ExprCall, ExprMatch, Fields, GenericArgument, GenericParam, Item, ItemEnum, ItemFn,
-    ItemStruct, Macro, Pat, PathArguments, Type,
+    Expr, ExprCall, ExprForLoop, ExprMatch, ExprMethodCall, Fields, GenericArgument, GenericParam,
+    ImplItem, ImplItemFn, Item, ItemEnum, ItemFn, ItemStruct, Local, Macro, Pat, PathArguments,
+    Stmt, Type,
 };
 
 use crate::paths::{KERNEL_TARGET, Paths};
@@ -746,6 +747,31 @@ fn pci_configuration_writes_require_function_authority() {
             });
         }
     }
+
+    let pure_forgery = "#![no_std]\n\
+        fn probe(authority: pci_config::FunctionAuthority) {\n\
+            let pci_config::FunctionAuthority { lease: _, .. } = authority;\n\
+        }\n";
+    require_error(&paths, "pci-pure-function-forgery", pure_forgery, "E0451").unwrap_or_else(
+        |diagnostics| {
+            panic!("pure PCI function authority exposed its private lease:\n{diagnostics}")
+        },
+    );
+
+    let hardware_forgery = "#![no_std]\n\
+        fn probe(authority: wost::arch::current::pci::FunctionClaim) {\n\
+            let wost::arch::current::pci::FunctionClaim { identity: _, .. } = authority;\n\
+        }\n";
+    require_error(
+        &paths,
+        "pci-hardware-function-forgery",
+        hardware_forgery,
+        "E0451",
+    )
+    .unwrap_or_else(|diagnostics| {
+        panic!("hardware PCI function authority exposed its private identity:\n{diagnostics}")
+    });
+
     for (bound, label) in [("Copy", "copy"), ("Clone", "clone")] {
         let source = format!(
             "#![no_std]\nfn requires<T: {bound}>() {{}}\n\
@@ -1103,6 +1129,49 @@ fn top_level_function<'ast>(syntax: &'ast syn::File, name: &str, relative: &str)
         "{relative} has more than one {name} function"
     );
     function
+}
+
+fn is_unqualified_type(ty: &Type, expected: &str) -> bool {
+    matches!(
+        ty,
+        Type::Path(path)
+            if path.qself.is_none()
+                && path.path.leading_colon.is_none()
+                && path.path.segments.len() == 1
+                && path.path.is_ident(expected)
+    )
+}
+
+fn inherent_method<'ast>(
+    syntax: &'ast syn::File,
+    type_name: &str,
+    method_name: &str,
+    relative: &str,
+) -> &'ast ImplItemFn {
+    let mut matches = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Impl(implementation)
+                if implementation.trait_.is_none()
+                    && is_unqualified_type(&implementation.self_ty, type_name) =>
+            {
+                Some(implementation.items.iter())
+            }
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident == method_name => Some(method),
+            _ => None,
+        });
+    let method = core::iter::Iterator::next(&mut matches)
+        .unwrap_or_else(|| panic!("{relative} has no {type_name}::{method_name} method"));
+    assert!(
+        core::iter::Iterator::next(&mut matches).is_none(),
+        "{relative} has more than one {type_name}::{method_name} method"
+    );
+    method
 }
 
 fn is_pub_super(visibility: &syn::Visibility) -> bool {
@@ -3572,6 +3641,428 @@ fn fallible_operation_bools_stay_must_use() {
             "{relative} lets an operation refusal be discarded"
         );
     }
+}
+
+fn pattern_is_ident(pattern: &Pat, expected: &str) -> bool {
+    matches!(
+        pattern,
+        Pat::Ident(name)
+            if name.by_ref.is_none()
+                && name.mutability.is_none()
+                && name.subpat.is_none()
+                && name.ident == expected
+    )
+}
+
+fn pattern_is_some_ident(pattern: &Pat, expected: &str) -> bool {
+    matches!(
+        pattern,
+        Pat::TupleStruct(some)
+            if some.qself.is_none()
+                && some.path.is_ident("Some")
+                && some.elems.len() == 1
+                && pattern_is_ident(&some.elems[0], expected)
+    )
+}
+
+fn expression_is_self_field(expression: &Expr, expected: &str) -> bool {
+    match expression {
+        Expr::Group(group) => expression_is_self_field(&group.expr, expected),
+        Expr::Paren(parenthesized) => expression_is_self_field(&parenthesized.expr, expected),
+        Expr::Field(field) => {
+            expression_is_ident(&field.base, "self")
+                && matches!(&field.member, syn::Member::Named(name) if name == expected)
+        }
+        _ => false,
+    }
+}
+
+fn expression_is_self_field_borrow(expression: &Expr, expected: &str, mutable: bool) -> bool {
+    matches!(
+        expression,
+        Expr::Reference(reference)
+            if reference.mutability.is_some() == mutable
+                && expression_is_self_field(&reference.expr, expected)
+    )
+}
+
+fn method_arguments_are_idents(call: &ExprMethodCall, expected: &[&str]) -> bool {
+    call.args.len() == expected.len()
+        && call
+            .args
+            .iter()
+            .zip(expected)
+            .all(|(argument, expected)| expression_is_ident(argument, expected))
+}
+
+fn framebuffer_plan_binding(local: &Local) -> bool {
+    let Some(initializer) = &local.init else {
+        return false;
+    };
+    let Expr::MethodCall(call) = initializer.expr.as_ref() else {
+        return false;
+    };
+    pattern_is_some_ident(&local.pat, "plan")
+        && initializer.diverge.is_some()
+        && call.method == "copy_rows_up"
+        && call.turbofish.is_none()
+        && expression_is_self_field(&call.receiver, "layout")
+        && method_arguments_are_idents(call, &["from_y", "to_y", "rows"])
+}
+
+fn framebuffer_row_count(local: &Local) -> bool {
+    let Some(initializer) = &local.init else {
+        return false;
+    };
+    matches!(
+        initializer.expr.as_ref(),
+        Expr::MethodCall(call)
+            if pattern_is_ident(&local.pat, "rows")
+                && initializer.diverge.is_none()
+                && call.method == "len"
+                && call.turbofish.is_none()
+                && call.args.is_empty()
+                && expression_is_ident(&call.receiver, "plan")
+    )
+}
+
+fn framebuffer_shadow_condition(expression: &Expr) -> bool {
+    let Expr::Binary(nonempty_and_nonzero) = expression else {
+        return false;
+    };
+    let Expr::Unary(nonempty) = nonempty_and_nonzero.left.as_ref() else {
+        return false;
+    };
+    let Expr::MethodCall(is_empty) = nonempty.expr.as_ref() else {
+        return false;
+    };
+    let Expr::Binary(nonzero) = nonempty_and_nonzero.right.as_ref() else {
+        return false;
+    };
+    matches!(nonempty_and_nonzero.op, syn::BinOp::And(_))
+        && matches!(nonempty.op, syn::UnOp::Not(_))
+        && is_empty.method == "is_empty"
+        && is_empty.turbofish.is_none()
+        && is_empty.args.is_empty()
+        && expression_is_self_field(&is_empty.receiver, "back")
+        && matches!(nonzero.op, syn::BinOp::Ne(_))
+        && expression_is_ident(&nonzero.left, "rows")
+        && matches!(
+            nonzero.right.as_ref(),
+            Expr::Lit(literal)
+                if matches!(&literal.lit, syn::Lit::Int(value)
+                    if value.base10_parse::<u128>().is_ok_and(|value| value == 0))
+        )
+}
+
+fn framebuffer_shadow_row_loop(statement: &Stmt) -> Option<&ExprForLoop> {
+    let Stmt::Expr(Expr::If(branch), None) = statement else {
+        return None;
+    };
+    let [
+        Stmt::Expr(Expr::ForLoop(row_loop), None),
+        Stmt::Expr(Expr::Return(exit), Some(_)),
+    ] = branch.then_branch.stmts.as_slice()
+    else {
+        return None;
+    };
+    (branch.else_branch.is_none()
+        && framebuffer_shadow_condition(&branch.cond)
+        && exit.expr.is_none()
+        && row_loop.label.is_none()
+        && pattern_is_ident(&row_loop.pat, "span")
+        && expression_is_ident(&row_loop.expr, "plan"))
+    .then_some(row_loop)
+}
+
+fn framebuffer_destination(local: &Local) -> bool {
+    let Some(initializer) = &local.init else {
+        return false;
+    };
+    matches!(
+        initializer.expr.as_ref(),
+        Expr::MethodCall(call)
+            if pattern_is_ident(&local.pat, "destination")
+                && initializer.diverge.is_none()
+                && call.method == "destination_offset"
+                && call.turbofish.is_none()
+                && call.args.is_empty()
+                && expression_is_ident(&call.receiver, "span")
+    )
+}
+
+fn framebuffer_source(local: &Local) -> bool {
+    let Some(initializer) = &local.init else {
+        return false;
+    };
+    matches!(
+        initializer.expr.as_ref(),
+        Expr::MethodCall(call)
+            if pattern_is_some_ident(&local.pat, "values")
+                && initializer.diverge.is_some()
+                && call.method == "source"
+                && call.turbofish.is_none()
+                && call.args.len() == 1
+                && expression_is_ident(&call.receiver, "span")
+                && expression_is_self_field_borrow(&call.args[0], "back", false)
+    )
+}
+
+fn framebuffer_device_publication(expression: &Expr) -> bool {
+    let Expr::Call(access) = expression else {
+        return false;
+    };
+    let Expr::Path(function) = access.func.as_ref() else {
+        return false;
+    };
+    let Some(Expr::MethodCall(write)) = access.args.first() else {
+        return false;
+    };
+    function.qself.is_none()
+        && function.path.is_ident("framebuffer_access")
+        && access.args.len() == 1
+        && write.method == "write_u32_slice"
+        && write.turbofish.is_none()
+        && expression_is_self_field(&write.receiver, "region")
+        && method_arguments_are_idents(write, &["destination", "values"])
+}
+
+fn framebuffer_shadow_commit(expression: &Expr) -> bool {
+    let Expr::If(branch) = expression else {
+        return false;
+    };
+    let Expr::MethodCall(is_none) = branch.cond.as_ref() else {
+        return false;
+    };
+    let Expr::MethodCall(copy) = is_none.receiver.as_ref() else {
+        return false;
+    };
+    branch.else_branch.is_none()
+        && is_none.method == "is_none"
+        && is_none.turbofish.is_none()
+        && is_none.args.is_empty()
+        && copy.method == "copy_within"
+        && copy.turbofish.is_none()
+        && copy.args.len() == 1
+        && expression_is_ident(&copy.receiver, "span")
+        && expression_is_self_field_borrow(&copy.args[0], "back", true)
+}
+
+fn values_iter_copied(expression: &Expr) -> bool {
+    let Expr::MethodCall(copied) = expression else {
+        return false;
+    };
+    let Expr::MethodCall(iter) = copied.receiver.as_ref() else {
+        return false;
+    };
+    copied.method == "copied"
+        && copied.turbofish.is_none()
+        && copied.args.is_empty()
+        && iter.method == "iter"
+        && iter.turbofish.is_none()
+        && iter.args.is_empty()
+        && expression_is_ident(&iter.receiver, "values")
+}
+
+fn mmio_slice_delegation(expression: &Expr) -> bool {
+    let Expr::MethodCall(call) = expression else {
+        return false;
+    };
+    call.method == "write_values"
+        && call.turbofish.is_none()
+        && expression_is_ident(&call.receiver, "self")
+        && call.args.len() == 2
+        && expression_is_ident(&call.args[0], "offset")
+        && values_iter_copied(&call.args[1])
+}
+
+fn values_len(expression: &Expr) -> bool {
+    matches!(
+        expression,
+        Expr::MethodCall(call)
+            if call.method == "len"
+                && call.turbofish.is_none()
+                && call.args.is_empty()
+                && expression_is_ident(&call.receiver, "values")
+    )
+}
+
+fn mmio_whole_span_check(local: &Local) -> bool {
+    let Some(initializer) = &local.init else {
+        return false;
+    };
+    let Expr::Try(checked) = initializer.expr.as_ref() else {
+        return false;
+    };
+    let Expr::MethodCall(call) = checked.expr.as_ref() else {
+        return false;
+    };
+    pattern_is_ident(&local.pat, "range")
+        && initializer.diverge.is_none()
+        && call.method == "check_words"
+        && call.turbofish.is_none()
+        && expression_is_ident(&call.receiver, "self")
+        && call.args.len() == 2
+        && expression_is_ident(&call.args[0], "offset")
+        && values_len(&call.args[1])
+}
+
+fn mmio_checked_values_loop(expression: &ExprForLoop) -> bool {
+    let Pat::Tuple(pattern) = expression.pat.as_ref() else {
+        return false;
+    };
+    let Expr::MethodCall(zip) = expression.expr.as_ref() else {
+        return false;
+    };
+    let Expr::MethodCall(offsets) = zip.receiver.as_ref() else {
+        return false;
+    };
+    pattern.elems.len() == 2
+        && pattern_is_ident(&pattern.elems[0], "cursor")
+        && pattern_is_ident(&pattern.elems[1], "value")
+        && zip.method == "zip"
+        && zip.turbofish.is_none()
+        && zip.args.len() == 1
+        && expression_is_ident(&zip.args[0], "values")
+        && offsets.method == "offsets"
+        && offsets.turbofish.is_none()
+        && offsets.args.is_empty()
+        && expression_is_ident(&offsets.receiver, "range")
+}
+
+fn u32_turbofish(call: &ExprMethodCall) -> bool {
+    let Some(arguments) = &call.turbofish else {
+        return false;
+    };
+    arguments.args.len() == 1
+        && matches!(
+            arguments.args.first(),
+            Some(GenericArgument::Type(Type::Path(path)))
+                if path.qself.is_none() && path.path.is_ident("u32")
+        )
+}
+
+fn mmio_word_pointer(local: &Local) -> bool {
+    let Some(initializer) = &local.init else {
+        return false;
+    };
+    let Expr::MethodCall(cast) = initializer.expr.as_ref() else {
+        return false;
+    };
+    let Expr::MethodCall(add) = cast.receiver.as_ref() else {
+        return false;
+    };
+    pattern_is_ident(&local.pat, "word")
+        && initializer.diverge.is_none()
+        && cast.method == "cast"
+        && cast.args.is_empty()
+        && u32_turbofish(cast)
+        && add.method == "wrapping_add"
+        && add.turbofish.is_none()
+        && expression_is_self_field(&add.receiver, "base")
+        && method_arguments_are_idents(add, &["cursor"])
+}
+
+fn mmio_volatile_write(expression: &Expr) -> bool {
+    let Expr::Unsafe(block) = expression else {
+        return false;
+    };
+    let [Stmt::Expr(Expr::MethodCall(write), None)] = block.block.stmts.as_slice() else {
+        return false;
+    };
+    write.method == "write_volatile"
+        && write.turbofish.is_none()
+        && expression_is_ident(&write.receiver, "word")
+        && method_arguments_are_idents(write, &["value"])
+}
+
+fn expression_is_ok_unit(expression: &Expr) -> bool {
+    matches!(
+        expression,
+        Expr::Call(call)
+            if call.args.len() == 1
+                && matches!(
+                    call.func.as_ref(),
+                    Expr::Path(function)
+                        if function.qself.is_none() && function.path.is_ident("Ok")
+                )
+                && matches!(&call.args[0], Expr::Tuple(unit) if unit.elems.is_empty())
+    )
+}
+
+#[test]
+fn framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit() {
+    let paths = Paths::discover().expect("workspace paths");
+
+    let boot_relative = "wost/src/boot/mod.rs";
+    let boot_source = std::fs::read_to_string(paths.root().join(boot_relative))
+        .unwrap_or_else(|error| panic!("reading {boot_relative}: {error}"));
+    let boot = syn::parse_file(&boot_source)
+        .unwrap_or_else(|error| panic!("parsing {boot_relative}: {error}"));
+    let copy_rows = inherent_method(&boot, "Framebuffer", "copy_rows", boot_relative);
+    let [Stmt::Local(plan), Stmt::Local(rows), branch, ..] = copy_rows.block.stmts.as_slice()
+    else {
+        panic!("Framebuffer::copy_rows does not begin with its checked shadow-row path");
+    };
+    assert!(
+        framebuffer_plan_binding(plan) && framebuffer_row_count(rows),
+        "Framebuffer::copy_rows does not carry one checked plan into its shadow-row path"
+    );
+    let row_loop = framebuffer_shadow_row_loop(branch)
+        .expect("Framebuffer::copy_rows does not consume that plan in its exact shadow branch");
+    let [
+        Stmt::Local(destination),
+        Stmt::Local(source),
+        Stmt::Expr(device, Some(_)),
+        Stmt::Expr(shadow, None),
+    ] = row_loop.body.stmts.as_slice()
+    else {
+        panic!("Framebuffer::copy_rows does not have one exact row-publication body");
+    };
+    assert!(
+        framebuffer_destination(destination)
+            && framebuffer_source(source)
+            && framebuffer_device_publication(device)
+            && framebuffer_shadow_commit(shadow),
+        "framebuffer rows are not published from one checked span before shadow commit"
+    );
+
+    let mmio_relative = "wost/src/mmio.rs";
+    let mmio_source = std::fs::read_to_string(paths.root().join(mmio_relative))
+        .unwrap_or_else(|error| panic!("reading {mmio_relative}: {error}"));
+    let mmio = syn::parse_file(&mmio_source)
+        .unwrap_or_else(|error| panic!("parsing {mmio_relative}: {error}"));
+    let write_slice = inherent_method(&mmio, "MmioRegion", "write_u32_slice", mmio_relative);
+    assert!(
+        matches!(
+            write_slice.block.stmts.as_slice(),
+            [Stmt::Expr(expression, None)] if mmio_slice_delegation(expression)
+        ),
+        "MmioRegion::write_u32_slice does not delegate the complete slice"
+    );
+
+    let write_values = inherent_method(&mmio, "MmioRegion", "write_values", mmio_relative);
+    let [
+        Stmt::Local(check),
+        Stmt::Expr(Expr::ForLoop(values), None),
+        Stmt::Expr(done, None),
+    ] = write_values.block.stmts.as_slice()
+    else {
+        panic!("MmioRegion::write_values does not have one exact checked publication body");
+    };
+    assert!(
+        mmio_whole_span_check(check)
+            && mmio_checked_values_loop(values)
+            && expression_is_ok_unit(done),
+        "MmioRegion::write_values does not check its complete span before publication"
+    );
+    let [Stmt::Local(pointer), Stmt::Expr(volatile, Some(_))] = values.body.stmts.as_slice() else {
+        panic!("MmioRegion::write_values does not have one exact per-word publication body");
+    };
+    assert!(
+        mmio_word_pointer(pointer) && mmio_volatile_write(volatile),
+        "MmioRegion::write_values does not publish each checked word with a volatile write"
+    );
 }
 
 #[derive(Default)]
