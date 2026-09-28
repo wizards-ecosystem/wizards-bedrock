@@ -120,8 +120,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1389 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
-        replace: "| Mutations | 1389 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
+        find: "| Mutations | 1391 registered; 285 in the last successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |",
+        replace: "| Mutations | 1391 registered; 285 in a successful complete sweep; the current complete sweep caught 1301, with 34 survivors and 24 inconclusive |\n<!-- last successful complete sweep -->",
         breaks: "the phase-close table borrows its successful-sweep label from unrelated prose",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -14411,6 +14411,20 @@ fn mint_stopped<'controller>(
             package: "xtask",
             name: "api::tests::wost_entry_contract_binds_the_handler_to_the_linker_entry",
         },
+    },
+    Mutation {
+        file: "kernel/src/selftest.rs",
+        find: "    let retired = last_rites_for(&spawned, 2_000).is_some();",
+        replace: "    let retired = last_rites_for(&spawned, 2_000).is_none();",
+        breaks: "the first ring-three crossing rejects its exact child-retirement evidence",
+        reddens: Caught::Check("a thread crosses into ring three and calls back"),
+    },
+    Mutation {
+        file: "kernel/src/selftest.rs",
+        find: "    let this_child_called = call.count > before.count && call.slot == spawned.slot;",
+        replace: "    let this_child_called = call.count > before.count && call.slot != spawned.slot;",
+        breaks: "the first ring-three crossing accepts only another thread's call record",
+        reddens: Caught::Check("a thread crosses into ring three and calls back"),
     },
 ];
 

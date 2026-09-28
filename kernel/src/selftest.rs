@@ -381,18 +381,17 @@ fn a_waiter_rereads_its_condition_before_blocking() -> bool {
 
 fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
     let before = trap::last_syscall();
-    let retirements_before = thread::retirements();
-    if user::run().is_err() {
+    let Ok(spawned) = user::run() else {
         return false;
-    }
+    };
 
-    // Generous: the thread maps two pages and a guarded stack before it can
-    // cross, and a refusal on any of them logs rather than hanging.
-    if !runs_until(2000, || trap::last_syscall().count > before.count) {
+    let retired = last_rites_for(&spawned, 2_000).is_some();
+    if !retired {
         return false;
     }
     let call = trap::last_syscall();
 
+    let this_child_called = call.count > before.count && call.slot == spawned.slot;
     let from_user = call.code_selector & 0b11 == 3;
     let through_the_gate = call.vector as u8 == vector::SYSCALL.get();
     let only_gate = interrupt::gate_privilege(vector::SYSCALL.get()) == 3
@@ -401,9 +400,8 @@ fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
         && interrupt::gate_privilege(exception::PAGE_FAULT) == 0;
     let on_a_user_stack =
         call.stack_selector & 0b11 == 3 && call.stack_pointer < usercopy::USER_END;
-    let retired = thread::retirements() > retirements_before;
 
-    from_user && through_the_gate && only_gate && on_a_user_stack && retired
+    this_child_called && from_user && through_the_gate && only_gate && on_a_user_stack && retired
 }
 
 fn a_program_cannot_bring_smap_down_with_it() -> bool {
