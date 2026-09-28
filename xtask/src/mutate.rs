@@ -280,8 +280,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1412 registered; complete-sweep verdicts live in source-bound qualification records |",
-        replace: "| Mutations | 1411 registered; complete-sweep verdicts live in source-bound qualification records |",
+        find: "| Mutations | 1413 registered; complete-sweep verdicts live in source-bound qualification records |",
+        replace: "| Mutations | 1412 registered; complete-sweep verdicts live in source-bound qualification records |",
         breaks: "the phase-close table understates the registered mutation source",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -14631,6 +14631,16 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "contracts::framebuffer_rows_publish_one_checked_volatile_span_before_shadow_commit",
+        },
+    },
+    Mutation {
+        file: "xtask/src/mutants_grade.rs",
+        find: "    command.current_dir(root).args([\"mutants\", \"--version\"]);",
+        replace: "    command.current_dir(root).arg(\"--version\");",
+        breaks: "the direct cargo-mutants version probe omits its subcommand entry point",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::direct_cargo_mutants_probe_names_its_subcommand",
         },
     },
 ];

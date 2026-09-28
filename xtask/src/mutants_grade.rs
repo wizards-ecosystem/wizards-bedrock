@@ -875,8 +875,7 @@ fn discover_tools(paths: &Paths) -> Result<ToolIdentity> {
     })?;
     let grader_bytes =
         qualification::read_bounded_file(&grader, 512 * 1024 * 1024, "cargo-mutants executable")?;
-    let mut version = Command::new(&grader);
-    version.current_dir(paths.root()).arg("--version");
+    let version = cargo_mutants_version_command(&grader, paths.root());
     let version = crate::bounded_process::output(
         version,
         Duration::from_secs(5),
@@ -908,6 +907,12 @@ fn discover_tools(paths: &Paths) -> Result<ToolIdentity> {
         nextest_path: nextest.to_string_lossy().into_owned(),
         nextest_bytes: nextest_bytes.len() as u64,
     })
+}
+
+fn cargo_mutants_version_command(grader: &Path, root: &Path) -> Command {
+    let mut command = Command::new(grader);
+    command.current_dir(root).args(["mutants", "--version"]);
+    command
 }
 
 fn resolve_path(name: &str) -> Result<PathBuf> {
@@ -978,6 +983,15 @@ fn verify_doctest(bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_cargo_mutants_probe_names_its_subcommand() {
+        let command = cargo_mutants_version_command(Path::new("cargo-mutants"), Path::new("."));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["mutants", "--version"]
+        );
+    }
 
     fn candidate(name: &str) -> String {
         format!(
