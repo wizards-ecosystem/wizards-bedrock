@@ -772,6 +772,20 @@ fn pci_configuration_writes_require_function_authority() {
         panic!("hardware PCI function authority exposed its private identity:\n{diagnostics}")
     });
 
+    let hardware_duplication = "#![no_std]\n\
+        fn probe(authority: &wost::arch::current::pci::FunctionClaim) {\n\
+            let _duplicate = authority.duplicate();\n\
+        }\n";
+    require_error(
+        &paths,
+        "pci-hardware-function-duplication",
+        hardware_duplication,
+        "E0599",
+    )
+    .unwrap_or_else(|diagnostics| {
+        panic!("hardware PCI function authority exposed a safe duplication door:\n{diagnostics}")
+    });
+
     for (bound, label) in [("Copy", "copy"), ("Clone", "clone")] {
         let source = format!(
             "#![no_std]\nfn requires<T: {bound}>() {{}}\n\

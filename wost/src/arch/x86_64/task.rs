@@ -1011,16 +1011,13 @@ fn forced_boundary_refuses(value: usize, expected: UserError) -> bool {
 }
 
 fn final_extended_state_is_isolated() -> bool {
-    let enabled = xstate::user_state_is_isolated();
-    #[cfg(feature = "selftest")]
-    let enabled = enabled && FORCED_USER_BOUNDARY_REFUSAL.load(Ordering::Acquire) != 2;
-    enabled
+    xstate::user_state_is_isolated()
 }
 
 fn final_shared_mappings_are_safe() -> bool {
     let safe = cpu::shared_kernel_mappings_are_safe();
     #[cfg(feature = "selftest")]
-    let safe = safe && FORCED_USER_BOUNDARY_REFUSAL.load(Ordering::Acquire) != 3;
+    let safe = safe && FORCED_USER_BOUNDARY_REFUSAL.load(Ordering::Acquire) != 2;
     safe
 }
 
@@ -1033,13 +1030,15 @@ pub fn final_no_execute_refusal_for_test() -> bool {
 /// Exercise the exact final-door extended-state refusal.
 #[cfg(feature = "selftest")]
 pub fn final_extended_state_refusal_for_test() -> bool {
-    forced_boundary_refuses(2, UserError::NoExtendedState)
+    xstate::without_user_state_isolation_for_test(|| {
+        user_entry_preflight(0, 0) == Err(UserError::NoExtendedState)
+    })
 }
 
 /// Exercise the exact final-door shared-mapping refusal.
 #[cfg(feature = "selftest")]
 pub fn final_shared_mapping_refusal_for_test() -> bool {
-    forced_boundary_refuses(3, UserError::NoSharedKernelIsolation)
+    forced_boundary_refuses(2, UserError::NoSharedKernelIsolation)
 }
 
 /// Push a ring-3 frame and `iretq` into it.

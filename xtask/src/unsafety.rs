@@ -194,7 +194,7 @@ mod tests {
             "wost/src/arch/x86_64/task.rs",
             14,
             3,
-            "f0f5560f023f3c7e56c266381a85f40388fcbbc41fad91007104e187c868c92c",
+            "0cd06d6dacd2e70f5abda111bcce6a3721e1bd8349ca15371a4dfaa5ef6f83f6",
         ),
         (
             "wost/src/arch/x86_64/usercopy.rs",

@@ -280,8 +280,8 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         file: "docs/014-storage.md",
-        find: "| Mutations | 1411 registered; complete-sweep verdicts live in source-bound qualification records |",
-        replace: "| Mutations | 1410 registered; complete-sweep verdicts live in source-bound qualification records |",
+        find: "| Mutations | 1412 registered; complete-sweep verdicts live in source-bound qualification records |",
+        replace: "| Mutations | 1411 registered; complete-sweep verdicts live in source-bound qualification records |",
         breaks: "the phase-close table understates the registered mutation source",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -10449,9 +10449,9 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         file: "wost/src/arch/x86_64/pci.rs",
-        find: "#[derive(Debug)]\n#[must_use = \"dropping PCI function authority permanently retains its claim\"]\npub struct FunctionClaim {",
-        replace: "#[derive(Debug, Clone)]\n#[must_use = \"dropping PCI function authority permanently retains its claim\"]\npub struct FunctionClaim {",
-        breaks: "hardware PCI function authority can be cloned",
+        find: "#[derive(Debug)]\n#[must_use = \"dropping PCI function authority permanently retains its claim\"]\npub struct FunctionClaim {\n    authority: FunctionAuthority,\n    identity: u32,\n}",
+        replace: "#[derive(Debug)]\n#[must_use = \"dropping PCI function authority permanently retains its claim\"]\npub struct FunctionClaim {\n    authority: FunctionAuthority,\n    identity: u32,\n}\n\nimpl Clone for FunctionClaim {\n    fn clone(&self) -> Self {\n        // SAFETY: the source is one valid aligned claim; this defect deliberately leaves both copies live.\n        unsafe { core::ptr::read(self) }\n    }\n}",
+        breaks: "hardware PCI function authority exposes a safe cloning route",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "contracts::pci_configuration_writes_require_function_authority",
@@ -10459,9 +10459,9 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         file: "wost/src/arch/x86_64/pci.rs",
-        find: "#[derive(Debug)]\n#[must_use = \"dropping PCI function authority permanently retains its claim\"]\npub struct FunctionClaim {",
-        replace: "#[derive(Debug, Clone, Copy)]\n#[must_use = \"dropping PCI function authority permanently retains its claim\"]\npub struct FunctionClaim {",
-        breaks: "hardware PCI function authority can be copied",
+        find: "#[derive(Debug)]\n#[must_use = \"dropping PCI function authority permanently retains its claim\"]\npub struct FunctionClaim {\n    authority: FunctionAuthority,\n    identity: u32,\n}",
+        replace: "#[derive(Debug)]\n#[must_use = \"dropping PCI function authority permanently retains its claim\"]\npub struct FunctionClaim {\n    authority: FunctionAuthority,\n    identity: u32,\n}\n\nimpl FunctionClaim {\n    /// Return a second live copy of this function claim.\n    pub fn duplicate(&self) -> Self {\n        // SAFETY: the source is one valid aligned claim; this defect deliberately leaves both copies live.\n        unsafe { core::ptr::read(self) }\n    }\n}",
+        breaks: "hardware PCI function authority exposes a safe duplication door",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "contracts::pci_configuration_writes_require_function_authority",
@@ -12032,6 +12032,13 @@ fn mint_stopped<'controller>(
         find: "    xstate::user_state_is_isolated()",
         replace: "    xstate::is_enabled()",
         breaks: "ring three trusts remembered extended-state enablement instead of the live isolation predicate",
+        reddens: Caught::Check("missing extended state closes the user boundary"),
+    },
+    Mutation {
+        file: "wost/src/arch/x86_64/task.rs",
+        find: "fn final_extended_state_is_isolated() -> bool {\n    xstate::user_state_is_isolated()\n}",
+        replace: "fn final_extended_state_is_isolated() -> bool {\n    xstate::is_enabled()\n}",
+        breaks: "the final ring-three crossing trusts remembered extended-state enablement instead of the live isolation predicate",
         reddens: Caught::Check("missing extended state closes the user boundary"),
     },
     Mutation {

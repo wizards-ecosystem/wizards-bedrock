@@ -19187,3 +19187,208 @@ the former is disproportionate and the latter is not replayable. Treating
 Allowing arbitrary documentation descendants or reconstructing a historical
 Git index was rejected in favor of one exact parent relation plus the already
 source-bound immutable mutation record and locked newest report.
+
+## D-331 External bytes clear before release, and mapping refusal retains their owner — Status: Accepted (2026-09-28), amends D-107 and D-115; closes PW-117
+
+**Context.** `USegment::reclaim` already cleared explicit ownership recovery,
+but the same invariant did not cover natural destruction. Dropping a
+`USegment`, dropping the last `Arc<SharedAllocation>` or returning from
+`map_user` after ownership had been extracted early could therefore return
+ring-3-controlled bytes to the allocator without clearing them. A failed clear
+was a separate fail-closed boundary: releasing the run after deciding that its
+contents could not be overwritten would preserve the disclosure through a
+different path.
+
+**Decision.** `USegment` retains its `Segment` until one of two terminal
+transitions. A successful `map_user` first commits every leaf and only then
+forgets the run into page-table ownership. Every other natural drop takes the
+run, clears it and lets the cleared `Segment` return to the allocator. If that
+clear refuses, the run is deliberately forgotten and therefore withheld.
+`SharedAllocation` contains the same `USegment`, so destruction of its last
+reference cannot bypass this rule.
+
+Mapping refusal is an owning result rather than a reason alone.
+`map_run_geometry` borrows the external run; only its successful result reaches
+`commit_mapping`, while `UserMapError::Mapping` carries the unchanged
+`USegment` on refusal. The caller may recover that exact owner for a retry or
+drop it through the same zero-before-free path.
+
+**Evidence.** On 2026-09-28 release QEMU wrote distinct markers into a direct
+external run, a last-shared run and a run passed to a mapping outside the user
+half. The restored implementation recovered or dropped each exact owner,
+observed allocator release only after every byte was zero and separately
+injected a clear refusal that kept the frame unavailable. It passed all
+262 checks.
+
+Four retained breaks were run serially and restored between boots. Skipping
+the zero and compiling out `USegment::drop` each failed only `external user
+bytes are zeroed before free` and `a refused external clear withholds its run`
+at 260/262. Replacing fail-closed `mem::forget` with `drop` failed only the
+withholding check at 261/262. Treating `map_user` refusal as a committed success
+failed `external user bytes are zeroed before free`, `cleanup refusals retain
+reachable tables` and `a user mapping cannot widen a supervisor table` at
+259/262. Exact restoration then passed 262/262.
+
+**Alternatives.** Relying on zero-on-allocation was rejected because it admits
+externally controlled contents into the kernel-owned free pool and makes every
+future allocation path carry the secrecy obligation. Panicking on a clear
+refusal was rejected because it turns a safe failure into a terminal machine
+failure without making reuse safer. Extracting ownership before page-table
+construction and rebuilding it during rollback was rejected because the
+fallible path would again depend on every exit remembering how to reconstruct
+the authority; borrowing until commit makes the compiler retain it.
+
+## D-332 Framebuffer scrolling keeps checked spans and interrupt progress — Status: Accepted (2026-09-28), amends D-48, D-137, D-249 and D-329; closes PW-011
+
+**Context.** Earlier debug boots spent more than a minute after the
+interrupt-progress scroll check, and an attempted speedup copied framebuffer
+rows outside checked MMIO. D-249 replaced that shortcut with pure checked row
+arithmetic and volatile publication, while D-329 bound the complete source
+chain. Closure still required current evidence that padded rows remain exact,
+cursor publication remains visible, console work does not exclude interrupts
+and the restored debug path completes repeatedly within the gate deadline.
+
+**Decision.** `FramebufferLayout` alone computes each upward row-copy plan.
+The plan distinguishes visible words from padded pitch, admits only upward
+movement and validates both source and destination against the complete shadow
+before iteration. Each row publishes its visible words through one checked
+MMIO span and commits the same words to the shadow afterward. Console entry
+does not disable interrupts around rendering. A line write hides the old cursor
+before scrolling and publishes the new cursor after the newline completes.
+
+**Evidence.** On 2026-09-28 all 41 `pixel` tests and its doctest passed, as did
+the exact checked-framebuffer source contract. Retained mutations 841 through
+844 were applied one at a time and restored byte-for-byte. Publishing stride
+words instead of visible words failed
+`row_copy_uses_padded_starts_without_publishing_padding` with five published
+words against three expected. Inverting upward admission failed
+`row_copy_refuses_downward_and_extreme_empty_ranges`; deleting the source bound
+made `row_copy_refuses_a_short_shadow_without_side_effects` reach a slice end of
+14 in a 13-word shadow; and advancing by visible width instead of pitch failed
+`every_small_row_copy_stays_within_its_padded_layout` with offset 4 against 8.
+
+Retained mutation 188 omitted the new cursor publication. Debug QEMU reported
+`a scroll moves one visible cursor` as its only failure, passed 261/262 and
+recorded `selftest: longest console scroll 367938646 ns`. Retained mutation 189
+disabled interrupts around console work. It reported
+`a console scroll does not block interrupts` as its only failure, passed
+261/262 and recorded `selftest: longest console scroll 150758765 ns`. Each
+mutation was restored before the next boot. Two consecutive restored debug
+boots then returned in 8.9 and 8.1 seconds, passed 262/262 and recorded exact
+longest-scroll values of 370250537 ns and 363899047 ns. The emulated nanosecond
+values are regression observations, not native performance claims.
+
+**Alternatives.** Restoring a raw bulk copy was rejected because it bypasses
+the checked volatile device boundary and can publish padding. Disabling
+interrupts around the console was rejected because rendering latency would
+become interrupt latency. A single restored boot was rejected because the
+original defect was intermittent enough to demand consecutive current runs.
+
+## D-333 Final user entry is tested through the production xstate predicate — Status: Accepted (2026-09-28), amends D-270; advances PW-132
+
+**Context.** D-270 requires early construction and the final ring-3 crossing
+to ask the same live extended-state predicate, but the final-door witness
+withheld a separate test-only discriminator. Replacing its production call
+with remembered `is_enabled()` therefore left that witness green, and the
+retained substitution mutation covered only the early door.
+
+**Decision and evidence.** The final-door witness now suppresses
+`xstate::user_state_is_isolated()` itself while executing the production
+preflight. Its obsolete synthetic branch is removed. Replacing only the final
+call with `is_enabled()` then failed only `missing extended state closes the
+user boundary` at 261/262; exact restoration passed 262/262. The new retained
+mutation binds that final call independently of D-270's early-door mutation,
+and the reviewed `task.rs` unsafe inventory remains 14 blocks and three
+declarations. PW-132 stays open for its remaining row-level causal proofs.
+
+## D-334 Paging activation is one interrupt-excluded publication transaction — Status: Accepted (2026-09-28), amends D-268; closes PW-127
+
+**Context.** D-268 implemented the activation transaction, but closure still
+required current causal evidence at each publication boundary. In particular,
+the proof had to distinguish a missing interrupt exclusion, premature
+readiness, root publication after readiness, CR3 after publication and a
+reclaimed-root read from unrelated paging or boot failures.
+
+**Decision.** Activation remains one `Cold -> Initializing -> Ready`
+transaction. It refuses reclamation before asking for the root, retains the
+caller's exact interrupt state through the transaction, writes CR3 before
+publishing the root and publishes `Ready` last with Release ordering. An
+observer may use the root only after it sees `Ready`.
+
+**Evidence.** On 2026-09-28 retained mutations 778 through 784 were applied
+one at a time and restored exactly. Removing the ready-byte decode failed only
+`every_byte_decodes_to_one_state_or_refusal`; removing the only completion edge
+failed only `only_the_protocol_edges_are_admitted`. Omitting interrupt
+exclusion and publishing `Ready` immediately after the cold-state claim each
+failed exactly `paging activation stays unpublished under interrupt exclusion`
+and `paging activation publishes its root before readiness` at 260/262.
+Publishing readiness before the root failed only the root-before-readiness
+witness at 261/262. Moving publication before CR3 failed only
+`paging_activation_loads_cr3_before_publishing_ready`. Bypassing the reclaimed
+preflight produced the complete framed panic `a reclaimed address space has no
+root` followed by `panic: terminal record complete v1`, before a self-test
+verdict. After exact restoration, release and debug QEMU each passed all
+262/262 checks, including both activation witnesses.
+
+**Alternatives.** Treating a green restored boot as sufficient was rejected
+because it does not prove that either pause seam or the ordering contract can
+fail. Treating interrupt exclusion as incidental to a single-CPU boot was
+rejected because interrupt handlers are observers on that CPU. Reading a
+reclaimed root before refusing it was rejected because the ownership
+precondition must dominate the read itself.
+
+## D-335 PCI configuration changes consume one exact function authority — Status: Accepted (2026-09-28), amends D-168, D-265 and D-329; closes PW-118, PW-125 and PW-129
+
+**Context.** D-265 implemented an exclusive PCI function claim and retained
+recovery, while D-329 proved that the claim identities remained opaque.
+Closure still required current causal evidence that a command snapshot cannot
+cross a registry or function, command transitions cannot nest, commit cannot
+overwrite a changed hardware word, and uncertain BAR restoration neither
+releases exclusion nor loses its retry owner. It also required the hardware
+wrapper and pure authority to remain non-duplicable and every configuration
+write to require that authority rather than a raw address.
+
+**Decision.** One opaque function claim binds its issuing registry, canonical
+function identity and live generation. Every command transition consumes a
+sublease from that claim and may complete only while the installed command
+word still matches. BAR probing derives its count from the verified header and
+returns the exact restoration owner whenever hardware state is uncertain;
+that owner continues excluding other claimants until an exact retry succeeds.
+Neither the pure authority nor its hardware wrapper is `Copy` or `Clone`, and
+the command registry and unchecked function-release door remain private.
+
+**Evidence.** On 2026-09-28 retained mutations 749, 750, 757 through 759, 787,
+792 and 1,010 through 1,015 were applied individually and restored exactly.
+Ignoring registry identity, function identity or live claim membership failed
+the exact cross-registry or configuration-cycle witnesses. Reversing the
+nested-lease test failed the exclusion witness; omitting the installed-word
+comparison reached the exact `a changed command word cannot be committed`
+panic. Dropping uncertain retry authority failed
+`an uncertain bar restore retains exclusion and retries exactly`; releasing
+the probe first let a competing command claim succeed and failed that same
+witness.
+
+Deriving `Clone` or `Copy` for the pure authority made the hostile compiler
+probe compile and failed its exact authority contract. A manual `Clone`
+implementation on the hardware wrapper and a separate safe duplication door
+also compiled, each duplicated the embedded authority without weakening the
+pure type and failed the exact hostile contract. Publishing the command
+registry or unchecked release door let the corresponding parallel-registry or
+live-sublease bypass compile and failed the exact contract. D-168 already
+records the independently broken verified-header BAR-count witness, and D-329
+records the independent private-field breaks for both authority identities.
+
+Exact restoration passed all 78 `pci-config` unit tests and both doctests, the
+PCI authority contract, and all 1,412 mutation applicability and named-check
+registrations. Restored release QEMU passed 262/262 after claiming both NVMe
+functions, enabling memory decode with bus mastering still off, enabling bus
+master only after verified controller disable, and starting a controller with
+8-entry queues, 133,120 512-byte blocks and four-byte-spaced doorbells.
+PW-536 and PW-537 still own the separate bus-master/quiescence and physical-
+range qualifications; PW-201 still owns native VMware observation.
+
+**Alternatives.** Keeping raw `Address` write doors was rejected because an
+address proves neither ownership nor liveness. Dropping an uncertain retry was
+rejected because it strands recoverable authority. Releasing the lease after
+an unverified restoration was rejected because uncertain hardware state must
+remain excluded, not become concurrently mutable.
