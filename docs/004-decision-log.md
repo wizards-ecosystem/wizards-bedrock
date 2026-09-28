@@ -19392,3 +19392,241 @@ address proves neither ownership nor liveness. Dropping an uncertain retry was
 rejected because it strands recoverable authority. Releasing the lease after
 an unverified restoration was rejected because uncertain hardware state must
 remain excluded, not become concurrently mutable.
+
+## D-336 APIC initialization and completion each have one linear transaction — Status: Accepted (2026-09-28), amends D-254, D-257, D-267 and D-313; closes PW-123 and PW-126
+
+**Context.** A non-duplicable `EoiToken` did not by itself prove that one
+delivery could mint only one token or that abandoning one returned the live
+claim. Likewise, the APIC lifecycle model and exact SVR readback did not by
+themselves prove that production kept readiness unpublished through the whole
+interrupt-excluded initialization transaction or that every late refusal
+remained terminal. Closure required current causal machine evidence for those
+ownership and publication edges, plus compiler evidence that completion
+authority cannot be cloned.
+
+**Decision.** One in-service delivery may latch one exact completion claim.
+The token consumes the live frame, vector, interrupt-exclusion and highest-ISR
+observations before EOI; consuming it completes once, while dropping it
+releases the latch for the same still-live delivery. `EoiToken` remains neither
+`Copy` nor `Clone`.
+
+APIC initialization remains one `Cold -> Initializing -> Ready` transaction.
+It owns the caller's exact entry interrupt state, keeps dependent vectors and
+register access unpublished until every ordered hardware stage and exact SVR
+readback succeeds, publishes `Ready` with Release ordering while interrupts
+are still excluded, and restores the saved interrupt state last. Every late or
+ignored-write refusal publishes terminal poison rather than making the
+controller retryable.
+
+**Evidence.** On 2026-09-28 retained mutations 736, 773, 774, 771, 850 and
+1,174 were applied one at a time and restored exactly. Bypassing the EOI latch
+failed only `one delivery mints one completion authority` at 261/262. Forgetting
+an abandoned token failed `an abandoned completion can be reclaimed for the
+same delivery`, then reached the complete terminal panic `interrupts became
+enabled inside an exclusion`. Leaving the latch claimed in `Drop` produced the
+complete early panic `vector 0x41 has no matching APIC in-service authority`.
+Adding `Clone` made the hostile `EoiToken<'static>` compiler probe succeed and
+failed the exact linear-authority contract.
+
+Publishing `Ready` in the initial compare-exchange failed both
+`local apic initialization stayed unpublished and interrupt-excluded` and
+`every late or ignored-write apic refusal stays unavailable and terminal` at
+260/262. Returning a failed transaction to `Cold` failed only the latter at
+261/262. D-313 already records current mutation 849, which restored interrupts
+before the Release publication and failed the exact ordered-publication
+contract. D-257 records current mutation 851, the independent omitted-SVR-
+readback break which failed only the ignored-write machine witness.
+
+Exact restoration passed all 82 `x86-apic` unit tests and its doctest, the
+linear-authority, typed-policy, ordered-publication and explicit-interrupt-arm
+contracts, and all 1,412 mutation applicability and named-check registrations.
+Restored release QEMU passed 262/262, including exact init exclusion, EOI
+uniqueness, abandoned-token recovery, terminal refusal, deferred delivery and
+successful interrupt progress.
+
+**Alternatives.** Relying on a non-`Copy` token alone was rejected because its
+mint can still duplicate a live delivery and the type can later gain `Clone`.
+Leaking an abandoned claim was rejected because it converts a recoverable live
+interrupt into permanent exclusion. Returning failed initialization to `Cold`
+was rejected because possibly changed hardware cannot authorize a fresh
+transaction. Publishing readiness after restoring interrupts was rejected
+because an interrupt handler is a concurrent observer on the same CPU.
+
+## D-337 Mapping liveness follows the loaded root and frozen shared topology — Status: Accepted (2026-09-28), amends D-125, D-142, D-253, D-259, D-281 and D-284; closes PW-120 and advances PW-540
+
+**Context.** The current implementation had repaired two related paging trust
+boundaries without a current end-to-end causal record. Stack and device tokens
+must describe what the loaded page tables will reach, not merely rewalk an old
+root which still shares kernel entries. Separately, every user root must inherit
+one reserved device-window topology before activation, and later binding may
+ignore only the `ACCESSED` bit which hardware can set. Local evidence was still
+needed before closing the former; the latter also needs a fresh VMware
+observation of the real shared-root path.
+
+**Decision.** A retained stack or device mapping is live only when its recorded
+root resolves through the current mapping root and every page in its complete
+extent still has the original physical address, four-kilobyte span and exact
+required flags. The first, interior and final leaves are all identity-bearing.
+
+Activation reserves the device-window PML4 slot as a supervisor table before
+publishing a root. Once active, the kernel cannot create another higher-half
+top-level table. An existing shared slot is accepted only when it is present,
+non-huge and supervisor-only; a new one is constructed supervisor-only. Binding
+requires the same table address and every entry flag except `ACCESSED`.
+
+D-125's remaining live-root and complete-stack audit disposition is closed, and
+PW-120 leaves D-142 and the hostile-surface audit. PW-540 remains `READY` until
+the same restored implementation passes VMware; local causal closure does not
+substitute for that hardware observation.
+
+**Evidence.** On 2026-09-28 retained mutations 817, 818 and 821 through 825
+were applied individually and restored byte-exact. Replacing the current-root
+lookup with recorded-root checks failed only `a stale shared root cannot
+authenticate a device mapping` and `a stale shared root cannot authenticate a
+stack`, respectively, each at 261/262. Skipping the stack's middle or final
+leaf failed only its corresponding named check; skipping the device mapping's
+first, middle or final leaf likewise failed only its corresponding named check,
+each at 261/262. D-259's 2026-08-31 mutation 819 record independently skipped
+the first stack leaf and failed all three then-new retained-stack substitution
+checks before restoration passed 251/251.
+
+For PW-540, mutations 326, 327 and 1,311 through 1,313 were then applied one at
+a time and restored byte-exact. Omitting pre-activation reservation prevented
+the I/O APIC and both NVMe controllers from mapping, failed 43 dependent
+self-checks including `late device mappings reach earlier user roots`, then
+reached the complete terminal panic `the bound-space witness did not retire`.
+Allowing a new active top-level table failed only `active kernel topology
+refuses a new shared root` at 261/262. Accepting a huge present root, accepting
+a user present root and constructing a user table each failed only `shared
+topology rejects hostile root entries` at 261/262.
+
+Mutation 1,314 compared the complete raw table word and failed the exact host
+identity test because accessed-only drift was rejected. Mutation 1,315 ignored
+`NO_CACHE` as well and the same test failed with `bit 4 was omitted from table
+identity`. Exact restoration passed that one test with 54 filtered out,
+release and debug QEMU each passed 262/262, and the applicability and named-check
+tests passed for all 1,412 registered mutations.
+
+**Alternatives.** Trusting a token's saved root was rejected because the next
+hardware access follows the loaded root. Sampling only an endpoint was rejected
+because an interior leaf is independently substitutable. Creating the shared
+slot lazily was rejected because active user roots already copied the older
+topology. Comparing raw entry words was rejected because hardware owns
+`ACCESSED`; ignoring another cache or privilege bit was rejected because it
+would turn materially different translations into the same identity.
+
+## D-338 Extended-state admission uses one exact live policy and a fresh initial image — Status: Accepted (2026-09-28), amends D-82, D-115, D-228, D-270 and D-333; closes PW-132
+
+**Context.** The extended-state implementation already required x87, SSE and
+AVX, sized standard XSAVE from reported component extents, cleared every fresh
+task area and checked live isolation at both user doors. PW-132 remained open
+because those independent policy, image and admission edges had not all been
+made causally red against the current 262-check machine. VMware's compacted
+`XSAVEC` execution remains PW-305; it is a separate hardware-form
+qualification, not missing local evidence for these invariants.
+
+**Decision.** Processor availability must contain every component in the fixed
+x87/SSE/AVX policy, and the live XCR0 configuration must equal that policy
+exactly. Standard-form size includes each present component at its reported
+offset and rejects any overlap with the legacy/header region or arithmetic
+overflow.
+
+A new or recycled task slot contains the architectural all-zero initial image
+across its complete aligned XSAVE ceiling before its first restore. That image
+is valid independently of any previous save. Early process construction and
+the final ring-three crossing both ask the same live predicate: configured
+form, live `CR4.OSXSAVE` and exact live XCR0 must all agree at the point of
+use.
+
+**Evidence.** On 2026-09-28 retained mutations 431, 432 and 717 were applied
+individually and restored byte-exact. Admitting any partial permitted mask
+failed only `xstate::tests::every_permitted_component_must_be_available`;
+accepting a standard component below the header failed only
+`xstate::tests::a_standard_component_extent_uses_the_reported_offset`; and
+admitting extra live XCR0 state failed only
+`xstate::tests::the_live_configuration_is_exactly_the_fixed_policy`. Each
+exact run failed one test with 32 filtered out.
+
+Release QEMU mutation 310 bypassed the early live-isolation refusal, while
+mutation 1,170 substituted remembered enablement for that predicate. Each
+failed only `missing extended state closes the user boundary` at 261/262.
+Mutations 828 and 829 independently skipped the complete task-area clear and
+disabled the witness's secret write; each failed only `an exited slot is
+reused` at 261/262. D-333 records the independent final-door mutation 1,171,
+which replaced only that production predicate and failed only the same boundary
+check at 261/262 before exact restoration passed 262/262.
+
+After every current break was restored, all 33 `x86-cpuid` unit tests and three
+doctests passed, release QEMU passed 262/262, and applicability plus named-check
+registration passed for all 1,412 retained mutations.
+
+**Alternatives.** Treating any nonempty permitted subset as sufficient was
+rejected because code may use every fixed component. Allowing extra live XCR0
+bits was rejected because the allocated image does not promise their layout.
+Saving a task once merely to initialize it was rejected because architectural
+zeros already encode the defined initial state. Remembered enablement was
+rejected at either user door because only current control-register state can
+authorize the crossing.
+
+## D-339 NVMe admission and DMA publication are causal ownership boundaries — Status: Accepted (2026-09-28), amends D-197, D-251 and D-278; closes PW-206 and PW-213
+
+**Context.** D-197's original pre-mapping refusal proof no longer reached the
+current storage order. The live driver now disables and prepares a controller,
+maps its exact BAR and only then asks that prepared controller to admit bus
+mastering. A refusal at that later door still needed to prove that it returns
+every mapping, queue, command and function owner without reaching controller
+start or a submission doorbell.
+
+Separately, distinguishing a reserved DMA command from an in-flight command
+did not by itself prove that the transition preceded the device handoff. If
+the callback received publication authority first, it could ring the doorbell
+while cancellation still described the bytes as host-owned. Copyable state or
+publication authority could independently recreate the same ambiguity.
+
+**Decision.** A disabled prepared controller can mint start authority only
+after the exact mapped function accepts bus mastering from a fresh `CC.EN = 0`
+and `CSTS.RDY = 0` observation. Refusal returns the unchanged disabled
+controller. Its queues and mapping are retired before the PCI command and
+function leases, selection continues only after the exact frame, claim and
+mapping baseline is restored, and any uncertain retirement remains
+quarantined and stops selection. No refusal reaches `nvme::start` or a
+submission doorbell.
+
+Pure DMA ownership follows one linear `Idle -> Reserved -> InFlight`
+transaction. Preparation may cancel only `Reserved`; matching completion may
+retire only `InFlight`. `publish_with` changes to `InFlight` before invoking
+its sole callback, and that callback receives one borrowed, non-`Copy`,
+non-`Clone` `DmaPublication` which the register adapter consumes when ringing
+the submission doorbell. `DmaState` is likewise neither `Copy` nor `Clone`.
+
+**Evidence.** On 2026-09-28 mutation 56 converted the forced post-disable PCI
+refusal into success. The first controller falsely logged bus-master admission
+and reached start, while the later real controller still completed its block
+read; only `a failed bus master admission stops before nvme start` failed, at
+261/262, with no terminal panic or secondary failed check. After exact
+restoration the forced refusal logged its typed command error, retired
+candidate one cleanly, and candidate two enabled bus mastering only after
+verified disable, started with eight-entry queues, 133,120 blocks of 512 bytes
+and four-byte-spaced doorbells, then read block zero.
+
+Mutation 710 invoked the publication callback before changing ownership and
+the exact transition test observed `Some(false)` instead of `Some(true)`.
+Mutation 711 allowed completion of a merely reserved command and failed
+`assertion failed: !state.complete()`. Mutations 830 and 1,179 through 1,181
+made `DmaState` or `DmaPublication<'static>` implement `Clone` or `Copy`; each
+made its hostile compiler probe succeed and failed only the exact linear-
+authority contract. Every mutation was restored byte-exact before the next.
+
+Exact restoration passed all 78 `pci-config` unit tests and two doctests, all
+34 `nvme` unit tests and two doctests, all 15 DMA authority contracts, the
+exact PCI and linear-publication contracts, and all 1,412 mutation
+applicability and named-check registrations. Restored release QEMU passed
+262/262 with the causal refusal, exact retirement and later real NVMe path.
+
+**Alternatives.** Treating an error log as closure was rejected because the
+defect was continuing after the log. Reusing the pre-mapping witness was
+rejected because it cannot observe the current post-prepare door or its cleanup
+owners. Moving to `InFlight` after the callback was rejected because callback
+entry is already the permission to touch hardware. A separate boolean or
+copyable proof was rejected because it can diverge from the state whose memory
+ownership it claims.
