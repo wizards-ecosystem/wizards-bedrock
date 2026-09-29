@@ -18951,7 +18951,7 @@ the same focused test pass. The audit also removed completed `PW-518`,
 `PW-520`, `PW-521`, `PW-525`, `PW-526`, `PW-532`, `PW-533` and `PW-544` from
 open or live classifications without erasing their underlying proof. Retained
 mutations replace live `PW-519` with completed `PW-520` in an `OPEN` segment
-and live `PW-542` with completed `PW-525` in the cross-cutting table. The latter
+and live `PW-541` with completed `PW-525` in the cross-cutting table. The latter
 first made only the focused check red with `PW-525 (DONE)`, then passed after
 restoration, so neither reverse rule can silently stop enforcing register state.
 
@@ -18961,6 +18961,14 @@ work and a future trigger. Requiring authors to remember the distinction was
 rejected because that was the mechanism which drifted. Removing completed
 identities everywhere was rejected because historical evidence remains useful;
 only its current-state label was wrong.
+
+**Amended by D-341.** The evidence above is the run as recorded on 2026-09-27,
+when the cross-cutting mutation replaced live `PW-541`; a later commit had
+rewritten that name in place, and D-341 restores it. As rows closed, both
+retained mutations were re-anchored; they are now ids 18 and 19, anchored on
+closed evidence and on the cross-cutting heading, which no closure moves. D-341
+also refuses a second `OPEN` segment in one proof cell, an `OPEN` label outside
+the proof column and an unreadable cross-cutting row.
 
 ## D-326 NVMe stack headroom is measured at the live register-access leaf — Status: Accepted (2026-09-27), closes PW-541
 
@@ -18998,6 +19006,9 @@ because reserved but unwritten frame space is invisible. A debugger-only
 measurement was rejected as non-repeatable gate evidence; it remains useful
 calibration for the retained machine check.
 
+**Amended by D-341.** The mutation cited above as 1,389 was array position 1
+when this record was written. Its permanent id is 17.
+
 ## D-327 A user-transition witness names one process incarnation — Status: Accepted (2026-09-27), amends D-101 and D-288; closes PW-549
 
 **Context.** A complete gate passed release QEMU at 262/262, then debug QEMU
@@ -19027,6 +19038,9 @@ cannot create identity. Treating the clean rerun as sufficient was rejected
 because the failed gate exposed a real proof gap even if its schedule is rare.
 Retaining the global retirement counter with another comparison was rejected
 because slot reuse and unrelated retirements remain admissible kernel behavior.
+
+**Amended by D-341.** Mutations 1,390 and 1,391 above are permanent ids 1,407
+and 1,408.
 
 ## D-328 Deleted public APIs earn closure through exact compiler reintroduction — Status: Accepted (2026-09-27), closes PW-519, PW-523 and D-136
 
@@ -19059,6 +19073,9 @@ would preserve the surface under review. Treating the mutation registry entry
 as execution evidence was rejected because applicability proves only that its
 source replacement still matches. Combining both reintroductions in one audit
 was rejected because a multi-item verdict would not isolate either causal red.
+
+**Amended by D-341.** This decision re-anchored D-325's retained `OPEN`-segment
+mutation, so it also amends D-325.
 
 ## D-329 Device publication and closure prose keep exact source authority — Status: Accepted (2026-09-28), amends D-249, D-265 and D-325; advances PW-010, PW-011 and PW-129
 
@@ -19104,6 +19121,11 @@ binding or make the matched loop a decoy. Keeping exact `PW-006` or `PW-543`
 text as a mutation anchor was rejected because closing the row would rot the
 proof. Updating mutable sweep totals after each run was rejected because the
 table is not sealed to the commit, tool invocation or complete outcome set.
+
+**Amended by D-341.** Mutations 1,392 through 1,395 above are permanent ids
+1,409 through 1,412. Of the rows named in the heading, PW-011 and PW-129 cite
+this record; PW-010 does not, and this record's census contribution is the
+re-anchored D-325 cross-cutting mutation.
 
 ## D-330 External close records and one exact documentation child are replayable — Status: Accepted (2026-09-28), amends D-218, D-244, D-246, D-262 and D-324; advances PW-009, PW-010, PW-025, PW-026 and PW-028
 
@@ -19663,3 +19685,72 @@ check should execute those same bytes. Accepting any successful version output
 was rejected because a PATH wrapper would no longer prove the recorded binary.
 Removing the preflight was rejected because it would let a multi-day run begin
 with a grader the sealer must later refuse.
+
+## D-341 Mutation citations name permanent identities — Status: Accepted (2026-09-28), amends D-244, D-325, D-326, D-327, D-328 and D-329; closes PW-550
+
+**Context.** Documents cited mutations by the runner's array position, and
+positions were not stable. Since the 2026-09-26 registry, 19 entries were
+placed at the top of the array (three on 2026-09-27, sixteen in `0a96973`) and
+one was inserted mid-array (`3a50327`). Every earlier citation therefore moved
+by a different amount: +3, +16, +17, +19 or +20, and older rows by hundreds
+after years of neighbouring inserts. Two numbers were wrong on the day they were
+written: D-326's "1,389" named what was then position 1, and PW-542's closing
+"1,301-1,312" copied D-288's range after it had already moved. Nothing checked a
+citation against the registry, so a cited number silently came to name an
+unrelated defect.
+
+**Decision.** Every mutation carries a permanent `id`. The existing entries
+take their positions at `cb2a313`, so the latest citations stay valid, and a
+new entry takes `NEXT_MUTATION_ID` wherever it is placed. A deleted entry's id
+moves to `RETIRED_MUTATION_IDS` and is never issued again; one host test
+requires the registered and retired ids to be exactly `1..NEXT_MUTATION_ID`,
+each once. The runner prints `#id` beside every progress, restore, survivor and
+inconclusive line; the registry fingerprint hashes every id; and the sequenced
+mutation report, now `wizard-mutation-report-v2`, names each outcome's id. A
+report keyed by an older registry fingerprint is never read by a newer sweep,
+so no compatibility path is needed.
+
+The living register, census, storage record, README and AGENTS cite ids. A
+prose check parses every `mutation N`, list and range citation in them and
+requires each id to be registered, or retired where the same line says so.
+Decision records keep the numbers their evidence was recorded against; the
+appendix below maps the three recent records whose numbers no longer name the
+same entry. The register's citations were re-derived by content, matching each
+row's defect and witness to an entry's `breaks` text and named check rather than
+applying an offset.
+
+Three related rules land with it. D-325's census check now refuses a second
+`OPEN` segment in one proof cell, an `OPEN` label outside the proof column and
+a cross-cutting row it cannot read, where each previously escaped
+classification. The register's sweep guide states its exact QEMU boot count,
+checked against the machine-witnessed entries. The storage record's count
+mutation (id 21) changes the count's leading digit instead of quoting the whole
+number, so appending an entry no longer rewrites that mutation.
+
+**Evidence.** On 2026-09-28 all 1,413 existing entries took ids equal to their
+`cb2a313` positions, and `every_mutation_still_applies`, the identity
+accounting test, the report round trip with non-positional ids, the citation
+parser, the living-citation check, the hardened census check and the boot-count
+check passed. Each new check was then broken once: a duplicated id failed with
+`#17 names both`, an unissued id failed as outside the issued identities, a
+report without ids failed its round trip, a doubled segment and an `OPEN` label
+in the consumer column each failed the one-segment rule, an unbackticked
+cross-cutting row failed as unreadable, a citation of an unissued id failed the
+living-citation check and an understated boot count failed the guide check.
+Those defects are retained as mutations 1,414 through 1,421. All 51 register
+citations were matched by content: 31 were corrected, among them PW-029's 553
+(now 569), PW-108's 236 (now 497), PW-130's 1219 (now 839), PW-542's range
+(now 1,323 through 1,334) and PW-548's 1,368 (now 1,388); the 20 written after
+`0a96973` already named the right entries.
+
+**Alternatives.** Moving the prepended entries back to the end was rejected: it
+would repair citations written before `0a96973` and break every one written
+after it. An append-only guard over positions was rejected because positions
+would still carry meaning while nothing verified a citation. Citing mutations
+by their `breaks` text was rejected because that text is long and is itself
+corrected over time. Content hashes were rejected for the same reason.
+
+**Appendix: recent decision citations that no longer match.** D-326's
+mutation 1,389 is id 17. D-327's mutations 1,390 and 1,391 are ids 1,407 and
+1,408. D-329's mutations 1,392 through 1,395 are ids 1,409 through 1,412. The
+numbers cited by D-322 through D-340 not listed here already equal their ids.

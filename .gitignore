@@ -38,5 +38,9 @@
 # Task handoff note for agents picking up in-flight work. Local, not a product.
 /HANDOFF.md
 
+# The pre-Wizzy qualification handoff. Local operational state; the evidence and
+# mutation gates require an untracked-clean tree.
+/PRE_WIZZY_HANDOFF.md
+
 # Local research clones; not part of the build and not ours.
 /exploration/

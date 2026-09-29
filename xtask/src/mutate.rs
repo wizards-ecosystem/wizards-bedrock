@@ -19,6 +19,8 @@ use crate::{qemu, qualification, sha256, tasks};
 /// One deliberate defect, and what it is a defect *in*.
 #[derive(Debug, Clone, Copy)]
 pub struct Mutation {
+    /// Permanent identity that documents cite; never renumbered or reused (D-341).
+    pub id: u16,
     /// Workspace-relative path.
     pub file: &'static str,
     /// The exact text to replace. Must occur exactly once.
@@ -74,6 +76,12 @@ pub enum Caught {
     },
 }
 
+/// The identity the next registered mutation takes, wherever it is placed.
+pub const NEXT_MUTATION_ID: u16 = 1422;
+
+/// Identities of deleted mutations, which no later entry may take.
+pub const RETIRED_MUTATION_IDS: &[u16] = &[];
+
 /// The defects, each of which some check must notice.
 ///
 /// Chosen to be *load-bearing rather than merely different*: every one removes
@@ -82,6 +90,7 @@ pub enum Caught {
 /// compile tests nothing.
 pub const MUTATIONS: &[Mutation] = &[
     Mutation {
+        id: 1,
         file: "xtask/src/mutants_grade.rs",
         find: "const COMMAND: &str = \"cargo mutants -p xtask --output <source-bound-directory>/mutants.out --jobs 1 --jobserver-tasks 1 --test-tool nextest --timeout-multiplier 3 --no-shuffle\";",
         replace: "const COMMAND: &str = \"cargo mutants -p xtask --output <source-bound-directory> --jobs 1 --jobserver-tasks 1 --test-tool nextest --timeout-multiplier 3 --no-shuffle\";",
@@ -92,6 +101,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 2,
         file: "xtask/src/mutants_grade.rs",
         find: "        run == independent,",
         replace: "        !run.is_empty() && !independent.is_empty(),",
@@ -102,6 +112,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 3,
         file: "xtask/src/mutants_grade.rs",
         find: "        require_process_status(\n            json_field(phase, \"process_status\", \"cargo-mutants phase\")?,\n            expected_status,\n        )?;",
         replace: "        let _unchecked_process_status = expected_status;",
@@ -112,6 +123,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 4,
         file: "xtask/src/mutants_grade.rs",
         find: "            !argv[0].is_empty() && arguments == expected_arguments,",
         replace: "            !argv[0].is_empty(),",
@@ -122,6 +134,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 5,
         file: "xtask/src/mutants_grade.rs",
         find: "        ensure!(\n            fields.remove(key) == Some(value),\n            \"cargo-mutants request `{key}` differs from D-324\"\n        );",
         replace: "        ensure!(fields.remove(key).is_some(), \"cargo-mutants request `{key}` is absent\");",
@@ -132,6 +145,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 6,
         file: "xtask/src/mutants_grade.rs",
         find: "            line.starts_with(\"error:\") || line.contains(\"FAILED\")",
         replace: "            line.starts_with(\"not-an-error:\") || line.contains(\"FAILED\")",
@@ -142,6 +156,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 7,
         file: "xtask/src/security_deep.rs",
         find: "    require_strict_scan_profile(scan)?;",
         replace: "    let _unchecked_strict_scan_profile = scan;",
@@ -152,6 +167,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 8,
         file: "xtask/src/security_deep.rs",
         find: "    ensure!(\n        string(target, \"revision\", \"scan target\")? == source.commit,\n        \"Codex Security scan belongs to another commit\"\n    );",
         replace: "    nonempty_string(target, \"revision\", \"scan target\")?;",
@@ -162,6 +178,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 9,
         file: "xtask/src/security_deep.rs",
         find: "    ensure!(\n        counts.values().all(|count| *count == 0),\n        \"Codex Security scan has reportable findings without a repository disposition\"\n    );",
         replace: "    let _unchecked_reportable_findings = &counts;",
@@ -172,6 +189,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 10,
         file: "xtask/src/evidence.rs",
         find: "            digest: sha256::hex(&sha256::digest(raw)),",
         replace: "            digest: sha256::hex(&sha256::digest(&[])),",
@@ -182,6 +200,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 11,
         file: "xtask/src/evidence.rs",
         find: "    policy == \"same-commit\"",
         replace: "    false && policy == \"same-commit\"",
@@ -192,6 +211,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 12,
         file: "xtask/src/evidence.rs",
         find: "        words == [evidence, qualified],",
         replace: "        words.first() == Some(&evidence),",
@@ -202,6 +222,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 13,
         file: "xtask/src/evidence.rs",
         find: "        ensure!(\n            ALLOWED.contains(&path),\n            \"parent-docs-only-v1 refuses `{path}`\"\n        );",
         replace: "        let _unchecked_closure_path = path;",
@@ -212,6 +233,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 14,
         file: "xtask/src/mutation_workspace.rs",
         find: "        Ok(reports\n            .into_iter()\n            .max_by_key(|(_, report)| report.sequence))",
         replace: "        Ok(reports\n            .into_iter()\n            .min_by_key(|(_, report)| report.sequence))",
@@ -222,6 +244,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 15,
         file: "xtask/src/qualification.rs",
         find: "            _lock: Some(pass),",
         replace: "            _lock: {\n                drop(pass);\n                None\n            },",
@@ -232,6 +255,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 16,
         file: "xtask/src/qualification.rs",
         find: "    BundleFile {\n        prefix: \"qualification.codex-security-deep.findings\",\n        relative: \"qualification/codex-security-deep/findings.json\",\n    },\n",
         replace: "",
@@ -242,6 +266,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 17,
         file: "kernel/src/nvme.rs",
         find: "    match disabled.access(|registers| write(registers, offset, value)) {",
         replace: "    match disabled.access(|registers| {\n        #[cfg(debug_assertions)]\n        let stack_pressure = [0u8; 3072];\n        #[cfg(not(debug_assertions))]\n        let stack_pressure = [0u8; 16 * 1024];\n        core::hint::black_box(&stack_pressure);\n        let result = write(registers, offset, value);\n        core::hint::black_box(&stack_pressure);\n        result\n    }) {",
@@ -249,6 +274,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("nvme preparation preserves two pages of boot-stack headroom"),
     },
     Mutation {
+        id: 18,
         file: "docs/017-pre-wizzy-hostile-surface-audit.md",
         find: "`PW-519`'s exact dead-API reintroduction red with the restored 1,723-item compiler graph",
         replace: "`OPEN`: `PW-520`",
@@ -259,6 +285,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 19,
         file: "docs/017-pre-wizzy-hostile-surface-audit.md",
         find: "## Cross-cutting closure obligations",
         replace: "## Cross-cutting closure obligations\n\n| Register row | Cross-cutting obligation |\n|---|---|\n| `PW-542` | Re-prove allocator conservation and exact zombie-incarnation cleanup with retained mutations and repeated boots. |",
@@ -269,6 +296,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 20,
         file: "docs/016-pre-wizzy-foundation.md",
         find: "| PW-542 | DONE |",
         replace: "| PW-542 | READY |",
@@ -279,9 +307,10 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 21,
         file: "docs/014-storage.md",
-        find: "| Mutations | 1413 registered; complete-sweep verdicts live in source-bound qualification records |",
-        replace: "| Mutations | 1412 registered; complete-sweep verdicts live in source-bound qualification records |",
+        find: "| Mutations | 1",
+        replace: "| Mutations | ",
         breaks: "the phase-close table understates the registered mutation source",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -289,6 +318,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 22,
         file: "docs/014-storage.md",
         find: "complete-sweep verdicts live in source-bound qualification records",
         replace: "complete-sweep verdicts live in this prose table",
@@ -299,6 +329,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 23,
         file: "xtask/src/cli.rs",
         find: "    qualify-advisory  as above (needs cargo-audit and fresh RustSec data)",
         replace: "                      advisory qualification omitted",
@@ -309,6 +340,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 24,
         file: "xtask/src/qualification.rs",
         find: "        relative: \"qualification/advisory/record\",",
         replace: "        relative: \"qualification/advisory/record-omitted\",",
@@ -319,6 +351,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 25,
         file: "xtask/src/lib.rs",
         find: "        Task::QualifyAdvisory => qualification::qualify_advisory(&paths),",
         replace: "        Task::QualifyAdvisory => Ok(()),",
@@ -329,6 +362,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 26,
         file: "xtask/src/qualification.rs",
         find: "        .args([\"--deny\", \"warnings\", \"--file\"])",
         replace: "        .args([\"--deny\", \"none\", \"--file\"])",
@@ -339,6 +373,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 27,
         file: "xtask/src/qualification.rs",
         find: "    invalidate(paths, Kind::Advisory)?;",
         replace: "    let _preserved_advisory_pass = paths;",
@@ -349,6 +384,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 28,
         file: "xtask/src/qualification.rs",
         find: "    verify_advisory_qualification(paths, root, source)?;",
         replace: "    let _omitted_advisory_qualification = (source, root);",
@@ -359,6 +395,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 29,
         file: "xtask/src/qualification.rs",
         find: "    require_source(&record, source)?;\n    require_advisory_inputs(paths, &record)?;",
         replace: "    let _unchecked_advisory_source = source;\n    require_advisory_inputs(paths, &record)?;",
@@ -369,6 +406,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 30,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        record.get(\"input.cargo-lock.bytes\")? == lock.bytes.to_string()\n            && record.get(\"input.cargo-lock.sha256\")? == lock.sha256,\n        \"advisory qualification belongs to another Cargo.lock\"\n    );",
         replace: "    let _unchecked_advisory_lock = (record, lock);",
@@ -379,6 +417,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 31,
         file: "xtask/src/qualification.rs",
         find: "            ensure!(\n                bytes == ADVISORY_POLICY.as_bytes(),\n                \"advisory policy differs from the no-ignore phase-close policy\"\n            );",
         replace: "            ensure!(!bytes.is_empty(), \"advisory policy is empty\");",
@@ -389,6 +428,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 32,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        lines[1] == \"exit.code=0\",\n        \"cargo-audit transcript does not record a successful result\"\n    );",
         replace: "    ensure!(lines[1].starts_with(\"exit.code=\"), \"cargo-audit transcript has no result\");",
@@ -399,6 +439,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 33,
         file: "xtask/src/qualification.rs",
         find: "            ADVISORY_TRANSCRIPT => (MAX_ADVISORY_TRANSCRIPT_BYTES, false),",
         replace: "            ADVISORY_TRANSCRIPT => (u64::MAX, false),",
@@ -409,6 +450,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 34,
         file: "xtask/src/qualification.rs",
         find: "            record.get(\"database.url\")? == ADVISORY_DATABASE_URL\n                && is_git_id(record.get(\"database.revision\")?)\n                && is_git_id(record.get(\"database.tree\")?),",
         replace: "            record.get(\"database.url\")? == ADVISORY_DATABASE_URL,",
@@ -419,6 +461,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 35,
         file: "xtask/src/qualification.rs",
         find: "            record.get(\"execution.command\")? == ADVISORY_COMMAND\n                && record.get(\"execution.exit-code\")? == \"0\"\n                && record.get(\"execution.refresh-command\")? == ADVISORY_REFRESH_COMMAND\n                && record.get(\"execution.refresh-exit-code\")? == \"0\",",
         replace: "            record.get(\"execution.exit-code\")? == \"0\"\n                && record.get(\"execution.refresh-command\")? == ADVISORY_REFRESH_COMMAND\n                && record.get(\"execution.refresh-exit-code\")? == \"0\",",
@@ -429,6 +472,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 36,
         file: "xtask/src/qualification.rs",
         find: "            observed != 0 && observed.to_string() == record.get(\"observation.utc-unix-seconds\")?,",
         replace: "            observed.to_string() == record.get(\"observation.utc-unix-seconds\")?,",
@@ -439,6 +483,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 37,
         file: "xtask/src/qualification.rs",
         find: "    let version = report\n        .strip_prefix(\"cargo-audit-audit \")\n        .or_else(|| report.strip_prefix(\"cargo-audit \"))\n        .context(\"cargo-audit printed no supported version identity\")?;",
         replace: "    let version = report;",
@@ -449,6 +494,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 38,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        report == ADVISORY_TOOL_VERSION,\n        \"cargo-audit version differs from the report schema qualification\"\n    );",
         replace: "    let _unqualified_advisory_tool_version = report;",
@@ -459,6 +505,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 39,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        origin == ADVISORY_DATABASE_URL,\n        \"advisory database origin differs from the RustSec authority\"\n    );",
         replace: "    let _unchecked_advisory_origin = origin;",
@@ -469,6 +516,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 40,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(status.is_empty(), \"advisory database checkout is dirty\");",
         replace: "    let _unchecked_advisory_status = status;",
@@ -479,6 +527,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 41,
         file: "xtask/src/qualification.rs",
         find: "        ensure!(\n            advisory_database_identity(&directory, &database)? == database_identity,\n            \"advisory database changed during the revision-pinned audit\"\n        );",
         replace: "        let _unchecked_database_after_review = &database_identity;",
@@ -489,6 +538,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 42,
         file: "xtask/src/qualification.rs",
         find: "        ensure!(\n            advisory_database_identity(&directory, &database)? == database_identity,\n            \"advisory database changed after cargo-audit completed\"\n        );",
         replace: "        let _unchecked_database_before_commit = &database_identity;",
@@ -499,6 +549,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 43,
         file: "xtask/src/qualification.rs",
         find: "    require_json_fields(\n        report,\n        &[\n            \"database\",\n            \"lockfile\",\n            \"settings\",\n            \"vulnerabilities\",\n            \"warnings\",\n        ],\n        \"cargo-audit report\",\n    )?;",
         replace: "    let _unchecked_advisory_report_schema = report;",
@@ -509,6 +560,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 44,
         file: "xtask/src/qualification.rs",
         find: "    require_json_fields(\n        database,\n        &[\"advisory-count\", \"last-commit\", \"last-updated\"],\n        \"cargo-audit database\",\n    )?;",
         replace: "    let _unchecked_advisory_database_schema = database;",
@@ -519,6 +571,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 45,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        advisory_count != 0,\n        \"cargo-audit report names an empty advisory database\"\n    );",
         replace: "    let _unchecked_advisory_count = database;",
@@ -529,6 +582,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 46,
         file: "xtask/src/qualification.rs",
         find: "            ensure!(\n                commit == database_revision,\n                \"cargo-audit report belongs to another advisory database revision\"\n            );",
         replace: "            let _unchecked_report_revision = database_revision;",
@@ -539,6 +593,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 47,
         file: "xtask/src/qualification.rs",
         find: "            ensure!(\n                is_rfc3339_timestamp(updated),\n                \"cargo-audit report has no RFC3339 database update time\"\n            );",
         replace: "            let _unchecked_advisory_update_time = updated;",
@@ -549,6 +604,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 48,
         file: "xtask/src/qualification.rs",
         find: "    require_json_fields(lockfile, &[\"dependency-count\"], \"cargo-audit lockfile\")?;",
         replace: "    let _unchecked_advisory_lock_schema = lockfile;",
@@ -559,6 +615,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 49,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        json_u64(\n            json_field(lockfile, \"dependency-count\")?,\n            \"dependency-count\"\n        )? != 0,\n        \"cargo-audit report names an empty lockfile\"\n    );",
         replace: "    let _unchecked_advisory_dependency_count = lockfile;",
@@ -569,6 +626,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 50,
         file: "xtask/src/qualification.rs",
         find: "    require_json_fields(\n        settings,\n        &[\n            \"ignore\",\n            \"informational_warnings\",\n            \"severity\",\n            \"target_arch\",\n            \"target_os\",\n        ],\n        \"cargo-audit settings\",\n    )?;",
         replace: "    let _unchecked_advisory_settings_schema = settings;",
@@ -579,6 +637,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 51,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        json_array(json_field(settings, \"target_arch\")?, \"target_arch\")?.is_empty()\n            && json_array(json_field(settings, \"target_os\")?, \"target_os\")?.is_empty()\n            && matches!(json_field(settings, \"severity\")?, JsonValue::Null)\n            && json_array(json_field(settings, \"ignore\")?, \"ignore\")?.is_empty()\n            && json_string_array(\n                json_field(settings, \"informational_warnings\")?,\n                \"informational_warnings\"\n            )? == [\"unmaintained\", \"unsound\", \"notice\"],\n        \"cargo-audit report was generated with different audit settings\"\n    );",
         replace: "    let _unchecked_advisory_settings = settings;",
@@ -589,6 +648,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 52,
         file: "xtask/src/qualification.rs",
         find: "    require_json_fields(\n        vulnerabilities,\n        &[\"count\", \"found\", \"list\"],\n        \"cargo-audit vulnerabilities\",\n    )?;",
         replace: "    let _unchecked_vulnerability_schema = vulnerabilities;",
@@ -599,6 +659,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 53,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        matches!(\n            json_field(vulnerabilities, \"found\")?,\n            JsonValue::Bool(false)\n        ) && json_u64(json_field(vulnerabilities, \"count\")?, \"vulnerability count\")? == 0\n            && json_array(json_field(vulnerabilities, \"list\")?, \"vulnerability list\")?.is_empty(),\n        \"cargo-audit report is not a consistent vulnerability-free result\"\n    );",
         replace: "    let _unchecked_vulnerability_result = vulnerabilities;",
@@ -609,6 +670,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 54,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        warnings.is_empty(),\n        \"cargo-audit report contains a dependency warning\"\n    );",
         replace: "    let _unchecked_advisory_warnings = warnings;",
@@ -619,6 +681,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 55,
         file: "kernel/src/vfs.rs",
         find: "            let listing = crate::tmpfs::list(index).ok_or(VfsError::NotFound)?;\n            for entry in listing.entries() {",
         replace: "            let listing = crate::tmpfs::list(index).ok_or(VfsError::NotFound)?;\n            static REGRESSION: wost::sync::SpinLock<()> = wost::sync::SpinLock::new(());\n            let _backend = REGRESSION.lock_leaf();\n            for entry in listing.entries() {",
@@ -626,6 +689,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("enumeration callbacks run without backend ownership"),
     },
     Mutation {
+        id: 56,
         file: "kernel/src/nvme.rs",
         find: "        match device.admit_bus_master(authority) {",
         replace: "        match device\n            .admit_bus_master(authority)\n            .or(Ok::<(), pci_config::EnableError>(()))\n        {",
@@ -633,6 +697,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a failed bus master admission stops before nvme start"),
     },
     Mutation {
+        id: 57,
         file: "kernel/src/input.rs",
         find: "            KeyState::Released => {\n                if self.down & bit != 0 {\n                    self.completed[index] = self.completed[index].wrapping_add(1);\n                }\n                self.down &= !bit;\n            }",
         replace: "            KeyState::Released => {\n                self.completed[index] = self.completed[index].wrapping_add(1);\n                self.down &= !bit;\n            }",
@@ -640,6 +705,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the controller route and ordered interrupt witness are exact"),
     },
     Mutation {
+        id: 58,
         file: "xtask/src/evidence.rs",
         find: "    ensure!(\n        record.render() == text,\n        \"evidence manifest is not in its canonical sorted encoding\"\n    );",
         replace: "    let _canonical_encoding = text;",
@@ -650,6 +716,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 59,
         file: "xtask/src/evidence.rs",
         find: "        match std::fs::symlink_metadata(&path) {",
         replace: "        match std::fs::metadata(&path) {",
@@ -660,6 +727,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 60,
         file: "xtask/src/evidence.rs",
         find: "fn require_evidence_root(root: &Path) -> Result<()> {\n    require_real_directory(root, \"evidence root\")?;\n    let parent = root.parent().context(\"evidence root has no parent\")?;\n    let canonical_parent = std::fs::canonicalize(parent)\n        .with_context(|| format!(\"canonicalizing {}\", parent.display()))?;\n    let canonical_root = std::fs::canonicalize(root)\n        .with_context(|| format!(\"canonicalizing {}\", root.display()))?;\n    ensure!(\n        canonical_root.parent() == Some(canonical_parent.as_path()),\n        \"evidence root escaped its canonical parent\"\n    );\n    Ok(())\n}",
         replace: "fn require_evidence_root(root: &Path) -> Result<()> {\n    let _unchecked_evidence_root = root;\n    Ok(())\n}",
@@ -670,6 +738,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 61,
         file: "xtask/src/evidence.rs",
         find: "    let path = checked_bundle_file(root, spec.relative, spec.prefix)?;",
         replace: "    let path = root.join(spec.relative);",
@@ -680,6 +749,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 62,
         file: "xtask/src/qualification.rs",
         find: "    require_real_directory(directory, \"VMware selector directory\")?;",
         replace: "    let _unchecked_selector_directory = directory;",
@@ -690,6 +760,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 63,
         file: "xtask/src/qualification.rs",
         find: "            require_contained_regular_file(&self.root, &path, \"qualification snapshot artifact\")?;",
         replace: "            let _unchecked_snapshot_parent = (&self.root, &path);",
@@ -700,6 +771,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 64,
         file: "xtask/src/qualification.rs",
         find: "    require_contained_real_directory(&root, &directory, \"qualification kind directory\")?;\n    Ok(directory)",
         replace: "    let _unchecked_qualification_directory = (&root, &directory);\n    Ok(directory)",
@@ -710,6 +782,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 65,
         file: "xtask/src/qualification.rs",
         find: "fn require_real_root(path: &Path, label: &str) -> Result<()> {\n    require_real_directory(path, label)?;\n    let parent = path.parent().context(\"contained root has no parent\")?;\n    let canonical_parent = std::fs::canonicalize(parent)\n        .with_context(|| format!(\"canonicalizing {}\", parent.display()))?;\n    let canonical_path = std::fs::canonicalize(path)\n        .with_context(|| format!(\"canonicalizing {}\", path.display()))?;\n    ensure!(\n        canonical_path.parent() == Some(canonical_parent.as_path()),\n        \"{label} escaped its canonical parent\"\n    );\n    Ok(())\n}",
         replace: "fn require_real_root(path: &Path, label: &str) -> Result<()> {\n    let _unchecked_qualification_root = (path, label);\n    Ok(())\n}",
@@ -720,6 +793,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 66,
         file: "xtask/src/qualification.rs",
         find: "    require_current_source(paths, record)?;\n    std::fs::rename(&temporary, &final_path)",
         replace: "    std::fs::rename(&temporary, &final_path)",
@@ -730,6 +804,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 67,
         file: "xtask/src/vmware.rs",
         find: "    ensure!(\n        canonical_child.parent() == Some(canonical_parent.as_path()),\n        \"{label} escaped its canonical parent\"\n    );",
         replace: "    let _unchecked_canonical_parent = (&canonical_parent, &canonical_child, label);",
@@ -740,6 +815,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 68,
         file: "xtask/src/qualification.rs",
         find: "        let observation = observe_running_vm(self.paths.root(), &self.vmrun, artifacts.vmx)?;",
         replace: "        let observation = format!(\"{VMRUN_LIST_HEADER}1\\n{}\", artifacts.vmx.display());",
@@ -750,6 +826,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 69,
         file: "xtask/src/qualification.rs",
         find: "const VMRUN_LIST_ARGS: &[&str] = &[\"-T\", \"ws\", \"list\"];",
         replace: "const VMRUN_LIST_ARGS: &[&str] = &[\"-T\", \"ws\", \"stop\"];",
@@ -760,6 +837,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 70,
         file: "xtask/src/qualification.rs",
         find: "    let before = run(&tool.path, &[], ExitPolicy::Any)?;",
         replace: "    let before = tool.version.clone();",
@@ -770,6 +848,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 71,
         file: "xtask/src/qualification.rs",
         find: "    let after = run(&tool.path, &[], ExitPolicy::Any)?;",
         replace: "    let after = tool.version.clone();",
@@ -780,6 +859,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 72,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        !report.contains(['\\0', '\\r']),\n        \"vmrun list contains a forbidden control byte\"\n    );",
         replace: "    ensure!(!report.contains('\\0'), \"vmrun list contains a NUL byte\");",
@@ -790,6 +870,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 73,
         file: "xtask/src/qualification.rs",
         find: "        parsed == 1 && paths.len() == parsed,",
         replace: "        parsed >= 1 && paths.len() == parsed,",
@@ -800,6 +881,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 74,
         file: "xtask/src/qualification.rs",
         find: "        observed == expected,\n        \"vmrun reported another machine: {}\",",
         replace: "        observed != expected,\n        \"vmrun reported another machine: {}\",",
@@ -810,6 +892,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 75,
         file: "xtask/src/qualification.rs",
         find: "        actual == expected,\n        \"VMware generation inventory differs: missing {:?}; unexpected {:?}\",",
         replace: "        actual.is_superset(&expected),\n        \"VMware generation inventory differs: missing {:?}; unexpected {:?}\",",
@@ -820,6 +903,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 76,
         file: "xtask/src/qualification.rs",
         find: "                .is_file(),\n            \"VMware generation entry is not a regular file: {}\",",
         replace: "                .is_file() || true,\n            \"VMware generation entry is not a regular file: {}\",",
@@ -830,6 +914,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 77,
         file: "xtask/src/qualification.rs",
         find: "    generation_transcript_name(&generation)",
         replace: "    Ok(VMWARE_TRANSCRIPT.to_string())",
@@ -840,6 +925,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 78,
         file: "xtask/src/vmware.rs",
         find: "            std::fs::remove_dir_all(&directory)\n                .with_context(|| format!(\"resetting {}\", directory.display()))?;",
         replace: "            let _stale_directory = &directory;",
@@ -850,6 +936,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 79,
         file: "xtask/src/vmware.rs",
         find: "        Kernel::SelfTest => paths.vm_dir().join(\"self-test\"),",
         replace: "        Kernel::SelfTest => paths.vm_dir(),",
@@ -860,6 +947,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 80,
         file: "xtask/src/mutation_workspace.rs",
         find: "        ensure!(\n            digest_tracked(&self.snapshot, &self.baseline.tracked)? == self.baseline.source_digest,\n            \"the immutable mutation source snapshot changed during the sweep\"\n        );",
         replace: "        let _snapshot_was_not_rechecked = &self.snapshot;",
@@ -870,6 +958,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 81,
         file: "xtask/src/qualification.rs",
         find: "    BundleFile {\n        prefix: \"qualification.vmware-self-test.observer\",\n        relative: \"qualification/vmware-self-test/vmrun-list.txt\",\n    },",
         replace: "",
@@ -880,6 +969,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 82,
         file: "libs/ring-proto/src/lib.rs",
         find: "    pub const fn is_consistent(&self) -> bool {\n        (self.reserved as u64) + (self.completion.occupied() as u64)\n            <= self.completion.capacity().entries() as u64\n    }",
         replace: "    pub const fn is_consistent(&self) -> bool {\n        true\n    }",
@@ -890,6 +980,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 83,
         file: "libs/ring-proto/src/lib.rs",
         find: "    pub const fn tail(&self) -> u32 {\n        self.tail\n    }",
         replace: "    pub const fn tail(&self) -> u32 {\n        0\n    }",
@@ -900,6 +991,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 84,
         file: "libs/ring-proto/src/lib.rs",
         find: "    pub const fn is_full(&self) -> bool {\n        self.occupied() == self.capacity.entries()\n    }",
         replace: "    pub const fn is_full(&self) -> bool {\n        self.occupied() != self.capacity.entries()\n    }",
@@ -910,6 +1002,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 85,
         file: "libs/ring-proto/src/lib.rs",
         find: "    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {\n        match *self {\n            Self::NotAPowerOfTwo(value) => write!(f, \"{value} is not a power of two\"),\n            Self::TooLarge(value) => write!(f, \"{value} entries is more than a ring may hold\"),\n        }\n    }",
         replace: "    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {\n        let _ = (self, f);\n        Ok(())\n    }",
@@ -920,6 +1013,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 86,
         file: "libs/frame-space/src/lib.rs",
         find: "    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n        match *self {\n            Self::NotManaged(frame) => write!(f, \"frame {frame} is not managed memory\"),\n            Self::AlreadyFree(frame) => write!(f, \"frame {frame} is already free\"),\n        }\n    }",
         replace: "    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {\n        Ok(())\n    }",
@@ -930,6 +1024,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 87,
         file: "libs/frame-space/src/lib.rs",
         find: "    pub const fn is_free(&self, frame: usize) -> bool {\n        frame < Self::FRAME_COUNT && self.free[frame / FRAMES_PER_WORD] & bit(frame) != 0\n    }",
         replace: "    pub const fn is_free(&self, frame: usize) -> bool {\n        frame <= Self::FRAME_COUNT && self.free[frame / FRAMES_PER_WORD] & bit(frame) != 0\n    }",
@@ -940,6 +1035,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 88,
         file: "libs/frame-space/src/lib.rs",
         find: "    pub const fn is_managed(&self, frame: usize) -> bool {\n        frame < Self::FRAME_COUNT && self.managed[frame / FRAMES_PER_WORD] & bit(frame) != 0\n    }",
         replace: "    pub const fn is_managed(&self, frame: usize) -> bool {\n        frame <= Self::FRAME_COUNT && self.managed[frame / FRAMES_PER_WORD] & bit(frame) != 0\n    }",
@@ -950,6 +1046,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 89,
         file: "libs/frame-space/src/lib.rs",
         find: "        if count == 0 || count > Self::FRAME_COUNT {",
         replace: "        if count == 0 || count >= Self::FRAME_COUNT {",
@@ -960,6 +1057,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 90,
         file: "libs/frame-space/src/lib.rs",
         find: "    pub fn allocate(&mut self) -> Option<usize> {\n        self.allocate_contiguous(1, 1)\n    }",
         replace: "    pub fn allocate(&mut self) -> Option<usize> {\n        Some(0)\n    }",
@@ -970,6 +1068,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 91,
         file: "libs/frame-space/src/lib.rs",
         find: "        for _ in 0..=Self::FRAME_COUNT {",
         replace: "        for _ in 0..=0 {",
@@ -980,6 +1079,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 92,
         file: "libs/frame-space/src/lib.rs",
         find: "            if end > to {",
         replace: "            if end == to {",
@@ -990,6 +1090,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 93,
         file: "libs/mmio-range/src/lib.rs",
         find: "        self.remaining -= 1;",
         replace: "        self.remaining += 1;",
@@ -1000,6 +1101,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 94,
         file: "libs/mmio-range/src/lib.rs",
         find: "        (self.remaining, Some(self.remaining))",
         replace: "        (0, None)",
@@ -1010,6 +1112,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 95,
         file: "libs/mmio-range/src/lib.rs",
         find: "            Self::InvalidWidth(width) => write!(formatter, \"access width {width} is invalid\"),",
         replace: "            Self::InvalidWidth(_) => formatter.write_str(\"invalid\"),",
@@ -1020,6 +1123,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 96,
         file: "libs/x86-paging/src/lib.rs",
         find: "        Self(self.0 | other.0)",
         replace: "        Self(self.0 ^ other.0)",
@@ -1030,6 +1134,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 97,
         file: "libs/x86-paging/src/lib.rs",
         find: "            Self::Misaligned(address) => write!(f, \"{address:#x} is not page-aligned\"),",
         replace: "            Self::Misaligned(_) => f.write_str(\"misaligned\"),",
@@ -1040,6 +1145,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 98,
         file: "libs/x86-paging/src/lib.rs",
         find: "            Self::ZeroLength => core::fmt::Write::write_str(f, \"mapping length is zero\"),",
         replace: "            Self::ZeroLength => core::fmt::Write::write_str(f, \"zero\"),",
@@ -1050,6 +1156,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 99,
         file: "libs/wizzy-handoff/src/lib.rs",
         find: "        || !value.bytes().all(|byte| byte.is_ascii_digit())",
         replace: "",
@@ -1060,6 +1167,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 100,
         file: "libs/wizzy-handoff/src/lib.rs",
         find: "            Self::NonCanonicalLineEnding => \"handoff record does not use canonical LF endings\",",
         replace: "            Self::NonCanonicalLineEnding => \"invalid\",",
@@ -1070,6 +1178,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 101,
         file: "libs/frame-space/src/lib.rs",
         find: "    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {\n        f.debug_struct(\"FrameSpace\")\n            .field(\"managed\", &self.managed_count)\n            .field(\"free\", &self.free_count)\n            .finish()\n    }",
         replace: "    fn fmt(&self, _f: &mut fmt::Formatter<'_>) -> fmt::Result {\n        Ok(())\n    }",
@@ -1080,6 +1189,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 102,
         file: "xtask/src/evidence.rs",
         find: "    verify_record(paths, &root, &record)?;\n    let manifest = root.join(MANIFEST_NAME);\n    write_manifest(&root, &manifest, &record.render())?;",
         replace: "    let manifest = root.join(MANIFEST_NAME);\n    write_manifest(&root, &manifest, &record.render())?;\n    verify_record(paths, &root, &record)?;",
@@ -1090,6 +1200,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 103,
         file: "xtask/src/mutate.rs",
         find: "        let mut impossible = MUTATIONS[0];\n        impossible.file = \"xtask/src/image/program.rs\";\n        impossible.reddens = Caught::Check(\"unused\");",
         replace: "        let mut impossible = MUTATIONS[0];\n        impossible.file = \"xtask/src/image/program.rs\";\n        let _ = &mut impossible.reddens;",
@@ -1100,6 +1211,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 104,
         file: "xtask/src/qualification.rs",
         find: "        let mutation_start = mutation_source\n            .rfind(\"\\npub fn run(paths: &Paths) -> Result<()> {\")\n            .unwrap();",
         replace: "        let mutation_start = 0;",
@@ -1110,6 +1222,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 105,
         file: "xtask/src/model.rs",
         find: "    let qualification_attempt = qualification::begin_model(paths)?;\n    let jar = paths.root().join(JAR);\n    verify_jar(&jar)?;",
         replace: "    let jar = paths.root().join(JAR);\n    verify_jar(&jar)?;\n    let qualification_attempt = qualification::begin_model(paths)?;",
@@ -1120,6 +1233,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 106,
         file: "xtask/src/model.rs",
         find: "    qualification_attempt.pass(&transcripts)?;",
         replace: "    drop(qualification_attempt);",
@@ -1130,6 +1244,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 107,
         file: "xtask/src/mutate.rs",
         find: "    let qualification_attempt = qualification::begin_mutation(paths, &registry, MUTATIONS.len())?;\n    let mut session = Session::open(paths, &registry, MUTATIONS.len())?;",
         replace: "    let mut session = Session::open(paths, &registry, MUTATIONS.len())?;\n    let qualification_attempt = qualification::begin_mutation(paths, &registry, MUTATIONS.len())?;",
@@ -1140,6 +1255,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 108,
         file: "xtask/src/mutate.rs",
         find: "        let pass = crate::mutation_workspace::current_pass(paths, &registry, MUTATIONS.len())?;\n        qualification_attempt.pass(&pass)?;",
         replace: "        let pass = crate::mutation_workspace::current_pass(paths, &registry, MUTATIONS.len())?;\n        drop(qualification_attempt);",
@@ -1150,6 +1266,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 109,
         file: "xtask/src/vmware.rs",
         find: "    let Some(xcr0) = xcr0.strip_suffix(\", compacted\") else {\n        return false;\n    };",
         replace: "    let xcr0 = xcr0.strip_suffix(\", compacted\").unwrap_or(xcr0);",
@@ -1160,6 +1277,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 110,
         file: "xtask/src/vmware.rs",
         find: "fn info_records(text: &str) -> impl Iterator<Item = (usize, &str)> {\n    let mut offset = 0;\n    text.split_inclusive('\\n').filter_map(move |record| {\n        let at = offset;\n        offset += record.len();\n        let line = record.strip_suffix('\\n')?;\n        let message = line.strip_prefix(\"[info ] \")?;\n        Some((at, message))\n    })\n}",
         replace: "fn info_records(text: &str) -> impl Iterator<Item = (usize, &str)> {\n    let mut offset = 0;\n    text.split_inclusive('\\n').flat_map(move |record| {\n        let at = offset;\n        offset += record.len();\n        record.strip_suffix('\\n').into_iter().flat_map(move |line| {\n            line.match_indices(\"[info ] \").map(move |(inside_at, _)| {\n                let body = &line[inside_at + \"[info ] \".len()..];\n                let message = body.split(\" [info ] \").next().unwrap_or(body);\n                (at + inside_at, message)\n            })\n        })\n    })\n}",
@@ -1170,6 +1288,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 111,
         file: "xtask/src/vmware.rs",
         find: "    qualification::invalidate_vmware(paths, kernel)?;",
         replace: "    let _direct_generation = (paths, kernel);",
@@ -1180,6 +1299,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 112,
         file: "libs/fat32/src/lib.rs",
         find: "        if sector[510] != 0x55 || sector[511] != 0xAA {",
         replace: "        if sector[510] != 0x55 && sector[511] != 0xAA {",
@@ -1190,6 +1310,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 113,
         file: "libs/fat32/src/lib.rs",
         find: "                + byte / SECTOR_BYTES as u64,",
         replace: "                + 0,",
@@ -1200,6 +1321,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 114,
         file: "libs/fat32/src/lib.rs",
         find: "        wanted\n            .iter()\n            .zip(self.name())\n            .all(|(wanted, actual)| upper(*wanted) == upper(*actual))",
         replace: "        wanted.iter().zip(self.name()).all(|_| true)",
@@ -1210,6 +1332,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 115,
         file: "libs/fat32/src/lib.rs",
         find: "        if slot[8 + index] != b' ' {\n            return Slot::Skip;\n        }",
         replace: "        if false && slot[8 + index] != b' ' {\n            return Slot::Skip;\n        }",
@@ -1220,6 +1343,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 116,
         file: "libs/fat32/src/lib.rs",
         find: "                    if visited >= self.chain_limit() {\n                        return Err(FatError::Unbounded);\n                    }",
         replace: "                    if false && visited >= self.chain_limit() {\n                        return Err(FatError::Unbounded);\n                    }",
@@ -1230,6 +1354,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 117,
         file: "libs/fat32/src/lib.rs",
         find: "                done += take;",
         replace: "                done = 0;",
@@ -1240,6 +1365,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 118,
         file: "libs/fat32/src/lib.rs",
         find: "                if !entry.is_directory() {\n                    return Err(FatError::WrongKind);\n                }\n                cluster = entry.cluster;",
         replace: "                cluster = entry.cluster;",
@@ -1250,6 +1376,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 119,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(actual == expected, \"qualification checksum does not match\");",
         replace: "    ensure!(is_digest(expected), \"qualification checksum does not match\");",
@@ -1260,6 +1387,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 120,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        actual == expected,\n        \"qualification schema differs: missing {:?}; unknown {:?}\",",
         replace: "    ensure!(\n        expected.is_subset(&actual),\n        \"qualification schema differs: missing {:?}; unknown {:?}\",",
@@ -1270,6 +1398,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 121,
         file: "xtask/src/qualification.rs",
         find: "        record.get(\"source.commit\")? == source.commit,",
         replace: "        is_git_id(record.get(\"source.commit\")?),",
@@ -1280,6 +1409,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 122,
         file: "xtask/src/qualification.rs",
         find: "        record.get(\"source.tree\")? == source.tree,",
         replace: "        is_git_id(record.get(\"source.tree\")?),",
@@ -1290,6 +1420,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 123,
         file: "xtask/src/qualification.rs",
         find: "            std::fs::remove_dir_all(&directory)\n                .with_context(|| format!(\"invalidating stale {} qualification\", kind.slug()))?;",
         replace: "            return Ok(());",
@@ -1300,6 +1431,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 124,
         file: "xtask/src/qualification.rs",
         find: "        receipt == generation_record(source, kind, directory, generation)?,",
         replace: "        receipt.get(\"input.kernel\")? == kind.slug(),",
@@ -1310,6 +1442,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 125,
         file: "xtask/src/qualification.rs",
         find: "        transcript.bytes != 0 && transcript.sha256 != empty_digest(),",
         replace: "        transcript.bytes == 0 || transcript.sha256 != empty_digest(),",
@@ -1320,6 +1453,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 126,
         file: "xtask/src/qualification.rs",
         find: "        reset.bytes == 0 && reset.sha256 == empty_digest(),",
         replace: "        reset.bytes <= reset.bytes,",
@@ -1330,6 +1464,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 127,
         file: "xtask/src/qualification.rs",
         find: "    for path in [receipt.to_path_buf(), parent.join(VMWARE_GENERATION_TEMP)] {",
         replace: "    for path in std::iter::empty::<PathBuf>() {",
@@ -1340,6 +1475,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 128,
         file: "xtask/src/qualification.rs",
         find: "            record.get(&format!(\"{prefix}.sha256\"))? == digest.sha256,",
         replace: "            digest.bytes == digest.bytes,",
@@ -1350,6 +1486,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 129,
         file: "xtask/src/qualification.rs",
         find: "        record.get(\"input.registry.sha256\")? == registry,",
         replace: "        is_digest(registry),",
@@ -1360,6 +1497,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 130,
         file: "xtask/src/qualification.rs",
         find: "        record.get(\"input.mutations\")? == mutation_count.to_string(),",
         replace: "        mutation_count != 0,",
@@ -1370,6 +1508,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 131,
         file: "xtask/src/qualification.rs",
         find: "            mutation.registry == registry",
         replace: "            true",
@@ -1380,6 +1519,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 132,
         file: "xtask/src/qualification.rs",
         find: "                && mutation.mutation_count == mutation_count",
         replace: "                && true",
@@ -1390,6 +1530,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 133,
         file: "xtask/src/qualification.rs",
         find: "                && record.get(\"source.commit\")? == mutation.commit",
         replace: "                && is_git_id(&mutation.commit)",
@@ -1400,6 +1541,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 134,
         file: "xtask/src/qualification.rs",
         find: "                && record.get(\"input.source.sha256\")? == mutation.source_digest",
         replace: "                && is_digest(&mutation.source_digest)",
@@ -1410,6 +1552,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 135,
         file: "xtask/src/qualification.rs",
         find: "                && record.get(\"input.index.sha256\")? == mutation.index_digest",
         replace: "                && is_digest(&mutation.index_digest)",
@@ -1420,6 +1563,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 136,
         file: "xtask/src/qualification.rs",
         find: "                && record.get(\"artifact.report.sha256\")? == mutation.report_digest,",
         replace: "                && is_digest(&mutation.report_digest),",
@@ -1430,6 +1574,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 137,
         file: "xtask/src/qualification.rs",
         find: "fn require_record_inputs(record: &Record, expected: &Record) -> Result<()> {\n    for (key, value) in &expected.fields {\n        ensure!(\n            record.get(key)? == value,",
         replace: "fn require_record_inputs(record: &Record, expected: &Record) -> Result<()> {\n    for (key, value) in &expected.fields {\n        ensure!(\n            record.fields.contains_key(key),",
@@ -1440,6 +1585,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 138,
         file: "xtask/src/vmware.rs",
         find: "    let evidence_end = require_once_in_order(text, SELFTEST_MARKERS)?;",
         replace: "    let evidence_end = 0;",
@@ -1450,6 +1596,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 139,
         file: "xtask/src/vmware.rs",
         find: "    require_once_in_order(text, SHIPPED_MARKERS)?;",
         replace: "    let _ = (text, SHIPPED_MARKERS);",
@@ -1460,6 +1607,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 140,
         file: "xtask/src/vmware.rs",
         find: "            at >= end,",
         replace: "            at < text.len(),",
@@ -1470,6 +1618,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 141,
         file: "xtask/src/vmware.rs",
         find: "            occurrences.len() == 1,",
         replace: "            !occurrences.is_empty(),",
@@ -1480,6 +1629,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 142,
         file: "xtask/src/vmware.rs",
         find: "        expected != 0 && passed == expected && failed == 0 && reported == expected,",
         replace: "        expected != 0 && failed == 0,",
@@ -1490,6 +1640,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 143,
         file: "xtask/src/vmware.rs",
         find: "        !text.contains(\"KERNEL PANIC\"),",
         replace: "        true,",
@@ -1500,6 +1651,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 144,
         file: "xtask/src/vmware.rs",
         find: "        !text.lines().any(|line| {",
         replace: "        !text.lines().any(|line| false && {",
@@ -1510,6 +1662,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 145,
         file: "xtask/src/vmware.rs",
         find: "        !text.contains('\\0'),",
         replace: "        true,",
@@ -1520,6 +1673,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 146,
         file: "xtask/src/vmware.rs",
         find: "    let text = std::str::from_utf8(bytes).context(\"VMware transcript is not UTF-8\")?;",
         replace: "    let text_storage = String::from_utf8_lossy(bytes); let text = text_storage.as_ref();",
@@ -1530,6 +1684,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 147,
         file: "xtask/src/vmware.rs",
         find: "        !text.contains(\"selftest: verdict\"),",
         replace: "        true,",
@@ -1540,6 +1695,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 148,
         file: "xtask/src/vmware.rs",
         find: "        !text.contains(\"user: no program\"),",
         replace: "        true,",
@@ -1550,6 +1706,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 149,
         file: "xtask/src/lib.rs",
         find: "            vmware::invalidate_generation(&paths, kernel)?;",
         replace: "            let _ = (&paths, kernel);",
@@ -1560,6 +1717,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 150,
         file: "xtask/src/vmware.rs",
         find: "    invalidate_generation(paths, kernel)?;",
         replace: "    let _generation_starts_here = (paths, kernel);",
@@ -1570,6 +1728,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 151,
         file: "xtask/src/vmware.rs",
         find: "    write_new(&serial_log, &[])?;",
         replace: "    let _ = &serial_log;",
@@ -1580,6 +1739,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 152,
         file: "xtask/src/lib.rs",
         find: "        Task::QualifyVmware { kernel } => vmware::qualify(&paths, kernel),",
         replace: "        Task::QualifyVmware { kernel } => { let _ = kernel; Ok(()) },",
@@ -1590,6 +1750,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 153,
         file: "xtask/src/cli.rs",
         find: "        \"qualify-vmware\" => Ok(Task::QualifyVmware {\n            kernel: if shipped {",
         replace: "        \"qualify-vmware\" => Ok(Task::QualifyVmware {\n            kernel: if false && shipped {",
@@ -1600,6 +1761,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 154,
         file: "xtask/src/evidence.rs",
         find: "            Ok(_) => {\n                std::fs::remove_file(&path).with_context(|| {\n                    format!(\"invalidating stale evidence manifest {}\", path.display())\n                })?;\n            }",
         replace: "            Ok(_) => {\n                let _preserved = &path;\n            }",
@@ -1610,6 +1772,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 155,
         file: "xtask/src/evidence.rs",
         find: "    let root = invalidate_manifest(paths)?;",
         replace: "    let root = evidence_root(paths);",
@@ -1620,6 +1783,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 156,
         file: "xtask/src/qualification.rs",
         find: "        relative: \"qualification/model/record\",",
         replace: "        relative: \"qualification/model/record-omitted\",",
@@ -1630,6 +1794,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 157,
         file: "xtask/src/evidence.rs",
         find: "        ensure!(\n            record.get(&format!(\"{}.sha256\", spec.prefix))? == digest.sha256,\n            \"{} has a different digest than its manifest\",\n            spec.prefix\n        );\n    }\n    Ok(())\n}\n\nfn verify_qualification_artifact_identity",
         replace: "        ensure!(\n            digest.bytes == digest.bytes,\n            \"{} has a different digest than its manifest\",\n            spec.prefix\n        );\n    }\n    Ok(())\n}\n\nfn verify_qualification_artifact_identity",
@@ -1640,6 +1805,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 158,
         file: "xtask/src/evidence.rs",
         find: "        shipped_image\n            == digest_bundle_file_exact(\n                root,\n                ARTIFACTS[1].relative,\n                ARTIFACTS[1].prefix,\n                expected_image_bytes,\n            )?,",
         replace: "        shipped_image.sha256 == shipped_image.sha256,",
@@ -1650,6 +1816,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 159,
         file: "xtask/src/evidence.rs",
         find: "        selftest_image != shipped_image,",
         replace: "        selftest_image.bytes != 0,",
@@ -1660,6 +1827,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 160,
         file: "xtask/src/evidence.rs",
         find: "            bundled == namespace,",
         replace: "            bundled.bytes != 0,",
@@ -1670,6 +1838,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 161,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        if self.preflight(&range, flags, grain)? == MappingState::Identical {\n            return Ok(());\n        }",
         replace: "        let _ = self.preflight(&range, flags, grain);",
@@ -1677,6 +1846,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a refused remap preserves every older entry"),
     },
     Mutation {
+        id: 162,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        let flags = flags.union(Flags::PRESENT);\n\n        if let Some(stack) = protected_stack_overlap(self.root(), virtual_base, len) {",
         replace: "        let flags = flags.union(Flags::PRESENT);\n\n        if let Some(stack) = protected_stack_overlap(self.root(), virtual_base, len).filter(|_| false) {",
@@ -1684,6 +1854,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("protected stacks refuse overlapping maps"),
     },
     Mutation {
+        id: 163,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        self.shared.push(keepalive);",
         replace: "        drop(keepalive);",
@@ -1692,6 +1863,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // `map_run` restores `OWNED`, so only the `map_boot` strip is load-bearing.
     Mutation {
+        id: 164,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            flags.difference(NOT_THE_CALLERS),
             Grain::Largest,",
@@ -1701,6 +1873,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a boot mapping cannot claim ownership"),
     },
     Mutation {
+        id: 165,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        space.reach = Reach::UserHalfOnly;",
         replace: "        space.reach = Reach::Everywhere;",
@@ -1708,6 +1881,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a user space cannot reach the kernel half"),
     },
     Mutation {
+        id: 166,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        if flags.contains(Flags::USER) {\n            return Err(MapError::NotYours(virtual_base));\n        }\n        self.map_run(virtual_base, run, flags)",
         replace: "        self.map_run(virtual_base, run, flags)",
@@ -1715,6 +1889,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("kernel memory cannot be published to ring three"),
     },
     Mutation {
+        id: 167,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        if flags.contains(Flags::USER) {\n            return Err(MapError::NotYours(virtual_base));\n        }\n        self.may_reach(virtual_base, region.len)?;",
         replace: "        self.may_reach(virtual_base, region.len)?;",
@@ -1722,6 +1897,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a boot mapping cannot publish kernel memory"),
     },
     Mutation {
+        id: 168,
         file: "wost/src/mm/mod.rs",
         find: "        if segment.zero() {\n            return Some(segment);\n        }",
         replace: "        return Some(segment);\n        #[allow(unreachable_code)]\n        if segment.zero() {\n            return Some(segment);\n        }",
@@ -1729,6 +1905,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a user page comes back cleared"),
     },
     Mutation {
+        id: 169,
         file: "kernel/src/queue.rs",
         find: "            if published == 0 || published > SUBMISSIONS {",
         replace: "            if published == 0 {",
@@ -1736,6 +1913,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a rewritten submission cannot change what was served"),
     },
     Mutation {
+        id: 170,
         file: "wost/src/arch/x86_64/task.rs",
         find: "    if xstate::is_enabled() {",
         replace: "    if false && xstate::is_enabled() {",
@@ -1743,6 +1921,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("every enabled state component survives a switch"),
     },
     Mutation {
+        id: 171,
         file: "wost/src/arch/x86_64/task.rs",
         find: "    table.slots[current].thread_base = leaving;",
         replace: "",
@@ -1750,6 +1929,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("thread local storage follows the thread"),
     },
     Mutation {
+        id: 172,
         file: "wost/src/arch/x86_64/task.rs",
         find: "    if live {\n        Err(bound)\n    } else {\n        Ok(Released { root })\n    }",
         replace: "    if false {\n        Err(bound)\n    } else {\n        Ok(Released { root })\n    }",
@@ -1757,6 +1937,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a bound space is not reclaimed"),
     },
     Mutation {
+        id: 173,
         file: "wost/src/arch/x86_64/task.rs",
         find: "        unsafe { cpu::set_page_table_base(wanted) };",
         replace: "",
@@ -1768,6 +1949,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Without the fixup the fault is terminal, so its panic is the causal observer.
     Mutation {
+        id: 174,
         file: "kernel/src/arch/x86_64/trap.rs",
         find: "            if usercopy::recover(frame, fault) =>",
         replace: "            if false && usercopy::recover(frame, fault) =>",
@@ -1780,6 +1962,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Trap-context logging is caught by ThreadLock's fail-stop (D-122).
     Mutation {
+        id: 175,
         file: "kernel/src/user.rs",
         find: "            REFUSED_CALLS.fetch_add(1, Ordering::Relaxed);",
         replace: "            crate::warn!(\"refused\");",
@@ -1792,6 +1975,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // A ring-3 copy-window target must retire rather than enter kernel recovery (D-126).
     Mutation {
+        id: 176,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "        code_selector: frame.code_selector(),",
         replace: "        code_selector: 0,",
@@ -1802,6 +1986,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 177,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            if frames.zero() {",
         replace: "            if false && frames.zero() {",
@@ -1810,6 +1995,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Inspecting the ring under the process-table guard recreates nested leaf locking.
     Mutation {
+        id: 178,
         file: "kernel/src/user.rs",
         find: "    let guard = BOOTSTRAPS.lock_leaf();
     let bootstrap = guard.get(slot).and_then(Option::as_ref)?;
@@ -1828,6 +2014,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("no lock is taken while a leaf guard is held"),
     },
     Mutation {
+        id: 179,
         file: "kernel/src/user.rs",
         find: "        .filter(|birth| birth.table == spawned.observed_table_incarnation)",
         replace: "        .filter(|birth| {\n            birth.table == spawned.observed_table_incarnation.wrapping_add(1)\n        })",
@@ -1835,6 +2022,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a spawned program holds exactly one handle"),
     },
     Mutation {
+        id: 180,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        if self.bound {
             match released.as_ref() {",
@@ -1844,6 +2032,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a bound space is not reclaimed"),
     },
     Mutation {
+        id: 181,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        if !is_active() || self.bound {",
         replace: "        if !is_active() {",
@@ -1851,6 +2040,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("one space has one binding"),
     },
     Mutation {
+        id: 182,
         file: "kernel/src/user.rs",
         find: "    let binding = construction\n        .space()?\n        .bind()\n        .map_err(SpawnError::NotBindable)?;",
         replace: "    let _duplicate_binding = AddressSpace::bind(construction.space()?);\n    let binding = construction\n        .space()?\n        .bind()\n        .map_err(SpawnError::NotBindable)?;",
@@ -1861,6 +2051,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 183,
         file: "kernel/src/user.rs",
         find: "            authority: Some(BootstrapAuthority::Bound(bound)),",
         replace: "            authority: None,",
@@ -1871,6 +2062,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 184,
         file: "kernel/src/user.rs",
         find: "        BootstrapAuthority::Bound(bound) => match task::release_address_space(bound) {\n            Ok(released) => Some(BootstrapAuthority::Released(released)),\n            Err(bound) => {\n                bootstrap.authority = Some(BootstrapAuthority::Bound(bound));\n                return Err(ReclaimRetention {\n                    refusal: ReclaimRefusal::TaskRelease,\n                    #[cfg(feature = \"selftest\")]\n                    observed_returned_pages: 0,\n                });\n            }\n        },",
         replace: "        BootstrapAuthority::Bound(bound) => Some(BootstrapAuthority::Bound(bound)),",
@@ -1881,6 +2073,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 185,
         file: "kernel/src/user.rs",
         find: "    let tables = match bootstrap.space.reclaim(Some(released)) {",
         replace: "    let tables = match bootstrap.space.reclaim(None) {",
@@ -1891,6 +2084,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 186,
         file: "kernel/src/devfs.rs",
         find: "pub(crate) const DEVICES: [Device; 2] = [Device::Storage, Device::Console];",
         replace: "pub(crate) const DEVICES: [Device; 1] = [Device::Storage];",
@@ -1901,6 +2095,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 187,
         file: "kernel/src/selftest.rs",
         find: "    let Ok(mut victim) = AddressSpace::for_user() else {\n        if let Err(reason) = observer.reclaim(None) {\n            warn!(\"selftest: observer cleanup after victim-space setup refusal: {reason}\");\n        }\n        return false;\n    };",
         replace: "    let Ok(mut victim) = AddressSpace::for_user() else {\n        let _ = observer.reclaim(None);\n        return false;\n    };",
@@ -1912,6 +2107,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Retained Phase 0-5 audit checks (D-135 to D-145).
     Mutation {
+        id: 188,
         file: "kernel/src/console.rs",
         find: "        self.hide_cursor();
         self.put(text);
@@ -1924,6 +2120,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a scroll moves one visible cursor"),
     },
     Mutation {
+        id: 189,
         file: "kernel/src/dev.rs",
         find: "pub(crate) fn with_console(f: impl FnOnce(&mut Console)) {
     let mut guard = CONSOLE.lock();
@@ -1943,6 +2140,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a console scroll does not block interrupts"),
     },
     Mutation {
+        id: 190,
         file: "wost/src/arch/x86_64/port.rs",
         find: "    if !CLAIMED.lock_leaf().reserve_all(&spans) {
         return None;
@@ -1959,6 +2157,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a refused pair of claims strands neither"),
     },
     Mutation {
+        id: 191,
         file: "wost/src/arch/x86_64/cpu.rs",
         find: "fn enable_write_protection() {
     write_cr0(read_cr0() | CR0_WRITE_PROTECT);
@@ -1970,6 +2169,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("supervisor writes obey read-only pages"),
     },
     Mutation {
+        id: 192,
         file: "wost/src/arch/x86_64/cpu.rs",
         find: "    unsafe { msr::write(EFER, msr::read(EFER) & !EFER_SYSCALL) };",
         replace: "",
@@ -1977,6 +2177,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("ring three has no fast-syscall door"),
     },
     Mutation {
+        id: 193,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    pub const fn is_reclaimed(&self) -> bool {
         self.root.is_none()
@@ -1988,6 +2189,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a reclaimed space answers nothing"),
     },
     Mutation {
+        id: 194,
         file: "kernel/src/handle.rs",
         find: "        let slot = &mut self.slots[index];
         let generation = slot.generation;
@@ -1998,6 +2200,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("filling the arena never repeats a slot"),
     },
     Mutation {
+        id: 195,
         file: "wost/src/arch/x86_64/xstate.rs",
         find: "    BYTES.store(bytes, Ordering::Release);",
         replace: "    BYTES.store(bytes / 2, Ordering::Release);",
@@ -2005,6 +2208,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a save stays inside its area"),
     },
     Mutation {
+        id: 196,
         file: "wost/src/arch/x86_64/interrupt.rs",
         find: "    \"verw word ptr [rsp]\",",
         replace: "",
@@ -2014,6 +2218,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Charging one slot too few leaves the final insertion no prepaid room,
     // the boundary that would allocate or panic in trap context (D-182).
     Mutation {
+        id: 197,
         file: "kernel/src/handle.rs",
         find: "        let id = commit_table(quota)?;",
         replace: "        let id = commit_table(quota.saturating_sub(1))?;",
@@ -2024,6 +2229,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 198,
         file: "kernel/src/handle.rs",
         find: "        let granted = offered.attenuate(declared).ok_or(HandleError::Denied)?;
         if !granted.are_meaningful_for(object.kind().per_type_rights()) {
@@ -2040,6 +2246,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a completion carries a handle with narrowed rights"),
     },
     Mutation {
+        id: 199,
         file: "kernel/src/object.rs",
         find: "            Self::Channel => Rights::NONE,",
         replace: "            Self::Channel => Rights::READ,",
@@ -2047,6 +2254,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a meaningless right is refused"),
     },
     Mutation {
+        id: 200,
         file: "kernel/src/object.rs",
         find: "            Self::File => Rights::READ,",
         replace: "            Self::File => Rights::READ.union(Rights::WRITE),",
@@ -2054,6 +2262,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a meaningless right is refused"),
     },
     Mutation {
+        id: 201,
         file: "kernel/src/object.rs",
         find: "            Self::Directory => Rights::TRAVERSE.union(Rights::ENUMERATE),",
         replace: "            Self::Directory => Rights::TRAVERSE
@@ -2065,6 +2274,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The kernel reads Echo's argument from the old handle field while the
     // independent ring-3 emitter keeps writing the widened offset.
     Mutation {
+        id: 202,
         file: "kernel/src/queue.rs",
         find: "    pub(super) const ARGUMENT: usize = 24;",
         replace: "    pub(super) const ARGUMENT: usize = 8;",
@@ -2077,6 +2287,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Skipping release leaks one promised handle slot after every refusal.
     Mutation {
+        id: 203,
         file: "kernel/src/handle.rs",
         find: "        if !self.spent {\n            let released = self.table.step(Quota::release);\n            assert!(released, \"a live reservation refused quota release\");\n        }",
         replace: "        if false && !self.spent {\n            let released = self.table.step(Quota::release);\n            assert!(released, \"a live reservation refused quota release\");\n        }",
@@ -2085,6 +2296,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Only a pre-deadline observation distinguishes deferral from immediate completion.
     Mutation {
+        id: 204,
         file: "kernel/src/queue.rs",
         find: "self.begin_settlement(|entry| {
             entry
@@ -2098,6 +2310,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Cancellation is a second operation, not a substitute for its target.
     Mutation {
+        id: 205,
         file: "kernel/src/queue.rs",
         find: "        if !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
             // The cancellation itself still gets the completion reserved for",
@@ -2111,6 +2324,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // A plausible shifted clock is exposed only by comparing both publication doors.
     Mutation {
+        id: 206,
         file: "kernel/src/timepage.rs",
         find: "    write_u32(page, CLOCK_AT + clock::SHIFT, conversion.shift());",
         replace: "    write_u32(page, CLOCK_AT + clock::SHIFT, conversion.shift() - 1);",
@@ -2119,6 +2333,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Leaving the sequence odd makes every correct reader spin until timeout.
     Mutation {
+        id: 207,
         file: "kernel/src/timepage.rs",
         find: "    write_u32(page, CLOCK_AT + clock::SEQ, Seq::end(Seq::begin(seq)));",
         replace: "    write_u32(page, CLOCK_AT + clock::SEQ, Seq::begin(seq));",
@@ -2127,6 +2342,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Publishing counter mode after revocation defeats the fail-closed reader path.
     Mutation {
+        id: 208,
         file: "kernel/src/timepage.rs",
         find: "    write_u32(page, CLOCK_AT + clock::MODE, mode);",
         replace: "    write_u32(page, CLOCK_AT + clock::MODE, MODE_COUNTER);",
@@ -2136,6 +2352,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The time page mapped writable, which is a program able to tell every
     // other program a lie about the time.
     Mutation {
+        id: 209,
         file: "kernel/src/timepage.rs",
         find: "    let result = space.map_shared(TIME, &shared, Flags::NO_EXECUTE);",
         replace: "    let result = space.map_shared(TIME, &shared, Flags::NO_EXECUTE.union(Flags::WRITABLE));",
@@ -2144,6 +2361,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Forgetting dead work strands both its completion and its reservation.
     Mutation {
+        id: 210,
         file: "kernel/src/queue.rs",
         find: "            if !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
                 break;
@@ -2157,6 +2375,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // A separately allocated table can die beneath the deferred promise.
     Mutation {
+        id: 211,
         file: "kernel/src/handle.rs",
         find: "        Ok(SlotReservation {
             table: Arc::clone(self),
@@ -2179,6 +2398,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Q35 leaves a bus-zero-only walk looking plausible, so the proof counts
     // buses rather than functions (D-168).
     Mutation {
+        id: 212,
         file: "kernel/src/pci.rs",
         find: "                if entry.class.is_bridge()
                     && entry.header.is_bridge()",
@@ -2190,6 +2410,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Two offsets in one header treated as two device identities. Exact-offset
     // duplicate checks cannot catch this; the claim must canonicalise first.
     Mutation {
+        id: 213,
         file: "libs/pci-config/src/lib.rs",
         find: "    let at = at.function_base();
         if self.is_claimed(at) {",
@@ -2204,6 +2425,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The ports a device decodes left free for anyone to claim, which is the
     // arrangement D-77 said proves the wrong thing.
     Mutation {
+        id: 214,
         file: "kernel/src/pci.rs",
         find: "        let owned = wost::arch::current::port::claim_spans::<BARS>(&requested[..port_count])",
         replace: "        let owned = wost::arch::current::port::claim_spans::<BARS>(&requested[..0])",
@@ -2213,6 +2435,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Consume the span handles without returning their bits; the witness
     // reacquires the same BDF, so registry-only cleanup cannot pass.
     Mutation {
+        id: 215,
         file: "kernel/src/pci.rs",
         find: "        if let Err(failure) = wost::arch::current::port::release_spans(ports) {
             self.ports = failure.spans;
@@ -2225,6 +2448,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A bridge's bus numbers decoded as a base address and then probed —
     // all ones written into the register that says which bus is behind it.
     Mutation {
+        id: 216,
         file: "libs/pci-config/src/lib.rs",
         find: "    match probe_bars_unleased(authority.bar_registers(), |event| access(function, event)) {",
         replace: "    match probe_bars_unleased(BARS, |event| access(function, event)) {",
@@ -2237,6 +2461,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Decode left enabled while BARs hold all ones; a fake device observes
     // the cycle where QEMU might forgive it.
     Mutation {
+        id: 217,
         file: "libs/pci-config/src/lib.rs",
         find: "const PROBE_DECODE: u16 = command::IO_SPACE | command::MEMORY_SPACE;",
         replace: "const PROBE_DECODE: u16 = 0;",
@@ -2248,6 +2473,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // A window one past the port-space width must not truncate to zero.
     Mutation {
+        id: 218,
         file: "libs/pci-config/src/lib.rs",
         find: "    if size >> u16::BITS == 0 {",
         replace: "    if true {",
@@ -2260,6 +2486,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // An out-of-range register count reaches past the fixed transaction arrays,
     // while every smaller header is refused before its first access.
     Mutation {
+        id: 219,
         file: "libs/pci-config/src/lib.rs",
         find: "    if registers > BARS {",
         replace: "    if registers < BARS {",
@@ -2271,6 +2498,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // The high half is no longer all ones when the low mask is read.
     Mutation {
+        id: 220,
         file: "libs/pci-config/src/lib.rs",
         find: "        if let Some(high) = slots.high {
             modified |= 1 << high;",
@@ -2285,6 +2513,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Bit two is an address bit in an I/O BAR, not the wide-memory type.
     // Treating it as width consumes the next header field.
     Mutation {
+        id: 221,
         file: "libs/pci-config/src/lib.rs",
         find: "        let high = if matches!(
             Bar::decode(original[low], 0)?,
@@ -2300,6 +2529,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A zero base is still an implemented narrow memory BAR when its probe
     // mask reports a window.
     Mutation {
+        id: 222,
         file: "libs/pci-config/src/lib.rs",
         find: "                let Some(size) = memory_window_size(masks[index], 0, MemoryWidth::Bits32) else {",
         replace: "                let Some(size) = memory_window_size(0, 0, MemoryWidth::Bits32) else {",
@@ -2311,6 +2541,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // A successful probe returns while the device still holds probe values.
     Mutation {
+        id: 223,
         file: "libs/pci-config/src/lib.rs",
         find: "    if restore.phase == ProbeRestorePhase::Bars {",
         replace: "    if false {",
@@ -2323,6 +2554,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Rollback restores BARs but forgets the command register after an access
     // fails; exhaustive cycle injection reaches every such exit.
     Mutation {
+        id: 224,
         file: "libs/pci-config/src/lib.rs",
         find: "fn after_probe_error<E>(
     reason: ProbeError<E>,
@@ -2346,6 +2578,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Record each requested run before the all-or-none preflight finishes.
     // A conflict later in the list then strands all earlier runs.
     Mutation {
+        id: 225,
         file: "libs/port-space/src/lib.rs",
         find: "            room[index] = Some(span);
         }
@@ -2370,6 +2603,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Keep the unique handles consumed but leave their bitmap bits set.
     Mutation {
+        id: 226,
         file: "libs/port-space/src/lib.rs",
         find: "                self.reserved[port / PORTS_PER_WORD] &= !bit(port);",
         replace: "                self.reserved[port / PORTS_PER_WORD] |= bit(port);",
@@ -2381,6 +2615,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // An address keeps its register offset when asked for its device identity.
     Mutation {
+        id: 227,
         file: "libs/pci-config/src/lib.rs",
         find: "        Self(self.0 & !0xFF)",
         replace: "        Self(self.0)",
@@ -2392,6 +2627,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Consuming the probe result must retain every decoded window.
     Mutation {
+        id: 228,
         file: "libs/pci-config/src/lib.rs",
         find: "    pub const fn into_windows(self) -> [Option<Window>; BARS] {
         self.windows
@@ -2407,6 +2643,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Report release while retaining the command sublease.
     Mutation {
+        id: 229,
         file: "libs/pci-config/src/lib.rs",
         find: "        *slot = None;
         true",
@@ -2420,6 +2657,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // A wide BAR in a bridge's last slot would consume its bus-number field.
     Mutation {
+        id: 230,
         file: "libs/pci-config/src/lib.rs",
         find: "            Some(core::iter::Iterator::next(&mut indices)?)",
         replace: "            let _ = core::iter::Iterator::next(&mut indices);
@@ -2433,6 +2671,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A wide non-prefetchable BAR must not acquire a property merely because
     // other bits in the low word are set.
     Mutation {
+        id: 231,
         file: "libs/pci-config/src/lib.rs",
         find: "                address: base | ((high as u64) << 32),
                 wide: true,
@@ -2448,6 +2687,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // A non-power-of-two mask happens to be aligned and otherwise plausible.
     Mutation {
+        id: 232,
         file: "libs/pci-config/src/lib.rs",
         find: "        if !size.is_power_of_two() || !base.is_multiple_of(size) {",
         replace: "        if false || !base.is_multiple_of(size) {",
@@ -2460,6 +2700,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A power-of-two mask does not authorize a base in the middle of that
     // window's own alignment unit.
     Mutation {
+        id: 233,
         file: "libs/pci-config/src/lib.rs",
         find: "        if !size.is_power_of_two() || !base.is_multiple_of(size) {",
         replace: "        if !size.is_power_of_two() || false {",
@@ -2472,6 +2713,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The first refused restore aborts rollback instead of continuing through
     // the command register and every older BAR.
     Mutation {
+        id: 234,
         file: "libs/pci-config/src/lib.rs",
         find: "            if restore.modified(index) {
                 let _ = access(ProbeAccess::WriteBar(index, restore.original[index]));
@@ -2490,6 +2732,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Record the BDF before its fallible device/resource preparation. Any
     // later refusal then poisons a permanent registry slot.
     Mutation {
+        id: 235,
         file: "kernel/src/pci.rs",
         find: "fn release_clean_function(function: pci::FunctionClaim, reason: ClaimError) -> ClaimError {
     if let Err(failure) = pci::release_function(function) {
@@ -2508,6 +2751,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Require memory decode but omit bus master from the transaction. MMIO
     // works and every DMA queue then waits forever without an error register.
     Mutation {
+        id: 236,
         file: "libs/pci-config/src/lib.rs",
         find: "        command::MEMORY_SPACE | command::BUS_MASTER,\n        0,\n        access,",
         replace: "        command::MEMORY_SPACE,\n        0,\n        access,",
@@ -2520,6 +2764,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // If either required bit was already present, toggling instead of adding
     // both would turn the working half back off.
     Mutation {
+        id: 237,
         file: "libs/pci-config/src/lib.rs",
         find: "    let installed = (before | set) & !clear;",
         replace: "    let installed = (before ^ set) & !clear;",
@@ -2532,6 +2777,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Configuration failures are surfaced in the boot log, so an empty error
     // loses the only diagnosis available before a controller exists.
     Mutation {
+        id: 238,
         file: "libs/pci-config/src/lib.rs",
         find: "            Self::Access => core::fmt::Write::write_str(f, \"configuration access failed\"),",
         replace: "            Self::Access => Ok(()),",
@@ -2544,6 +2790,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Treat a successful configuration cycle as proof the device accepted the
     // command bits, skipping the readback which distinguishes the two claims.
     Mutation {
+        id: 239,
         file: "libs/pci-config/src/lib.rs",
         find: "            Some(bits) if bits as u16 == wanted => return Ok(()),",
         replace: "            Some(_) => return Ok(()),",
@@ -2554,6 +2801,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 240,
         file: "libs/pci-config/src/lib.rs",
         find: "            Some(bits) if bits as u16 == wanted => return Ok(()),",
         replace: "            Some(bits) if bits as u16 & wanted == wanted => return Ok(()),",
@@ -2565,6 +2813,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Read the captured command word back without first restoring it.
     Mutation {
+        id: 241,
         file: "libs/pci-config/src/lib.rs",
         find: "    let _ = access(at, CommandAccess::Write(state.before));\n    match access(at, CommandAccess::Read) {",
         replace: "    match access(at, CommandAccess::Read) {",
@@ -2577,6 +2826,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Return the initiating access error without restoring a command write
     // which may already have enabled only part of the device.
     Mutation {
+        id: 242,
         file: "libs/pci-config/src/lib.rs",
         find: "    let _ = access(at, CommandAccess::Write(original));\n    match access(at, CommandAccess::Read) {",
         replace: "    return Err(failure);\n    #[expect(unreachable_code)]\n    match access(at, CommandAccess::Read) {",
@@ -2589,6 +2839,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Admit an empty read to the zero-based NLB encoder. In release that
     // underflows to the largest command rather than panicking.
     Mutation {
+        id: 243,
         file: "libs/nvme/src/lib.rs",
         find: "        if blocks == 0 {\n            return Err(TransferError::Empty);\n        }",
         replace: "        if false && blocks == 0 {\n            return Err(TransferError::Empty);\n        }",
@@ -2601,6 +2852,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Admit the first count whose zero-based encoding no longer fits the
     // command's sixteen-bit NLB field.
     Mutation {
+        id: 244,
         file: "libs/nvme/src/lib.rs",
         find: "        if blocks > MAX_TRANSFER_BLOCKS {\n            return Err(TransferError::TooManyBlocks);\n        }",
         replace: "        if false && blocks > MAX_TRANSFER_BLOCKS {\n            return Err(TransferError::TooManyBlocks);\n        }",
@@ -2613,6 +2865,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Wrap the LBA end back into the namespace instead of refusing the
     // overflow which would make a controller reach an unrelated block.
     Mutation {
+        id: 245,
         file: "libs/nvme/src/lib.rs",
         find: "        let Some(end) = lba.checked_add(blocks as u64) else {\n            return Err(TransferError::OutsideNamespace);\n        };",
         replace: "        let end = lba.wrapping_add(blocks as u64);",
@@ -2625,6 +2878,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Let the device write one byte past the allocation that proves the DMA
     // extent. Exact-size and short buffers differ only at this comparison.
     Mutation {
+        id: 246,
         file: "libs/nvme/src/lib.rs",
         find: "        if bytes > buffer_bytes {\n            return Err(TransferError::BufferTooSmall);\n        }",
         replace: "        if false && bytes > buffer_bytes {\n            return Err(TransferError::BufferTooSmall);\n        }",
@@ -2637,6 +2891,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Replace the controller-bound validation with one known-good request;
     // the submission interceptor catches it before any doorbell.
     Mutation {
+        id: 247,
         file: "kernel/src/nvme.rs",
         find: "        let request = self.validate_read(lba, blocks, buffer_bytes)?;",
         replace: "        let request = self\n            .validate_read(lba, blocks, buffer_bytes)\n            .or_else(|_| {\n                ReadTransfer::new(\n                    0,\n                    1,\n                    self.blocks,\n                    u64::from(self.block_bytes),\n                    u64::MAX,\n                )\n                .map_err(BringUpError::InvalidTransfer)\n            })?;",
@@ -2646,6 +2901,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Treat a zeroed Identify response as a usable namespace. There is no LBA
     // zero when NSZE is zero, however plausible the remaining format looks.
     Mutation {
+        id: 248,
         file: "libs/nvme/src/lib.rs",
         find: "        if blocks == 0 {\n            return Err(NamespaceError::Empty);\n        }",
         replace: "        if false && blocks == 0 {\n            return Err(NamespaceError::Empty);\n        }",
@@ -2658,6 +2914,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Accept the extended format table even though this host never enabled
     // LBAFEE and copied only the sixteen-entry prefix it negotiated.
     Mutation {
+        id: 249,
         file: "libs/nvme/src/lib.rs",
         find: "        if last_format >= MAX_LBA_FORMATS {\n            return Err(NamespaceError::TooManyFormats(u16::from(last_format) + 1));\n        }",
         replace: "        if false && last_format >= MAX_LBA_FORMATS {\n            return Err(NamespaceError::TooManyFormats(u16::from(last_format) + 1));\n        }",
@@ -2670,6 +2927,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Ignore FLBAS's reserved bit, making a malformed selector indistinguishable
     // from a format this host knows how to interpret.
     Mutation {
+        id: 250,
         file: "libs/nvme/src/lib.rs",
         find: "        if formatted & 0x80 != 0 {\n            return Err(NamespaceError::ReservedFormatBits(formatted));\n        }",
         replace: "        if false && formatted & 0x80 != 0 {\n            return Err(NamespaceError::ReservedFormatBits(formatted));\n        }",
@@ -2682,6 +2940,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Select a packed table entry beyond zero-based NLBAF. Its bytes are not a
     // supported format even when the fixed Identify buffer happens to hold it.
     Mutation {
+        id: 251,
         file: "libs/nvme/src/lib.rs",
         find: "        if selected > last_format {\n            return Err(NamespaceError::FormatOutsideList {\n                selected,\n                formats: last_format + 1,\n            });\n        }",
         replace: "        if false && selected > last_format {\n            return Err(NamespaceError::FormatOutsideList {\n                selected,\n                formats: last_format + 1,\n            });\n        }",
@@ -2694,6 +2953,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Interpret reserved LBAF control bits as relative-performance bits. The
     // low two are descriptive; every higher bit is an unknown layout contract.
     Mutation {
+        id: 252,
         file: "libs/nvme/src/lib.rs",
         find: "        if control & 0xfc != 0 {\n            return Err(NamespaceError::ReservedLbaFormatBits(control));\n        }",
         replace: "        if false && control & 0xfc != 0 {\n            return Err(NamespaceError::ReservedLbaFormatBits(control));\n        }",
@@ -2706,6 +2966,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Drop per-LBA metadata from the transfer length and pointer contract.
     // Even one byte makes the controller's data shape differ from the host's.
     Mutation {
+        id: 253,
         file: "libs/nvme/src/lib.rs",
         find: "        if metadata != 0 {\n            return Err(NamespaceError::Metadata(metadata));\n        }",
         replace: "        if false && metadata != 0 {\n            return Err(NamespaceError::Metadata(metadata));\n        }",
@@ -2718,6 +2979,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Confuse support capabilities with active metadata settings. A device may
     // advertise both transfer forms while the selected LBAF uses no metadata.
     Mutation {
+        id: 254,
         file: "libs/nvme/src/lib.rs",
         find: "        if metadata != 0 {\n            return Err(NamespaceError::Metadata(metadata));\n        }",
         replace: "        if metadata != 0 || identify[27] != 0 || identify[28] != 0 {\n            return Err(NamespaceError::Metadata(metadata));\n        }",
@@ -2730,6 +2992,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Read protected blocks without providing or checking their protection
     // information, turning integrity errors into ordinary data.
     Mutation {
+        id: 255,
         file: "libs/nvme/src/lib.rs",
         find: "        if protection != 0 {\n            return Err(NamespaceError::Protection(protection));\n        }",
         replace: "        if false && protection != 0 {\n            return Err(NamespaceError::Protection(protection));\n        }",
@@ -2742,6 +3005,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Admit every exponent at or above 512 bytes, restoring the old trust in a
     // byte which may be 32 and which the only storage caller cannot consume.
     Mutation {
+        id: 256,
         file: "libs/nvme/src/lib.rs",
         find: "        if block_shift != SUPPORTED_BLOCK_SHIFT {\n            return Err(NamespaceError::BlockSize(block_shift));\n        }",
         replace: "        if block_shift < SUPPORTED_BLOCK_SHIFT {\n            return Err(NamespaceError::BlockSize(block_shift));\n        }",
@@ -2754,6 +3018,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Replace refused device data with a known-good synthetic namespace. The
     // self-test queue interceptor catches the bypass before allocation or MMIO.
     Mutation {
+        id: 257,
         file: "kernel/src/nvme.rs",
         find: "        let namespace = Namespace::parse(identify).map_err(BringUpError::InvalidNamespace)?;",
         replace: "        let namespace = Namespace::parse(identify)\n            .or_else(|_| {\n                let mut accepted = [0u8; NAMESPACE_IDENTIFY_BYTES];\n                accepted[0] = 1;\n                accepted[128 + 2] = 9;\n                Namespace::parse(&accepted)\n            })\n            .map_err(BringUpError::InvalidNamespace)?;",
@@ -2763,6 +3028,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A disk of identical blocks hides a dropped LBA, so the namespace gives
     // every block a distinct signature (D-169).
     Mutation {
+        id: 258,
         file: "libs/nvme/src/lib.rs",
         find: "        command.words[10] = lba as u32;
         command.words[11] = (lba >> 32) as u32;",
@@ -2777,6 +3043,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The block count sent unadjusted, so one block becomes two. The first
     // block is still exactly right; only the bytes past it say so.
     Mutation {
+        id: 259,
         file: "libs/nvme/src/lib.rs",
         find: "        command.words[12] = transfer.zero_based_blocks() as u32;",
         replace: "        command.words[12] = transfer.zero_based_blocks() as u32 + 1;",
@@ -2789,6 +3056,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The phase tag never flips: fine until the queue wraps, so the check
     // must issue more commands than the queue has entries.
     Mutation {
+        id: 260,
         file: "kernel/src/nvme.rs",
         find: "                if completion_head == 0 {
                     queue.phase = !queue.phase;
@@ -2802,6 +3070,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A register file mapped write-back, which an emulator forgives and
     // hardware does not (`012` §2).
     Mutation {
+        id: 261,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            .union(Flags::NO_CACHE);",
         replace: "            .union(Flags::NONE);",
@@ -2811,6 +3080,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A missing cluster bias reads valid sectors belonging to another file,
     // so the image corpus distinguishes adjacent clusters (D-170).
     Mutation {
+        id: 262,
         file: "libs/fat32/src/lib.rs",
         find: "        let index = (cluster - FIRST_DATA_CLUSTER) as u64;",
         replace: "        let index = cluster as u64;",
@@ -2823,6 +3093,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A read bounded by the cluster rather than by the file, which hands back
     // the last cluster's tail: its previous occupant's data.
     Mutation {
+        id: 263,
         file: "libs/fat32/src/lib.rs",
         find: "        let wanted = into.len().min((entry.size - offset) as usize);",
         replace: "        let wanted = into.len();",
@@ -2832,6 +3103,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The deleted marker taken for the end of the directory, which loses every
     // file below it. Only reachable because the corpus deletes one on purpose.
     Mutation {
+        id: 264,
         file: "libs/fat32/src/lib.rs",
         find: "    if slot[0] == 0xE5 {
         return Slot::Deleted;
@@ -2845,6 +3117,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The volume mounted at sector zero, which is where a reader that could
     // not be given an offset would look.
     Mutation {
+        id: 265,
         file: "kernel/src/fs.rs",
         find: "pub(crate) const VOLUME_SECTOR: u64 = 2048;",
         replace: "pub(crate) const VOLUME_SECTOR: u64 = 0;",
@@ -2854,6 +3127,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Treating `..` as a name lets a caller ask the resolver to escape its
     // starting handle, contrary to `012` section 5 (D-171).
     Mutation {
+        id: 266,
         file: "libs/path-walk/src/lib.rs",
         find: "        if component == b\"..\" {",
         replace: "        if false {",
@@ -2863,6 +3137,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Ascending past the start clamped rather than refused, which silently
     // answers a different question than the caller asked.
     Mutation {
+        id: 267,
         file: "libs/path-walk/src/lib.rs",
         find: "            depth = depth.checked_sub(1).ok_or(PathError::Escapes)?;",
         replace: "            depth = depth.saturating_sub(1);",
@@ -2872,6 +3147,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A component that is not a directory walked through, so a file's bytes
     // are read as directory entries — with the caller choosing the bytes.
     Mutation {
+        id: 268,
         file: "libs/fat32/src/lib.rs",
         find: "                if !entry.is_directory() {
                     return Err(FatError::WrongKind);
@@ -2888,6 +3164,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Globally unique fixture names hide a missing parent comparison, so two
     // fixture directories deliberately contain `MOTD` (D-172).
     Mutation {
+        id: 269,
         file: "kernel/src/tmpfs.rs",
         find: "        if index == ROOT || entry.parent != directory {
             continue;
@@ -2903,6 +3180,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A path walked *through* a device, which has nothing inside it — the
     // "everything is a file" conflation arriving as a defect.
     Mutation {
+        id: 270,
         file: "kernel/src/vfs.rs",
         find: "    if rest.is_empty() {
         Ok(Node::Device(device))
@@ -2917,6 +3195,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A tmpfs read bounded by the arena rather than by the file, which hands
     // back the next file's bytes.
     Mutation {
+        id: 271,
         file: "kernel/src/tmpfs.rs",
         find: "    let wanted = into.len().min(len - offset);",
         replace: "    let wanted = into.len();",
@@ -2926,6 +3205,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A list-only directory handle must not become traversal authority
     // (D-173).
     Mutation {
+        id: 272,
         file: "kernel/src/queue.rs",
         find: "        if !held.contains(Rights::TRAVERSE) {
             return refuse(token, STATUS_DENIED);
@@ -2939,6 +3219,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A file handle granted WRITE, which nothing can honour: there is no write
     // path, and a right that grants nothing is a syscall name in disguise.
     Mutation {
+        id: 273,
         file: "kernel/src/queue.rs",
         find: "                held.intersection(Rights::UNIVERSAL).union(Rights::READ),
             ),",
@@ -2950,6 +3231,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A file opened through an attenuated directory regains the universal
     // rights its parent gave up. TRAVERSE authorizes READ, not re-delegation.
     Mutation {
+        id: 274,
         file: "kernel/src/queue.rs",
         find: "                held.intersection(Rights::UNIVERSAL).union(Rights::READ),
             ),",
@@ -2961,6 +3243,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The same widening defect on the other branch: copying a directory's
     // identity must not copy rights its parent did not hold.
     Mutation {
+        id: 275,
         file: "kernel/src/queue.rs",
         find: "            crate::vfs::Node::Directory(directory) => (crate::object::directory(directory), held),",
         replace: "            crate::vfs::Node::Directory(directory) => (
@@ -2973,6 +3256,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A malformed OpenAt path inspected before its slot is promised; a full
     // table must report quota first, as Duplicate does.
     Mutation {
+        id: 276,
         file: "kernel/src/queue.rs",
         find: "        let Ok(reservation) = table.reserve_slot() else {
             return refuse(token, STATUS_NO_HANDLE_SLOT);
@@ -2994,6 +3278,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Duplicate's rights check pulled ahead of the promise; a full table
     // must report quota even for malformed rights.
     Mutation {
+        id: 277,
         file: "kernel/src/queue.rs",
         find: "        let named = submission.handle;",
         replace: "        let named = submission.handle;
@@ -3010,6 +3295,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A read that ignores its offset. Nothing holds a cursor, so the offset
     // alone says where the bytes came from.
     Mutation {
+        id: 278,
         file: "kernel/src/queue.rs",
         find: "        match crate::vfs::read(request.file, request.offset, &mut scratch[..request.wanted]) {",
         replace: "        match crate::vfs::read(request.file, 0, &mut scratch[..request.wanted]) {",
@@ -3019,6 +3305,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The buffer bound moved after the read. The output is unchanged, so
     // only the driver's command counter can tell the kernels apart (D-173).
     Mutation {
+        id: 279,
         file: "kernel/src/queue.rs",
         find: "    (end <= DATA_BYTES).then_some((at, len))",
         replace: "    let _ = end;
@@ -3029,6 +3316,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A rights word read as its low half, so undefined bits are dropped
     // rather than refused (D-174).
     Mutation {
+        id: 280,
         file: "kernel/src/queue.rs",
         find: "        let Some(declared) = u32::try_from(submission.argument)
             .ok()
@@ -3041,6 +3329,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A file offset wrapped into the file rather than past it, so byte four
     // billion and one is answered with byte one.
     Mutation {
+        id: 281,
         file: "kernel/src/queue.rs",
         find: "        let offset = u32::try_from(submission.offset).unwrap_or(u32::MAX);",
         replace: "        let offset = submission.offset as u32;",
@@ -3050,6 +3339,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A cancellation token truncated, so a program ends an operation it did
     // not name.
     Mutation {
+        id: 282,
         file: "kernel/src/queue.rs",
         find: "        let Ok(target) = u32::try_from(submission.argument) else {
             return refuse(submission.token, STATUS_NOT_FOUND);
@@ -3061,6 +3351,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // D-133's exemption, put back. The waiter still runs on the slice already
     // armed, so only the counter distinguishes this from a working wake.
     Mutation {
+        id: 283,
         file: "kernel/src/thread.rs",
         find: "    if woken > 0 {
         #[cfg(feature = \"selftest\")]
@@ -3074,6 +3365,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A discriminant and its `match` arm drifting apart, which is how a
     // diagnosis comes to name the wrong guard (D-176).
     Mutation {
+        id: 284,
         file: "kernel/src/time.rs",
         find: "            6 => Self::Disagreed,",
         replace: "            6 => Self::NotBelievable,",
@@ -3083,6 +3375,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // A run offered from a region that is described but is not memory, which
     // is the hole the four probes fell into on VMware (D-177).
     Mutation {
+        id: 285,
         file: "libs/memory-map/src/lib.rs",
         find: "            stored[len] = region;\n            len += 1;",
         replace: "            if region.kind.is_direct_mapped() {\n                stored[len] = region;\n            }\n            len += 1;",
@@ -3095,6 +3388,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Launch the program on its Echo route; only the handle count proves the
     // trap exercised Duplicate. Kernel source, because the driver cannot rebuild itself.
     Mutation {
+        id: 286,
         file: "kernel/src/user.rs",
         find: "    spawn(\"user-duplicate\", 6, DUPLICATE)",
         replace: "    spawn(\"user-duplicate\", 6, BEHAVE)",
@@ -3104,6 +3398,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The identity read as a translating controller would rewrite it, which is
     // the state the check exists to catch (D-178).
     Mutation {
+        id: 287,
         file: "kernel/src/selftest.rs",
         find: "const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x83);",
         replace: "const UNTRANSLATED_MF2: (u8, u8) = (0xAB, 0x41);",
@@ -3112,6 +3407,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Distinct keys keep the translated and untranslated rounds independent.
     Mutation {
+        id: 288,
         file: "libs/ps2-keys/src/set1.rs",
         find: "        0x30 => Key::B,",
         replace: "        0x30 => Key::Pause,",
@@ -3123,6 +3419,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // QEMU makes the bit and identity agree, so only omitted re-derivation is observable.
     Mutation {
+        id: 289,
         file: "kernel/src/input.rs",
         find: "    keyboard.decoder = decoder_for(&mut keyboard.controller);",
         replace: "    let _ = &mut keyboard.controller;",
@@ -3131,6 +3428,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Seeding against the stream makes an unadopted numbering change observable.
     Mutation {
+        id: 290,
         file: "kernel/src/input.rs",
         find: "        if translated != self.decoder.reads_translated() {",
         replace: "        if false && translated != self.decoder.reads_translated() {",
@@ -3142,6 +3440,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 291,
         file: "libs/ps2-keys/src/arriving.rs",
         find: "const BREAK: u8 = 0xF0;",
         replace: "const BREAK: u8 = 0xF1;",
@@ -3152,6 +3451,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 292,
         file: "libs/ps2-keys/src/arriving.rs",
         find: "const SET_2_HIGHEST_MAKE: u8 = 0x83;",
         replace: "const SET_2_HIGHEST_MAKE: u8 = 0x7F;",
@@ -3162,6 +3462,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 293,
         file: "libs/ps2-keys/src/arriving.rs",
         find: "const AMBIGUOUS: [u8; 2] = [0xAA, 0xAB];",
         replace: "const AMBIGUOUS: [u8; 2] = [0xAA, 0xAA];",
@@ -3172,6 +3473,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 294,
         file: "kernel/src/input.rs",
         find: "pub(crate) const HUMAN_WAIT_MS: u64 = 45_000;",
         replace: "pub(crate) const HUMAN_WAIT_MS: u64 = 90_000;",
@@ -3182,6 +3484,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 295,
         file: "xtask/templates/wizard-os.vmx.in",
         find: "nvme0.present = \"TRUE\"\nnvme1.present = \"TRUE\"",
         replace: "nvme0.present = \"TRUE\"\nnvme0:0.present = \"TRUE\"\nnvme1.present = \"TRUE\"",
@@ -3192,6 +3495,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 296,
         file: "libs/memory-map/src/lib.rs",
         find: "                region.len != 0\n                    && region.base < end\n                    && start < region.end()\n                    && !allowed(region.kind)",
         replace: "                region.len != 0\n                    && region.base <= start\n                    && start < region.end()\n                    && !allowed(region.kind)",
@@ -3202,6 +3506,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 297,
         file: "libs/memory-map/src/lib.rs",
         find: "                if first.is_none_or(|known| base < known) && self.covers_memory(base, end) {",
         replace: "                if first.is_none_or(|known| base < known) && self.covers(base, end) {",
@@ -3214,6 +3519,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Treat an unverified stop as verified; a fake device completes after
     // the allocator could already reuse the command's memory.
     Mutation {
+        id: 298,
         file: "kernel/src/nvme.rs",
         find: "            self.disposition = DmaDisposition::Retained;",
         replace: "            self.disposition = DmaDisposition::Quiesced;",
@@ -3226,6 +3532,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Return a retained DMA segment to the frame allocator. Safe access is
     // still gone, so only the allocator count can distinguish this defect.
     Mutation {
+        id: 299,
         file: "wost/src/mm/mod.rs",
         find: "        if let Some(segment) = self.segment.take() {\n            core::mem::forget(segment);\n        }",
         replace: "        if let Some(segment) = self.segment.take() {\n            drop(segment);\n        }",
@@ -3234,6 +3541,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Repair follows the red observation so the outstanding command remains observable.
     Mutation {
+        id: 300,
         file: "kernel/src/nvme.rs",
         find: "            core::hint::spin_loop();\n        }\n        self.fail_submitted(BringUpError::NotReady, data)",
         replace: "            core::hint::spin_loop();\n        }\n        Err(BringUpError::NotReady)",
@@ -3243,6 +3551,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Re-export the private closure that can hand any safe kernel module the
     // running `AddressSpace`, including its reclaim and arbitrary-unmap doors.
     Mutation {
+        id: 301,
         file: "kernel/src/mem.rs",
         find: "fn with_active_space<T>(",
         replace: "pub(crate) fn with_active_space<T>(",
@@ -3255,6 +3564,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Forget every ownership entry after D-117's old fixed ceiling. The table
     // frames remain live and reachable, but reclamation silently loses them.
     Mutation {
+        id: 302,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "for table in self.tables.drain(..) {",
         replace: "for table in self.tables.drain(..).take(32) {",
@@ -3263,6 +3573,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Skip terminal table reclamation while reporting success.
     Mutation {
+        id: 303,
         file: "kernel/src/user.rs",
         find: "        match space.reclaim(released) {",
         replace: "        match { drop(released); Ok::<usize, wost::arch::current::paging::ReclaimFailure>(0) } {",
@@ -3272,6 +3583,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Admit an entry outside every executable segment. The image is otherwise
     // valid, so this reaches mapping unless the entry participates in preflight.
     Mutation {
+        id: 304,
         file: "kernel/src/user.rs",
         find: "    if !entry_is_executable {\n        return Err(LoadError::InvalidEntry(entry));\n    }",
         replace: "    if false && !entry_is_executable {\n        return Err(LoadError::InvalidEntry(entry));\n    }",
@@ -3280,6 +3592,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // A second fabricated launch reuses the stack address retired by the first.
     Mutation {
+        id: 305,
         file: "wost/src/arch/x86_64/task.rs",
         find: "        let stack_index = table.slots[slot].stack_index;\n        table.slots[slot] = Slot {\n            stack_index,\n            ..Slot::VACANT\n        };",
         replace: "        table.slots[slot] = Slot::VACANT;",
@@ -3289,6 +3602,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Return after the first injected retirement refusal without completing
     // the task-table retirement or publishing the scheduler slot.
     Mutation {
+        id: 306,
         file: "kernel/src/thread.rs",
         find: "    if refuse(SpawnPoint::Fabricated) {\n        if let Err(reason) = retire_prepared(slot) {\n            finish_refused_retirement(slot, reason);\n            return Err(PreparedFailure::before_binding(\n                SpawnError::Retirement { slot, reason },\n                binding,\n            ));\n        }\n        return Err(PreparedFailure::before_binding(SpawnError::Full, binding));\n    }",
         replace: "    if refuse(SpawnPoint::Fabricated) {\n        if let Err(reason) = retire_prepared(slot) {\n            return Err(PreparedFailure::before_binding(\n                SpawnError::Retirement { slot, reason },\n                binding,\n            ));\n        }\n        return Err(PreparedFailure::before_binding(SpawnError::Full, binding));\n    }",
@@ -3296,6 +3610,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a retirement refusal is settled before slot reuse"),
     },
     Mutation {
+        id: 307,
         file: "kernel/src/user.rs",
         find: "const MAX_REGIONS: usize = MAX_SEGMENTS + 1;",
         replace: "const MAX_REGIONS: usize = MAX_SEGMENTS;",
@@ -3303,6 +3618,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a maximum image and stack fit the cleanup ledger"),
     },
     Mutation {
+        id: 308,
         file: "kernel/src/user.rs",
         find: "                if let Err(refusal) = undo(space, &placements[..done]) {\n                    return Err(LoadError::Rollback {\n                        reason: refusal.reason,\n                        pages: refusal.pages,\n                    });\n                }",
         replace: "                if let Err(refusal) = undo(space, &placements[..done]) {\n                    let _ = refusal;\n                }",
@@ -3310,6 +3626,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("cleanup refusals retain reachable tables"),
     },
     Mutation {
+        id: 309,
         file: "kernel/src/user.rs",
         find: "                    #[cfg(feature = \"selftest\")]\n                    if CLEANUP_REFUSAL_INJECTED.swap(false, Ordering::AcqRel) {\n                        REFUSED_MAPPING_RECLAIMS.fetch_add(1, Ordering::AcqRel);\n                        continue;\n                    }",
         replace: "                    #[cfg(feature = \"selftest\")]\n                    if CLEANUP_REFUSAL_INJECTED.swap(false, Ordering::AcqRel) {\n                        REFUSED_MAPPING_RECLAIMS.fetch_add(1, Ordering::AcqRel);\n                        return;\n                    }",
@@ -3317,6 +3634,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("cleanup refusals retain reachable tables"),
     },
     Mutation {
+        id: 310,
         file: "kernel/src/user.rs",
         find: "    if !extended_state_is_isolated() {\n        return Err(SpawnError::NoExtendedState);\n    }",
         replace: "    if false && !extended_state_is_isolated() {\n        return Err(SpawnError::NoExtendedState);\n    }",
@@ -3324,6 +3642,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("missing extended state closes the user boundary"),
     },
     Mutation {
+        id: 311,
         file: "kernel/src/selftest.rs",
         find: "    let Some(Ok(returned)) = mem::unmap_for_test(&mut context(), mapping) else {\n        return false;\n    };\n    drop(returned);",
         replace: "    drop(mapping);",
@@ -3331,6 +3650,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a mapping added after the switch is live"),
     },
     Mutation {
+        id: 312,
         file: "kernel/src/selftest.rs",
         find: "    let checked = check(&mut space);\n    let reclaimed = space.reclaim(None).is_ok();\n    drop(space);",
         replace: "    let checked = check(&mut space);\n    drop(space);\n    let reclaimed = true;",
@@ -3338,6 +3658,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a second address space is refused"),
     },
     Mutation {
+        id: 313,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        if self.owned_pages != 0 {",
         replace: "        if false && self.owned_pages != 0 {",
@@ -3345,6 +3666,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("cleanup refusals retain reachable tables"),
     },
     Mutation {
+        id: 314,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            drop(returned);\n            remaining -= 1;",
         replace: "            drop(returned);\n            remaining = 0;",
@@ -3352,6 +3674,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("partial stack rollback is retryable"),
     },
     Mutation {
+        id: 315,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        if let Err(cause) = self.verify_guard(slot) {\n            return match self.rollback_stack(slot, 1, 0) {\n                Ok(_) => Err(StackMapError::Mapping(cause)),\n                Err(cleanup) => Err(StackMapError::Rollback { cause, cleanup }),\n            };\n        }",
         replace: "        if let Err(cause) = self.verify_guard(slot) {\n            let _ = self.rollback_stack(slot, 1, 0);\n            return Err(StackMapError::Mapping(cause));\n        }",
@@ -3359,6 +3682,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("guard rollback refusal retains the stack"),
     },
     Mutation {
+        id: 316,
         file: "kernel/src/mem.rs",
         find: "    match space.reclaim(None) {",
         replace: "    match {\n        drop(space);\n        Ok::<usize, ReclaimFailure>(0)\n    } {",
@@ -3366,6 +3690,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a failed boot-space build returns every table frame"),
     },
     Mutation {
+        id: 317,
         file: "kernel/src/user.rs",
         find: "            Err(bound) => {\n                bootstrap.authority = Some(BootstrapAuthority::Bound(bound));\n                return Err(ReclaimRetention {\n                    refusal: ReclaimRefusal::TaskRelease,\n                    #[cfg(feature = \"selftest\")]\n                    observed_returned_pages: 0,\n                });\n            }",
         replace: "            Err(bound) => {\n                drop(bound);\n                return Ok(ReclaimSuccess {\n                    reclaimed: Reclaimed::default(),\n                    #[cfg(feature = \"selftest\")]\n                    observed_returned_pages: 0,\n                });\n            }",
@@ -3373,6 +3698,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a task release refusal retains the zombie for retry"),
     },
     Mutation {
+        id: 318,
         file: "kernel/src/thread.rs",
         find: "            .find(|slot| threads.queue.slots[*slot].state == State::Free && !zombie_slots[*slot])",
         replace: "            .find(|slot| threads.queue.slots[*slot].state == State::Free)",
@@ -3380,6 +3706,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a task release refusal retains the zombie for retry"),
     },
     Mutation {
+        id: 319,
         file: "wost/src/mm/mod.rs",
         find: "        let released = FRAMES.lock_leaf().free(self.index);",
         replace: "        let released = FRAMES.lock_leaf().free(usize::MAX);",
@@ -3390,6 +3717,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 320,
         file: "wost/src/mm/mod.rs",
         find: "        let released = FRAMES.lock_leaf().free_contiguous(self.first, self.count);",
         replace: "        let released = FRAMES.lock_leaf().free_contiguous(usize::MAX, self.count);",
@@ -3402,6 +3730,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Consume a pending operation when its terminal post refuses; only a
     // witness inspecting ownership before the retry sees the loss.
     Mutation {
+        id: 321,
         file: "kernel/src/queue.rs",
         find: "            pending.slots[index] = Some(Pending {\n                settling: false,\n                ..entry\n            });\n            #[cfg(feature = \"selftest\")]\n            self.settlement_refusals.fetch_add(1, Ordering::AcqRel);",
         replace: "            pending.slots[index] = None;\n            #[cfg(feature = \"selftest\")]\n            self.settlement_refusals.fetch_add(1, Ordering::AcqRel);",
@@ -3411,6 +3740,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Continue construction after the boot stack guard refused; only the
     // explicit boundary state distinguishes this from a normal launch.
     Mutation {
+        id: 322,
         file: "kernel/src/user.rs",
         find: "    if !crate::user_launch_is_safe() {\n        return Err(SpawnError::UnguardedBootStack);\n    }",
         replace: "    if false && !crate::user_launch_is_safe() {\n        return Err(SpawnError::UnguardedBootStack);\n    }",
@@ -3420,6 +3750,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Erase what makes a forgotten guard distinct from an ordinary holder;
     // the lock still excludes, so the witness must read the reason.
     Mutation {
+        id: 323,
         file: "wost/src/sync.rs",
         find: "        self.lock.forgotten_for_test.store(true, Ordering::Release);",
         replace: "        self.lock.forgotten_for_test.store(false, Ordering::Release);",
@@ -3427,6 +3758,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("forgotten lock ownership is distinct from contention"),
     },
     Mutation {
+        id: 324,
         file: "kernel/src/main.rs",
         find: "    survey_the_bus();\n    survey_the_filesystems();\n    start_interrupts(routing.as_ref());",
         replace: "    survey_the_bus();\n    if wost::arch::current::pci::is_available() {\n        survey_the_filesystems();\n    }\n    start_interrupts(routing.as_ref());",
@@ -3436,6 +3768,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Leave the failed controller's ownership record behind; the sibling
     // still maps, so only the selection ledger sees the incomplete retirement.
     Mutation {
+        id: 325,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        let Some(slot) = self.devices.get_mut(mapping.device_slot) else {\n            panic!(\"a preflighted device ledger slot disappeared\");\n        };\n        *slot = None;",
         replace: "        let _ = mapping.device_slot;",
@@ -3445,6 +3778,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // User roots copy top-level entries only once, so every future shared
     // device mapping needs its root slot before the first activation.
     Mutation {
+        id: 326,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    space\n        .reserve_shared_kernel_topology()\n        .map_err(ActivateError::SharedTopology)?;",
         replace: "    if false {\n        space\n            .reserve_shared_kernel_topology()\n            .map_err(ActivateError::SharedTopology)?;\n    }",
@@ -3454,6 +3788,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Once roots have copied the higher half, a new active-root PML4 entry
     // would exist in only one of them.
     Mutation {
+        id: 327,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        if level == Level::Pml4\n            && !is_user_address(virtual_address)\n            && is_active()\n            && self.root() == active_root()\n        {",
         replace: "        if false\n            && level == Level::Pml4\n            && !is_user_address(virtual_address)\n            && is_active()\n            && self.root() == active_root()\n        {",
@@ -3461,6 +3796,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("active kernel topology refuses a new shared root"),
     },
     Mutation {
+        id: 328,
         file: "libs/mmio-range/src/lib.rs",
         find: "    for _ in 0..=occupied.len() {",
         replace: "    for _ in 0..occupied.len() {",
@@ -3471,6 +3807,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 329,
         file: "libs/mmio-range/src/lib.rs",
         find: "            return Some(cursor);",
         replace: "            return cursor.checked_add(align);",
@@ -3481,6 +3818,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 330,
         file: "libs/mmio-range/src/lib.rs",
         find: "            base: base & !(align - 1),",
         replace: "            base,",
@@ -3491,6 +3829,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 331,
         file: "libs/mmio-range/src/lib.rs",
         find: "    pub const fn new(base: u64, len: u64) -> Option<Self> {\n        if len == 0 {",
         replace: "    pub const fn new(base: u64, len: u64) -> Option<Self> {\n        if false {",
@@ -3503,6 +3842,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // Restore everything but stop enumeration anyway, reproducing the
     // first-candidate-only selector without conflating it with cleanup.
     Mutation {
+        id: 332,
         file: "kernel/src/main.rs",
         find: "    info!(\"nvme: candidate {ordinal} retired cleanly; trying next\");
     StorageSelection::Seeking
@@ -3515,6 +3855,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     // Publish queue addresses before moving them into their cleanup owner.
     Mutation {
+        id: 333,
         file: "kernel/src/nvme.rs",
         find: "    // Cleanup owns every published queue address before the enable write.
     let controller = Controller {",
@@ -3527,6 +3868,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 334,
         file: "libs/timebase/src/lib.rs",
         find: "            Some(now) => Self::Deadline(now.saturating_add(timeout_ms.saturating_mul(1_000_000))),",
         replace: "            Some(_) => Self::Attempts(fallback_attempts),",
@@ -3537,6 +3879,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 335,
         file: "libs/timebase/src/lib.rs",
         find: "            Self::Attempts(remaining) if *remaining > 0 => {",
         replace: "            Self::Attempts(remaining) if *remaining > 1 => {",
@@ -3547,6 +3890,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 336,
         file: "libs/timebase/src/lib.rs",
         find: "            Some(now) => Self::Deadline(now.saturating_add(timeout_ms.saturating_mul(1_000_000))),",
         replace: "            Some(now) => Self::Deadline(now.wrapping_add(timeout_ms.saturating_mul(1_000_000))),",
@@ -3557,6 +3901,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 337,
         file: "kernel/src/queue.rs",
         find: "const WORK_DEPTH: usize = 8;",
         replace: "const WORK_DEPTH: usize = 7;",
@@ -3564,6 +3909,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("file work pressure is bounded at admission"),
     },
     Mutation {
+        id: 338,
         file: "kernel/src/queue.rs",
         find: "        matches!(
             self,
@@ -3578,6 +3924,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a delayed read preserves interrupts and exact teardown"),
     },
     Mutation {
+        id: 339,
         file: "kernel/src/wait.rs",
         find: "            let mut waiters = self.waiters.lock(context);
             if ready() {",
@@ -3587,6 +3934,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a waiter rereads its condition before blocking"),
     },
     Mutation {
+        id: 340,
         file: "kernel/src/wait.rs",
         find: "        let switched = registered && thread::wait_from_trap(frame, until);",
         replace: "        let switched = registered && false && thread::wait_from_trap(frame, until);",
@@ -3594,6 +3942,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a program waits through its trap frame"),
     },
     Mutation {
+        id: 341,
         file: "kernel/src/thread.rs",
         find: "            entity: Entity::new(weight),",
         replace: "            entity: Entity::new(BASE_WEIGHT),",
@@ -3601,6 +3950,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("runtime divides in proportion to weight"),
     },
     Mutation {
+        id: 342,
         file: "kernel/src/user.rs",
         find: "    if !no_execute_is_enabled() {\n        return Err(SpawnError::NoExecuteProtection);\n    }",
         replace: "    if false && !no_execute_is_enabled() {\n        return Err(SpawnError::NoExecuteProtection);\n    }",
@@ -3608,6 +3958,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("no-execute protection closes the user boundary"),
     },
     Mutation {
+        id: 343,
         file: "kernel/src/user.rs",
         find: "    if !crate::time::is_calibrated() {\n        return Err(SpawnError::NoClock);\n    }",
         replace: "    if false && !crate::time::is_calibrated() {\n        return Err(SpawnError::NoClock);\n    }",
@@ -3615,6 +3966,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("an uncalibrated clock admits no user or timer"),
     },
     Mutation {
+        id: 344,
         file: "kernel/src/queue.rs",
         find: "                if !crate::time::is_calibrated() {\n                    return Some(refuse(token, STATUS_UNAVAILABLE));\n                }",
         replace: "                if false && !crate::time::is_calibrated() {\n                    return Some(refuse(token, STATUS_UNAVAILABLE));\n                }",
@@ -3622,6 +3974,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("an uncalibrated clock admits no user or timer"),
     },
     Mutation {
+        id: 345,
         file: "kernel/src/thread.rs",
         find: "    if spawned.is_err() {\n        IDLE_STATE.store(IDLE_UNSTARTED, Ordering::Release);\n        return;\n    }",
         replace: "    if spawned.is_err() {\n        IDLE_STATE.store(IDLE_STARTING, Ordering::Release);\n        return;\n    }",
@@ -3629,6 +3982,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a failed idle start can be retried exactly once"),
     },
     Mutation {
+        id: 346,
         file: "kernel/src/user.rs",
         find: "    if !crate::queue::worker_is_ready() {\n        return Err(SpawnError::NoServiceWorker);\n    }",
         replace: "    if false && !crate::queue::worker_is_ready() {\n        return Err(SpawnError::NoServiceWorker);\n    }",
@@ -3636,6 +3990,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a busy machine reaps a program without another spawn"),
     },
     Mutation {
+        id: 347,
         file: "kernel/src/user.rs",
         find: "    if stored {\n        crate::queue::request_reap();\n    }",
         replace: "    let _ = stored;",
@@ -3643,6 +3998,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a busy machine reaps a program without another spawn"),
     },
     Mutation {
+        id: 348,
         file: "libs/handle-space/src/lib.rs",
         find: "    identity.checked_add(1)",
         replace: "    Some(identity.wrapping_add(1))",
@@ -3653,6 +4009,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 349,
         file: "kernel/src/handle.rs",
         find: "        let successor = handle_space::next_table_identity(self.next_table)\n            .ok_or(HandleError::IdentityExhausted)?;",
         replace: "        let successor = self.next_table.wrapping_add(1);",
@@ -3660,6 +4017,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("table identities never wrap or repeat"),
     },
     Mutation {
+        id: 350,
         file: "kernel/src/handle.rs",
         find: "        self.next_table = successor;",
         replace: "        if successor != u64::MAX {\n            self.next_table = successor;\n        }",
@@ -3667,6 +4025,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("table identities never wrap or repeat"),
     },
     Mutation {
+        id: 351,
         file: "libs/acpi-tables/src/lib.rs",
         find: "                    model.io_apic_count += 1;",
         replace: "                    model.io_apic_count = 1;",
@@ -3677,6 +4036,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 352,
         file: "libs/acpi-tables/src/lib.rs",
         find: "                    let Some(slot) = model.io_apics.get_mut(model.io_apic_count) else {\n                        return Err(InterruptError::TooManyIoApics { limit: IO_APICS });\n                    };",
         replace: "                    let Some(slot) = model.io_apics.get_mut(model.io_apic_count) else {\n                        break;\n                    };",
@@ -3687,6 +4047,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 353,
         file: "libs/x86-apic/src/io.rs",
         find: "        let Some(distance) = entries.checked_sub(1) else {\n            return None;\n        };",
         replace: "        let distance = entries.saturating_sub(1);",
@@ -3697,6 +4058,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 354,
         file: "libs/x86-apic/src/io.rs",
         find: "    Ok(ranges.iter().position(|range| range.contains(gsi)))",
         replace: "    Ok(ranges\n        .first()\n        .filter(|range| range.contains(gsi))\n        .map(|_| 0))",
@@ -3707,6 +4069,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 355,
         file: "libs/x86-apic/src/io.rs",
         find: "            if ranges[first].overlaps(ranges[second]) {",
         replace: "            if ranges[first].overlaps(ranges[second]) && first == second {",
@@ -3717,6 +4080,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 356,
         file: "libs/fat32/src/lib.rs",
         find: "#![cfg_attr(\n    not(test),\n    deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)\n)]",
         replace: "",
@@ -3727,6 +4091,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 357,
         file: "wost/src/arch/x86_64/port.rs",
         find: "pub struct PortSpan {\n    base: u16,\n    len: usize,\n}",
         replace: "pub struct PortSpan {\n    base: u16,\n    len: usize,\n}\n\nimpl PortSpan {\n    pub const fn base(&self) -> u16 {\n        self.base\n    }\n}",
@@ -3737,6 +4102,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 358,
         file: "libs/fat32/src/lib.rs",
         find: "        if first_data_sector >= total_sectors as u64 {",
         replace: "        if false && first_data_sector >= total_sectors as u64 {",
@@ -3747,6 +4113,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 359,
         file: "libs/fat32/src/lib.rs",
         find: "        if (root_cluster - FIRST_DATA_CLUSTER) as u64 >= data_clusters {",
         replace: "        if false && (root_cluster - FIRST_DATA_CLUSTER) as u64 >= data_clusters {",
@@ -3757,6 +4124,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 360,
         file: "libs/fat32/src/lib.rs",
         find: "        if data_clusters + FIRST_DATA_CLUSTER as u64 > fat_entries {",
         replace: "        if false && data_clusters + FIRST_DATA_CLUSTER as u64 > fat_entries {",
@@ -3767,6 +4135,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 361,
         file: "libs/fat32/src/lib.rs",
         find: "        if data_clusters < MIN_FAT32_CLUSTERS || data_clusters > MAX_FAT32_CLUSTERS {",
         replace: "        if false || data_clusters > MAX_FAT32_CLUSTERS {",
@@ -3777,6 +4146,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 362,
         file: "libs/fat32/src/lib.rs",
         find: "        if data_clusters < MIN_FAT32_CLUSTERS || data_clusters > MAX_FAT32_CLUSTERS {",
         replace: "        if data_clusters < MIN_FAT32_CLUSTERS || false {",
@@ -3787,6 +4157,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 363,
         file: "libs/fat32/src/lib.rs",
         find: "            || (extended_flags & MIRRORING_DISABLED == 0 && selector != 0)",
         replace: "            || false",
@@ -3797,6 +4168,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 364,
         file: "libs/fat32/src/lib.rs",
         find: "            || active_fat >= fats",
         replace: "            || false",
@@ -3807,6 +4179,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 365,
         file: "libs/fat32/src/lib.rs",
         find: "                + self.active_fat as u64 * self.sectors_per_fat as u64",
         replace: "                + self.active_fat as u64 * 0",
@@ -3817,6 +4190,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 366,
         file: "libs/fat32/src/lib.rs",
         find: "        if let Next::Cluster(cluster) = next\n            && !self.bpb.holds(cluster)\n        {\n            return Err(FatError::BadCluster(cluster));\n        }",
         replace: "",
@@ -3827,6 +4201,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 367,
         file: "libs/fat32/src/lib.rs",
         find: "        let skip_clusters = offset / cluster_bytes;",
         replace: "        let skip_clusters = offset;",
@@ -3837,6 +4212,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 368,
         file: "libs/fat32/src/lib.rs",
         find: "    const fn chain_limit(&self) -> u32 {\n        self.bpb.clusters()\n    }",
         replace: "    const fn chain_limit(&self) -> u32 {\n        1 << 24\n    }",
@@ -3847,6 +4223,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 369,
         file: "tools/fat32-corpus/foreign-fat32.sparse",
         find: "sector 7 ",
         replace: "sector 1 ",
@@ -3857,6 +4234,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 370,
         file: "libs/fat32/src/lib.rs",
         find: "                Next::Cluster(next) => {\n                    let Some(visited) = cursor.visited.checked_add(1) else {\n                        return Err(FatError::Unbounded);\n                    };\n                    if visited >= self.chain_limit() {\n                        return Err(FatError::Unbounded);\n                    }\n                    cursor.cluster = next;\n                    cursor.sector = 0;\n                    cursor.visited = visited;\n                }\n                Next::End => {\n                    cursor.done = true;\n                    return Ok(DirectoryChunk::EMPTY);\n                }",
         replace: "                Next::Cluster(_) | Next::End => {\n                    cursor.done = true;\n                    return Ok(DirectoryChunk::EMPTY);\n                }",
@@ -3867,6 +4245,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 371,
         file: "xtask/src/mutation_workspace.rs",
         find: "            workspace: Paths::new(workspace_root, Some(&build)),",
         replace: "            workspace: Paths::new(paths.root().to_path_buf(), Some(&build)),",
@@ -3877,6 +4256,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 372,
         file: "xtask/src/mutation_workspace.rs",
         find: "    file.try_lock().with_context(|| {",
         replace: "    std::io::Result::<()>::Ok(()).with_context(|| {",
@@ -3887,6 +4267,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 373,
         file: "xtask/src/mutation_workspace.rs",
         find: "    write_source(&destination, &bytes)?;\n    ensure!(\n        read_bounded_bytes(\n            &destination,\n            MAX_TRACKED_FILE_BYTES,\n            \"restored mutation source\",\n        )? == bytes,",
         replace: "    ensure!(\n        read_bounded_bytes(\n            &destination,\n            MAX_TRACKED_FILE_BYTES,\n            \"restored mutation source\",\n        )? == bytes,",
@@ -3897,6 +4278,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 374,
         file: "xtask/src/mutation_workspace.rs",
         find: ".max_by_key(|journal| journal.generation)",
         replace: ".min_by_key(|journal| journal.generation)",
@@ -3907,6 +4289,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 375,
         file: "xtask/src/mutation_workspace.rs",
         find: "        restore_workspace(\n            &self.snapshot,\n            self.workspace.root(),\n            &self.baseline.tracked,\n        )?;\n        self.journal.completed.push(outcome);",
         replace: "        self.journal.completed.push(outcome);",
@@ -3917,6 +4300,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 376,
         file: "xtask/src/mutation_workspace.rs",
         find: "            verdict: if survived == 0 && inconclusive == 0 {",
         replace: "            verdict: if true || survived == 0 && inconclusive == 0 {",
@@ -3927,6 +4311,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 377,
         file: "xtask/src/mutation_workspace.rs",
         find: "            .max_by_key(|(_, report)| report.sequence))",
         replace: "            .min_by_key(|(_, report)| report.sequence))",
@@ -3937,6 +4322,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 378,
         file: "xtask/src/mutation_workspace.rs",
         find: "    let pass_lock = acquire_lock(&state_root.join(LOCK_NAME))?;\n    let baseline = Baseline::discover(paths.root())?;",
         replace: "    let pass_lock = acquire_lock(&state_root.join(\"unrelated-lock\"))?;\n    let baseline = Baseline::discover(paths.root())?;",
@@ -3947,6 +4333,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 379,
         file: "xtask/src/mutation_workspace.rs",
         find: "            self.commit == baseline.commit\n                && self.registry == registry",
         replace: "            true\n                && self.registry == registry",
@@ -3957,6 +4344,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 380,
         file: "xtask/src/mutation_workspace.rs",
         find: "        ensure!(\n            report.encode_with_checksum() == text,\n            \"mutation report is not in its canonical encoding\"\n        );",
         replace: "        let _ = text;",
@@ -3967,6 +4355,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 381,
         file: "xtask/src/cargo.rs",
         find: "        .env(\"CARGO_TARGET_DIR\", child_process_path(paths.target_dir()));",
         replace: "        .env_remove(\"CARGO_TARGET_DIR\");",
@@ -3977,6 +4366,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 382,
         file: "xtask/src/mutate.rs",
         find: "            marker: \"faulting address 0x0000600000000000\",",
         replace: "            marker: \"\",",
@@ -3987,6 +4377,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 383,
         file: "xtask/src/mutate.rs",
         find: "    result.with_context(|| format!(\"pristine {label} mutation baseline is not green\"))",
         replace: "    let _ = (label, result);\n    Ok(())",
@@ -3997,6 +4388,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 384,
         file: "xtask/src/mutate.rs",
         find: "        (Caught::Check(name), qemu::SelftestOutcome::Failed(failed))\n            if failed.iter().any(|actual| actual == name) =>\n        {\n            Ok(true)\n        }",
         replace: "        (Caught::Check(_), qemu::SelftestOutcome::Failed(failed))\n            if !failed.is_empty() =>\n        {\n            Ok(true)\n        }",
@@ -4007,6 +4399,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 385,
         file: "xtask/src/mutate.rs",
         find: "        (Caught::Panic { marker, .. }, qemu::SelftestOutcome::Panicked { transcript, .. })\n            if transcript.contains(marker) =>\n        {\n            Ok(true)\n        }",
         replace: "        (Caught::Panic { .. }, qemu::SelftestOutcome::Panicked { transcript, .. })\n            if !transcript.is_empty() =>\n        {\n            Ok(true)\n        }",
@@ -4017,6 +4410,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 386,
         file: "xtask/src/mutate.rs",
         find: "        qemu::DegradedOutcome::Panicked {\n            no_x2apic_diagnosed: false,\n            transcript,\n        } => bail!(\n            \"mutation expected a prior no-x2APIC diagnosis before panic {marker:?}, but observed: {transcript}\"\n        ),\n",
         replace: "",
@@ -4027,6 +4421,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 387,
         file: "xtask/src/mutate.rs",
         find: "        qemu::DegradedOutcome::Panicked { transcript, .. } if transcript.contains(marker) => {\n            Ok(true)\n        }",
         replace: "        qemu::DegradedOutcome::Panicked { transcript, .. } if !transcript.is_empty() => {\n            Ok(true)\n        }",
@@ -4037,6 +4432,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 388,
         file: "libs/panic-record/src/lib.rs",
         find: "                '\\n' => Some(\"\\\\n\"),",
         replace: "                '\\n' => None,",
@@ -4047,6 +4443,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 389,
         file: "libs/panic-record/src/lib.rs",
         find: "                '\\r' => Some(\"\\\\r\"),",
         replace: "                '\\r' => None,",
@@ -4057,6 +4454,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 390,
         file: "libs/panic-record/src/lib.rs",
         find: "                '\\\\' => Some(\"\\\\\\\\\"),",
         replace: "                '\\\\' => None,",
@@ -4067,6 +4465,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 391,
         file: "libs/panic-record/src/lib.rs",
         find: "            core::fmt::Write::write_str(&mut *self.writer, escaped)?;",
         replace: "            let _ = core::fmt::Write::write_str(&mut *self.writer, escaped);",
@@ -4077,6 +4476,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 392,
         file: "libs/panic-record/src/lib.rs",
         find: "                core::fmt::Write::write_str(&mut *self.writer, &text[start..index])?;",
         replace: "                let _ = core::fmt::Write::write_str(&mut *self.writer, &text[start..index]);",
@@ -4087,6 +4487,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 393,
         file: "xtask/src/paths.rs",
         find: "    \"panic-record\",",
         replace: "",
@@ -4097,6 +4498,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 394,
         file: "xtask/src/qemu.rs",
         find: "    if panic.is_some() && !*panic_complete {\n        bail!(\"the kernel continued a single-line panic record\");\n    }",
         replace: "    if panic.is_some() && !*panic_complete {\n        return Ok(Some(PanicTransition::Unchanged));\n    }",
@@ -4107,6 +4509,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 395,
         file: "xtask/src/qemu.rs",
         find: "        if panic.is_none() {\n            bail!(\"the kernel completed a panic record it never started\");\n        }",
         replace: "        if false && panic.is_none() {\n            bail!(\"the kernel completed a panic record it never started\");\n        }",
@@ -4117,6 +4520,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 396,
         file: "xtask/src/qemu.rs",
         find: "        if *panic_complete {\n            bail!(\"the kernel completed its panic record more than once\");\n        }",
         replace: "        if false && *panic_complete {\n            bail!(\"the kernel completed its panic record more than once\");\n        }",
@@ -4127,6 +4531,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 397,
         file: "xtask/src/qemu.rs",
         find: "    if *panic_complete {\n        bail!(\"the kernel printed serial data after its terminal panic record\");\n    }",
         replace: "    if false && *panic_complete {\n        bail!(\"the kernel printed serial data after its terminal panic record\");\n    }",
@@ -4137,6 +4542,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 398,
         file: "xtask/src/qemu.rs",
         find: "        return Ok(Some(PanicTransition::Completed));",
         replace: "        return Ok(Some(PanicTransition::Unchanged));",
@@ -4147,6 +4553,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 399,
         file: "xtask/src/qemu.rs",
         find: "    fn publish(self, panicked: &AtomicBool) {\n        if self == Self::Completed {\n            panicked.store(true, Ordering::Release);\n        }\n    }",
         replace: "    fn publish(self, panicked: &AtomicBool) {\n        panicked.store(true, Ordering::Release);\n    }",
@@ -4157,6 +4564,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 400,
         file: "xtask/src/qemu.rs",
         find: "fn is_complete_panic_record(line: &str) -> bool {\n    terminated_serial_text(line).and_then(|line| line.strip_prefix(\"[error] \"))\n        == Some(COMPLETE_MARKER)\n}",
         replace: "fn is_complete_panic_record(line: &str) -> bool {\n    line.contains(COMPLETE_MARKER)\n}",
@@ -4167,6 +4575,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 401,
         file: "xtask/src/qemu.rs",
         find: "    if line.starts_with(OPEN_PREFIX) {",
         replace: "    if line.contains(OPEN_PREFIX.trim_start_matches(\"[error] \")) {",
@@ -4177,6 +4586,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 402,
         file: "xtask/src/qemu.rs",
         find: "fn is_exact_no_x2apic_diagnosis(line: &str) -> bool {\n    is_exact_log_message(line, LogSeverity::Warning, NO_X2APIC_DIAGNOSIS)\n}",
         replace: "fn is_exact_no_x2apic_diagnosis(line: &str) -> bool {\n    line.contains(\"no x2apic mode\")\n}",
@@ -4187,6 +4597,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 403,
         file: "xtask/src/qemu.rs",
         find: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    NO_X2APIC_RECORD,",
         replace: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::warning(\"no x2apic mode\"),",
@@ -4197,6 +4608,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 404,
         file: "xtask/src/qemu.rs",
         find: "        (Some(_), false) => bail!(\"QEMU stopped with an incomplete serial panic record\"),",
         replace: "        (Some(transcript), false) => Ok(Some(transcript)),",
@@ -4207,6 +4619,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 405,
         file: "libs/panic-record/src/lib.rs",
         find: "    writeln!(writer, \"[error] {COMPLETE_MARKER}\")",
         replace: "    Ok(())",
@@ -4217,6 +4630,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 406,
         file: "libs/panic-record/src/lib.rs",
         find: "        write!(record, \"{OPEN_PREFIX}{thread}': {body}\")?;",
         replace: "        let _ = write!(record, \"{OPEN_PREFIX}{thread}': {body}\");",
@@ -4227,6 +4641,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 407,
         file: "kernel/src/panic.rs",
         find: "        let _ = write_record(uart, thread, info);",
         replace: "        let _ = writeln!(uart, \"[error] KERNEL PANIC on thread '{thread}': {info}\");",
@@ -4237,6 +4652,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 408,
         file: "libs/panic-record/src/lib.rs",
         find: "    writer.write_char('\\n')?;",
         replace: "    let _ = writer.write_char('\\n');",
@@ -4247,6 +4663,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 409,
         file: "xtask/src/qemu.rs",
         find: "        *panic = Some(text.to_string());",
         replace: "        *panic = Some(text.trim_end().to_string());",
@@ -4257,6 +4674,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 410,
         file: "xtask/src/qemu.rs",
         find: "        let text = terminated_serial_text(line)\n            .context(\"the kernel printed an unterminated panic opening record\")?;",
         replace: "        let text = terminated_serial_text(line).unwrap_or(line);",
@@ -4267,6 +4685,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 411,
         file: "xtask/src/qemu.rs",
         find: "    if text.contains('\\r') || text.contains('\\n') {\n        return None;\n    }",
         replace: "    let _ = text.contains('\\r') || text.contains('\\n');",
@@ -4277,6 +4696,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 412,
         file: "kernel/src/arch/x86_64/uart.rs",
         find: "        if !self.wait_for(line_status::TRANSMIT_HOLDING_EMPTY) {\n            return Err(fmt::Error);\n        }",
         replace: "        let _ = self.wait_for(line_status::TRANSMIT_HOLDING_EMPTY);",
@@ -4287,6 +4707,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 413,
         file: "kernel/src/arch/x86_64/uart.rs",
         find: "                self.write_byte(b'\\r')?;",
         replace: "                let _ = self.write_byte(b'\\r');",
@@ -4297,6 +4718,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 414,
         file: "kernel/src/arch/x86_64/uart.rs",
         find: "            self.write_byte(byte)?;",
         replace: "            let _ = self.write_byte(byte);",
@@ -4307,6 +4729,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 415,
         file: "libs/panic-record/src/lib.rs",
         find: "#![cfg_attr(\n    not(test),\n    deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)\n)]",
         replace: "",
@@ -4317,6 +4740,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 416,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "this processor has no x2apic mode, and xapic needs page tables",
         replace: "this processor has no x2apic mode",
@@ -4327,6 +4751,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 417,
         file: "xtask/src/qemu.rs",
         find: "const EXPECTED_SELFTEST_CHECKS: usize = 262;",
         replace: "const EXPECTED_SELFTEST_CHECKS: usize = 261;",
@@ -4337,6 +4762,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 418,
         file: "xtask/src/qemu.rs",
         find: "    if observation.failed.len() != verdict.failed {",
         replace: "    if false && observation.failed.len() != verdict.failed {",
@@ -4347,6 +4773,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 419,
         file: "libs/eevdf/src/lib.rs",
         find: "        if self.slice_is_spent() {\n            return 0;\n        }",
         replace: "        if false && self.slice_is_spent() {\n            return 0;\n        }",
@@ -4357,6 +4784,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 420,
         file: "libs/elf64/src/lib.rs",
         find: "        match self.offset.checked_add(self.file_size) {\n            Some(end) => end <= bytes as u64,\n            None => false,\n        }",
         replace: "        self.offset.wrapping_add(self.file_size) <= bytes as u64",
@@ -4367,6 +4795,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 421,
         file: "libs/frame-space/src/lib.rs",
         find: "        for frame in first..end {\n            self.check_releasable(frame)?;\n        }",
         replace: "        self.check_releasable(first)?;",
@@ -4377,6 +4806,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 422,
         file: "libs/mmio-range/src/lib.rs",
         find: "        if end > region_len {",
         replace: "        if end > region_len.saturating_add(1) {",
@@ -4387,6 +4817,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 423,
         file: "libs/path-walk/src/lib.rs",
         find: "            depth = depth.checked_sub(1).ok_or(PathError::Escapes)?;",
         replace: "            depth = depth.saturating_sub(1);",
@@ -4397,6 +4828,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 424,
         file: "libs/pixel/src/lib.rs",
         find: "        let Some(span) = pitch.checked_mul(height) else {",
         replace: "        let Some(span) = row_bytes.checked_mul(height) else {",
@@ -4407,6 +4839,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 425,
         file: "libs/ps2-keys/src/decode.rs",
         find: "            Set::One => protocol::is_reply(byte) && byte != protocol::SELF_TEST_PASSED,",
         replace: "            Set::One => protocol::is_reply(byte),",
@@ -4417,6 +4850,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 426,
         file: "libs/ring-proto/src/lib.rs",
         find: "        if self.reserved + self.completion.occupied() >= self.completion.capacity().entries() {",
         replace: "        if self.reserved >= self.completion.capacity().entries() {",
@@ -4427,6 +4861,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 427,
         file: "libs/slab-layout/src/lib.rs",
         find: "        Ok(None) if size == 0 => Ok(Placement::Frames {\n            count: 1,\n            align: align.div_ceil(FRAME_SIZE),\n        }),",
         replace: "        Ok(None) if false && size == 0 => Ok(Placement::Frames {\n            count: 1,\n            align: align.div_ceil(FRAME_SIZE),\n        }),",
@@ -4437,6 +4872,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 428,
         file: "libs/stack-layout/src/lib.rs",
         find: "            stack_base: guard_base + self.guard_len,",
         replace: "            stack_base: guard_base,",
@@ -4447,6 +4883,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 429,
         file: "libs/timebase/src/lib.rs",
         find: "        let carried = advanced - (whole << self.shift);",
         replace: "        let carried = 0;",
@@ -4457,6 +4894,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 430,
         file: "libs/trap-cause/src/lib.rs",
         find: "        self.0 & (1 << 1) != 0",
         replace: "        self.0 & (1 << 2) != 0",
@@ -4467,6 +4905,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 431,
         file: "libs/x86-cpuid/src/xstate.rs",
         find: "pub const fn has_permitted_components(available: u64) -> bool {\n    available & PERMITTED == PERMITTED\n}",
         replace: "pub const fn has_permitted_components(available: u64) -> bool {\n    available & PERMITTED != 0\n}",
@@ -4477,6 +4916,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 432,
         file: "libs/x86-cpuid/src/xstate.rs",
         find: "    if !component.is_present() || offset < HEADER_BYTES as u32 {",
         replace: "    if !component.is_present() || offset > HEADER_BYTES as u32 {",
@@ -4487,6 +4927,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 433,
         file: "libs/x86-cpuid/src/xstate.rs",
         find: "        let mut complete = mask & AVX == 0 || mask & SSE != 0;",
         replace: "        let mut complete = true;",
@@ -4497,6 +4938,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 434,
         file: "libs/x86-cpuid/src/xstate.rs",
         find: "    mask & AVX == 0 || basic_ecx & AVX_SUPPORTED != 0",
         replace: "    mask & AVX == 0 || basic_ecx & AVX_SUPPORTED == 0",
@@ -4507,6 +4949,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 435,
         file: "libs/x86-cpuid/src/xstate.rs",
         find: "            if !component.is_present() {\n                complete = false;\n                break;\n            }",
         replace: "            if !component.is_present() {\n                continue;\n            }",
@@ -4517,6 +4960,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 436,
         file: "libs/x86-cpuid/src/xstate.rs",
         find: "            let Ok(narrowed) = u32::try_from(cursor) else {\n                complete = false;\n                break;\n            };",
         replace: "            let narrowed = cursor as u32;",
@@ -4527,6 +4971,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 437,
         file: "libs/x86-paging/src/lib.rs",
         find: "        Self(self.0 & other.0)",
         replace: "        Self(self.0 | other.0)",
@@ -4537,6 +4982,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 438,
         file: "libs/x86-pit/src/calibrate.rs",
         find: "        Some(product) => product.checked_add(denominator / 2),",
         replace: "        Some(product) => product.checked_add(denominator & 0),",
@@ -4547,6 +4993,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 439,
         file: "libs/x86-tables/src/idt.rs",
         find: "        gate.attributes |= 0b11 << 5;",
         replace: "        gate.attributes |= 0b11 << 4;",
@@ -4557,6 +5004,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 440,
         file: "xtask/src/image/mod.rs",
         find: "            Self::SelfTest => &[paths::SELFTEST_FEATURE],",
         replace: "            Self::SelfTest => &[],",
@@ -4567,6 +5015,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 441,
         file: "xtask/src/image/mod.rs",
         find: "            .open_file(paths::KERNEL_ON_ESP)",
         replace: "            .open_file(paths::PROGRAM_ON_ESP)",
@@ -4577,6 +5026,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 442,
         file: "xtask/src/gate.rs",
         find: "    CargoPass {\n        name: \"kernel refuse-pci\",\n        packages: paths::KERNEL_PACKAGES,\n        target: Some(paths::KERNEL_TARGET),\n        features: Some(paths::REFUSE_PCI_FEATURE_SPEC),\n    },\n",
         replace: "",
@@ -4587,6 +5037,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 443,
         file: "xtask/src/gate.rs",
         find: "    Step::ShippedBoot,\n    Step::DegradedBoot,",
         replace: "    Step::ShippedBoot,\n    Step::ShippedBoot,\n    Step::DegradedBoot,",
@@ -4597,6 +5048,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 444,
         file: "libs/elf64/src/lib.rs",
         find: "            offset: read_u64(header, 40)?,",
         replace: "            offset: read_u64(header, 32)?,",
@@ -4607,6 +5059,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 445,
         file: "xtask/src/api.rs",
         find: "        if inventory.is_non_call_use(file, at) {\n            return Ok(());\n        }",
         replace: "        if false && inventory.is_non_call_use(file, at) {\n            return Ok(());\n        }",
@@ -4617,6 +5070,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 446,
         file: "xtask/src/api.rs",
         find: "    public_name();\n    api::nested::same_name();",
         replace: "    public_name();\n    api::documented();\n    api::nested::same_name();",
@@ -4627,6 +5081,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 447,
         file: "xtask/src/api.rs",
         find: "    api::nested::same_name();",
         replace: "    api::same_name();",
@@ -4637,6 +5092,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 448,
         file: "libs/mmio-range/src/lib.rs",
         find: "        if count != 0 && !offset.is_multiple_of(width) {",
         replace: "        if !offset.is_multiple_of(width) {",
@@ -4647,6 +5103,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 449,
         file: "libs/mmio-range/src/lib.rs",
         find: "        self.next += self.width;",
         replace: "        self.next += 0;",
@@ -4657,6 +5114,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 450,
         file: "libs/stack-layout/src/lib.rs",
         find: "    left < right_end && right < left_end",
         replace: "    left <= right_end && right < left_end",
@@ -4667,6 +5125,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 451,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        if current_mapping_root(root).is_none() {",
         replace: "        if false && current_mapping_root(root).is_none() {",
@@ -4674,6 +5133,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the double-fault stack cannot be unmapped"),
     },
     Mutation {
+        id: 452,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    pinned.iter().flatten().find_map(|identity| {",
         replace: "    pinned.iter().skip(1).flatten().find_map(|identity| {",
@@ -4681,6 +5141,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the double-fault stack cannot be unmapped"),
     },
     Mutation {
+        id: 453,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    pinned.iter().flatten().find_map(|identity| {",
         replace: "    pinned.iter().take(1).flatten().find_map(|identity| {",
@@ -4688,6 +5149,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the boot thread stands on a guarded stack"),
     },
     Mutation {
+        id: 454,
         file: "xtask/src/unsafety.rs",
         find: "        self.lines += span.end().line.saturating_sub(span.start().line) + 1;",
         replace: "        self.lines += 0;",
@@ -4698,6 +5160,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 455,
         file: "wost/src/mmio.rs",
         find: "    pub(crate) const unsafe fn new(base: *mut u8, len: usize) -> Self {",
         replace: "    pub(crate) const fn new(base: *mut u8, len: usize) -> Self {",
@@ -4708,6 +5171,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 456,
         file: "wost/src/arch/x86_64/cpu.rs",
         find: "    unsafe { core::arch::asm!(\"pushfq\", \"pop {}\", out(reg) flags, options(preserves_flags)) };",
         replace: "    unsafe { core::arch::asm!(\"pushfq\", \"pop {}\", out(reg) flags, options(nomem, preserves_flags)) };",
@@ -4718,6 +5182,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 457,
         file: "wost/src/arch/x86_64/segment.rs",
         find: "            \"ltr {selector:x}\",\n            selector = in(reg) TASK_STATE.bits(),\n            options(nostack, preserves_flags),",
         replace: "            \"ltr {selector:x}\",\n            selector = in(reg) TASK_STATE.bits(),\n            options(nomem, nostack, preserves_flags),",
@@ -4728,6 +5193,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 458,
         file: "wost/src/arch/x86_64/segment.rs",
         find: "            \"mov ss, {selector:x}\",\n            \"mov ds, {selector:x}\",\n            \"mov es, {selector:x}\",\n            selector = in(reg) KERNEL_DATA.bits(),\n            options(nostack, preserves_flags),",
         replace: "            \"mov ss, {selector:x}\",\n            \"mov ds, {selector:x}\",\n            \"mov es, {selector:x}\",\n            selector = in(reg) KERNEL_DATA.bits(),\n            options(nomem, nostack, preserves_flags),",
@@ -4738,6 +5204,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 459,
         file: "README.md",
         find: "See [docs/002-architecture.md](docs/002-architecture.md).",
         replace: "See [docs/002-architecture.md](docs/002-architectur.md).",
@@ -4748,6 +5215,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 460,
         file: "AGENTS.md",
         find: "[Development](README.md#development)",
         replace: "[Development](README.md#developmnt)",
@@ -4758,6 +5226,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 461,
         file: "AGENTS.md",
         find: "`kernel/src/selftest.rs` and runs under `cargo xtask test-boot`.",
         replace: "`kernel/src/selftest.rs` and runs under `cargo xtask test-bot`.",
@@ -4768,6 +5237,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 462,
         file: "docs/014-storage.md",
         find: "| Machine checks | 262 |",
         replace: "| Machine checks | 261 |",
@@ -4778,6 +5248,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 463,
         file: "docs/000-vision.md",
         find: "| Boot | UEFI + Limine (vendored); an own bootloader is not planned without a concrete unmet handoff requirement (D-219) |",
         replace: "| Boot | UEFI + Limine (vendored); own bootloader is a future side-quest |",
@@ -4788,6 +5259,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 464,
         file: "xtask/src/mutate.rs",
         find: "    if success {\n        let passed = format!(\"test {name} ... ok\");\n        let passed = stdout\n            .lines()\n            .chain(stderr.lines())\n            .filter(|line| *line == passed)\n            .count();\n        if passed == 1 {\n            return Ok(false);\n        }\n        bail!(\"host mutation selected no exact test `{name}`\");\n    }",
         replace: "    if success {\n        return Ok(false);\n    }",
@@ -4798,6 +5270,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 465,
         file: "xtask/src/mutate.rs",
         find: "                    mutation.reddens,\n                    Caught::HostTest {\n                        package: actual,\n                        ..\n                    } if actual == package",
         replace: "                    mutation.reddens,\n                    Caught::HostTest { .. }",
@@ -4808,6 +5281,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 466,
         file: "xtask/src/cargo.rs",
         find: "    let mut args = vec![\"build\".to_string(), \"--locked\".to_string()];",
         replace: "    let mut args = vec![\"build\".to_string()];",
@@ -4818,6 +5292,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 467,
         file: "xtask/src/evidence.rs",
         find: "            self.fields.insert(key.clone(), value).is_none(),",
         replace: "            self.fields.insert(key.clone(), value).is_none() || true,",
@@ -4828,6 +5303,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 468,
         file: "xtask/src/evidence.rs",
         find: "        actual == *expected,",
         replace: "        actual != *expected,",
@@ -4838,6 +5314,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 469,
         file: "xtask/src/evidence.rs",
         find: "    first.bytes == second.bytes && first.sha256 == second.sha256",
         replace: "    first.bytes == second.bytes || first.sha256 == second.sha256",
@@ -4848,6 +5325,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 470,
         file: "xtask/src/evidence.rs",
         find: "            record.get(key)? == PASS,",
         replace: "            record.get(key)? == PASS || true,",
@@ -4858,6 +5336,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 471,
         file: "xtask/src/evidence.rs",
         find: "    status.trim().is_empty()",
         replace: "    true",
@@ -4868,6 +5347,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 472,
         file: "xtask/src/evidence.rs",
         find: "        for (key, value) in &self.fields {",
         replace: "        for (key, value) in self.fields.iter().rev() {",
@@ -4878,6 +5358,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 473,
         file: "xtask/src/evidence.rs",
         find: "            record.get(&format!(\"{}.sha256\", spec.prefix))? == digest.sha256,\n            \"{} has a different digest than its manifest\",\n            spec.prefix\n        );\n        digests.push(digest);",
         replace: "            record.get(&format!(\"{}.sha256\", spec.prefix))? == digest.sha256 || true,\n            \"{} has a different digest than its manifest\",\n            spec.prefix\n        );\n        digests.push(digest);",
@@ -4888,6 +5369,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 474,
         file: "xtask/src/qemu.rs",
         find: "pub(crate) const MACHINE_TYPE: &str = \"pc-q35-9.2\";",
         replace: "pub(crate) const MACHINE_TYPE: &str = \"q35\";",
@@ -4898,6 +5380,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 475,
         file: "xtask/src/qualification.rs",
         find: "    Ok(version.to_string())",
         replace: "    Ok(report.trim().to_string())",
@@ -4908,6 +5391,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 476,
         file: "xtask/src/evidence.rs",
         find: "    record.insert(format!(\"{prefix}.version\"), version)?;",
         replace: "    record.insert(format!(\"{prefix}.reported-version\"), version)?;",
@@ -4918,6 +5402,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 477,
         file: "xtask/src/evidence.rs",
         find: "    for prefix in QUALIFICATION_TOOLS {",
         replace: "    for prefix in QUALIFICATION_TOOLS.iter().take(0) {",
@@ -4928,6 +5413,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 478,
         file: "supply-chain/inventory.txt",
         find: "crate|anyhow|1.0.104|development|330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470|MIT|selected from MIT OR Apache-2.0",
         replace: "crate|anyhow|1.0.104|development|0000000000000000000000000000000000000000000000000000000000000000|MIT|selected from MIT OR Apache-2.0",
@@ -4938,6 +5424,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 479,
         file: "supply-chain/inventory.txt",
         find: "crate|noto-sans-mono-bitmap|0.3.2|runtime|f102c477fd4ec864c149803bf606ecc23bc9329602ec0f99073a728abf454abc|MIT AND OFL-1.1|MIT crate code and OFL-1.1 Noto glyph data",
         replace: "crate|noto-sans-mono-bitmap|0.3.2|runtime|f102c477fd4ec864c149803bf606ecc23bc9329602ec0f99073a728abf454abc|GPL-3.0-only|MIT crate code and OFL-1.1 Noto glyph data",
@@ -4948,6 +5435,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 480,
         file: "supply-chain/inventory.txt",
         find: "artifact|boot/limine/BOOTX64.EFI|v10.x-binary-2026-07-18|runtime|91ef81c1f95c4ac8bf77c4393a0b2fcd2628550827d7abf89a43194400e17a85|BSD-2-Clause|Limine UEFI binary",
         replace: "artifact|boot/limine/BOOTX64.EFI|v10.x-binary-2026-07-18|runtime|0000000000000000000000000000000000000000000000000000000000000000|BSD-2-Clause|Limine UEFI binary",
@@ -4958,6 +5446,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 481,
         file: "supply-chain/inventory.txt",
         find: "crate|bitflags|2.13.1|runtime|b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da|MIT|selected from MIT OR Apache-2.0",
         replace: "crate|bitflags|2.13.1|development|b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da|MIT|selected from MIT OR Apache-2.0",
@@ -4968,6 +5457,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 482,
         file: "supply-chain/foundation.spdx",
         find: "DocumentName: wizards-os-foundation",
         replace: "DocumentName: unrelated-foundation",
@@ -4978,6 +5468,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 483,
         file: "supply-chain/THIRD-PARTY-NOTICES.md",
         find: "SIL Open Font License 1.1 (`OFL-1.1`), copyright 2022 The Noto Project",
         replace: "SIL Open Font License 1.1 (`OFL 1.1`), copyright 2022 The Noto Project",
@@ -4988,6 +5479,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 484,
         file: "xtask/src/supply_chain.rs",
         find: "        matches.len() == 1,",
         replace: "        !matches.is_empty(),",
@@ -4998,6 +5490,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 485,
         file: "wost/src/arch/x86_64/shared_memory.rs",
         find: "        asm!(\n            \"mov dword ptr [{address}], {value:e}\",\n            address = in(reg) address,\n            value = in(reg) value,\n            options(nostack, preserves_flags),\n        );",
         replace: "        asm!(\n            \"mov dword ptr [{address}], {value:e}\",\n            address = in(reg) address,\n            value = in(reg) value,\n            options(nostack, preserves_flags, nomem),\n        );",
@@ -5008,6 +5501,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 486,
         file: "wost/src/arch/x86_64/shared_memory.rs",
         find: "        asm!(\n            \"mov {value:e}, dword ptr [{address}]\",\n            address = in(reg) address,\n            value = out(reg) value,\n            options(nostack, preserves_flags),\n        );",
         replace: "        asm!(\n            \"mov {value:e}, dword ptr [{address}]\",\n            address = in(reg) address,\n            value = out(reg) value,\n            options(nostack, preserves_flags, nomem),\n        );",
@@ -5018,6 +5512,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 487,
         file: "wost/src/mm/mod.rs",
         find: "        let value = unsafe { shared_memory::load_acquire_u32(address) };",
         replace: "        let value = unsafe { (address as *const u32).read_volatile() };",
@@ -5028,6 +5523,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 488,
         file: "wost/src/mm/mod.rs",
         find: "        unsafe { shared_memory::store_release_u32(address, value.to_le()) };",
         replace: "        unsafe { (address as *mut u32).write_volatile(value.to_le()) };",
@@ -5038,6 +5534,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 489,
         file: "wost/src/mm/mod.rs",
         find: "        unsafe { destination.write_volatile(byte) };",
         replace: "        unsafe { destination.write(byte) };",
@@ -5048,6 +5545,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 490,
         file: "xtask/src/image/program.rs",
         find: "    const COMPLETION_TAIL_AT: u8 = 28;",
         replace: "    const COMPLETION_TAIL_AT: u8 = 24;",
@@ -5058,6 +5556,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 491,
         file: "kernel/src/queue.rs",
         find: "        let tail = ring.protocol.completions().tail();\n\n        let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;",
         replace: "        let tail = ring.protocol.completions().tail();\n        drop(ring);\n        let mut ring = self.ring.lock_leaf();\n\n        let at = COMPLETIONS_AT + slot * COMPLETION_BYTES;",
@@ -5068,6 +5567,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 492,
         file: "kernel/src/handle.rs",
         find: "        if entry.owner != self.id {\n            return Err(HandleError::Stale);\n        }",
         replace: "",
@@ -5075,6 +5575,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a handle reveals no foreign occupancy"),
     },
     Mutation {
+        id: 493,
         file: "wost/src/arch/x86_64/interrupt.rs",
         find: "pub struct InterruptState {
     owner: usize,
@@ -5095,6 +5596,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 494,
         file: "wost/src/sync.rs",
         find: "pub struct ThreadLockGuard<'a, T> {
     lock: &'a ThreadLock<T>,
@@ -5111,6 +5613,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 495,
         file: "wost/src/sync.rs",
         find: "impl<T> Drop for SpinLockGuard<'_, T> {",
         replace: "#[cfg(any())]\nimpl<T> Drop for SpinLockGuard<'_, T> {",
@@ -5121,6 +5624,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 496,
         file: "xtask/src/contracts.rs",
         find: "    DirectDoor {\n        call: \"RingEnter\",\n        ownership: WaitOwnership::CannotWait,\n    },\n",
         replace: "",
@@ -5131,6 +5635,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 497,
         file: "libs/memory-map/src/lib.rs",
         find: "            if len == MAX_REGIONS {
                 return Err(MemoryMapError::TooMany {
@@ -5148,6 +5653,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 498,
         file: "libs/x86-cpuid/src/lib.rs",
         find: "                let product = (crystal_hz as u64).checked_mul(numerator as u64);",
         replace: "                let product = (crystal_hz as u64).checked_mul(denominator as u64);",
@@ -5158,6 +5664,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 499,
         file: "libs/x86-pit/src/calibrate.rs",
         find: "    if observed_hz.abs_diff(expected_tsc_hz) <= expected_tsc_hz / AGREEMENT_DIVISOR {",
         replace: "    if observed_hz.abs_diff(observed_hz) <= expected_tsc_hz / AGREEMENT_DIVISOR {",
@@ -5168,6 +5675,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 500,
         file: "libs/x86-pit/src/calibrate.rs",
         find: "    if apic_remaining != 0 || expected_pit_ticks == 0 || expected_tsc_hz == 0 {",
         replace: "    if false && apic_remaining != 0 || expected_pit_ticks == 0 || expected_tsc_hz == 0 {",
@@ -5178,6 +5686,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 501,
         file: "kernel/src/time.rs",
         find: "            if failures >= WATCHDOG_FAILURES {",
         replace: "            if failures > WATCHDOG_FAILURES {",
@@ -5187,6 +5696,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 502,
         file: "kernel/src/timepage.rs",
         find: "    DESIRED_MODE.store(mode, Ordering::Release);",
         replace: "    DESIRED_MODE.store(MODE_COUNTER, Ordering::Release);",
@@ -5194,6 +5704,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("revoking the clock sends readers to ring Uptime"),
     },
     Mutation {
+        id: 503,
         file: "kernel/src/time.rs",
         find: "        Some(now.saturating_add(elapsed))",
         replace: "        Some(now.saturating_add(elapsed.saturating_sub(elapsed)))",
@@ -5203,6 +5714,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 504,
         file: "libs/wizzy-handoff/src/lib.rs",
         find: "pub const FORMAT: &str = \"wizard-wizzy-handoff-v1\";",
         replace: "pub const FORMAT: &str = \"wizard-wizzy-handoff-v2\";",
@@ -5213,6 +5725,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 505,
         file: "libs/wizzy-handoff/src/lib.rs",
         find: "    if core::iter::Iterator::next(&mut lines) != Some(FORMAT) {",
         replace: "    if core::iter::Iterator::next(&mut lines).is_none() {",
@@ -5223,6 +5736,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 506,
         file: "libs/wizzy-handoff/src/lib.rs",
         find: "    extra.is_none()",
         replace: "    extra.is_none() || true",
@@ -5233,6 +5747,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 507,
         file: "libs/wizzy-handoff/src/lib.rs",
         find: "    first.is_ascii_lowercase()",
         replace: "    true",
@@ -5243,6 +5758,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 508,
         file: "libs/wizzy-handoff/src/lib.rs",
         find: "    record.target_id == TARGET_ID",
         replace: "    true || record.target_id == TARGET_ID",
@@ -5253,6 +5769,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 509,
         file: "libs/wizzy-handoff/src/lib.rs",
         find: "    record.artifact_bytes == artifact.bytes && record.artifact_sha256 == artifact.sha256",
         replace: "    record.artifact_bytes == artifact.bytes || record.artifact_sha256 == artifact.sha256",
@@ -5263,6 +5780,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 510,
         file: "handoff/conformance-v1.artifact",
         find: "This payload is opaque to the handoff envelope.",
         replace: "This payload is altered for the handoff envelope.",
@@ -5273,6 +5791,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 511,
         file: "userland/abi/wizard_abi.h",
         find: "#define WIZ_TIME_VERSION 1u",
         replace: "#define WIZ_TIME_VERSION 2u",
@@ -5283,6 +5802,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 512,
         file: "xtask/src/qemu.rs",
         find: "    let escaped = path.to_string_lossy().replace(',', \",,\");",
         replace: "    let escaped = path.to_string_lossy().into_owned();",
@@ -5293,6 +5813,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 513,
         file: "xtask/src/qemu.rs",
         find: "    drive_file(&format!(\"{options},snapshot=on\"), path)",
         replace: "    drive_file(&format!(\"{options},snapshot=off\"), path)",
@@ -5303,6 +5824,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 514,
         file: "xtask/src/qemu.rs",
         find: "        let monitor = control_listener(\"monitor\")?;",
         replace: "        let monitor = qmp.try_clone().context(\"cloning the QMP listener\")?;",
@@ -5313,6 +5835,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 515,
         file: "xtask/src/qemu.rs",
         find: "const MONITOR_CLIENT_SUFFIX: &str = \",server=off\";",
         replace: "const MONITOR_CLIENT_SUFFIX: &str = \",server=on\";",
@@ -5323,6 +5846,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 516,
         file: "xtask/src/qemu.rs",
         find: "            let sequence = NEXT_RUN.fetch_add(1, Ordering::Relaxed);",
         replace: "            let sequence = NEXT_RUN.load(Ordering::Relaxed);",
@@ -5333,6 +5857,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 517,
         file: "xtask/src/qemu.rs",
         find: "                if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {",
         replace: "                if cancelled.is_some_and(|_| false) {",
@@ -5343,6 +5868,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 518,
         file: "xtask/src/image/mod.rs",
         find: "            let sequence = NEXT_RUN_IMAGE.fetch_add(1, Ordering::Relaxed);",
         replace: "            let sequence = NEXT_RUN_IMAGE.load(Ordering::Relaxed);",
@@ -5353,6 +5879,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 519,
         file: "xtask/src/qemu.rs",
         find: "        match file.try_lock() {",
         replace: "        match std::result::Result::<(), TryLockError>::Ok(()) {",
@@ -5363,6 +5890,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 520,
         file: "wost/src/arch/x86_64/xstate.rs",
         find: "const OPERATION_MASK: u32 = u32::MAX;",
         replace: "const OPERATION_MASK: u32 = u32::MAX & !(xstate::X87 as u32);",
@@ -5370,6 +5898,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("every enabled state component survives a switch"),
     },
     Mutation {
+        id: 521,
         file: "wost/src/arch/x86_64/xstate.rs",
         find: "const OPERATION_MASK: u32 = u32::MAX;",
         replace: "const OPERATION_MASK: u32 = u32::MAX & !(xstate::SSE as u32);",
@@ -5377,6 +5906,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("every enabled state component survives a switch"),
     },
     Mutation {
+        id: 522,
         file: "wost/src/arch/x86_64/xstate.rs",
         find: "const OPERATION_MASK: u32 = u32::MAX;",
         replace: "const OPERATION_MASK: u32 = u32::MAX & !(xstate::AVX as u32);",
@@ -5384,6 +5914,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("every enabled state component survives a switch"),
     },
     Mutation {
+        id: 523,
         file: "libs/ring-proto/src/lib.rs",
         find: "                self.reserved += 1;",
         replace: "                self.reserved += 0;",
@@ -5394,6 +5925,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 524,
         file: "kernel/src/queue.rs",
         find: "            if !entry.settling && wanted(*entry) {",
         replace: "            if wanted(*entry) {",
@@ -5404,6 +5936,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 525,
         file: "models/RingMemory.tla",
         find: "        \\/ BeginRetire(op)\n",
         replace: "",
@@ -5414,6 +5947,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 526,
         file: "xtask/src/model.rs",
         find: "    ensure!(
         stderr.trim().is_empty(),
@@ -5427,6 +5961,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 527,
         file: "xtask/src/model.rs",
         find: "    ensure!(
         !lines.iter().any(|line| {
@@ -5444,6 +5979,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 528,
         file: "xtask/src/model.rs",
         find: "        !lines.iter().any(|line| is_runtime_failure(line)),",
         replace: "        true,",
@@ -5454,6 +5990,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 529,
         file: "xtask/src/model.rs",
         find: "    ensure!(
         trace_is_exact,
@@ -5467,6 +6004,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 530,
         file: "xtask/src/model.rs",
         find: "{} is missing; see tools/tla/README.md for where it comes from",
         replace: "{} is missing; see models/README.md for where it comes from",
@@ -5477,6 +6015,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 531,
         file: "kernel/src/user.rs",
         find: "    spawn(\"user-baseline\", 8, MEASURE)",
         replace: "    spawn(\"user-baseline\", 8, 0)",
@@ -5484,6 +6023,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a ring enter round trip is measurable"),
     },
     Mutation {
+        id: 532,
         file: "kernel/src/nvme.rs",
         find: "        self.read_blocks(0, blocks, into).ok()?;",
         replace: "        self.read_blocks(self.blocks, blocks, into).ok()?;",
@@ -5491,6 +6031,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a full-buffer nvme read is measurable"),
     },
     Mutation {
+        id: 533,
         file: "xtask/src/qemu.rs",
         find: "        if core::iter::Iterator::next(&mut fields).is_some() {\n            bail!(\"trailing fields in foundation baseline\");\n        }",
         replace: "        if false && core::iter::Iterator::next(&mut fields).is_some() {\n            bail!(\"trailing fields in foundation baseline\");\n        }",
@@ -5501,6 +6042,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 534,
         file: "xtask/src/baseline.rs",
         find: "        if value >= self.minimum && value <= self.maximum {",
         replace: "        if value >= self.minimum || value <= self.maximum {",
@@ -5511,6 +6053,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 535,
         file: "xtask/src/cli.rs",
         find: "        \"baseline\" => Ok(Task::Baseline),",
         replace: "        \"baseline-disabled\" => Ok(Task::Baseline),",
@@ -5521,6 +6064,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 536,
         file: "xtask/src/image/program.rs",
         find: "    code.extend_from_slice(&[0x41, 0xB8, 1, 0, 0, 0]);",
         replace: "    code.extend_from_slice(&[0x41, 0xB8, 0, 0, 0, 0]);",
@@ -5531,6 +6075,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 537,
         file: "xtask/src/qemu.rs",
         find: "    if port == 0 {",
         replace: "    if false && port == 0 {",
@@ -5541,6 +6086,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 538,
         file: "xtask/src/debugger.rs",
         find: "    if identity != GDB_IDENTITY {",
         replace: "    if false && identity != GDB_IDENTITY {",
@@ -5551,6 +6097,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 539,
         file: "xtask/src/debugger.rs",
         find: "        format!(\"hbreak {ENTRY_SYMBOL}\"),",
         replace: "        format!(\"break {ENTRY_SYMBOL}\"),",
@@ -5561,6 +6108,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 540,
         file: "xtask/src/debugger.rs",
         find: "    if !frame.contains(\"wizard_kernel::kmain\") || !frame.contains(\"wost/src/boot/mod.rs\") {",
         replace: "    if !frame.contains(\"wizard_kernel::kmain\") && !frame.contains(\"wost/src/boot/mod.rs\") {",
@@ -5571,6 +6119,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 541,
         file: "xtask/src/cli.rs",
         find: "        \"debug\" => Ok(Task::Debug(if check {",
         replace: "        \"debug-disabled\" => Ok(Task::Debug(if check {",
@@ -5581,6 +6130,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 542,
         file: "xtask/src/mutate.rs",
         find: "const MACHINE_OBSERVATIONS: usize = 2;\n\nfn qualify_machine_mutation",
         replace: "const MACHINE_OBSERVATIONS: usize = 1;\n\nfn qualify_machine_mutation",
@@ -5593,6 +6143,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The bytes on disk are pristine either way; only a rebuild of everything
     // that inlined them can tell the two apart.
     Mutation {
+        id: 543,
         file: "xtask/src/mutation_workspace.rs",
         find: "    write_source(&destination, &bytes)?;\n    ensure!(",
         replace: "    std::fs::copy(&source, &destination)\n        .map(|_| ())\n        .with_context(|| format!(\"writing {}\", destination.display()))?;\n    ensure!(",
@@ -5603,6 +6154,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 544,
         file: "xtask/src/mutation_workspace.rs",
         find: "        let bytes = read_bounded_bytes(&source, MAX_TRACKED_FILE_BYTES, \"tracked mutation file\")?;\n        write_source(&destination, &bytes)?;",
         replace: "        std::fs::copy(&source, &destination)\n            .map(|_| ())\n            .with_context(|| format!(\"copying {}\", source.display()))?;",
@@ -5613,6 +6165,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 545,
         file: "xtask/src/qemu.rs",
         find: "            failed: observation.failed,",
         replace: "            failed: Vec::new(),",
@@ -5623,6 +6176,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 546,
         file: "xtask/src/mutate.rs",
         find: "        (Caught::Check(name), qemu::SelftestOutcome::Panicked { failed, .. })\n            if failed.iter().any(|actual| actual == name) =>\n        {\n            Ok(true)\n        }",
         replace: "        (Caught::Check(name), qemu::SelftestOutcome::Panicked { failed, .. })\n            if false && failed.iter().any(|actual| actual == name) =>\n        {\n            Ok(true)\n        }",
@@ -5633,6 +6187,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 547,
         file: "xtask/src/cli.rs",
         find: "        \"vmware\" => Ok(Task::Vmware {\n            profile,\n            kernel: if shipped {",
         replace: "        \"vmware\" => Ok(Task::Vmware {\n            profile,\n            kernel: if false && shipped {",
@@ -5643,6 +6198,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 548,
         file: "xtask/src/vmware.rs",
         find: "        Kernel::Shipped => paths.vm_dir().join(\"shipped\"),",
         replace: "        Kernel::Shipped => paths.vm_dir(),",
@@ -5655,6 +6211,7 @@ pub const MUTATIONS: &[Mutation] = &[
     // The property tier's own falsifiability (D-242): the defect must
     // survive every generated case, not one a unit test names.
     Mutation {
+        id: 549,
         file: "libs/path-walk/src/lib.rs",
         find: "        if component == b\".\" {",
         replace: "        if false && component == b\".\" {",
@@ -5665,6 +6222,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 550,
         file: "libs/stack-layout/src/lib.rs",
         find: "    if left_len == 0 || right_len == 0 {",
         replace: "    if left_len == 0 {",
@@ -5675,6 +6233,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 551,
         file: "libs/frame-space/src/lib.rs",
         find: "        if !self.is_managed(frame) {\n            return Err(FreeError::NotManaged(frame));\n        }",
         replace: "        if !self.is_managed(frame) && frame >= self.managed_count {\n            return Err(FreeError::NotManaged(frame));\n        }",
@@ -5685,6 +6244,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 552,
         file: "libs/nvme/src/lib.rs",
         find: "            && address.checked_add(len).is_some()",
         replace: "            && true",
@@ -5695,6 +6255,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 553,
         file: "docs/016-pre-wizzy-foundation.md",
         find: "| D-121 | TRIGGER | PW-707 fires at the fourth leaf-lock static or a public callback-shaped leaf guard. |",
         replace: "| D-121 | TRIGGER | PW-999 fires at the fourth leaf-lock static or a public callback-shaped leaf guard. |",
@@ -5705,6 +6266,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 554,
         file: "libs/timebase/src/lib.rs",
         find: "        if multiplier > MAX_MULTIPLIER {\n            return None;\n        }",
         replace: "",
@@ -5715,6 +6277,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 555,
         file: "libs/timebase/src/lib.rs",
         find: "        if shift > MAX_SHIFT {\n            return None;\n        }",
         replace: "",
@@ -5725,6 +6288,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 556,
         file: "libs/path-walk/src/lib.rs",
         find: "#[cfg(test)]\nmod tests",
         replace: "/// Whether `path` begins as a relative path.\npub const fn is_relative(path: &[u8]) -> bool {\n    !path.is_empty() && path[0] != SEPARATOR\n}\n\n#[cfg(test)]\nmod tests",
@@ -5732,6 +6296,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::ApiAudit("fn is_relative"),
     },
     Mutation {
+        id: 557,
         file: "libs/wizzy-handoff/src/lib.rs",
         find: "    if manifest.contains('\\r') || !manifest.ends_with('\\n') {",
         replace: "    if manifest.contains('\\r') {",
@@ -5742,6 +6307,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 558,
         file: "libs/x86-paging/src/lib.rs",
         find: "            (Self::OWNED, \"owned\"),",
         replace: "",
@@ -5752,6 +6318,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 559,
         file: "libs/ring-proto/src/lib.rs",
         find: "                self.reserved -= 1;",
         replace: "                self.reserved -= 0;",
@@ -5762,6 +6329,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 560,
         file: "libs/trap-cause/src/lib.rs",
         find: "}\n\n/// An architectural exception.",
         replace: "    /// Whether the interrupted code can be resumed.\n    pub const fn is_resumable(self) -> bool {\n        matches!(self, Self::Fault(Fault::Breakpoint))\n    }\n}\n\n/// An architectural exception.",
@@ -5769,6 +6337,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::ApiAudit("method impl::is_resumable"),
     },
     Mutation {
+        id: 561,
         file: "kernel/src/arch/x86_64/i8042.rs",
         find: "    fn require_config(&mut self, value: u8) -> Result<(), I8042Error> {\n        self.write_config(value)\n            .then_some(())\n            .ok_or(I8042Error::ConfigurationRefused)\n    }",
         replace: "    fn require_config(&mut self, value: u8) -> Result<(), I8042Error> {\n        let _ = self.write_config(value);\n        Ok(())\n    }",
@@ -5778,6 +6347,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 562,
         file: "kernel/src/arch/x86_64/i8042.rs",
         find: "    pub(crate) fn enable_interrupt(&mut self) -> Result<(), InterruptEnableError> {\n        if !Self::flush(self) {\n            return Err(InterruptEnableError::Unavailable);\n        }",
         replace: "    pub(crate) fn enable_interrupt(&mut self) -> Result<(), InterruptEnableError> {\n        let _ = Self::flush(self);",
@@ -5787,6 +6357,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 563,
         file: "kernel/src/arch/x86_64/i8042.rs",
         find: "    fn controller_query(&mut self, command: u8) -> Option<u8> {\n        if !self.controller_command(command) {\n            return None;\n        }\n        self.read_reply(RESPONSE_ATTEMPTS)\n    }",
         replace: "    fn controller_query(&mut self, command: u8) -> Option<u8> {\n        let _ = self.controller_command(command);\n        self.read_reply(RESPONSE_ATTEMPTS)\n    }",
@@ -5796,6 +6367,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 564,
         file: "wost/src/boot/limine_glue.rs",
         find: "    let region = unsafe { MmioRegion::new(fb.addr(), layout.span()) };",
         replace: "    let region = unsafe { MmioRegion::new(fb.addr(), layout.span() - 4) };",
@@ -5806,6 +6378,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 565,
         file: "kernel/src/main.rs",
         find: "#[cfg(feature = \"refuse-pci\")]\nfn refuse_pci_for_degraded_boot() {\n    assert!(\n        wost::arch::current::port::claim::<u32>(0x0cf8).is_some(),\n        \"the degraded boot could not reserve the PCI configuration ports\"\n    );\n}",
         replace: "#[cfg(feature = \"refuse-pci\")]\nfn refuse_pci_for_degraded_boot() {}",
@@ -5815,6 +6388,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 566,
         file: "kernel/src/queue.rs",
         find: "            assert!(posted, \"a reserved completion slot was not there\");",
         replace: "            debug_assert!(posted, \"a reserved completion slot was not there\");",
@@ -5825,6 +6399,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 567,
         file: "kernel/src/main.rs",
         find: "cpu: extended state unavailable; ring 3 stays closed",
         replace: "cpu: extended state unavailable",
@@ -5832,6 +6407,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::BootMarker(qemu::DEGRADED_XSTATE_MARKER),
     },
     Mutation {
+        id: 568,
         file: "kernel/src/user.rs",
         find: "maskable interrupts are not admitted; ring 3 is closed",
         replace: "interrupt admission unavailable; ring 3 is closed",
@@ -5839,6 +6415,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::BootMarker(qemu::DEGRADED_USER_MARKER),
     },
     Mutation {
+        id: 569,
         file: "kernel/src/time.rs",
         find: "        Err(apic::TimerError::Unavailable)\n            if !Timebase::from_bits(NANOSECONDS_TO_APIC.load(Ordering::Relaxed))\n                .is_calibrated() => {}\n",
         replace: "",
@@ -5849,6 +6426,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 570,
         file: "kernel/src/handle.rs",
         find: "        assert!(committed, \"a live reservation refused quota commit\");",
         replace: "        debug_assert!(committed, \"a live reservation refused quota commit\");",
@@ -5859,6 +6437,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 571,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    assert!(index < ENTRIES, \"a level's index is always below 512\");",
         replace: "    debug_assert!(index < ENTRIES, \"a level's index is always below 512\");",
@@ -5869,6 +6448,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 572,
         file: "wost/src/arch/x86_64/segment.rs",
         find: "pub(super) fn write_kernel_stack(top: KernelStackTop<'_>) {\n    let top = top.address();\n    let at = TaskState::privilege_stack_offset(0);\n    assert!(",
         replace: "pub(super) fn write_kernel_stack(top: KernelStackTop<'_>) {\n    let top = top.address();\n    let at = TaskState::privilege_stack_offset(0);\n    debug_assert!(",
@@ -5879,6 +6459,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 573,
         file: "kernel/src/user.rs",
         find: "    assert!(answered, \"the live syscall frame could not be answered\");",
         replace: "    debug_assert!(answered, \"the live syscall frame could not be answered\");",
@@ -5889,6 +6470,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 574,
         file: "kernel/src/nvme.rs",
         find: "            self.stop_dma(Some(data));",
         replace: "            let _ = self.fail_submitted(BringUpError::NotReady, Some(data));",
@@ -5899,6 +6481,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 575,
         file: "libs/eevdf/src/lib.rs",
         find: "            Some((_, deadline)) if !before(entity.deadline, deadline) => {}",
         replace: "            Some((_, _deadline)) if false => {}",
@@ -5909,6 +6492,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 576,
         file: "libs/elf64/src/lib.rs",
         find: "            Self::NotAnElf => core::fmt::Write::write_str(f, \"does not begin with the elf magic\"),",
         replace: "            Self::NotAnElf => core::fmt::Write::write_str(f, \"\"),",
@@ -5919,6 +6503,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 577,
         file: "libs/elf64/src/lib.rs",
         find: "    pub const fn flags(self) -> u32 {\n        self.flags\n    }",
         replace: "    pub const fn flags(self) -> u32 {\n        0\n    }",
@@ -5929,6 +6514,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 578,
         file: "libs/elf64/src/lib.rs",
         find: "    /// Where in the file its contents start.\n    pub const fn offset(self) -> u64 {\n        self.offset\n    }",
         replace: "    /// Where in the file its contents start.\n    pub const fn offset(self) -> u64 {\n        0\n    }",
@@ -5939,6 +6525,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 579,
         file: "libs/elf64/src/lib.rs",
         find: "        self.flags & Self::READ != 0",
         replace: "        self.flags | Self::READ != 0",
@@ -5949,6 +6536,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 580,
         file: "libs/elf64/src/lib.rs",
         find: "        self.file_size > self.memory_size",
         replace: "        self.file_size >= self.memory_size",
@@ -5959,6 +6547,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 581,
         file: "libs/elf64/src/lib.rs",
         find: "    pub const fn segment_count(&self) -> u16 {\n        self.program_count\n    }",
         replace: "    pub const fn segment_count(&self) -> u16 {\n        1\n    }",
@@ -5969,6 +6558,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 582,
         file: "libs/pixel/src/lib.rs",
         find: "            Self::Red => core::fmt::Write::write_str(f, \"red\"),",
         replace: "            Self::Red => core::fmt::Write::write_str(f, \"\"),",
@@ -5979,6 +6569,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 583,
         file: "libs/pixel/src/lib.rs",
         find: "            Self::EmptyChannel(channel) => write!(f, \"{channel} channel has no bits\"),",
         replace: "            Self::EmptyChannel(_) => f.write_str(\"\"),",
@@ -5989,6 +6580,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 584,
         file: "libs/pixel/src/lib.rs",
         find: "            Self::ZeroWidth => core::fmt::Write::write_str(f, \"framebuffer width is zero\"),",
         replace: "            Self::ZeroWidth => core::fmt::Write::write_str(f, \"\"),",
@@ -5999,6 +6591,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 585,
         file: "libs/pixel/src/lib.rs",
         find: "    let bits = if size == u32::BITS {\n        u32::MAX\n    } else {\n        (1 << size) - 1\n    };",
         replace: "    let bits = if size == u32::BITS {\n        u32::MAX\n    } else {\n        (1 << size) / 1\n    };",
@@ -6009,6 +6602,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 586,
         file: "libs/port-space/src/lib.rs",
         find: "    left.start < right.end && right.start < left.end",
         replace: "    left.start < right.end && right.start <= left.end",
@@ -6019,6 +6613,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 587,
         file: "libs/slab-layout/src/lib.rs",
         find: "                write!(f, \"alignment {align} is not a non-zero power of two\")",
         replace: "                f.write_str(\"\")",
@@ -6029,6 +6624,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 588,
         file: "libs/slab-layout/src/lib.rs",
         find: "            needed.next_power_of_two()",
         replace: "            needed.next_power_of_two() / 2",
@@ -6039,6 +6635,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 589,
         file: "libs/handle-space/src/lib.rs",
         find: "    pub const fn is_identity(self) -> bool {\n        self.0 == 0\n    }",
         replace: "    pub const fn is_identity(self) -> bool {\n        false\n    }",
@@ -6049,6 +6646,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 590,
         file: "libs/handle-space/src/lib.rs",
         find: "    pub const fn union(self, other: Self) -> Self {\n        Self(self.0 | other.0)\n    }",
         replace: "    pub const fn union(self, other: Self) -> Self {\n        Self(self.0 ^ other.0)\n    }",
@@ -6059,6 +6657,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 591,
         file: "libs/memory-map/src/lib.rs",
         find: "                region.len != 0\n                    && region.base < end\n                    && start < region.end()\n                    && !allowed(region.kind)",
         replace: "                region.len != 0\n                    && region.base <= end\n                    && start < region.end()\n                    && !allowed(region.kind)",
@@ -6069,6 +6668,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 592,
         file: "kernel/src/user.rs",
         find: "            Some((process, bound)) => {\n                prepared = Some(process);\n                Err(bound)\n            }",
         replace: "            Some((process, bound)) => {\n                core::mem::forget(process);\n                Err(bound)\n            }",
@@ -6076,6 +6676,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a commit refusal reunites cleanup authority"),
     },
     Mutation {
+        id: 593,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "                self.undo(&range, offset, grain);\n                self.rollback_tables(table_mark);",
         replace: "                self.undo(&range, offset, grain);",
@@ -6083,6 +6684,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a partial mapping failure returns its tables"),
     },
     Mutation {
+        id: 594,
         file: "kernel/src/selftest.rs",
         find: "    paging::refuse_mapping_after_for_test(1);\n    let result = space.map_owned(BASE, run, flags);",
         replace: "    paging::refuse_mapping_after_for_test(1);\n    paging::refuse_mapping_undo_after_for_test(0);\n    let result = space.map_owned(BASE, run, flags);",
@@ -6093,6 +6695,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 595,
         file: "kernel/src/handle.rs",
         find: "        let committed = self.table.step(Quota::commit);\n        assert!(committed, \"a live reservation refused quota commit\");\n        self.spent = true;",
         replace: "        self.spent = true;",
@@ -6100,6 +6703,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a completion carries a handle with narrowed rights"),
     },
     Mutation {
+        id: 596,
         file: "wost/src/mm/heap.rs",
         find: "        let Some(live) = self.live.checked_sub(1) else {",
         replace: "        let Some(live) = self.live.checked_sub(usize::MAX) else {",
@@ -6110,6 +6714,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 597,
         file: "wost/src/mm/heap.rs",
         find: "                        heap.large_frames.checked_sub(count),",
         replace: "                        heap.large_frames.checked_sub(usize::MAX),",
@@ -6120,6 +6725,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 598,
         file: "wost/src/mm/heap.rs",
         find: "                let Some(physical) = physical_of(pointer) else {",
         replace: "                let Some(physical) = Option::<Paddr>::None else {",
@@ -6130,6 +6736,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 599,
         file: "wost/src/boot/mod.rs",
         find: "        let words = self.words();",
         replace: "        let words = self.words() - 1;",
@@ -6137,6 +6744,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the console has a complete shadow to scroll from"),
     },
     Mutation {
+        id: 600,
         file: "libs/elf64/src/lib.rs",
         find: "    pub const fn has_valid_alignment(self) -> bool {\n        self.alignment <= 1\n            || self.alignment.is_power_of_two()\n                && self.address % self.alignment == self.offset % self.alignment\n    }",
         replace: "    pub const fn has_valid_alignment(self) -> bool {\n        true\n    }",
@@ -6147,6 +6755,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 601,
         file: "kernel/src/user.rs",
         find: "        if !at.is_multiple_of(PAGE_SIZE) {\n            return Err(LoadError::Unaligned(at));\n        }",
         replace: "",
@@ -6154,6 +6763,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the loader refuses what it may not map"),
     },
     Mutation {
+        id: 602,
         file: "kernel/src/user.rs",
         find: "    bootstrap.abandoned = bootstrap\n        .abandoned\n        .checked_add(abandoned)\n        .unwrap_or_else(|| panic!(\"zombie abandonment accounting overflowed\"));",
         replace: "    bootstrap.abandoned = bootstrap.abandoned.saturating_add(abandoned);",
@@ -6164,6 +6774,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 603,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            let Some((candidate_physical, flags)) = translate_in(candidate, address) else {\n                return Some(address);\n            };",
         replace: "            let Some((candidate_physical, flags)) = translate_in(candidate, address) else {\n                return Some(address);\n            };\n            let flags = flags.union(Flags::USER);",
@@ -6171,6 +6782,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the loaded page table is ours"),
     },
     Mutation {
+        id: 604,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            match walk(root, virtual_address) {",
         replace: "            match walk(root, virtual_address).map(|(mapped, flags, span)| (mapped, flags.union(Flags::NO_CACHE), span)) {",
@@ -6178,6 +6790,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the loaded page table is ours"),
     },
     Mutation {
+        id: 605,
         file: "kernel/src/input.rs",
         find: "pub(crate) fn take_interrupts() {\n    assert!(\n        INTERRUPT_DRIVEN.claim(),\n        \"the keyboard interrupt handoff happened more than once\"\n    );\n}",
         replace: "pub(crate) fn take_interrupts() {}",
@@ -6189,6 +6802,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 606,
         file: "kernel/src/time.rs",
         find: "    assert!(\n        SCHEDULER_NOW_NS\n            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |now| {",
         replace: "    debug_assert!(\n        SCHEDULER_NOW_NS\n            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |now| {",
@@ -6199,6 +6813,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 607,
         file: "kernel/src/main.rs",
         find: "        assert_eq!(\n            timepage::publish(mode, time::origin_ticks(), time::conversion()),",
         replace: "        debug_assert_eq!(\n            timepage::publish(mode, time::origin_ticks(), time::conversion()),",
@@ -6209,6 +6824,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 608,
         file: "wost/src/mm/mod.rs",
         find: "    #[must_use = \"a refused shared-memory write changed no bytes\"]\n    pub fn write_volatile_at",
         replace: "    pub fn write_volatile_at",
@@ -6219,6 +6835,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 609,
         file: "kernel/src/user.rs",
         find: "    if !crate::shared_kernel_mappings_are_safe() {",
         replace: "    if false && !crate::shared_kernel_mappings_are_safe() {",
@@ -6228,6 +6845,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 610,
         file: "wost/src/arch/x86_64/cpu.rs",
         find: "        let leaf = cpuid(0x4000_0000, 0);",
         replace: "        let leaf = cpuid(0x4000_0001, 0);",
@@ -6237,6 +6855,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 611,
         file: "libs/x86-cpuid/src/lib.rs",
         find: "    if speculation.rdcl_no() {",
         replace: "    if false && speculation.rdcl_no() {",
@@ -6247,6 +6866,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 612,
         file: "libs/x86-cpuid/src/lib.rs",
         find: "        ExecutionEnvironmentKind::QemuTcg => Some(SharedKernelMappingReason {\n            kind: SharedKernelMappingReasonKind::QemuTcg,\n        }),",
         replace: "        ExecutionEnvironmentKind::QemuTcg => None,",
@@ -6257,6 +6877,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 613,
         file: "libs/x86-cpuid/src/lib.rs",
         find: "        if leaf_1_ecx & HYPERVISOR_BIT == 0 {",
         replace: "        if false && leaf_1_ecx & HYPERVISOR_BIT == 0 {",
@@ -6267,6 +6888,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 614,
         file: "libs/x86-cpuid/src/lib.rs",
         find: "                u32::from_le_bytes(*b\"GTCG\"),",
         replace: "                u32::from_le_bytes(*b\"GTCF\"),",
@@ -6277,6 +6899,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 615,
         file: "libs/x86-cpuid/src/lib.rs",
         find: "            SharedKernelMappingReasonKind::QemuTcg => \"qemu_tcg\",",
         replace: "            SharedKernelMappingReasonKind::QemuTcg => \"qemu\",",
@@ -6287,6 +6910,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 616,
         file: "libs/x86-cpuid/src/lib.rs",
         find: "const HYPERVISOR_BIT: u32 = 1 << 31;",
         replace: "const HYPERVISOR_BIT: u32 = 1 << 30;",
@@ -6297,6 +6921,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 617,
         file: "xtask/src/qemu.rs",
         find: "    \"-no-user-config\",\n    \"-accel\",",
         replace: "    \"-accel\",",
@@ -6307,6 +6932,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 618,
         file: "xtask/src/qemu.rs",
         find: "    \"-accel\",\n    \"tcg\",\n    \"-machine\",",
         replace: "    \"-accel\",\n    \"whpx\",\n    \"-machine\",",
@@ -6317,6 +6943,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 619,
         file: "xtask/src/qemu.rs",
         find: "    \"-cpu\",\n    \"max,hypervisor=on,tcg-cpuid=on\",\n    \"-m\",",
         replace: "    \"-cpu\",\n    \"max\",\n    \"-m\",",
@@ -6327,6 +6954,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 620,
         file: "xtask/src/qemu.rs",
         find: "const DEGRADED_CPU: [&str; 2] = [\n    \"-cpu\",\n    \"qemu64,-x2apic,-smep,-smap,-umip,hypervisor=on,tcg-cpuid=on\",\n];",
         replace: "const DEGRADED_CPU: [&str; 2] = [\n    \"-cpu\",\n    \"qemu64,-x2apic,-smep,-smap,-umip\",\n];",
@@ -6337,6 +6965,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 621,
         file: "xtask/src/qemu.rs",
         find: "    validate_run_arguments(extra)?;",
         replace: "    let _unchecked_extra = extra;",
@@ -6347,6 +6976,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 622,
         file: "xtask/src/qemu.rs",
         find: "                | \"-cpu\"",
         replace: "",
@@ -6357,6 +6987,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 623,
         file: "xtask/src/qemu.rs",
         find: "                | \"-global\"",
         replace: "",
@@ -6367,6 +6998,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 624,
         file: "xtask/src/qemu.rs",
         find: "                | \"-readconfig\"",
         replace: "",
@@ -6377,6 +7009,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 625,
         file: "xtask/src/qemu.rs",
         find: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n];",
         replace: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n];",
@@ -6387,6 +7020,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 626,
         file: "xtask/src/qemu.rs",
         find: "fn is_exact_log_message(line: &str, severity: LogSeverity, expected: &str) -> bool {\n    log_message(line, severity) == Some(expected)\n}",
         replace: "fn is_exact_log_message(line: &str, severity: LogSeverity, expected: &str) -> bool {\n    log_message(line, severity).is_some_and(|message| message.contains(expected))\n}",
@@ -6397,6 +7031,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 627,
         file: "xtask/src/qemu.rs",
         find: "    if verdict.status == VerdictStatus::Pass && !observation.qemu_tcg_isolation {",
         replace: "    if false && verdict.status == VerdictStatus::Pass && !observation.qemu_tcg_isolation {",
@@ -6407,6 +7042,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 628,
         file: "xtask/src/qemu.rs",
         find: "        if observation.qemu_tcg_isolation {",
         replace: "        if false && observation.qemu_tcg_isolation {",
@@ -6417,6 +7053,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 629,
         file: "xtask/src/vmware.rs",
         find: "const VMWARE_ISOLATION_MARKER: &str = \"cpu: user isolation shared kernel mappings: rdcl_no\";",
         replace: "const VMWARE_ISOLATION_MARKER: &str = \"cpu: user isolation shared kernel mappings: qemu_tcg\";",
@@ -6427,6 +7064,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 630,
         file: "xtask/src/vmware.rs",
         find: "            Self::Exact(expected) => message == expected,",
         replace: "            Self::Exact(expected) => message.contains(expected),",
@@ -6437,6 +7075,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 631,
         file: "xtask/src/vmware.rs",
         find: "    TranscriptMarker::LocalApic,\n    TranscriptMarker::Exact(VMWARE_ISOLATION_MARKER),\n    TranscriptMarker::Exact(\"selftest: a thread crosses into ring three and calls back\"),",
         replace: "    TranscriptMarker::LocalApic,\n    TranscriptMarker::Exact(\"selftest: a thread crosses into ring three and calls back\"),",
@@ -6447,6 +7086,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 632,
         file: "xtask/src/vmware.rs",
         find: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Exact(VMWARE_ISOLATION_MARKER),\n    TranscriptMarker::Nvme,",
         replace: "const SHIPPED_MARKERS: &[TranscriptMarker] = &[\n    TranscriptMarker::Nvme,",
@@ -6457,6 +7097,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 633,
         file: "xtask/src/api.rs",
         find: "            ensure!(\n                !contains_diagnostic_marker(&text).with_context(|| {\n                    format!(\n                        \"decoding literals while scanning {} for the reserved API marker\",\n                        relative.display()\n                    )\n                })?,\n                \"{} contains the API audit's reserved diagnostic marker\",\n                relative.display()\n            );",
         replace: "            let _unchecked_diagnostic_source = (&text, &relative);",
@@ -6467,6 +7108,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 634,
         file: "xtask/src/api.rs",
         find: "            ensure!(\n                instrumentation.ids.contains(&id),\n                \"an API diagnostic names item {id}, which was not instrumented in this compiler round\"\n            );",
         replace: "            let _unchecked_instrumentation = (&instrumentation.ids, id);",
@@ -6477,6 +7119,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 635,
         file: "xtask/src/mutation_workspace.rs",
         find: "    let metadata = std::fs::symlink_metadata(child)\n        .with_context(|| format!(\"inspecting {}\", child.display()))?;\n    require_real_directory_metadata(child, &metadata, label)?;\n    require_canonical_child(parent, child, label)",
         replace: "    let metadata = std::fs::symlink_metadata(child)\n        .with_context(|| format!(\"inspecting {}\", child.display()))?;\n    let _unchecked_mutation_child = (metadata, label);\n    Ok(())",
@@ -6487,6 +7130,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 636,
         file: "xtask/src/api.rs",
         find: "    if count != 1 || summary != \"public API item(s) have no caller:\" {\n        return false;\n    }",
         replace: "    if count != 1 {\n        return false;\n    }",
@@ -6497,6 +7141,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 637,
         file: "xtask/src/elf.rs",
         find: "    if stride != SECTION_HEADER_BYTES {",
         replace: "    if false && stride != SECTION_HEADER_BYTES {",
@@ -6507,6 +7152,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 638,
         file: "libs/memory-map/src/lib.rs",
         find: "        matches!(self, Self::Usable)",
         replace: "        false",
@@ -6517,6 +7163,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 639,
         file: "libs/memory-map/src/lib.rs",
         find: "                let overlaps = start < region.end() && region.base < end;",
         replace: "                let overlaps = start < region.end() && region.base <= end;",
@@ -6527,6 +7174,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 640,
         file: "libs/elf64/src/lib.rs",
         find: "        if u32::from(identification_version) != CURRENT_VERSION {",
         replace: "        if false && u32::from(identification_version) != CURRENT_VERSION {",
@@ -6537,6 +7185,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 641,
         file: "libs/elf64/src/lib.rs",
         find: "        if kind != EXECUTABLE {",
         replace: "        if false && kind != EXECUTABLE {",
@@ -6547,6 +7196,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 642,
         file: "libs/elf64/src/lib.rs",
         find: "        if version != CURRENT_VERSION {",
         replace: "        if false && version != CURRENT_VERSION {",
@@ -6557,6 +7207,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 643,
         file: "libs/elf64/src/lib.rs",
         find: "        if header_size as usize != HEADER_BYTES {",
         replace: "        if false && header_size as usize != HEADER_BYTES {",
@@ -6567,6 +7218,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 644,
         file: "libs/wizzy-handoff/src/lib.rs",
         find: "    repository_authority(&location[..authority_end])",
         replace: "    true",
@@ -6577,6 +7229,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 645,
         file: "libs/wizzy-handoff/src/lib.rs",
         find: "    repository_authority(&location[..authority_end])",
         replace: "    false",
@@ -6587,6 +7240,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 646,
         file: "libs/wizzy-handoff/src/lib.rs",
         find: "    if host.len() > 253 {",
         replace: "    if host.len() >= 253 {",
@@ -6597,6 +7251,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 647,
         file: "xtask/src/bounded_process.rs",
         find: "        if exited.is_none() {\n            return Err(anyhow::anyhow!(\n                \"{error:#}; stopping {reason} {label}: {kill_error}\"\n            ));\n        }",
         replace: "        if false && exited.is_none() {\n            return Err(anyhow::anyhow!(\n                \"{error:#}; stopping {reason} {label}: {kill_error}\"\n            ));\n        }",
@@ -6607,6 +7262,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 648,
         file: "xtask/src/bounded_process.rs",
         find: "    } else if let Err(reap) = poll_terminated_child(&mut child, try_wait, POST_KILL_TIMEOUT, label)\n    {\n        return Err(anyhow::anyhow!(\"{error:#}; {reap:#}\"));\n    }",
         replace: "    } else {\n        let _unreaped_child = (&mut child, try_wait, label);\n    }",
@@ -6617,6 +7273,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 649,
         file: "xtask/src/bounded_process.rs",
         find: "        ensure!(\n            bytes <= limit as u64,\n            \"bounded child output exceeded {limit} bytes\"\n        );",
         replace: "        let _unchecked_capture_size = (bytes, limit);",
@@ -6627,6 +7284,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 650,
         file: "xtask/src/debugger.rs",
         find: "    crate::bounded_process::output(command, timeout, \"GDB identity probe\")",
         replace: "    crate::bounded_process::output(command, timeout.saturating_mul(20), \"GDB identity probe\")",
@@ -6637,6 +7295,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 651,
         file: "xtask/src/model.rs",
         find: "    crate::bounded_process::output(command, timeout, label)",
         replace: "    crate::bounded_process::output(command, timeout.saturating_mul(2), label)",
@@ -6647,6 +7306,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 652,
         file: "xtask/src/qualification.rs",
         find: "    let result = crate::bounded_process::output(command, timeout, &label)?;",
         replace: "    let result = crate::bounded_process::output(command, timeout.saturating_mul(20), &label)?;",
@@ -6657,6 +7317,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 653,
         file: "xtask/src/mutation_workspace.rs",
         find: "        let path = require_confined_file(&self.snapshot, relative, \"mutation source file\")?;",
         replace: "        let path = self.snapshot.join(relative);",
@@ -6667,6 +7328,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 654,
         file: "xtask/src/mutation_workspace.rs",
         find: "        let path =\n            require_confined_file(self.workspace.root(), relative, \"mutation workspace file\")?;",
         replace: "        let path = self.workspace.root().join(relative);",
@@ -6677,6 +7339,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 655,
         file: "xtask/src/mutation_workspace.rs",
         find: "    require_real_file_metadata(path, &metadata, label)?;\n    require_canonical_child(parent, path, label)?;",
         replace: "    let _unchecked_direct_file = (&metadata, label);",
@@ -6687,6 +7350,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 656,
         file: "xtask/src/mutation_workspace.rs",
         find: "    fn require_directory(&self) -> Result<()> {\n        ensure!(\n            canonical_existing_real_directory(&self.directory, \"mutation journal directory\")?\n                == self.directory,\n            \"mutation journal directory changed after it was opened\"\n        );\n        Ok(())\n    }",
         replace: "    fn require_directory(&self) -> Result<()> { Ok(()) }",
@@ -6697,6 +7361,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 657,
         file: "xtask/src/mutation_workspace.rs",
         find: "            if require_direct_file_if_present(&self.directory, path, label)? {\n                std::fs::remove_file(path)\n                    .with_context(|| format!(\"removing old {label} {}\", path.display()))?;\n            }\n            std::fs::rename(&temporary, path).with_context(|| {\n                format!(\n                    \"publishing {label} {} as {}\",\n                    temporary.display(),\n                    path.display()\n                )\n            })?;",
         replace: "            let _unchecked_destination =\n                require_direct_file_if_present(&self.directory, path, label)?;\n            std::fs::write(path, bytes)\n                .with_context(|| format!(\"overwriting {label} {}\", path.display()))?;",
@@ -6707,6 +7372,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 658,
         file: "xtask/src/qualification.rs",
         find: "            prepare_contained_real_directory(\n                evidence_root,\n                parent,\n                \"qualification bundle directory\",\n            )?;",
         replace: "            std::fs::create_dir_all(parent)\n                .with_context(|| format!(\"creating {}\", parent.display()))?;\n            require_contained_real_directory(\n                evidence_root,\n                parent,\n                \"qualification bundle directory\",\n            )?;",
@@ -6717,6 +7383,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 659,
         file: "xtask/src/qualification.rs",
         find: "            transcript.source.file_name().and_then(|name| name.to_str())\n                == Some(generation_transcript_name(generation)?.as_str()),",
         replace: "            true,",
@@ -6727,6 +7394,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 660,
         file: "xtask/src/qualification.rs",
         find: "            receipt == generation_record_from_digests(source, kind, generation, &digests)?,",
         replace: "            generation_record_from_digests(source, kind, generation, &digests).is_ok(),",
@@ -6737,6 +7405,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 661,
         file: "xtask/src/qualification.rs",
         find: "                digest_file(&file.source)? == file.digest,",
         replace: "                true,",
@@ -6747,6 +7416,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 662,
         file: "xtask/src/qualification.rs",
         find: "            ensure!(\n                destination == file.captured && digest_file(&destination)? == file.digest,\n                \"captured VMware artifact changed during publication\"\n            );",
         replace: "            std::fs::copy(&file.source, &destination)\n                .with_context(|| format!(\"recopying {}\", file.source.display()))?;",
@@ -6757,6 +7427,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 663,
         file: "libs/x86-apic/src/vector.rs",
         find: "        if vector < FIRST_PIC_VECTOR {",
         replace: "        if vector < FIRST_PIC_VECTOR && vector != 0x1f {",
@@ -6767,6 +7438,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 664,
         file: "libs/x86-apic/src/vector.rs",
         find: "            while other < index {",
         replace: "            while other < index.saturating_sub(1) {",
@@ -6777,6 +7449,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 665,
         file: "xtask/src/api.rs",
         find: "    identity == wanted\n        && location.rsplit_once(':').is_some_and(|(path, line)| {",
         replace: "    identity.contains(wanted)\n        && location.rsplit_once(':').is_some_and(|(path, line)| {",
@@ -6787,6 +7460,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 666,
         file: "xtask/src/evidence.rs",
         find: "    let output = run(command, QEMU_VERSION_DEADLINE, QEMU_VERSION_LABEL)?;",
         replace: "    let output = run(command, Duration::MAX, QEMU_VERSION_LABEL)?;",
@@ -6797,6 +7471,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 667,
         file: "xtask/src/model.rs",
         find: "    ensure!(\n        description.len() > 2 && description.starts_with('<') && description.ends_with('>'),\n        \"TLC trace state has no canonical action description\"\n    );",
         replace: "    let _unchecked_description = description;",
@@ -6807,6 +7482,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 668,
         file: "xtask/src/evidence.rs",
         find: "    let root = crate::mutation_workspace::prepare_real_directory_tree(\n        &evidence_root(paths),\n        \"evidence root\",\n    )?;",
         replace: "    let root = evidence_root(paths);\n    std::fs::create_dir_all(&root)\n        .with_context(|| format!(\"creating evidence directory {}\", root.display()))?;",
@@ -6817,6 +7493,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 669,
         file: "xtask/src/qualification.rs",
         find: "fn invalidate(paths: &Paths, kind: Kind) -> Result<()> {\n    let root = crate::mutation_workspace::prepare_real_directory_tree(\n        &qualification_root(paths),\n        \"qualification root\",\n    )?;",
         replace: "fn invalidate(paths: &Paths, kind: Kind) -> Result<()> {\n    let root = qualification_root(paths);\n    std::fs::create_dir_all(&root).with_context(|| format!(\"creating {}\", root.display()))?;",
@@ -6827,6 +7504,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 670,
         file: "xtask/src/api.rs",
         find: "fn prepare_audit_target(paths: &Paths) -> Result<PathBuf> {\n    crate::mutation_workspace::prepare_real_directory_tree(\n        paths.target_dir(),\n        \"API audit target directory\",\n    )\n}",
         replace: "fn prepare_audit_target(paths: &Paths) -> Result<PathBuf> {\n    let target = paths.target_dir().to_path_buf();\n    std::fs::create_dir_all(&target)\n        .with_context(|| format!(\"creating {}\", target.display()))?;\n    Ok(target)\n}",
@@ -6837,6 +7515,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 671,
         file: "xtask/src/api.rs",
         find: "    match std::fs::symlink_metadata(&directory) {\n        Ok(_) => {\n            let canonical = crate::mutation_workspace::canonical_existing_real_directory(\n                &directory,\n                \"API audit working directory\",\n            )?;\n            ensure!(\n                canonical.parent() == Some(state),\n                \"API audit working directory escaped its canonical state root\"\n            );\n            std::fs::remove_dir_all(&canonical)\n                .with_context(|| format!(\"removing stale {}\", canonical.display()))?;\n        }\n        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}\n        Err(error) => {\n            return Err(error).with_context(|| format!(\"inspecting {}\", directory.display()));\n        }\n    }\n    crate::mutation_workspace::prepare_real_child(state, &directory, \"API audit working directory\")",
         replace: "    if directory.exists() {\n        std::fs::remove_dir_all(&directory)\n            .with_context(|| format!(\"removing stale {}\", directory.display()))?;\n    }\n    std::fs::create_dir_all(&directory)\n        .with_context(|| format!(\"creating {}\", directory.display()))?;\n    Ok(directory)",
@@ -6847,6 +7526,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 672,
         file: "xtask/src/api.rs",
         find: "fn open_audit_lock(state: &Path) -> Result<File> {\n    let lock_path = state.join(\"LOCK\");\n    crate::mutation_workspace::require_direct_file_if_present(state, &lock_path, \"API audit lock\")?;\n    let mut lock_options = OpenOptions::new();\n    OpenOptions::create(&mut lock_options, true);\n    OpenOptions::truncate(&mut lock_options, false);\n    OpenOptions::read(&mut lock_options, true);\n    OpenOptions::write(&mut lock_options, true);\n    let lock = OpenOptions::open(&lock_options, &lock_path)\n        .with_context(|| format!(\"opening {}\", lock_path.display()))?;\n    crate::mutation_workspace::require_direct_file(state, &lock_path, \"API audit lock\")?;\n    lock.try_lock()\n        .context(\"another public API audit is already running\")?;\n    Ok(lock)\n}",
         replace: "fn open_audit_lock(state: &Path) -> Result<File> {\n    let lock_path = state.join(\"LOCK\");\n    let mut lock_options = OpenOptions::new();\n    OpenOptions::create(&mut lock_options, true);\n    OpenOptions::truncate(&mut lock_options, false);\n    OpenOptions::read(&mut lock_options, true);\n    OpenOptions::write(&mut lock_options, true);\n    let lock = OpenOptions::open(&lock_options, &lock_path)\n        .with_context(|| format!(\"opening {}\", lock_path.display()))?;\n    lock.try_lock()\n        .context(\"another public API audit is already running\")?;\n    Ok(lock)\n}",
@@ -6857,6 +7537,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 673,
         file: "xtask/src/mutate.rs",
         find: "        ensure!(\n            !success,\n            \"host mutation printed a failed verdict but Cargo exited successfully\"\n        );",
         replace: "        let _unchecked_status = success;",
@@ -6867,6 +7548,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 674,
         file: "xtask/src/mutate.rs",
         find: "    let failed = stdout\n        .lines()\n        .chain(stderr.lines())\n        .filter(|line| *line == failed)\n        .count();",
         replace: "    let failed = stdout\n        .lines()\n        .chain(stderr.lines())\n        .filter(|line| line.contains(&failed))\n        .count();",
@@ -6877,6 +7559,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 675,
         file: "xtask/src/mutation_workspace.rs",
         find: "fn write_source(destination: &Path, bytes: &[u8]) -> Result<()> {\n    write_source_with(destination, bytes, |from, to| std::fs::rename(from, to))\n}",
         replace: "fn write_source(destination: &Path, bytes: &[u8]) -> Result<()> {\n    std::fs::write(destination, bytes)\n        .with_context(|| format!(\"overwriting {}\", destination.display()))\n}",
@@ -6887,6 +7570,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 676,
         file: "xtask/src/bounded_process.rs",
         find: "    let mut file = retained\n        .try_clone()\n        .with_context(|| format!(\"cloning captured {label} {}\", path.display()))?;",
         replace: "    let _discarded_capture_handle = retained;\n    let mut file = File::open(path)\n        .with_context(|| format!(\"reopening captured {label} {}\", path.display()))?;",
@@ -6897,6 +7581,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 677,
         file: "xtask/src/mutation_workspace.rs",
         find: "    Ok(SweepLock { _file: file })",
         replace: "    file.set_len(0)\n        .with_context(|| format!(\"truncating mutation lock {}\", path.display()))?;\n    Ok(SweepLock { _file: file })",
@@ -6907,6 +7592,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 678,
         file: "xtask/src/model.rs",
         find: "fn canonical_model_scratch(scratch: &Path) -> Result<PathBuf> {\n    crate::mutation_workspace::canonical_existing_real_directory(\n        scratch,\n        \"model-check scratch directory\",\n    )\n}",
         replace: "fn canonical_model_scratch(scratch: &Path) -> Result<PathBuf> {\n    std::fs::canonicalize(scratch)\n        .with_context(|| format!(\"canonicalizing {}\", scratch.display()))\n}",
@@ -6917,6 +7603,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 679,
         file: "xtask/src/vmware.rs",
         find: "    crate::mutation_workspace::prepare_real_directory_tree(&root, \"VMware root\")?;",
         replace: "    std::fs::create_dir_all(&root)\n        .with_context(|| format!(\"creating VMware root {}\", root.display()))?;",
@@ -6927,6 +7614,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 680,
         file: "xtask/src/evidence.rs",
         find: "fn require_real_directory(path: &Path, label: &str) -> Result<()> {\n    crate::mutation_workspace::canonical_existing_real_directory(path, label)?;\n    Ok(())\n}",
         replace: "fn require_real_directory(path: &Path, label: &str) -> Result<()> {\n    let metadata = std::fs::symlink_metadata(path)\n        .with_context(|| format!(\"inspecting {}\", path.display()))?;\n    ensure!(\n        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),\n        \"{label} is not a real directory: {}\",\n        path.display()\n    );\n    Ok(())\n}",
@@ -6937,6 +7625,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 681,
         file: "xtask/src/qualification.rs",
         find: "fn require_real_directory(path: &Path, label: &str) -> Result<()> {\n    crate::mutation_workspace::canonical_existing_real_directory(path, label)?;\n    Ok(())\n}",
         replace: "fn require_real_directory(path: &Path, label: &str) -> Result<()> {\n    let metadata = std::fs::symlink_metadata(path)\n        .with_context(|| format!(\"inspecting {}\", path.display()))?;\n    ensure!(\n        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),\n        \"{label} is not a real directory: {}\",\n        path.display()\n    );\n    Ok(())\n}",
@@ -6947,6 +7636,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 682,
         file: "xtask/src/vmware.rs",
         find: "fn require_canonical_child(parent: &Path, child: &Path, label: &str) -> Result<()> {\n    let canonical_parent =\n        crate::mutation_workspace::canonical_existing_real_directory(parent, label)?;\n    let canonical_child =\n        crate::mutation_workspace::canonical_existing_real_directory(child, label)?;\n    ensure!(\n        canonical_child.parent() == Some(canonical_parent.as_path()),\n        \"{label} escaped its canonical parent\"\n    );\n    Ok(())\n}",
         replace: "fn require_canonical_child(parent: &Path, child: &Path, label: &str) -> Result<()> {\n    let canonical_parent = std::fs::canonicalize(parent)\n        .with_context(|| format!(\"canonicalizing {}\", parent.display()))?;\n    let canonical_child = std::fs::canonicalize(child)\n        .with_context(|| format!(\"canonicalizing {}\", child.display()))?;\n    ensure!(\n        canonical_child.parent() == Some(canonical_parent.as_path()),\n        \"{label} escaped its canonical parent\"\n    );\n    Ok(())\n}",
@@ -6957,6 +7647,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 683,
         file: "kernel/src/queue.rs",
         find: "                && current == self.expected,",
         replace: "                && current != self.expected,",
@@ -6967,6 +7658,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 684,
         file: "kernel/src/queue.rs",
         find: "                !entry.settling && *entry == self.work.expected,",
         replace: "                entry.settling && *entry == self.work.expected,",
@@ -6977,6 +7669,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 685,
         file: "kernel/src/queue.rs",
         find: "            entry.settling && current == entry,",
         replace: "            !entry.settling && current == entry,",
@@ -6987,6 +7680,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 686,
         file: "kernel/src/queue.rs",
         find: "        if self.head >= WORK_DEPTH || self.tail >= WORK_DEPTH || self.len > WORK_DEPTH {",
         replace: "        if self.head > WORK_DEPTH || self.tail >= WORK_DEPTH || self.len > WORK_DEPTH {",
@@ -6994,6 +7688,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a cancelled operation and its cancellation complete separately"),
     },
     Mutation {
+        id: 687,
         file: "kernel/src/queue.rs",
         find: "            pending.checked_add(1)",
         replace: "            Some(pending.wrapping_add(1))",
@@ -7001,6 +7696,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a cancelled operation and its cancellation complete separately"),
     },
     Mutation {
+        id: 688,
         file: "kernel/src/queue.rs",
         find: "            pending.checked_sub(1)",
         replace: "            Some(pending.wrapping_sub(1))",
@@ -7008,6 +7704,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a cancelled operation and its cancellation complete separately"),
     },
     Mutation {
+        id: 689,
         file: "libs/ring-proto/src/lib.rs",
         find: "        if self.reserved + self.completion.occupied() >= self.completion.capacity().entries() {",
         replace: "        if true || self.reserved + self.completion.occupied() >= self.completion.capacity().entries() {",
@@ -7018,6 +7715,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 690,
         file: "xtask/src/mutation_workspace.rs",
         find: "        write_source(&path, mutated.as_bytes())\n            .with_context(|| format!(\"writing isolated mutation {}\", path.display()))",
         replace: "        std::fs::write(&path, mutated)\n            .with_context(|| format!(\"writing isolated mutation {}\", path.display()))",
@@ -7028,6 +7726,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 691,
         file: "xtask/src/bounded_process.rs",
         find: "        let status = match try_wait(&mut child) {\n            Ok(status) => status,\n            Err(error) => {\n                let error = anyhow::anyhow!(\"checking {label}: {error}\");\n                return stop_after_observation_failure(child, try_wait, kill, error, label);\n            }\n        };",
         replace: "        let status = try_wait(&mut child)\n            .with_context(|| format!(\"checking {label}\"))?;",
@@ -7038,6 +7737,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 692,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        self.may_reach(virtual_base, len)?;\n        if let Some(pinned) = protected_stack_overlap(self.root(), virtual_base, len) {",
         replace: "        self.may_reach(virtual_base, len)?;\n        if let Some(pinned) = permanent_stack_overlap(self.root(), virtual_base, len) {",
@@ -7045,6 +7745,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("unmapping refuses what it does not own"),
     },
     Mutation {
+        id: 693,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    if current_slot == Some(slot) {",
         replace: "    if current_slot == Some(slot) && cpu::page_table_base() != active_root() {",
@@ -7052,6 +7753,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("an active unmap exposes only its replacement"),
     },
     Mutation {
+        id: 694,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    if current_slot == Some(slot) {",
         replace: "    if cpu::page_table_base() == active_root() {",
@@ -7059,6 +7761,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a shared kernel unmap evicts the live user root"),
     },
     Mutation {
+        id: 695,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    if current_slot == Some(slot) {",
         replace: "    if true {",
@@ -7066,6 +7769,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("an inactive lower-root unmap preserves the live observer"),
     },
     Mutation {
+        id: 696,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "const NOT_THE_CALLERS: Flags = Flags::OWNED.union(Flags::HUGE).union(Flags::GLOBAL);",
         replace: "const NOT_THE_CALLERS: Flags = Flags::OWNED.union(Flags::HUGE);",
@@ -7073,6 +7777,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("caller global is removed from safe mappings"),
     },
     Mutation {
+        id: 697,
         file: "wost/src/arch/x86_64/cpu.rs",
         find: "    assert!(\n        !page_table_context_ids_are_enabled(),\n        \"page-table switching requires CR4.PCIDE to remain clear\"\n    );",
         replace: "    assert!(\n        page_table_context_ids_are_enabled(),\n        \"page-table switching requires CR4.PCIDE to remain clear\"\n    );",
@@ -7083,6 +7788,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 698,
         file: "wost/src/arch/x86_64/task.rs",
         find: "    if let Some(address) = arena.invalid_page() {",
         replace: "    if let Some(address) = arena.invalid_page().filter(|_| false) {",
@@ -7090,6 +7796,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("thread stacks are guarded below"),
     },
     Mutation {
+        id: 699,
         file: "wost/src/arch/x86_64/task.rs",
         find: "    let layout = match validate_arena(&arena) {",
         replace: "    let layout = match Ok::<stack_layout::StackLayout, TaskError>(*arena.layout()) {",
@@ -7100,6 +7807,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 700,
         file: "xtask/src/model.rs",
         find: "        transcripts.len() == RUNS.len(),",
         replace: "        true,",
@@ -7110,6 +7818,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 701,
         file: "xtask/src/model.rs",
         find: "        ensure!(
             transcript.artifact == run.artifact,
@@ -7125,6 +7834,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 702,
         file: "xtask/src/qualification.rs",
         find: "            crate::model::verify_transcript(name, &bytes)?;",
         replace: "            let _unchecked_model_transcript = (name, &bytes);",
@@ -7135,6 +7845,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 703,
         file: "xtask/src/qualification.rs",
         find: "        relative: \"qualification/model/ring-clean.transcript\",",
         replace: "        relative: \"qualification/model/ring-clean.transcript-omitted\",",
@@ -7145,6 +7856,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 704,
         file: "xtask/src/api.rs",
         find: "            let mut activated = false;\n            for (&(file, site), evidence) in &self.dispatches {",
         replace: "            let mut activated = false;\n            for activation in &inventory.trait_activations {\n                if activation.declaration.is_some()\n                    && live.contains(&activation.self_type)\n                    && live.insert(activation.implementation)\n                {\n                    pending.push_back(activation.implementation);\n                    activated = true;\n                }\n            }\n            for (&(file, site), evidence) in &self.dispatches {",
@@ -7155,6 +7867,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 705,
         file: "xtask/src/api.rs",
         find: "        ensure!(
             !inventory.unresolved_trait_implementations.contains(&caller),
@@ -7170,6 +7883,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 706,
         file: "xtask/src/api.rs",
         find: "fn prelude_external_trait(path: &str) -> bool {\n    matches!(",
         replace: "fn prelude_external_trait(path: &str) -> bool {\n    return false;\n    #[allow(unreachable_code)]\n    matches!(",
@@ -7180,6 +7894,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 707,
         file: "libs/nvme/src/lib.rs",
         find: "        if namespace == 0 || !Self::contiguous_extent(address, IDENTIFY_TRANSFER_BYTES, page_size) {",
         replace: "        if namespace == 0 {",
@@ -7190,6 +7905,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 708,
         file: "libs/nvme/src/lib.rs",
         find: "            || !Self::contiguous_extent(address, transfer.bytes(), page_size)",
         replace: "            || false",
@@ -7200,6 +7916,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 709,
         file: "libs/nvme/src/lib.rs",
         find: "        if queue == 0 || !Self::contiguous_extent(address, capacity.completion_bytes(), page_size) {",
         replace: "        if queue == 0 {",
@@ -7210,6 +7927,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 710,
         file: "libs/nvme/src/lib.rs",
         find: "        self.state = DmaOwnership::InFlight;\n        Some(handoff(DmaPublication { _state: self }))",
         replace: "        let outcome = handoff(DmaPublication { _state: self });\n        self.state = DmaOwnership::InFlight;\n        Some(outcome)",
@@ -7220,6 +7938,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 711,
         file: "libs/nvme/src/lib.rs",
         find: "        if self.state != DmaOwnership::InFlight {",
         replace: "        if self.state == DmaOwnership::Idle {",
@@ -7230,6 +7949,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 712,
         file: "kernel/src/user.rs",
         find: "        return if another_collector {
             CollectOutcome::Retained
@@ -7245,6 +7965,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("an in-flight collector keeps the worker retry live"),
     },
     Mutation {
+        id: 713,
         file: "wost/src/mm/mod.rs",
         find: "impl Drop for USegment {\n    fn drop(&mut self) {\n        let Some(mut segment) = self.segment.take() else {\n            return;\n        };\n        if !segment.zero() {",
         replace: "impl Drop for USegment {\n    fn drop(&mut self) {\n        let Some(mut segment) = self.segment.take() else {\n            return;\n        };\n        if false {",
@@ -7252,6 +7973,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("external user bytes are zeroed before free"),
     },
     Mutation {
+        id: 714,
         file: "wost/src/mm/mod.rs",
         find: "impl Drop for USegment {",
         replace: "#[cfg(any())]\nimpl Drop for USegment {",
@@ -7259,6 +7981,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("external user bytes are zeroed before free"),
     },
     Mutation {
+        id: 715,
         file: "wost/src/mm/mod.rs",
         find: "        if !segment.zero() {\n            #[cfg(feature = \"selftest\")]\n            let address = segment.address();\n            core::mem::forget(segment);\n            #[cfg(feature = \"selftest\")]\n            observe_external_run_withheld_for_test(address);\n        }",
         replace: "        if !segment.zero() {\n            #[cfg(feature = \"selftest\")]\n            let address = segment.address();\n            drop(segment);\n            #[cfg(feature = \"selftest\")]\n            observe_external_run_withheld_for_test(address);\n        }",
@@ -7266,6 +7989,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a refused external clear withholds its run"),
     },
     Mutation {
+        id: 716,
         file: "kernel/src/user.rs",
         find: "            if zombies.settling[slot] {\n                return None;\n            }",
         replace: "            if false && zombies.settling[slot] {\n                return None;\n            }",
@@ -7277,6 +8001,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 717,
         file: "libs/x86-cpuid/src/xstate.rs",
         find: "pub const fn matches_permitted_configuration(configured: u64) -> bool {\n    configured == PERMITTED\n}",
         replace: "pub const fn matches_permitted_configuration(configured: u64) -> bool {\n    configured & PERMITTED == PERMITTED\n}",
@@ -7287,6 +8012,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 718,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    fn device_reclaim_error(&self) -> Option<ReclaimError> {\n        let mappings = self.devices.iter().flatten().count();\n        (mappings != 0).then_some(ReclaimError::Devices(mappings))\n    }",
         replace: "    fn device_reclaim_error(&self) -> Option<ReclaimError> {\n        let _mappings = self.devices.iter().flatten().count();\n        None\n    }",
@@ -7294,6 +8020,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("active device tables cannot be reclaimed"),
     },
     Mutation {
+        id: 719,
         file: "wost/src/mm/mod.rs",
         find: "    for run in map.allocatable_runs() {\n        ignored += frames.insert(run.base(), run.bytes()).ignored;\n    }",
         replace: "    for region in map.regions().filter(|region| region.kind.is_allocatable()) {\n        ignored += frames.insert(region.base, region.len).ignored;\n    }",
@@ -7301,6 +8028,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the frame allocator admits only exclusively usable frames"),
     },
     Mutation {
+        id: 720,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            Err(reason) => Err(UserMapError::Mapping { reason, run }),",
         replace: "            Err(_reason) => {\n                run.commit_mapping();\n                Ok(())\n            }",
@@ -7308,6 +8036,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("external user bytes are zeroed before free"),
     },
     Mutation {
+        id: 721,
         file: "kernel/src/user.rs",
         find: "    if !crate::maskable_interrupts_are_ready() {\n        warn!(\"user {which}: maskable interrupts are not admitted\");\n        refuse_cross(slot);\n    }",
         replace: "    if false {\n        warn!(\"user {which}: maskable interrupts are not admitted\");\n        refuse_cross(slot);\n    }",
@@ -7315,6 +8044,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("unadmitted interrupts cannot be enabled by a user transition"),
     },
     Mutation {
+        id: 722,
         file: "wost/src/arch/x86_64/task.rs",
         find: "    if !disabled.were_enabled() {",
         replace: "    if false {",
@@ -7322,6 +8052,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("unadmitted interrupts cannot be enabled by a user transition"),
     },
     Mutation {
+        id: 723,
         file: "kernel/src/user.rs",
         find: "fn refuse_cross(slot: usize) -> ! {\n    let _disabled = interrupt::disable();\n    orphan(slot);\n    thread::exit()\n}",
         replace: "fn refuse_cross(slot: usize) -> ! {\n    let _disabled = interrupt::disable();\n    let _ = slot;\n    thread::exit()\n}",
@@ -7329,6 +8060,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("unadmitted interrupts cannot be enabled by a user transition"),
     },
     Mutation {
+        id: 724,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "#[cfg(feature = \"selftest\")]\npub fn fault_window() -> (u64, u64) {",
         replace: "pub fn fault_window() -> (u64, u64) {",
@@ -7339,6 +8071,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 725,
         file: "xtask/src/sha256.rs",
         find: "            if self.buffered != BLOCK_SIZE {",
         replace: "            if false && self.buffered != BLOCK_SIZE {",
@@ -7349,6 +8082,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 726,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        initial <= maximum,\n        \"{label} is {initial} bytes, exceeding the {maximum}-byte allocation limit\"\n    );",
         replace: "    ensure!(\n        true,\n        \"{label} is {initial} bytes, exceeding the {maximum}-byte allocation limit\"\n    );",
@@ -7359,6 +8093,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 727,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        bytes.len() as u64 <= maximum,\n        \"{label} grew beyond the {maximum}-byte allocation limit while being read\"\n    );",
         replace: "    ensure!(\n        true,\n        \"{label} grew beyond the {maximum}-byte allocation limit while being read\"\n    );",
@@ -7369,6 +8104,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 728,
         file: "xtask/src/qualification.rs",
         find: "        ensure!(\n            length == maximum,\n            \"qualification artifact {name} is {length} bytes, expected exactly {maximum}\"\n        );",
         replace: "        ensure!(\n            length <= maximum,\n            \"qualification artifact {name} is {length} bytes, expected exactly {maximum}\"\n        );",
@@ -7379,6 +8115,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 729,
         file: "xtask/src/qualification.rs",
         find: "            initial == maximum,\n            \"{label} is {initial} bytes, expected exactly {maximum}\"",
         replace: "            initial >= maximum,\n            \"{label} is {initial} bytes, expected exactly {maximum}\"",
@@ -7389,6 +8126,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 730,
         file: "xtask/src/evidence.rs",
         find: "    verify_artifacts_with_image_bytes(record, root, boot_image_bytes())",
         replace: "    verify_artifacts_with_image_bytes(\n        record,\n        root,\n        std::fs::metadata(root.join(ARTIFACTS[1].relative))?.len(),\n    )",
@@ -7399,6 +8137,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 731,
         file: "xtask/src/mutation_workspace.rs",
         find: "    ensure!(\n        initial <= maximum,\n        \"{label} is {initial} bytes, exceeding the {maximum}-byte allocation limit\"\n    );",
         replace: "    ensure!(\n        true,\n        \"{label} is {initial} bytes, exceeding the {MAX_STATE_FILE_BYTES}-byte allocation limit\"\n    );",
@@ -7409,6 +8148,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 732,
         file: "xtask/src/supply_chain.rs",
         find: "    let result = (|| {\n        let mut options = OpenOptions::new();",
         replace: "    std::fs::write(destination, bytes)\n        .with_context(|| format!(\"writing old SPDX document {}\", destination.display()))?;\n    let result = (|| {\n        let mut options = OpenOptions::new();",
@@ -7419,6 +8159,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 733,
         file: "libs/x86-apic/src/local_vector.rs",
         find: "        if vector.get() == spurious.get() {",
         replace: "        if vector.get() == spurious.get() && false {",
@@ -7429,6 +8170,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 734,
         file: "libs/x86-apic/src/timer.rs",
         find: "    if current_count != 0 {",
         replace: "    if false {",
@@ -7439,6 +8181,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 735,
         file: "libs/x86-apic/src/in_service.rs",
         find: "    for (bank, bits) in registers.iter().enumerate().rev() {",
         replace: "    for (bank, bits) in registers.iter().enumerate() {",
@@ -7449,6 +8192,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 736,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "    if EOI_CLAIMED\n        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)\n        .is_err()\n    {",
         replace: "    if EOI_CLAIMED\n        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)\n        .is_err()\n        && false\n    {",
@@ -7456,6 +8200,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("one delivery mints one completion authority"),
     },
     Mutation {
+        id: 737,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "#[derive(Debug)]\npub struct DisarmedTimer",
         replace: "#[derive(Debug, Clone, Copy)]\npub struct DisarmedTimer",
@@ -7466,6 +8211,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 738,
         file: "xtask/src/boundary.rs",
         find: "        \"acpi-tables\",\n        \"eevdf\",\n        \"elf64\",",
         replace: "        \"acpi-tables\",\n        \"elf64\",",
@@ -7476,6 +8222,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 739,
         file: "xtask/src/vmware.rs",
         find: "        let message = line.strip_prefix(\"[info ] \")?;",
         replace: "        let message = line.split_once(\"] \").map(|(_, message)| message)?;",
@@ -7486,6 +8233,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 740,
         file: "xtask/src/vmware.rs",
         find: "    OpenOptions::create_new(&mut options, true);",
         replace: "    OpenOptions::create(&mut options, true);\n    OpenOptions::truncate(&mut options, true);",
@@ -7496,6 +8244,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 741,
         file: "xtask/src/qualification.rs",
         find: "    require_observed_vmx(&observed, &expected)\n}",
         replace: "    require_observed_vmx(&observed, &observed)\n}",
@@ -7506,6 +8255,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 742,
         file: "xtask/src/api.rs",
         find: "    let mut output_options = OpenOptions::new();\n    OpenOptions::create_new(&mut output_options, true);\n    OpenOptions::write(&mut output_options, true);\n    let mut output = OpenOptions::open(&output_options, destination)",
         replace: "    let mut output_options = OpenOptions::new();\n    OpenOptions::create(&mut output_options, true);\n    OpenOptions::truncate(&mut output_options, true);\n    OpenOptions::write(&mut output_options, true);\n    let mut output = OpenOptions::open(&output_options, destination)",
@@ -7516,6 +8266,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 743,
         file: "xtask/src/mutate.rs",
         find: "    let label = format!(\"host mutation test {package}::{name}\");\n    let output = run(command, HOST_TEST_TIMEOUT, &label)?;",
         replace: "    let label = format!(\"host mutation test {package}::{name}\");\n    let output = match run(command, HOST_TEST_TIMEOUT, &label) {\n        Ok(output) => output,\n        Err(_) => return Ok(true),\n    };",
@@ -7526,6 +8277,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 744,
         file: "libs/x86-apic/src/in_service.rs",
         find: "pub fn owns(registers: &[u32; 8], vector: InterruptVector) -> bool {\n    highest(registers) == Some(vector.get())\n}",
         replace: "pub fn owns(registers: &[u32; 8], vector: InterruptVector) -> bool {\n    let _ = vector;\n    highest(registers).is_some()\n}",
@@ -7536,6 +8288,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 745,
         file: "libs/x86-apic/src/in_service.rs",
         find: "    matches!(interrupts, Interrupts::Excluded)",
         replace: "    true",
@@ -7546,6 +8299,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 746,
         file: "libs/x86-apic/src/in_service.rs",
         find: "        && matches!(frame_liveness, FrameLiveness::Live)",
         replace: "        && true",
@@ -7556,6 +8310,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 747,
         file: "libs/x86-apic/src/in_service.rs",
         find: "        && frame_vector == token_vector.get() as u64",
         replace: "        && true",
@@ -7566,6 +8321,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 748,
         file: "libs/x86-apic/src/in_service.rs",
         find: "        && matches!(dismissal, DismissalOwnership::Owned)",
         replace: "        && true",
@@ -7576,6 +8332,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 749,
         file: "libs/pci-config/src/lib.rs",
         find: "    fn holds_function(&self, function: FunctionLease, lease: CommandLease) -> bool {\n        lease.function == function && self.slots.iter().flatten().any(|held| *held == lease)\n    }",
         replace: "    fn holds_function(&self, function: FunctionLease, lease: CommandLease) -> bool {\n        lease.function == function\n            && self.slots.iter().flatten().any(|held| {\n                held.function == lease.function && held.generation == lease.generation\n            })\n    }",
@@ -7586,6 +8343,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 750,
         file: "libs/pci-config/src/lib.rs",
         find: "    pub fn holds(&self, authority: &FunctionAuthority) -> bool {\n        self.slots\n            .iter()\n            .flatten()\n            .any(|held| *held == authority.lease)\n    }",
         replace: "    pub fn holds(&self, authority: &FunctionAuthority) -> bool {\n        let _ = authority;\n        true\n    }",
@@ -7596,6 +8354,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 751,
         file: "libs/pci-config/src/lib.rs",
         find: "    if !functions.holds(authority) {\n        return Err(EnableFailure::from(EnableError::Stale));\n    }\n    enable_memory_space_with_leases(&mut functions.commands, authority, access)",
         replace: "    if functions.holds(authority) {\n        return Err(EnableFailure::from(EnableError::Stale));\n    }\n    enable_memory_space_with_leases(&mut functions.commands, authority, access)",
@@ -7606,6 +8365,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 752,
         file: "libs/pci-config/src/lib.rs",
         find: "    admit_bus_master_with_leases(&mut functions.commands, authority.function, state, access)",
         replace: "    let _ = (&mut functions.commands, authority, state, access);\n    Ok(())",
@@ -7616,6 +8376,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 753,
         file: "libs/pci-config/src/lib.rs",
         find: "    if !functions.holds_bar(authority) {\n        return Err(EnableError::Stale);\n    }\n    admit_bus_master_with_leases(&mut functions.commands, authority.function, state, access)",
         replace: "    if functions.holds_bar(authority) {\n        return Err(EnableError::Stale);\n    }\n    admit_bus_master_with_leases(&mut functions.commands, authority.function, state, access)",
@@ -7626,6 +8387,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 754,
         file: "libs/pci-config/src/lib.rs",
         find: "    if !functions.holds(authority) {\n        return Err(RestoreFailure {\n            reason: EnableError::Stale,\n            state,\n        });\n    }\n    commit_command_with_leases(&mut functions.commands, authority, state, access)",
         replace: "    if functions.holds(authority) {\n        return Err(RestoreFailure {\n            reason: EnableError::Stale,\n            state,\n        });\n    }\n    commit_command_with_leases(&mut functions.commands, authority, state, access)",
@@ -7636,6 +8398,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 755,
         file: "libs/pci-config/src/lib.rs",
         find: "    retry_probe_with_leases(&mut functions.commands, authority, retry, access)",
         replace: "    let _ = (&mut functions.commands, authority, retry, access);\n    Ok(())",
@@ -7646,6 +8409,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 756,
         file: "libs/pci-config/src/lib.rs",
         find: "    if !functions.holds(authority) {\n        return Err(ProbeFailure::with_retry(\n            ProbeError::Unavailable(EnableError::Stale),\n            retry,\n        ));\n    }\n    retry_probe_with_leases(&mut functions.commands, authority, retry, access)",
         replace: "    if functions.holds(authority) {\n        return Err(ProbeFailure::with_retry(\n            ProbeError::Unavailable(EnableError::Stale),\n            retry,\n        ));\n    }\n    retry_probe_with_leases(&mut functions.commands, authority, retry, access)",
@@ -7656,6 +8420,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 757,
         file: "libs/pci-config/src/lib.rs",
         find: "    fn reserve(&mut self, authority: &FunctionAuthority) -> Result<CommandLease, EnableError> {
         if self
@@ -7678,6 +8443,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 758,
         file: "libs/pci-config/src/lib.rs",
         find: "    if current != state.installed {\n        return Err(RestoreFailure {\n            reason: EnableError::Changed(current),\n            state,\n        });\n    }\n    if leases.release(state.lease) {",
         replace: "    if leases.release(state.lease) {",
@@ -7688,6 +8454,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 759,
         file: "libs/pci-config/src/lib.rs",
         find: "    fn holds_function(&self, function: FunctionLease, lease: CommandLease) -> bool {\n        lease.function == function && self.slots.iter().flatten().any(|held| *held == lease)\n    }",
         replace: "    fn holds_function(&self, _function: FunctionLease, lease: CommandLease) -> bool {\n        self.slots.iter().flatten().any(|held| {\n            held.registry == lease.registry && held.generation == lease.generation\n        })\n    }",
@@ -7698,6 +8465,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 760,
         file: "libs/pci-config/src/lib.rs",
         find: "    fn holds_function(&self, function: FunctionLease, lease: CommandLease) -> bool {\n        lease.function == function && self.slots.iter().flatten().any(|held| *held == lease)\n    }\n\n    fn release(&mut self, lease: CommandLease) -> bool {\n        let Some(slot) = self.slots.iter_mut().find(|held| **held == Some(lease)) else {",
         replace: "    fn holds_function(&self, function: FunctionLease, lease: CommandLease) -> bool {\n        lease.function == function\n            && self.slots.iter().flatten().any(|held| {\n                held.function == lease.function && held.generation == lease.generation\n            })\n    }\n\n    fn release(&mut self, lease: CommandLease) -> bool {\n        let Some(slot) = self.slots.iter_mut().find(|held| {\n            held.is_some_and(|held| {\n                held.function == lease.function && held.generation == lease.generation\n            })\n        }) else {",
@@ -7708,6 +8476,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 761,
         file: "libs/pci-config/src/lib.rs",
         find: "            state: Some(state),",
         replace: "            state: None,",
@@ -7718,6 +8487,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 762,
         file: "libs/pci-config/src/lib.rs",
         find: "    let wanted = current | command::MEMORY_SPACE | command::BUS_MASTER;\n    state.phase = CommandPhase::Restoring(wanted);\n    let result = change_command(at, current, wanted, &mut access);",
         replace: "    let wanted = current | command::MEMORY_SPACE | command::BUS_MASTER;\n    let result = change_command(at, current, wanted, &mut access);",
@@ -7728,6 +8498,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 763,
         file: "libs/pci-config/src/lib.rs",
         find: "        Address(self.function.at.0 | header::COMMAND as u32)",
         replace: "        Address(self.function.at.0 | header::BAR0 as u32)",
@@ -7738,6 +8509,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 764,
         file: "libs/pci-config/src/lib.rs",
         find: "        let Some(generation) = self.generation.checked_add(1) else {\n            return Err(EnableError::Exhausted);\n        };",
         replace: "        let generation = self.generation.wrapping_add(1);",
@@ -7748,6 +8520,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 765,
         file: "libs/x86-apic/src/lifecycle.rs",
         find: "            Self::Cold => Ok(()),",
         replace: "            Self::Cold => Err(BeginError::Ready),",
@@ -7758,6 +8531,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 766,
         file: "libs/x86-apic/src/lifecycle.rs",
         find: "            Ok(()) => Ok(Self {\n                lifecycle: Lifecycle::Initializing,\n                next_stage: 0,\n            }),",
         replace: "            Ok(()) => Ok(Self {\n                lifecycle: Lifecycle::Ready,\n                next_stage: 0,\n            }),",
@@ -7768,6 +8542,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 767,
         file: "libs/x86-apic/src/lifecycle.rs",
         find: "    pub fn refuse(&mut self) -> Lifecycle {\n        if matches!(self.lifecycle, Lifecycle::Initializing) {\n            self.lifecycle = Lifecycle::Poisoned;\n        }\n        self.lifecycle\n    }",
         replace: "    pub fn refuse(&mut self) -> Lifecycle {\n        if matches!(self.lifecycle, Lifecycle::Initializing) {\n            self.lifecycle = Lifecycle::Cold;\n        }\n        self.lifecycle\n    }",
@@ -7778,6 +8553,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 768,
         file: "libs/x86-apic/src/lifecycle.rs",
         find: "const fn progress_is_excluded(interrupts: Interrupts) -> bool {\n    matches!(interrupts, Interrupts::Excluded)\n}",
         replace: "const fn progress_is_excluded(interrupts: Interrupts) -> bool {\n    let _ = interrupts;\n    true\n}",
@@ -7788,6 +8564,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 769,
         file: "libs/x86-apic/src/lifecycle.rs",
         find: "        if InitStage::ALL.get(self.next_stage) != Some(&stage) {",
         replace: "        if false {",
@@ -7798,6 +8575,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 770,
         file: "libs/x86-apic/src/lifecycle.rs",
         find: "        if self.next_stage != InitStage::ALL.len() {",
         replace: "        if false {",
@@ -7808,6 +8586,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 771,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "            Lifecycle::Cold.bits(),\n            Lifecycle::Initializing.bits(),\n            Ordering::AcqRel,",
         replace: "            Lifecycle::Cold.bits(),\n            Lifecycle::Ready.bits(),\n            Ordering::AcqRel,",
@@ -7817,6 +8596,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 772,
         file: "kernel/src/arch/x86_64/trap.rs",
         find: "                if let Some(eoi) = eoi {\n                    dismiss(eoi);\n                }",
         replace: "                if let Some(eoi) = eoi {\n                    drop(eoi);\n                }",
@@ -7824,6 +8604,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the interrupt is dismissed, so the next one arrives"),
     },
     Mutation {
+        id: 773,
         file: "kernel/src/arch/x86_64/trap.rs",
         find: "    drop(eoi);\n    let reclaimed = apic::claim_eoi(frame, vector::PING);",
         replace: "    core::mem::forget(eoi);\n    let reclaimed = apic::claim_eoi(frame, vector::PING);",
@@ -7831,6 +8612,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("an abandoned completion can be reclaimed for the same delivery"),
     },
     Mutation {
+        id: 774,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "impl Drop for EoiToken<'_> {\n    fn drop(&mut self) {\n        EOI_CLAIMED.store(false, Ordering::Release);",
         replace: "impl Drop for EoiToken<'_> {\n    fn drop(&mut self) {\n        EOI_CLAIMED.store(true, Ordering::Release);",
@@ -7841,6 +8623,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 775,
         file: "kernel/src/arch/x86_64/trap.rs",
         find: "            dismiss(eoi);\n            crate::thread::reschedule(frame);",
         replace: "            drop(eoi);\n            crate::thread::reschedule(frame);",
@@ -7851,6 +8634,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 776,
         file: "kernel/src/arch/x86_64/trap.rs",
         find: "            let woke = crate::input::on_interrupt();\n            dismiss(eoi);",
         replace: "            let woke = crate::input::on_interrupt();\n            drop(eoi);",
@@ -7861,6 +8645,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 777,
         file: "libs/x86-paging/src/lib.rs",
         find: "        if is_canonical(address) {",
         replace: "        if true {",
@@ -7871,6 +8656,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 778,
         file: "libs/x86-paging/src/activation.rs",
         find: "            2 => Some(Self::Ready),",
         replace: "            2 => None,",
@@ -7881,6 +8667,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 779,
         file: "libs/x86-paging/src/activation.rs",
         find: "            Self::Initializing => Some(Self::Ready),",
         replace: "            Self::Initializing => None,",
@@ -7891,6 +8678,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 780,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        let interrupts = Some(interrupt::disable());",
         replace: "        let interrupts = None;",
@@ -7898,6 +8686,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("paging activation stays unpublished under interrupt exclusion"),
     },
     Mutation {
+        id: 781,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            Ok(_) => {\n                let activation = Self {",
         replace: "            Ok(_) => {\n                state.store(ActivationState::Ready.bits(), Ordering::Release);\n                let activation = Self {",
@@ -7905,6 +8694,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("paging activation stays unpublished under interrupt exclusion"),
     },
     Mutation {
+        id: 782,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        this.root.store(root, Ordering::Release);\n        after_root();\n        let Some(ready) = ActivationState::Initializing.complete() else {\n            panic!(\"paging initialization cannot complete\");\n        };\n        this.committed = true;\n        this.state.store(ready.bits(), Ordering::Release);",
         replace: "        let Some(ready) = ActivationState::Initializing.complete() else {\n            panic!(\"paging initialization cannot complete\");\n        };\n        this.state.store(ready.bits(), Ordering::Release);\n        this.root.store(root, Ordering::Release);\n        after_root();\n        this.committed = true;",
@@ -7912,6 +8702,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("paging activation publishes its root before readiness"),
     },
     Mutation {
+        id: 783,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    unsafe { cpu::set_page_table_base(root) };\n    activation.commit(root);",
         replace: "    activation.commit(root);\n    unsafe { cpu::set_page_table_base(root) };",
@@ -7922,6 +8713,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 784,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    if space.is_reclaimed() {",
         replace: "    if false && space.is_reclaimed() {",
@@ -7932,6 +8724,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 785,
         file: "wost/src/arch/x86_64/cpu.rs",
         find: "pub fn invalidate_page(address: CanonicalAddress) {\n    // SAFETY: construction of `CanonicalAddress` proves the instruction's\n    // operand is canonical. `invlpg` dereferences no memory and only evicts\n    // this CPU's cached translation.\n    unsafe {\n        core::arch::asm!(\"invlpg [{}]\", in(reg) address.get(), options(nostack, preserves_flags))\n    };\n    #[cfg(feature = \"selftest\")]\n    PAGE_INVALIDATIONS.fetch_add(1, Ordering::Relaxed);\n}",
         replace: "pub trait InvalidationAddress {\n    /// Expose the instruction operand.\n    fn raw(self) -> u64;\n}\n\nimpl InvalidationAddress for CanonicalAddress {\n    fn raw(self) -> u64 {\n        self.get()\n    }\n}\n\nimpl InvalidationAddress for u64 {\n    fn raw(self) -> u64 {\n        self\n    }\n}\n\n/// Drop any cached translation for an admitted address from this CPU's TLB.\npub fn invalidate_page(address: impl InvalidationAddress) {\n    let raw = address.raw();\n    // SAFETY: the weakened mutation admits this operand without validation.\n    unsafe {\n        core::arch::asm!(\"invlpg [{}]\", in(reg) raw, options(nostack, preserves_flags))\n    };\n    #[cfg(feature = \"selftest\")]\n    PAGE_INVALIDATIONS.fetch_add(1, Ordering::Relaxed);\n}",
@@ -7942,6 +8735,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 786,
         file: "kernel/src/selftest.rs",
         find: "    let raw = an_admitted_canonical_page_can_be_invalidated as *const () as u64;",
         replace: "    let raw = 0x0000_8000_0000_0000;",
@@ -7949,6 +8743,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("an admitted canonical page can be invalidated"),
     },
     Mutation {
+        id: 787,
         file: "libs/pci-config/src/lib.rs",
         find: "            Some(restore) => Err(ProbeFailure {\n                reason: failure.reason,\n                retry: Some(ProbeRetry { probe, restore }),\n            }),",
         replace: "            Some(restore) => Err(ProbeFailure {\n                reason: failure.reason,\n                retry: None,\n            }),",
@@ -7959,6 +8754,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 788,
         file: "libs/pci-config/src/lib.rs",
         find: "                Ok(bits) if bits == restore.original[index] => {}\n                Ok(_) => return Err((ProbeError::RestoreChanged, restore)),",
         replace: "                Ok(_) => {}",
@@ -7969,6 +8765,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 789,
         file: "libs/pci-config/src/lib.rs",
         find: "        Ok(bits) if bits as u16 == restore.command => Ok(()),\n        Ok(_) => Err((ProbeError::RestoreChanged, restore)),",
         replace: "        Ok(_) => Ok(()),",
@@ -7979,6 +8776,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 790,
         file: "libs/pci-config/src/lib.rs",
         find: "            Ok(bits) if bits as u16 == decode_off => {}\n            Ok(_) => return Err((ProbeError::RestoreChanged, restore)),",
         replace: "            Ok(_) => {}",
@@ -7989,6 +8787,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 791,
         file: "libs/pci-config/src/lib.rs",
         find: "        Ok(bits) if bits as u16 == decode_off => {}\n        Ok(bits) => {\n            return Err(after_probe_error(\n                ProbeError::Refused(bits as u16),\n                &mut access,\n                command_restore,\n            ));\n        }",
         replace: "        Ok(_) => {}",
@@ -7999,6 +8798,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 792,
         file: "libs/pci-config/src/lib.rs",
         find: "            Some(restore) => Err(ProbeFailure {\n                reason: failure.reason,\n                retry: Some(ProbeRetry { probe, restore }),\n            }),",
         replace: "            Some(restore) => {\n                let _released = leases.release(probe.0);\n                Err(ProbeFailure {\n                    reason: failure.reason,\n                    retry: Some(ProbeRetry { probe, restore }),\n                })\n            }",
@@ -8009,6 +8809,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 793,
         file: "wost/src/arch/x86_64/pci.rs",
         find: "    let NvmeBusMasterAuthority { bar, _observed: _ } = authority;\n    let mut configuration = CONFIGURATION.lock_leaf();",
         replace: "    let NvmeBusMasterAuthority { bar, _observed: _ } = authority;\n    let mut configuration = CONFIGURATION\n        .try_lock_leaf()\n        .expect(\"the configuration port pair is available\");",
@@ -8019,6 +8820,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 794,
         file: "xtask/src/tasks.rs",
         find: r#"    ensure!(
         directory == root.join("vm"),
@@ -8032,6 +8834,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 795,
         file: "xtask/src/tasks.rs",
         find: r#"    let canonical_directory = crate::mutation_workspace::canonical_existing_real_directory(
         directory,
@@ -8046,6 +8849,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 796,
         file: "xtask/src/tasks.rs",
         find: r#"    let canonical_directory = crate::mutation_workspace::canonical_existing_real_directory(
         directory,
@@ -8066,6 +8870,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 797,
         file: "xtask/src/qemu.rs",
         find: "        let directory = crate::image::qemu_run_directory(target)?;",
         replace: r#"        let directory = target.join(crate::paths::QEMU_RUN_DIRECTORY);
@@ -8078,6 +8883,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 798,
         file: "xtask/src/image/mod.rs",
         find: r#"pub(crate) fn qemu_run_directory(target: &Path) -> Result<PathBuf> {
     crate::mutation_workspace::prepare_real_directory_tree(
@@ -8098,6 +8904,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 799,
         file: "xtask/src/qemu.rs",
         find: r#"    crate::mutation_workspace::prepare_real_directory_tree(&parent, "QEMU storage directory")?;"#,
         replace: r#"    std::fs::create_dir_all(&parent)
@@ -8109,6 +8916,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 800,
         file: "xtask/src/qemu.rs",
         find: r#"        crate::mutation_workspace::publish_staged_file(
             parent,
@@ -8140,6 +8948,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 801,
         file: "xtask/src/qemu.rs",
         find: r#"        let mut options = OpenOptions::new();
         OpenOptions::create_new(&mut options, true);
@@ -8157,6 +8966,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 802,
         file: "xtask/src/qemu.rs",
         find: r#"fn require_storage_lock_path(parent: &Path, path: &Path, must_exist: bool) -> Result<()> {
     ensure!(
@@ -8186,6 +8996,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 803,
         file: "xtask/src/qemu.rs",
         find: "    after_open(path);\n    require_storage_lock_path(parent, path, true)?;",
         replace: "    after_open(path);\n    require_storage_lock_path(parent, path, false)?;",
@@ -8196,6 +9007,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 804,
         file: "xtask/src/image/mod.rs",
         find: r#"    let canonical_parent = crate::mutation_workspace::prepare_real_directory_tree(
         parent,
@@ -8210,6 +9022,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 805,
         file: "xtask/src/image/mod.rs",
         find: r#"        crate::mutation_workspace::publish_staged_file(
             &canonical_parent,
@@ -8239,6 +9052,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 806,
         file: "xtask/src/mutation_workspace.rs",
         find: r#"        let (_, destination) =
             prepare_confined_destination(&root, relative, "mutation copy destination")?;"#,
@@ -8253,6 +9067,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 807,
         file: "xtask/src/mutation_workspace.rs",
         find: r#"    let (parent, destination) =
         prepare_confined_destination(&workspace, relative, "mutation restore destination")?;"#,
@@ -8268,6 +9083,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 808,
         file: "xtask/src/mutation_workspace.rs",
         find: r#"    if let Err(error) = result {
         restore_previous_file(parent, destination, previous.as_deref(), label)
@@ -8284,6 +9100,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 809,
         file: "xtask/src/mutation_workspace.rs",
         find: r#"            if require_direct_file_if_present(parent, staging, label).with_context(|| {
                 format!(
@@ -8307,6 +9124,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 810,
         file: "xtask/src/mutation_workspace.rs",
         find: r#"                remove(staging).with_context(|| {
                     format!(
@@ -8322,6 +9140,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 811,
         file: "xtask/src/supply_chain.rs",
         find: r#"                digest: package.checksum.clone().with_context(|| {
                     format!(
@@ -8337,6 +9156,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 812,
         file: "xtask/src/bounded_process.rs",
         find: "        reservation.track(path);",
         replace: "        let _untracked_capture = (reservation, path);",
@@ -8347,6 +9167,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 813,
         file: "xtask/src/qemu.rs",
         find: r#"        return Err(error).context("terminating QEMU");"#,
         replace: "        return Ok(());",
@@ -8357,6 +9178,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 814,
         file: "xtask/src/qemu.rs",
         find: r#"        if exited(child).context("polling terminated QEMU")? {
             return Ok(());
@@ -8371,6 +9193,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 815,
         file: "xtask/src/qemu.rs",
         find: r#"            bail!(
                 "QEMU did not exit within {} ms after termination",
@@ -8384,6 +9207,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 816,
         file: "xtask/src/mutate.rs",
         find: "            if node.method == \"check\" && report_receiver {",
         replace: "            if node.method == \"check\" {",
@@ -8394,6 +9218,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 817,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        let Some(current) = current_mapping_root(self.root) else {\n            return false;\n        };",
         replace: "        if !is_active() || active_root() != self.root {\n            return false;\n        }\n        let current = self.root;",
@@ -8401,6 +9226,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a stale shared root cannot authenticate a device mapping"),
     },
     Mutation {
+        id: 818,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        current_mapping_root(self.identity.root)\n            .is_some_and(|current| self.identity.invalid_page_in(current).is_none())",
         replace: "        is_active()\n            && active_root() == self.identity.root\n            && self.identity.invalid_page_in(self.identity.root).is_none()",
@@ -8408,6 +9234,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a stale shared root cannot authenticate a stack"),
     },
     Mutation {
+        id: 819,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        let mut stack = self.slot.stack_base();",
         replace: "        let mut stack = self.slot.stack_base() + PAGE_SIZE;",
@@ -8415,6 +9242,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("the boot stack rejects a lower-leaf substitution"),
     },
     Mutation {
+        id: 820,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    pub(crate) fn stack_top(&self, index: usize) -> Option<KernelStackTop<'_>> {\n        let identity = self.stacks.get(index)?;\n        if !is_active() {\n            return None;\n        }\n        let current = cpu::page_table_base();\n        identity\n            .invalid_page_in(current)\n            .is_none()\n            .then_some(KernelStackTop(identity))\n    }",
         replace: "    pub(crate) fn stack_top(&self, index: usize) -> Option<KernelStackTop<'_>> {\n        self.stacks.get(index).map(KernelStackTop)\n    }",
@@ -8422,6 +9250,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a noncurrent task stack rejects a lower-leaf substitution"),
     },
     Mutation {
+        id: 821,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            match walk(root, stack) {\n                Some((found, flags, span))\n                    if page_identity_matches(found, flags, span, physical, expected_flags) => {}\n                _ => return Some(stack),\n            }",
         replace: "            if offset != PAGE_SIZE {\n                match walk(root, stack) {\n                    Some((found, flags, span))\n                        if page_identity_matches(found, flags, span, physical, expected_flags) => {}\n                    _ => return Some(stack),\n                }\n            }",
@@ -8429,6 +9258,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a stack checks its middle leaf"),
     },
     Mutation {
+        id: 822,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        while stack < self.slot.stack_top() {",
         replace: "        while stack < self.slot.stack_top() - PAGE_SIZE {",
@@ -8436,6 +9266,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a stack checks its last leaf"),
     },
     Mutation {
+        id: 823,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        let mut offset = 0u64;",
         replace: "        let mut offset = PAGE_SIZE;",
@@ -8443,6 +9274,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a device mapping checks its first leaf"),
     },
     Mutation {
+        id: 824,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            let Some((mapped, flags, span)) = walk(current, virtual_address) else {\n                return false;\n            };\n            if !page_identity_matches(mapped, flags, span, expected, self.expected_flags) {",
         replace: "            let Some((mapped, flags, span)) = walk(current, virtual_address) else {\n                return false;\n            };\n            let expected = if offset == PAGE_SIZE {\n                mapped\n            } else {\n                expected\n            };\n            if !page_identity_matches(mapped, flags, span, expected, self.expected_flags) {",
@@ -8450,6 +9282,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a device mapping checks its middle leaf"),
     },
     Mutation {
+        id: 825,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            let Some((mapped, flags, span)) = walk(current, virtual_address) else {\n                return false;\n            };\n            if !page_identity_matches(mapped, flags, span, expected, self.expected_flags) {",
         replace: "            let Some((mapped, flags, span)) = walk(current, virtual_address) else {\n                return false;\n            };\n            let expected = if offset.checked_add(PAGE_SIZE) == Some(self.pages) {\n                mapped\n            } else {\n                expected\n            };\n            if !page_identity_matches(mapped, flags, span, expected, self.expected_flags) {",
@@ -8457,6 +9290,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a device mapping checks its last leaf"),
     },
     Mutation {
+        id: 826,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            if !page_identity_matches(mapped, flags, span, expected, self.expected_flags) {",
         replace: "            if !page_identity_matches(mapped, flags, span, expected, flags) {",
@@ -8464,6 +9298,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a device mapping checks its cache policy"),
     },
     Mutation {
+        id: 827,
         file: "libs/x86-paging/src/lib.rs",
         find: "        && span == PAGE_SIZE",
         replace: "        && span != 0",
@@ -8474,6 +9309,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 828,
         file: "wost/src/arch/x86_64/task.rs",
         find: "    unsafe { extended.write_bytes(0, xstate::CEILING) };",
         replace: "    unsafe { extended.write_bytes(0, 0) };",
@@ -8481,6 +9317,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("an exited slot is reused"),
     },
     Mutation {
+        id: 829,
         file: "kernel/src/selftest.rs",
         find: "    let written = xstate::write_probe(REUSED_SLOT_SECRET);",
         replace: "    let written = false;",
@@ -8488,6 +9325,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("an exited slot is reused"),
     },
     Mutation {
+        id: 830,
         file: "libs/nvme/src/lib.rs",
         find: "#[derive(Debug, PartialEq, Eq)]\npub struct DmaState {",
         replace: "#[derive(Debug, Clone, PartialEq, Eq)]\npub struct DmaState {",
@@ -8498,6 +9336,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 831,
         file: "libs/ring-proto/src/lib.rs",
         find: "            if end > bytes {",
         replace: "            if end >= bytes {",
@@ -8508,6 +9347,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 832,
         file: "libs/ring-proto/src/lib.rs",
         find: "            let word_end = word + PUBLICATION_WORD_BYTES;",
         replace: "            let word_end = word;",
@@ -8518,6 +9358,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 833,
         file: "libs/ring-proto/src/lib.rs",
         find: "            if !at.is_multiple_of(align_of::<u32>()) {",
         replace: "            if false && !at.is_multiple_of(align_of::<u32>()) {",
@@ -8528,6 +9369,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 834,
         file: "wost/src/mm/mod.rs",
         find: "impl Shared {\n    /// Consume the allocation into volatile byte-only access.",
         replace: "impl Shared {\n    /// Write through the unpartitioned shared owner.\n    #[must_use]\n    pub fn write_volatile_at(&mut self, offset: usize, bytes: &[u8]) -> bool {\n        write_shared_volatile(&self.0, offset, bytes)\n    }\n\n    /// Consume the allocation into volatile byte-only access.",
@@ -8538,6 +9380,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 835,
         file: "wost/src/mm/mod.rs",
         find: "        if !self.layout.contains_payload(offset, bytes.len()) {",
         replace: "        if false && !self.layout.contains_payload(offset, bytes.len()) {",
@@ -8548,6 +9391,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 836,
         file: "kernel/src/arch/x86_64/ioapic.rs",
         find: "        write(&mut self.registers, low, entry::MASKED)?;\n        let (observed_low, observed_high) = self.entry_words(line)?;\n        if observed_low != entry::MASKED {\n            return Err(MaskError::Refused {\n                low: observed_low,\n                high: observed_high,\n            });\n        }\n        write(&mut self.registers, low + 1, 0)?;",
         replace: "        write(&mut self.registers, low, entry::MASKED)?;\n        write(&mut self.registers, low + 1, 0)?;",
@@ -8557,6 +9401,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 837,
         file: "kernel/src/arch/x86_64/ioapic.rs",
         find: "        if low != entry::MASKED || high != 0 {\n            return Err(MaskError::Refused { low, high });\n        }",
         replace: "        let _ = (low, high);",
@@ -8566,6 +9411,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 838,
         file: "kernel/src/arch/x86_64/ioapic.rs",
         find: "            Ok((low, high)) if low == expected_low && high == destination => Ok(()),\n            Ok((low, high)) => self.refuse_route(line, expected_low, destination, low, high),",
         replace: "            Ok((_low, _high)) => Ok(()),",
@@ -8575,6 +9421,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 839,
         file: "kernel/src/arch/x86_64/ioapic.rs",
         find: "        match self.entry_words(line) {\n            Ok((low, high)) if low == entry::MASKED && high == destination => {}\n            Ok((low, high)) => {\n                return self.refuse_route(line, expected_low, destination, low, high);\n            }\n            Err(error) => {\n                self.mask_line_and_verify(line)\n                    .map_err(RoutingError::from)?;\n                return Err(RoutingError::Registers(error));\n            }\n        }",
         replace: "        let _ = self.entry_words(line);",
@@ -8584,6 +9431,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 840,
         file: "kernel/src/pci.rs",
         find: "        Ok(()) => release_clean_function(function, reason),",
         replace: "        Ok(()) => {\n            drop(function);\n            reason\n        },",
@@ -8591,6 +9439,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("a device is claimed once and a refusal strands nothing"),
     },
     Mutation {
+        id: 841,
         file: "libs/pixel/src/lib.rs",
         find: "        Some(RowCopyPlan {\n            source_word,\n            destination_word,\n            destination_offset,\n            row_words: self.width,\n            stride_words,",
         replace: "        Some(RowCopyPlan {\n            source_word,\n            destination_word,\n            destination_offset,\n            row_words: stride_words,\n            stride_words,",
@@ -8601,6 +9450,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 842,
         file: "libs/pixel/src/lib.rs",
         find: "        if to_y > from_y {",
         replace: "        if to_y < from_y {",
@@ -8611,6 +9461,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 843,
         file: "libs/pixel/src/lib.rs",
         find: "        self.source_end <= len && self.destination_end <= len",
         replace: "        self.destination_end <= len",
@@ -8621,6 +9472,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 844,
         file: "libs/pixel/src/lib.rs",
         find: "            self.destination_offset += self.pitch;",
         replace: "            self.destination_offset += self.row_words * WORD_SIZE;",
@@ -8631,6 +9483,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 845,
         file: "libs/x86-apic/src/lifecycle.rs",
         find: "/// One ordered boundary in the hardware transaction.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum InitStage {",
         replace: "impl Interrupts {\n    pub const fn from_enabled(enabled: bool) -> Self {\n        if enabled { Self::Enabled } else { Self::Excluded }\n    }\n}\n\n/// One ordered boundary in the hardware transaction.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum InitStage {",
@@ -8641,6 +9494,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 846,
         file: "libs/x86-apic/src/in_service.rs",
         find: "pub const fn may_complete(\n    interrupts: Interrupts,\n    frame_liveness: FrameLiveness,\n    frame_vector: u64,\n    token_vector: InterruptVector,\n    dismissal: DismissalOwnership,\n) -> bool {\n    matches!(interrupts, Interrupts::Excluded)\n        && matches!(frame_liveness, FrameLiveness::Live)\n        && frame_vector == token_vector.get() as u64\n        && matches!(dismissal, DismissalOwnership::Owned)\n}",
         replace: "pub const fn may_complete(\n    interrupts_excluded: bool,\n    frame_is_live: bool,\n    frame_vector: u64,\n    token_vector: InterruptVector,\n    dismissal_owned: bool,\n) -> bool {\n    interrupts_excluded\n        && frame_is_live\n        && frame_vector == token_vector.get() as u64\n        && dismissal_owned\n}",
@@ -8651,6 +9505,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 847,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "    fn published_vector(self, source: &AtomicU8) -> Option<InterruptVector> {\n        if !self.is_enabled() {\n            return None;\n        }\n        InterruptVector::new(source.load(Ordering::Relaxed))",
         replace: "    fn published_vector(self, source: &AtomicU8) -> Option<InterruptVector> {\n        let vector = source.load(Ordering::Relaxed);\n        if !self.is_enabled() {\n            return None;\n        }\n        InterruptVector::new(vector)",
@@ -8661,6 +9516,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 848,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "        let Some(vector) = self.published_vector(self.self_interrupt_vector) else {\n            return Err(DeliveryError::Unavailable);\n        };",
         replace: "        let vector = self.self_interrupt_vector.load(Ordering::Relaxed);",
@@ -8671,6 +9527,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 849,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "        self.controller.state.store(ready.bits(), Ordering::Release);\n        if let Some(interrupts) = self.interrupts.take() {\n            interrupts.restore();\n        }",
         replace: "        if let Some(interrupts) = self.interrupts.take() {\n            interrupts.restore();\n        }\n        self.controller.state.store(ready.bits(), Ordering::Release);",
@@ -8681,6 +9538,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 850,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "            self.controller\n                .state\n                .store(self.transaction.refuse().bits(), Ordering::Release);",
         replace: "            self.controller\n                .state\n                .store(Lifecycle::Cold.bits(), Ordering::Release);",
@@ -8690,6 +9548,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 851,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "    InitializationRegisters::write(\n        &registers,\n        register::SPURIOUS_INTERRUPT_VECTOR,\n        spurious.bits().into(),\n    );\n    if InitializationRegisters::read(&registers, register::SPURIOUS_INTERRUPT_VECTOR)\n        != u64::from(spurious.bits())\n    {\n        return Err(ApicError::NotResponding);\n    }",
         replace: "    InitializationRegisters::write(\n        &registers,\n        register::SPURIOUS_INTERRUPT_VECTOR,\n        spurious.bits().into(),\n    );",
@@ -8699,6 +9558,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 852,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "        self.lifecycle().is_ready().then_some(Registers)",
         replace: "        matches!(self.lifecycle(), Lifecycle::Initializing | Lifecycle::Ready)\n            .then_some(Registers)",
@@ -8708,6 +9568,7 @@ pub const MUTATIONS: &[Mutation] = &[
         ),
     },
     Mutation {
+        id: 853,
         file: "wost/src/mm/mod.rs",
         find: "        let Ok(range) = AccessRange::repeated(offset, bytes.len(), 1, self.len) else {",
         replace: "        let Ok(range) =\n            AccessRange::repeated(offset, bytes.len(), 1, self.len.saturating_sub(1))\n        else {",
@@ -8715,6 +9576,7 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Check("dma byte access is exact and bounded"),
     },
     Mutation {
+        id: 854,
         file: "libs/trap-cause/src/lib.rs",
         find: "        self.0 & !0b11 == 0",
         replace: "        self.0 & !0b111 == 0",
@@ -8725,6 +9587,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 855,
         file: "libs/x86-paging/src/lib.rs",
         find: "    pub const ZERO: Self = Self(0);",
         replace: "    pub const ZERO: Self = Self(1);",
@@ -8735,6 +9598,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 856,
         file: "libs/x86-cpuid/src/lib.rs",
         find: "    pub const fn none() -> Self {\n        Self(0)\n    }",
         replace: "    pub const fn none() -> Self {\n        Self(1 << 11)\n    }",
@@ -8745,6 +9609,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 857,
         file: "libs/x86-cpuid/src/lib.rs",
         find: "        Self(self.0 | 1 << 20)",
         replace: "        Self(self.0 | 1 << 21)",
@@ -8755,6 +9620,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 858,
         file: "libs/x86-cpuid/src/lib.rs",
         find: "        Self(self.0 | 1 << 21)",
         replace: "        Self(self.0 | 1 << 20)",
@@ -8765,6 +9631,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 859,
         file: "libs/x86-cpuid/src/lib.rs",
         find: "        Self(self.0 | 1 << 11)",
         replace: "        Self(self.0 | 1 << 21)",
@@ -8775,6 +9642,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 860,
         file: "wost/src/arch/x86_64/interrupt.rs",
         find: "#[cfg(feature = \"selftest\")]\n#[must_use = \"a refused resume changed no trap frame\"]\npub(super) fn resume_write_protection(",
         replace: "#[cfg(feature = \"selftest\")]\n#[must_use = \"a refused write-protection resume changed no trap frame\"]\npub(super) fn resume_write_protection(",
@@ -8785,6 +9653,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 861,
         file: "docs/017-pre-wizzy-hostile-surface-audit.md",
         find: "| `x86-pit` | PIT counter/status samples and watchdog observations |",
         replace: "| `x86-pit-omitted` | PIT counter/status samples and watchdog observations |",
@@ -8795,6 +9664,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 862,
         file: "libs/trap-cause/src/lib.rs",
         find: "        self.vector == u64::from(exception::PAGE_FAULT)",
         replace: "        self.vector <= u64::from(exception::PAGE_FAULT)",
@@ -8805,6 +9675,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 863,
         file: "libs/trap-cause/src/lib.rs",
         find: "            && self.frame_error_code == self.page_fault.bits()",
         replace: "            && self.frame_error_code == self.frame_error_code",
@@ -8815,6 +9686,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 864,
         file: "libs/trap-cause/src/lib.rs",
         find: "            && self.code_selector & 0b11 == 0",
         replace: "            && self.code_selector & 0b11 != 3",
@@ -8825,6 +9697,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 865,
         file: "libs/trap-cause/src/lib.rs",
         find: "            RecoveryFault::SupervisorData => self.page_fault.is_supervisor_data_access(),",
         replace: "            RecoveryFault::SupervisorData => true,",
@@ -8835,6 +9708,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 866,
         file: "libs/trap-cause/src/lib.rs",
         find: "            RecoveryFault::SupervisorWriteProtection => self.page_fault.bits() == 0b11,",
         replace: "            RecoveryFault::SupervisorWriteProtection => {\n                self.page_fault.is_supervisor_data_access()\n            }",
@@ -8845,6 +9719,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 867,
         file: "libs/trap-cause/src/lib.rs",
         find: "            && rule.fault_addresses.contains(&self.faulting_address)",
         replace: "            && self.faulting_address < rule.fault_addresses.end",
@@ -8855,6 +9730,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 868,
         file: "libs/trap-cause/src/lib.rs",
         find: "            && rule\n                .instruction_addresses\n                .contains(&self.instruction_pointer)",
         replace: "            && self.instruction_pointer < rule.instruction_addresses.end",
@@ -8865,6 +9741,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 869,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "        frame_error_code: frame.error_code(),",
         replace: "        frame_error_code: frame.vector(),",
@@ -8875,6 +9752,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 870,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "    let at = frame.instruction_pointer();",
         replace: "    let mut at = frame.instruction_pointer();",
@@ -8885,6 +9763,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 871,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "    let start = core::ptr::addr_of!(wost_copy_fault_start) as u64;",
         replace: "    let start = core::ptr::addr_of!(wost_copy_fault_end) as u64;",
@@ -8895,6 +9774,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 872,
         file: "wost/src/arch/x86_64/cpu.rs",
         find: "        faulting_address: faulting_address(),",
         replace: "        faulting_address: target,",
@@ -8905,6 +9785,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 873,
         file: "wost/src/arch/x86_64/cpu.rs",
         find: "target.checked_add(1)",
         replace: "target.wrapping_add(1)",
@@ -8915,6 +9796,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 874,
         file: "wost/src/arch/x86_64/interrupt.rs",
         find: "    // SAFETY: as above. Only `usercopy` can construct the target, from its\n    // in-crate fixup label, so `iretq` cannot be redirected by another caller.\n    unsafe { core::ptr::write(slot, target.address()) };",
         replace: "    // SAFETY: this mutation writes a value already read from the live frame.\n    unsafe { core::ptr::write(slot, frame.instruction_pointer()) };",
@@ -8925,6 +9807,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 875,
         file: "wost/src/arch/x86_64/interrupt.rs",
         find: "    LIVE_FRAME.load(Ordering::Relaxed) == frame.origin",
         replace: "    LIVE_FRAME.load(Ordering::Relaxed) != frame.origin",
@@ -8935,6 +9818,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 876,
         file: "wost/src/arch/x86_64/interrupt.rs",
         find: "pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::RecoveryTarget) -> bool {\n    if !is_live_frame(frame) {\n        return false;\n    }",
         replace: "pub(super) fn resume_usercopy(frame: &TrapFrame, target: super::usercopy::RecoveryTarget) -> bool {\n    if false && !is_live_frame(frame) {\n        return false;\n    }",
@@ -8945,6 +9829,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 877,
         file: "wost/src/arch/x86_64/interrupt.rs",
         find: "pub(super) fn resume_write_protection(\n    frame: &TrapFrame,\n    target: super::cpu::WriteProtectionRecoveryTarget,\n) -> bool {\n    if !is_live_frame(frame) {\n        return false;\n    }",
         replace: "pub(super) fn resume_write_protection(\n    frame: &TrapFrame,\n    target: super::cpu::WriteProtectionRecoveryTarget,\n) -> bool {\n    if false && !is_live_frame(frame) {\n        return false;\n    }",
@@ -8955,6 +9840,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 878,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "pub(super) struct RecoveryTarget(u64);",
         replace: "pub(super) struct RecoveryTarget(pub(super) u64);",
@@ -8965,6 +9851,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 879,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "pub(super) struct RecoveryTarget(u64);",
         replace: "#[derive(Clone)]\npub(super) struct RecoveryTarget(u64);",
@@ -8975,6 +9862,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 880,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "impl RecoveryTarget {\n    fn fixup() -> Self {",
         replace: "impl RecoveryTarget {\n    const ZERO: Self = Self(0);\n\n    fn fixup() -> Self {",
@@ -8985,6 +9873,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 881,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "pub(super) struct RecoveryTarget(u64);\n\nimpl RecoveryTarget {",
         replace: "pub(super) struct RecoveryTarget(u64);\n\nconst FORGED_RECOVERY_TARGET: RecoveryTarget = unsafe { core::mem::transmute(0u64) };\n\nimpl RecoveryTarget {",
@@ -8995,6 +9884,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 882,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "pub(super) struct RecoveryTarget(u64);\n\nimpl RecoveryTarget {",
         replace: "pub(super) struct RecoveryTarget(u64);\n\nuse self::RecoveryTarget as ForgedRecoveryTarget;\n\nimpl RecoveryTarget {",
@@ -9005,6 +9895,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 883,
         file: "wost/src/arch/x86_64/cpu.rs",
         find: "pub(super) struct WriteProtectionRecoveryTarget(u64);",
         replace: "pub(super) struct WriteProtectionRecoveryTarget(pub(super) u64);",
@@ -9015,6 +9906,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 884,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "        Self(core::ptr::addr_of!(wost_copy_fixup) as u64)",
         replace: "        Self(core::ptr::addr_of!(wost_copy_fault_end) as u64)",
@@ -9025,6 +9917,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 885,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "    pub(super) const fn address(&self) -> u64 {\n        self.0\n    }",
         replace: "    pub(super) const fn address(&self) -> u64 {\n        0\n    }",
@@ -9035,6 +9928,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 886,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "impl RecoveryTarget {\n    fn fixup() -> Self {\n        Self(core::ptr::addr_of!(wost_copy_fixup) as u64)\n    }\n\n    pub(super) const fn address(&self) -> u64 {\n        self.0\n    }\n}",
         replace: "impl RecoveryTarget {\n    fn fixup() -> Self {\n        Self(core::ptr::addr_of!(wost_copy_fixup) as u64)\n    }\n\n    pub(super) const fn address(&self) -> u64 {\n        self.0\n    }\n}\n\nimpl self::RecoveryTarget {\n    fn from_raw(address: u64) -> Self {\n        Self(address)\n    }\n}",
@@ -9045,6 +9939,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 887,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "impl RecoveryTarget {\n    fn fixup() -> Self {\n        Self(core::ptr::addr_of!(wost_copy_fixup) as u64)\n    }\n\n    pub(super) const fn address(&self) -> u64 {\n        self.0\n    }\n}",
         replace: "impl RecoveryTarget {\n    fn fixup() -> Self {\n        Self(core::ptr::addr_of!(wost_copy_fixup) as u64)\n    }\n\n    pub(super) const fn address(&self) -> u64 {\n        self.0\n    }\n}\n\nmod hostile_nested_recovery_constructor {\n    fn from_raw(value: u64) -> super::RecoveryTarget {\n        super::RecoveryTarget(value)\n    }\n}",
@@ -9055,6 +9950,7 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
+        id: 888,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: r#"impl RecoveryTarget {
     fn fixup() -> Self {
@@ -9143,6 +10039,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 889,
         file: "xtask/src/bounded_process.rs",
         find: "        capture.require_within_limit(capture_limit)",
         replace: "        capture.require_within_limit(MAX_CAPTURE_BYTES)",
@@ -9153,6 +10050,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 890,
         file: "xtask/src/bounded_process.rs",
         find: "    capture.collect_with_limit(status, capture_limit)",
         replace: "    capture.collect_with_limit(status, MAX_CAPTURE_BYTES)",
@@ -9163,6 +10061,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 891,
         file: "xtask/src/bounded_process.rs",
         find: "    for name in GIT_REDIRECT_ENVIRONMENT {\n        command.env_remove(name);\n    }",
         replace: "    for name in GIT_REDIRECT_ENVIRONMENT {\n        if *name != \"GIT_DIR\" {\n            command.env_remove(name);\n        }\n    }",
@@ -9173,6 +10072,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 892,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        initial <= maximum,\n        \"{} is {initial} bytes, exceeding its {maximum}-byte digest limit\",\n        path.display()\n    );",
         replace: "    ensure!(\n        true,\n        \"{} is {initial} bytes, exceeding its {maximum}-byte digest limit\",\n        path.display()\n    );",
@@ -9183,6 +10083,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 893,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        bytes <= maximum,\n        \"{} grew beyond its {maximum}-byte digest limit while hashing\",\n        path.display()\n    );",
         replace: "    ensure!(\n        true,\n        \"{} grew beyond its {maximum}-byte digest limit while hashing\",\n        path.display()\n    );",
@@ -9193,6 +10094,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 894,
         file: "xtask/src/qualification.rs",
         find: "            length <= MAX_MODEL_FILE_BYTES,",
         replace: "            true,",
@@ -9203,6 +10105,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 895,
         file: "xtask/src/qualification.rs",
         find: "            total <= MAX_MODEL_TREE_BYTES,",
         replace: "            true,",
@@ -9213,6 +10116,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 896,
         file: "xtask/src/qualification.rs",
         find: "            .update(&(relative.len() as u64).to_le_bytes())",
         replace: "            .update(&0u64.to_le_bytes())",
@@ -9223,6 +10127,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 897,
         file: "xtask/src/qualification.rs",
         find: "    let output = run(command, PROBE_TIMEOUT, &command_label, maximum)?;",
         replace: "    let output = run(\n        command,\n        PROBE_TIMEOUT,\n        &command_label,\n        crate::bounded_process::MAX_CAPTURE_BYTES,\n    )?;",
@@ -9233,6 +10138,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 898,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        before == after,\n        \"qualification source identity changed while it was captured\"\n    );",
         replace: "    ensure!(\n        before == before,\n        \"qualification source identity changed while it was captured\"\n    );",
@@ -9243,6 +10149,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 899,
         file: "xtask/src/evidence.rs",
         find: "    ensure!(\n        initial == expected,\n        \"{label} is {initial} bytes, expected exactly {expected}\"\n    );",
         replace: "    ensure!(\n        true,\n        \"{label} is {initial} bytes, expected exactly {expected}\"\n    );",
@@ -9253,6 +10160,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 900,
         file: "xtask/src/evidence.rs",
         find: "    ensure!(\n        before == after,\n        \"release source identity changed while it was captured\"\n    );",
         replace: "    ensure!(\n        before == before,\n        \"release source identity changed while it was captured\"\n    );",
@@ -9263,6 +10171,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 901,
         file: "xtask/src/supply_chain.rs",
         find: "        bytes.len() as u64 <= MAX_SPDX_BYTES,",
         replace: "        bytes.len() as u64 <= MAX_SPDX_BYTES + 1,",
@@ -9273,6 +10182,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 902,
         file: "xtask/src/supply_chain.rs",
         find: "            after_publish(published)",
         replace: "            let _ = published;\n            Ok(())",
@@ -9283,6 +10193,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 903,
         file: "xtask/src/supply_chain.rs",
         find: "    ensure!(\n        initial <= maximum,\n        \"{label} is {initial} bytes, exceeding its {maximum}-byte allocation limit\"\n    );",
         replace: "    ensure!(\n        true,\n        \"{label} is {initial} bytes, exceeding its {maximum}-byte allocation limit\"\n    );",
@@ -9293,6 +10204,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 904,
         file: "xtask/src/supply_chain.rs",
         find: "    ensure!(\n        bytes.len() as u64 <= maximum,\n        \"{label} grew beyond its {maximum}-byte allocation limit\"\n    );",
         replace: "    ensure!(\n        true,\n        \"{label} grew beyond its {maximum}-byte allocation limit\"\n    );",
@@ -9303,6 +10215,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 905,
         file: "xtask/src/supply_chain.rs",
         find: "    crate::mutation_workspace::require_direct_file(parent, &path, label)?;\n    let mut file =",
         replace: "    let mut file =",
@@ -9313,6 +10226,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 906,
         file: "xtask/src/supply_chain.rs",
         find: "    crate::mutation_workspace::require_direct_file(parent, &path, label)?;\n    String::from_utf8(bytes)",
         replace: "    String::from_utf8(bytes)",
@@ -9323,6 +10237,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 907,
         file: "xtask/src/vendor.rs",
         find: "            matches!(\n                core::iter::Iterator::next(&mut components),\n                Some(Component::Normal(_))\n            ) && core::iter::Iterator::next(&mut components).is_none()\n                && !name.contains(['/', '\\\\'])\n                && !name.chars().any(char::is_control),",
         replace: "            true,",
@@ -9333,6 +10248,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 908,
         file: "xtask/src/vendor.rs",
         find: "            names.insert(name.to_string()),",
         replace: "            names.insert(name.to_string()) || names.contains(name),",
@@ -9343,6 +10259,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 909,
         file: "xtask/src/vendor.rs",
         find: "            entries.len() < MAX_DIRECTORY_ENTRIES,",
         replace: "            true,",
@@ -9353,6 +10270,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 910,
         file: "xtask/src/vendor.rs",
         find: "        initial <= MAX_LISTING_BYTES,",
         replace: "        true,",
@@ -9363,6 +10281,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 911,
         file: "xtask/src/vendor.rs",
         find: "        bytes.len() as u64 <= MAX_LISTING_BYTES,",
         replace: "        true,",
@@ -9373,6 +10292,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 912,
         file: "xtask/src/vendor.rs",
         find: "            length <= MAX_PAYLOAD_BYTES,",
         replace: "            true,",
@@ -9383,6 +10303,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 913,
         file: "xtask/src/vendor.rs",
         find: "            total <= MAX_DIRECTORY_PAYLOAD_BYTES,",
         replace: "            true,",
@@ -9393,6 +10314,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 914,
         file: "xtask/src/qemu.rs",
         find: "        || (text.len() > 1 && text.starts_with('0'))\n",
         replace: "",
@@ -9403,6 +10325,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 915,
         file: "xtask/src/vmware.rs",
         find: "const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;",
         replace: "const MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;",
@@ -9413,6 +10336,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 916,
         file: "xtask/src/mutation_workspace.rs",
         find: "            length <= MAX_TRACKED_FILE_BYTES,",
         replace: "            true,",
@@ -9423,6 +10347,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 917,
         file: "xtask/src/mutation_workspace.rs",
         find: "            total <= MAX_TRACKED_TREE_BYTES,",
         replace: "            true,",
@@ -9433,6 +10358,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 918,
         file: "xtask/src/mutation_workspace.rs",
         find: "            .update(&(name.len() as u64).to_le_bytes())",
         replace: "            .update(&0u64.to_le_bytes())",
@@ -9443,6 +10369,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 919,
         file: "libs/pci-config/src/lib.rs",
         find: "pub const fn memory_window_size(low: u32, high: u32, width: MemoryWidth) -> Option<u64> {",
         replace: "pub const fn memory_window_size(low: u32, high: u32, width: bool) -> Option<u64> {",
@@ -9453,6 +10380,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 920,
         file: "libs/nvme/src/lib.rs",
         find: "pub const fn doorbell(cap: Capabilities, queue: u16, doorbell: Doorbell) -> Option<usize> {",
         replace: "pub const fn doorbell(cap: Capabilities, queue: u16, doorbell: bool) -> Option<usize> {",
@@ -9463,6 +10391,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 921,
         file: "libs/nvme/src/lib.rs",
         find: "    /// Permanently refuse another publication on this controller.\n    pub fn close(&mut self) {",
         replace: "    /// Recover hardware quiescence from an unnamed observation.\n    pub fn quiesce(&mut self, verified: bool) {\n        if verified {\n            self.close();\n        }\n    }\n\n    /// Permanently refuse another publication on this controller.\n    pub fn close(&mut self) {",
@@ -9473,6 +10402,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 922,
         file: "libs/nvme/src/lib.rs",
         find: "    /// Permanently refuse another publication on this controller.\n    pub fn close(&mut self) {",
         replace: "    /// Recover retained hardware ownership from an unnamed observation.\n    pub fn retain_unquiesced(&mut self, retained: bool) {\n        if retained {\n            self.close();\n        }\n    }\n\n    /// Permanently refuse another publication on this controller.\n    pub fn close(&mut self) {",
@@ -9483,6 +10413,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 923,
         file: "libs/nvme/src/lib.rs",
         find: "    pub fn close(&mut self) {",
         replace: "    pub fn close(&mut self, _closed: bool) {",
@@ -9493,6 +10424,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 924,
         file: "libs/x86-cpuid/src/xstate.rs",
         find: "    pub const fn new(size: u32, alignment: Alignment) -> Self {",
         replace: "    pub const fn new(size: u32, alignment: bool) -> Self {",
@@ -9503,6 +10435,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 925,
         file: "wost/src/sync.rs",
         find: "    fn acquire(&self, #[cfg(feature = \"selftest\")] kind: LockKind) -> Option<SpinLockGuard<'_, T>> {",
         replace: "    fn acquire(&self, #[cfg(feature = \"selftest\")] kind: bool) -> Option<SpinLockGuard<'_, T>> {",
@@ -9513,6 +10446,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 926,
         file: "wost/src/arch/x86_64/percpu.rs",
         find: "        #[cfg(feature = \"selftest\")] kind: LockKind,\n        #[cfg(feature = \"selftest\")] at: &'static core::panic::Location<'static>,",
         replace: "        #[cfg(feature = \"selftest\")] kind: bool,\n        #[cfg(feature = \"selftest\")] at: &'static core::panic::Location<'static>,",
@@ -9523,6 +10457,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 927,
         file: "wost/src/arch/x86_64/percpu.rs",
         find: "    pub(crate) fn released_lock(&self, #[cfg(feature = \"selftest\")] kind: LockKind) {",
         replace: "    pub(crate) fn released_lock(&self, #[cfg(feature = \"selftest\")] kind: bool) {",
@@ -9533,6 +10468,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 928,
         file: "kernel/src/pci.rs",
         find: "fn claim_as(at: Address, lifetime: ClaimLifetime) -> Result<Device, ClaimError> {",
         replace: "fn claim_as(at: Address, lifetime: bool) -> Result<Device, ClaimError> {",
@@ -9543,6 +10479,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 929,
         file: "kernel/src/main.rs",
         find: "fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked>) {",
         replace: "fn start_interrupts(external_controllers: bool) {",
@@ -9553,6 +10490,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 930,
         file: "kernel/src/main.rs",
         find: "const fn external_interrupts_are_admitted(mask: Option<&mem::ExternalControllersMasked>) -> bool {",
         replace: "const fn external_interrupts_are_admitted(mask: bool) -> bool {",
@@ -9563,6 +10501,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 931,
         file: "kernel/src/main.rs",
         find: "fn route_keyboard(routing: Option<mem::ExternalControllersMasked>) {",
         replace: "fn route_keyboard(routing: Option<bool>) {",
@@ -9573,6 +10512,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 932,
         file: "kernel/src/input.rs",
         find: "pub(crate) fn set_translation(translation: crate::arch::current::i8042::Translation) -> bool {",
         replace: "pub(crate) fn set_translation(translation: bool) -> bool {",
@@ -9583,6 +10523,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 933,
         file: "kernel/src/arch/x86_64/i8042.rs",
         find: "    pub(crate) fn set_translation(&mut self, translation: Translation) -> bool {",
         replace: "    pub(crate) fn set_translation(&mut self, translation: bool) -> bool {",
@@ -9593,6 +10534,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 934,
         file: "kernel/src/nvme.rs",
         find: "    wanted: Readiness,",
         replace: "    wanted: bool,",
@@ -9603,6 +10545,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 935,
         file: "kernel/src/thread.rs",
         find: "    fn choose(&self, current: usize, eligibility: CurrentEligibility) -> Option<usize> {",
         replace: "    fn choose(&self, current: usize, eligibility: bool) -> Option<usize> {",
@@ -9613,6 +10556,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 936,
         file: "kernel/src/console.rs",
         find: "    fn show_cursor(&mut self) {",
         replace: "    fn show_cursor(&mut self, _visible: bool) {",
@@ -9623,6 +10567,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 937,
         file: "kernel/src/console.rs",
         find: "    fn hide_cursor(&mut self) {",
         replace: "    fn hide_cursor(&mut self, _visible: bool) {",
@@ -9633,6 +10578,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 938,
         file: "kernel/src/console.rs",
         find: "    fn show_cursor(&mut self) {",
         replace: "    fn set_cursor(&mut self, visible: bool) {\n        let colour = if visible {\n            self.palette.foreground\n        } else {\n            self.palette.background\n        };\n        self.paint_cursor(colour);\n    }\n\n    fn show_cursor(&mut self) {",
@@ -9643,6 +10589,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 939,
         file: "kernel/src/mem.rs",
         find: "#[derive(Debug)]\npub(crate) struct ExternalControllersMasked {",
         replace: "#[derive(Debug, Clone)]\npub(crate) struct ExternalControllersMasked {",
@@ -9653,6 +10600,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 940,
         file: "kernel/src/mem.rs",
         find: "pub(crate) struct ExternalControllersMasked {\n    routing: Option<Routing>,\n}",
         replace: "pub(crate) struct ExternalControllersMasked {\n    pub(crate) routing: Option<Routing>,\n}",
@@ -9663,6 +10611,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 941,
         file: "kernel/src/mem.rs",
         find: "pub(crate) struct ExternalControllersMasked {\n    routing: Option<Routing>,\n}\n\nstruct ControllersReleased {",
         replace: "pub(crate) struct ExternalControllersMasked {\n    routing: Option<Routing>,\n}\n\nuse self::ExternalControllersMasked as ForgedMask;\n\nstruct ControllersReleased {",
@@ -9673,6 +10622,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 942,
         file: "kernel/src/mem.rs",
         find: "impl ExternalControllersMasked {\n    /// The selected keyboard controller, when the proven inventory has one.\n    pub(crate) fn into_routing(self) -> Option<Routing> {\n        self.routing\n    }\n}",
         replace: "impl ExternalControllersMasked {\n    /// The selected keyboard controller, when the proven inventory has one.\n    pub(crate) fn into_routing(self) -> Option<Routing> {\n        self.routing\n    }\n}\n\nfn forged_mask_authority() -> ExternalControllersMasked {\n    ExternalControllersMasked { routing: None }\n}",
@@ -9683,6 +10633,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 943,
         file: "kernel/src/mem.rs",
         find: "            controllers_masked: false,",
         replace: "            controllers_masked: true,",
@@ -9693,6 +10644,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 944,
         file: "kernel/src/mem.rs",
         find: "struct ControllersReleased {\n    _private: (),\n}",
         replace: "#[derive(Clone)]\nstruct ControllersReleased {\n    _private: (),\n}",
@@ -9703,6 +10655,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 945,
         file: "kernel/src/mem.rs",
         find: "impl RoutingPreparation {\n    fn ready(routing: Routing) -> Self {",
         replace: "impl RoutingPreparation {\n    const fn polled_without_release() -> Self {\n        Self {\n            routing: None,\n            controllers_masked: true,\n        }\n    }\n\n    fn ready(routing: Routing) -> Self {",
@@ -9713,6 +10666,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 946,
         file: "kernel/src/mem.rs",
         find: "impl RoutingPreparation {\n    fn ready(routing: Routing) -> Self {",
         replace: "fn forged_routing_preparation() -> RoutingPreparation {\n    RoutingPreparation {\n        routing: None,\n        controllers_masked: true,\n    }\n}\n\nimpl RoutingPreparation {\n    fn ready(routing: Routing) -> Self {",
@@ -9723,6 +10677,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 947,
         file: "kernel/src/mem.rs",
         find: "struct ControllersReleased {\n    _private: (),\n}\n\nimpl RoutingPreparation {",
         replace: "struct ControllersReleased {\n    _private: (),\n}\n\nfn forged_controller_release() -> ControllersReleased {\n    ControllersReleased { _private: () }\n}\n\nimpl RoutingPreparation {",
@@ -9733,6 +10688,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 948,
         file: "kernel/src/mem.rs",
         find: "            retain_routing_registers(registers, core::mem::take(controllers));\n            return None;",
         replace: "            retain_routing_registers(registers, core::mem::take(controllers));\n            return Some(ControllersReleased { _private: () });",
@@ -9743,6 +10699,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 949,
         file: "kernel/src/mem.rs",
         find: "            warn!(\"ioapic: candidate mapping remained owned during cleanup\");\n            retain_routing_registers(registers, core::mem::take(controllers));",
         replace: "            assert!(controllers.is_empty());\n            retain_routing_registers(registers, core::mem::take(controllers));",
@@ -9753,6 +10710,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 950,
         file: "kernel/src/main.rs",
         find: "        Some(routing) if interrupt::are_enabled() => routing,",
         replace: "        Some(routing) if true => routing,",
@@ -9763,6 +10721,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 951,
         file: "kernel/src/main.rs",
         find: "        Some(routing) if interrupt::are_enabled() => routing,",
         replace: "        Some(routing) if { let _ = interrupt::are_enabled(); true } => routing,",
@@ -9773,6 +10732,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 952,
         file: "kernel/src/main.rs",
         find: "fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked>) {\n    if let Err(reason) = pic::silence() {",
         replace: "fn enable_before_mask_proof() {\n    interrupt::enable();\n}\n\nfn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked>) {\n    enable_before_mask_proof();\n    if let Err(reason) = pic::silence() {",
@@ -9783,6 +10743,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 953,
         file: "kernel/src/main.rs",
         find: "fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked>) {\n    if let Err(reason) = pic::silence() {",
         replace: "fn retain_interrupt_enable() {\n    let _ = interrupt::enable;\n}\n\nfn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked>) {\n    if let Err(reason) = pic::silence() {",
@@ -9793,6 +10754,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 954,
         file: "kernel/src/main.rs",
         find: "fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked>) {\n    if let Err(reason) = pic::silence() {",
         replace: "use wost::arch::current::interrupt::enable as alias_enable;\n\nfn call_aliased_interrupt_enable() {\n    alias_enable();\n}\n\nfn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked>) {\n    if let Err(reason) = pic::silence() {",
@@ -9803,6 +10765,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 955,
         file: "kernel/src/main.rs",
         find: "    mask.is_some()",
         replace: "    mask.is_none()",
@@ -9813,6 +10776,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 956,
         file: "xtask/src/typed_arguments.rs",
         find: "        visit::visit_item_impl(self, implementation);",
         replace: "        let _ = implementation;",
@@ -9823,6 +10787,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 957,
         file: "libs/nvme/src/lib.rs",
         find: "        self.state = DmaOwnership::Closed;",
         replace: "        self.state = DmaOwnership::Idle;",
@@ -9833,6 +10798,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 958,
         file: "kernel/src/nvme.rs",
         find: "    wait_for_ready(registers, *capabilities, Readiness::NotReady)?;",
         replace: "    wait_for_ready(registers, *capabilities, Readiness::Ready)?;",
@@ -9843,6 +10809,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 959,
         file: "kernel/src/nvme.rs",
         find: "    let cc = read(registers, register::CC)?;",
         replace: "    let cc = 0;",
@@ -9853,6 +10820,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 960,
         file: "kernel/src/nvme.rs",
         find: "    let csts = read(registers, register::CSTS)?;",
         replace: "    let csts = 0;",
@@ -9863,6 +10831,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 961,
         file: "kernel/src/nvme.rs",
         find: "    let observed = DisabledRegisters::from_bits(cc, csts).map_err(|_| BringUpError::NotReady)?;",
         replace: "    let observed = DisabledRegisters::from_bits(0, 0).map_err(|_| BringUpError::NotReady)?;",
@@ -9873,6 +10842,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 962,
         file: "kernel/src/nvme.rs",
         find: "            self.dma.disposition = DmaDisposition::Quiesced;",
         replace: "            self.dma.disposition = DmaDisposition::Retained;",
@@ -9883,6 +10853,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 963,
         file: "kernel/src/nvme.rs",
         find: "    dma: &'controller mut DmaState,",
         replace: "    dma: &'controller DmaState,",
@@ -9893,6 +10864,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 964,
         file: "kernel/src/nvme.rs",
         find: "    fn quiesce(self) {",
         replace: "    fn quiesce(&mut self) {",
@@ -9903,6 +10875,7 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
         },
     },
     Mutation {
+        id: 965,
         file: "kernel/src/nvme.rs",
         find: r#"    Ok(ControllerStopped {
         _registers: registers,
@@ -9931,6 +10904,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 966,
         file: "xtask/src/typed_arguments.rs",
         find: "        if implementation.trait_.is_none() && type_is(&implementation.self_ty, self.owner) {",
         replace: "        if type_is(&implementation.self_ty, self.owner) {",
@@ -9941,6 +10915,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 967,
         file: "xtask/src/dma_contracts.rs",
         find: "    methods.visit_file(syntax);",
         replace: "    for item in &syntax.items {\n        if let Item::Impl(implementation) = item {\n            methods.visit_item_impl(implementation);\n        }\n    }",
@@ -9951,6 +10926,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 968,
         file: "xtask/src/dma_contracts.rs",
         find: "    find_method(syntax, owner, name, false)",
         replace: "    find_method(syntax, owner, name, true)",
@@ -9961,6 +10937,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 969,
         file: "kernel/src/nvme.rs",
         find: "#[derive(Debug)]\nstruct ControllerStopped<'controller> {\n    _registers: &'controller MappedBar,\n    _observed: DisabledRegisters,\n    dma: &'controller mut DmaState,\n}",
         replace: "#[derive(Debug)]\nstruct ControllerStopped<'controller> {\n    _registers: &'controller MappedBar,\n    _observed: DisabledRegisters,\n    dma: &'controller mut DmaState,\n}\n\nconst _: () = {\n    impl Clone for ControllerStopped<'_> {\n        fn clone(&self) -> Self {\n            unreachable!()\n        }\n    }\n};",
@@ -9971,6 +10948,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 970,
         file: "kernel/src/nvme.rs",
         find: "#[derive(Debug, PartialEq, Eq)]\nenum DmaDisposition {",
         replace: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\nenum DmaDisposition {",
@@ -9981,6 +10959,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 971,
         file: "kernel/src/nvme.rs",
         find: "impl ControllerStopped<'_> {\n    fn quiesce(self) {",
         replace: "impl ControllerStopped<'_> {\n    fn duplicate(self) -> Self {\n        self\n    }\n\n    fn quiesce(self) {",
@@ -9991,6 +10970,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 972,
         file: "kernel/src/nvme.rs",
         find: "struct ControllerStopped<'controller> {\n    _registers: &'controller MappedBar,\n    _observed: DisabledRegisters,\n    dma: &'controller mut DmaState,\n}\n\nimpl ControllerStopped<'_> {",
         replace: "struct ControllerStopped<'controller> {\n    _registers: &'controller MappedBar,\n    _observed: DisabledRegisters,\n    dma: &'controller mut DmaState,\n}\n\ntype ControllerStoppedAlias<'controller> = ControllerStopped<'controller>;\n\nimpl ControllerStopped<'_> {",
@@ -10001,6 +10981,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 973,
         file: "kernel/src/nvme.rs",
         find: "struct ControllerStopped<'controller> {\n    _registers: &'controller MappedBar,\n    _observed: DisabledRegisters,\n    dma: &'controller mut DmaState,\n}\n\nimpl ControllerStopped<'_> {",
         replace: "struct ControllerStopped<'controller> {\n    _registers: &'controller MappedBar,\n    _observed: DisabledRegisters,\n    dma: &'controller mut DmaState,\n}\n\nuse self::ControllerStopped as ForgedStopped;\n\nimpl ControllerStopped<'_> {",
@@ -10011,6 +10992,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 974,
         file: "kernel/src/nvme.rs",
         find: "    const fn is_settled(&self) -> bool {\n        !matches!(&self.disposition, DmaDisposition::Active)\n    }",
         replace: "    const fn is_settled(&self) -> bool {\n        true\n    }",
@@ -10021,6 +11003,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 975,
         file: "kernel/src/nvme.rs",
         find: "        if self.dma.disposition == DmaDisposition::Active {",
         replace: "        if true {",
@@ -10031,6 +11014,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 976,
         file: "kernel/src/nvme.rs",
         find: "        if self.dma.must_retain() {\n            self.admin.retain();\n            if let Some(queue) = self.io.as_mut() {\n                queue.retain();\n            }\n            if let Some(segment) = data {\n                segment.retain();\n            }\n        }",
         replace: "",
@@ -10041,6 +11025,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 977,
         file: "kernel/src/nvme.rs",
         find: "        self.completion.retain();",
         replace: "",
@@ -10051,6 +11036,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 978,
         file: "kernel/src/nvme.rs",
         find: "        if !self.dma.is_quiesced() {\n            return quarantine_controller(self);\n        }",
         replace: "        if !self.dma.is_quiesced() {\n            return ControllerRetirement::Retired;\n        }",
@@ -10061,6 +11047,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 979,
         file: "kernel/src/nvme.rs",
         find: "        mem::MappedPciBarRetirement::Quarantined => PrepareFailure::memory_quarantine(reason),",
         replace: "        mem::MappedPciBarRetirement::Quarantined => PrepareFailure::Retired(reason),",
@@ -10071,6 +11058,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 980,
         file: "kernel/src/nvme.rs",
         find: "    *retained = Some(RetainedController {\n        _controller: controller,\n        device: None,\n    });",
         replace: "    drop(controller);",
@@ -10081,6 +11069,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 981,
         file: "kernel/src/nvme.rs",
         find: "impl Drop for Controller {\n    fn drop(&mut self) {\n        self.stop_dma(None);\n    }\n}",
         replace: "impl Drop for Controller {\n    fn drop(&mut self) {}\n}",
@@ -10091,6 +11080,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 982,
         file: "kernel/src/nvme.rs",
         find: "        if observed == wanted {",
         replace: "        if observed == wanted || wanted == Readiness::NotReady {",
@@ -10101,6 +11091,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 983,
         file: "kernel/src/nvme.rs",
         find: "        let observed = if bits & status::READY != 0 {",
         replace: "        let observed = if bits & status::READY == 0 {",
@@ -10111,6 +11102,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 984,
         file: "kernel/src/nvme.rs",
         find: "    const fn must_retain(&self) -> bool {\n        matches!(&self.disposition, DmaDisposition::Retained)\n    }\n}\n\n/// A mapped controller observed disabled while PCI bus mastering was off.",
         replace: "    const fn must_retain(&self) -> bool {\n        matches!(&self.disposition, DmaDisposition::Retained)\n    }\n}\n\nfn swap_dma_states(left: &mut Controller, right: &mut Controller) {\n    core::mem::swap(&mut left.dma, &mut right.dma);\n}\n\n/// A mapped controller observed disabled while PCI bus mastering was off.",
@@ -10121,6 +11113,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 985,
         file: "kernel/src/nvme.rs",
         find: "    const fn must_retain(&self) -> bool {\n        matches!(&self.disposition, DmaDisposition::Retained)\n    }\n}\n\n/// A mapped controller observed disabled while PCI bus mastering was off.",
         replace: "    const fn must_retain(&self) -> bool {\n        matches!(&self.disposition, DmaDisposition::Retained)\n    }\n}\n\nfn alias_dma_state(controller: &Controller) {\n    let _ = &controller.dma;\n}\n\n/// A mapped controller observed disabled while PCI bus mastering was off.",
@@ -10131,6 +11124,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 986,
         file: "libs/nvme/src/lib.rs",
         find: "    pub fn close(&mut self) {",
         replace: "    pub fn quiesce(&mut self) {",
@@ -10141,6 +11135,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 987,
         file: "kernel/src/queue.rs",
         find: "            WORKER_IS_PAUSED.store(true, Ordering::Release);",
         replace: "            WORKER_IS_PAUSED.store(false, Ordering::Release);",
@@ -10148,6 +11143,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("a task release refusal retains the zombie for retry"),
     },
     Mutation {
+        id: 988,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    fn map_device_range(\n        &mut self,\n        admitted: &AdmittedDeviceRange,\n    ) -> Result<DeviceMapping, MapError> {",
         replace: "    fn map_device_range(\n        &mut self,\n        admitted: &AdmittedDeviceRange,\n    ) -> Result<DeviceMapping, MapError> {\n        let _fixed_projection = [None::<DeviceExtent>; MAX_DEVICE_MAPPINGS];",
@@ -10158,6 +11154,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 989,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "        let virtual_extent =\n            AddressRange::new(virtual_base, pages).ok_or(MapError::InvalidDeviceRange(physical))?;\n\n        let expected_flags = Flags::PRESENT\n            .union(Flags::WRITABLE)\n            .union(Flags::NO_EXECUTE)\n            .union(Flags::NO_CACHE);\n        self.map_range(\n            virtual_base,\n            base,\n            pages,\n            expected_flags.difference(Flags::PRESENT),\n            Grain::Pages,\n        )?;",
         replace: "        let expected_flags = Flags::PRESENT\n            .union(Flags::WRITABLE)\n            .union(Flags::NO_EXECUTE)\n            .union(Flags::NO_CACHE);\n        self.map_range(\n            virtual_base,\n            base,\n            pages,\n            expected_flags.difference(Flags::PRESENT),\n            Grain::Pages,\n        )?;\n        let virtual_extent =\n            AddressRange::new(virtual_base, pages).ok_or(MapError::InvalidDeviceRange(physical))?;",
@@ -10168,6 +11165,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 990,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "pub(crate) struct TaskStackPin {\n    stacks: Vec<StackIdentity>,\n}\n\n/// A task-stack top borrowed from a pinned arena identity.",
         replace: "pub(crate) struct TaskStackPin {\n    stacks: Vec<StackIdentity>,\n}\n\nimpl Drop for TaskStackPin {\n    fn drop(&mut self) {\n        let mut pinned = TASK_STACK_PIN.lock_leaf();\n        *pinned = None;\n    }\n}\n\n/// A task-stack top borrowed from a pinned arena identity.",
@@ -10178,6 +11176,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 991,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "pub(crate) struct KernelStackTop<'pin>(&'pin StackIdentity);\n\nimpl KernelStackTop<'_> {\n    /// The address hardware may retain in `RSP0`.\n    pub(crate) const fn address(self) -> u64 {\n        self.0.slot.stack_top()\n    }\n}\n\nimpl TaskStackPin {\n    /// The pinned stack at `index`, as retained-hardware authority.\n    pub(crate) fn stack_top(&self, index: usize) -> Option<KernelStackTop<'_>> {\n        let identity = self.stacks.get(index)?;\n        if !is_active() {\n            return None;\n        }\n        let current = cpu::page_table_base();\n        identity\n            .invalid_page_in(current)\n            .is_none()\n            .then_some(KernelStackTop(identity))\n    }",
         replace: "pub(crate) struct KernelStackTop<'pin> {\n    address: u64,\n    _pin: core::marker::PhantomData<&'pin TaskStackPin>,\n}\n\nimpl KernelStackTop<'_> {\n    /// The address hardware may retain in `RSP0`.\n    pub(crate) const fn address(self) -> u64 {\n        self.address\n    }\n}\n\nimpl TaskStackPin {\n    /// The pinned stack at `index`, as retained-hardware authority.\n    pub(crate) fn stack_top(&self, index: usize) -> Option<KernelStackTop<'_>> {\n        let identity = self.stacks.get(index)?;\n        if !is_active() {\n            return None;\n        }\n        let current = cpu::page_table_base();\n        identity\n            .invalid_page_in(current)\n            .is_none()\n            .then_some(KernelStackTop {\n                address: identity.slot.stack_top(),\n                _pin: core::marker::PhantomData,\n            })\n    }",
@@ -10188,6 +11187,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 992,
         file: "wost/src/arch/x86_64/paging.rs",
         find: r#"            None => {
                 self.devices
@@ -10258,6 +11258,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 993,
         file: "kernel/src/fs.rs",
         find: "pub(crate) const VOLUME_SECTOR: u64 = 2048;",
         replace: "pub(crate) const VOLUME_SECTOR: u64 = 2048;\n\nfn with_volume() {}",
@@ -10268,6 +11269,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 994,
         file: "kernel/src/nvme.rs",
         find: "const COMMAND_TIMEOUT_MS: u64 = 5_000;",
         replace: "const COMMAND_TIMEOUT_MS: u64 = 5_000;\n\nfn with_controller() {}",
@@ -10278,6 +11280,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 995,
         file: "kernel/src/tmpfs.rs",
         find: "pub(crate) const ROOT: usize = 0;",
         replace: "pub(crate) const ROOT: usize = 0;\n\nfn walk() {}",
@@ -10288,6 +11291,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 996,
         file: "libs/acpi-tables/src/lib.rs",
         find: "fn checksum_is_valid(bytes: &[u8]) -> bool {",
         replace: "pub fn checksum_is_valid(bytes: &[u8]) -> bool {",
@@ -10298,6 +11302,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 997,
         file: "libs/acpi-tables/src/lib.rs",
         find: "#[cfg(test)]\nfn fix_checksum(bytes: &mut [u8], index: usize) {",
         replace: "pub fn fix_checksum(bytes: &mut [u8], index: usize) {",
@@ -10308,6 +11313,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 998,
         file: "libs/fat32/src/lib.rs",
         find: "    const fn sector_of(self, cluster: u32) -> Result<u64, FatError> {",
         replace: "    pub const fn sector_of(self, cluster: u32) -> Result<u64, FatError> {",
@@ -10318,6 +11324,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 999,
         file: "libs/fat32/src/lib.rs",
         find: "    const fn table_position(self, cluster: u32) -> (u64, usize) {",
         replace: "    pub const fn table_position(self, cluster: u32) -> (u64, usize) {",
@@ -10328,6 +11335,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1000,
         file: "libs/fat32/src/lib.rs",
         find: "const fn decode_entry(raw: u32) -> Next {",
         replace: "pub const fn decode_entry(raw: u32) -> Next {",
@@ -10338,6 +11346,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1001,
         file: "libs/fat32/src/lib.rs",
         find: "const fn decode_slot(slot: &[u8; ENTRY_BYTES]) -> Slot {",
         replace: "pub const fn decode_slot(slot: &[u8; ENTRY_BYTES]) -> Slot {",
@@ -10348,6 +11357,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1002,
         file: "libs/memory-map/src/lib.rs",
         find: "pub const MAX_REGIONS: usize = 128;",
         replace: "pub const MAX_REGIONS: usize = 128;\n\npub fn allocatable_bytes() -> u64 {\n    0\n}",
@@ -10358,6 +11368,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1003,
         file: "libs/path-walk/src/lib.rs",
         find: "fn is_a_name(component: &[u8]) -> bool {",
         replace: "pub fn is_a_name(component: &[u8]) -> bool {",
@@ -10368,6 +11379,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1004,
         file: "libs/pci-config/src/lib.rs",
         find: "const fn io_window_size(mask: u32) -> Option<u16> {",
         replace: "pub const fn io_window_size(mask: u32) -> Option<u16> {",
@@ -10378,6 +11390,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1005,
         file: "libs/pci-config/src/lib.rs",
         find: "pub const BARS: usize = 6;",
         replace: "pub const BARS: usize = 6;\n\nfn subordinate_bus() -> u8 {\n    0\n}",
@@ -10388,6 +11401,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1006,
         file: "libs/stack-layout/src/lib.rs",
         find: "pub const PAGE_SIZE: u64 = 4096;",
         replace: "pub const PAGE_SIZE: u64 = 4096;\n\nfn stack_overlaps() -> bool {\n    false\n}",
@@ -10398,6 +11412,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1007,
         file: "wost/src/arch/x86_64/pci.rs",
         find: "const FUNCTION_CLAIMS: usize = 8;",
         replace: "const FUNCTION_CLAIMS: usize = 8;\n\nfn write_command() {}",
@@ -10408,6 +11423,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1008,
         file: "wost/src/mm/mod.rs",
         find: "pub const CEILING: u64 = 16 << 30;",
         replace: "pub const CEILING: u64 = 16 << 30;\n\nfn first_region() {}",
@@ -10418,6 +11434,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1009,
         file: "wost/src/mm/mod.rs",
         find: "pub const CEILING: u64 = 16 << 30;",
         replace: "pub const CEILING: u64 = 16 << 30;\n\nfn past_every_region() {}",
@@ -10428,6 +11445,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1010,
         file: "libs/pci-config/src/lib.rs",
         find: "#[derive(Debug, PartialEq, Eq)]\n#[must_use = \"dropping function authority permanently retains its claim\"]\npub struct FunctionAuthority {",
         replace: "#[derive(Debug, Clone, PartialEq, Eq)]\n#[must_use = \"dropping function authority permanently retains its claim\"]\npub struct FunctionAuthority {",
@@ -10438,6 +11456,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1011,
         file: "libs/pci-config/src/lib.rs",
         find: "#[derive(Debug, PartialEq, Eq)]\n#[must_use = \"dropping function authority permanently retains its claim\"]\npub struct FunctionAuthority {",
         replace: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n#[must_use = \"dropping function authority permanently retains its claim\"]\npub struct FunctionAuthority {",
@@ -10448,6 +11467,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1012,
         file: "wost/src/arch/x86_64/pci.rs",
         find: "#[derive(Debug)]\n#[must_use = \"dropping PCI function authority permanently retains its claim\"]\npub struct FunctionClaim {\n    authority: FunctionAuthority,\n    identity: u32,\n}",
         replace: "#[derive(Debug)]\n#[must_use = \"dropping PCI function authority permanently retains its claim\"]\npub struct FunctionClaim {\n    authority: FunctionAuthority,\n    identity: u32,\n}\n\nimpl Clone for FunctionClaim {\n    fn clone(&self) -> Self {\n        // SAFETY: the source is one valid aligned claim; this defect deliberately leaves both copies live.\n        unsafe { core::ptr::read(self) }\n    }\n}",
@@ -10458,6 +11478,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1013,
         file: "wost/src/arch/x86_64/pci.rs",
         find: "#[derive(Debug)]\n#[must_use = \"dropping PCI function authority permanently retains its claim\"]\npub struct FunctionClaim {\n    authority: FunctionAuthority,\n    identity: u32,\n}",
         replace: "#[derive(Debug)]\n#[must_use = \"dropping PCI function authority permanently retains its claim\"]\npub struct FunctionClaim {\n    authority: FunctionAuthority,\n    identity: u32,\n}\n\nimpl FunctionClaim {\n    /// Return a second live copy of this function claim.\n    pub fn duplicate(&self) -> Self {\n        // SAFETY: the source is one valid aligned claim; this defect deliberately leaves both copies live.\n        unsafe { core::ptr::read(self) }\n    }\n}",
@@ -10468,6 +11489,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1014,
         file: "libs/pci-config/src/lib.rs",
         find: "struct CommandLeases<const N: usize> {",
         replace: "pub struct CommandLeases<const N: usize> {",
@@ -10478,6 +11500,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1015,
         file: "libs/pci-config/src/lib.rs",
         find: "    fn release(&mut self, authority: FunctionAuthority) -> Result<(), FunctionAuthority> {",
         replace: "    pub fn release(&mut self, authority: FunctionAuthority) -> Result<(), FunctionAuthority> {",
@@ -10488,6 +11511,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1016,
         file: "xtask/src/contracts.rs",
         find: "let _ = pci::enable_memory_space(at);",
         replace: "let _ = pci::read(at);",
@@ -10498,6 +11522,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1017,
         file: "xtask/src/contracts.rs",
         find: "let _ = pci::enable_bus_master(at);",
         replace: "let _ = pci::read(at);",
@@ -10508,6 +11533,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1018,
         file: "xtask/src/contracts.rs",
         find: "let _ = pci::admit_bus_master(at, state);",
         replace: "let _ = pci::read(at);",
@@ -10518,6 +11544,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1019,
         file: "xtask/src/contracts.rs",
         find: "let _ = pci::restore_command(at, state);",
         replace: "let _ = pci::read(at);",
@@ -10528,6 +11555,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1020,
         file: "xtask/src/contracts.rs",
         find: "let _ = pci::commit_command(at, state);",
         replace: "let _ = pci::read(at);",
@@ -10538,6 +11566,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1021,
         file: "xtask/src/contracts.rs",
         find: "let _ = pci::probe_bars(at);",
         replace: "let _ = pci::read(at);",
@@ -10548,6 +11577,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1022,
         file: "xtask/src/contracts.rs",
         find: "let _ = pci::retry_probe(at, retry);",
         replace: "let _ = pci::read(at);",
@@ -10558,6 +11588,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1023,
         file: "xtask/src/contracts.rs",
         find: "let _ = pci::release_function(at);",
         replace: "let _ = pci::read(at);",
@@ -10568,6 +11599,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1024,
         file: "wost/src/arch/x86_64/pci.rs",
         find: "pub fn read(at: Address) -> Option<u32> {",
         replace: "pub(crate) fn read(at: Address) -> Option<u32> {",
@@ -10578,6 +11610,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1025,
         file: "wost/src/arch/x86_64/pci.rs",
         find: "pub fn claim_function(at: Address) -> Result<FunctionClaim, ClaimError> {",
         replace: "pub(crate) fn claim_function(at: Address) -> Result<FunctionClaim, ClaimError> {",
@@ -10588,6 +11621,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1026,
         file: "xtask/src/recovery_contracts.rs",
         find: "impl<'ast> Visit<'ast> for WriterFunctions<'ast> {",
         replace: "impl<'ast> Visit<'ast> for WriterFunctions<'ast> {\n    fn visit_item_mod(&mut self, _module: &'ast syn::ItemMod) {}",
@@ -10598,6 +11632,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1027,
         file: "xtask/src/api.rs",
         find: "        Some(\"std\" | \"core\" | \"alloc\") => ImportOrigin::Standard,",
         replace: "        Some(\"std\" | \"core\" | \"alloc\") => ImportOrigin::Other,",
@@ -10608,6 +11643,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1028,
         file: "xtask/src/api.rs",
         find: "    #[cfg(test)]\n    fn observe(\n        &mut self,\n        graph: usize,\n        kind: RootKind,\n        inventory: &Inventory,\n        root: &Path,\n        output: &str,\n        instrumentation: &Instrumentation,\n    ) -> Result<()> {\n        if self.graphs.len() <= graph {\n            self.graphs.resize_with(graph + 1, Uses::default);\n        }",
         replace: "    #[cfg(test)]\n    fn observe(\n        &mut self,\n        graph: usize,\n        kind: RootKind,\n        inventory: &Inventory,\n        root: &Path,\n        output: &str,\n        instrumentation: &Instrumentation,\n    ) -> Result<()> {\n        self.graphs.resize_with(graph + 1, Uses::default);",
@@ -10618,6 +11654,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1029,
         file: "xtask/src/api.rs",
         find: "            uses.observe_cargo(\n                compilation.graph,\n                compilation.kind,\n                &inventory,\n                &workspace.root,\n                &compilation.diagnostics,\n                &insertions,\n            )?;",
         replace: "            if compilation.kind == RootKind::Production {\n                uses.observe_cargo(\n                    compilation.graph,\n                    compilation.kind,\n                    &inventory,\n                    &workspace.root,\n                    &compilation.diagnostics,\n                    &insertions,\n                )?;\n            }",
@@ -10628,6 +11665,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1030,
         file: "xtask/src/api.rs",
         find: "            CargoTargetKind::Library | CargoTargetKind::Test | CargoTargetKind::Bench => false,",
         replace: "            CargoTargetKind::Library => true,\n            CargoTargetKind::Test | CargoTargetKind::Bench => false,",
@@ -10638,6 +11676,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1031,
         file: "xtask/src/api.rs",
         find: "            RootKind::TestHarness => self.verification,",
         replace: "            RootKind::TestHarness => self.production || self.verification,",
@@ -10648,6 +11687,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1032,
         file: "xtask/src/api.rs",
         find: "        ensure!(\n            test_artifact,\n            \"Cargo target `{}:{}` uses a custom test harness, which the API audit cannot classify\",\n            selected.package,\n            selected.name\n        );",
         replace: "        let _unchecked_test_artifact = test_artifact;",
@@ -10658,6 +11698,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1033,
         file: "xtask/src/api.rs",
         find: "                        CargoTargetKind::Library\n                        | CargoTargetKind::Bin\n                        | CargoTargetKind::Example => target.test,",
         replace: "                        CargoTargetKind::Library => false,\n                        CargoTargetKind::Bin | CargoTargetKind::Example => target.test,",
@@ -10668,6 +11709,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1034,
         file: "xtask/src/api.rs",
         find: "                        CargoTargetKind::Test | CargoTargetKind::Bench => true,",
         replace: "                        CargoTargetKind::Test | CargoTargetKind::Bench => target.test,",
@@ -10678,6 +11720,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1035,
         file: "xtask/src/api.rs",
         find: "    let mut args = vec![command.to_string()];\n    if matches!(plan.mode, CompilationMode::TestHarness(_)) {",
         replace: "    let mut args = vec![command.to_string()];\n    if matches!(plan.mode, CompilationMode::RegisteredPass) {\n        args.push(\"--all-targets\".to_string());\n    }\n    if matches!(plan.mode, CompilationMode::TestHarness(_)) {",
@@ -10688,6 +11731,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1036,
         file: "xtask/src/api.rs",
         find: "    if core::iter::Iterator::next(&mut lines).is_some() {\n        return false;\n    }\n    let Some((identity, location)) = row.rsplit_once(\" at \") else {",
         replace: "    let Some((identity, location)) = row.rsplit_once(\" at \") else {",
@@ -10698,6 +11742,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1037,
         file: "xtask/src/api.rs",
         find: "fn graph_build_directory(build: &Path, graph: usize) -> Result<PathBuf> {\n    let directory = build.join(format!(\"graph-{graph}\"));\n    let directory = crate::mutation_workspace::prepare_real_child(\n        build,\n        &directory,\n        \"API audit graph build directory\",\n    )?;\n    Ok(crate::cargo::child_process_path(&directory))\n}",
         replace: "fn graph_build_directory(build: &Path, _graph: usize) -> Result<PathBuf> {\n    Ok(crate::cargo::child_process_path(build))\n}",
@@ -10708,6 +11753,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1038,
         file: "xtask/src/api.rs",
         find: "        \"--locked\".to_string(),",
         replace: "",
@@ -10718,6 +11764,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1039,
         file: "xtask/src/api.rs",
         find: "    args.extend([\"--target\".to_string(), plan.target.clone()]);",
         replace: "    let _implicit_host_target = &plan.target;",
@@ -10728,6 +11775,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1040,
         file: "xtask/src/api.rs",
         find: "        if current == *expected {\n            return Ok(());\n        }",
         replace: "        if true || current == *expected {\n            return Ok(());\n        }",
@@ -10738,6 +11786,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1041,
         file: "xtask/src/api.rs",
         find: "    workspace.require_copy_unchanged(expected)?;\n    workspace.require_source_unchanged(&workspace.source_root)?;\n    compiler.require_unchanged()?;\n    if !result.status.success() {",
         replace: "    workspace.require_source_unchanged(&workspace.source_root)?;\n    compiler.require_unchanged()?;\n    if !result.status.success() {",
@@ -10748,6 +11797,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1042,
         file: "xtask/src/api.rs",
         find: "    workspace.require_copy_unchanged(expected)?;\n    workspace.require_source_unchanged(&workspace.source_root)?;\n    compiler.require_unchanged()?;\n    if !result.status.success() {",
         replace: "    workspace.require_copy_unchanged(expected)?;\n    compiler.require_unchanged()?;\n    if !result.status.success() {",
@@ -10758,6 +11808,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1043,
         file: "xtask/src/api.rs",
         find: "        workspace.require_copy_unchanged(expected)?;\n        workspace.require_source_unchanged(&workspace.source_root)?;\n        workspace.require_cargo_inputs_unchanged()?;\n        compiler.require_unchanged()?;\n        ensure!(",
         replace: "        workspace.require_source_unchanged(&workspace.source_root)?;\n        workspace.require_cargo_inputs_unchanged()?;\n        compiler.require_unchanged()?;\n        ensure!(",
@@ -10768,6 +11819,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1044,
         file: "xtask/src/api.rs",
         find: "            .context(\"spawning Cargo metadata for the API audit\")?;\n        workspace.require_copy_unchanged(expected)?;\n        workspace.require_source_unchanged(&workspace.source_root)?;\n        workspace.require_cargo_inputs_unchanged()?;\n        compiler.require_unchanged()?;",
         replace: "            .context(\"spawning Cargo metadata for the API audit\")?;\n        workspace.require_copy_unchanged(expected)?;\n        workspace.require_cargo_inputs_unchanged()?;\n        compiler.require_unchanged()?;",
@@ -10778,6 +11830,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1045,
         file: "xtask/src/api.rs",
         find: "    }\n    workspace.require_source_unchanged(paths.root())?;\n    plan.compiler.require_input_authority_unchanged()?;\n\n    uses.validate_dispatches(&inventory)?;\n    let dead = uses.dead(&inventory);",
         replace: "    }\n    plan.compiler.require_input_authority_unchanged()?;\n\n    uses.validate_dispatches(&inventory)?;\n    let dead = uses.dead(&inventory);",
@@ -10788,6 +11841,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1046,
         file: "xtask/src/api.rs",
         find: "        let catalog = catalog.context(\"the API audit has no registered Cargo graph\")?;\n        compiler.require_input_authority_unchanged()?;\n        Self::from_catalog(catalog, compiler)",
         replace: "        let catalog = catalog.context(\"the API audit has no registered Cargo graph\")?;\n        Self::from_catalog(catalog, compiler)",
@@ -10798,6 +11852,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1047,
         file: "xtask/src/api.rs",
         find: "    workspace.require_cargo_inputs_unchanged()?;\n    plan.compiler.require_input_authority_unchanged()?;\n    let pristine_build_authority = (0..plan.compilations.len())",
         replace: "    workspace.require_cargo_inputs_unchanged()?;\n    let pristine_build_authority = (0..plan.compilations.len())",
@@ -10808,6 +11863,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1048,
         file: "xtask/src/api.rs",
         find: "        workspace.require_cargo_inputs_unchanged()?;\n        plan.compiler.require_target_libraries_unchanged()?;\n    }\n    workspace.require_source_unchanged(paths.root())?;",
         replace: "        workspace.require_cargo_inputs_unchanged()?;\n    }\n    workspace.require_source_unchanged(paths.root())?;",
@@ -10818,6 +11874,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1049,
         file: "xtask/src/api.rs",
         find: "    workspace.require_source_unchanged(paths.root())?;\n    plan.compiler.require_input_authority_unchanged()?;\n\n    uses.validate_dispatches(&inventory)?;",
         replace: "    workspace.require_source_unchanged(paths.root())?;\n\n    uses.validate_dispatches(&inventory)?;",
@@ -10828,6 +11885,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1050,
         file: "xtask/src/api.rs",
         find: "            return self.self_type == exact_self_type;",
         replace: "            return true;",
@@ -10838,6 +11896,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1051,
         file: "xtask/src/api.rs",
         find: "            let mut activated = false;\n            for (&(file, site), evidence) in &self.dispatches {",
         replace: "            let mut activated = false;\n            for activation in &inventory.trait_activations {\n                if activation.declaration.is_none()\n                    && live.contains(&activation.self_type)\n                    && live.insert(activation.implementation)\n                {\n                    pending.push_back(activation.implementation);\n                    activated = true;\n                }\n            }\n            for (&(file, site), evidence) in &self.dispatches {",
@@ -10848,6 +11907,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1052,
         file: "xtask/src/api.rs",
         find: "                        self.language_main && self.scope.is_empty() && self.lexical_item_depth == 0,",
         replace: "                        true,",
@@ -10858,6 +11918,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1053,
         file: "xtask/src/api.rs",
         find: "            availability: context.availability.for_item(&module.attrs),",
         replace: "            availability: context.availability,",
@@ -10868,6 +11929,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1054,
         file: "xtask/src/api.rs",
         find: "        scope.push(module.ident.to_string());",
         replace: "",
@@ -10878,6 +11940,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1055,
         file: "xtask/src/api.rs",
         find: "            existing == &context,",
         replace: "            true || existing == &context,",
@@ -10888,6 +11951,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1056,
         file: "xtask/src/api.rs",
         find: "                candidates.len() != 2,",
         replace: "                true || candidates.len() != 2,",
@@ -10898,6 +11962,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1057,
         file: "xtask/src/api.rs",
         find: "        let declared_path = literal_module_path(&module.attrs, source, module.ident.span())?;",
         replace: "        let declared_path = None::<PathBuf>;",
@@ -10908,6 +11973,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1058,
         file: "xtask/src/api.rs",
         find: "                        self.language_main && self.scope.is_empty() && self.lexical_item_depth == 0,",
         replace: "                        self.language_main && self.scope.is_empty(),",
@@ -10918,6 +11984,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1059,
         file: "xtask/src/api.rs",
         find: "files[candidate.file].origin == files[reference.file].origin\n                    && candidate.symbol == name",
         replace: "candidate.symbol == name",
@@ -10928,6 +11995,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1060,
         file: "xtask/src/api.rs",
         find: "        Some(_) => ImportOrigin::Dependency,",
         replace: "        Some(_) => ImportOrigin::Other,",
@@ -10938,6 +12006,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1061,
         file: "kernel/src/mem.rs",
         find: "#[derive(Debug)]\npub(crate) struct ExternalControllersMasked {",
         replace: "#[derive(Debug, Default)]\npub(crate) struct ExternalControllersMasked {",
@@ -10948,6 +12017,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1062,
         file: "xtask/src/api.rs",
         find: "        && declaration_crate == crate_name",
         replace: "        && declaration_crate == \"not_a_crate\"",
@@ -10958,6 +12028,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1063,
         file: "xtask/src/api.rs",
         find: "        if prelude_external_trait(path) {\n            ImportOrigin::Standard",
         replace: "        if false && prelude_external_trait(path) {\n            ImportOrigin::Standard",
@@ -10968,6 +12039,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1064,
         file: "xtask/src/api.rs",
         find: "        imports.collect_names(items, &mut scope.to_vec());",
         replace: "",
@@ -10978,6 +12050,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1065,
         file: "xtask/src/api.rs",
         find: "        } else if self.local_name(scope, first) {\n            ImportOrigin::Other",
         replace: "        } else if self.local_name(scope, first) {\n            ImportOrigin::Dependency",
@@ -10988,6 +12061,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1066,
         file: "xtask/src/api.rs",
         find: "            || self.glob_binds_local(scope, first, &mut BTreeSet::new())",
         replace: "            || false",
@@ -10998,6 +12072,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1067,
         file: "xtask/src/cargo.rs",
         find: "            Prefix::VerbatimDisk(drive) => PathBuf::from(format!(\"{}:\\\\\", char::from(drive))),",
         replace: "            Prefix::VerbatimDisk(_) => return path.to_path_buf(),",
@@ -11008,6 +12083,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1068,
         file: "xtask/src/api.rs",
         find: "                    let path = self\n                        .trait_imports\n                        .resolve_path(&self.scope, &path)\n                        .unwrap_or(path);",
         replace: "                    let path = path;",
@@ -11018,6 +12094,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1069,
         file: "xtask/src/api.rs",
         find: "workspace_type_matches(&files[candidate.file], &candidate.symbol, name)",
         replace: "false",
@@ -11028,6 +12105,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1070,
         file: "xtask/src/api.rs",
         find: "            .find(|(id, _)| active.contains(*id))",
         replace: "            .find(|_| false)",
@@ -11038,6 +12116,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1071,
         file: "xtask/src/api.rs",
         find: "        _ => bail!(\"unsupported attribute `{name}`\"),",
         replace: "        _ => {}",
@@ -11048,6 +12127,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1072,
         file: "xtask/src/api.rs",
         find: "                let derive = single_path_name(&derive).context(\"qualified derive path\")?;",
         replace: "                let _procedural_derive = derive;\n                let derive = \"Clone\".to_string();",
@@ -11058,6 +12138,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1073,
         file: "xtask/src/api.rs",
         find: "        entry.mac.path.is_ident(\"macro_rules\")",
         replace: "        entry.mac.path.is_ident(\"not_macro_rules\")",
@@ -11068,6 +12149,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1074,
         file: "xtask/src/api.rs",
         find: "        expanded.to_string() == expected.to_string(),",
         replace: "        true,",
@@ -11078,6 +12160,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1075,
         file: "xtask/src/api.rs",
         find: "        entry_contract_use(&generated, \"boot::BootInfo\", \"wost::boot::BootInfo\")?,",
         replace: "        entry_contract_use(\n            &generated,\n            \"boot::limine_glue::base_revision\",\n            \"wost::boot::BootInfo\",\n        )?,",
@@ -11088,6 +12171,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1076,
         file: "xtask/src/api.rs",
         find: "            && handler.segments[0].ident == \"kernel_main\"",
         replace: "            && true",
@@ -11098,6 +12182,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1077,
         file: "xtask/src/api.rs",
         find: "        if transparent_macro(expression, self.unqualified_standard) {",
         replace: "        if false && transparent_macro(expression, self.unqualified_standard) {",
@@ -11108,6 +12193,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1078,
         file: "xtask/src/api.rs",
         find: "    fn visit_item(&mut self, _item: &'ast Item) {\n        self.opaque = true;\n    }",
         replace: "    fn visit_item(&mut self, _item: &'ast Item) {}",
@@ -11118,6 +12204,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1079,
         file: "xtask/src/api.rs",
         find: "                && unqualified_standard\n                && transparent_macro_name(name) =>",
         replace: "                && unqualified_standard =>",
@@ -11128,6 +12215,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1080,
         file: "xtask/src/api.rs",
         find: "            Some(name) if trusted_unqualified_statement_macro_name(&name.to_string()) => {",
         replace: "            Some(name) if false && trusted_unqualified_statement_macro_name(&name.to_string()) => {",
@@ -11138,6 +12226,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1081,
         file: "xtask/src/api.rs",
         find: "            None if !approved_item_macro_for_shadow_policy(item, self.context, self.relative) => {",
         replace: "            None if false && !approved_item_macro_for_shadow_policy(item, self.context, self.relative) => {",
@@ -11148,6 +12237,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1082,
         file: "xtask/src/api.rs",
         find: "        if !trusted_standard_statement_macro(&statement.mac) {",
         replace: "        if false && !trusted_standard_statement_macro(&statement.mac) {",
@@ -11158,6 +12248,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1083,
         file: "xtask/src/api.rs",
         find: "    if name.starts_with(\"CARGO_\") {",
         replace: "    if false && name.starts_with(\"CARGO_\") {",
@@ -11168,6 +12259,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1084,
         file: "xtask/src/api.rs",
         find: "        \"RUSTC\"\n            | \"RUSTC_WRAPPER\"",
         replace: "        \"IGNORED_RUSTC\"\n            | \"RUSTC_WRAPPER\"",
@@ -11178,6 +12270,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1085,
         file: "xtask/src/api.rs",
         find: "                    ImplicitTraitTrigger::ConstructedType(ty) => self\n                        .constructions\n                        .iter()\n                        .any(|(caller, types)| live.contains(caller) && types.contains(&ty)),",
         replace: "                    ImplicitTraitTrigger::ConstructedType(ty) => live.contains(&ty),",
@@ -11188,6 +12281,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1086,
         file: "xtask/src/api.rs",
         find: "                        .any(|(caller, types)| live.contains(caller) && types.contains(&ty)),",
         replace: "                        .any(|(_, types)| types.contains(&ty)),",
@@ -11198,6 +12292,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1087,
         file: "xtask/src/api.rs",
         find: "                        .filter(|(_, allocator_type)| *allocator_type == self_type)",
         replace: "                        .filter(|_| true)",
@@ -11208,6 +12303,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1088,
         file: "xtask/src/api.rs",
         find: "                    Lit::Str(value) => bytes_contain_diagnostic_marker(value.value().as_bytes()),",
         replace: "                    Lit::Str(value) => {\n                        let _unchecked_decoded_literal = value;\n                        false\n                    }",
@@ -11218,6 +12314,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1089,
         file: "xtask/src/api.rs",
         find: "            TokenTree::Group(group) => {\n                if token_stream_contains_diagnostic_marker(group.stream())? {\n                    return Ok(true);\n                }\n            }",
         replace: "            TokenTree::Group(group) => {\n                if group.delimiter() != Delimiter::Brace\n                    && token_stream_contains_diagnostic_marker(group.stream())?\n                {\n                    return Ok(true);\n                }\n            }",
@@ -11228,6 +12325,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1090,
         file: "xtask/src/api.rs",
         find: "        reject_authority_diagnostic_marker(\n            &directory.join(relative),\n            &bytes,\n            \"authenticated registry compiler input\",\n        )?;",
         replace: "        let _unchecked_registry_marker = (&bytes, relative);",
@@ -11238,6 +12336,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1091,
         file: "xtask/src/api.rs",
         find: "                snapshot_marker_free_file(\n                    root,\n                    &entry.path(),\n                    snapshot,\n                    \"build-script compiler input\",\n                )?;",
         replace: "                snapshot_file(root, &entry.path(), snapshot)?;",
@@ -11248,6 +12347,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1092,
         file: "xtask/src/api.rs",
         find: "        validate_active_external_package_roots(registry_source, package_values, &members, &active)?;",
         replace: "        let _unchecked_external_roots =\n            (registry_source, package_values, &members, &active);",
@@ -11258,6 +12358,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1093,
         file: "xtask/src/api.rs",
         find: "    snapshot_compiler_target_runtime(sysroot, targets, &mut snapshot)?;\n    Ok(snapshot)",
         replace: "    Ok(snapshot)",
@@ -11268,6 +12369,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1094,
         file: "xtask/src/api.rs",
         find: "    reject_authority_diagnostic_marker(path, &bytes, label)?;",
         replace: "    if label != \"compiler target library authority\" {\n        reject_authority_diagnostic_marker(path, &bytes, label)?;\n    }",
@@ -11278,6 +12380,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1095,
         file: "xtask/src/api.rs",
         find: "    if current == expected {\n        return Ok(());\n    }",
         replace: "    if true {\n        return Ok(());\n    }",
@@ -11288,6 +12391,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1096,
         file: "xtask/src/api.rs",
         find: "            !kernel_item_binds_wost_root(item),",
         replace: "            true,",
@@ -11298,6 +12402,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1097,
         file: "xtask/src/api.rs",
         find: "            && !exact_kernel_entry_invocation(item)",
         replace: "            && false\n            && !exact_kernel_entry_invocation(item)",
@@ -11308,6 +12413,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1098,
         file: "xtask/src/api.rs",
         find: "            if enabled && RESERVED_LANGUAGE_ROOTS.contains(&dependency.name.as_str()) {",
         replace: "            if false && enabled && RESERVED_LANGUAGE_ROOTS.contains(&dependency.name.as_str()) {",
@@ -11318,6 +12424,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1099,
         file: "xtask/src/api.rs",
         find: "            || reserved_language_root(&binding) && !reserved_language_root(&source)",
         replace: "            || reserved_language_root(&binding)\n                && false\n                && !reserved_language_root(&source)",
@@ -11328,6 +12435,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1100,
         file: "xtask/src/api.rs",
         find: "        UseTree::Rename(rename) => {\n            let binding = rename.rename.to_string();\n            let source = rename.ident.to_string();\n            let source_root = root.unwrap_or(&source);\n            if (trusted_unqualified_statement_macro_name(&binding)\n                || reserved_language_root(&binding))\n                && !reserved_language_root(source_root)",
         replace: "        UseTree::Rename(rename) => {\n            let binding = rename.rename.to_string();\n            let source = rename.ident.to_string();\n            let source_root = root.unwrap_or(&source);\n            if (trusted_unqualified_statement_macro_name(&binding)\n                || reserved_language_root(&binding))\n                && false\n                && !reserved_language_root(source_root)",
@@ -11338,6 +12446,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1101,
         file: "xtask/src/api.rs",
         find: "                        _ => ImportOrigin::Dependency,",
         replace: "                        _ => ImportOrigin::Standard,",
@@ -11348,6 +12457,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1102,
         file: "xtask/src/api.rs",
         find: "    let column = line\n        .char_indices()\n        .map(|(offset, _)| offset)",
         replace: "    let column = line\n        .bytes()\n        .enumerate()\n        .map(|(offset, _)| offset)",
@@ -11358,6 +12468,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1103,
         file: "xtask/src/api.rs",
         find: "            !nodes[candidates[0]].type_alias,",
         replace: "            true,",
@@ -11368,6 +12479,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1104,
         file: "xtask/src/api.rs",
         find: "                    REVIEWED_IMPLICIT_DROP_TYPES\n                        .iter()\n                        .any(|(relative, symbol)| {\n                            file.relative == Path::new(relative) && declaration.symbol == *symbol\n                        }),",
         replace: "                    true,",
@@ -11378,6 +12490,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1105,
         file: "xtask/src/api.rs",
         find: "            self.sites.push(ValueConstruction {\n                range: range(segment.ident.span()),\n            });",
         replace: "            self.sites.push(ValueConstruction {\n                range: range(path.span()),\n            });",
@@ -11388,6 +12501,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1106,
         file: "xtask/src/api.rs",
         find: "    fn visit_item_static(&mut self, _item: &'ast syn::ItemStatic) {}",
         replace: "    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {\n        visit::visit_item_static(self, item);\n    }",
@@ -11398,6 +12512,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1107,
         file: "xtask/src/api.rs",
         find: "        package == crate::paths::KERNEL_PACKAGE && target.relative == Path::new(\"kernel/build.rs\"),",
         replace: "        false && package == crate::paths::KERNEL_PACKAGE\n            && target.relative == Path::new(\"kernel/build.rs\"),",
@@ -11408,6 +12523,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1108,
         file: "xtask/src/api.rs",
         find: "        actual == expected,\n        \"kernel build script performs work outside its exact linker contract\"",
         replace: "        actual != expected,\n        \"kernel build script performs work outside its exact linker contract\"",
@@ -11418,6 +12534,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1109,
         file: "xtask/src/api.rs",
         find: "            !text.contains(\"harness\") && !text.contains(\"\\\\u\") && !text.contains(\"\\\\U\"),",
         replace: "            true,",
@@ -11428,6 +12545,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1110,
         file: "xtask/src/api.rs",
         find: "                    !conditional_semantic_root(attribute),",
         replace: "                    true,",
@@ -11438,6 +12556,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1111,
         file: "xtask/src/api.rs",
         find: "            && (at.line < self.end.line || at.line == self.end.line && at.column < self.end.column)",
         replace: "            && (at.line < self.end.line || at.line == self.end.line && at.column <= self.end.column)",
@@ -11448,6 +12567,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1112,
         file: "xtask/src/api.rs",
         find: "    let active_scripts = scripts\n        .iter()\n        .filter(|(id, _)| active.contains(*id))\n        .map(|(_, script)| script)\n        .collect::<Vec<_>>();",
         replace: "    let active_scripts: Vec<&DependencyBuildScript> = Vec::new();",
@@ -11458,6 +12578,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1113,
         file: "xtask/src/api.rs",
         find: "        build_script_authority_snapshot(root)? == *expected,",
         replace: "        build_script_authority_snapshot(root)? == *expected || true,",
@@ -11468,6 +12589,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1114,
         file: "xtask/src/api.rs",
         find: "        diagnostic.origin.package_id == expected.package_id\n            && diagnostic.origin.target_name == expected.name\n            && diagnostic.origin.target_kind == expected.kind\n            && reported_source == expected_source,",
         replace: "        true,",
@@ -11478,6 +12600,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1115,
         file: "xtask/src/api.rs",
         find: "                    inventory.is_opaque_macro_use(expansion_file, at),",
         replace: "                    true,",
@@ -11488,6 +12611,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1116,
         file: "xtask/src/api.rs",
         find: "                    expansion.terminal,\n                    \"an API diagnostic for item {} has an external primary span with a nested expansion chain\",",
         replace: "                    true,\n                    \"an API diagnostic for item {} has an external primary span with a nested expansion chain\",",
@@ -11498,6 +12622,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1117,
         file: "xtask/src/api.rs",
         find: "                        crate::json::JsonValue::Object(_) => false,",
         replace: "                        crate::json::JsonValue::Object(_) => bail!(\"primary API diagnostic has a nested expansion chain\"),",
@@ -11508,6 +12633,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1118,
         file: "xtask/src/api.rs",
         find: "            .find(|contract| contract.id == used)?;",
         replace: "            .find(|contract| contract.primary.contains(primary_at))?;",
@@ -11518,6 +12644,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1119,
         file: "xtask/src/api.rs",
         find: "        (contract.primary.contains(primary_at)\n            && declaration.file == primary_file",
         replace: "        (true\n            && declaration.file == primary_file",
@@ -11528,6 +12655,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1120,
         file: "xtask/src/api.rs",
         find: "            && expansion.terminal\n            && expansion.macro_decl_name == \"::wost::entry!\"",
         replace: "            && true\n            && expansion.macro_decl_name == \"::wost::entry!\"",
@@ -11538,6 +12666,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1121,
         file: "xtask/src/api.rs",
         find: "            && expansion.macro_decl_name == \"::wost::entry!\"",
         replace: "            && true",
@@ -11548,6 +12677,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1122,
         file: "xtask/src/api.rs",
         find: "            && expansion_file == entry.file\n            && expansion_at == entry.invocation.start)",
         replace: "            && true\n            && expansion_at == entry.invocation.start)",
@@ -11558,6 +12688,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1123,
         file: "xtask/src/api.rs",
         find: "            && expansion_at == entry.invocation.start)\n            .then_some(entry.invocation_node)",
         replace: "            && true)\n            .then_some(entry.invocation_node)",
@@ -11568,6 +12699,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1124,
         file: "xtask/src/api.rs",
         find: "                    validate_cargo_diagnostic_origin(\n                        diagnostic,\n                        inventory,\n                        root,\n                        expansion_file,\n                        expansion_source,\n                    )?;\n                    Some(caller)",
         replace: "                    let _unchecked_entry_origin =\n                        (diagnostic, inventory, root, expansion_file, expansion_source);\n                    Some(caller)",
@@ -11578,6 +12710,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1125,
         file: "xtask/src/api.rs",
         find: "    fn exact_entry_invocation_caller(\n        &self,\n        file: usize,\n        at: LineColumn,\n        used: usize,\n    ) -> Option<usize> {\n        let entry = self.entry?;",
         replace: "    fn exact_entry_invocation_caller(\n        &self,\n        file: usize,\n        at: LineColumn,\n        used: usize,\n    ) -> Option<usize> {\n        let entry = self.entry?;\n        let declaration = &self.nodes[entry.macro_declaration];\n        if declaration.file == file && declaration.range.contains(at) {\n            return Some(entry.invocation_node);\n        }",
@@ -11588,6 +12721,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1126,
         file: "xtask/src/api.rs",
         find: "    fn discover_with_targets(root: &Path, targets: &[CargoTarget]) -> Result<Self> {\n        Self::discover_with_targets_and_entry_authority(root, targets, None)\n    }",
         replace: "    fn discover_with_targets(root: &Path, targets: &[CargoTarget]) -> Result<Self> {\n        let authority = EntryContractAuthority {\n            uses: validate_wost_entry_contract(root)?,\n        };\n        Self::discover_with_targets_and_entry_authority(root, targets, Some(&authority))\n    }",
@@ -11598,6 +12732,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1127,
         file: "xtask/src/api.rs",
         find: "                        macro_decl_name: macro_decl_name.to_string(),",
         replace: "                        macro_decl_name: \"::wost::entry!\".to_string(),",
@@ -11608,6 +12743,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1128,
         file: "xtask/src/api.rs",
         find: "            && expansion_at == entry.invocation.start)\n            .then_some(entry.invocation_node)\n    }\n\n    fn is_opaque_macro_use",
         replace: "            && expansion_at == entry.invocation.start)\n            .then_some(entry.invocation_node)\n            .filter(|_| false)\n    }\n\n    fn is_opaque_macro_use",
@@ -11618,6 +12754,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1129,
         file: "xtask/src/api.rs",
         find: "            policy.reserved_root_rebinding.is_none(),",
         replace: "            true,",
@@ -11628,6 +12765,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1130,
         file: "xtask/src/api.rs",
         find: "                    trait_qualifier: path.qself.as_ref().and(trait_qualifier),",
         replace: "                    trait_qualifier: trait_qualifier.or_else(|| {\n                        direct_path_prefix(\n                            &path.path,\n                            path.path.segments.len().saturating_sub(1),\n                        )\n                    }),",
@@ -11638,6 +12776,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1131,
         file: "xtask/src/api.rs",
         find: "        match matching.as_slice() {\n            [activation] => DispatchResolution::Implementation(activation.implementation),\n            _ => DispatchResolution::Failure(matching.len()),\n        }",
         replace: "        match matching.as_slice() {\n            [activation, ..] => DispatchResolution::Implementation(activation.implementation),\n            [] => DispatchResolution::Failure(0),\n        }",
@@ -11648,6 +12787,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1132,
         file: "xtask/src/api.rs",
         find: "            if let DispatchResolution::Failure(implementations) =\n                self.dispatch_resolution(inventory, dispatch, evidence)\n            {\n                failures.insert(DispatchFailure {\n                    file,\n                    site,\n                    implementations,\n                });\n            }",
         replace: "            if let DispatchResolution::Failure(implementations) =\n                self.dispatch_resolution(inventory, dispatch, evidence)\n                && failures.is_empty()\n            {\n                failures.insert(DispatchFailure {\n                    file,\n                    site,\n                    implementations,\n                });\n            }",
@@ -11658,6 +12798,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1133,
         file: "xtask/src/api.rs",
         find: "        for (graph_index, graph) in self.graphs.iter().enumerate() {",
         replace: "        for (graph_index, graph) in self.graphs.iter().take(1).enumerate() {",
@@ -11668,6 +12809,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1134,
         file: "xtask/src/api.rs",
         find: "        if !self.call_compatible(site, callee_nodes) || !self.exact_self_type {",
         replace: "        if !self.call_compatible(site, callee_nodes) {",
@@ -11678,6 +12820,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1135,
         file: "xtask/src/api.rs",
         find: "        if has_trait_declaration_evidence\n            && !self\n                .declaration\n                .is_some_and(|declaration| callee_nodes.contains(&declaration))\n        {",
         replace: "        if false\n            && has_trait_declaration_evidence\n            && !self\n                .declaration\n                .is_some_and(|declaration| callee_nodes.contains(&declaration))\n        {",
@@ -11688,6 +12831,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1136,
         file: "xtask/src/api.rs",
         find: "    uses.validate_dispatches(&inventory)?;\n    let dead = uses.dead(&inventory);",
         replace: "    let dead = uses.dead(&inventory);",
@@ -11698,6 +12842,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1137,
         file: "xtask/src/api.rs",
         find: "                    implicit_activations.push(ImplicitTraitActivation {\n                        trigger: ImplicitTraitTrigger::LiveNode(producer_node),\n                        implementation: node.id,\n                    });",
         replace: "                    let _unchecked_reviewed_producer_trigger = (producer_node, node.id);",
@@ -11708,6 +12853,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1138,
         file: "xtask/src/api.rs",
         find: "                            recorded.reviewed_drop_producer =\n                                implementing_type.as_deref().and_then(|owner| {\n                                    reviewed_drop_producer(\n                                        self.relative,\n                                        owner,\n                                        &member.sig.ident.to_string(),\n                                        implemented_trait.as_deref(),\n                                    )\n                                });",
         replace: "                            recorded.reviewed_drop_producer = None;",
@@ -11718,6 +12864,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1139,
         file: "xtask/src/api.rs",
         find: "                    candidate.direct_self_construction\n                        && candidate.reviewed_drop_producer.is_none()\n                        && matching_type_nodes(nodes, files, candidate, owner).contains(&self_type)",
         replace: "                    candidate.direct_self_construction\n                        && candidate.reviewed_drop_producer.is_none()\n                        && candidate.file == declaration.file\n                        && matching_type_nodes(nodes, files, candidate, owner).contains(&self_type)",
@@ -11728,6 +12875,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1140,
         file: "xtask/src/api.rs",
         find: "                    unreviewed_producer.is_none(),",
         replace: "                    true,",
@@ -11738,6 +12886,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1141,
         file: "xtask/src/api.rs",
         find: "            matching_type_nodes(nodes, files, producers[0], producer_owner) == vec![produced_type],",
         replace: "            true,",
@@ -11748,6 +12897,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1142,
         file: "xtask/src/api.rs",
         find: "    if type_path.qself.is_some()\n        || type_path\n            .path\n            .segments\n            .iter()\n            .any(|segment| !matches!(segment.arguments, syn::PathArguments::None))\n    {\n        return None;\n    }",
         replace: "    if type_path.qself.is_some() {\n        return None;\n    }",
@@ -11758,6 +12908,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1143,
         file: "xtask/src/api.rs",
         find: "    let compiler_name = if cfg!(windows) { \"rustc.exe\" } else { \"rustc\" };",
         replace: "    let compiler_name = if cfg!(windows) { \"cargo.exe\" } else { \"cargo\" };",
@@ -11768,6 +12919,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1144,
         file: "xtask/src/api.rs",
         find: "        if normalized.starts_with(\"CARGO_\")\n            || normalized.starts_with(\"RUST\")\n            || normalized == \"TARGET\"\n        {",
         replace: "        if false\n            && (normalized.starts_with(\"CARGO_\")\n                || normalized.starts_with(\"RUST\")\n                || normalized == \"TARGET\")\n        {",
@@ -11778,6 +12930,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1145,
         file: "xtask/src/api.rs",
         find: "        .env(\"RUSTC\", &compiler.path)",
         replace: "        .env(\"RUSTC\", env!(\"CARGO\"))",
@@ -11788,6 +12941,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1146,
         file: "xtask/src/api.rs",
         find: "        .env(\"RUSTC_WRAPPER\", \"\")\n        .env(\"RUSTC_WORKSPACE_WRAPPER\", \"\")",
         replace: "        .env(\"RUSTC_WRAPPER\", \"cargo\")\n        .env(\"RUSTC_WORKSPACE_WRAPPER\", \"cargo\")",
@@ -11798,6 +12952,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1147,
         file: "xtask/src/api.rs",
         find: "        .env(\"CARGO_HOME\", cargo_home)",
         replace: "        .env(\"CARGO_HOME\", execution_root)",
@@ -11808,6 +12963,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1148,
         file: "xtask/src/api.rs",
         find: "        .env(\"PATH\", &compiler.tool_path)",
         replace: "        .env(\"PATH\", execution_root)",
@@ -11818,6 +12974,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1149,
         file: "xtask/src/api.rs",
         find: "            compiler.host_linker.to_string_lossy()",
         replace: "            compiler.path.to_string_lossy()",
@@ -11828,6 +12985,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1150,
         file: "xtask/src/api.rs",
         find: "        .arg(format!(\"source.api-audit-registry.directory={registry}\"));",
         replace: "        .arg(format!(\"source.untrusted-registry.directory={registry}\"));",
@@ -11838,6 +12996,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1151,
         file: "xtask/src/api.rs",
         find: "            crate::sha256::hex(&crate::sha256::digest(&bytes)) == digest,\n            \"materialized registry file `{relative}` differs from its authenticated archive\"",
         replace: "            true,\n            \"materialized registry file `{relative}` differs from its authenticated archive\"",
@@ -11848,6 +13007,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1152,
         file: "libs/acpi-tables/src/lib.rs",
         find: "        if listed > MAX_TABLES {",
         replace: "        if false {",
@@ -11858,6 +13018,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1153,
         file: "libs/acpi-tables/src/lib.rs",
         find: "        if listed > MAX_TABLES {",
         replace: "        if listed >= MAX_TABLES {",
@@ -11868,6 +13029,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1154,
         file: "libs/acpi-tables/src/lib.rs",
         find: "            8 => u64_at(self.body, self.offset)?,",
         replace: "            8 => u32_at(self.body, self.offset)? as u64,",
@@ -11878,6 +13040,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1155,
         file: "libs/acpi-tables/src/lib.rs",
         find: "        if self.revision >= 2 && self.xsdt != 0 {",
         replace: "        if self.revision >= 2 || self.xsdt != 0 {",
@@ -11888,6 +13051,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1156,
         file: "libs/acpi-tables/src/lib.rs",
         find: "                enabled: u32_at(entry, 4).unwrap_or(0) & 1 != 0,",
         replace: "                enabled: u32_at(entry, 4).unwrap_or(0) & 1 == 0,",
@@ -11898,6 +13062,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1157,
         file: "libs/acpi-tables/src/lib.rs",
         find: "                    if bus != 0 {",
         replace: "                    if false {",
@@ -11908,6 +13073,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1158,
         file: "libs/acpi-tables/src/lib.rs",
         find: "                    let Some(slot) = model.overrides.get_mut(source as usize) else {",
         replace: "                    let Some(slot) = model.overrides.get_mut((source as usize).min(15)) else {",
@@ -11918,6 +13084,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1159,
         file: "libs/acpi-tables/src/lib.rs",
         find: "                    if flags & !0xf != 0 || polarity == 0b10 || trigger == 0b10 {",
         replace: "                    if false {",
@@ -11928,6 +13095,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1160,
         file: "libs/acpi-tables/src/lib.rs",
         find: "                    if slot.is_some() {",
         replace: "                    if false {",
@@ -11938,6 +13106,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1161,
         file: "wost/src/arch/x86_64/cpu.rs",
         find: "pub(super) unsafe fn set_page_table_base(address: u64) {",
         replace: "pub(crate) unsafe fn set_page_table_base(address: u64) {",
@@ -11948,6 +13117,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1162,
         file: "wost/src/arch/x86_64/xstate.rs",
         find: "pub(super) unsafe fn save(area: *mut u8) {",
         replace: "pub(crate) unsafe fn save(area: *mut u8) {",
@@ -11958,6 +13128,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1163,
         file: "wost/src/arch/x86_64/xstate.rs",
         find: "pub(super) unsafe fn restore(area: *const u8) {",
         replace: "pub(crate) unsafe fn restore(area: *const u8) {",
@@ -11968,6 +13139,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1164,
         file: "wost/src/arch/x86_64/task.rs",
         find: "fn write_thread_base(base: CanonicalAddress) {",
         replace: "pub(super) fn write_thread_base(base: CanonicalAddress) {",
@@ -11978,6 +13150,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1165,
         file: "wost/src/arch/x86_64/cpu.rs",
         find: "pub(super) unsafe fn set_page_table_base(address: u64) {",
         replace: "pub(super) fn set_page_table_base(address: u64) {",
@@ -11988,6 +13161,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1166,
         file: "wost/src/arch/x86_64/xstate.rs",
         find: "pub(super) unsafe fn save(area: *mut u8) {",
         replace: "pub(super) fn save(area: *mut u8) {",
@@ -11998,6 +13172,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1167,
         file: "wost/src/arch/x86_64/xstate.rs",
         find: "pub(super) unsafe fn restore(area: *const u8) {",
         replace: "pub(super) fn restore(area: *const u8) {",
@@ -12008,6 +13183,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1168,
         file: "wost/src/arch/x86_64/task.rs",
         find: "fn write_thread_base(base: CanonicalAddress) {",
         replace: "unsafe fn write_thread_base(base: CanonicalAddress) {",
@@ -12018,6 +13194,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1169,
         file: "wost/src/arch/x86_64/msr.rs",
         find: "pub(super) unsafe fn write(msr: u32, value: u64) {",
         replace: "pub unsafe fn write(msr: u32, value: u64) {",
@@ -12028,6 +13205,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1170,
         file: "kernel/src/user.rs",
         find: "    xstate::user_state_is_isolated()",
         replace: "    xstate::is_enabled()",
@@ -12035,6 +13213,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("missing extended state closes the user boundary"),
     },
     Mutation {
+        id: 1171,
         file: "wost/src/arch/x86_64/task.rs",
         find: "fn final_extended_state_is_isolated() -> bool {\n    xstate::user_state_is_isolated()\n}",
         replace: "fn final_extended_state_is_isolated() -> bool {\n    xstate::is_enabled()\n}",
@@ -12042,6 +13221,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("missing extended state closes the user boundary"),
     },
     Mutation {
+        id: 1172,
         file: "xtask/src/mutation_workspace.rs",
         find: "    ensure!(\n        Report::parse(text)? == *selected,\n        \"mutation report changed while selecting the current pass\"\n    );",
         replace: "    let _unchecked_selected_report = (selected, text);",
@@ -12052,6 +13232,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1173,
         file: "xtask/src/model.rs",
         find: "            report.as_bytes(),\n            error.as_bytes(),",
         replace: "            error.as_bytes(),\n            report.as_bytes(),",
@@ -12062,6 +13243,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1174,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "pub struct EoiToken<'frame> {\n    vector: InterruptVector,\n    frame: &'frame TrapFrame,\n    interrupts: Option<interrupt::InterruptState>,\n}\n\nimpl fmt::Debug for EoiToken<'_> {",
         replace: "pub struct EoiToken<'frame> {\n    vector: InterruptVector,\n    frame: &'frame TrapFrame,\n    interrupts: Option<interrupt::InterruptState>,\n}\n\nimpl Clone for EoiToken<'_> {\n    fn clone(&self) -> Self {\n        Self {\n            vector: self.vector,\n            frame: self.frame,\n            interrupts: None,\n        }\n    }\n}\n\nimpl fmt::Debug for EoiToken<'_> {",
@@ -12072,6 +13254,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1175,
         file: "wost/src/arch/x86_64/apic.rs",
         find: "#[derive(Debug)]\npub struct DisarmedTimer {",
         replace: "#[derive(Debug, Clone)]\npub struct DisarmedTimer {",
@@ -12082,6 +13265,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1176,
         file: "wost/src/mm/mod.rs",
         find: "#[derive(Debug)]\npub struct Shared(Arc<SharedAllocation>);",
         replace: "#[derive(Debug, Clone)]\npub struct Shared(Arc<SharedAllocation>);",
@@ -12092,6 +13276,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1177,
         file: "wost/src/mm/mod.rs",
         find: "#[derive(Debug)]\npub struct SharedBytes(Arc<SharedAllocation>);",
         replace: "#[derive(Debug, Clone)]\npub struct SharedBytes(Arc<SharedAllocation>);",
@@ -12102,6 +13287,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1178,
         file: "wost/src/mm/mod.rs",
         find: "#[derive(Debug)]\npub struct SharedRing<const WORDS: usize> {",
         replace: "#[derive(Debug, Clone)]\npub struct SharedRing<const WORDS: usize> {",
@@ -12112,6 +13298,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1179,
         file: "libs/nvme/src/lib.rs",
         find: "#[derive(Debug, PartialEq, Eq)]\npub struct DmaState {",
         replace: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct DmaState {",
@@ -12122,6 +13309,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1180,
         file: "libs/nvme/src/lib.rs",
         find: "#[derive(Debug)]\npub struct DmaPublication<'a> {",
         replace: "#[derive(Debug, Clone)]\npub struct DmaPublication<'a> {",
@@ -12132,6 +13320,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1181,
         file: "libs/nvme/src/lib.rs",
         find: "#[derive(Debug)]\npub struct DmaPublication<'a> {",
         replace: "#[derive(Debug, Clone, Copy)]\npub struct DmaPublication<'a> {",
@@ -12142,6 +13331,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1182,
         file: "xtask/src/image/mod.rs",
         find: "        build(&staging, &mut disk)?;",
         replace: "        let _ignored_construction_failure = build(&staging, &mut disk);",
@@ -12152,6 +13342,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1183,
         file: "xtask/src/qemu.rs",
         find: "    let line = line.strip_suffix('\\n')?;",
         replace: "    let line = line.strip_suffix('\\n').unwrap_or(line);",
@@ -12162,6 +13353,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1184,
         file: "xtask/src/qemu.rs",
         find: "    if text.contains('\\r') || text.contains('\\n') {\n        return None;\n    }",
         replace: "",
@@ -12172,6 +13364,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1185,
         file: "xtask/src/qemu.rs",
         find: "            Self::Warning => \"[warn ] \",",
         replace: "            Self::Warning => \"[info ] \",",
@@ -12182,6 +13375,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1186,
         file: "xtask/src/qemu.rs",
         find: "fn is_required_boot_marker(line: &str, record: RequiredLogRecord) -> bool {\n    if record == NO_X2APIC_RECORD {\n        return is_exact_no_x2apic_diagnosis(line);\n    }\n    is_exact_log_message(line, record.severity, record.message)\n}",
         replace: "fn is_required_boot_marker(line: &str, record: RequiredLogRecord) -> bool {\n    if record.message == DEGRADED_FILESYSTEM_MARKER {\n        return line.contains(\"tmpfs:\");\n    }\n    if record == NO_X2APIC_RECORD {\n        return is_exact_no_x2apic_diagnosis(line);\n    }\n    is_exact_log_message(line, record.severity, record.message)\n}",
@@ -12192,6 +13386,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1187,
         file: "xtask/src/qemu.rs",
         find: "        .strip_prefix(SETTLED_MARKER)",
         replace: "        .split_once(SETTLED_MARKER)\n        .map(|(_, uptime)| uptime)",
@@ -12202,6 +13397,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1188,
         file: "xtask/src/qemu.rs",
         find: "        .and_then(|uptime| uptime.strip_suffix(\" ms\"))",
         replace: "        .and_then(|uptime| uptime.split_once(\" ms\").map(|(uptime, _)| uptime))",
@@ -12212,6 +13408,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1189,
         file: "xtask/src/qemu.rs",
         find: "    if text.is_empty()\n        || (text.len() > 1 && text.starts_with('0'))\n        || !text.bytes().all(|byte| byte.is_ascii_digit())\n    {",
         replace: "    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {",
@@ -12222,6 +13419,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1190,
         file: "xtask/src/qemu.rs",
         find: "    if text.is_empty()\n        || (text.len() > 1 && text.starts_with('0'))\n        || !text.bytes().all(|byte| byte.is_ascii_digit())\n    {",
         replace: "    if text.is_empty() || (text.len() > 1 && text.starts_with('0')) {",
@@ -12232,6 +13430,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1191,
         file: "xtask/src/qemu.rs",
         find: "    <u64 as core::str::FromStr>::from_str(text).ok()",
         replace: "    Some(<u64 as core::str::FromStr>::from_str(text).unwrap_or(u64::MAX))",
@@ -12242,6 +13441,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1192,
         file: "xtask/src/qemu.rs",
         find: "            if is_settled_record(&text) {",
         replace: "            if text.contains(SETTLED_MARKER) {",
@@ -12252,6 +13452,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1193,
         file: "xtask/src/qemu.rs",
         find: "                let present = is_required_boot_marker(&text, *record);",
         replace: "                let present = text.contains(record.message);",
@@ -12262,6 +13463,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1194,
         file: "xtask/src/qemu.rs",
         find: "    RequiredLogRecord::info(NVME_FALLBACK_MARKER),",
         replace: "",
@@ -12272,6 +13474,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1195,
         file: "xtask/src/qemu.rs",
         find: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    NO_X2APIC_RECORD,",
         replace: "const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    NO_X2APIC_RECORD,",
@@ -12282,6 +13485,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1196,
         file: "xtask/src/qemu.rs",
         find: "    RequiredLogRecord::warning(NO_PCI_MARKER),",
         replace: "    RequiredLogRecord::info(NO_PCI_MARKER),",
@@ -12292,6 +13496,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1197,
         file: "xtask/src/qemu.rs",
         find: "    RequiredLogRecord::info(DEGRADED_FILESYSTEM_MARKER),",
         replace: "    RequiredLogRecord::info(\"tmpfs:\"),",
@@ -12302,6 +13507,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1198,
         file: "xtask/src/qemu.rs",
         find: "    RequiredLogRecord::info(DEGRADED_STORAGE_MARKER),",
         replace: "    RequiredLogRecord::info(\"devfs: storage is\"),",
@@ -12312,6 +13518,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1199,
         file: "xtask/src/qemu.rs",
         find: "    RequiredLogRecord::info(DEGRADED_CONSOLE_MARKER),",
         replace: "    RequiredLogRecord::info(\"devfs: console is\"),",
@@ -12322,6 +13529,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1200,
         file: "xtask/src/qemu.rs",
         find: "    RequiredLogRecord::info(DEGRADED_PROTECTIONS_MARKER),",
         replace: "    RequiredLogRecord::info(\"cpu: protections\"),",
@@ -12332,6 +13540,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1201,
         file: "xtask/src/qemu.rs",
         find: "    RequiredLogRecord::warning(DEGRADED_XSTATE_MARKER),",
         replace: "    RequiredLogRecord::warning(\"cpu: extended state unavailable\"),",
@@ -12342,6 +13551,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1202,
         file: "xtask/src/qemu.rs",
         find: "    RequiredLogRecord::warning(DEGRADED_USER_MARKER),",
         replace: "    RequiredLogRecord::warning(\"user: no program\"),",
@@ -12352,6 +13562,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1203,
         file: "xtask/src/qemu.rs",
         find: "        write_expected(&mut file)?;",
         replace: "        let _ = write_expected(&mut file);",
@@ -12362,6 +13573,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1204,
         file: "xtask/src/qemu.rs",
         find: "    }\n    for lba in 0..NVME_SIGNED_BLOCKS {\n        Seek::seek(file, SeekFrom::Start(lba * NVME_BLOCK_BYTES as u64))",
         replace: "    }\n    for lba in 0..NVME_SIGNED_BLOCKS - 1 {\n        Seek::seek(file, SeekFrom::Start(lba * NVME_BLOCK_BYTES as u64))",
@@ -12372,6 +13584,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1205,
         file: "xtask/src/mutation_workspace.rs",
         find: r#"    ensure!(
         bytes.len() as u64 <= maximum,
@@ -12388,6 +13601,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1206,
         file: "xtask/src/qualification.rs",
         find: r#"    ensure!(
         bytes == initial
@@ -12407,6 +13621,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1207,
         file: "xtask/src/sha256.rs",
         find: r#"            return Ok((hasher.bytes, hasher.finish()));"#,
         replace: r#"            return Ok((hasher.bytes.saturating_sub(1), hasher.finish()));"#,
@@ -12417,6 +13632,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1208,
         file: "xtask/src/evidence.rs",
         find: r#"        qualification::read_bounded_text(&manifest, MAX_MANIFEST_BYTES, "evidence manifest")?;"#,
         replace: r#"        qualification::read_bounded_text(&manifest, u64::MAX, "evidence manifest")?;"#,
@@ -12427,6 +13643,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1209,
         file: "xtask/src/qualification.rs",
         find: r#"    let text = read_bounded_text(path, MAX_RECORD_BYTES, "qualification record")?;"#,
         replace: r#"    let text = read_bounded_text(path, u64::MAX, "qualification record")?;"#,
@@ -12437,6 +13654,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1210,
         file: "xtask/src/qualification.rs",
         find: r#"    let text = read_bounded_text(path, MAX_VMWARE_TEXT_BYTES, "VMware generation receipt")?;"#,
         replace: r#"    let text = read_bounded_text(path, u64::MAX, "VMware generation receipt")?;"#,
@@ -12447,6 +13665,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1211,
         file: "xtask/src/model.rs",
         find: r#"    ensure!(
         captured <= maximum,
@@ -12463,6 +13682,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1212,
         file: "xtask/src/model.rs",
         find: r#"    ensure!(
         captured <= maximum,
@@ -12479,6 +13699,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1213,
         file: "xtask/src/qualification.rs",
         find: r#"    ensure!(
         length as u64 <= maximum,
@@ -12495,6 +13716,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1214,
         file: "xtask/src/qualification.rs",
         find: r#"    ensure!(
         transcript.len() as u64 <= maximum,
@@ -12511,6 +13733,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1215,
         file: "xtask/src/qualification.rs",
         find: r#"    ensure!(
         copied <= maximum,
@@ -12527,6 +13750,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1216,
         file: "xtask/src/qualification.rs",
         find: r#"    ensure!(
         !exact || copied == maximum,
@@ -12543,6 +13767,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1217,
         file: "xtask/src/mutation_workspace.rs",
         find: r#"    ensure!(
         initial <= maximum,
@@ -12559,6 +13784,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1218,
         file: "xtask/src/mutation_workspace.rs",
         find: r#"    ensure!(
         observed <= maximum,
@@ -12575,6 +13801,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1219,
         file: "xtask/src/mutation_workspace.rs",
         find: r#"    ensure!(
         observed == initial
@@ -12593,6 +13820,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1220,
         file: "xtask/src/evidence.rs",
         find: r#"    ensure!(
         initial <= maximum,
@@ -12609,6 +13837,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1221,
         file: "xtask/src/evidence.rs",
         find: r#"    ensure!(
         bytes <= maximum,
@@ -12625,6 +13854,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1222,
         file: "xtask/src/evidence.rs",
         find: r#"    ensure!(
         bytes == initial,
@@ -12638,6 +13868,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1223,
         file: "xtask/src/evidence.rs",
         find: r#"    ensure!(
         File::open(path)
@@ -12656,6 +13887,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1224,
         file: "xtask/src/evidence.rs",
         find: r#"    ensure!(
         digest.bytes == expected,
@@ -12674,6 +13906,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1225,
         file: "xtask/src/evidence.rs",
         find: r#"    ensure!(
         limited
@@ -12695,6 +13928,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1226,
         file: "xtask/src/qualification.rs",
         find: r#"            ADVISORY_POLICY_PATH => (MAX_ADVISORY_POLICY_BYTES, false),"#,
         replace: r#"            ADVISORY_POLICY_PATH => (MAX_ADVISORY_POLICY_BYTES + 1, false),"#,
@@ -12705,6 +13939,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1227,
         file: "xtask/src/qualification.rs",
         find: r#"        Kind::Mutation => (MAX_MUTATION_REPORT_BYTES, false),"#,
         replace: r#"        Kind::Mutation => (MAX_MUTATION_REPORT_BYTES + 1, false),"#,
@@ -12715,6 +13950,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1228,
         file: "xtask/src/qualification.rs",
         find: r#"        Kind::Model => (MAX_MODEL_TRANSCRIPT_BYTES, false),"#,
         replace: r#"        Kind::Model => (MAX_MODEL_TRANSCRIPT_BYTES + 1, false),"#,
@@ -12725,6 +13961,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1229,
         file: "xtask/src/qualification.rs",
         find: r#"            VMWARE_IMAGE => (boot_image_bytes(), true),"#,
         replace: r#"            VMWARE_IMAGE => (boot_image_bytes() + 1, true),"#,
@@ -12735,6 +13972,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1230,
         file: "xtask/src/qualification.rs",
         find: r#"            VMWARE_NAMESPACE => (namespace_bytes(), true),"#,
         replace: r#"            VMWARE_NAMESPACE => (namespace_bytes() + 1, true),"#,
@@ -12745,6 +13983,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1231,
         file: "xtask/src/qualification.rs",
         find: r#"            VMWARE_TRANSCRIPT => (MAX_VMWARE_TRANSCRIPT_BYTES, false),"#,
         replace: r#"            VMWARE_TRANSCRIPT => (MAX_VMWARE_TRANSCRIPT_BYTES + 1, false),"#,
@@ -12755,6 +13994,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1232,
         file: "xtask/src/qualification.rs",
         find: r#"            | VMWARE_OBSERVER => (MAX_VMWARE_TEXT_BYTES, false),"#,
         replace: r#"            | VMWARE_OBSERVER => (MAX_VMWARE_TEXT_BYTES + 1, false),"#,
@@ -12765,6 +14005,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1233,
         file: "xtask/src/qualification.rs",
         find: r#"        return Ok((MAX_RECORD_BYTES, false));"#,
         replace: r#"        return Ok((MAX_RECORD_BYTES + 1, false));"#,
@@ -12775,6 +14016,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1234,
         file: "xtask/src/qualification.rs",
         find: r#"        ensure!(
             length <= maximum,
@@ -12791,6 +14033,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1235,
         file: "xtask/src/qualification.rs",
         find: r#"        ensure!(
             length == maximum,
@@ -12809,6 +14052,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1236,
         file: "xtask/src/qualification.rs",
         find: r#"        ensure!(
             length <= maximum,
@@ -12827,6 +14071,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1237,
         file: "xtask/src/supply_chain.rs",
         find: r#"    let staging = directory.join(SPDX_STAGING);"#,
         replace: r#"    let staging = directory.join(SPDX_STAGING);
@@ -12838,6 +14083,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1238,
         file: "xtask/src/qemu.rs",
         find: r#"fn parse_failed_check(line: &str) -> Option<&str> {
     let message = log_message(line, LogSeverity::Error)?;
@@ -12858,6 +14104,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1239,
         file: "xtask/src/qemu.rs",
         find: r#"    let (severity, message) = log_message(line, LogSeverity::Info)
         .map(|message| (LogSeverity::Info, message))
@@ -12878,6 +14125,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1240,
         file: "xtask/src/qemu.rs",
         find: r#"        ensure!(
             matches!(
@@ -12895,6 +14143,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1241,
         file: "xtask/src/qemu.rs",
         find: "    let mut fields = message.strip_prefix(SELFTEST_VERDICT_PREFIX)?.split(' ');",
         replace: "    let mut fields = message\n        .strip_prefix(SELFTEST_VERDICT_PREFIX)?\n        .split_whitespace();",
@@ -12905,6 +14154,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1242,
         file: "xtask/src/qemu.rs",
         find: r#"    usize::try_from(canonical_decimal(value).context("invalid self-test verdict count")?)
         .context("self-test verdict count does not fit usize")"#,
@@ -12916,6 +14166,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1243,
         file: "xtask/src/qemu.rs",
         find: r#"    let message = log_message(line, LogSeverity::Info)?;
     let mut fields = message.strip_prefix(BASELINE_PREFIX)?.split(' ');"#,
@@ -12928,6 +14179,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1244,
         file: "xtask/src/qemu.rs",
         find: "    let mut fields = message.strip_prefix(BASELINE_PREFIX)?.split(' ');",
         replace: "    let mut fields = message\n        .strip_prefix(BASELINE_PREFIX)?\n        .split_whitespace();",
@@ -12938,6 +14190,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1245,
         file: "xtask/src/qemu.rs",
         find: r#"    canonical_decimal(value).with_context(|| format!("invalid baseline field {name}"))"#,
         replace: r#"    value
@@ -12950,6 +14203,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1246,
         file: "xtask/src/qemu.rs",
         find: ".position(|record| is_required_boot_marker(line, *record))",
         replace: ".position(|record| line.contains(record.message))",
@@ -12960,6 +14214,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1247,
         file: "xtask/src/qemu.rs",
         find: r#"    let ordered = match order {
         InteractiveMarkerOrder::Strict => index == *next,
@@ -12979,6 +14234,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1248,
         file: "xtask/src/qemu.rs",
         find: "        InteractiveMarkerOrder::Mutation => index >= *next,",
         replace: "        InteractiveMarkerOrder::Mutation => index == *next,",
@@ -12989,6 +14245,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1249,
         file: "xtask/src/qemu.rs",
         find: "    } else if observed == round {\n        InjectionAction::Inject",
         replace: "    } else if observed >= round {\n        InjectionAction::Inject",
@@ -12999,6 +14256,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1250,
         file: "xtask/src/qemu.rs",
         find: r#"                    match observe_interactive_marker(
                         &text,
@@ -13026,6 +14284,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1251,
         file: "xtask/src/qemu.rs",
         find: "    RequiredLogRecord::info(STORAGE_DELAY_MARKER),",
         replace: "    RequiredLogRecord::warning(STORAGE_DELAY_MARKER),",
@@ -13036,6 +14295,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1252,
         file: "xtask/src/qemu.rs",
         find: "    RequiredLogRecord::info(READY_MARKER),",
         replace: "    RequiredLogRecord::warning(READY_MARKER),",
@@ -13046,6 +14306,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1253,
         file: "xtask/src/qemu.rs",
         find: "    RequiredLogRecord::info(TRANSLATED_MARKER),",
         replace: "    RequiredLogRecord::warning(TRANSLATED_MARKER),",
@@ -13056,6 +14317,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1254,
         file: "xtask/src/qemu.rs",
         find: r#"        if observation.failed.iter().any(|failed| failed == name) {
             bail!("the self-test kernel named one failed check more than once");
@@ -13068,6 +14330,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1255,
         file: "xtask/src/qemu.rs",
         find: r#"    if observation.verdict.is_some() {
         bail!("the self-test kernel printed serial data after its final verdict");
@@ -13080,6 +14343,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1256,
         file: "kernel/src/selftest.rs",
         find: r#"            error!("selftest: {name} FAILED");"#,
         replace: r#"            warn!("selftest: {name} FAILED");"#,
@@ -13090,6 +14354,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1257,
         file: "kernel/src/selftest.rs",
         find: r#"            "selftest: verdict v{} PASS passed={} failed={} expected={}","#,
         replace: r#"            "selftest: verdict v{} OK passed={} failed={} expected={}","#,
@@ -13100,6 +14365,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1258,
         file: "kernel/src/selftest.rs",
         find: r#"            "selftest: verdict v{} FAIL passed={} failed={} expected={}","#,
         replace: r#"            "selftest: verdict v{} ERROR passed={} failed={} expected={}","#,
@@ -13110,6 +14376,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1259,
         file: "kernel/src/selftest.rs",
         find: r#"        "selftest: baseline v1 boot_ns={} frames_free={} heap_slab={} heap_large={} heap_live={} handles_committed={} handles_live={} trap_ticks={} storage_bytes={} storage_ticks={} counter_hz={}","#,
         replace: r#"        "selftest: baseline v1 boot={} frames_free={} heap_slab={} heap_large={} heap_live={} handles_committed={} handles_live={} trap_ticks={} storage_bytes={} storage_ticks={} counter_hz={}","#,
@@ -13120,6 +14387,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1260,
         file: "kernel/src/selftest.rs",
         find: r#"fn awaiting(marker: &str, press: &str) {
     info!("{marker}");"#,
@@ -13132,6 +14400,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1261,
         file: "kernel/src/selftest.rs",
         find: r#"        "selftest: awaiting storage-delay keystroke","#,
         replace: r#"        "selftest: awaiting storage delay keystroke","#,
@@ -13142,6 +14411,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1262,
         file: "kernel/src/selftest.rs",
         find: r#"        "selftest: awaiting injected keystroke","#,
         replace: r#"        "selftest: awaiting injected key","#,
@@ -13152,6 +14422,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1263,
         file: "kernel/src/selftest.rs",
         find: r#"        "selftest: awaiting translated keystroke","#,
         replace: r#"        "selftest: awaiting translated key","#,
@@ -13162,6 +14433,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1264,
         file: "xtask/src/vmware.rs",
         find: "    let mut fields = verdicts[0].1[crate::qemu::SELFTEST_VERDICT_PREFIX.len()..].split(' ');",
         replace: "    let mut fields = verdicts[0].1[crate::qemu::SELFTEST_VERDICT_PREFIX.len()..].split_whitespace();",
@@ -13172,6 +14444,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1265,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "#[cfg(feature = \"selftest\")]\npub fn drive_fault_recovery_for_test() -> bool {",
         replace: "/// A mutated general unchecked copy door.\npub fn copy_from_user_unwalked(_from: u64, _into: &mut [u8]) -> Result<(), UserCopyError> {\n    Ok(())\n}\n\n#[cfg(feature = \"selftest\")]\npub fn drive_fault_recovery_for_test() -> bool {",
@@ -13182,6 +14455,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1266,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "#[cfg(feature = \"selftest\")]\npub fn drive_fault_recovery_for_test() -> bool {",
         replace: "pub fn drive_fault_recovery_for_test() -> bool {",
@@ -13192,6 +14466,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1267,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "    let exact = left == scratch.len() && scratch == UNCHANGED;",
         replace: "    let exact = left == 0 && scratch == UNCHANGED;",
@@ -13199,6 +14474,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("a faulting user copy resumes and reports"),
     },
     Mutation {
+        id: 1268,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "    drop(window);\n    let exact = left == scratch.len() && scratch == UNCHANGED;",
         replace: "    drop(window);\n    scratch[0] ^= 1;\n    let exact = left == scratch.len() && scratch == UNCHANGED;",
@@ -13206,6 +14482,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("a faulting user copy resumes and reports"),
     },
     Mutation {
+        id: 1269,
         file: "wost/src/arch/x86_64/usercopy.rs",
         find: "            Some((_, flags)) if flags.contains(Flags::USER) => {",
         replace: "            Some((_, flags)) => {",
@@ -13213,6 +14490,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("bytes cross the boundary only where they may"),
     },
     Mutation {
+        id: 1270,
         file: "libs/x86-apic/src/vector.rs",
         find: "        if vector >= FIRST_PIC_VECTOR && vector < FIRST_ASSIGNABLE {",
         replace: "        if vector >= FIRST_PIC_VECTOR && vector < FIRST_ASSIGNABLE && vector != 0x2f {",
@@ -13223,6 +14501,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1271,
         file: "kernel/src/arch/x86_64/vector.rs",
         find: "pub(crate) const SYSCALL: InterruptVector = SOURCES[4];",
         replace: "pub(crate) const SYSCALL: InterruptVector = SOURCES[3];",
@@ -13233,6 +14512,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1272,
         file: "kernel/src/arch/x86_64/ioapic.rs",
         find: "    fn route_line(\n",
         replace: "    #[allow(dead_code)]\n    fn route_raw_for_mutation(\n        &mut self,\n        line: u32,\n        vector: u8,\n        wiring: Wiring,\n        destination: u32,\n    ) -> Result<(), RoutingError> {\n        let Some(vector) = InterruptVector::new(vector) else {\n            return Ok(());\n        };\n        self.route_line(line, vector, wiring, destination)\n    }\n\n    fn route_line(\n",
@@ -13243,6 +14523,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1273,
         file: "kernel/src/arch/x86_64/ioapic.rs",
         find: "        && controller.registers.low == u32::from(super::vector::KEYBOARD.get())",
         replace: "        && controller.registers.low == u32::from(super::vector::TIMER.get())",
@@ -13250,6 +14531,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("an isolated I/O APIC route encodes its typed vector"),
     },
     Mutation {
+        id: 1274,
         file: "libs/pci-config/src/lib.rs",
         find: "    let current = access(at, CommandAccess::Read).ok_or(EnableError::Access)? as u16;",
         replace: "    let current = access(at, CommandAccess::Read).unwrap_or(u32::from(state.installed)) as u16;",
@@ -13260,6 +14542,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1275,
         file: "libs/pci-config/src/lib.rs",
         find: "        Err(error) => {\n            if error != EnableError::Restore {\n                state.phase = CommandPhase::Installed;\n            }\n            Err(error)\n        }",
         replace: "        Err(error) => {\n            state.phase = CommandPhase::Installed;\n            Err(error)\n        }",
@@ -13270,6 +14553,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1276,
         file: "libs/pci-config/src/lib.rs",
         find: "    if !leases.holds_function(function, state.lease) || state.phase != CommandPhase::Installed {",
         replace: "    if state.phase != CommandPhase::Installed {",
@@ -13280,6 +14564,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1277,
         file: "libs/pci-config/src/lib.rs",
         find: "    admit_bus_master_with_leases(&mut functions.commands, authority.function, state, access)",
         replace: "    admit_bus_master_with_leases(&mut functions.commands, state.lease.function, state, access)",
@@ -13290,6 +14575,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1278,
         file: "libs/nvme/src/lib.rs",
         find: "        if cc & configuration::ENABLE != 0 || csts & status::READY != 0 {",
         replace: "        if csts & status::READY != 0 {",
@@ -13300,6 +14586,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1279,
         file: "libs/nvme/src/lib.rs",
         find: "        if cc & configuration::ENABLE != 0 || csts & status::READY != 0 {",
         replace: "        if cc & configuration::ENABLE != 0 {",
@@ -13310,6 +14597,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1280,
         file: "libs/nvme/src/lib.rs",
         find: "        match DisabledRegisters::from_bits(cc, csts) {",
         replace: "        match DisabledRegisters::from_bits(0, 0) {",
@@ -13320,6 +14608,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1281,
         file: "libs/nvme/src/lib.rs",
         find: "impl<T> DisabledPreparation<T> {\n    /// Attempt one disabled-controller access with exact retirement fallback.\n    pub fn access<U, E>(\n        mut self,\n        operation: impl FnOnce(&mut T) -> Result<U, E>,\n    ) -> Result<(Self, U), PreparationFailure<Self, E>> {\n        match operation(&mut self.owner) {\n            Ok(value) => Ok((self, value)),\n            Err(reason) => Err(PreparationFailure {\n                preparation: self,\n                reason,\n            }),\n        }\n    }",
         replace: "impl<T> DisabledPreparation<T> {\n    /// Attempt one disabled-controller access with exact retirement fallback.\n    pub fn access<U, E>(\n        mut self,\n        operation: impl FnOnce(&mut T) -> Result<U, E>,\n    ) -> Result<(Self, U), PreparationFailure<Self, E>> {\n        match operation(&mut self.owner) {\n            Ok(value) => Ok((self, value)),\n            Err(_) => panic!(\"mutant discarded disabled-controller cleanup authority\"),\n        }\n    }",
@@ -13330,6 +14619,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1282,
         file: "wost/src/arch/x86_64/pci.rs",
         find: "            .read_u32(register::CC)",
         replace: "            .read_u32(register::CSTS)",
@@ -13340,6 +14630,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1283,
         file: "wost/src/arch/x86_64/pci.rs",
         find: "#[derive(Debug)]\n#[must_use = \"NVMe quiescence authority must be consumed by DMA admission\"]\npub struct NvmeBusMasterAuthority<'bar> {",
         replace: "#[derive(Debug, Clone)]\n#[must_use = \"NVMe quiescence authority must be consumed by DMA admission\"]\npub struct NvmeBusMasterAuthority<'bar> {",
@@ -13350,6 +14641,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1284,
         file: "wost/src/arch/x86_64/pci.rs",
         find: "pub struct NvmeBusMasterAuthority<'bar> {\n    bar: &'bar MappedBar,\n    _observed: DisabledRegisters,\n}",
         replace: "pub struct NvmeBusMasterAuthority<'bar> {\n    pub bar: &'bar MappedBar,\n    pub _observed: DisabledRegisters,\n}",
@@ -13360,6 +14652,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1285,
         file: "wost/src/arch/x86_64/pci.rs",
         find: "pub fn admit_bus_master(\n    authority: NvmeBusMasterAuthority<'_>,",
         replace: "pub fn enable_bus_master(at: Address) -> Result<(), EnableError> {\n    let mut configuration = CONFIGURATION.lock_leaf();\n    let (address, data) = configuration.ports.as_mut().ok_or(EnableError::Access)?;\n    let command = at.at(header::COMMAND).ok_or(EnableError::Stale)?;\n    Port::write(address, command.bits());\n    let current = Port::read(data) as u16;\n    let wanted = current | pci_config::command::MEMORY_SPACE | pci_config::command::BUS_MASTER;\n    Port::write(address, command.bits());\n    Port::write(data, u32::from(wanted));\n    Port::write(address, command.bits());\n    let found = Port::read(data) as u16;\n    if found == wanted { Ok(()) } else { Err(EnableError::Refused(found)) }\n}\n\npub fn admit_bus_master(\n    authority: NvmeBusMasterAuthority<'_>,",
@@ -13370,6 +14663,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1286,
         file: "libs/pci-config/src/lib.rs",
         find: "    if !functions.holds(function) || bars.function != Some(function.lease) {",
         replace: "    if !functions.holds(function) {",
@@ -13380,6 +14674,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1287,
         file: "libs/pci-config/src/lib.rs",
         find: "    if Bar::decode(low, high) != Some(authority.window.bar) {",
         replace: "    if false {",
@@ -13390,6 +14685,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1288,
         file: "libs/pci-config/src/lib.rs",
         find: "const PROBE_DISABLED: u16 = PROBE_DECODE | command::BUS_MASTER;",
         replace: "const PROBE_DISABLED: u16 = PROBE_DECODE;",
@@ -13400,6 +14696,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1289,
         file: "libs/pci-config/src/lib.rs",
         find: "        Ok(CommandState {\n            lease: probe.0,",
         replace: "        let _released = self.release(probe.0);\n        Ok(CommandState {\n            lease: probe.0,",
@@ -13410,6 +14707,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1290,
         file: "libs/pci-config/src/lib.rs",
         find: "                assert!(\n                    leases.finish_probe(authority, probe).is_ok(),\n                    \"a restored BAR-probe refusal lost its exact reservation\"\n                );",
         replace: "                let _retained = probe;",
@@ -13420,6 +14718,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1291,
         file: "libs/pci-config/src/lib.rs",
         find: "        if memory_type == Self::BELOW_ONE_MEGABYTE {\n            return None;\n        }",
         replace: "        if false && memory_type == Self::BELOW_ONE_MEGABYTE {\n            return None;\n        }",
@@ -13430,6 +14729,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1292,
         file: "libs/pci-config/src/lib.rs",
         find: "        if memory_type == Self::RESERVED {\n            return None;\n        }",
         replace: "        if false && memory_type == Self::RESERVED {\n            return None;\n        }",
@@ -13440,6 +14740,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1293,
         file: "libs/pci-config/src/lib.rs",
         find: "            Bar::decode(original[low], 0)?,",
         replace: "            Bar::decode(original[low], 0).unwrap_or(Bar::Absent),",
@@ -13450,6 +14751,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1294,
         file: "libs/pci-config/src/lib.rs",
         find: "    let low = read(low_at, authority.index).ok_or(BarIdentityError::Access)?;",
         replace: "    let low = read(low_at, authority.index).ok_or(BarIdentityError::Access)? & !Bar::TYPE_MASK;",
@@ -13460,6 +14762,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1295,
         file: "libs/pci-config/src/lib.rs",
         find: "    let low = read(low_at, authority.index).ok_or(BarIdentityError::Access)?;\n    let high = match authority.window.bar {\n        Bar::Memory { wide: true, .. } => {\n            let high_offset = low_offset.checked_add(4).ok_or(BarIdentityError::Stale)?;\n            if authority.index + 1 >= function.bar_registers() {\n                return Err(BarIdentityError::Stale);\n            }\n            let high_at = function\n                .address()\n                .at(high_offset)\n                .ok_or(BarIdentityError::Stale)?;\n            read(high_at, authority.index + 1).ok_or(BarIdentityError::Access)?\n        }\n        Bar::Memory { wide: false, .. } => 0,\n        Bar::Io { .. } | Bar::Absent => return Err(BarIdentityError::Stale),\n    };",
         replace: "    let high = match authority.window.bar {\n        Bar::Memory { wide: true, .. } => {\n            let high_offset = low_offset.checked_add(4).ok_or(BarIdentityError::Stale)?;\n            if authority.index + 1 >= function.bar_registers() {\n                return Err(BarIdentityError::Stale);\n            }\n            let high_at = function\n                .address()\n                .at(high_offset)\n                .ok_or(BarIdentityError::Stale)?;\n            read(high_at, authority.index + 1).ok_or(BarIdentityError::Access)?\n        }\n        Bar::Memory { wide: false, .. } => 0,\n        Bar::Io { .. } | Bar::Absent => return Err(BarIdentityError::Stale),\n    };\n    let low = read(low_at, authority.index).ok_or(BarIdentityError::Access)?;",
@@ -13470,6 +14773,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1296,
         file: "libs/memory-map/src/lib.rs",
         find: "        matches!(self, Self::Reserved | Self::Unknown(_))",
         replace: "        matches!(\n            self,\n            Self::Reserved | Self::Unknown(_) | Self::BootloaderReclaimable\n        )",
@@ -13480,6 +14784,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1297,
         file: "libs/pci-config/src/lib.rs",
         find: "#[derive(Debug, PartialEq, Eq)]\n#[must_use = \"a BAR authority must remain with its mapping or be returned\"]\npub struct BarAuthority {",
         replace: "#[derive(Debug, Clone, PartialEq, Eq)]\n#[must_use = \"a BAR authority must remain with its mapping or be returned\"]\npub struct BarAuthority {",
@@ -13490,6 +14795,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1298,
         file: "kernel/src/main.rs",
         find: "        page_start < page_end && page_end <= 1_u64 << physical_bits,",
         replace: "        false && page_start < page_end && page_end <= 1_u64 << physical_bits,",
@@ -13497,6 +14803,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("a live nvme bar obeys maxphyaddr"),
     },
     Mutation {
+        id: 1299,
         file: "libs/x86-cpuid/src/physical.rs",
         find: "        if maximum_extended_leaf < ADDRESS_SIZE_LEAF || bits < 32 || bits > 52 {",
         replace: "        if bits < 32 || bits > 52 {",
@@ -13507,6 +14814,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1300,
         file: "libs/x86-cpuid/src/physical.rs",
         find: "        start < end && end <= 1_u64 << self.0",
         replace: "        start < end && end < 1_u64 << self.0",
@@ -13517,6 +14825,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1301,
         file: "libs/x86-paging/src/device.rs",
         find: "        let page_start = physical - physical % PAGE_SIZE;",
         replace: "        let page_start = physical;",
@@ -13527,6 +14836,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1302,
         file: "libs/x86-paging/src/device.rs",
         find: "        if !width.contains(page_start, page_end) {",
         replace: "        if false {",
@@ -13537,6 +14847,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1303,
         file: "xtask/src/image/program.rs",
         find: "    let slot = code.get_mut(site).with_context(|| {",
         replace: "    let slot = code.get_mut(0).with_context(|| {",
@@ -13547,6 +14858,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1304,
         file: "xtask/src/image/program.rs",
         find: "        i8::try_from(distance).with_context(|| {",
         replace: "        i8::try_from(distance.min(i8::MAX as usize)).with_context(|| {",
@@ -13557,6 +14869,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1305,
         file: "wost/src/mm/mod.rs",
         find: "        if !self.layout.contains_publication_word(offset) {\n            return None;\n        }",
         replace: "        if false && !self.layout.contains_publication_word(offset) {\n            return None;\n        }",
@@ -13567,6 +14880,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1306,
         file: "wost/src/mm/mod.rs",
         find: "        if !self.layout.contains_publication_word(offset) {\n            return false;\n        }",
         replace: "        if false && !self.layout.contains_publication_word(offset) {\n            return false;\n        }",
@@ -13577,6 +14891,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1307,
         file: "wost/src/mm/mod.rs",
         find: "        let end = offset.checked_add(size_of::<u32>())?;",
         replace: "        let end = offset.wrapping_add(size_of::<u32>());",
@@ -13587,6 +14902,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1308,
         file: "wost/src/mm/mod.rs",
         find: "        if end as u64 > self.len() {\n            return None;\n        }",
         replace: "        if false && end as u64 > self.len() {\n            return None;\n        }",
@@ -13597,6 +14913,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1309,
         file: "wost/src/mm/mod.rs",
         find: "        let address = base.addr().checked_add(offset)?;",
         replace: "        let address = base.addr().wrapping_add(offset);",
@@ -13607,6 +14924,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1310,
         file: "wost/src/mm/mod.rs",
         find: "        if !address.is_multiple_of(align_of::<u32>()) {\n            return None;\n        }",
         replace: "        if false && !address.is_multiple_of(align_of::<u32>()) {\n            return None;\n        }",
@@ -13617,6 +14935,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1311,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            if current.is_huge() || current.flags().contains(Flags::USER) {",
         replace: "            if current.flags().contains(Flags::USER) {",
@@ -13624,6 +14943,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("shared topology rejects hostile root entries"),
     },
     Mutation {
+        id: 1312,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            if current.is_huge() || current.flags().contains(Flags::USER) {",
         replace: "            if current.is_huge() {",
@@ -13631,6 +14951,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("shared topology rejects hostile root entries"),
     },
     Mutation {
+        id: 1313,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            self.take_owned_table(DEVICE_WINDOW_START, Level::Pml4, TablePrivilege::Supervisor)?;",
         replace: "            self.take_owned_table(DEVICE_WINDOW_START, Level::Pml4, TablePrivilege::User)?;",
@@ -13638,6 +14959,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("shared topology rejects hostile root entries"),
     },
     Mutation {
+        id: 1314,
         file: "libs/x86-paging/src/lib.rs",
         find: "        self.address() == found.address()\n            && self.flags().difference(Flags::ACCESSED).bits()\n                == found.flags().difference(Flags::ACCESSED).bits()",
         replace: "        self.bits() == found.bits()",
@@ -13648,6 +14970,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1315,
         file: "libs/x86-paging/src/lib.rs",
         find: "        self.address() == found.address()\n            && self.flags().difference(Flags::ACCESSED).bits()\n                == found.flags().difference(Flags::ACCESSED).bits()",
         replace: "        self.address() == found.address()\n            && self\n                .flags()\n                .difference(Flags::ACCESSED.union(Flags::NO_CACHE))\n                .bits()\n                == found\n                    .flags()\n                    .difference(Flags::ACCESSED.union(Flags::NO_CACHE))\n                    .bits()",
@@ -13658,6 +14981,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1316,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    if flags.contains(Flags::NO_CACHE) || flags.contains(Flags::WRITE_THROUGH) {",
         replace: "    if flags.contains(Flags::NO_CACHE) && flags.contains(Flags::WRITE_THROUGH) {",
@@ -13665,6 +14989,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("shared mappings reject cache aliases"),
     },
     Mutation {
+        id: 1317,
         file: "xtask/src/paths.rs",
         find: "fn collect_directory_entries<T>(\n    entries: impl Iterator<Item = std::io::Result<T>>,\n) -> std::io::Result<Vec<T>> {\n    entries.collect()\n}",
         replace: "fn collect_directory_entries<T>(\n    entries: impl Iterator<Item = std::io::Result<T>>,\n) -> std::io::Result<Vec<T>> {\n    Ok(entries.filter_map(|entry| entry.ok()).collect())\n}",
@@ -13675,6 +15000,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1318,
         file: "xtask/src/decisions.rs",
         find: "    std::fs::read_to_string(path)\n        .unwrap_or_else(|reason| panic!(\"reading searchable file {}: {reason}\", path.display()))",
         replace: "    std::fs::read_to_string(path).unwrap_or_default()",
@@ -13685,6 +15011,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1319,
         file: "xtask/src/paths.rs",
         find: "fn collect_classified_entries<T>(entries: impl Iterator<Item = Result<T>>) -> Result<Vec<T>> {\n    entries.collect()\n}",
         replace: "fn collect_classified_entries<T>(entries: impl Iterator<Item = Result<T>>) -> Result<Vec<T>> {\n    Ok(entries.filter_map(|entry| entry.ok()).collect())\n}",
@@ -13695,6 +15022,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1320,
         file: "xtask/src/paths.rs",
         find: "    !is_symlink && !is_reparse_point && (is_dir || is_file)",
         replace: "    is_dir || is_file",
@@ -13705,6 +15033,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1321,
         file: "xtask/src/paths.rs",
         find: "    !is_symlink && !is_reparse_point && (is_dir || is_file)",
         replace: "    !is_symlink && !is_reparse_point",
@@ -13715,6 +15044,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1322,
         file: "xtask/src/api.rs",
         find: "fn optional_path_is_present(path: &Path) -> Result<bool> {\n    path.try_exists()\n        .with_context(|| format!(\"checking whether {} exists\", path.display()))\n}",
         replace: "fn optional_path_is_present(path: &Path) -> Result<bool> {\n    Ok(path.exists())\n}",
@@ -13725,6 +15055,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1323,
         file: "libs/slab-layout/src/ownership.rs",
         find: "        self.free_frames\n            .checked_add(self.slab_frames)?\n            .checked_add(self.large_frames)",
         replace: "        Some(\n            self.free_frames\n                .wrapping_add(self.slab_frames)\n                .wrapping_add(self.large_frames),\n        )",
@@ -13735,6 +15066,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1324,
         file: "libs/slab-layout/src/ownership.rs",
         find: "                .is_some_and(|accounted| before.accounted_physical_frames() == Some(accounted))",
         replace: "                .is_some_and(|accounted| {\n                    before.accounted_physical_frames().unwrap_or(accounted) == accounted\n                })",
@@ -13745,6 +15077,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1325,
         file: "libs/slab-layout/src/ownership.rs",
         find: "            && self\n                .accounted_physical_frames()\n                .is_some_and(|accounted| before.accounted_physical_frames() == Some(accounted))",
         replace: "            && self.accounted_physical_frames().is_some()",
@@ -13755,6 +15088,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1326,
         file: "libs/slab-layout/src/ownership.rs",
         find: "        self.live_allocations == before.live_allocations\n            && self.slab_frames >= before.slab_frames",
         replace: "        self.slab_frames >= before.slab_frames",
@@ -13765,6 +15099,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1327,
         file: "libs/slab-layout/src/ownership.rs",
         find: "        self.live_allocations == before.live_allocations\n            && self.slab_frames >= before.slab_frames",
         replace: "        self.live_allocations == before.live_allocations\n            && self.slab_frames >= before.slab_frames\n            && self.large_frames == before.large_frames",
@@ -13775,6 +15110,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1328,
         file: "libs/slab-layout/src/ownership.rs",
         find: "        self.live_allocations == before.live_allocations\n            && self.slab_frames >= before.slab_frames",
         replace: "        self.live_allocations == before.live_allocations",
@@ -13785,6 +15121,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1329,
         file: "kernel/src/selftest.rs",
         find: "    fn capture() -> Self {\n        let disabled = interrupt::disable();\n        let snapshot = Self {\n            free_frames: mm::free_frames(),\n            heap: mm::heap::stats(),\n        };\n        disabled.restore();\n        snapshot\n    }",
         replace: "    fn capture() -> Self {\n        Self {\n            free_frames: mm::free_frames(),\n            heap: mm::heap::stats(),\n        }\n    }",
@@ -13795,6 +15132,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1330,
         file: "kernel/src/selftest.rs",
         find: "fn spawn_resources() -> SpawnResources {\n    let disabled = interrupt::disable();\n    let allocator = AllocatorSnapshot::capture();\n    let resources = SpawnResources {\n        frames: allocator.free_frames,\n        heap: allocator.heap,\n        arena: HandleTable::arena_usage_for_test(),\n        channels: object::live_channels_for_test(),\n        rings: queue::live_for_test(),\n        thread_slots: thread::free_slots(),\n        process_records: user::process_records_for_test(),\n        mapping_refusals: user::refused_mapping_reclaims(),\n        table_refusals: user::refused_table_reclaims(),\n        task_retirements: user::refused_task_retirements(),\n    };\n    disabled.restore();\n    resources\n}",
         replace: "fn spawn_resources() -> SpawnResources {\n    let allocator = AllocatorSnapshot::capture();\n    SpawnResources {\n        frames: allocator.free_frames,\n        heap: allocator.heap,\n        arena: HandleTable::arena_usage_for_test(),\n        channels: object::live_channels_for_test(),\n        rings: queue::live_for_test(),\n        thread_slots: thread::free_slots(),\n        process_records: user::process_records_for_test(),\n        mapping_refusals: user::refused_mapping_reclaims(),\n        table_refusals: user::refused_table_reclaims(),\n        task_retirements: user::refused_task_retirements(),\n    }\n}",
@@ -13805,6 +15143,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1331,
         file: "kernel/src/user.rs",
         find: "                table: bootstrap.table.identity_for_test(),",
         replace: "                table: bootstrap.table.identity_for_test().wrapping_add(1),",
@@ -13812,6 +15151,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("a task release refusal retains the zombie for retry"),
     },
     Mutation {
+        id: 1332,
         file: "kernel/src/user.rs",
         find: "    (launches, bootstraps, zombies)",
         replace: "    (\n        launches,\n        bootstraps + usize::from(zombies != 0),\n        zombies,\n    )",
@@ -13819,6 +15159,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("a task release refusal retains the zombie for retry"),
     },
     Mutation {
+        id: 1333,
         file: "kernel/src/user.rs",
         find: "            RECLAIMED_PAGES.fetch_add(success.observed_returned_pages, Ordering::AcqRel);",
         replace: "            RECLAIMED_PAGES.fetch_add(\n                success.observed_returned_pages + 1,\n                Ordering::AcqRel,\n            );",
@@ -13826,6 +15167,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("a task release refusal retains the zombie for retry"),
     },
     Mutation {
+        id: 1334,
         file: "kernel/src/user.rs",
         find: "            RECLAIMED_TABLES.fetch_add(success.reclaimed.tables, Ordering::AcqRel);",
         replace: "            RECLAIMED_TABLES.fetch_add(\n                success.reclaimed.tables + 1,\n                Ordering::AcqRel,\n            );",
@@ -13833,6 +15175,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("a task release refusal retains the zombie for retry"),
     },
     Mutation {
+        id: 1335,
         file: "wost/src/arch/x86_64/interrupt.rs",
         find: "    \"push rax\",\n    \"mov ax, {kernel_data}\",\n    \"mov ss, ax\",",
         replace: "    \"push rax\",",
@@ -13840,6 +15183,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("ring-three entry restores the kernel stack selector"),
     },
     Mutation {
+        id: 1336,
         file: "wost/src/arch/x86_64/interrupt.rs",
         find: "#[cfg(feature = \"selftest\")]\npub const SAVED_FRAME_BYTES: u64 = size_of::<RawTrapFrame>() as u64;",
         replace: "pub const SAVED_FRAME_BYTES: u64 = size_of::<RawTrapFrame>() as u64;",
@@ -13850,6 +15194,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1337,
         file: "wost/src/arch/x86_64/interrupt.rs",
         find: "pub(super) const RECORD_BUFFER_CLEARS: usize = cfg!(feature = \"selftest\") as usize;",
         replace: "pub(super) const RECORD_BUFFER_CLEARS: usize = 1;",
@@ -13860,6 +15205,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1338,
         file: "kernel/src/user.rs",
         find: "#[cfg(feature = \"selftest\")]\nstatic REFUSED_MAPPING_RECLAIMS: AtomicUsize = AtomicUsize::new(0);",
         replace: "static REFUSED_MAPPING_RECLAIMS: AtomicUsize = AtomicUsize::new(0);",
@@ -13870,6 +15216,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1339,
         file: "wost/src/arch/x86_64/interrupt.rs",
         find: "    \".if {record_clears}\",\n    \"jnz 3f\",\n    \"inc qword ptr [rip + BUFFER_CLEARS]\",",
         replace: "    \".if 1\",\n    \"jnz 3f\",\n    \"inc qword ptr [rip + BUFFER_CLEARS]\",",
@@ -13880,6 +15227,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1340,
         file: "wost/src/arch/x86_64/task.rs",
         find: "        \".if {record_clears}\",\n        \"jnz 3f\",\n        \"inc qword ptr [rip + BUFFER_CLEARS]\",",
         replace: "        \".if 1\",\n        \"jnz 3f\",\n        \"inc qword ptr [rip + BUFFER_CLEARS]\",",
@@ -13890,6 +15238,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1341,
         file: "wost/src/mm/mod.rs",
         find: "#[cfg(feature = \"selftest\")]\npub fn free_frames() -> usize {",
         replace: "pub fn free_frames() -> usize {",
@@ -13900,6 +15249,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1342,
         file: "wost/src/mmio.rs",
         find: "    #[cfg(feature = \"selftest\")]\n    pub(crate) const fn base_address(&self) -> *mut u8 {",
         replace: "    pub(crate) const fn base_address(&self) -> *mut u8 {",
@@ -13910,6 +15260,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1343,
         file: "wost/src/mm/mod.rs",
         find: "    #[cfg(feature = \"selftest\")]\n    #[must_use = \"a refused segment read copied no bytes\"]\n    pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {",
         replace: "    #[must_use = \"a refused segment read copied no bytes\"]\n    pub fn read_at(&self, offset: usize, into: &mut [u8]) -> bool {",
@@ -13920,6 +15271,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1344,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    #[cfg(feature = \"selftest\")]\n    pub const fn was_user(&self) -> bool {",
         replace: "    pub const fn was_user(&self) -> bool {",
@@ -13930,6 +15282,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1345,
         file: "wost/src/mm/heap.rs",
         find: "        #[cfg(feature = \"selftest\")]\n        if !self.record_slab_frame() {",
         replace: "        if !self.record_slab_frame() {",
@@ -13940,6 +15293,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1346,
         file: "kernel/src/dev.rs",
         find: "pub(crate) fn keep_io_apic(io_apic: IoApic, #[cfg(feature = \"selftest\")] gsi: u32) {",
         replace: "pub(crate) fn keep_io_apic(io_apic: IoApic, gsi: u32) {",
@@ -13950,6 +15304,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1347,
         file: "kernel/src/main.rs",
         find: "        #[cfg(feature = \"selftest\")]\n        gsi,",
         replace: "        gsi,",
@@ -13960,6 +15315,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1348,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "            #[cfg(feature = \"selftest\")]\n            let result = if mapping_refusal(&MAPPING_WRITES_BEFORE_REFUSAL) {\n                Err(MapError::OutOfMemory)\n            } else {\n                self.set(virtual_address, physical, flags, level)\n            };\n            #[cfg(not(feature = \"selftest\"))]\n            let result = self.set(virtual_address, physical, flags, level);",
         replace: "            #[cfg(feature = \"selftest\")]\n            let injected = mapping_refusal(&MAPPING_WRITES_BEFORE_REFUSAL);\n            #[cfg(not(feature = \"selftest\"))]\n            let injected = false;\n            let result = if injected {\n                Err(MapError::OutOfMemory)\n            } else {\n                self.set(virtual_address, physical, flags, level)\n            };",
@@ -13970,6 +15326,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1349,
         file: "kernel/src/arch/x86_64/trap.rs",
         find: "            #[cfg(not(feature = \"selftest\"))]\n            dismiss(eoi);",
         replace: "            #[cfg(not(feature = \"selftest\"))]\n            {\n                let eoi = Some(eoi);\n                if let Some(eoi) = eoi {\n                    dismiss(eoi);\n                }\n            }",
@@ -13980,6 +15337,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1350,
         file: "xtask/src/api.rs",
         find: "            let callee_receiver = if let Some(qself) = &path.qself {\n                Some(ExactReceiver {\n                    range: range(qself.ty.span()),\n                    exact_nominal: exact_nominal_type_path(&qself.ty).is_some(),\n                })\n            } else {\n                path_prefix_receiver(&path.path)\n            };\n            let argument_receiver = path.qself.is_none().then(|| {\n                expression\n                    .args\n                    .first()\n                    .and_then(exact_dispatch_receiver_range)\n            });",
         replace: "            let callee_receiver = path\n                .qself\n                .is_none()\n                .then(|| path_prefix_receiver(&path.path))\n                .flatten();\n            let argument_receiver = Some(\n                expression\n                    .args\n                    .first()\n                    .and_then(exact_dispatch_receiver_range),\n            );",
@@ -13990,6 +15348,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1351,
         file: "xtask/src/api.rs",
         find: "        declarations.take(2).count() == 1",
         replace: "        false && declarations.take(2).count() == 1",
@@ -14000,6 +15359,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1352,
         file: "xtask/src/api.rs",
         find: "        if !self.dispatch_requires_resolution(inventory, site, evidence) {\n            return DispatchResolution::NoCredit;\n        }",
         replace: "        if !self.dispatch_requires_resolution(inventory, site, evidence) {\n            let DispatchKind::Call { member, .. } = &site.kind;\n            if let Some(activation) = inventory\n                .trait_activations\n                .iter()\n                .find(|activation| activation.key.member == *member)\n            {\n                return DispatchResolution::Implementation(activation.implementation);\n            }\n            return DispatchResolution::NoCredit;\n        }",
@@ -14010,6 +15370,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1353,
         file: "xtask/src/api.rs",
         find: "        if self.exact_self_type(inventory, site, evidence).is_some()\n            || evidence.callee_nodes.iter().any(|node| {",
         replace: "        if false\n            || evidence.callee_nodes.iter().any(|node| {",
@@ -14020,6 +15381,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1354,
         file: "xtask/src/api.rs",
         find: "fn qself_trait_path(expression: &syn::ExprPath) -> Option<String> {\n    let qself = expression.qself.as_ref()?;\n    qself.as_token?;\n    if qself.position == 0 || qself.position + 1 != expression.path.segments.len() {",
         replace: "fn qself_trait_path(expression: &syn::ExprPath) -> Option<String> {\n    let qself = expression.qself.as_ref()?;\n    qself.as_token?;\n    if qself.position == 0\n        || qself.position + 1 != expression.path.segments.len()\n        || expression\n            .path\n            .segments\n            .iter()\n            .take(qself.position)\n            .any(|segment| !matches!(segment.arguments, syn::PathArguments::None))\n    {",
@@ -14030,6 +15392,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1355,
         file: "xtask/src/api.rs",
         find: "                        self.key.trait_path == qualifier\n                            || !qualifier.contains(\"::\")\n                                && last_path_segment(&self.key.trait_path) == qualifier",
         replace: "                        last_path_segment(&self.key.trait_path)\n                            == last_path_segment(qualifier)",
@@ -14040,6 +15403,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1356,
         file: "xtask/src/api.rs",
         find: "            .take(count)\n            .take(count.saturating_sub(1))\n            .any(|segment| !matches!(segment.arguments, syn::PathArguments::None))",
         replace: "            .take(count)\n            .any(|segment| !matches!(segment.arguments, syn::PathArguments::None))",
@@ -14050,6 +15414,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1357,
         file: "xtask/src/api.rs",
         find: "            .is_some_and(|bounds| bounds.contains(&trait_path))",
         replace: "            .is_some_and(|bounds| !bounds.is_empty())",
@@ -14060,6 +15425,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1358,
         file: "xtask/src/api.rs",
         find: "        let callee_self = evidence\n            .self_nodes\n            .intersection(&evidence.callee_nodes)",
         replace: "        let callee_self = evidence\n            .nodes\n            .intersection(&evidence.callee_nodes)",
@@ -14070,6 +15436,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1359,
         file: "xtask/src/api.rs",
         find: "            || self.local_default_dispatch(inventory, site, evidence)",
         replace: "            || false && self.local_default_dispatch(inventory, site, evidence)",
@@ -14080,6 +15447,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1360,
         file: "xtask/src/api.rs",
         find: "        if self.selected_non_trait_callable(inventory, evidence) {",
         replace: "        if false && self.selected_non_trait_callable(inventory, evidence) {",
@@ -14090,6 +15458,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1361,
         file: "xtask/src/api.rs",
         find: "            if self.declaration.is_none()\n                && trait_qualifier.is_none()\n                && !site.callee_names(callee_nodes, exact_self_type)\n            {",
         replace: "            if false\n                && self.declaration.is_none()\n                && trait_qualifier.is_none()\n                && !site.callee_names(callee_nodes, exact_self_type)\n            {",
@@ -14100,6 +15469,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1362,
         file: "xtask/src/api.rs",
         find: "                if let DispatchResolution::Implementation(implementation) =\n                    self.dispatch_resolution(inventory, site, evidence)\n                    && live.insert(implementation)",
         replace: "                if let Some(implementation) = self\n                    .dispatch_matches(inventory, site, evidence)\n                    .first()\n                    .map(|activation| activation.implementation)\n                    && live.insert(implementation)",
@@ -14110,6 +15480,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1363,
         file: "xtask/src/api.rs",
         find: "self.dispatch_resolution(inventory, dispatch, evidence)",
         replace: "match self.dispatch_matches(inventory, dispatch, evidence).as_slice() {\n                    [activation] => {\n                        DispatchResolution::Implementation(activation.implementation)\n                    }\n                    matches => DispatchResolution::Failure(matches.len()),\n                }",
@@ -14120,6 +15491,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1364,
         file: "xtask/src/api.rs",
         find: "        if let Some(exact) = preferred.next().copied() {",
         replace: "        if let Some(exact) = preferred.next().copied().filter(|_| false) {",
@@ -14130,6 +15502,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1365,
         file: "docs/014-storage.md",
         find: "measurement, so the current self-test image still needs the same human round;",
         replace: "measurement, so the current 189-check image still needs the same human round;",
@@ -14140,6 +15513,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1366,
         file: "xtask/src/prose.rs",
         find: "character.is_alphanumeric() || matches!(character, '_' | '-')",
         replace: "character.is_alphanumeric() || character == '_'",
@@ -14150,6 +15524,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1367,
         file: "xtask/src/cli.rs",
         find: "    qualify-vmware    as above (validates a fresh human-boot transcript)",
         replace: "                      VMware transcript qualification omitted",
@@ -14160,6 +15535,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1368,
         file: "AGENTS.md",
         find: "Consumer scaffolding remains stopped until PW-601 has both a pinned draft\nartifact and a runtime seam;",
         replace: "Consumer scaffolding starts when PW-601 has a pinned draft artifact;",
@@ -14170,6 +15546,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1369,
         file: "README.md",
         find: "`cargo xtask qualify-vmware --shipped`",
         replace: "`cargo xtask qualify-vmware`",
@@ -14180,6 +15557,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1370,
         file: "docs/004-decision-log.md",
         find: "scaffolding remains stopped until both a pinned draft artifact and its runtime\nseam exist.",
         replace: "scaffolding may start once a draft artifact exists.",
@@ -14190,6 +15568,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1371,
         file: "wost/src/panic.rs",
         find: "    crate::arch::current::pci::force_unlock(panic);\n",
         replace: "",
@@ -14200,6 +15579,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1372,
         file: "wost/src/arch/x86_64/paging.rs",
         find: "    PERMANENT_STACKS.force_unlock(panic);\n    TASK_STACK_PIN.force_unlock(panic);\n",
         replace: "    PERMANENT_STACKS.force_unlock(panic);\n",
@@ -14210,6 +15590,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1373,
         file: "xtask/src/api.rs",
         find: "        workspace.require_cargo_inputs_unchanged()?;\n        plan.compiler.require_target_libraries_unchanged()?;\n",
         replace: "        plan.compiler.require_target_libraries_unchanged()?;\n",
@@ -14220,6 +15601,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1374,
         file: "xtask/src/api.rs",
         find: "                && !site.callee_names(callee_nodes, exact_self_type)\n            {",
         replace: "                && true\n            {",
@@ -14230,6 +15612,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1375,
         file: "xtask/src/api.rs",
         find: "    fn callee_names(&self, callee_nodes: &BTreeSet<usize>, self_type: usize) -> bool {\n        self.exact_callee_self_syntax && !self.explicit_qself && callee_nodes.contains(&self_type)\n    }",
         replace: "    fn callee_names(&self, _callee_nodes: &BTreeSet<usize>, _self_type: usize) -> bool {\n        self.exact_callee_self_syntax && !self.explicit_qself\n    }",
@@ -14240,6 +15623,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1376,
         file: "xtask/src/qualification.rs",
         find: "        (DatabaseBinding::Pinned, JsonValue::Null, JsonValue::Null) => None,",
         replace: "        (_, JsonValue::Null, JsonValue::Null) => None,",
@@ -14250,6 +15634,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1377,
         file: "xtask/src/qualification.rs",
         find: "    ensure!(\n        audited.advisory_count == fetched.advisory_count,\n        \"the pinned audit and the population run saw different advisory databases\"\n    );",
         replace: "    let _unchecked_database_agreement = (audited.advisory_count, fetched.advisory_count);",
@@ -14260,6 +15645,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1378,
         file: "xtask/src/qualification.rs",
         find: "        ensure!(\n            is_rfc3339_timestamp(record.get(\"database.last-updated\")?),\n            \"advisory qualification names no RFC3339 database update time\"\n        );",
         replace: "        let _unchecked_database_update_time = record.get(\"database.last-updated\")?;",
@@ -14270,6 +15656,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1379,
         file: "xtask/src/qualification.rs",
         find: "        ensure!(\n            record.get(\"database.last-updated\")? == attestation.last_updated,\n            \"advisory record names another database update time\"\n        );",
         replace: "        let _unchecked_attested_update_time = attestation.last_updated;",
@@ -14280,6 +15667,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1380,
         file: "xtask/src/mutation_workspace.rs",
         find: "            ensure!(\n                previous < raw,\n                \"Git tracked paths are not unique and sorted\"\n            );",
         replace: "            ensure!(\n                previous != raw,\n                \"Git tracked paths are not unique and sorted\"\n            );",
@@ -14290,6 +15678,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1381,
         file: "xtask/src/cargo.rs",
         find: r#"            Prefix::VerbatimUNC(server, share) => {
                 let mut root = OsString::from(r"\\");
@@ -14306,6 +15695,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1382,
         file: "xtask/src/mutate.rs",
         find: "    let expected = format!(\"self-test did not finish within {seconds} seconds\");\n    if error.to_string() == expected {\n        Ok(true)",
         replace: "    let expected = format!(\"self-test did not finish within {seconds} seconds\");\n    if error.to_string() != expected {\n        Ok(true)",
@@ -14316,6 +15706,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1383,
         file: "libs/fat32/src/lib.rs",
         find: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n#[non_exhaustive]\npub enum FatError {",
         replace: "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum FatError {",
@@ -14326,6 +15717,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1384,
         file: "libs/fat32/src/lib.rs",
         find: "            Self::Unreadable => core::fmt::Write::write_str(f, \"the sector source refused a read\"),",
         replace: "            Self::Unreadable => core::fmt::Write::write_str(f, \"unreadable\"),",
@@ -14336,6 +15728,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1385,
         file: "libs/path-walk/src/lib.rs",
         find: "                Self::Empty => \"the path is empty\",",
         replace: "                Self::Empty => \"empty\",",
@@ -14346,6 +15739,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1386,
         file: "libs/pci-config/src/lib.rs",
         find: "            Self::Access(reason) => write!(f, \"configuration access failed: {reason}\"),",
         replace: "            Self::Access(reason) => core::fmt::Display::fmt(reason, f),",
@@ -14356,6 +15750,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1387,
         file: "libs/x86-apic/src/timer.rs",
         find: "        core::fmt::Write::write_str(f, \"the local APIC timer is still running\")",
         replace: "        core::fmt::Write::write_str(f, \"timer error\")",
@@ -14366,6 +15761,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1388,
         file: "libs/pci-config/src/lib.rs",
         find: "#[derive(Debug, PartialEq, Eq)]\n#[must_use = \"a refused function release returns its authority for retry\"]\npub struct FunctionReleaseFailure {",
         replace: "#[derive(Debug, PartialEq, Eq)]\npub struct FunctionReleaseFailure {",
@@ -14376,6 +15772,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1389,
         file: "xtask/src/main.rs",
         find: r#"fn main() -> ExitCode {
     let args = std::env::args_os().skip(1);
@@ -14401,6 +15798,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1390,
         file: "xtask/src/api.rs",
         find: "                custom_build |= kinds.contains(&\"custom-build\");",
         replace: "                custom_build &= kinds.contains(&\"custom-build\");",
@@ -14411,6 +15809,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1391,
         file: "xtask/src/api.rs",
         find: r#"    fn metadata_name(self) -> &'static str {
         match self {
@@ -14430,6 +15829,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1392,
         file: "xtask/src/api.rs",
         find: "                dependency.normal\n                    && dependency.package_id == dependency_id\n                    && dependency.name == dependency_name",
         replace: "                dependency.build\n                    && dependency.package_id == dependency_id\n                    && dependency.name == dependency_name",
@@ -14440,6 +15840,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1393,
         file: "xtask/src/api.rs",
         find: "                    crate::json::JsonValue::String(kind) if kind == \"build\" => build = true,",
         replace: "                    crate::json::JsonValue::String(kind) if kind == \"build\" => dev = true,",
@@ -14450,6 +15851,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1394,
         file: "xtask/src/api.rs",
         find: "            let enabled = dependency.normal\n                || dependency.build\n                || include_root_dev_dependencies && root_ids.contains(&package) && dependency.dev;\n            if enabled && active.insert(dependency.package_id.clone()) {",
         replace: "            let enabled = dependency.normal\n                || dependency.build\n                || dependency.dev;\n            if enabled && active.insert(dependency.package_id.clone()) {",
@@ -14460,6 +15862,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1395,
         file: "xtask/src/api.rs",
         find: "            let enabled = dependency.normal\n                || dependency.build\n                || include_root_dev_dependencies && root_ids.contains(package) && dependency.dev;\n            if enabled && RESERVED_LANGUAGE_ROOTS.contains(&dependency.name.as_str()) {",
         replace: "            let enabled = dependency.normal\n                || dependency.build\n                || dependency.dev;\n            if enabled && RESERVED_LANGUAGE_ROOTS.contains(&dependency.name.as_str()) {",
@@ -14470,6 +15873,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1396,
         file: "xtask/src/api.rs",
         find: "            .filter(|package| package.name == script.name && package.version == script.version)",
         replace: "            .filter(|package| package.name == script.name || package.version == script.version)",
@@ -14480,6 +15884,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1397,
         file: "xtask/src/api.rs",
         find: "                    target.package == context.package\n                        && target.relative == context.target_root\n                        && target.kind == context.target_kind\n                        && target.name.replace('-', \"_\") == context.crate_name",
         replace: "                    target.package == context.package\n                        && target.relative == context.target_root\n                        || target.kind == context.target_kind\n                            && target.name.replace('-', \"_\") == context.crate_name",
@@ -14490,6 +15895,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1398,
         file: "xtask/src/api.rs",
         find: "                && if round < self.antichain_rounds {\n                    node.code & (1 << round) != 0\n                } else {\n                    node.isolation == Some(ISOLATIONS[round - self.antichain_rounds])\n                }",
         replace: "                && if round <= self.antichain_rounds {\n                    node.code & (1 << round) != 0\n                } else {\n                    node.isolation == Some(ISOLATIONS[round - self.antichain_rounds])\n                }",
@@ -14500,6 +15906,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1399,
         file: "xtask/src/api.rs",
         find: "        (entry.file == file\n            && entry.invocation.contains(at)\n            && (used == entry.function_node && entry.argument.contains(at)\n                || used == entry.macro_declaration && entry.macro_path.contains(at)))",
         replace: "        (entry.file == file\n            || entry.invocation.contains(at)\n                && (used == entry.function_node && entry.argument.contains(at)\n                    || used == entry.macro_declaration && entry.macro_path.contains(at)))",
@@ -14510,6 +15917,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1400,
         file: "xtask/src/api.rs",
         find: "        self.nodes[used].macro_declaration\n            && self.files[file]\n                .macro_paths\n                .iter()\n                .any(|range| range.contains(at))",
         replace: "        self.nodes[used].macro_declaration\n            || self.files[file]\n                .macro_paths\n                .iter()\n                .any(|range| range.contains(at))",
@@ -14520,6 +15928,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1401,
         file: "xtask/src/api.rs",
         find: "                node.file == spec.file\n                    && node.range == spec.invocation\n                    && node.symbol == \"entry\"\n                    && node.roots.production",
         replace: "                node.file == spec.file\n                    && node.range == spec.invocation\n                    || node.symbol == \"entry\"\n                        && node.roots.production",
@@ -14530,6 +15939,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1402,
         file: "xtask/src/api.rs",
         find: "                node.macro_declaration\n                    && node.symbol == \"boot::entry\"\n                    && files[node.file].relative == Path::new(\"wost/src/boot/mod.rs\")",
         replace: "                node.macro_declaration\n                    || node.symbol == \"boot::entry\"\n                        && files[node.file].relative == Path::new(\"wost/src/boot/mod.rs\")",
@@ -14540,6 +15950,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1403,
         file: "xtask/src/api.rs",
         find: "            Item::Macro(item) if item.ident.as_ref().is_some_and(|ident| ident == \"entry\") => {\n                Some(item)\n            }",
         replace: "            Item::Macro(item) if true => Some(item),",
@@ -14550,6 +15961,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1404,
         file: "xtask/src/api.rs",
         find: "                if item.ident == \"__WOST_ENTRY_SIGNATURE\"\n                    && matches!(item.vis, Visibility::Inherited) =>",
         replace: "                if true =>",
@@ -14560,6 +15972,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1405,
         file: "xtask/src/api.rs",
         find: "            Item::Static(item) if matches!(item.vis, Visibility::Inherited) => {",
         replace: "            Item::Static(item) if true => {",
@@ -14570,6 +15983,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1406,
         file: "xtask/src/api.rs",
         find: "                if item.sig.ident == \"kmain\" && matches!(item.vis, Visibility::Inherited) =>",
         replace: "                if item.sig.ident == \"kmain\" || matches!(item.vis, Visibility::Inherited) =>",
@@ -14580,6 +15994,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1407,
         file: "kernel/src/selftest.rs",
         find: "    let retired = last_rites_for(&spawned, 2_000).is_some();",
         replace: "    let retired = last_rites_for(&spawned, 2_000).is_none();",
@@ -14587,6 +16002,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("a thread crosses into ring three and calls back"),
     },
     Mutation {
+        id: 1408,
         file: "kernel/src/selftest.rs",
         find: "    let this_child_called = call.count > before.count && call.slot == spawned.slot;",
         replace: "    let this_child_called = call.count > before.count && call.slot != spawned.slot;",
@@ -14594,6 +16010,7 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check("a thread crosses into ring three and calls back"),
     },
     Mutation {
+        id: 1409,
         file: "libs/pci-config/src/lib.rs",
         find: "pub struct FunctionAuthority {\n    lease: FunctionLease,\n    registers: usize,\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\nstruct FunctionLease {",
         replace: "pub struct FunctionAuthority {\n    pub lease: FunctionLease,\n    registers: usize,\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct FunctionLease {",
@@ -14604,6 +16021,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1410,
         file: "wost/src/arch/x86_64/pci.rs",
         find: "pub struct FunctionClaim {\n    authority: FunctionAuthority,\n    identity: u32,\n}",
         replace: "pub struct FunctionClaim {\n    authority: FunctionAuthority,\n    pub identity: u32,\n}",
@@ -14614,6 +16032,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1411,
         file: "wost/src/mmio.rs",
         find: "        self.write_values(offset, values.iter().copied())",
         replace: "        // SAFETY: this weakened path assumes every supplied word is writable.\n        unsafe {\n            core::ptr::copy_nonoverlapping(\n                values.as_ptr(),\n                self.base.wrapping_add(offset).cast(),\n                values.len(),\n            )\n        };\n        Ok(())",
@@ -14624,6 +16043,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1412,
         file: "wost/src/boot/mod.rs",
         find: "                let Some(values) = span.source(&self.back) else {\n                    panic!(\"framebuffer shadow is shorter than its validated mapping\");\n                };\n                framebuffer_access(self.region.write_u32_slice(destination, values));\n                if span.copy_within(&mut self.back).is_none() {\n                    panic!(\"framebuffer shadow is shorter than its validated mapping\");\n                }",
         replace: "                if span.copy_within(&mut self.back).is_none() {\n                    panic!(\"framebuffer shadow is shorter than its validated mapping\");\n                }\n                let Some(values) = span.source(&self.back) else {\n                    panic!(\"framebuffer shadow is shorter than its validated mapping\");\n                };\n                framebuffer_access(self.region.write_u32_slice(destination, values));",
@@ -14634,6 +16054,7 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1413,
         file: "xtask/src/mutants_grade.rs",
         find: "    command.current_dir(root).args([\"mutants\", \"--version\"]);",
         replace: "    command.current_dir(root).arg(\"--version\");",
@@ -14641,6 +16062,94 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "mutants_grade::tests::direct_cargo_mutants_probe_names_its_subcommand",
+        },
+    },
+    Mutation {
+        id: 1414,
+        file: "xtask/src/mutate.rs",
+        find: "        id: 18,\n",
+        replace: "        id: 17,\n",
+        breaks: "two registered mutations share one permanent identity",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::every_mutation_identity_is_permanent_and_accounted_for",
+        },
+    },
+    Mutation {
+        id: 1415,
+        file: "xtask/src/mutate.rs",
+        find: "    Mutation {\n        id: 1,\n",
+        replace: "    Mutation {\n        id: 60000,\n",
+        breaks: "a registered mutation carries an identity the counter never issued",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutate::tests::every_mutation_identity_is_permanent_and_accounted_for",
+        },
+    },
+    Mutation {
+        id: 1416,
+        file: "xtask/src/mutation_workspace.rs",
+        find: "            body.push_str(&format!(\"id {id} \"));",
+        replace: "            let _ = id;",
+        breaks: "the durable mutation report omits which mutation each outcome names",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutation_workspace::tests::a_report_names_each_outcome_by_its_permanent_mutation_identity",
+        },
+    },
+    Mutation {
+        id: 1417,
+        file: "docs/017-pre-wizzy-hostile-surface-audit.md",
+        find: "[first-fit oracle](../libs/mmio-range/tests/first_fit.rs) |",
+        replace: "[first-fit oracle](../libs/mmio-range/tests/first_fit.rs); `OPEN`: `PW-006`; `OPEN`: `PW-006` |",
+        breaks: "a second open segment in one proof cell escapes classification",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::every_live_register_row_has_a_hostile_surface_disposition",
+        },
+    },
+    Mutation {
+        id: 1418,
+        file: "docs/017-pre-wizzy-hostile-surface-audit.md",
+        find: "| All MMIO and direct-span adapters |",
+        replace: "| All MMIO and direct-span adapters; `OPEN`: `PW-525` |",
+        breaks: "an open label outside the proof column escapes classification",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::every_live_register_row_has_a_hostile_surface_disposition",
+        },
+    },
+    Mutation {
+        id: 1419,
+        file: "docs/017-pre-wizzy-hostile-surface-audit.md",
+        find: "| Register row | Cross-cutting obligation |\n|---|---|\n",
+        replace: "| Register row | Cross-cutting obligation |\n|---|---|\n| PW-525 | A completed obligation written without its register code span. |\n",
+        breaks: "a cross-cutting obligation row the census cannot read escapes classification",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::every_live_register_row_has_a_hostile_surface_disposition",
+        },
+    },
+    Mutation {
+        id: 1420,
+        file: "docs/016-pre-wizzy-foundation.md",
+        find: "retained mutations 841 through 844",
+        replace: "retained mutations 841 through 8440",
+        breaks: "a living register row cites mutation identities the registry never issued",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::every_living_mutation_citation_names_a_registered_identity",
+        },
+    },
+    Mutation {
+        id: 1421,
+        file: "docs/016-pre-wizzy-foundation.md",
+        find: "after interruption, and 2",
+        replace: "after interruption, and 1",
+        breaks: "the sweep guide understates how many entries boot QEMU",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::the_sweep_guide_states_the_exact_machine_witness_count",
         },
     },
 ];
@@ -14717,9 +16226,10 @@ pub fn run(paths: &Paths) -> Result<()> {
             .get(active)
             .with_context(|| format!("journal names absent mutation {active}"))?;
         println!(
-            "[xtask] restoring interrupted mutation {}/{}: {}",
+            "[xtask] restoring interrupted mutation {}/{} #{}: {}",
             active + 1,
             MUTATIONS.len(),
+            mutation.id,
             mutation.breaks
         );
         session.recover(active, mutation.file)?;
@@ -14739,9 +16249,10 @@ pub fn run(paths: &Paths) -> Result<()> {
         let mutated = apply(&original, mutation)?;
 
         println!(
-            "[xtask] mutate {}/{}: {}",
+            "[xtask] mutate {}/{} #{}: {}",
             index + 1,
             MUTATIONS.len(),
+            mutation.id,
             mutation.breaks
         );
         session.begin(index)?;
@@ -14765,7 +16276,11 @@ pub fn run(paths: &Paths) -> Result<()> {
         session.finish(index, mutation.file, outcome)?;
     }
 
-    let outcomes = session.complete(MUTATIONS.len())?;
+    let ids = MUTATIONS
+        .iter()
+        .map(|mutation| mutation.id)
+        .collect::<Vec<_>>();
+    let outcomes = session.complete(&ids)?;
     let mut survivors = Vec::new();
     let mut inconclusive = Vec::new();
     for (mutation, outcome) in MUTATIONS.iter().zip(&outcomes) {
@@ -14782,12 +16297,15 @@ pub fn run(paths: &Paths) -> Result<()> {
         return Ok(());
     }
     for survivor in &survivors {
-        println!("[xtask] survived: {} ({})", survivor.breaks, survivor.file);
+        println!(
+            "[xtask] survived: #{} {} ({})",
+            survivor.id, survivor.breaks, survivor.file
+        );
     }
     for (mutation, error) in &inconclusive {
         println!(
-            "[xtask] inconclusive: {} ({}): {error}",
-            mutation.breaks, mutation.file
+            "[xtask] inconclusive: #{} {} ({}): {error}",
+            mutation.id, mutation.breaks, mutation.file
         );
     }
 
@@ -14816,6 +16334,7 @@ pub(crate) fn registry_fingerprint() -> String {
 
     let mut material = Vec::new();
     for mutation in MUTATIONS {
+        field(&mut material, &mutation.id.to_string());
         field(&mut material, mutation.file);
         field(&mut material, mutation.find);
         field(&mut material, mutation.replace);
@@ -15517,6 +17036,7 @@ mod tests {
     #[test]
     fn a_foreign_host_witness_cannot_cover_a_librarys_source_mutation() {
         let mutation = Mutation {
+            id: 1,
             file: "libs/eevdf/src/lib.rs",
             find: "old",
             replace: "new",
@@ -15804,9 +17324,45 @@ mod tests {
         }
     }
 
+    /// Documents cite identities, so an identity may neither repeat nor
+    /// return after its mutation is deleted (D-341).
+    #[test]
+    fn every_mutation_identity_is_permanent_and_accounted_for() {
+        let mut seen = BTreeMap::new();
+        for mutation in MUTATIONS {
+            assert!(
+                (1..NEXT_MUTATION_ID).contains(&mutation.id),
+                "#{} for `{}` is outside the issued identities",
+                mutation.id,
+                mutation.breaks
+            );
+            if let Some(earlier) = seen.insert(mutation.id, mutation.breaks) {
+                panic!(
+                    "#{} names both `{earlier}` and `{}`",
+                    mutation.id, mutation.breaks
+                );
+            }
+        }
+        let mut issued = seen
+            .keys()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        for retired in RETIRED_MUTATION_IDS {
+            assert!(
+                issued.insert(*retired),
+                "#{retired} is retired twice or still registered"
+            );
+        }
+        assert!(
+            issued.iter().copied().eq(1..NEXT_MUTATION_ID),
+            "every issued identity must be registered or retired exactly once"
+        );
+    }
+
     #[test]
     fn a_pattern_that_matches_once_is_applied_and_others_are_refused() {
         let mutation = Mutation {
+            id: 1,
             file: "x",
             find: "keep",
             replace: "drop",

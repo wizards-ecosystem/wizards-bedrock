@@ -16,7 +16,7 @@ use crate::paths::Paths;
 use crate::sha256;
 
 const JOURNAL_MAGIC: &str = "wizard-mutation-journal-v1";
-const REPORT_MAGIC: &str = "wizard-mutation-report-v1";
+const REPORT_MAGIC: &str = "wizard-mutation-report-v2";
 const LOCK_NAME: &str = "LOCK";
 const JOURNAL_SLOTS: [&str; 2] = ["journal.0", "journal.1"];
 const REPORT_PREFIX: &str = "run.";
@@ -252,12 +252,16 @@ impl Session {
 
     /// Verify the source and index, write the final summary and retire the
     /// resumable journal.
-    pub fn complete(mut self, expected: usize) -> Result<Vec<Outcome>> {
+    ///
+    /// `ids` are the registry's permanent identities in sweep order, so the
+    /// durable report names each outcome's mutation rather than its position.
+    pub fn complete(mut self, ids: &[u16]) -> Result<Vec<Outcome>> {
         ensure!(self.journal.active.is_none(), "a mutation is still active");
         ensure!(
-            self.journal.completed.len() == expected,
-            "only {} of {expected} mutations completed",
-            self.journal.completed.len()
+            self.journal.completed.len() == ids.len(),
+            "only {} of {} mutations completed",
+            self.journal.completed.len(),
+            ids.len()
         );
         restore_workspace(
             &self.snapshot,
@@ -270,7 +274,7 @@ impl Session {
         );
         self.baseline.verify()?;
 
-        let report = self.store.save_report(Report::from(&self.journal))?;
+        let report = self.store.save_report(Report::from(&self.journal, ids))?;
         self.store.write_last_run(&report)?;
         self.store.clear()?;
         Ok(std::mem::take(&mut self.journal.completed))
@@ -1697,11 +1701,12 @@ struct Report {
     survived: usize,
     inconclusive: usize,
     verdict: ReportVerdict,
+    ids: Vec<u16>,
     outcomes: Vec<Outcome>,
 }
 
 impl Report {
-    fn from(journal: &Journal) -> Self {
+    fn from(journal: &Journal, ids: &[u16]) -> Self {
         let (caught, survived, inconclusive) = outcome_totals(&journal.completed);
         Self {
             sequence: 0,
@@ -1717,6 +1722,7 @@ impl Report {
             } else {
                 ReportVerdict::Fail
             },
+            ids: ids.to_vec(),
             outcomes: journal.completed.clone(),
         }
     }
@@ -1738,7 +1744,8 @@ impl Report {
             self.survived,
             self.inconclusive,
         );
-        for outcome in &self.outcomes {
+        for (id, outcome) in self.ids.iter().zip(&self.outcomes) {
+            body.push_str(&format!("id {id} "));
             match outcome {
                 Outcome::Caught => body.push_str("result caught\n"),
                 Outcome::Survived => body.push_str("result survived\n"),
@@ -1810,10 +1817,19 @@ impl Report {
             "mutation report identity field is malformed"
         );
 
+        let mut ids = Vec::with_capacity(mutation_count);
         let mut outcomes = Vec::with_capacity(mutation_count);
         for _ in 0..mutation_count {
             let line = core::iter::Iterator::next(&mut lines)
                 .context("mutation report outcome is missing")?;
+            let (id, line) = line
+                .strip_prefix("id ")
+                .and_then(|line| line.split_once(' '))
+                .context("mutation report outcome names no mutation")?;
+            ids.push(
+                <u16 as core::str::FromStr>::from_str(id)
+                    .context("parsing mutation report identity")?,
+            );
             outcomes.push(match line {
                 "result caught" => Outcome::Caught,
                 "result survived" => Outcome::Survived,
@@ -1856,6 +1872,7 @@ impl Report {
             survived,
             inconclusive,
             verdict,
+            ids,
             outcomes,
         };
         ensure!(
@@ -2217,6 +2234,14 @@ mod tests {
         }
     }
 
+    /// Identities that are neither positions nor contiguous, as a registry
+    /// with retired and interleaved entries would carry.
+    fn ids_for(journal: &Journal) -> Vec<u16> {
+        (0..journal.completed.len())
+            .map(|index| 17 + 2 * index as u16)
+            .collect()
+    }
+
     fn fixture_baseline(journal: &Journal) -> Baseline {
         Baseline {
             root: PathBuf::from("fixture-root"),
@@ -2247,10 +2272,29 @@ mod tests {
     }
 
     #[test]
+    fn a_report_names_each_outcome_by_its_permanent_mutation_identity() {
+        let mut journal = fixture_journal();
+        journal.completed = vec![Outcome::Caught, Outcome::Survived];
+        let mut report = Report::from(&journal, &[17, 1_413]);
+        report.sequence = 1;
+        let encoded = report.encode_with_checksum();
+        assert!(encoded.contains("\nid 17 result caught\nid 1413 result survived\n"));
+        assert_eq!(Report::parse(&encoded).unwrap().ids, [17, 1_413]);
+
+        let rechecked = |body: String| {
+            let digest = sha256::hex(&sha256::digest(body.as_bytes()));
+            Report::parse(&format!("{body}checksum {digest}\n"))
+        };
+        assert!(rechecked(report.body().replacen("id 17 ", "", 1)).is_err());
+        assert!(rechecked(report.body().replacen("id 17 ", "id seventeen ", 1)).is_err());
+        assert!(rechecked(report.body().replacen("id 17 ", "id 017 ", 1)).is_err());
+    }
+
+    #[test]
     fn a_completed_report_binds_totals_and_verdict_to_every_outcome() {
         let mut pass_journal = fixture_journal();
         pass_journal.completed = vec![Outcome::Caught, Outcome::Caught];
-        let mut pass = Report::from(&pass_journal);
+        let mut pass = Report::from(&pass_journal, &ids_for(&pass_journal));
         pass.sequence = 1;
         assert_eq!(Report::parse(&pass.encode_with_checksum()).unwrap(), pass);
         assert_eq!((pass.caught, pass.survived, pass.inconclusive), (2, 0, 0));
@@ -2264,7 +2308,7 @@ mod tests {
             Outcome::Survived,
             Outcome::Inconclusive("wrong machine verdict".to_string()),
         ];
-        let mut failed = Report::from(&failed_journal);
+        let mut failed = Report::from(&failed_journal, &ids_for(&failed_journal));
         failed.sequence = 2;
         assert_eq!(
             Report::parse(&failed.encode_with_checksum()).unwrap(),
@@ -2309,9 +2353,13 @@ mod tests {
         let store = JournalStore::new(temp.0.clone()).unwrap();
         let mut journal = fixture_journal();
         journal.completed = vec![Outcome::Caught];
-        let pass = store.save_report(Report::from(&journal)).unwrap();
+        let pass = store
+            .save_report(Report::from(&journal, &ids_for(&journal)))
+            .unwrap();
         journal.completed = vec![Outcome::Survived];
-        let failed = store.save_report(Report::from(&journal)).unwrap();
+        let failed = store
+            .save_report(Report::from(&journal, &ids_for(&journal)))
+            .unwrap();
         store.write_last_run(&failed).unwrap();
 
         assert_eq!(pass.sequence, 1);
@@ -2337,7 +2385,9 @@ mod tests {
         std::fs::create_dir(&state).unwrap();
         let store = JournalStore::new(state).unwrap();
         journal.completed = vec![Outcome::Caught];
-        let pass = store.save_report(Report::from(&journal)).unwrap();
+        let pass = store
+            .save_report(Report::from(&journal, &ids_for(&journal)))
+            .unwrap();
         let pass_path = store.directory.join(report_name(pass.sequence));
         let pass_bytes = read_state_text(&pass_path, "fixture mutation report").unwrap();
         let pass_digest = sha256::hex(&sha256::digest(pass_bytes.as_bytes()));
@@ -2356,7 +2406,9 @@ mod tests {
         drop(current);
 
         journal.completed = vec![Outcome::Survived];
-        store.save_report(Report::from(&journal)).unwrap();
+        store
+            .save_report(Report::from(&journal, &ids_for(&journal)))
+            .unwrap();
         assert!(
             recorded_pass(
                 &paths,
@@ -2375,7 +2427,7 @@ mod tests {
     fn a_current_pass_cannot_bind_bytes_from_a_substituted_report() {
         let mut journal = fixture_journal();
         journal.completed = vec![Outcome::Caught];
-        let mut selected = Report::from(&journal);
+        let mut selected = Report::from(&journal, &ids_for(&journal));
         selected.sequence = 1;
         let selected_bytes = selected.encode_with_checksum();
 
@@ -2711,7 +2763,7 @@ mod tests {
         assert_pristine(&workspace);
 
         contaminate(&workspace);
-        assert_eq!(session.complete(1).unwrap(), [Outcome::Caught]);
+        assert_eq!(session.complete(&[1]).unwrap(), [Outcome::Caught]);
         assert_pristine(&workspace);
         let evidence = current_pass(&paths, &"a".repeat(64), 1).expect("current pass evidence");
         assert_eq!(evidence.evidence().mutation_count, 1);
@@ -2724,7 +2776,7 @@ mod tests {
         let registry = "d".repeat(64);
         Session::open(&paths, &registry, 0)
             .expect("isolated session")
-            .complete(0)
+            .complete(&[])
             .expect("completed report");
         let pass = current_pass(&paths, &registry, 0).expect("current pass");
 
@@ -3025,7 +3077,7 @@ mod tests {
         let outside_last_run = outside.join("last-run");
         std::fs::write(&outside_last_run, b"outside report authority").expect("outside report");
         std::fs::hard_link(&outside_last_run, state.join(LAST_RUN)).expect("hard-linking report");
-        let mut report = Report::from(&journal);
+        let mut report = Report::from(&journal, &ids_for(&journal));
         report.sequence = 1;
         store
             .write_last_run(&report)
@@ -3077,7 +3129,7 @@ mod tests {
         resumed
             .finish(0, MUTATION_TARGET, Outcome::Caught)
             .expect("finishing mutation");
-        assert_eq!(resumed.complete(1).unwrap(), [Outcome::Caught]);
+        assert_eq!(resumed.complete(&[1]).unwrap(), [Outcome::Caught]);
     }
 
     /// The real Git boundary supplies only tracked bytes to a distinct build
@@ -3119,7 +3171,7 @@ mod tests {
         );
         assert!(!workspace.join("ignored").exists());
         assert!(!workspace.join(".git").exists());
-        assert_eq!(session.complete(0).unwrap(), []);
+        assert_eq!(session.complete(&[]).unwrap(), []);
 
         assert_eq!(
             std::fs::read(repository.join("tracked")).unwrap(),
@@ -3149,7 +3201,7 @@ mod tests {
         )
         .expect("changing copied snapshot");
 
-        let error = session.complete(0).unwrap_err().to_string();
+        let error = session.complete(&[]).unwrap_err().to_string();
         assert!(error.contains("source snapshot changed"), "{error}");
         assert!(current_pass(&paths, &"c".repeat(64), 0).is_err());
     }

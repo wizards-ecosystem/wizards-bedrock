@@ -394,6 +394,186 @@ mod tests {
         );
     }
 
+    /// Living documents cite mutations by permanent identity, so every cited
+    /// identity must still name a registered mutation (D-341).
+    #[test]
+    fn every_living_mutation_citation_names_a_registered_identity() {
+        let root = root();
+        let registered = crate::mutate::MUTATIONS
+            .iter()
+            .map(|mutation| u64::from(mutation.id))
+            .collect::<BTreeSet<_>>();
+        let retired = crate::mutate::RETIRED_MUTATION_IDS
+            .iter()
+            .map(|id| u64::from(*id))
+            .collect::<BTreeSet<_>>();
+        let mut cited = 0;
+        let mut unknown = Vec::new();
+        for path in [
+            "docs/016-pre-wizzy-foundation.md",
+            "docs/017-pre-wizzy-hostile-surface-audit.md",
+            "docs/014-storage.md",
+            "README.md",
+            "AGENTS.md",
+        ] {
+            let document = std::fs::read_to_string(root.join(path))
+                .unwrap_or_else(|_| panic!("reading {path}"));
+            let lines = document.lines().collect::<Vec<_>>();
+            for (line, id) in mutation_citations(&document) {
+                cited += 1;
+                let retired_here = retired.contains(&id) && lines[line - 1].contains("retired");
+                if !registered.contains(&id) && !retired_here {
+                    unknown.push(format!("{path}:{line} #{id}"));
+                }
+            }
+        }
+        assert!(cited > 0, "no living document cites a mutation");
+        assert!(
+            unknown.is_empty(),
+            "living documents cite unregistered mutations: {}",
+            unknown.join(", ")
+        );
+    }
+
+    /// The sweep guide's boot count is derived from the registry, so an
+    /// operator budgeting machine time never reads an estimate.
+    #[test]
+    fn the_sweep_guide_states_the_exact_machine_witness_count() {
+        use crate::mutate::Caught;
+
+        let register = std::fs::read_to_string(root().join("docs/016-pre-wizzy-foundation.md"))
+            .expect("016-pre-wizzy-foundation.md");
+        let words = register.split_whitespace().collect::<Vec<_>>();
+        let claims = words
+            .windows(6)
+            .filter(|window| window[1..] == ["of", "its", "entries", "boot", "QEMU,"])
+            .map(|window| window[0])
+            .collect::<Vec<_>>();
+        let [claimed] = claims.as_slice() else {
+            panic!(
+                "the sweep guide states its QEMU boot count {} times",
+                claims.len()
+            );
+        };
+        let machine = crate::mutate::MUTATIONS
+            .iter()
+            .filter(|mutation| {
+                !matches!(
+                    mutation.reddens,
+                    Caught::HostTest { .. } | Caught::ApiAudit(_)
+                )
+            })
+            .count();
+        assert_eq!(
+            *claimed,
+            machine.to_string(),
+            "the sweep guide says {claimed} entries boot QEMU and the registry has {machine}"
+        );
+    }
+
+    #[test]
+    fn mutation_citations_read_every_list_and_range_form() {
+        let ids = |text: &str| {
+            mutation_citations(text)
+                .into_iter()
+                .map(|(_, id)| id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("mutation 17 failed"), [17]);
+        assert_eq!(ids("Mutations 1,390 and 1,391 each"), [1_390, 1_391]);
+        assert_eq!(
+            ids("mutations 326, 327 and 1,311 through 1,313 red"),
+            [326, 327, 1_311, 1_312, 1_313]
+        );
+        assert_eq!(ids("mutations 237-239 retain"), [237, 238, 239]);
+        assert_eq!(ids("mutation 1219 retains"), [1_219]);
+        assert_eq!(ids("mutation 17, and the rest"), [17]);
+        assert_eq!(ids("mutations 9 through 7"), [9, u64::MAX]);
+        assert!(ids("mutation-only recovery; the mutation sweep; 12 mutations").is_empty());
+    }
+
+    /// Every identity a citation such as `mutations 12, 14 and 1,020 through
+    /// 1,022` names, with its one-based line. An inverted range yields
+    /// `u64::MAX`, which no registry holds.
+    fn mutation_citations(document: &str) -> Vec<(usize, u64)> {
+        let mut cited = Vec::new();
+        for (index, line) in document.lines().enumerate() {
+            let lower = line.to_ascii_lowercase();
+            let mut offset = 0;
+            while let Some(found) = lower[offset..].find("mutation") {
+                let start = offset + found;
+                offset = start + "mutation".len();
+                if lower[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|character| character.is_ascii_alphanumeric())
+                {
+                    continue;
+                }
+                let rest = &line[offset..];
+                let rest = rest.strip_prefix('s').unwrap_or(rest);
+                let Some((first, mut rest)) = rest.strip_prefix(' ').and_then(citation_number)
+                else {
+                    continue;
+                };
+                cited.push((index + 1, first));
+                let mut previous = first;
+                loop {
+                    if let Some(after) = [" through ", "-"]
+                        .into_iter()
+                        .find_map(|separator| rest.strip_prefix(separator))
+                    {
+                        let Some((last, after)) = citation_number(after) else {
+                            break;
+                        };
+                        if last < previous {
+                            cited.push((index + 1, u64::MAX));
+                        }
+                        cited.extend((previous + 1..=last).map(|id| (index + 1, id)));
+                        previous = last;
+                        rest = after;
+                    } else if let Some(after) = [", and ", ", ", " and "]
+                        .into_iter()
+                        .find_map(|separator| rest.strip_prefix(separator))
+                    {
+                        let Some((next, after)) = citation_number(after) else {
+                            break;
+                        };
+                        cited.push((index + 1, next));
+                        previous = next;
+                        rest = after;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        cited
+    }
+
+    /// One decimal number, with or without thousands separators, and the text
+    /// after it.
+    fn citation_number(text: &str) -> Option<(u64, &str)> {
+        let bytes = text.as_bytes();
+        let mut end = bytes
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count();
+        if end == 0 {
+            return None;
+        }
+        while bytes.get(end) == Some(&b',')
+            && bytes
+                .get(end + 1..end + 4)
+                .is_some_and(|group| group.iter().all(u8::is_ascii_digit))
+            && !bytes.get(end + 4).is_some_and(u8::is_ascii_digit)
+        {
+            end += 4;
+        }
+        let value = <u64 as core::str::FromStr>::from_str(&text[..end].replace(',', "")).ok()?;
+        Some((value, &text[end..]))
+    }
+
     #[test]
     fn current_numeric_history_is_distinct_from_a_current_claim() {
         assert_eq!(
@@ -808,12 +988,25 @@ mod tests {
         );
 
         let mut stale = Vec::new();
+        let mut misplaced = Vec::new();
         for line in audit.lines().filter(|line| line.starts_with('|')) {
             let cells = line
                 .trim_matches('|')
                 .split('|')
                 .map(str::trim)
                 .collect::<Vec<_>>();
+            // Only the proof column classifies, and only through one segment.
+            if cells
+                .iter()
+                .enumerate()
+                .any(|(index, cell)| index != 4 && cell.contains("`OPEN`"))
+                || cells.get(4).is_some_and(|proof| {
+                    let labels = proof.matches("`OPEN`").count();
+                    labels > 1 || labels != proof.matches("`OPEN`:").count()
+                })
+            {
+                misplaced.push(line);
+            }
             let Some(proof) = cells.get(4) else {
                 continue;
             };
@@ -841,6 +1034,11 @@ mod tests {
             "the hostile-surface audit labels non-live register rows `OPEN`: {}",
             stale.join(", ")
         );
+        assert!(
+            misplaced.is_empty(),
+            "an `OPEN` label must be one exact `OPEN`: segment in the proof column: {}",
+            misplaced.join("\n")
+        );
 
         let (_, cross_cutting) = audit
             .split_once("## Cross-cutting closure obligations")
@@ -850,15 +1048,22 @@ mod tests {
             .expect("stopped surfaces heading");
         let mut stale_cross_cutting = Vec::new();
         for line in cross_cutting.lines().filter(|line| line.starts_with('|')) {
-            let Some(id) = line
+            let first = line
                 .trim_matches('|')
                 .split('|')
                 .next()
                 .map(str::trim)
-                .and_then(|cell| cell.strip_prefix('`'))
+                .unwrap_or_default();
+            if first == "Register row" || first.chars().all(|character| character == '-') {
+                continue;
+            }
+            // A row the check cannot read would otherwise escape it entirely.
+            let Some(id) = first
+                .strip_prefix('`')
                 .and_then(|cell| cell.strip_suffix('`'))
                 .filter(|cell| cell.starts_with("PW-"))
             else {
+                stale_cross_cutting.push(format!("unreadable row `{first}`"));
                 continue;
             };
             if states.get(id).is_none_or(|state| !LIVE.contains(state)) {
