@@ -3547,7 +3547,7 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "the running address space has no broad safe borrow",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "unsafety::tests::the_running_space_has_no_broad_safe_borrow",
+            name: "contracts::no_item_mem_exposes_names_the_running_address_space",
         },
     },
     // Forget every ownership entry after D-117's old fixed ceiling. The table

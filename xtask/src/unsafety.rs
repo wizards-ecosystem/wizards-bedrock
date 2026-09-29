@@ -361,23 +361,6 @@ mod tests {
         assert_eq!((lines, blocks), (0, 0), "kernel/ grew an unsafe block");
     }
 
-    #[test]
-    fn the_running_space_has_no_broad_safe_borrow() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("xtask sits below the workspace root");
-        let source = std::fs::read_to_string(root.join("kernel/src/mem.rs")).expect("mem.rs");
-
-        assert!(
-            source.contains("\nfn with_active_space<T>("),
-            "the private address-space authority moved; review its new boundary"
-        );
-        assert!(
-            !source.contains("\npub(crate) fn with_active_space<T>("),
-            "safe kernel modules can borrow the running AddressSpace wholesale"
-        );
-    }
-
     /// Check the declarations because counting blocks cannot see an unused
     /// `unsafe fn` or `unsafe impl` (D-147).
     #[test]

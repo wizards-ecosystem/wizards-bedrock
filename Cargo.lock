@@ -161,6 +161,10 @@ dependencies = [
 [[package]]
 name = "handle-space"
 version = "0.1.0"
+dependencies = [
+ "getrandom 0.3.1",
+ "proptest",
+]
 
 [[package]]
 name = "hex"

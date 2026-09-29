@@ -433,6 +433,140 @@ impl<'ast> Visit<'ast> for ProductionAssignments {
     }
 }
 
+/// A type that names `mem`'s `AddressSpace`, however deeply it is nested.
+#[derive(Default)]
+struct NamesAddressSpace(bool);
+
+impl<'ast> Visit<'ast> for NamesAddressSpace {
+    fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+        if path
+            .path
+            .segments
+            .iter()
+            .any(|segment| segment.ident == "AddressSpace")
+        {
+            self.0 = true;
+        }
+        visit::visit_type_path(self, path);
+    }
+}
+
+/// Whether an item with this visibility is reachable from outside its module.
+fn is_visible_outside_module(visibility: &syn::Visibility) -> bool {
+    match visibility {
+        syn::Visibility::Public(_) => true,
+        syn::Visibility::Restricted(restricted) => !restricted.path.is_ident("self"),
+        syn::Visibility::Inherited => false,
+    }
+}
+
+fn signature_names_the_space(signature: &syn::Signature) -> bool {
+    let mut names = NamesAddressSpace::default();
+    names.visit_signature(signature);
+    names.0
+}
+
+fn type_names_the_space(ty: &Type) -> bool {
+    let mut names = NamesAddressSpace::default();
+    names.visit_type(ty);
+    names.0
+}
+
+/// Every item `mem` exposes to the rest of the kernel whose type surface names
+/// the running `AddressSpace`. Function bodies are excluded on purpose: a body
+/// may reach the space through the private helper, but only a crossing
+/// signature or an accessible field hands it out (D-189).
+#[derive(Default)]
+struct AddressSpaceSurface(Vec<String>);
+
+impl<'ast> Visit<'ast> for AddressSpaceSurface {
+    fn visit_item_fn(&mut self, item: &'ast ItemFn) {
+        if is_visible_outside_module(&item.vis) && signature_names_the_space(&item.sig) {
+            self.0.push(item.sig.ident.to_string());
+        }
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast ImplItemFn) {
+        if is_visible_outside_module(&item.vis) && signature_names_the_space(&item.sig) {
+            self.0.push(item.sig.ident.to_string());
+        }
+    }
+
+    fn visit_item_struct(&mut self, item: &'ast ItemStruct) {
+        if !is_visible_outside_module(&item.vis) {
+            return;
+        }
+        for field in &item.fields {
+            if is_visible_outside_module(&field.vis) && type_names_the_space(&field.ty) {
+                self.0.push(item.ident.to_string());
+            }
+        }
+    }
+
+    fn visit_item_enum(&mut self, item: &'ast ItemEnum) {
+        if !is_visible_outside_module(&item.vis) {
+            return;
+        }
+        for variant in &item.variants {
+            for field in &variant.fields {
+                if type_names_the_space(&field.ty) {
+                    self.0.push(item.ident.to_string());
+                }
+            }
+        }
+    }
+
+    fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+        if is_visible_outside_module(&item.vis) && type_names_the_space(&item.ty) {
+            self.0.push(item.ident.to_string());
+        }
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if is_visible_outside_module(&item.vis) && type_names_the_space(&item.ty) {
+            self.0.push(item.ident.to_string());
+        }
+    }
+
+    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+        if is_visible_outside_module(&item.vis) && type_names_the_space(&item.ty) {
+            self.0.push(item.ident.to_string());
+        }
+    }
+}
+
+/// D-189: the running `AddressSpace` carries reclaim and arbitrary-unmap
+/// authority, so nothing `mem` exposes to the rest of the kernel may name it.
+/// A rename of the private borrow helper fails compilation; a second borrow
+/// route under any other name is caught here, where the old name search could
+/// not see it (PW-552).
+#[test]
+fn no_item_mem_exposes_names_the_running_address_space() {
+    let paths = Paths::discover().expect("workspace paths");
+    let source = paths.root().join("kernel/src/mem.rs");
+    let text = std::fs::read_to_string(&source)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", source.display()));
+    let syntax = syn::parse_file(&text)
+        .unwrap_or_else(|error| panic!("parsing {}: {error}", source.display()));
+
+    let mut surface = AddressSpaceSurface::default();
+    surface.visit_file(&syntax);
+
+    // Items whose crossing signature names the space by audited exception.
+    const ALLOWED: &[&str] = &[];
+    let leaked: Vec<&String> = surface
+        .0
+        .iter()
+        .filter(|name| !ALLOWED.contains(&name.as_str()))
+        .collect();
+
+    assert!(
+        leaked.is_empty(),
+        "these items visible outside `mem` name the running AddressSpace, \
+         which no safe module may borrow (D-189): {leaked:?}"
+    );
+}
+
 #[test]
 fn one_assignment_and_typed_signatures_own_every_vector_door() {
     let paths = Paths::discover().expect("workspace paths");
