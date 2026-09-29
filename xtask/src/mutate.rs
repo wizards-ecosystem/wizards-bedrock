@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1521;
+pub const NEXT_MUTATION_ID: u16 = 1524;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[514, 515, 517];
@@ -10004,8 +10004,8 @@ pub fn recover(frame: &interrupt::TrapFrame, fault: trap_cause::PageFault) -> bo
     Mutation {
         id: 889,
         file: "xtask/src/bounded_process.rs",
-        find: "        capture.require_within_limit(capture_limit)",
-        replace: "        capture.require_within_limit(MAX_CAPTURE_BYTES)",
+        find: "        || capture.require_within_limit(capture_limit),",
+        replace: "        || capture.require_within_limit(MAX_CAPTURE_BYTES),",
         breaks: "child polling ignores its caller-specific capture ceiling",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -17201,6 +17201,39 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "qemu::tests::a_serial_file_never_reuses_an_existing_name",
+        },
+    },
+    Mutation {
+        id: 1521,
+        file: "xtask/src/bounded_process.rs",
+        find: "            wrapped.wrap(process_wrap::std::JobObject);\n",
+        replace: "",
+        breaks: "a bounded command's descendants run outside any job",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "bounded_process::tests::a_completed_command_leaves_no_parked_descendant",
+        },
+    },
+    Mutation {
+        id: 1522,
+        file: "xtask/src/bounded_process.rs",
+        find: "impl Drop for Tree {\n    fn drop(&mut self) {\n        let _ = self.terminate();\n    }\n}",
+        replace: "impl Drop for Tree {\n    fn drop(&mut self) {}\n}",
+        breaks: "a completed bounded command leaves its descendants running",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "bounded_process::tests::a_completed_command_leaves_no_parked_descendant",
+        },
+    },
+    Mutation {
+        id: 1523,
+        file: "xtask/src/bounded_process.rs",
+        find: "        #[cfg(windows)]\n        return self.child.start_kill();",
+        replace: "        #[cfg(windows)]\n        return self.child.inner_mut().start_kill();",
+        breaks: "a timed-out bounded command stops only its direct child",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "bounded_process::tests::a_timed_out_command_takes_its_parked_descendant_with_it",
         },
     },
 ];

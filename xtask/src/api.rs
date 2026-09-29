@@ -115,6 +115,7 @@ const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
         "xtask/src/bounded_process.rs",
         "bounded_process::CaptureReservation",
     ),
+    ("xtask/src/bounded_process.rs", "bounded_process::Tree"),
     ("xtask/src/contracts.rs", "contracts::Probe"),
     ("xtask/src/image/mod.rs", "image::RunImage"),
     (
@@ -226,6 +227,13 @@ const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         member: "new",
         implemented_trait: None,
         produced: "bounded_process::CaptureReservation",
+    },
+    ReviewedDropProducer {
+        relative: "xtask/src/bounded_process.rs",
+        owner: "bounded_process::Tree",
+        member: "spawn",
+        implemented_trait: None,
+        produced: "bounded_process::Tree",
     },
     ReviewedDropProducer {
         relative: "xtask/src/contracts.rs",

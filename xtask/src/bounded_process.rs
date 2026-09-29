@@ -1,14 +1,17 @@
-//! Bounded direct-child execution without pipe-EOF waits.
+//! Bounded child execution without pipe-EOF waits.
 //!
 //! Regular-file capture prevents inherited pipe handles from extending a wait.
-//! Termination gets its own bounded poll. This does not contain descendants:
-//! resolved tools are trusted not to leave them, and the byte cap bounds memory
-//! rather than disk retained through an unlinked capture file.
+//! Termination gets its own bounded poll. On Windows every command runs in a
+//! job object that holds each process it starts, and the whole job is
+//! terminated when the command ends, times out or fails (D-347). The byte cap
+//! bounds memory rather than disk retained through an unlinked capture file.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, SeekFrom};
 use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus, Output, Stdio};
+#[cfg(not(windows))]
+use std::process::Child;
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -68,14 +71,63 @@ pub(crate) fn output_with_limit(
     command
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
-    let child = command
-        .spawn()
-        .with_context(|| format!("launching {label}"))?;
-    drop(command);
-    let status = poll_child_with(child, Child::try_wait, Child::kill, timeout, label, || {
-        capture.require_within_limit(capture_limit)
-    })?;
+    let tree = Tree::spawn(command).with_context(|| format!("launching {label}"))?;
+    let status = poll_child_with(
+        tree,
+        Tree::try_wait,
+        Tree::terminate,
+        timeout,
+        label,
+        || capture.require_within_limit(capture_limit),
+    )?;
     collect_output(&capture, status, capture_limit)
+}
+
+/// One bounded command and every process it starts. On Windows they share a
+/// job object that is terminated as a whole; dropping the tree does that, so
+/// no descendant outlives the command however it ends.
+struct Tree {
+    #[cfg(windows)]
+    child: Box<dyn process_wrap::std::ChildWrapper>,
+    #[cfg(not(windows))]
+    child: Child,
+}
+
+impl Tree {
+    /// On Windows the child is created suspended, assigned to its job and
+    /// only then resumed, so nothing it starts can escape the job.
+    fn spawn(command: Command) -> std::io::Result<Self> {
+        #[cfg(windows)]
+        let child = {
+            let mut wrapped = process_wrap::std::CommandWrap::from(command);
+            wrapped.wrap(process_wrap::std::JobObject);
+            wrapped.spawn()?
+        };
+        #[cfg(not(windows))]
+        let child = {
+            let mut command = command;
+            command.spawn()?
+        };
+        Ok(Self { child })
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    /// Terminate every process in the job; elsewhere only the direct child.
+    fn terminate(&mut self) -> std::io::Result<()> {
+        #[cfg(windows)]
+        return self.child.start_kill();
+        #[cfg(not(windows))]
+        return self.child.kill();
+    }
+}
+
+impl Drop for Tree {
+    fn drop(&mut self) {
+        let _ = self.terminate();
+    }
 }
 
 fn collect_output(capture: &Capture, status: ExitStatus, capture_limit: usize) -> Result<Output> {
@@ -697,6 +749,128 @@ mod tests {
     fn capture_fixture_child() {
         println!("captured stdout");
         eprintln!("captured stderr");
+    }
+
+    const PARKED_LOCK: &str = "WIZARD_PARKED_GRANDCHILD_LOCK";
+    const PARENT_LINGERS: &str = "WIZARD_PARKED_PARENT_LINGERS";
+
+    /// Holds its lock file exclusively for a minute unless its job ends it.
+    #[test]
+    #[ignore]
+    fn parked_grandchild_fixture() {
+        let Some(path) = std::env::var_os(PARKED_LOCK) else {
+            return;
+        };
+        #[cfg(windows)]
+        let _held = {
+            use std::os::windows::fs::OpenOptionsExt;
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .share_mode(0)
+                .open(path)
+                .unwrap()
+        };
+        #[cfg(not(windows))]
+        let _held = File::create(path).unwrap();
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    /// Starts the parked grandchild without waiting for it, sees its lock
+    /// taken, then exits or lingers as the test asks.
+    #[test]
+    #[ignore]
+    fn grandparent_fixture_child() {
+        let Some(path) = std::env::var_os(PARKED_LOCK).map(PathBuf::from) else {
+            return;
+        };
+        let mut grandchild = Command::new(std::env::current_exe().unwrap());
+        grandchild
+            .args([
+                "--exact",
+                "bounded_process::tests::parked_grandchild_fixture",
+                "--ignored",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // Deliberately never awaited: the grandchild must outlive this process.
+        drop(grandchild.spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !path.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the grandchild never took its lock"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if std::env::var_os(PARENT_LINGERS).is_some() {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    fn parked_family(label: &str, lingers: bool) -> (PathBuf, PathBuf, Command) {
+        let root = std::env::temp_dir().join(format!(
+            "wizard-parked-{label}-{}-{}",
+            std::process::id(),
+            NEXT_CAPTURE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let lock = root.join("parked.lock");
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "bounded_process::tests::grandparent_fixture_child",
+                "--ignored",
+            ])
+            .env(PARKED_LOCK, &lock);
+        if lingers {
+            command.env(PARENT_LINGERS, "1");
+        }
+        (root, lock, command)
+    }
+
+    /// The lock goes away only once no process holds it open.
+    fn released(lock: &std::path::Path) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            if std::fs::remove_file(lock).is_ok() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_completed_command_leaves_no_parked_descendant() {
+        let (root, lock, command) = parked_family("completed", false);
+        let result = output(command, Duration::from_secs(60), "grandparent fixture").unwrap();
+        assert!(result.status.success(), "{result:?}");
+        assert!(
+            released(&lock),
+            "a parked grandchild outlived its completed bounded command"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_timed_out_command_takes_its_parked_descendant_with_it() {
+        let (root, lock, command) = parked_family("timed-out", true);
+        let error = output(
+            command,
+            Duration::from_secs(8),
+            "lingering grandparent fixture",
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("timed out"), "{error:#}");
+        assert!(
+            released(&lock),
+            "a parked grandchild outlived its timed-out bounded command"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

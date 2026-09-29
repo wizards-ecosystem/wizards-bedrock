@@ -121,6 +121,11 @@ fatfs = { version = "0.3", default-features = false, features = ["std", "alloc"]
 fscommon = "0.1"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["full", "visit"] }
+# Windows job objects hold every process a bounded command starts (D-347).
+process-wrap = { version = "=10.0.1", default-features = false, features = [
+    "std",
+    "job-object",
+] }
 
 # Host-only verification. D-242 admits `proptest` in the five pure libraries
 # that state measured generated-input reach; `shuttle` remains confined to

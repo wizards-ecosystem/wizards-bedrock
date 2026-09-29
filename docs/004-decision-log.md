@@ -16882,6 +16882,9 @@ delegated process-tree containment remains PW-013's trigger.
 exit, capture, cleanup and partial-reservation rollback have exact host and
 mutation witnesses.
 
+**Amended by D-347.** On Windows the delegated tree this record left to PW-013
+is contained: every bounded command runs in a job object that ends with it.
+
 ## D-265 One PCI function authority owns every uncertain transition — Status: Accepted (2026-08-31), amends D-187, D-197 and D-251; advances PW-118, PW-125 and PW-129
 
 **Context.** Address equality was not function authority. A command snapshot
@@ -20070,3 +20073,48 @@ without `unsafe`. A Windows named pipe was rejected because QEMU, as its
 server, would still accept whichever local client connected first. The GDB
 stub stays on loopback because GDB speaks TCP; D-231 already limits it to a
 paused private machine.
+
+## D-347 A bounded command ends with every process it started — Status: Accepted (2026-09-28), amends D-264; closes PW-013
+
+**Context.** D-264 bounded each external child's capture and exit but stopped
+only the direct child, and left delegated process trees to PW-013's trigger.
+That trigger has fired. The mutation sweep runs each host witness as `cargo
+test`, and D-342's seal runs `cargo test -p xtask --doc`; both start compiler
+and test processes. The canceled Daybreak scan retained the consequence: a
+witness that timed out lost only its `cargo` process, and a descendant could
+keep running into the next mutation.
+
+**Decision.** On Windows every bounded command runs in its own job object.
+`process-wrap` 10.0.1 creates the child suspended, assigns it to the job and
+only then resumes it, so nothing the child starts can escape the job. The
+helper holds the child in one value whose drop terminates the whole job, and
+a timeout terminates the job as well, so the job ends whenever the command
+completes, times out, overruns its capture limit or cannot be observed. On
+other hosts the helper still stops only the direct child; process groups there
+belong with PW-708's non-Windows gate.
+
+The crate is pinned exactly and used only by `xtask` on Windows. It adds
+seventeen locked packages, all MIT or dual MIT and Apache-2.0, recorded as
+development inputs. Only `nix`, which a Windows build never compiles, has a
+build script. Its std interface cannot request kill-on-close, so a hard
+external kill of `xtask` itself still leaves the tree; every exit `xtask`
+controls, a panic included, terminates it.
+
+**Evidence.** On 2026-09-28 rustc 1.97.1 linked the crate's `windows-link`
+imports with no `dlltool` on `PATH`. Two fixtures start a grandchild that holds
+a file exclusively for a minute. After a normal completion and after an 8 s
+timeout, the grandchild released the file within the tests' 15 s bound. The
+existing bounded-process tests passed unchanged. Mutations 1,521 through 1,523
+remove the job, skip termination at drop and terminate only the direct child,
+and each failed its exact fixture before byte-for-byte restoration; mutation
+889 moved to the reformatted capture check and failed its witness again. The
+supply-chain check verified 84 registry crates against the updated inventory
+and regenerated SBOM.
+
+**Alternatives.** Assigning an already running child to a job, as `win32job`
+does, was rejected because the child can start a process before the
+assignment. `command-group` 5, the predecessor of `process-wrap`, was rejected
+because it is superseded and built on `winapi`. Calling the job APIs directly
+was rejected because `xtask` forbids `unsafe` and `wost` is the only crate that
+may write it. `taskkill /T` was rejected because it follows parent links and
+misses a descendant whose parent has already exited.
