@@ -18926,6 +18926,10 @@ probe is calibration only, not a PW-025 result. PW-025 and D-246 remain open
 until a complete clean-commit grade and every required adjudication are
 recorded.
 
+**Amended by D-342.** The grader is pinned by its executable's SHA-256 as well
+as its version, and the command passes `--output <dir>`, under which
+cargo-mutants writes `mutants.out`.
+
 ## D-325 Hostile-surface live classifications are checked in both directions — Status: Accepted (2026-09-27), advances PW-010
 
 **Context.** The hostile-surface oracle required every live register row to
@@ -19127,6 +19131,10 @@ table is not sealed to the commit, tool invocation or complete outcome set.
 this record; PW-010 does not, and this record's census contribution is the
 re-anchored D-325 cross-cutting mutation.
 
+**Amended by D-342.** The rule for the MMIO slice body above, one whole-span
+check and one volatile write per admitted word, had no retained break;
+mutations 1,451 and 1,452 now make it fail.
+
 ## D-330 External close records and one exact documentation child are replayable — Status: Accepted (2026-09-28), amends D-218, D-244, D-246, D-262 and D-324; advances PW-009, PW-010, PW-025, PW-026 and PW-028
 
 **Context.** The final independent `xtask` mutation grade and managed Codex
@@ -19209,6 +19217,13 @@ the former is disproportionate and the latter is not replayable. Treating
 Allowing arbitrary documentation descendants or reconstructing a historical
 Git index was rejected in favor of one exact parent relation plus the already
 source-bound immutable mutation record and locked newest report.
+
+**Amended by D-342.** The command above made cargo-mutants write one directory
+deeper than the seal read, so no real run could seal. The seal now reads
+`<dir>/mutants.out`, runs the independent inventory and the doctest command
+itself and pins the grader's digest. The sixteen retained mutations above
+covered part of this decision's checks; mutations 1,427 through 1,450 retain
+the rest, and two checks that could not fail are removed.
 
 ## D-331 External bytes clear before release, and mapping refusal retains their owner — Status: Accepted (2026-09-28), amends D-107 and D-115; closes PW-117
 
@@ -19414,6 +19429,11 @@ address proves neither ownership nor liveness. Dropping an uncertain retry was
 rejected because it strands recoverable authority. Releasing the lease after
 an unverified restoration was rejected because uncertain hardware state must
 remain excluded, not become concurrently mutable.
+
+**Amended by D-343.** The safe-duplication evidence above held for one method
+name: the hostile probe called `duplicate`, so a door under any other name
+compiled unrefused. D-343 replaces that probe with a syntax inventory of every
+door in `pci-config` and `wost`, and mutation 1,013 now fails it.
 
 ## D-336 APIC initialization and completion each have one linear transaction — Status: Accepted (2026-09-28), amends D-254, D-257, D-267 and D-313; closes PW-123 and PW-126
 
@@ -19754,3 +19774,136 @@ corrected over time. Content hashes were rejected for the same reason.
 mutation 1,389 is id 17. D-327's mutations 1,390 and 1,391 are ids 1,407 and
 1,408. D-329's mutations 1,392 through 1,395 are ids 1,409 through 1,412. The
 numbers cited by D-322 through D-340 not listed here already equal their ids.
+
+## D-342 The `xtask` grade seals what cargo-mutants writes and witnesses its own completeness — Status: Accepted (2026-09-28), amends D-324, D-329 and D-330; advances PW-025; closes PW-551 and PW-552
+
+**Context.** An adversarial audit of D-330's grade workflow found that it
+could not seal a real run. Its published command passed
+`--output <dir>/mutants.out`, but cargo-mutants 27.1.0 creates `mutants.out`
+inside the directory it is given, so a run that followed the command wrote
+`<dir>/mutants.out/mutants.out` while the seal read `<dir>/mutants.out`.
+Mutation 1 guarded the defect's direction: its witness asserted the doubled
+path. The seal also took completeness from the operator. It accepted the
+independent inventory and the doctest transcript as files placed beside the
+run, so a subset run paired with a matching subset inventory would seal as
+complete. The grader was identified by its version text while nextest was
+hash-pinned, the doctest transcript was not bound to the `xtask` package, a
+grade directory inside the qualification records could be removed when the
+seal replaced its kind directory, and PowerShell 5.1's `>` writes UTF-16,
+which reached the JSON parser as an unexplained syntax error.
+
+The audit also found checks that had never failed once, which D-28 requires.
+D-330's grade timing, success count, recomputed caught counter, single
+baseline and candidate bijection, its four adjudication rules, five
+Deep-coverage rules, the manifest-digest and request-byte comparisons, the
+parent-diff status, mode, order and framing rules and three CLI rules had no
+retained defect, and neither had D-329's rule for the checked MMIO slice body.
+Two checks could not fail: the Deep `openQuestions` test followed an exact
+key-set check that already required the key, and the parent-diff parser's
+non-empty test followed framing that already refuses a diff without one
+complete row.
+
+**Decision.** The published command passes `--output <dir>`, and the seal
+reads `<dir>/mutants.out` through one constant that the command's test also
+reads. The seal runs the independent `--list --json --diff --no-times`
+inventory with the resolved grader and runs `cargo test -p xtask --doc
+--locked` from the frozen checkout, each through the bounded helper with a
+time and output limit, and records both results; no operator file stands in
+for either. The request format `wizard-cargo-mutants-request-v2` names both as
+seal-run and binds the grader's SHA-256, which must equal the reviewed
+executable at begin and at seal. The doctest transcript must name exactly the
+`xtask` package. The seal refuses a grade directory inside
+`target/qualification` and refuses operator JSON that begins with a UTF-8 or
+UTF-16 byte-order mark, naming the mark.
+
+The reviewed grader is `cargo-mutants 27.1.0` from crates.io, installed by
+`cargo install` with rustc 1.97.1 (`8bab26f4f`, 2026-07-14) in its release
+profile: 15,363,104 bytes with SHA-256
+`4ef442752564625eef9786739a1d57cc692263fca071dd16751f45ba2e322d9c`. Another
+build of the same version needs its own decision.
+
+Every check listed above now has one retained defect, and both unreachable
+checks are removed. Cargo delegates to compiler and test processes, so the two
+seal-run commands join the delegated commands whose process trees PW-013 owns.
+
+**Evidence.** On 2026-09-28 a one-candidate cargo-mutants 27.1.0 run with
+`--output <dir>` wrote `mutants.json` and `outcomes.json` under
+`<dir>/mutants.out`. Mutation 1 now makes the published command write one
+level deeper than the seal reads and fails the output-directory witness.
+Mutations 1,422 through 1,426 accept any grader digest, accept another
+package's doctest transcript, seal a directory inside the records, pass
+UTF-16 JSON to the parser and read the grade directory itself. Mutations 1,427
+through 1,450 each weaken one D-330 rule named above, and mutations 1,451 and
+1,452 make the checked MMIO slice publish one word or use ordinary writes.
+Each of the 32 failed its exact host witness and was restored byte for byte.
+
+**Alternatives.** Keeping operator-supplied inventory and doctest files with
+stricter parsing was rejected because a consistent subset still agrees with
+itself. Accepting any executable that reports version 27.1.0 was rejected
+because version text does not identify bytes. Launching the grade itself from
+`xtask` stays with D-330: the seal's two commands are bounded to minutes,
+while the grade runs for days under the operator's authority. Keeping the two
+unreachable checks was rejected because a check that cannot fail still reads
+as a claim.
+
+**Consequences.** The operator redirects no output, and the seal takes one
+inventory listing and one doctest build longer. A new cargo-mutants build
+requires a decision that updates the pin. PW-025 remains REQUIRED until the
+complete campaign is sealed.
+
+## D-343 PCI function authority is counted at every door — Status: Accepted (2026-09-28), amends D-335; corrects PW-129
+
+**Context.** D-335 recorded that a separate safe duplication door compiled and
+failed the exact hostile contract. The contract compiled one call to a method
+named `duplicate`, so it caught mutation 1,013 because that mutation used the
+same name. A door with any other name compiled with the contract green, and so
+did a safe reissue inside `pci-config`, whose private lease is `Copy`; a split
+that returns two claims for one; a mutable borrow that retargets a claim; a
+static holding a spare claim; and a trait whose default method copies `Self`.
+
+**Decision.** One syntax inventory covers every item outside test code in
+`libs/pci-config/src` and `wost/src`, the two crates that can construct
+function authority. It starts from `FunctionAuthority` and `FunctionClaim` and
+adds each struct, enum, union, type alias and renamed import that holds one by
+value until the set stops growing. It then requires:
+
+- no function signature produces more owned authority than it consumes by
+  value, except the audited mints `FunctionClaims::claim` and
+  `claim_function`, each seen exactly once;
+- parameters and fields hold authority only by value or by shared reference,
+  and a mutable borrow, raw pointer, closure, trait object or generic bound
+  that names authority is refused;
+- no static, constant or associated type holds authority;
+- a type holding authority implements only `Debug`, `Display`, `Error`,
+  `PartialEq` and `Eq`, and derives only `Debug`, `PartialEq` and `Eq`;
+- no macro receives an authority name, and a file that names authority
+  contains no item-position macro, because syntax cannot see what a macro
+  expands to.
+
+`Option` and `Result` count as alternatives, tuples and fixed arrays as
+products, and any other container as unbounded. The name-only compiler probe
+is removed, and the inventory now witnesses mutation 1,013.
+
+A generic function that manufactures a `T` from `&T` needs `unsafe`, which
+D-41's inventory confines to reviewed single-operation blocks in `wost`. The
+type inventory leaves that case to it.
+
+**Evidence.** On 2026-09-28 the inventory accepted the current sources, in
+which it found four authority-holding types, `FunctionAuthority`,
+`FunctionReleaseFailure`, `FunctionClaim` and `ReleaseFailure`, and both
+mints. A fixture test presents twenty hostile doors and both mint accounting
+failures, and each was refused with its exact diagnostic. Mutations 1,453
+through 1,474 each disable one rule of the inventory, and each failed that
+fixture test. Mutation 1,013 and mutations 1,475 through 1,481 apply eight
+doors to the real sources: the original `duplicate`, a pure reissue, a
+hardware split, a pure retarget through `&mut self`, a static spare, a trait
+default, a renamed import and an item macro. Each failed the live inventory
+with a diagnostic naming its door, and every source was restored byte for
+byte.
+
+**Alternatives.** More compiler probes under other method names were rejected
+because no list of names is complete. Inspecting only the public methods of
+the two authority types was rejected because a door can be a free function, a
+trait default, a wrapper's method or a static. Refusing every mention of
+authority was rejected because shared references are how configuration writes
+prove ownership.

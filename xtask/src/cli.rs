@@ -541,10 +541,19 @@ mod tests {
             parse_args(&["qualify-security-deep", "--seal=scan"]).unwrap(),
             Task::QualifySecurityDeep(SecurityDeepAction::Seal(PathBuf::from("scan")))
         );
-        assert!(parse_args(&["qualify-mutants-grade"]).is_err());
-        assert!(parse_args(&["qualify-security-deep", "--begin", "--seal=scan"]).is_err());
-        assert!(parse_args(&["qualify-mutants-grade", "--seal=one", "--seal=two"]).is_err());
+        for task in ["qualify-mutants-grade", "qualify-security-deep"] {
+            assert!(parse_args(&[task]).is_err(), "{task} ran with no action");
+            assert!(
+                parse_args(&[task, "--begin", "--seal=scan"]).is_err(),
+                "{task} accepted both actions"
+            );
+            assert!(
+                parse_args(&[task, "--seal=one", "--seal=two"]).is_err(),
+                "{task} accepted two seal directories"
+            );
+        }
         assert!(parse_args(&["build", "--begin"]).is_err());
+        assert!(parse_args(&["build", "--seal=scan"]).is_err());
     }
 
     #[test]

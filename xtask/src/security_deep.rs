@@ -319,10 +319,6 @@ fn verify_scan(
         .is_empty(),
         "Codex Security coverage has deferred work"
     );
-    ensure!(
-        !coverage_root.contains_key("openQuestions"),
-        "Codex Security deep aggregate contains open questions"
-    );
     let surfaces = json_array(
         json_field(coverage_root, "surfaces", "coverage")?,
         "coverage surfaces",
@@ -578,6 +574,54 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// Replace one coverage fragment and re-bind the manifest to the new bytes,
+    /// so only the coverage rule under test can refuse the scan.
+    fn with_coverage(from: &str, to: &str) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+        let source = source();
+        let (manifest, findings, coverage, report) = artifacts(None, "complete", &source.commit);
+        let old = String::from_utf8(coverage).unwrap();
+        assert!(old.contains(from), "fixture lacks {from}");
+        let coverage = old.replacen(from, to, 1).into_bytes();
+        let manifest = String::from_utf8(manifest)
+            .unwrap()
+            .replace(
+                &sha256::hex(&sha256::digest(old.as_bytes())),
+                &sha256::hex(&sha256::digest(&coverage)),
+            )
+            .into_bytes();
+        (manifest, findings, coverage, report)
+    }
+
+    #[test]
+    fn coverage_must_be_the_complete_unqualified_repository_workflow() {
+        let source = source();
+        let (manifest, findings, coverage, report) =
+            with_coverage(r#""mode":"deep_repository""#, r#""mode":"deep_repository""#);
+        verify_scan(&manifest, &findings, &coverage, &report, &source).unwrap();
+        for (from, to) in [
+            (
+                r#""mode":"deep_repository""#,
+                r#""mode":"quick_repository""#,
+            ),
+            (
+                r#""inventoryStrategy":"repository""#,
+                r#""inventoryStrategy":"sampled""#,
+            ),
+            (
+                r#""explicitExclusions":[]"#,
+                r#""explicitExclusions":["vm"]"#,
+            ),
+            (r#""deferred":[]"#, r#""deferred":["kernel"]"#),
+            (r#""surfaces":[]"#, r#""surfaces":[{}]"#),
+        ] {
+            let (manifest, findings, coverage, report) = with_coverage(from, to);
+            assert!(
+                verify_scan(&manifest, &findings, &coverage, &report, &source).is_err(),
+                "accepted coverage with {to}"
+            );
+        }
     }
 
     #[test]

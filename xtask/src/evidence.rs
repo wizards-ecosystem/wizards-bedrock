@@ -908,10 +908,6 @@ fn parse_parent_docs_diff(raw: &[u8]) -> Result<Vec<String>> {
         );
         files.push(path.to_string());
     }
-    ensure!(
-        !files.is_empty(),
-        "parent-docs-only-v1 requires a nonempty closure diff"
-    );
     Ok(files)
 }
 
@@ -1458,6 +1454,37 @@ mod tests {
         assert!(parse_parent_docs_diff(source.as_bytes()).is_err());
         let empty = b"";
         assert!(parse_parent_docs_diff(empty).is_err());
+    }
+
+    #[test]
+    fn the_parent_diff_admits_only_sorted_unique_regular_modifications() {
+        let old = "1".repeat(40);
+        let new = "2".repeat(40);
+        let row = |modes: &str, status: &str, path: &str| {
+            format!(":{modes} {old} {new} {status}\0{path}\0")
+        };
+        let refused = |raw: &str, diagnostic: &str| {
+            let error = parse_parent_docs_diff(raw.as_bytes()).unwrap_err();
+            assert!(format!("{error:#}").contains(diagnostic), "{error:#}");
+        };
+        let readme = row("100644 100644", "M", "README.md");
+        let log = row("100644 100644", "M", "docs/004-decision-log.md");
+        assert_eq!(
+            parse_parent_docs_diff(format!("{readme}{log}").as_bytes()).unwrap(),
+            ["README.md", "docs/004-decision-log.md"]
+        );
+        refused(&format!("{log}{readme}"), "not unique and sorted");
+        refused(&format!("{readme}{readme}"), "not unique and sorted");
+        refused(
+            &row("100644 100644", "T", "README.md"),
+            "ordinary 100644 file modifications",
+        );
+        refused(
+            &row("100755 100755", "M", "README.md"),
+            "ordinary 100644 file modifications",
+        );
+        refused(readme.trim_end_matches('\0'), "not NUL terminated");
+        refused(&format!("{readme}extra\0"), "incomplete row");
     }
 
     #[test]

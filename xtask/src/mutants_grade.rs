@@ -24,9 +24,26 @@ const NEXTEST_ARCHIVE_SHA256: &str =
     "5bc4b6789103e9834f596eff2b290cfb5b2b69e5413c78bbaa5acc835ac5baa0";
 const NEXTEST_EXECUTABLE_SHA256: &str =
     "3fca621fe9e9a5bb7461367ea74fba4c85de824fdb77519b5678fbf91f40c86f";
-const COMMAND: &str = "cargo mutants -p xtask --output <source-bound-directory>/mutants.out --jobs 1 --jobserver-tasks 1 --test-tool nextest --timeout-multiplier 3 --no-shuffle";
+const COMMAND: &str = "cargo mutants -p xtask --output <source-bound-directory> --jobs 1 --jobserver-tasks 1 --test-tool nextest --timeout-multiplier 3 --no-shuffle";
+/// The directory cargo-mutants creates inside its `--output` argument.
+const CARGO_MUTANTS_OUTPUT: &str = "mutants.out";
+/// The reviewed crates.io `cargo-mutants 27.1.0` executable (D-342).
+const CARGO_MUTANTS_EXECUTABLE_SHA256: &str =
+    "4ef442752564625eef9786739a1d57cc692263fca071dd16751f45ba2e322d9c";
 const INVENTORY_COMMAND: &str = "cargo mutants -p xtask --list --json --diff --no-times";
+const INVENTORY_ARGUMENTS: [&str; 7] = [
+    "mutants",
+    "-p",
+    "xtask",
+    "--list",
+    "--json",
+    "--diff",
+    "--no-times",
+];
+const INVENTORY_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const DOCTEST_COMMAND: &str = "cargo test -p xtask --doc --locked";
+const DOCTEST_ARGUMENTS: [&str; 5] = ["test", "-p", "xtask", "--doc", "--locked"];
+const DOCTEST_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const REQUEST: &str = "request";
 const DOCTEST: &str = "doctest.transcript";
 const ADJUDICATIONS: &str = "adjudications.json";
@@ -136,23 +153,23 @@ fn begin(paths: &Paths) -> Result<()> {
 fn seal(paths: &Paths, source_directory: &Path) -> Result<()> {
     let attempt = qualification::begin_external(paths, Kind::CargoMutantsGrade, true)?;
     let root = canonical_directory(source_directory, "cargo-mutants grade directory")?;
+    let records = canonical_directory(
+        &paths.target_dir().join("qualification"),
+        "qualification records",
+    )?;
+    require_outside_records(&root, &records)?;
     let request = read(
         &attempt.directory().join(REQUEST),
         MAX_RECEIPT_BYTES,
         "cargo-mutants run request",
     )?;
-    let output = canonical_directory(&root.join("mutants.out"), "cargo-mutants output directory")?;
-    let doctest = read(&root.join(DOCTEST), MAX_RECEIPT_BYTES, "doctest transcript")?;
+    let output = canonical_directory(&output_directory(&root), "cargo-mutants output directory")?;
     let adjudications = read(
         &root.join(ADJUDICATIONS),
         MAX_ADJUDICATION_BYTES,
         "cargo-mutants adjudications",
     )?;
-    let inventory = read(
-        &root.join(INVENTORY),
-        MAX_JSON_BYTES,
-        "independent cargo-mutants inventory",
-    )?;
+    reject_byte_order_mark(&adjudications, "cargo-mutants adjudications")?;
     let mutants = read(
         &output.join(MUTANTS),
         MAX_JSON_BYTES,
@@ -169,6 +186,10 @@ fn seal(paths: &Paths, source_directory: &Path) -> Result<()> {
         discover_tools(paths)? == tools,
         "cargo-mutants or cargo-nextest changed between request and seal"
     );
+    // The completeness witness and the doctest proof come from this checkout,
+    // never from files the operator supplies beside the run.
+    let inventory = capture_inventory(&tools, paths.root())?;
+    let doctest = capture_doctest(paths)?;
     verify_doctest(&doctest)?;
     let candidates = parse_candidates(&mutants, "cargo-mutants run inventory")?;
     let independent = parse_candidates(&inventory, "independent cargo-mutants inventory")?;
@@ -737,13 +758,12 @@ fn render_request(source: &SourceIdentity, tools: &ToolIdentity) -> Result<Vec<u
         .parent()
         .context("cargo-nextest path has no parent")?;
     let body = format!(
-        "wizard-cargo-mutants-request-v1\nsource.commit={}\nsource.tree={}\ncommand={}\nenvironment.CARGO_BUILD_JOBS=1\nenvironment.NEXTEST_TEST_THREADS=1\nenvironment.PATH.nextest-first={}\ninventory.command={}\ninventory.output={}\ndoctest.command={}\nexecution.authority=external-operator\ntool.cargo-mutants.bytes={}\ntool.cargo-mutants.path={}\ntool.cargo-mutants.sha256={}\ntool.cargo-mutants.version={}\ntool.cargo-nextest.archive.sha256={}\ntool.cargo-nextest.bytes={}\ntool.cargo-nextest.commit={}\ntool.cargo-nextest.path={}\ntool.cargo-nextest.sha256={}\ntool.cargo-nextest.url={}\ntool.cargo-nextest.version={}\n",
+        "wizard-cargo-mutants-request-v2\nsource.commit={}\nsource.tree={}\ncommand={}\nenvironment.CARGO_BUILD_JOBS=1\nenvironment.NEXTEST_TEST_THREADS=1\nenvironment.PATH.nextest-first={}\ninventory.command={}\ninventory.runner=xtask-seal\ndoctest.command={}\ndoctest.runner=xtask-seal\nexecution.authority=external-operator\ntool.cargo-mutants.bytes={}\ntool.cargo-mutants.path={}\ntool.cargo-mutants.sha256={}\ntool.cargo-mutants.version={}\ntool.cargo-nextest.archive.sha256={}\ntool.cargo-nextest.bytes={}\ntool.cargo-nextest.commit={}\ntool.cargo-nextest.path={}\ntool.cargo-nextest.sha256={}\ntool.cargo-nextest.url={}\ntool.cargo-nextest.version={}\n",
         source.commit,
         source.tree,
         COMMAND,
         nextest_parent.display(),
         INVENTORY_COMMAND,
-        INVENTORY,
         DOCTEST_COMMAND,
         tools.cargo_mutants_bytes,
         tools.cargo_mutants_path,
@@ -781,7 +801,7 @@ fn verify_request(bytes: &[u8], source: &SourceIdentity) -> Result<ToolIdentity>
     canonical_body.pop();
     let mut lines = canonical_body.lines();
     ensure!(
-        lines.next() == Some("wizard-cargo-mutants-request-v1"),
+        lines.next() == Some("wizard-cargo-mutants-request-v2"),
         "unsupported cargo-mutants request"
     );
     let mut fields = BTreeMap::new();
@@ -801,9 +821,11 @@ fn verify_request(bytes: &[u8], source: &SourceIdentity) -> Result<ToolIdentity>
         ("environment.CARGO_BUILD_JOBS", "1"),
         ("environment.NEXTEST_TEST_THREADS", "1"),
         ("inventory.command", INVENTORY_COMMAND),
-        ("inventory.output", INVENTORY),
+        ("inventory.runner", "xtask-seal"),
         ("doctest.command", DOCTEST_COMMAND),
+        ("doctest.runner", "xtask-seal"),
         ("execution.authority", "external-operator"),
+        ("tool.cargo-mutants.sha256", CARGO_MUTANTS_EXECUTABLE_SHA256),
         ("tool.cargo-mutants.version", VERSION),
         ("tool.cargo-nextest.archive.sha256", NEXTEST_ARCHIVE_SHA256),
         ("tool.cargo-nextest.version", NEXTEST_VERSION),
@@ -827,10 +849,6 @@ fn verify_request(bytes: &[u8], source: &SourceIdentity) -> Result<ToolIdentity>
         .remove("tool.cargo-mutants.path")
         .context("cargo-mutants request has no grader path")?
         .to_string();
-    let cargo_mutants_sha256 = fields
-        .remove("tool.cargo-mutants.sha256")
-        .context("cargo-mutants request has no grader digest")?
-        .to_string();
     let nextest_bytes = canonical_u64(
         fields
             .remove("tool.cargo-nextest.bytes")
@@ -851,17 +869,13 @@ fn verify_request(bytes: &[u8], source: &SourceIdentity) -> Result<ToolIdentity>
         "cargo-mutants request tool paths are malformed"
     );
     ensure!(
-        is_digest(&cargo_mutants_sha256),
-        "cargo-mutants request grader digest is malformed"
-    );
-    ensure!(
         fields.is_empty(),
         "cargo-mutants request has unknown fields"
     );
     Ok(ToolIdentity {
         cargo_mutants_path,
         cargo_mutants_bytes,
-        cargo_mutants_sha256,
+        cargo_mutants_sha256: CARGO_MUTANTS_EXECUTABLE_SHA256.to_string(),
         nextest_path,
         nextest_bytes,
     })
@@ -875,6 +889,10 @@ fn discover_tools(paths: &Paths) -> Result<ToolIdentity> {
     })?;
     let grader_bytes =
         qualification::read_bounded_file(&grader, 512 * 1024 * 1024, "cargo-mutants executable")?;
+    ensure!(
+        sha256::hex(&sha256::digest(&grader_bytes)) == CARGO_MUTANTS_EXECUTABLE_SHA256,
+        "cargo-mutants executable differs from D-342's reviewed build"
+    );
     let version = cargo_mutants_version_command(&grader, paths.root());
     let version = crate::bounded_process::output(
         version,
@@ -915,6 +933,85 @@ fn cargo_mutants_version_command(grader: &Path, root: &Path) -> Command {
     command
 }
 
+fn inventory_command(grader: &Path, root: &Path) -> Command {
+    let mut command = Command::new(grader);
+    command.current_dir(root).args(INVENTORY_ARGUMENTS);
+    command
+}
+
+/// The pinned grader's own candidate listing of the checkout being sealed.
+fn capture_inventory(tools: &ToolIdentity, root: &Path) -> Result<Vec<u8>> {
+    let output = crate::bounded_process::output_with_limit(
+        inventory_command(Path::new(&tools.cargo_mutants_path), root),
+        INVENTORY_TIMEOUT,
+        "independent cargo-mutants inventory",
+        usize::try_from(MAX_JSON_BYTES).context("inventory limit exceeds the address space")?,
+    )?;
+    ensure!(
+        output.status.success(),
+        "the independent cargo-mutants inventory exited {}",
+        output.status
+    );
+    Ok(output.stdout)
+}
+
+fn doctest_command(paths: &Paths) -> Command {
+    let mut command = Command::new(env!("CARGO"));
+    command
+        .current_dir(paths.root())
+        .env(
+            "CARGO_TARGET_DIR",
+            crate::cargo::child_process_path(paths.target_dir()),
+        )
+        .args(DOCTEST_ARGUMENTS);
+    command
+}
+
+/// Cargo's `Doc-tests` header goes to stderr and the harness summary to
+/// stdout, so the transcript keeps them in that order.
+fn capture_doctest(paths: &Paths) -> Result<Vec<u8>> {
+    let output = crate::bounded_process::output(
+        doctest_command(paths),
+        DOCTEST_TIMEOUT,
+        "xtask doctest run",
+    )?;
+    ensure!(
+        output.status.success(),
+        "the xtask doctest run exited {}",
+        output.status
+    );
+    let mut transcript = output.stderr;
+    transcript.extend_from_slice(&output.stdout);
+    Ok(transcript)
+}
+
+fn output_directory(grade: &Path) -> PathBuf {
+    grade.join(CARGO_MUTANTS_OUTPUT)
+}
+
+fn require_outside_records(grade: &Path, records: &Path) -> Result<()> {
+    ensure!(
+        !grade.starts_with(records),
+        "the cargo-mutants grade directory {} lies inside the qualification records {}, \
+         which sealing replaces",
+        grade.display(),
+        records.display()
+    );
+    Ok(())
+}
+
+fn reject_byte_order_mark(bytes: &[u8], label: &str) -> Result<()> {
+    ensure!(
+        !bytes.starts_with(&[0xFF, 0xFE]) && !bytes.starts_with(&[0xFE, 0xFF]),
+        "{label} is UTF-16; save it as UTF-8 without a byte-order mark"
+    );
+    ensure!(
+        !bytes.starts_with(&[0xEF, 0xBB, 0xBF]),
+        "{label} begins with a UTF-8 byte-order mark; save it without one"
+    );
+    Ok(())
+}
+
 fn resolve_path(name: &str) -> Result<PathBuf> {
     let path = std::env::var_os("PATH").context("PATH is unavailable")?;
     for directory in std::env::split_paths(&path) {
@@ -938,15 +1035,16 @@ fn canonical_u64(value: &str, label: &str) -> Result<u64> {
     Ok(parsed)
 }
 
-fn is_digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-}
-
 fn verify_doctest(bytes: &[u8]) -> Result<()> {
     let transcript = std::str::from_utf8(bytes).context("doctest transcript is not UTF-8")?;
+    let packages: Vec<_> = transcript
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("Doc-tests "))
+        .collect();
+    ensure!(
+        packages == ["xtask"],
+        "doctest output names {packages:?} rather than exactly the xtask package"
+    );
     let counts: Vec<_> = transcript
         .lines()
         .filter_map(|line| line.trim().strip_prefix("running "))
@@ -1066,7 +1164,7 @@ mod tests {
                 .to_string_lossy()
                 .into_owned(),
             cargo_mutants_bytes: 12,
-            cargo_mutants_sha256: "c".repeat(64),
+            cargo_mutants_sha256: CARGO_MUTANTS_EXECUTABLE_SHA256.to_string(),
             nextest_path: fixture_root
                 .join("cargo-nextest.exe")
                 .to_string_lossy()
@@ -1074,10 +1172,17 @@ mod tests {
             nextest_bytes: 34,
         };
         let request = render_request(&source, &tools).unwrap();
-        assert!(String::from_utf8_lossy(&request).contains(
-            "command=cargo mutants -p xtask --output <source-bound-directory>/mutants.out --jobs 1"
-        ));
+        assert!(
+            String::from_utf8_lossy(&request).contains(
+                "command=cargo mutants -p xtask --output <source-bound-directory> --jobs 1"
+            )
+        );
         assert_eq!(verify_request(&request, &source).unwrap(), tools);
+        let other_grader = ToolIdentity {
+            cargo_mutants_sha256: "c".repeat(64),
+            ..tools.clone()
+        };
+        assert!(verify_request(&render_request(&source, &other_grader).unwrap(), &source).is_err());
         let weakened = String::from_utf8(request)
             .unwrap()
             .replace("--jobs 1", "--jobs 2");
@@ -1134,10 +1239,158 @@ mod tests {
 
     #[test]
     fn doctest_transcript_requires_only_successful_zero_test_summaries() {
-        let good = b"running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
-        verify_doctest(good).unwrap();
-        let forged = b"running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\nerror: later failure\n";
-        assert!(verify_doctest(forged).is_err());
+        let good = "   Doc-tests xtask\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
+        verify_doctest(good.as_bytes()).unwrap();
+        let forged = format!("{good}error: later failure\n");
+        assert!(verify_doctest(forged.as_bytes()).is_err());
         assert!(verify_doctest(&[0xff]).is_err());
+    }
+
+    #[test]
+    fn doctest_transcript_belongs_to_exactly_the_xtask_package() {
+        let good = "   Doc-tests xtask\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
+        let headless = good.replacen("   Doc-tests xtask\n", "", 1);
+        assert!(verify_doctest(headless.as_bytes()).is_err());
+        let foreign = good.replacen("Doc-tests xtask", "Doc-tests fat32", 1);
+        assert!(verify_doctest(foreign.as_bytes()).is_err());
+        let doubled = format!("   Doc-tests other\n{good}");
+        assert!(verify_doctest(doubled.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn the_published_output_directory_is_the_one_the_sealer_reads() {
+        let arguments = COMMAND.split_whitespace().collect::<Vec<_>>();
+        let output = arguments
+            .windows(2)
+            .find(|pair| pair[0] == "--output")
+            .map(|pair| pair[1]);
+        // cargo-mutants 27.1.0 creates `mutants.out` inside its `--output`
+        // argument (its `output.rs`), and the sealer reads that child.
+        assert_eq!(output, Some("<source-bound-directory>"));
+        assert_eq!(
+            output_directory(Path::new("grade")),
+            Path::new("grade").join("mutants.out")
+        );
+    }
+
+    fn baseline_object() -> String {
+        format!(
+            r#"{{"scenario":"Baseline","summary":"Success","log_path":"log/baseline.log","diff_path":null,"phase_results":{}}}"#,
+            phases("\"Success\"")
+        )
+    }
+
+    #[test]
+    fn a_grade_ends_after_it_starts_and_recounts_every_outcome() {
+        let candidates = BTreeMap::from([("m".to_string(), "d".to_string())]);
+        let valid = String::from_utf8(outcomes("CaughtMutant", "\"2026-09-27T09:06:03.3224359Z\""))
+            .unwrap();
+        parse_outcomes(valid.as_bytes(), &candidates).unwrap();
+        let instantaneous = valid.replace(
+            "\"end_time\":\"2026-09-27T09:06:03.3224359Z\"",
+            "\"end_time\":\"2026-09-27T09:03:24.9388039Z\"",
+        );
+        assert!(parse_outcomes(instantaneous.as_bytes(), &candidates).is_err());
+        let unclassified = valid.replace("\"success\":0", "\"success\":1");
+        assert!(parse_outcomes(unclassified.as_bytes(), &candidates).is_err());
+        let miscounted = valid.replace("\"caught\":1", "\"caught\":2");
+        assert!(parse_outcomes(miscounted.as_bytes(), &candidates).is_err());
+    }
+
+    #[test]
+    fn a_grade_has_one_baseline_and_an_outcome_for_every_candidate() {
+        let candidates = BTreeMap::from([("m".to_string(), "d".to_string())]);
+        let valid = String::from_utf8(outcomes("CaughtMutant", "\"2026-09-27T09:06:03.3224359Z\""))
+            .unwrap();
+        let baseline = baseline_object();
+        assert!(valid.contains(&baseline));
+        let doubled = valid.replacen(&baseline, &format!("{baseline},{baseline}"), 1);
+        assert!(parse_outcomes(doubled.as_bytes(), &candidates).is_err());
+        let absent = valid.replacen(&format!("{baseline},"), "", 1);
+        assert!(parse_outcomes(absent.as_bytes(), &candidates).is_err());
+        // Counters agree with the larger inventory, so only the missing
+        // outcome can refuse it.
+        let two = BTreeMap::from([
+            ("m".to_string(), "d".to_string()),
+            ("n".to_string(), "e".to_string()),
+        ]);
+        let partial = valid.replace("\"total_mutants\":1", "\"total_mutants\":2");
+        assert!(parse_outcomes(partial.as_bytes(), &two).is_err());
+    }
+
+    #[test]
+    fn adjudications_name_exactly_the_noncaught_mutants_with_allowed_reasons() {
+        let expected = BTreeMap::from([("m".to_string(), "MissedMutant".to_string())]);
+        let row = |name: &str, disposition: &str, rationale: &str| {
+            format!(
+                r#"{{"name":"{name}","summary":"MissedMutant","disposition":"{disposition}","rationale":"{rationale}"}}"#
+            )
+        };
+        let document = |rows: &[String]| {
+            format!(
+                r#"{{"format":"wizard-cargo-mutants-adjudications-v1","outcomes":[{}]}}"#,
+                rows.join(",")
+            )
+        };
+        let good = row("m", "equivalent", "observationally identical");
+        assert_eq!(
+            verify_adjudications(document(std::slice::from_ref(&good)).as_bytes(), &expected)
+                .unwrap(),
+            1
+        );
+        let wrong_reason = row("m", "compiler-rejected", "observationally identical");
+        assert!(verify_adjudications(document(&[wrong_reason]).as_bytes(), &expected).is_err());
+        let silent = row("m", "equivalent", "  ");
+        assert!(verify_adjudications(document(&[silent]).as_bytes(), &expected).is_err());
+        let duplicated = document(&[good.clone(), good.clone()]);
+        assert!(verify_adjudications(duplicated.as_bytes(), &expected).is_err());
+        let extra = row("caught", "equivalent", "observationally identical");
+        assert!(verify_adjudications(document(&[good, extra]).as_bytes(), &expected).is_err());
+    }
+
+    #[test]
+    fn sealed_commands_are_exactly_the_documented_ones() {
+        let paths = Paths::new(PathBuf::from("fixture-root"), None);
+        assert_eq!(
+            format!("cargo {}", INVENTORY_ARGUMENTS.join(" ")),
+            INVENTORY_COMMAND
+        );
+        assert_eq!(
+            format!("cargo {}", DOCTEST_ARGUMENTS.join(" ")),
+            DOCTEST_COMMAND
+        );
+        assert_eq!(
+            inventory_command(Path::new("grader"), Path::new("fixture-root"))
+                .get_args()
+                .collect::<Vec<_>>(),
+            INVENTORY_ARGUMENTS
+        );
+        assert_eq!(
+            doctest_command(&paths).get_args().collect::<Vec<_>>(),
+            DOCTEST_ARGUMENTS
+        );
+    }
+
+    #[test]
+    fn a_grade_directory_inside_the_records_cannot_be_sealed() {
+        let records = Path::new("root/target/qualification");
+        assert!(
+            require_outside_records(&records.join("cargo-mutants-grade/run"), records).is_err()
+        );
+        assert!(require_outside_records(records, records).is_err());
+        require_outside_records(Path::new("root/grades/run"), records).unwrap();
+    }
+
+    #[test]
+    fn operator_json_is_utf8_without_a_byte_order_mark() {
+        for (bytes, expected) in [
+            (&[0xFF, 0xFE, b'{'][..], "UTF-16"),
+            (&[0xFE, 0xFF, 0, b'{'][..], "UTF-16"),
+            (&[0xEF, 0xBB, 0xBF, b'{'][..], "byte-order mark"),
+        ] {
+            let error = reject_byte_order_mark(bytes, "fixture").unwrap_err();
+            assert!(format!("{error:#}").contains(expected), "{error:#}");
+        }
+        reject_byte_order_mark(b"{}", "fixture").unwrap();
     }
 }
