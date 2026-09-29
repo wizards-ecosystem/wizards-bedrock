@@ -7525,21 +7525,24 @@ fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
     let resources = spawn_resources();
     let reclaimed = user::reclaimed();
     let reaps = queue::worker_reaps_for_test();
-    let retirements = thread::retirements();
     let idle_halts = thread::idle_halts();
 
     STOP_SPINNING.store(0, Ordering::Release);
     LIGHT_SPINS.store(0, Ordering::Release);
     let busy = thread::spawn("reap-pressure", light_spinner).is_ok();
-    let spawned = user::run_for_bootstrap();
-    let launched = spawned.is_ok();
-    drop(spawned);
+    let Ok(spawned) = user::run_for_bootstrap() else {
+        return false;
+    };
 
-    let retired = launched && runs_until(2000, || thread::retirements() > retirements);
-    let progressed = retired
+    // This exact incarnation retired: its rites are recorded and, with no other
+    // program spawned to reuse the slot, stay recorded past the reap. The busy
+    // worker then reaped it without a spawn: its slot holds no zombie and the
+    // reap and reclaim counters advanced (D-355).
+    let reaped_this_child = last_rites_for(&spawned, 2_000).is_some()
         && runs_until(2000, || {
             let now = user::reclaimed();
-            queue::worker_reaps_for_test() > reaps
+            !user::zombie_owns_slot_for_test(spawned.slot)
+                && queue::worker_reaps_for_test() > reaps
                 && now.0 > reclaimed.0
                 && now.1 > reclaimed.1
                 && !user::has_zombies()
@@ -7549,7 +7552,7 @@ fn a_busy_machine_reaps_a_program_without_another_spawn() -> bool {
     STOP_SPINNING.store(1, Ordering::Release);
     let settled = yields_until(|| thread::free_slots() == resources.thread_slots);
 
-    busy && progressed
+    busy && reaped_this_child
         && idle_stayed_out
         && LIGHT_SPINS.load(Ordering::Relaxed) > 0
         && settled

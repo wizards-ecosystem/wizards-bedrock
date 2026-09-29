@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1538;
+pub const NEXT_MUTATION_ID: u16 = 1539;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1521];
@@ -17343,6 +17343,14 @@ fn mint_stopped<'controller>(
         replace: "    let this_child = fault.slot != spawned.slot && fault.rax == start;",
         breaks: "the copy-window witness accepts a fault from another slot as its child's",
         reddens: Caught::Check("a program cannot aim at the copy window"),
+    },
+    Mutation {
+        id: 1538,
+        file: "kernel/src/selftest.rs",
+        find: "    let reaped_this_child = last_rites_for(&spawned, 2_000).is_some()",
+        replace: "    let reaped_this_child = last_rites_for(&spawned, 2_000).is_none()",
+        breaks: "the busy-reap witness accepts a reap without its child's own last rites",
+        reddens: Caught::Check("a busy machine reaps a program without another spawn"),
     },
 ];
 
