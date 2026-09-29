@@ -164,7 +164,7 @@ mod tests {
             "wost/src/arch/x86_64/paging.rs",
             11,
             0,
-            "57e0d8d8cfa6b198bbec98b4fa7418a10112df22fa9aadc9c6c608517f0acaa6",
+            "cec0720f63fe10a2d86c4c3e1bf20ef8f790f04c4e1fb195860a10f788e8d407",
         ),
         (
             "wost/src/arch/x86_64/percpu.rs",
@@ -236,7 +236,7 @@ mod tests {
             "wost/src/mm/mod.rs",
             15,
             3,
-            "be2098dea762d3ff1b0dd5cc3785cfa8b183c1d901fdd990817935b0d57ddc91",
+            "7a0c07d05ddcf4820e0091ad314d2380b49e0911403639295fd98f1e90829995",
         ),
         (
             "wost/src/mmio.rs",

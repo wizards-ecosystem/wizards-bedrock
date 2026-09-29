@@ -235,6 +235,13 @@ pub fn map_covers_memory(start: Paddr, end: Paddr) -> bool {
         .is_some_and(|map| map.covers_memory(start, end))
 }
 
+/// The one cache type the direct map gives `start..end`, if it has one.
+pub(crate) fn map_direct_cache(start: Paddr, end: Paddr) -> Option<crate::boot::DirectMapCache> {
+    MAP.lock_leaf()
+        .as_ref()
+        .and_then(|map| map.direct_map_cache(start, end))
+}
+
 /// Where the boot map covers `len` bytes with memory, or `None` before it is up.
 ///
 /// See [`crate::boot::MemoryMap::first_memory_run`] for why a caller asks

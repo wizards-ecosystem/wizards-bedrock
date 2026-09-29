@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1524;
+pub const NEXT_MUTATION_ID: u16 = 1533;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[514, 515, 517];
@@ -1891,8 +1891,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 167,
         file: "wost/src/arch/x86_64/paging.rs",
-        find: "        if flags.contains(Flags::USER) {\n            return Err(MapError::NotYours(virtual_base));\n        }\n        self.may_reach(virtual_base, region.len)?;",
-        replace: "        self.may_reach(virtual_base, region.len)?;",
+        find: "        if flags.contains(Flags::USER) {\n            return Err(MapError::NotYours(virtual_base));\n        }\n        if flags.intersection(CACHE_TYPE) != region.cache_type() {",
+        replace: "        if flags.intersection(CACHE_TYPE) != region.cache_type() {",
         breaks: "boot evidence cannot publish kernel memory to ring 3",
         reddens: Caught::Check("a boot mapping cannot publish kernel memory"),
     },
@@ -4753,8 +4753,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 417,
         file: "xtask/src/qemu.rs",
-        find: "const EXPECTED_SELFTEST_CHECKS: usize = 262;",
-        replace: "const EXPECTED_SELFTEST_CHECKS: usize = 261;",
+        find: "const EXPECTED_SELFTEST_CHECKS: usize = ",
+        replace: "const EXPECTED_SELFTEST_CHECKS: usize = 1 + ",
         breaks: "the host accepts a different machine-check population than the kernel",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -5239,8 +5239,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 462,
         file: "docs/014-storage.md",
-        find: "| Machine checks | 262 |",
-        replace: "| Machine checks | 261 |",
+        find: "| Machine checks | ",
+        replace: "| Machine checks | 1",
         breaks: "the current documentation count disagrees with the machine oracle",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -14945,8 +14945,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1316,
         file: "wost/src/arch/x86_64/paging.rs",
-        find: "    if flags.contains(Flags::NO_CACHE) || flags.contains(Flags::WRITE_THROUGH) {",
-        replace: "    if flags.contains(Flags::NO_CACHE) && flags.contains(Flags::WRITE_THROUGH) {",
+        find: "    if flags.intersection(CACHE_TYPE) != Flags::NONE {",
+        replace: "    if flags.contains(CACHE_TYPE) {",
         breaks: "a shared mapping admits an individual non-write-back cache policy alias",
         reddens: Caught::Check("shared mappings reject cache aliases"),
     },
@@ -17235,6 +17235,87 @@ fn mint_stopped<'controller>(
             package: "xtask",
             name: "bounded_process::tests::a_timed_out_command_takes_its_parked_descendant_with_it",
         },
+    },
+    Mutation {
+        id: 1524,
+        file: "libs/x86-paging/src/lib.rs",
+        find: "        Some(end) => end <= USER_MAPPING_END,",
+        replace: "        Some(end) => end <= USER_END,",
+        breaks: "a user mapping may cover the last canonical page",
+        reddens: Caught::HostTest {
+            package: "x86-paging",
+            name: "tests::no_user_mapping_reaches_the_last_canonical_page",
+        },
+    },
+    Mutation {
+        id: 1525,
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        if !user_mapping_fits(at, len) {",
+        replace: "        if at.checked_add(len).is_none_or(|end| end > USER_END) {",
+        breaks: "a user space may map its last canonical page",
+        reddens: Caught::Check("the last canonical page is never user memory"),
+    },
+    Mutation {
+        id: 1526,
+        file: "kernel/src/user.rs",
+        find: "        if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {",
+        replace: "        if mapped_end > usercopy::USER_END || segment.memory_size() == 0 {",
+        breaks: "the loader places a segment on the last canonical page",
+        reddens: Caught::Check("the loader refuses what it may not map"),
+    },
+    Mutation {
+        id: 1527,
+        file: "libs/memory-map/src/lib.rs",
+        find: "        self.covered_by(start, end, |kind| kind == MemoryKind::Framebuffer)\n            .then_some(DirectMapCache::Framebuffer)",
+        replace: "        Some(DirectMapCache::Framebuffer)",
+        breaks: "a boot range mixing framebuffer and ordinary memory gets one cache type",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::a_boot_range_has_one_direct_map_cache_type_or_none",
+        },
+    },
+    Mutation {
+        id: 1528,
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "    if flags.intersection(CACHE_TYPE) != Flags::NONE {\n        return Err(MapError::CacheAlias(virtual_base));\n    }\n    Ok(())",
+        replace: "    let _ = (virtual_base, flags);\n    Ok(())",
+        breaks: "RAM may be mapped with a cache type its direct map does not share",
+        reddens: Caught::Check("ram mappings keep the direct map's cache type"),
+    },
+    Mutation {
+        id: 1529,
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        ram_cache_policy(virtual_base, flags)?;\n        self.may_reach(virtual_base, len)?;",
+        replace: "        self.may_reach(virtual_base, len)?;",
+        breaks: "owned and user RAM may be mapped uncached or write-through",
+        reddens: Caught::Check("ram mappings keep the direct map's cache type"),
+    },
+    Mutation {
+        id: 1530,
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        if flags.intersection(CACHE_TYPE) != region.cache_type() {\n            return Err(MapError::CacheAlias(virtual_base));\n        }\n",
+        replace: "",
+        breaks: "a boot range may be mapped with a cache type other than its own",
+        reddens: Caught::Check("ram mappings keep the direct map's cache type"),
+    },
+    Mutation {
+        id: 1531,
+        file: "libs/x86-apic/src/io.rs",
+        find: "    let identity = version & 0xFF;\n    if identity < MIN_VERSION || identity > MAX_VERSION {\n        return None;\n    }",
+        replace: "    let identity = version & 0xFF;\n    let _ = (identity, MIN_VERSION, MAX_VERSION);",
+        breaks: "the I/O APIC version decoder admits any version byte",
+        reddens: Caught::HostTest {
+            package: "x86-apic",
+            name: "io::tests::a_version_register_yields_an_entry_count_only_when_it_is_plausible",
+        },
+    },
+    Mutation {
+        id: 1532,
+        file: "kernel/src/arch/x86_64/ioapic.rs",
+        find: "        let Some(entries) = entries_from_version(version) else {\n            return Err(TakeFailure {\n                registers,\n                reason: TakeError::ImplausibleVersion(version),\n            });\n        };",
+        replace: "        let entries = ((version >> 16) & 0xFF) + 1;",
+        breaks: "a window firmware aimed elsewhere is taken over as an I/O APIC",
+        reddens: Caught::Check("a window that is not an I/O APIC is never taken over"),
     },
 ];
 

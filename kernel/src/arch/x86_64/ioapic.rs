@@ -11,7 +11,7 @@ use core::fmt;
 use wost::arch::current::apic;
 use wost::arch::current::paging::ReleasableDevice;
 use wost::mmio::{MmioError, MmioRegion};
-use x86_apic::io::GsiRange;
+use x86_apic::io::{GsiRange, entries_from_version};
 use x86_apic::vector::InterruptVector;
 
 use crate::debug;
@@ -173,6 +173,8 @@ impl From<MaskError> for RoutingError {
 pub(crate) enum TakeError {
     /// The register window refused an access.
     Registers(MmioError),
+    /// The version register is not one an I/O APIC could have reported.
+    ImplausibleVersion(u32),
     /// The ACPI base and hardware entry count leave the GSI namespace.
     InvalidRange { base: u32, entries: u32 },
     /// A line did not retain the exact inert entry written during takeover.
@@ -183,6 +185,9 @@ impl fmt::Display for TakeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Registers(error) => write!(f, "{error}"),
+            Self::ImplausibleVersion(version) => {
+                write!(f, "version register {version:#010x} is not an i/o apic")
+            }
             Self::InvalidRange { base, entries } => {
                 write!(f, "{entries} entries from gsi {base} are not representable")
             }
@@ -251,8 +256,14 @@ impl<R: RegisterAccess> IoApic<R> {
                 });
             }
         };
-        // Bits 23:16 hold the highest entry index, so the count is one more.
-        let entries = ((version >> 16) & 0xFF) + 1;
+        // A window firmware pointed at another device reports an implausible
+        // version or entry count; refuse it before any redirection write.
+        let Some(entries) = entries_from_version(version) else {
+            return Err(TakeFailure {
+                registers,
+                reason: TakeError::ImplausibleVersion(version),
+            });
+        };
         let Some(range) = GsiRange::new(gsi_base, entries) else {
             return Err(TakeFailure {
                 registers,
@@ -453,6 +464,7 @@ fn write<R: RegisterAccess>(registers: &mut R, index: u32, value: u32) -> Result
 #[derive(Debug)]
 struct FakeRegisters {
     selected: u32,
+    version: u32,
     low: u32,
     high: u32,
     ignore_once: Option<(u32, u32)>,
@@ -463,8 +475,14 @@ struct FakeRegisters {
 #[cfg(feature = "selftest")]
 impl FakeRegisters {
     const fn stale(ignore_once: Option<(u32, u32)>) -> Self {
+        // Version 0x11 with a maximum redirection entry of zero: one line.
+        Self::reporting(0x0000_0011, ignore_once)
+    }
+
+    const fn reporting(version: u32, ignore_once: Option<(u32, u32)>) -> Self {
         Self {
             selected: 0,
+            version,
             low: 0x31,
             high: 0xAB00_0000,
             ignore_once,
@@ -477,7 +495,9 @@ impl FakeRegisters {
 #[cfg(feature = "selftest")]
 impl RegisterAccess for FakeRegisters {
     fn read_u32(&self, offset: usize) -> Result<u32, MmioError> {
-        let value = if offset != window::DATA || self.selected == index::VERSION {
+        let value = if self.selected == index::VERSION && offset == window::DATA {
+            self.version
+        } else if offset != window::DATA {
             0
         } else if self.selected == redirection(0) {
             self.low
@@ -613,4 +633,29 @@ pub(crate) fn ignored_writes_are_refused_for_test() -> bool {
         && takeover_is_inert
         && route_refused
         && destination_refused_before_unmask
+}
+
+/// A window that does not report an I/O APIC version is never taken over.
+///
+/// Firmware controls where the register window points; a version register that
+/// is not an I/O APIC's means it points at something else, and no redirection
+/// is written to it (D-350).
+#[cfg(feature = "selftest")]
+pub(crate) fn an_implausible_version_is_refused_for_test() -> bool {
+    // A zeroed window, a text-console MMIO byte, and a count no part can hold.
+    let refused = [0x0000_0000, 0x0000_0041, 0x00FF_0011]
+        .into_iter()
+        .all(|version| {
+            matches!(
+                IoApic::take(FakeRegisters::reporting(version, None), 0),
+                Err(TakeFailure {
+                    reason: TakeError::ImplausibleVersion(reported),
+                    ..
+                }) if reported == version
+            )
+        });
+    // The plausible version the other checks rely on is still accepted.
+    let accepted = IoApic::take(FakeRegisters::reporting(0x0000_0011, None), 0)
+        .is_ok_and(|controller| controller.range == GsiRange::new(0, 1).expect("one entry"));
+    refused && accepted
 }

@@ -54,6 +54,33 @@ const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 /// Physical addresses this encoding can represent.
 pub const MAX_PHYSICAL: u64 = ADDRESS_MASK + PAGE_SIZE;
 
+/// The first address that is not user memory; the canonical hole begins here.
+pub const USER_END: u64 = 0x0000_8000_0000_0000;
+
+/// The first address a user mapping may not cover.
+///
+/// The last canonical page stays unmapped, so no user instruction can end at
+/// [`USER_END`]. A trap taken after such an instruction would save a
+/// non-canonical return address, and returning to it faults in the kernel
+/// (D-348).
+pub const USER_MAPPING_END: u64 = USER_END - PAGE_SIZE;
+
+/// Whether `len` bytes at `at` lie wholly below [`USER_MAPPING_END`].
+///
+/// ```
+/// use x86_paging::{PAGE_SIZE, USER_MAPPING_END, user_mapping_fits};
+///
+/// assert!(user_mapping_fits(USER_MAPPING_END - PAGE_SIZE, PAGE_SIZE));
+/// assert!(!user_mapping_fits(USER_MAPPING_END, PAGE_SIZE));
+/// assert!(!user_mapping_fits(u64::MAX, 2));
+/// ```
+pub const fn user_mapping_fits(at: u64, len: u64) -> bool {
+    match at.checked_add(len) {
+        Some(end) => end <= USER_MAPPING_END,
+        None => false,
+    }
+}
+
 /// Flags of a page table entry.
 ///
 /// A hand-rolled bit set rather than a `bitflags` dependency, on the
@@ -988,6 +1015,31 @@ mod tests {
 
         assert!(!is_canonical(0x0000_8000_0000_0000), "the hole below");
         assert!(!is_canonical(0xffff_7fff_ffff_ffff), "the hole above");
+    }
+
+    #[test]
+    fn no_user_mapping_reaches_the_last_canonical_page() {
+        assert_eq!(USER_END, 0x0000_8000_0000_0000);
+        assert!(!is_canonical(USER_END), "the hole begins at USER_END");
+        assert_eq!(USER_MAPPING_END, 0x0000_7fff_ffff_f000);
+
+        assert!(user_mapping_fits(0, PAGE_SIZE));
+        assert!(user_mapping_fits(0, USER_MAPPING_END));
+        assert!(user_mapping_fits(USER_MAPPING_END - PAGE_SIZE, PAGE_SIZE));
+        assert!(user_mapping_fits(USER_MAPPING_END, 0));
+
+        assert!(!user_mapping_fits(USER_MAPPING_END, PAGE_SIZE));
+        assert!(!user_mapping_fits(
+            USER_MAPPING_END - PAGE_SIZE,
+            2 * PAGE_SIZE
+        ));
+        assert!(!user_mapping_fits(USER_MAPPING_END - 1, 2));
+        assert!(!user_mapping_fits(0, USER_END));
+        assert!(!user_mapping_fits(u64::MAX, 1));
+
+        // The last byte a trap can follow is USER_MAPPING_END - 1, so the
+        // saved return address is at most USER_MAPPING_END, still canonical.
+        assert!(is_canonical(USER_MAPPING_END));
     }
 
     #[test]

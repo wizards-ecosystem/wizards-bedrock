@@ -6,6 +6,49 @@
 
 use core::fmt;
 
+/// The redirection entries a plausible I/O APIC version register can report.
+///
+/// The architecture stores the maximum redirection entry in bits 23:16, so at
+/// most 256 entries; every shipped I/O APIC reports far fewer. A count outside
+/// this range means the version register did not come from an I/O APIC, which
+/// happens when firmware points the window at another device (D-350).
+const MAX_REDIRECTION_ENTRIES: u32 = 240;
+
+/// Version identifiers a real I/O APIC reports in bits 7:0.
+///
+/// 82093AA and every later part report 0x11 through 0x20. A byte outside this
+/// range is not an I/O APIC version (D-350).
+const MIN_VERSION: u32 = 0x11;
+const MAX_VERSION: u32 = 0x20;
+
+/// The redirection-entry count a version register describes, if it is one an
+/// I/O APIC could have reported.
+///
+/// The register holds the version in bits 7:0 and the maximum redirection
+/// entry in bits 23:16; the count is one more than that maximum. `None` when
+/// either field is implausible, which is how a window aimed at another device
+/// is refused before any redirection write (D-350).
+///
+/// ```
+/// use x86_apic::io::entries_from_version;
+///
+/// assert_eq!(entries_from_version(0x0017_0011), Some(24));
+/// assert_eq!(entries_from_version(0x0000_0011), Some(1));
+/// assert_eq!(entries_from_version(0x0017_0009), None);
+/// assert_eq!(entries_from_version(0xFFFF_FFFF), None);
+/// ```
+pub const fn entries_from_version(version: u32) -> Option<u32> {
+    let identity = version & 0xFF;
+    if identity < MIN_VERSION || identity > MAX_VERSION {
+        return None;
+    }
+    let entries = ((version >> 16) & 0xFF) + 1;
+    if entries > MAX_REDIRECTION_ENTRIES {
+        return None;
+    }
+    Some(entries)
+}
+
 /// One non-empty, representable I/O APIC GSI range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GsiRange {
@@ -142,5 +185,25 @@ mod tests {
             .to_string(),
             "i/o apic ranges 3 and 7 overlap"
         );
+    }
+
+    #[test]
+    fn a_version_register_yields_an_entry_count_only_when_it_is_plausible() {
+        // Every real part: version 0x11..=0x20, 1..=24 entries.
+        assert_eq!(entries_from_version(0x0017_0011), Some(24));
+        assert_eq!(entries_from_version(0x0017_0020), Some(24));
+        assert_eq!(entries_from_version(0x0000_0011), Some(1));
+        // Reserved bits outside the two fields are ignored.
+        assert_eq!(entries_from_version(0xFF17_8011), Some(24));
+        assert_eq!(entries_from_version(0x00EF_0011), Some(240));
+
+        // Below the first shipped version, or above the last.
+        assert_eq!(entries_from_version(0x0017_0010), None);
+        assert_eq!(entries_from_version(0x0017_0021), None);
+        assert_eq!(entries_from_version(0x0017_0000), None);
+        // More redirection entries than any I/O APIC can hold.
+        assert_eq!(entries_from_version(0x00F0_0011), None);
+        assert_eq!(entries_from_version(0x00FF_0011), None);
+        assert_eq!(entries_from_version(0xFFFF_FFFF), None);
     }
 }

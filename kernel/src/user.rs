@@ -399,7 +399,7 @@ pub(crate) fn load_image(
         let mapped_end = at
             .checked_add(mapped_len)
             .ok_or(LoadError::NotUserMemory(at))?;
-        if mapped_end > usercopy::USER_END || segment.memory_size() == 0 {
+        if !x86_paging::user_mapping_fits(at, mapped_len) || segment.memory_size() == 0 {
             return Err(LoadError::NotUserMemory(at));
         }
 

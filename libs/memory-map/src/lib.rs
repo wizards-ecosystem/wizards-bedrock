@@ -421,6 +421,28 @@ impl MemoryMap {
         self.covered_by(start, end, MemoryKind::is_direct_mapped)
     }
 
+    /// The one cache type the direct map gives every byte of `start..end`.
+    ///
+    /// `None` unless the map covers the range with memory, or if the range
+    /// mixes framebuffer and ordinary memory: no single mapping of it could
+    /// agree with the direct map's type for every page (D-349).
+    pub fn direct_map_cache(&self, start: u64, end: u64) -> Option<DirectMapCache> {
+        if !self.covers_memory(start, end) {
+            return None;
+        }
+        let touches_framebuffer = self.regions().any(|region| {
+            region.len != 0
+                && region.kind == MemoryKind::Framebuffer
+                && region.base < end
+                && start < region.end()
+        });
+        if !touches_framebuffer {
+            return Some(DirectMapCache::Normal);
+        }
+        self.covered_by(start, end, |kind| kind == MemoryKind::Framebuffer)
+            .then_some(DirectMapCache::Framebuffer)
+    }
+
     /// Whether a physical extent is disjoint from RAM and firmware storage.
     pub fn allows_device_mapping(&self, start: u64, end: u64) -> bool {
         start < end
@@ -895,6 +917,44 @@ mod tests {
                 PAGE_SIZE * 3
             );
         }
+    }
+
+    #[test]
+    fn a_boot_range_has_one_direct_map_cache_type_or_none() {
+        let map = MemoryMap::try_from_regions([
+            MemoryRegion {
+                base: PAGE_SIZE,
+                len: PAGE_SIZE * 2,
+                kind: MemoryKind::Usable,
+            },
+            MemoryRegion {
+                base: PAGE_SIZE * 3,
+                len: PAGE_SIZE * 2,
+                kind: MemoryKind::Framebuffer,
+            },
+            MemoryRegion {
+                base: PAGE_SIZE * 6,
+                len: PAGE_SIZE,
+                kind: MemoryKind::Reserved,
+            },
+        ])
+        .expect("disjoint map");
+
+        assert_eq!(
+            map.direct_map_cache(PAGE_SIZE, PAGE_SIZE * 3),
+            Some(DirectMapCache::Normal)
+        );
+        assert_eq!(
+            map.direct_map_cache(PAGE_SIZE * 3, PAGE_SIZE * 5),
+            Some(DirectMapCache::Framebuffer)
+        );
+        assert_eq!(
+            map.direct_map_cache(PAGE_SIZE * 2, PAGE_SIZE * 4),
+            None,
+            "one mapping cannot give ordinary memory and a framebuffer one type"
+        );
+        assert_eq!(map.direct_map_cache(PAGE_SIZE * 5, PAGE_SIZE * 6), None);
+        assert_eq!(map.direct_map_cache(PAGE_SIZE * 6, PAGE_SIZE * 7), None);
     }
 
     #[test]

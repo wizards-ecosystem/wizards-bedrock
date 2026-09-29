@@ -17480,6 +17480,10 @@ and their combination for both shared types, requires no installed leaf or
 retained owner on refusal, and has a registered single-flag bypass mutation.
 Its restored release, debug and VMware executions remain part of PW-128.
 
+**Amended by D-349.** The same write-back rule now covers every RAM mapping,
+not only the shared doors: `map_owned`, `map_user` and `map_boot` refuse a
+cache type the range's direct map does not already have.
+
 ## D-284 Shared top-level identity ignores only hardware access metadata — Status: Accepted (2026-09-05), amends D-281; advances PW-540
 
 **Context.** D-281 compared complete higher-half PML4 words when binding and
@@ -20118,3 +20122,112 @@ because it is superseded and built on `winapi`. Calling the job APIs directly
 was rejected because `xtask` forbids `unsafe` and `wost` is the only crate that
 may write it. `taskkill /T` was rejected because it follows parent links and
 misses a descendant whose parent has already exited.
+
+## D-348 No user mapping reaches the last canonical page — Status: Accepted (2026-09-29), amends D-102 and D-124; closes PW-558
+
+**Context.** User memory ran to `USER_END` at `0x0000_8000_0000_0000`, the
+first address of the canonical hole. A ring-3 program could therefore hold
+code or a stack on the last mapped page, `0x0000_7fff_ffff_f000`. An
+instruction that ended at `USER_END` would push a return address of
+`USER_END`, which is non-canonical. The CPU raises `#GP` when `iretq` loads a
+non-canonical `RIP`, and that fault is taken in ring 0 with the kernel's
+stack, so a user program could turn its own boundary into a kernel fault.
+D-102 retires a ring-3 fault, but this one arrives inside `iretq` on the
+return path, not as a fault the scheduler can attribute to the program before
+resuming it.
+
+**Decision.** The last canonical page is never user memory. `libs/x86-paging`
+exports `USER_MAPPING_END = USER_END - PAGE_SIZE` and `user_mapping_fits`, a
+pure bound with a doctest. `AddressSpace::may_reach` admits a user range only
+while it fits below `USER_MAPPING_END`; the ELF loader applies the same bound
+to every placed segment. The kernel half and the reclaimed-space rules are
+unchanged. The last byte a mapping can now hold is `USER_MAPPING_END - 1`, so
+the largest saved return address is `USER_MAPPING_END`, still canonical.
+
+**Evidence.** On 2026-09-29 the `x86-paging` host test and its doctest fixed
+the two constants and checked `user_mapping_fits` on both sides of the edge.
+Two machine checks were added: one maps a page at `USER_MAPPING_END` and is
+refused with `NotYours` while the page below maps and is released, and the
+loader check refuses a segment doctored to that page before any mapping, with
+its cleanup and pre-mapping evidence intact. A release self-test then passed
+264/264. Mutation 1,524 relaxes the pure bound to `USER_END` and fails the
+host test; mutations 1,525 and 1,526 relax the `wost` and loader bounds and
+fail the two machine checks. The `iretq` recovery arm is not added: no
+mapping can now produce the non-canonical return, so the fault is unreachable
+rather than handled.
+
+**Alternatives.** Adding a `#GP` recovery arm that retires the program was
+rejected because the fault is taken during the kernel's own `iretq`, after the
+program is no longer current, and refusing the mapping removes the state that
+reaches it. Keeping `USER_END` and rejecting only a stack there was rejected
+because code, not only a stack, can end on that page.
+
+## D-349 Every RAM mapping keeps its direct-map cache type — Status: Accepted (2026-09-29), amends D-283; closes PW-559
+
+**Context.** D-283 made the two shared-mapping doors refuse `NO_CACHE` and
+`WRITE_THROUGH`, because a shared allocation stays reachable through the
+kernel's write-back direct map. The same reasoning covers all RAM: every
+byte the direct map describes has a cache type there, and a second mapping of
+another type is an alias the architecture leaves undefined. `map_owned`,
+`map_user` and `map_boot` still took the caller's cache flags. The framebuffer
+is the one range the boot map marks write-through, and `map_boot` carried that
+by convention rather than by check.
+
+**Decision.** `libs/memory-map` gains `direct_map_cache`, which returns the one
+cache type the direct map gives a range, or `None` if the range is uncovered
+or mixes framebuffer and ordinary memory. `BootRegion` records that type at
+`describe` and refuses a mixed range. `map_boot` maps a range only with its own
+type; `map_owned` and `map_user`, which map ordinary RAM, refuse any cache
+type at all. The shared doors keep D-283's rule. Device memory keeps its
+separate admitted uncached path.
+
+**Evidence.** On 2026-09-29 a `memory-map` host test checked
+`direct_map_cache` for uniform ordinary, uniform framebuffer, mixed, uncovered
+and reserved ranges. A machine check refuses `map_owned`, `map_user` and
+`map_boot` for each cache flag and their combination with nothing installed,
+maps an ordinary boot range write-back, refuses that range write-through and
+maps the framebuffer range write-through. A release self-test passed 264/264.
+Mutation 1,527 makes a mixed range report one type and fails the host test;
+mutations 1,528 through 1,530 drop the RAM policy from the shared, owned/user
+and boot doors and fail the machine check.
+
+**Alternatives.** Letting `map_boot` keep taking caller flags was rejected
+because the framebuffer's type then rests on every caller passing it. Mapping
+ordinary RAM uncached on request was rejected because the write-back direct
+map alias makes the result undefined, exactly as for the shared doors.
+
+## D-350 The I/O APIC takeover proves the window is one before writing it — Status: Accepted (2026-09-29), amends D-121; closes PW-560
+
+**Context.** Firmware's MADT supplies each I/O APIC's register-window address,
+and the takeover read the version register there to learn how many redirection
+entries the controller has. It used bits 23:16 of whatever it read as the
+maximum entry index and never checked that the value came from an I/O APIC. A
+window firmware pointed at another device, or at nothing, therefore yielded a
+plausible-looking entry count, and the kernel masked and later routed
+redirection entries into that foreign MMIO. Firmware is trusted (the hardware
+threat model), but reading one register and validating it costs nothing and
+turns a firmware defect or a hostile MADT from arbitrary MMIO writes into a
+refused takeover.
+
+**Decision.** `libs/x86-apic` gains `entries_from_version`, a pure decoder that
+returns a redirection-entry count only when the version byte is 0x11 through
+0x20, the range every shipped I/O APIC reports, and the count is at most 240,
+the most the field can hold. `IoApic::take` uses it and refuses a window whose
+version register is anything else with `TakeError::ImplausibleVersion`, before
+it masks a line or writes a redirection entry. The GSI-range and mask checks
+are unchanged.
+
+**Evidence.** On 2026-09-29 an `x86-apic` host test and its doctest checked the
+decoder on real versions with 1 to 240 entries and on implausible bytes and
+over-counts. A machine check refuses a window reporting version zero, a
+console-byte value and an over-count, and still accepts the plausible version
+the other I/O APIC checks use. A release self-test passed 265/265. Mutation
+1,531 relaxes the decoder to admit any version byte and fails the host test;
+mutation 1,532 restores the old inline count in `take` and fails the machine
+check.
+
+**Alternatives.** Trusting the MADT window outright was the prior behaviour and
+is what the threat model still assumes for the address itself; the version
+check is defence in depth that a real I/O APIC always passes. Requiring an
+exact version was rejected because the parts in service report a small range,
+not one value.

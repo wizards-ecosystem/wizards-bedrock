@@ -25,7 +25,7 @@ use x86_paging::activation::State as ActivationState;
 use x86_paging::device::{DeviceRange as CheckedDeviceRange, DeviceRangeError};
 use x86_paging::{
     CanonicalAddress, ENTRIES, Entry, EntryError, Flags, LARGE_PAGE_SIZE, Level, MappingRange,
-    MappingRangeError, PAGE_SIZE, TablePrivilege, page_identity_matches,
+    MappingRangeError, PAGE_SIZE, TablePrivilege, page_identity_matches, user_mapping_fits,
 };
 
 use super::task::Released;
@@ -612,8 +612,12 @@ enum Reach {
 /// The first address that is not user memory.
 ///
 /// The canonical hole and kernel half begin here. User-copy code re-exports
-/// this value so copy and mapping bounds cannot drift (D-124).
+/// this value so copy and mapping bounds cannot drift (D-124). No user mapping
+/// reaches the last page below it (D-348). Spelled as a literal because it is
+/// an ABI constant the C header reads; the assertion binds it to the library's.
 pub const USER_END: u64 = 0x0000_8000_0000_0000;
+
+const _: () = assert!(USER_END == x86_paging::USER_END);
 
 /// Whether `address` is one ring 3 could name.
 ///
@@ -630,8 +634,13 @@ pub const fn is_user_address(address: u64) -> bool {
 /// mapping implementation may choose them (D-88, D-105).
 const NOT_THE_CALLERS: Flags = Flags::OWNED.union(Flags::HUGE).union(Flags::GLOBAL);
 
-fn shared_cache_policy(virtual_base: u64, flags: Flags) -> Result<(), MapError> {
-    if flags.contains(Flags::NO_CACHE) || flags.contains(Flags::WRITE_THROUGH) {
+/// The cache-type bits a caller may name on a mapping of RAM.
+const CACHE_TYPE: Flags = Flags::NO_CACHE.union(Flags::WRITE_THROUGH);
+
+/// RAM keeps its write-back direct-map type in every other mapping; a second
+/// alias of another type corrupts it (D-349).
+fn ram_cache_policy(virtual_base: u64, flags: Flags) -> Result<(), MapError> {
+    if flags.intersection(CACHE_TYPE) != Flags::NONE {
         return Err(MapError::CacheAlias(virtual_base));
     }
     Ok(())
@@ -795,8 +804,8 @@ impl AddressSpace {
         if self.reach == Reach::Everywhere {
             return Ok(());
         }
-        let end = at.checked_add(len).ok_or(MapError::NonCanonical(at))?;
-        if end > USER_END {
+        at.checked_add(len).ok_or(MapError::NonCanonical(at))?;
+        if !user_mapping_fits(at, len) {
             return Err(MapError::NotYours(at));
         }
         Ok(())
@@ -918,6 +927,9 @@ impl AddressSpace {
         if flags.contains(Flags::USER) {
             return Err(MapError::NotYours(virtual_base));
         }
+        if flags.intersection(CACHE_TYPE) != region.cache_type() {
+            return Err(MapError::CacheAlias(virtual_base));
+        }
         self.may_reach(virtual_base, region.len)?;
         self.map_range(
             virtual_base,
@@ -995,7 +1007,7 @@ impl AddressSpace {
         run: &SharedBytes,
         flags: Flags,
     ) -> Result<(), MapError> {
-        shared_cache_policy(virtual_base, flags)?;
+        ram_cache_policy(virtual_base, flags)?;
         self.map_shared_allocation(
             virtual_base,
             run.address(),
@@ -1020,7 +1032,7 @@ impl AddressSpace {
         run: &SharedRing<WORDS>,
         flags: Flags,
     ) -> Result<(), MapError> {
-        shared_cache_policy(virtual_base, flags)?;
+        ram_cache_policy(virtual_base, flags)?;
         self.map_shared_allocation(
             virtual_base,
             run.address(),
@@ -1079,6 +1091,7 @@ impl AddressSpace {
         frames: usize,
         flags: Flags,
     ) -> Result<usize, MapError> {
+        ram_cache_policy(virtual_base, flags)?;
         self.may_reach(virtual_base, len)?;
         let owned_pages = self
             .owned_pages
@@ -3477,20 +3490,32 @@ impl Binding {
 pub struct BootRegion {
     base: Paddr,
     len: u64,
+    cache: crate::boot::DirectMapCache,
 }
 
 impl BootRegion {
     /// Describe `len` bytes at `base`, or `None` unless the memory map covers
-    /// all of it *with memory*.
+    /// all of it *with memory* of one direct-map cache type.
     ///
     /// Device holes are excluded because write-back direct-map aliases of MMIO
-    /// are unsafe. Returns `None` before the map exists (D-45, D-105).
+    /// are unsafe, and a range mixing framebuffer and ordinary memory has no
+    /// single type a mapping could share. Returns `None` before the map exists
+    /// (D-45, D-105, D-349).
     pub fn describe(base: Paddr, len: u64) -> Option<Self> {
         let end = base.checked_add(len)?;
         if len == 0 || !base.is_multiple_of(PAGE_SIZE) {
             return None;
         }
-        crate::mm::map_covers_memory(base, end).then_some(Self { base, len })
+        let cache = crate::mm::map_direct_cache(base, end)?;
+        Some(Self { base, len, cache })
+    }
+
+    /// The cache-type bits every mapping of this range must carry.
+    const fn cache_type(&self) -> Flags {
+        match self.cache {
+            crate::boot::DirectMapCache::Normal => Flags::NONE,
+            crate::boot::DirectMapCache::Framebuffer => Flags::WRITE_THROUGH,
+        }
     }
 }
 

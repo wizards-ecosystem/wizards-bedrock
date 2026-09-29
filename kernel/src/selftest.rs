@@ -851,6 +851,14 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
         Err(user::LoadError::NotUserMemory(_))
     );
 
+    // Code there could trap with a non-canonical return address (D-348).
+    let mut topmost = doctor(VADDR, x86_paging::USER_MAPPING_END);
+    topmost[ALIGNMENT..ALIGNMENT + 8].copy_from_slice(&1u64.to_le_bytes());
+    let (topmost_result, topmost_cleaned, topmost_preflight) = load(&topmost, 0);
+    let topmost_refused = matches!(topmost_result, Err(user::LoadError::NotUserMemory(_)))
+        && topmost_cleaned
+        && topmost_preflight;
+
     // ELF congruence is still valid, but this loader deliberately places only
     // whole-page segments and refuses that narrower contract before mapping.
     let mut unaligned = doctor(VADDR, field(VADDR) + 1);
@@ -913,6 +921,7 @@ fn the_loader_refuses_what_it_may_not_map() -> bool {
         && overrun_refused
         && oversized_refused
         && intruding_refused
+        && topmost_refused
         && unaligned_refused
         && alignment_refused
         && congruence_refused
@@ -5836,6 +5845,79 @@ fn shared_mappings_reject_cache_aliases() -> bool {
     all_refused
 }
 
+fn ram_mappings_keep_the_direct_map_cache_type() -> bool {
+    const OWNED: u64 = 0x0000_3530_0000_0000;
+    const USER: u64 = 0x0000_3540_0000_0000;
+    const BOOT: u64 = 0x0000_3550_0000_0000;
+
+    let mut refused = true;
+    for cache in [
+        Flags::NO_CACHE,
+        Flags::WRITE_THROUGH,
+        Flags::NO_CACHE.union(Flags::WRITE_THROUGH),
+    ] {
+        let flags = Flags::NO_EXECUTE.union(cache);
+        refused &= in_reclaimed_space(AddressSpace::for_user, |space| {
+            let Some(owned) = mm::allocate_contiguous(1, 1) else {
+                return false;
+            };
+            let owned_refused =
+                space.map_owned(OWNED, owned, flags) == Err(MapError::CacheAlias(OWNED));
+            let Some(user) = mm::allocate_contiguous(1, 1) else {
+                return false;
+            };
+            let address = user.address();
+            let user_refused = match space.map_user(USER, user.into(), flags) {
+                Ok(()) => false,
+                Err(error) => {
+                    let reason = error.reason();
+                    let run = error.into_run();
+                    let returned = run.address() == address;
+                    drop(run);
+                    reason == MapError::CacheAlias(USER) && returned
+                }
+            };
+            let Some(region) = probe_page(0) else {
+                return false;
+            };
+            let boot_refused =
+                space.map_boot(BOOT, region, flags) == Err(MapError::CacheAlias(BOOT));
+            owned_refused
+                && user_refused
+                && boot_refused
+                && [OWNED, USER, BOOT]
+                    .into_iter()
+                    .all(|at| space.lookup(at).is_none())
+        });
+    }
+
+    // Each boot range maps with exactly its own direct-map type.
+    let framebuffer = mm::memory_map_for_test().and_then(|map| {
+        map.page_runs()
+            .find(|run| run.cache() == wost::boot::DirectMapCache::Framebuffer)
+            .map(|run| run.base())
+    });
+    let exact = in_reclaimed_space(AddressSpace::for_user, |space| {
+        let (Some(ordinary), Some(base)) = (probe_page(0), framebuffer) else {
+            return false;
+        };
+        let (Some(bare_screen), Some(screen)) = (
+            BootRegion::describe(base, PAGE_SIZE),
+            BootRegion::describe(base, PAGE_SIZE),
+        ) else {
+            return false;
+        };
+        let ordinary_mapped = space.map_boot(BOOT, ordinary, Flags::NO_EXECUTE).is_ok();
+        let screen_refused = space.map_boot(OWNED, bare_screen, Flags::NO_EXECUTE)
+            == Err(MapError::CacheAlias(OWNED));
+        let screen_mapped = space
+            .map_boot(USER, screen, Flags::NO_EXECUTE.union(Flags::WRITE_THROUGH))
+            .is_ok();
+        ordinary_mapped && screen_refused && screen_mapped
+    });
+    refused && exact
+}
+
 fn shared_topology_rejects_hostile_root_entries() -> bool {
     let huge = in_reclaimed_space(AddressSpace::new, |space| {
         space.rejects_huge_shared_topology_for_test()
@@ -6089,7 +6171,8 @@ fn a_boot_mapping_cannot_publish_kernel_memory() -> bool {
 fn a_user_space_cannot_reach_the_kernel_half() -> bool {
     // The direct map ensures the hostile walk reaches real entries to blank.
     const KERNEL: u64 = 0xffff_8000_0010_0000;
-    const LAST_USER: u64 = 0x0000_7fff_ffff_f000;
+    const HOLE_EDGE: u64 = x86_paging::USER_MAPPING_END;
+    const LAST_USER: u64 = x86_paging::USER_MAPPING_END - PAGE_SIZE;
 
     in_reclaimed_space(AddressSpace::for_user, |user| {
         let Some(region) = probe_page(0) else {
@@ -6100,8 +6183,9 @@ fn a_user_space_cannot_reach_the_kernel_half() -> bool {
         // The canonical-hole check precedes half ownership, so the straddle
         // must report that distinct refusal.
         let straddles =
-            user.unmap(LAST_USER, 2 * PAGE_SIZE).err() == Some(MapError::NonCanonical(LAST_USER));
-        // The last user page reaches mapping lookup rather than half refusal.
+            user.unmap(HOLE_EDGE, 2 * PAGE_SIZE).err() == Some(MapError::NonCanonical(HOLE_EDGE));
+        // The last mappable user page reaches mapping lookup rather than half
+        // refusal.
         let reaches_its_own =
             user.unmap(LAST_USER, PAGE_SIZE).err() != Some(MapError::NotYours(LAST_USER));
 
@@ -6109,6 +6193,43 @@ fn a_user_space_cannot_reach_the_kernel_half() -> bool {
             && mapped == Err(MapError::NotYours(KERNEL))
             && straddles
             && reaches_its_own
+    })
+}
+
+fn the_last_canonical_page_is_never_user_memory() -> bool {
+    // Code ending on this page would trap with a non-canonical return
+    // address, which `iretq` refuses in ring 0 (D-348).
+    const TOP: u64 = x86_paging::USER_MAPPING_END;
+    const BELOW: u64 = TOP - PAGE_SIZE;
+
+    in_reclaimed_space(AddressSpace::for_user, |space| {
+        let Some(run) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        let address = run.address();
+        let refused = match space.map_user(TOP, run.into(), Flags::NONE) {
+            Ok(()) => false,
+            Err(error) => {
+                let reason = error.reason();
+                let run = error.into_run();
+                let returned = run.address() == address;
+                drop(run);
+                reason == MapError::NotYours(TOP) && returned
+            }
+        };
+        let Some(below) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        let admitted = space.map_user(BELOW, below.into(), Flags::NONE).is_ok()
+            && space.lookup(BELOW).is_some();
+        let top_absent = space.lookup(TOP).is_none();
+        let released = space
+            .unmap(BELOW, PAGE_SIZE)
+            .ok()
+            .and_then(|unmapped| unmapped.into_user())
+            .and_then(|user| user.reclaim())
+            .is_some();
+        refused && admitted && top_absent && released
     })
 }
 
@@ -7523,7 +7644,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 262;
+const EXPECTED_CHECKS: usize = 265;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -8191,6 +8312,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         shared_mappings_reject_cache_aliases(),
     );
     report.check(
+        "ram mappings keep the direct map's cache type",
+        ram_mappings_keep_the_direct_map_cache_type(),
+    );
+    report.check(
         "a large space returns every table frame",
         a_large_space_returns_every_table_frame(),
     );
@@ -8221,6 +8346,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a user space cannot reach the kernel half",
         a_user_space_cannot_reach_the_kernel_half(),
+    );
+    report.check(
+        "the last canonical page is never user memory",
+        the_last_canonical_page_is_never_user_memory(),
     );
     report.check(
         "a user mapping cannot widen a supervisor table",
@@ -8462,6 +8591,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "an isolated I/O APIC route encodes its typed vector",
         ioapic::typed_route_is_encoded_for_test(),
+    );
+    report.check(
+        "a window that is not an I/O APIC is never taken over",
+        ioapic::an_implausible_version_is_refused_for_test(),
     );
     report.check(
         "a failed controller flush stops every following transaction",
