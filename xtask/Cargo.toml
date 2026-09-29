@@ -28,4 +28,4 @@ syn.workspace = true
 wizzy-handoff.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-process-wrap.workspace = true
+command-group.workspace = true

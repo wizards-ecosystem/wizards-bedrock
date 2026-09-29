@@ -328,6 +328,16 @@ const REVIEWED_DEPENDENCY_BUILD_SCRIPTS: &[(&str, &str, &str)] = &[
         "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09",
     ),
     (
+        "winapi",
+        "0.3.9",
+        "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419",
+    ),
+    (
+        "winapi-x86_64-pc-windows-gnu",
+        "0.4.0",
+        "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f",
+    ),
+    (
         "windows_x86_64_gnu",
         "0.52.6",
         "147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78",

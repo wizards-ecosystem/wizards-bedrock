@@ -80,7 +80,7 @@ pub enum Caught {
 pub const NEXT_MUTATION_ID: u16 = 1534;
 
 /// Identities of deleted mutations, which no later entry may take.
-pub const RETIRED_MUTATION_IDS: &[u16] = &[514, 515, 517];
+pub const RETIRED_MUTATION_IDS: &[u16] = &[514, 515, 517, 1521];
 
 /// The defects, each of which some check must notice.
 ///
@@ -17204,17 +17204,6 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
-        id: 1521,
-        file: "xtask/src/bounded_process.rs",
-        find: "            wrapped.wrap(process_wrap::std::JobObject);\n",
-        replace: "",
-        breaks: "a bounded command's descendants run outside any job",
-        reddens: Caught::HostTest {
-            package: "xtask",
-            name: "bounded_process::tests::a_completed_command_leaves_no_parked_descendant",
-        },
-    },
-    Mutation {
         id: 1522,
         file: "xtask/src/bounded_process.rs",
         find: "impl Drop for Tree {\n    fn drop(&mut self) {\n        let _ = self.terminate();\n    }\n}",
@@ -17228,9 +17217,9 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1523,
         file: "xtask/src/bounded_process.rs",
-        find: "        #[cfg(windows)]\n        return self.child.start_kill();",
-        replace: "        #[cfg(windows)]\n        return self.child.inner_mut().start_kill();",
-        breaks: "a timed-out bounded command stops only its direct child",
+        find: "    fn terminate(&mut self) -> std::io::Result<()> {\n        self.child.kill()\n    }",
+        replace: "    fn terminate(&mut self) -> std::io::Result<()> {\n        let _ = &mut self.child;\n        Ok(())\n    }",
+        breaks: "a timed-out bounded command never terminates its job",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "bounded_process::tests::a_timed_out_command_takes_its_parked_descendant_with_it",

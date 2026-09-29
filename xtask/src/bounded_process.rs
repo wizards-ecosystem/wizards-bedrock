@@ -88,7 +88,7 @@ pub(crate) fn output_with_limit(
 /// no descendant outlives the command however it ends.
 struct Tree {
     #[cfg(windows)]
-    child: Box<dyn process_wrap::std::ChildWrapper>,
+    child: command_group::GroupChild,
     #[cfg(not(windows))]
     child: Child,
 }
@@ -99,9 +99,9 @@ impl Tree {
     fn spawn(command: Command) -> std::io::Result<Self> {
         #[cfg(windows)]
         let child = {
-            let mut wrapped = process_wrap::std::CommandWrap::from(command);
-            wrapped.wrap(process_wrap::std::JobObject);
-            wrapped.spawn()?
+            use command_group::CommandGroup;
+            let mut command = command;
+            command.group().spawn()?
         };
         #[cfg(not(windows))]
         let child = {
@@ -117,10 +117,7 @@ impl Tree {
 
     /// Terminate every process in the job; elsewhere only the direct child.
     fn terminate(&mut self) -> std::io::Result<()> {
-        #[cfg(windows)]
-        return self.child.start_kill();
-        #[cfg(not(windows))]
-        return self.child.kill();
+        self.child.kill()
     }
 }
 
