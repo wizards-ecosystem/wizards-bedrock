@@ -42,6 +42,13 @@ pub const BAD_CLUSTER: u32 = 0x0FFF_FFF7;
 const MIN_FAT32_CLUSTERS: u64 = 65_525;
 const FIRST_RESERVED_CLUSTER: u32 = 0x0FFF_FFF0;
 const MAX_FAT32_CLUSTERS: u64 = FIRST_RESERVED_CLUSTER as u64 - FIRST_DATA_CLUSTER as u64;
+
+/// The most entries one FAT directory may hold.
+///
+/// The specification caps a directory at 65,536 entries. Past the clusters
+/// that hold them, a chain that has not ended is malformed, so this bounds a
+/// directory walk independently of the volume's size (D-352).
+const MAX_DIRECTORY_ENTRIES: u32 = 65_536;
 const MIRRORING_DISABLED: u16 = 1 << 7;
 const ACTIVE_FAT_MASK: u16 = 0x000F;
 const EXTENDED_FLAGS_MASK: u16 = MIRRORING_DISABLED | ACTIVE_FAT_MASK;
@@ -279,6 +286,23 @@ impl Bpb {
         (data / self.sectors_per_cluster as u64) as u32
     }
 
+    /// The most clusters a directory chain may span before it must have ended.
+    ///
+    /// A directory holds at most [`MAX_DIRECTORY_ENTRIES`] entries, so it needs
+    /// at most that many entry slots' worth of clusters. This does not grow
+    /// with the volume, so a cyclic or oversized directory on a large volume
+    /// cannot drive an unbounded read; the chain length is the tighter of this
+    /// and the data area (D-352).
+    fn directory_cluster_limit(self) -> u32 {
+        let per_cluster = self.cluster_bytes() / ENTRY_BYTES as u32;
+        let by_entries = if per_cluster == 0 {
+            MAX_DIRECTORY_ENTRIES
+        } else {
+            MAX_DIRECTORY_ENTRIES.div_ceil(per_cluster)
+        };
+        by_entries.min(self.clusters())
+    }
+
     /// Whether `cluster` names data in this volume.
     ///
     /// Both ends: below two is a marker rather than data, and past the count
@@ -412,6 +436,7 @@ pub struct DirectoryCursor {
     cluster: u32,
     sector: u32,
     visited: u32,
+    hare: Option<u32>,
     done: bool,
 }
 
@@ -422,6 +447,7 @@ impl DirectoryCursor {
             cluster,
             sector: 0,
             visited: 0,
+            hare: Some(cluster),
             done: false,
         }
     }
@@ -727,12 +753,19 @@ impl<S: Sectors> Volume<S> {
                     let Some(visited) = cursor.visited.checked_add(1) else {
                         return Err(FatError::Unbounded);
                     };
-                    if visited >= self.chain_limit() {
+                    if visited >= self.bpb.directory_cluster_limit() {
+                        return Err(FatError::Unbounded);
+                    }
+                    // A tortoise/hare check catches a cycle in the length of
+                    // the cycle, before the entry cap is reached (D-352).
+                    let hare = self.advance_cycle_hare(cursor.hare)?;
+                    if hare == Some(next) {
                         return Err(FatError::Unbounded);
                     }
                     cursor.cluster = next;
                     cursor.sector = 0;
                     cursor.visited = visited;
+                    cursor.hare = hare;
                 }
                 Next::End => {
                     cursor.done = true;
@@ -1414,7 +1447,9 @@ mod tests {
         let third = volume.directory_chunk(&mut cursor).expect("next cluster");
         assert!(third.entries().is_empty());
         assert_eq!((cursor.cluster, cursor.sector, cursor.visited), (3, 1, 1));
-        assert_eq!(volume.source.reads, [2, 3, 1, 4]);
+        // The 2 -> 3 transition reads the FAT once for the cursor and twice
+        // more for the cycle hare, which advances two links from cluster 2.
+        assert_eq!(volume.source.reads, [2, 3, 1, 1, 1, 4]);
 
         let fourth = volume.directory_chunk(&mut cursor).expect("last sector");
         assert_eq!(fourth.entries().len(), 1);
@@ -1424,7 +1459,7 @@ mod tests {
         let end = volume.directory_chunk(&mut cursor).expect("end of chain");
         assert!(end.entries().is_empty());
         assert!(cursor.is_done());
-        assert_eq!(volume.source.reads, [2, 3, 1, 4, 5, 1]);
+        assert_eq!(volume.source.reads, [2, 3, 1, 1, 1, 4, 5, 1]);
 
         let reads = volume.source.reads.clone();
         assert!(
@@ -1641,33 +1676,93 @@ mod tests {
     }
 
     #[test]
-    fn directory_chunks_retain_the_volume_derived_cycle_bound() {
-        let bpb = tiny(5);
+    fn a_cyclic_directory_chain_is_caught_by_the_hare_not_the_volume() {
+        // A million-cluster volume: the two-cycle is caught in a handful of
+        // steps, far short of the volume and the directory cluster cap, so a
+        // hostile cyclic directory cannot stall the walk.
+        let bpb = tiny(1_000_000);
+        assert!(bpb.clusters() > bpb.directory_cluster_limit());
         let mut volume = Volume {
             source: CountedCycle {
                 reads: 0,
-                ceiling: bpb.clusters() * 4,
+                ceiling: 64,
             },
             base: 0,
             bpb,
         };
         let mut cursor = DirectoryCursor::new(FIRST_DATA_CLUSTER);
 
-        for visited in 0..bpb.clusters() {
-            let chunk = volume
-                .directory_chunk(&mut cursor)
-                .expect("one bounded cluster");
-            assert!(chunk.entries().is_empty());
-            assert_eq!(cursor.visited, visited);
-        }
+        let mut chunks = 0u32;
+        let error = loop {
+            match volume.directory_chunk(&mut cursor) {
+                Ok(chunk) => {
+                    assert!(chunk.entries().is_empty());
+                    chunks += 1;
+                    assert!(chunks < 8, "the hare did not catch the two-cycle quickly");
+                }
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(error, FatError::Unbounded);
+        assert!(
+            cursor.visited < 4,
+            "the cycle was caught within its own length"
+        );
         let before = cursor;
         assert_eq!(
             volume.directory_chunk(&mut cursor),
             Err(FatError::Unbounded)
         );
         assert_eq!(cursor, before, "a refused transition changed the cursor");
-        assert_eq!(cursor.visited, bpb.clusters() - 1);
-        assert_eq!(volume.source.reads, bpb.clusters() * 2);
+    }
+
+    #[test]
+    fn the_directory_cluster_limit_is_the_tighter_of_entries_and_volume() {
+        // 512-byte clusters hold 16 entries, so 65,536 entries need 4,096
+        // clusters, tighter than a large volume but not a small one.
+        assert_eq!(tiny(1_000_000).directory_cluster_limit(), 4096);
+        assert_eq!(tiny(100).directory_cluster_limit(), 100);
+        // Larger clusters hold more entries, so fewer of them bound a directory.
+        let mut wide = tiny(1_000_000);
+        wide.sectors_per_cluster = 8;
+        assert_eq!(wide.directory_cluster_limit(), 512);
+    }
+
+    #[test]
+    fn a_huge_acyclic_directory_stops_at_the_entry_cap() {
+        // Big clusters make the cap small (128) while the volume stays large,
+        // so a never-ending linear chain stops at the cap, not the volume.
+        let bpb = Bpb {
+            sectors_per_cluster: 32,
+            reserved_sectors: 1,
+            fats: 1,
+            sectors_per_fat: 64,
+            active_fat: 0,
+            root_cluster: FIRST_DATA_CLUSTER,
+            total_sectors: 100_000,
+        };
+        let cap = bpb.directory_cluster_limit();
+        assert_eq!(cap, 128, "512 entries per cluster caps 65,536 at 128");
+        assert!(bpb.clusters() > cap);
+        let mut volume = Volume {
+            source: CountedLine,
+            base: 0,
+            bpb,
+        };
+        let mut cursor = DirectoryCursor::new(FIRST_DATA_CLUSTER);
+
+        let mut chunks = 0u32;
+        let error = loop {
+            match volume.directory_chunk(&mut cursor) {
+                Ok(_) => {
+                    chunks += 1;
+                    assert!(chunks < cap * 40, "the walk ran past the entry cap");
+                }
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(error, FatError::Unbounded);
+        assert_eq!(cursor.visited, cap - 1);
     }
 
     #[test]
@@ -1980,6 +2075,30 @@ mod tests {
     }
 
     #[test]
+    fn a_file_skip_past_the_volume_is_refused_before_walking() {
+        // The chain is acyclic, so the hare never fires: only the volume
+        // bound can refuse a skip whose offset names more clusters than the
+        // volume holds, and it refuses before reading the table (D-238).
+        let bpb = tiny(62);
+        assert_eq!(bpb.clusters(), 62);
+        let mut volume = Volume {
+            source: LinearFat { reads: 0 },
+            base: 0,
+            bpb,
+        };
+        let entry = Entry::for_contents(FIRST_DATA_CLUSTER, u32::MAX);
+        let mut byte = [0u8; 1];
+        assert_eq!(
+            volume.read_file(&entry, 100 * SECTOR_BYTES as u32, &mut byte),
+            Err(FatError::Unbounded)
+        );
+        assert_eq!(
+            volume.source.reads, 0,
+            "the skip was refused before any read"
+        );
+    }
+
+    #[test]
     fn an_early_end_of_chain_is_a_truncated_file_not_eof() {
         let mut skipped = image_volume(1, 4);
         set_link(&mut skipped, FIRST_DATA_CLUSTER, END_OF_CHAIN);
@@ -2049,6 +2168,31 @@ mod tests {
         }
     }
 
+    /// A FAT whose every cluster links to the next: a linear, never-ending
+    /// chain with no cycle, so only the entry cap can stop a walk of it.
+    struct CountedLine;
+
+    impl Sectors for CountedLine {
+        type Error = ();
+
+        fn read_sector(
+            &mut self,
+            sector: u64,
+            into: &mut [u8; SECTOR_BYTES],
+        ) -> Result<(), Self::Error> {
+            // The FAT sits in sectors 1..=64 here; each holds 128 entries.
+            if (1..=64).contains(&sector) {
+                let base = ((sector - 1) * 128) as u32;
+                for (index, slot) in into.chunks_exact_mut(4).enumerate() {
+                    slot.copy_from_slice(&(base + index as u32 + 1).to_le_bytes());
+                }
+            } else {
+                into.fill(0xE5);
+            }
+            Ok(())
+        }
+    }
+
     fn tiny(clusters: u32) -> Bpb {
         Bpb {
             sectors_per_cluster: 1,
@@ -2062,11 +2206,10 @@ mod tests {
     }
 
     #[test]
-    fn a_cyclic_chain_is_refused_within_the_volume() {
+    fn a_cyclic_chain_is_refused_in_both_the_directory_and_file_paths() {
         let bpb = tiny(62);
         assert_eq!(bpb.clusters(), 62);
-        // Four reads per cluster the volume holds is far more rope than a
-        // bounded walk needs and far less than a fixed cap consumes.
+        // Enough reads for the hare to lap the cycle a few times over.
         let ceiling = bpb.clusters() * 4;
 
         let mut volume = Volume {
@@ -2077,7 +2220,7 @@ mod tests {
         assert_eq!(
             directory_entries(&mut volume, FIRST_DATA_CLUSTER),
             Err(FatError::Unbounded),
-            "the walk ran past every cluster the volume holds"
+            "the directory walk did not refuse the cyclic chain"
         );
 
         let mut volume = Volume {
@@ -2090,7 +2233,7 @@ mod tests {
         assert_eq!(
             volume.read_file(&entry, u32::MAX - 1, &mut byte),
             Err(FatError::Unbounded),
-            "the skip walked a cycle with no bound at all"
+            "the file skip did not refuse the cyclic chain"
         );
     }
 }

@@ -77,10 +77,10 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1534;
+pub const NEXT_MUTATION_ID: u16 = 1536;
 
 /// Identities of deleted mutations, which no later entry may take.
-pub const RETIRED_MUTATION_IDS: &[u16] = &[514, 515, 517, 1521];
+pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1521];
 
 /// The defects, each of which some check must notice.
 ///
@@ -1340,17 +1340,6 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::HostTest {
             package: "fat32",
             name: "tests::an_eight_three_name_is_unpacked",
-        },
-    },
-    Mutation {
-        id: 116,
-        file: "libs/fat32/src/lib.rs",
-        find: "                    if visited >= self.chain_limit() {\n                        return Err(FatError::Unbounded);\n                    }",
-        replace: "                    if false && visited >= self.chain_limit() {\n                        return Err(FatError::Unbounded);\n                    }",
-        breaks: "a directory chunk follows more cluster links than the volume can contain",
-        reddens: Caught::HostTest {
-            package: "fat32",
-            name: "tests::directory_chunks_retain_the_volume_derived_cycle_bound",
         },
     },
     Mutation {
@@ -4219,7 +4208,7 @@ pub const MUTATIONS: &[Mutation] = &[
         breaks: "a FAT chain walk is bounded by the volume that could hold it",
         reddens: Caught::HostTest {
             package: "fat32",
-            name: "tests::a_cyclic_chain_is_refused_within_the_volume",
+            name: "tests::a_file_skip_past_the_volume_is_refused_before_walking",
         },
     },
     Mutation {
@@ -4236,7 +4225,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 370,
         file: "libs/fat32/src/lib.rs",
-        find: "                Next::Cluster(next) => {\n                    let Some(visited) = cursor.visited.checked_add(1) else {\n                        return Err(FatError::Unbounded);\n                    };\n                    if visited >= self.chain_limit() {\n                        return Err(FatError::Unbounded);\n                    }\n                    cursor.cluster = next;\n                    cursor.sector = 0;\n                    cursor.visited = visited;\n                }\n                Next::End => {\n                    cursor.done = true;\n                    return Ok(DirectoryChunk::EMPTY);\n                }",
+        find: "                Next::Cluster(next) => {\n                    let Some(visited) = cursor.visited.checked_add(1) else {\n                        return Err(FatError::Unbounded);\n                    };\n                    if visited >= self.bpb.directory_cluster_limit() {\n                        return Err(FatError::Unbounded);\n                    }\n                    // A tortoise/hare check catches a cycle in the length of\n                    // the cycle, before the entry cap is reached (D-352).\n                    let hare = self.advance_cycle_hare(cursor.hare)?;\n                    if hare == Some(next) {\n                        return Err(FatError::Unbounded);\n                    }\n                    cursor.cluster = next;\n                    cursor.sector = 0;\n                    cursor.visited = visited;\n                    cursor.hare = hare;\n                }\n                Next::End => {\n                    cursor.done = true;\n                    return Ok(DirectoryChunk::EMPTY);\n                }",
         replace: "                Next::Cluster(_) | Next::End => {\n                    cursor.done = true;\n                    return Ok(DirectoryChunk::EMPTY);\n                }",
         breaks: "a FAT directory walk silently stops after its first cluster",
         reddens: Caught::HostTest {
@@ -17315,6 +17304,28 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "contracts::production_kernel_code_claims_no_port_by_number",
+        },
+    },
+    Mutation {
+        id: 1534,
+        file: "libs/fat32/src/lib.rs",
+        find: "                    if visited >= self.bpb.directory_cluster_limit() {",
+        replace: "                    if visited >= self.chain_limit() {",
+        breaks: "a directory walk is bounded by the volume, not the entry cap",
+        reddens: Caught::HostTest {
+            package: "fat32",
+            name: "tests::a_huge_acyclic_directory_stops_at_the_entry_cap",
+        },
+    },
+    Mutation {
+        id: 1535,
+        file: "libs/fat32/src/lib.rs",
+        find: "                    let hare = self.advance_cycle_hare(cursor.hare)?;\n                    if hare == Some(next) {\n                        return Err(FatError::Unbounded);\n                    }\n",
+        replace: "                    let hare = self.advance_cycle_hare(cursor.hare)?;\n",
+        breaks: "a directory walk never checks its chain for a cycle",
+        reddens: Caught::HostTest {
+            package: "fat32",
+            name: "tests::a_cyclic_directory_chain_is_caught_by_the_hare_not_the_volume",
         },
     },
 ];
