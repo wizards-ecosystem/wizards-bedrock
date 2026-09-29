@@ -8,7 +8,7 @@ use wost::boot::Framebuffer;
 use wost::sync::{SpinLock, ThreadLock};
 
 use crate::arch::current::ioapic::IoApic;
-use crate::arch::current::uart::{self, Uart, UartError};
+use crate::arch::current::uart::{Uart, UartError};
 use crate::console::Console;
 use crate::theme;
 use crate::{debug, info, warn};
@@ -18,7 +18,7 @@ static CONSOLE: ThreadLock<Option<Console>> = ThreadLock::new(None);
 
 /// Bring up the serial console.
 pub(crate) fn init_uart() -> Result<(), UartError> {
-    let uart = Uart::new(uart::COM1)?;
+    let uart = Uart::new()?;
     *UART.lock() = Some(uart);
     Ok(())
 }

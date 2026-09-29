@@ -3108,6 +3108,87 @@ fn every_interrupt_arm_has_explicit_completion_ownership() {
     );
 }
 
+/// The raw port-claim doors, which take a numeric port rather than a device.
+const RAW_PORT_CLAIMS: [&str; 4] = ["claim", "claim_pair", "claim_block", "claim_block_pair"];
+
+#[derive(Default)]
+struct RawPortClaims {
+    calls: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for RawPortClaims {
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        let segments = path
+            .path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        if segments.iter().any(|segment| segment == "port")
+            && segments
+                .last()
+                .is_some_and(|name| RAW_PORT_CLAIMS.contains(&name.as_str()))
+        {
+            self.calls.push(segments.join("::"));
+        }
+        visit::visit_expr_path(self, path);
+    }
+}
+
+/// Production kernel code names a device, never a raw port number (D-351).
+///
+/// A driver asks `port::i8042()` or `port::com1()`, not `port::claim(0x60)`.
+/// Only the self-test harness may probe the registry with a raw claim, so a
+/// component cannot reserve hardware it does not own.
+#[test]
+fn production_kernel_code_claims_no_port_by_number() {
+    let paths = Paths::discover().expect("workspace paths");
+    let mut offenders = Vec::new();
+    for path in rust_sources_below(&paths.root().join("kernel/src")) {
+        let relative = path
+            .strip_prefix(paths.root())
+            .expect("source below the workspace")
+            .to_string_lossy()
+            .replace('\\', "/");
+        // The self-test harness alone probes exclusivity with raw claims.
+        if relative == "kernel/src/selftest.rs" {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("reading {relative}: {error}"));
+        let syntax =
+            syn::parse_file(&source).unwrap_or_else(|error| panic!("parsing {relative}: {error}"));
+        let mut raw = RawPortClaims::default();
+        raw.visit_file(&syntax);
+        for call in raw.calls {
+            offenders.push(format!("{relative}: `{call}`"));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "production kernel code claims a port by number instead of by device:\n{}",
+        offenders.join("\n")
+    );
+
+    // The scanner sees a raw claim wherever `port` and the door both appear.
+    let fixture = "fn drive() {\n\
+            let _ = wost::arch::current::port::claim::<u32>(0xF4);\n\
+            let _ = port::claim_block(0x40);\n\
+            let _ = port::com1();\n\
+            let _ = port::claim_spans::<2>(&spans);\n\
+        }\n";
+    let syntax = syn::parse_file(fixture).expect("fixture parses");
+    let mut raw = RawPortClaims::default();
+    raw.visit_file(&syntax);
+    assert_eq!(
+        raw.calls,
+        [
+            "wost::arch::current::port::claim".to_string(),
+            "port::claim_block".to_string(),
+        ]
+    );
+}
+
 #[test]
 fn machine_probes_are_absent_from_the_shipped_wost_graph() {
     let paths = Paths::discover().expect("workspace paths");

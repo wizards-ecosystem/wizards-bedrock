@@ -9,9 +9,6 @@
 
 use wost::arch::current::port::{self, Port};
 
-/// The `iobase` the harness passes to QEMU.
-const PORT: u16 = 0xF4;
-
 /// Written when every check passed. QEMU then exits with 33.
 const PASSED: u32 = 0x10;
 
@@ -24,7 +21,7 @@ const FAILED: u32 = 0x11;
 /// returns. Anywhere else the write goes nowhere and the caller carries on, so
 /// a self-test kernel booted on real hardware still reaches its idle loop.
 pub(crate) fn report(passed: bool) {
-    if let Some(mut device) = port::claim::<u32>(PORT) {
+    if let Some(mut device) = port::debug_exit() {
         Port::write(&mut device, if passed { PASSED } else { FAILED });
     }
 }

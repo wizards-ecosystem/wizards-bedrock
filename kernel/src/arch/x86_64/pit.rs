@@ -12,10 +12,7 @@ use wost::arch::current::port::{self, PortBlock};
 use x86_pit::STATUS_NULL_COUNT;
 use x86_pit::command::{Access, Channel, ControlWord, OperatingMode};
 
-/// I/O port base: three counters, then the control register.
-const CHANNEL_BASE: u16 = 0x40;
-
-/// Ports occupied by the chip.
+/// Ports occupied by the chip: three counters, then the control register.
 const REGISTER_COUNT: usize = 4;
 
 /// Register offsets from the port base.
@@ -63,7 +60,7 @@ pub(crate) struct Pit {
 impl Pit {
     /// Claim the chip's ports.
     pub(crate) fn claim() -> Result<Self, PitError> {
-        let registers = port::claim_block(CHANNEL_BASE).ok_or(PitError::PortsUnavailable)?;
+        let registers = port::pit().ok_or(PitError::PortsUnavailable)?;
         Ok(Self { registers })
     }
 

@@ -202,6 +202,51 @@ pub fn claim_block_pair<const N: usize, const M: usize>(
     Some((first, second))
 }
 
+/// The QEMU debug-exit device, at the fixed ISA port the machine profile sets.
+///
+/// A typed door for one known device: a caller entitled to signal the verdict
+/// asks for the device by name rather than naming a raw port, so no component
+/// can claim a port it does not own (D-351).
+pub fn debug_exit() -> Option<Port<u32>> {
+    claim(0xF4)
+}
+
+/// The 8042 keyboard controller's data and command ports (0x60 and 0x64).
+///
+/// One transaction, because a driver that took the data port and then failed
+/// to take the command port would strand the first for the life of the boot.
+pub fn i8042() -> Option<(Port<u8>, Port<u8>)> {
+    claim_pair(0x60, 0x64)
+}
+
+/// The 8254 interval timer's four registers (0x40 through 0x43).
+pub fn pit() -> Option<PortBlock<4>> {
+    claim_block(0x40)
+}
+
+/// The first serial controller's eight registers (0x3F8 through 0x3FF).
+pub fn com1() -> Option<PortBlock<8>> {
+    claim_block(0x3F8)
+}
+
+/// The legacy PCI configuration address and data ports (0xCF8 and 0xCFC).
+///
+/// The one door to configuration space; a degraded boot with no bus claims it
+/// to prove nothing else did.
+pub fn pci_configuration() -> Option<(Port<u32>, Port<u32>)> {
+    claim_pair(0x0CF8, 0x0CFC)
+}
+
+/// Whether `len` ports from `port` are already claimed, without minting one.
+///
+/// The self-test proves exclusivity by asking whether a device driver's ports
+/// are spoken for; a probe answers that without handing back a usable [`Port`]
+/// that would itself claim them (D-351).
+#[cfg(feature = "selftest")]
+pub fn is_claimed(port: u16, len: usize) -> bool {
+    !CLAIMED.lock_leaf().is_available(port as usize, len)
+}
+
 /// Reclaim the registry's lock on the terminal panic path.
 ///
 /// Called by [`panic::reclaim`](crate::panic::reclaim) rather than directly:

@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1533;
+pub const NEXT_MUTATION_ID: u16 = 1534;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[514, 515, 517];
@@ -6347,7 +6347,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 565,
         file: "kernel/src/main.rs",
-        find: "#[cfg(feature = \"refuse-pci\")]\nfn refuse_pci_for_degraded_boot() {\n    assert!(\n        wost::arch::current::port::claim::<u32>(0x0cf8).is_some(),\n        \"the degraded boot could not reserve the PCI configuration ports\"\n    );\n}",
+        find: "#[cfg(feature = \"refuse-pci\")]\nfn refuse_pci_for_degraded_boot() {\n    assert!(\n        wost::arch::current::port::pci_configuration().is_some(),\n        \"the degraded boot could not reserve the PCI configuration ports\"\n    );\n}",
         replace: "#[cfg(feature = \"refuse-pci\")]\nfn refuse_pci_for_degraded_boot() {}",
         breaks: "the degraded image silently retains live PCI configuration ports",
         reddens: Caught::BootMarker(
@@ -17316,6 +17316,17 @@ fn mint_stopped<'controller>(
         replace: "        let entries = ((version >> 16) & 0xFF) + 1;",
         breaks: "a window firmware aimed elsewhere is taken over as an I/O APIC",
         reddens: Caught::Check("a window that is not an I/O APIC is never taken over"),
+    },
+    Mutation {
+        id: 1533,
+        file: "kernel/src/arch/x86_64/debug_exit.rs",
+        find: "    if let Some(mut device) = port::debug_exit() {",
+        replace: "    if let Some(mut device) = port::claim::<u32>(0xF4) {",
+        breaks: "a production driver claims a port by its number",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::production_kernel_code_claims_no_port_by_number",
+        },
     },
 ];
 

@@ -406,7 +406,7 @@ pub(crate) fn unproven_external_controllers_veto_interrupts() -> bool {
 #[cfg(feature = "refuse-pci")]
 fn refuse_pci_for_degraded_boot() {
     assert!(
-        wost::arch::current::port::claim::<u32>(0x0cf8).is_some(),
+        wost::arch::current::port::pci_configuration().is_some(),
         "the degraded boot could not reserve the PCI configuration ports"
     );
 }

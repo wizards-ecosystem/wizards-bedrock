@@ -15,12 +15,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use wost::arch::current::port::{self, Port};
 
-/// I/O port the device's bytes arrive on, and device commands leave by.
-const DATA: u16 = 0x60;
-
-/// Status when read; commands to the controller itself when written.
-const CONTROL: u16 = 0x64;
-
 mod status {
     /// A byte is waiting in the output buffer.
     pub(super) const OUTPUT_FULL: u8 = 1 << 0;
@@ -235,8 +229,7 @@ impl Controller {
     pub(crate) fn new() -> Result<Self, I8042Error> {
         // Both or neither: a claim is permanent, so a stranded `DATA` would
         // mean no keyboard controller for the rest of the boot (D-138).
-        let (data, control) =
-            port::claim_pair(DATA, CONTROL).ok_or(I8042Error::PortsUnavailable)?;
+        let (data, control) = port::i8042().ok_or(I8042Error::PortsUnavailable)?;
         let mut controller = Self {
             data,
             control,

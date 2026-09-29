@@ -7,6 +7,10 @@ use core::fmt;
 use wost::arch::current::port::{self, PortBlock};
 
 /// I/O port base of the first serial controller.
+///
+/// `wost::arch::current::port::com1` owns this number for the driver; the
+/// self-test keeps it to probe that the driver's ports are exclusively held.
+#[cfg(feature = "selftest")]
 pub(crate) const COM1: u16 = 0x3F8;
 
 /// Ports occupied by one controller.
@@ -97,14 +101,14 @@ pub(crate) struct Uart {
 }
 
 impl Uart {
-    /// Claim and configure the controller at `base` for 115200 baud, 8N1.
+    /// Claim and configure the first serial controller for 115200 baud, 8N1.
     ///
     /// Interrupts stay masked: this is a polled driver until the kernel has an
     /// IDT. The probe runs after configuration, so a machine without a
     /// controller reports [`UartError::NotPresent`] rather than silently
     /// swallowing every log line.
-    pub(crate) fn new(base: u16) -> Result<Self, UartError> {
-        let registers = port::claim_block(base).ok_or(UartError::PortsUnavailable)?;
+    pub(crate) fn new() -> Result<Self, UartError> {
+        let registers = port::com1().ok_or(UartError::PortsUnavailable)?;
         let mut uart = Self { registers };
         uart.configure();
         if uart.probe() {
