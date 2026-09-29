@@ -195,10 +195,10 @@ fn publish_image(
             )? == canonical_parent,
             "boot-image target directory changed before publication"
         );
-        let staged = crate::sha256::digest_reader(
-            File::open(&staging)
-                .with_context(|| format!("opening boot-image stage {}", staging.display()))?,
-        )
+        let staged = crate::sha256::digest_reader(crate::mutation_workspace::open_real_file(
+            &staging,
+            "boot-image stage",
+        )?)
         .with_context(|| format!("hashing boot-image stage {}", staging.display()))?;
 
         crate::mutation_workspace::publish_staged_file(
@@ -207,11 +207,10 @@ fn publish_image(
             &published_path,
             "boot image",
             |published| {
-                let digest =
-                    crate::sha256::digest_reader(File::open(published).with_context(|| {
-                        format!("opening boot image {}", destination.display())
-                    })?)
-                    .with_context(|| format!("hashing boot image {}", destination.display()))?;
+                let digest = crate::sha256::digest_reader(
+                    crate::mutation_workspace::open_real_file(published, "boot image")?,
+                )
+                .with_context(|| format!("hashing boot image {}", destination.display()))?;
                 ensure!(
                     digest == staged,
                     "published boot image differs from its complete stage"

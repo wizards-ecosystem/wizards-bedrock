@@ -25,6 +25,7 @@ mod dma_contracts;
 pub mod elf;
 mod evidence;
 mod gate;
+mod git;
 #[cfg(test)]
 mod handoff;
 pub mod image;

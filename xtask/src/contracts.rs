@@ -54,13 +54,24 @@ struct Probe {
 }
 
 impl Probe {
+    // A probe directory is created exclusively inside this checkout's target
+    // tree, so no other account can pre-place or redirect it (D-344).
     fn create(paths: &Paths, label: &str, source: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "wizard-{label}-contract-{}-{}",
-            std::process::id(),
+        let target = crate::mutation_workspace::canonical_existing_real_directory(
+            paths.target_dir(),
+            "contract probe target",
+        )
+        .expect("contract probe target");
+        std::fs::create_dir_all(target.join("contract-probes")).expect("contract probe parent");
+        let parent = crate::mutation_workspace::canonical_existing_real_directory(
+            &target.join("contract-probes"),
+            "contract probe parent",
+        )
+        .expect("contract probe parent");
+        let root = fresh_probe_directory(&parent, label, || {
             NEXT_PROBE.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(root.join("src")).expect("contract source directory");
+        });
+        std::fs::create_dir(root.join("src")).expect("contract source directory");
 
         let wost = paths
             .root()
@@ -114,6 +125,73 @@ impl Drop for Probe {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// Create a directory no earlier entry occupies; an existing name is skipped.
+fn fresh_probe_directory(
+    parent: &std::path::Path,
+    label: &str,
+    mut next: impl FnMut() -> usize,
+) -> std::path::PathBuf {
+    core::iter::repeat_with(|| parent.join(format!("{label}-{}-{}", std::process::id(), next())))
+        .take(128)
+        .find(|root| match std::fs::create_dir(root) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+            Err(error) => panic!("creating contract probe {}: {error}", root.display()),
+        })
+        .expect("a fresh contract probe directory")
+}
+
+#[test]
+fn contract_probes_are_fresh_directories_inside_the_target_tree() {
+    let paths = Paths::discover().expect("workspace paths");
+    let target = crate::mutation_workspace::canonical_existing_real_directory(
+        paths.target_dir(),
+        "contract probe target",
+    )
+    .expect("contract probe target");
+    let probe = Probe::create(&paths, "fresh-probe", "#![no_std]\n");
+    assert!(
+        probe.root.starts_with(target.join("contract-probes")),
+        "contract probe escaped the target tree: {}",
+        probe.root.display()
+    );
+    drop(probe);
+
+    let parent = target.join("contract-probes");
+    let occupied = parent.join(format!("occupied-{}-0", std::process::id()));
+    let outside = parent.join(format!("outside-{}", std::process::id()));
+    let _ = std::fs::remove_file(&occupied).or_else(|_| std::fs::remove_dir(&occupied));
+    let _ = std::fs::remove_dir_all(&outside);
+    let _ = std::fs::remove_dir(parent.join(format!("occupied-{}-1", std::process::id())));
+    std::fs::create_dir(&outside).expect("outside fixture");
+    std::fs::write(outside.join("marker"), b"outside").expect("outside marker");
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_dir(&outside, &occupied).expect("occupying link");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, &occupied).expect("occupying link");
+    let mut counter = 0;
+    let fresh = fresh_probe_directory(&parent, "occupied", || {
+        counter += 1;
+        counter - 1
+    });
+    assert_eq!(
+        fresh,
+        parent.join(format!("occupied-{}-1", std::process::id()))
+    );
+    assert_eq!(
+        std::fs::read_dir(&outside)
+            .expect("outside listing")
+            .count(),
+        1,
+        "a pre-placed link redirected the probe"
+    );
+    std::fs::remove_dir(&fresh).expect("removing the fresh probe");
+    std::fs::remove_file(&occupied)
+        .or_else(|_| std::fs::remove_dir(&occupied))
+        .expect("removing the occupying link");
+    std::fs::remove_dir_all(&outside).expect("removing the outside fixture");
 }
 
 fn diagnostic_codes(output: &Output) -> Vec<&str> {
@@ -1727,6 +1805,278 @@ fn the_pci_authority_inventory_counts_every_door_and_channel() {
         violations.iter().any(|violation| violation
             .contains("`claim_unaudited` returns 1 PCI authority copies while consuming 0")),
         "an unaudited mint was not refused: {violations:?}"
+    );
+}
+
+/// Checks that refuse a link or non-file at a path (D-344).
+const PATH_CHECKS: [&str; 5] = [
+    "canonical_existing_real_directory",
+    "require_contained_regular_file",
+    "require_direct_file",
+    "require_direct_file_if_present",
+    "require_regular_file",
+];
+
+#[derive(Default)]
+struct CheckedReopens {
+    checks: bool,
+    opens: usize,
+}
+
+impl<'ast> Visit<'ast> for CheckedReopens {
+    fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+        if let Expr::Path(function) = call.func.as_ref() {
+            let segments = function
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>();
+            if segments
+                .last()
+                .is_some_and(|name| PATH_CHECKS.contains(&name.as_str()))
+            {
+                self.checks = true;
+            }
+            if segments.ends_with(&["File".to_string(), "open".to_string()]) {
+                self.opens += 1;
+            }
+        }
+        visit::visit_expr_call(self, call);
+    }
+
+    fn visit_item(&mut self, _item: &'ast Item) {}
+}
+
+/// Every function body outside test code, including functions nested in bodies.
+fn production_bodies(syntax: &syn::File) -> Vec<(String, &syn::Block)> {
+    let mut found = Vec::new();
+    let mut pending = syntax.items.iter().collect::<Vec<_>>();
+    while let Some(item) = pending.pop() {
+        if cfg_test(observer_item_attributes(item)) {
+            continue;
+        }
+        let mut bodies = Vec::new();
+        match item {
+            Item::Fn(function) => bodies.push((function.sig.ident.to_string(), &*function.block)),
+            Item::Impl(implementation) => {
+                for member in &implementation.items {
+                    if let ImplItem::Fn(method) = member
+                        && !cfg_test(&method.attrs)
+                    {
+                        bodies.push((method.sig.ident.to_string(), &method.block));
+                    }
+                }
+            }
+            Item::Mod(module) => {
+                if let Some((_, items)) = &module.content {
+                    pending.extend(items);
+                }
+            }
+            _ => {}
+        }
+        for (name, body) in bodies {
+            for statement in &body.stmts {
+                if let Stmt::Item(nested) = statement {
+                    pending.push(nested);
+                }
+            }
+            found.push((name, body));
+        }
+    }
+    found
+}
+
+fn checked_reopens(relative: &str, source: &str) -> Vec<String> {
+    let syntax =
+        syn::parse_file(source).unwrap_or_else(|error| panic!("parsing {relative}: {error}"));
+    let mut violations = Vec::new();
+    for (name, body) in production_bodies(&syntax) {
+        let mut shape = CheckedReopens::default();
+        shape.visit_block(body);
+        if shape.checks && shape.opens > 0 {
+            violations.push(format!(
+                "{relative}: `{name}` checks a path, then follows it"
+            ));
+        }
+    }
+    violations
+}
+
+/// Record builders whose source is established again when their record is
+/// qualified, so the Git that answered is the qualifying run's (D-344).
+const SOURCE_WITHOUT_GIT: [&str; 1] = ["generation_record_from_digests"];
+/// Publishers that must re-measure Git after its last answer (D-344).
+const GIT_PUBLISHERS: [(&str, &str, &str); 2] = [
+    ("xtask/src/evidence.rs", "create", "write_manifest"),
+    ("xtask/src/qualification.rs", "commit_record", "rename"),
+];
+
+#[derive(Default)]
+struct GitUse {
+    binds_source: bool,
+    names_resolved: bool,
+    bare_git: bool,
+    calls: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for GitUse {
+    fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+        if let Expr::Path(function) = call.func.as_ref() {
+            let segments = function
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>();
+            if segments.ends_with(&["git".to_string(), "resolved".to_string()]) {
+                self.names_resolved = true;
+            }
+            if segments.ends_with(&["Command".to_string(), "new".to_string()])
+                && call.args.first().is_some_and(|argument| {
+                    matches!(argument, Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(program), .. })
+                        if program.value() == "git")
+                })
+            {
+                self.bare_git = true;
+            }
+            if let Some(last) = segments.last() {
+                self.calls.push(last.clone());
+            }
+        }
+        visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+        if call.method == "insert"
+            && call.args.first().is_some_and(|argument| {
+                matches!(argument, Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(key), .. })
+                    if key.value() == "source.commit")
+            })
+        {
+            self.binds_source = true;
+        }
+        self.calls.push(call.method.to_string());
+        visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_item(&mut self, _item: &'ast Item) {}
+}
+
+fn git_bindings(relative: &str, source: &str) -> Vec<String> {
+    let syntax =
+        syn::parse_file(source).unwrap_or_else(|error| panic!("parsing {relative}: {error}"));
+    let mut violations = Vec::new();
+    for (name, body) in production_bodies(&syntax) {
+        let mut shape = GitUse::default();
+        shape.visit_block(body);
+        if shape.binds_source
+            && !shape.names_resolved
+            && !SOURCE_WITHOUT_GIT.contains(&name.as_str())
+        {
+            violations.push(format!(
+                "{relative}: `{name}` binds a source without the Git that established it"
+            ));
+        }
+        if shape.bare_git && relative != "xtask/src/git.rs" {
+            violations.push(format!("{relative}: `{name}` spawns `git` from PATH"));
+        }
+        for (file, publisher, publication) in GIT_PUBLISHERS {
+            if relative == file && name == publisher {
+                let measured = shape
+                    .calls
+                    .iter()
+                    .position(|call| call == "require_unchanged");
+                let published = shape.calls.iter().position(|call| call == publication);
+                if !matches!((measured, published), (Some(measured), Some(published)) if measured < published)
+                {
+                    violations.push(format!(
+                        "{relative}: `{name}` publishes before re-measuring Git"
+                    ));
+                }
+            }
+        }
+    }
+    violations
+}
+
+#[test]
+fn every_source_identity_names_the_git_that_established_it() {
+    let paths = Paths::discover().expect("workspace paths");
+    let mut violations = Vec::new();
+    let mut publishers = 0;
+    for path in rust_sources_below(&paths.root().join("xtask/src")) {
+        let relative = path
+            .strip_prefix(paths.root())
+            .expect("source below the workspace")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("reading {relative}: {error}"));
+        let syntax =
+            syn::parse_file(&source).unwrap_or_else(|error| panic!("parsing {relative}: {error}"));
+        publishers += production_bodies(&syntax)
+            .iter()
+            .filter(|(name, _)| {
+                GIT_PUBLISHERS
+                    .iter()
+                    .any(|(file, publisher, _)| *file == relative && name == publisher)
+            })
+            .count();
+        violations.extend(git_bindings(&relative, &source));
+    }
+    assert_eq!(publishers, GIT_PUBLISHERS.len(), "a Git publisher moved");
+    assert!(
+        violations.is_empty(),
+        "source identity escapes its Git binding:\n{}",
+        violations.join("\n")
+    );
+
+    let fixture = "fn bound(record: &mut Record) {\n\
+            record.insert(\"source.commit\", commit);\n\
+            for field in crate::git::resolved()?.fields() {}\n\
+        }\n\
+        fn unbound(record: &mut Record) { record.insert(\"source.commit\", commit); }\n\
+        fn bare() { let _ = Command::new(\"git\"); }\n";
+    assert_eq!(
+        git_bindings("xtask/src/fixture.rs", fixture),
+        [
+            "xtask/src/fixture.rs: `bare` spawns `git` from PATH",
+            "xtask/src/fixture.rs: `unbound` binds a source without the Git that established it",
+        ]
+    );
+}
+
+#[test]
+fn a_checked_path_is_opened_only_without_following_links() {
+    let paths = Paths::discover().expect("workspace paths");
+    let mut violations = Vec::new();
+    for path in rust_sources_below(&paths.root().join("xtask/src")) {
+        let relative = path
+            .strip_prefix(paths.root())
+            .expect("source below the workspace")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("reading {relative}: {error}"));
+        violations.extend(checked_reopens(&relative, &source));
+    }
+    assert!(
+        violations.is_empty(),
+        "checked paths are reopened by a following open:\n{}",
+        violations.join("\n")
+    );
+
+    let fixture = "fn checked(parent: &Path, path: &Path) {\n\
+            require_direct_file(parent, path, \"x\").unwrap();\n\
+            let _ = std::fs::File::open(path);\n\
+        }\n\
+        fn unchecked(path: &Path) { let _ = File::open(path); }\n\
+        #[cfg(test)]\n\
+        mod tests { fn checked(p: &Path) { require_regular_file(p, \"x\"); File::open(p); } }\n";
+    assert_eq!(
+        checked_reopens("fixture.rs", fixture),
+        ["fixture.rs: `checked` checks a path, then follows it"]
     );
 }
 

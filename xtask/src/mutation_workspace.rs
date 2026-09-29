@@ -7,7 +7,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -804,9 +803,8 @@ fn git<const N: usize>(
     maximum: usize,
     label: &str,
 ) -> Result<Vec<u8>> {
-    let mut command = Command::new("git");
-    crate::bounded_process::isolate_git_environment(&mut command);
-    command.current_dir(root).args(args);
+    let mut command = crate::git::resolved()?.command(root);
+    command.args(args);
     let output = crate::bounded_process::output_with_limit(command, GIT_TIMEOUT, label, maximum)
         .with_context(|| format!("running {label}"))?;
     if !output.status.success() {
@@ -1386,6 +1384,62 @@ pub(crate) fn require_direct_file_if_present(
     require_real_file_metadata(path, &metadata, label)?;
     require_canonical_child(parent, path, label)?;
     Ok(true)
+}
+
+/// Open `path` for reading without following a final-component link, then
+/// prove from the opened handle that it is one real file (D-344).
+///
+/// A path check alone cannot stop a link swapped in before an ordinary open.
+pub(crate) fn open_real_file(path: &Path, label: &str) -> Result<File> {
+    let file =
+        open_without_following(path).with_context(|| format!("opening {}", path.display()))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspecting opened {}", path.display()))?;
+    require_real_file_metadata(path, &metadata, label)?;
+    require_opened_entry(path, &metadata, label)?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn open_without_following(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_without_following(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
+
+// Windows opened the entry itself; elsewhere the entry must still be the file
+// the handle reached.
+#[cfg(windows)]
+const fn require_opened_entry(
+    _path: &Path,
+    _opened: &std::fs::Metadata,
+    _label: &str,
+) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn require_opened_entry(path: &Path, opened: &std::fs::Metadata, label: &str) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let entry = std::fs::symlink_metadata(path)
+        .with_context(|| format!("inspecting {}", path.display()))?;
+    ensure!(
+        entry.dev() == opened.dev() && entry.ino() == opened.ino(),
+        "{label} was replaced while it was opened: {}",
+        path.display()
+    );
+    Ok(())
 }
 
 fn validate_relative(relative: &str) -> Result<()> {
@@ -2193,6 +2247,7 @@ const fn hex_nibble(byte: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 

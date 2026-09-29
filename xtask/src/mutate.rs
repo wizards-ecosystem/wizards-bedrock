@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1482;
+pub const NEXT_MUTATION_ID: u16 = 1510;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[];
@@ -1191,8 +1191,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 102,
         file: "xtask/src/evidence.rs",
-        find: "    verify_record(paths, &root, &record)?;\n    let manifest = root.join(MANIFEST_NAME);\n    write_manifest(&root, &manifest, &record.render())?;",
-        replace: "    let manifest = root.join(MANIFEST_NAME);\n    write_manifest(&root, &manifest, &record.render())?;\n    verify_record(paths, &root, &record)?;",
+        find: "    verify_record(paths, &root, &record)?;\n    crate::git::resolved()?.require_unchanged()?;\n    let manifest = root.join(MANIFEST_NAME);\n    write_manifest(&root, &manifest, &record.render())?;",
+        replace: "    crate::git::resolved()?.require_unchanged()?;\n    let manifest = root.join(MANIFEST_NAME);\n    write_manifest(&root, &manifest, &record.render())?;\n    verify_record(paths, &root, &record)?;",
         breaks: "a failed final evidence verification leaves a committed manifest",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -8924,13 +8924,10 @@ pub const MUTATIONS: &[Mutation] = &[
             backing,
             "NVMe image",
             |published| {
-                let digest =
-                    crate::sha256::digest_reader(File::open(published).with_context(|| {
-                        format!("opening published NVMe image {}", published.display())
-                    })?)
-                    .with_context(|| {
-                        format!("hashing published NVMe image {}", published.display())
-                    })?;
+                let digest = crate::sha256::digest_reader(
+                    crate::mutation_workspace::open_real_file(published, "published NVMe image")?,
+                )
+                .with_context(|| format!("hashing published NVMe image {}", published.display()))?;
                 ensure!(
                     digest == expected,
                     "published NVMe image differs from its staged bytes"
@@ -9030,11 +9027,10 @@ pub const MUTATIONS: &[Mutation] = &[
             &published_path,
             "boot image",
             |published| {
-                let digest =
-                    crate::sha256::digest_reader(File::open(published).with_context(|| {
-                        format!("opening boot image {}", destination.display())
-                    })?)
-                    .with_context(|| format!("hashing boot image {}", destination.display()))?;
+                let digest = crate::sha256::digest_reader(
+                    crate::mutation_workspace::open_real_file(published, "boot image")?,
+                )
+                .with_context(|| format!("hashing boot image {}", destination.display()))?;
                 ensure!(
                     digest == staged,
                     "published boot image differs from its complete stage"
@@ -13871,8 +13867,7 @@ fn mint_stopped<'controller>(
         id: 1223,
         file: "xtask/src/evidence.rs",
         find: r#"    ensure!(
-        File::open(path)
-            .with_context(|| format!("reopening {label} {}", path.display()))?
+        crate::mutation_workspace::open_real_file(path, label)?
             .metadata()
             .with_context(|| format!("remeasuring {label} {}", path.display()))?
             .len()
@@ -16810,6 +16805,314 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "contracts::pci_function_authority_has_audited_mints_and_no_duplication_door",
+        },
+    },
+    Mutation {
+        id: 1482,
+        file: "xtask/src/git.rs",
+        find: "        let mut command = Command::new(&self.path);",
+        replace: "        let mut command = Command::new(\"git\");",
+        breaks: "a run's Git queries spawn whatever `git` PATH names",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "git::tests::a_run_spawns_the_git_it_resolved_whatever_path_later_says",
+        },
+    },
+    Mutation {
+        id: 1483,
+        file: "xtask/src/git.rs",
+        find: "    let path = std::fs::canonicalize(&found)\n        .with_context(|| format!(\"canonicalizing Git {}\", found.display()))?;",
+        replace: "    let path = found;",
+        breaks: "resolved Git is recorded under a non-canonical path",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "git::tests::a_run_spawns_the_git_it_resolved_whatever_path_later_says",
+        },
+    },
+    Mutation {
+        id: 1484,
+        file: "xtask/src/git.rs",
+        find: "            measure(&self.path)? == (self.bytes, self.sha256.clone()),",
+        replace: "            measure(&self.path).is_ok(),",
+        breaks: "a Git executable changed during a run still publishes",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "git::tests::a_changed_executable_blocks_publication",
+        },
+    },
+    Mutation {
+        id: 1485,
+        file: "xtask/src/git.rs",
+        find: "        version.starts_with(\"git version \") && !version.contains(['\\r', '\\n', '\\0']),",
+        replace: "        !version.contains(['\\r', '\\n', '\\0']),",
+        breaks: "any executable that prints one line passes as Git",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "git::tests::an_executable_that_is_not_git_is_refused_by_its_version_identity",
+        },
+    },
+    Mutation {
+        id: 1486,
+        file: "xtask/src/git.rs",
+        find: "            .is_ok_and(|value| value > 0 && value.to_string() == bytes),",
+        replace: "            .is_ok(),",
+        breaks: "a recorded Git length may be zero or noncanonical",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "git::tests::recorded_git_identity_is_validated_field_by_field",
+        },
+    },
+    Mutation {
+        id: 1487,
+        file: "xtask/src/git.rs",
+        find: "        Path::new(get(FIELDS[1])?).is_absolute(),",
+        replace: "        !get(FIELDS[1])?.is_empty(),",
+        breaks: "a recorded Git path may be relative",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "git::tests::recorded_git_identity_is_validated_field_by_field",
+        },
+    },
+    Mutation {
+        id: 1488,
+        file: "xtask/src/git.rs",
+        find: "        sha256.len() == 64\n            && sha256\n                .bytes()\n                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),",
+        replace: "        sha256.len() == 64,",
+        breaks: "a recorded Git digest may be uppercase or non-hexadecimal",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "git::tests::recorded_git_identity_is_validated_field_by_field",
+        },
+    },
+    Mutation {
+        id: 1489,
+        file: "xtask/src/git.rs",
+        find: "        get(FIELDS[3])?.starts_with(\"git version \"),",
+        replace: "        !get(FIELDS[3])?.is_empty(),",
+        breaks: "a recorded Git version may name another program",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "git::tests::recorded_git_identity_is_validated_field_by_field",
+        },
+    },
+    Mutation {
+        id: 1490,
+        file: "xtask/src/evidence.rs",
+        find: "    for (key, value) in crate::git::resolved()?.fields() {\n        record.insert(key, value)?;\n    }\n",
+        replace: "",
+        breaks: "the evidence manifest omits the Git that established its source",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::every_source_identity_names_the_git_that_established_it",
+        },
+    },
+    Mutation {
+        id: 1491,
+        file: "xtask/src/qualification.rs",
+        find: "    record.insert(\"source.tree\", &source.tree)?;\n    for (key, value) in crate::git::resolved()?.fields() {\n        record.insert(key, value)?;\n    }\n",
+        replace: "    record.insert(\"source.tree\", &source.tree)?;\n",
+        breaks: "a qualification record omits the Git that established its source",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::every_source_identity_names_the_git_that_established_it",
+        },
+    },
+    Mutation {
+        id: 1492,
+        file: "xtask/src/qualification.rs",
+        find: "    validate_record(record, kind)?;\n    crate::git::resolved()?.require_unchanged()?;\n",
+        replace: "    validate_record(record, kind)?;\n",
+        breaks: "a qualification record commits without re-measuring Git",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::every_source_identity_names_the_git_that_established_it",
+        },
+    },
+    Mutation {
+        id: 1493,
+        file: "xtask/src/evidence.rs",
+        find: "    crate::git::resolved()?.require_unchanged()?;\n    let manifest = root.join(MANIFEST_NAME);",
+        replace: "    let manifest = root.join(MANIFEST_NAME);",
+        breaks: "an evidence manifest publishes without re-measuring Git",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::every_source_identity_names_the_git_that_established_it",
+        },
+    },
+    Mutation {
+        id: 1494,
+        file: "xtask/src/mutation_workspace.rs",
+        find: "    let mut command = crate::git::resolved()?.command(root);\n    command.args(args);\n    let output = crate::bounded_process::output_with_limit(command, GIT_TIMEOUT, label, maximum)",
+        replace: "    let mut command = std::process::Command::new(\"git\");\n    crate::bounded_process::isolate_git_environment(&mut command);\n    command.current_dir(root).args(args);\n    let output = crate::bounded_process::output_with_limit(command, GIT_TIMEOUT, label, maximum)",
+        breaks: "the mutation sweep asks whatever `git` PATH names about its source",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::every_source_identity_names_the_git_that_established_it",
+        },
+    },
+    Mutation {
+        id: 1495,
+        file: "xtask/src/contracts.rs",
+        find: "                    matches!(argument, Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(program), .. })\n                        if program.value() == \"git\")",
+        replace: "                    matches!(argument, Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(program), .. })\n                        if program.value() == \"git.exe\")",
+        breaks: "the Git binding contract misses a bare `git` spawn",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::every_source_identity_names_the_git_that_established_it",
+        },
+    },
+    Mutation {
+        id: 1496,
+        file: "xtask/src/contracts.rs",
+        find: "                    if key.value() == \"source.commit\")",
+        replace: "                    if key.value() == \"source.tree\")",
+        breaks: "the Git binding contract misses a record that binds a source",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::every_source_identity_names_the_git_that_established_it",
+        },
+    },
+    Mutation {
+        id: 1497,
+        file: "xtask/src/mutation_workspace.rs",
+        find: "        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)\n",
+        replace: "",
+        breaks: "a checked artifact is opened through a link swapped in after its check",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::an_artifact_swapped_for_a_link_after_its_check_is_never_read",
+        },
+    },
+    Mutation {
+        id: 1498,
+        file: "xtask/src/mutation_workspace.rs",
+        find: "    require_real_file_metadata(path, &metadata, label)?;\n    require_opened_entry(path, &metadata, label)?;",
+        replace: "    require_opened_entry(path, &metadata, label)?;",
+        breaks: "an opened link is read without proving the handle names a real file",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::an_artifact_swapped_for_a_link_after_its_check_is_never_read",
+        },
+    },
+    Mutation {
+        id: 1499,
+        file: "xtask/src/vendor.rs",
+        find: "    let mut file = crate::mutation_workspace::open_real_file(path, \"vendor checksum listing\")?;",
+        replace: "    let mut file = std::fs::File::open(path)?;",
+        breaks: "a checked vendor listing is reopened through a following open",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::a_checked_path_is_opened_only_without_following_links",
+        },
+    },
+    Mutation {
+        id: 1500,
+        file: "xtask/src/contracts.rs",
+        find: "                .is_some_and(|name| PATH_CHECKS.contains(&name.as_str()))",
+        replace: "                .is_some_and(|name| name == \"require_regular_file\")",
+        breaks: "the reopen guard recognizes only one path check",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::a_checked_path_is_opened_only_without_following_links",
+        },
+    },
+    Mutation {
+        id: 1501,
+        file: "xtask/src/contracts.rs",
+        find: "        .find(|root| match std::fs::create_dir(root) {",
+        replace: "        .find(|root| match std::fs::create_dir_all(root) {",
+        breaks: "a contract probe reuses a directory another party placed first",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::contract_probes_are_fresh_directories_inside_the_target_tree",
+        },
+    },
+    Mutation {
+        id: 1502,
+        file: "xtask/src/contracts.rs",
+        find: "        std::fs::create_dir_all(target.join(\"contract-probes\")).expect(\"contract probe parent\");\n        let parent = crate::mutation_workspace::canonical_existing_real_directory(\n            &target.join(\"contract-probes\"),",
+        replace: "        let parent = crate::mutation_workspace::canonical_existing_real_directory(\n            &std::env::temp_dir(),",
+        breaks: "contract probes return to the shared temporary directory",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::contract_probes_are_fresh_directories_inside_the_target_tree",
+        },
+    },
+    Mutation {
+        id: 1503,
+        file: "xtask/src/supply_chain.rs",
+        find: "                    source == CRATES_IO,",
+        replace: "                    source.starts_with(\"registry+\"),",
+        breaks: "an alternate registry's package passes as crates.io",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::a_locked_package_from_any_other_source_is_refused",
+        },
+    },
+    Mutation {
+        id: 1504,
+        file: "xtask/src/supply_chain.rs",
+        find: "                !header.starts_with(\"dependencies.\")\n                    && !(header.starts_with(\"target.\") && header.contains(\".dependencies.\")),",
+        replace: "                !(header.starts_with(\"target.\") && header.contains(\".dependencies.\")),",
+        breaks: "a detailed dependency table silently leaves the runtime scope",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::every_dependency_declaration_shape_is_modeled_or_refused",
+        },
+    },
+    Mutation {
+        id: 1505,
+        file: "xtask/src/supply_chain.rs",
+        find: "                !header.starts_with(\"dependencies.\")\n                    && !(header.starts_with(\"target.\") && header.contains(\".dependencies.\")),",
+        replace: "                !header.starts_with(\"dependencies.\"),",
+        breaks: "a target-specific detailed dependency table silently leaves the runtime scope",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::every_dependency_declaration_shape_is_modeled_or_refused",
+        },
+    },
+    Mutation {
+        id: 1506,
+        file: "xtask/src/supply_chain.rs",
+        find: "                !name.contains('.'),",
+        replace: "                true,",
+        breaks: "a dotted dependency key is read as a dependency name",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::every_dependency_declaration_shape_is_modeled_or_refused",
+        },
+    },
+    Mutation {
+        id: 1507,
+        file: "xtask/src/supply_chain.rs",
+        find: "                !renames_package(declaration),",
+        replace: "                true,",
+        breaks: "a renamed dependency resolves by its local alias",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::every_dependency_declaration_shape_is_modeled_or_refused",
+        },
+    },
+    Mutation {
+        id: 1508,
+        file: "xtask/src/supply_chain.rs",
+        find: "        noticed == runtime,",
+        replace: "        runtime.is_subset(&noticed),",
+        breaks: "a notice may list components the image does not ship",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::each_runtime_component_has_exactly_one_exact_notice_entry",
+        },
+    },
+    Mutation {
+        id: 1509,
+        file: "xtask/src/supply_chain.rs",
+        find: "        ensure!(\n            components.insert((name.to_string(), version.to_string())),\n            \"third-party notices repeat `{name}` `{version}`\"\n        );",
+        replace: "        components.insert((name.to_string(), version.to_string()));",
+        breaks: "a notice may repeat one component's entry",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::each_runtime_component_has_exactly_one_exact_notice_entry",
         },
     },
 ];

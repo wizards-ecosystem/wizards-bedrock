@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Read, Write as IoWrite};
 use std::path::{Path, PathBuf};
 
@@ -21,6 +21,8 @@ const SPDX: &str = "supply-chain/foundation.spdx";
 const SPDX_STAGING: &str = "foundation.spdx.incomplete";
 const NOTICES: &str = "supply-chain/THIRD-PARTY-NOTICES.md";
 const MAGIC: &str = "wizard-supply-chain-v1";
+/// The one registry source a locked package may name (D-345, as D-213's audit).
+const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 const HEADER: &str = "kind|name|version|scope|sha256|license|note";
 const MAX_INVENTORY_BYTES: u64 = 1024 * 1024;
 const MAX_LOCK_BYTES: u64 = 4 * 1024 * 1024;
@@ -240,9 +242,10 @@ where
             destination,
             "SPDX document",
             |published| {
-                let mut file = File::open(published).with_context(|| {
-                    format!("opening published SPDX document {}", published.display())
-                })?;
+                let mut file = crate::mutation_workspace::open_real_file(
+                    published,
+                    "published SPDX document",
+                )?;
                 let (length, digest) =
                     sha256::digest_reader((&mut file).take(bytes.len() as u64 + 1)).with_context(
                         || format!("hashing published SPDX document {}", published.display()),
@@ -292,8 +295,7 @@ where
         .with_context(|| format!("{label} has no parent directory"))?;
     crate::mutation_workspace::canonical_existing_real_directory(parent, label)?;
     crate::mutation_workspace::require_direct_file(parent, &path, label)?;
-    let mut file =
-        File::open(&path).with_context(|| format!("opening {label} {}", path.display()))?;
+    let mut file = crate::mutation_workspace::open_real_file(&path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -451,7 +453,11 @@ fn parse_lock(text: &str) -> Result<Vec<LockedPackage>> {
             } else if let Some(value) = value(line, "version") {
                 version = Some(value.to_string());
             } else if let Some(source) = value(line, "source") {
-                registry = source.starts_with("registry+");
+                ensure!(
+                    source == CRATES_IO,
+                    "locked package source `{source}` is not crates.io"
+                );
+                registry = true;
             } else if let Some(value) = value(line, "checksum") {
                 ensure!(valid_digest(value), "invalid locked checksum `{value}`");
                 checksum = Some(value.to_string());
@@ -628,7 +634,9 @@ fn local_normal_dependencies(
             "package manifest",
         )?;
         let name = package_name(&manifest)?;
-        let old = dependencies.insert(name.clone(), manifest_dependencies(&manifest));
+        let declared = manifest_dependencies(&manifest)
+            .with_context(|| format!("reading {member}/Cargo.toml"))?;
+        let old = dependencies.insert(name.clone(), declared);
         ensure!(old.is_none(), "duplicate workspace package `{name}`");
     }
     Ok(dependencies)
@@ -660,26 +668,39 @@ fn package_name(manifest: &str) -> Result<String> {
     bail!("workspace manifest has no package name")
 }
 
-fn manifest_dependencies(manifest: &str) -> Vec<Dependency> {
+/// Normal dependency names declared by one member manifest.
+///
+/// This is a line reader, so it refuses every declaration shape it does not
+/// model rather than silently omitting a runtime dependency.
+fn manifest_dependencies(manifest: &str) -> Result<Vec<Dependency>> {
     let mut in_normal_dependencies = false;
     let mut dependencies = Vec::new();
     for line in manifest.lines().map(str::trim) {
         if line.starts_with('[') {
-            in_normal_dependencies = line == "[dependencies]"
-                || (line.ends_with(".dependencies]")
-                    && !line.contains("dev-dependencies")
-                    && !line.contains("build-dependencies"));
+            let header = line.trim_start_matches('[').trim_end_matches(']');
+            ensure!(
+                !header.starts_with("dependencies.")
+                    && !(header.starts_with("target.") && header.contains(".dependencies.")),
+                "`{line}` is a dependency table the runtime-scope reader does not model"
+            );
+            in_normal_dependencies = header == "dependencies"
+                || (header.starts_with("target.") && header.ends_with(".dependencies"));
             continue;
         }
         if !in_normal_dependencies || line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if let Some((name, _)) = line.split_once('=') {
-            let name = name
-                .trim()
-                .trim_matches('"')
-                .strip_suffix(".workspace")
-                .unwrap_or(name.trim().trim_matches('"'));
+        if let Some((key, declaration)) = line.split_once('=') {
+            let key = key.trim().trim_matches('"');
+            let name = key.strip_suffix(".workspace").unwrap_or(key);
+            ensure!(
+                !name.contains('.'),
+                "dotted dependency key `{key}` is not modeled"
+            );
+            ensure!(
+                !renames_package(declaration),
+                "renamed dependency `{name}` is not modeled"
+            );
             if !name.is_empty() {
                 dependencies.push(Dependency {
                     name: name.to_string(),
@@ -688,7 +709,16 @@ fn manifest_dependencies(manifest: &str) -> Vec<Dependency> {
             }
         }
     }
-    dependencies
+    Ok(dependencies)
+}
+
+fn renames_package(declaration: &str) -> bool {
+    declaration.split(['{', ',']).any(|field| {
+        field
+            .trim_start()
+            .strip_prefix("package")
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    })
 }
 
 fn resolve_dependency(packages: &[LockedPackage], dependency: &Dependency) -> Result<usize> {
@@ -736,8 +766,8 @@ fn verify_artifacts(paths: &Paths, inventory: &Inventory) -> Result<()> {
                 &file,
                 "vendored supply-chain artifact",
             )?;
-            let mut input = File::open(&file)
-                .with_context(|| format!("opening vendored artifact {}", file.display()))?;
+            let mut input =
+                crate::mutation_workspace::open_real_file(&file, "vendored supply-chain artifact")?;
             let length = input
                 .metadata()
                 .with_context(|| format!("measuring vendored artifact {}", file.display()))?
@@ -792,29 +822,7 @@ fn verify_notices(paths: &Paths, inventory: &Inventory) -> Result<()> {
         MAX_NOTICE_BYTES,
         "third-party notices",
     )?;
-    for required in [
-        "foundation.spdx",
-        "SIL Open Font License 1.1 (`OFL-1.1`)",
-        "BSD-2-Clause",
-    ] {
-        ensure!(
-            notices.contains(required),
-            "third-party notices omit `{required}`"
-        );
-    }
-    for entry in inventory
-        .entries
-        .iter()
-        .filter(|entry| entry.scope == Scope::Runtime)
-    {
-        let leaf = core::iter::Iterator::next(&mut entry.name.rsplit('/')).unwrap_or(&entry.name);
-        ensure!(
-            notices.contains(leaf) && notices.contains(&entry.version),
-            "third-party notices omit runtime input {} {}",
-            entry.name,
-            entry.version
-        );
-    }
+    require_notices(&notices, inventory)?;
     let ofl = read(
         paths.root().join("supply-chain/licenses/OFL-1.1.txt"),
         MAX_NOTICE_BYTES,
@@ -825,6 +833,53 @@ fn verify_notices(paths: &Paths, inventory: &Inventory) -> Result<()> {
         "the distributed OFL-1.1 license text is incomplete"
     );
     Ok(())
+}
+
+fn require_notices(notices: &str, inventory: &Inventory) -> Result<()> {
+    for required in [
+        "foundation.spdx",
+        "SIL Open Font License 1.1 (`OFL-1.1`)",
+        "BSD-2-Clause",
+    ] {
+        ensure!(
+            notices.contains(required),
+            "third-party notices omit `{required}`"
+        );
+    }
+    let runtime: BTreeSet<_> = inventory
+        .entries
+        .iter()
+        .filter(|entry| entry.scope == Scope::Runtime)
+        .map(|entry| (entry.name.clone(), entry.version.clone()))
+        .collect();
+    let noticed = notice_components(notices)?;
+    ensure!(
+        noticed == runtime,
+        "third-party notice entries differ from the runtime inventory\n  notices:   {noticed:?}\n  inventory: {runtime:?}"
+    );
+    Ok(())
+}
+
+/// The exact `name` `version` pairs that open the notice's component entries.
+fn notice_components(notices: &str) -> Result<BTreeSet<(String, String)>> {
+    let mut components = BTreeSet::new();
+    for line in notices.lines() {
+        let Some(entry) = line.strip_prefix("- `") else {
+            continue;
+        };
+        let (name, rest) = entry
+            .split_once('`')
+            .with_context(|| format!("notice entry has no closed name: {line}"))?;
+        let (version, _) = rest
+            .strip_prefix(" `")
+            .and_then(|rest| rest.split_once('`'))
+            .with_context(|| format!("notice entry for `{name}` has no exact version"))?;
+        ensure!(
+            components.insert((name.to_string(), version.to_string())),
+            "third-party notices repeat `{name}` `{version}`"
+        );
+    }
+    Ok(components)
 }
 
 fn render_spdx(inventory: &Inventory, source: &str) -> Result<String> {
@@ -959,6 +1014,8 @@ fn spdx_id(entry: &InventoryEntry) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+
     use super::*;
 
     #[cfg(unix)]
@@ -1327,6 +1384,116 @@ mod tests {
                 .is_empty()
         );
         std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn a_locked_package_from_any_other_source_is_refused() {
+        let lock = |source: &str| {
+            format!(
+                "version = 4\n\n[[package]]\nname = \"fixture\"\nversion = \"1.0.0\"\nsource = \"{source}\"\nchecksum = \"{}\"\n",
+                "a".repeat(64)
+            )
+        };
+        assert!(parse_lock(&lock(CRATES_IO)).unwrap()[0].registry);
+        for source in [
+            "registry+https://example.invalid/index",
+            "sparse+https://example.invalid/index/",
+            "git+https://example.invalid/fixture?rev=1#1",
+        ] {
+            let error = parse_lock(&lock(source)).unwrap_err().to_string();
+            assert!(error.contains("is not crates.io"), "{source}: {error}");
+        }
+    }
+
+    #[test]
+    fn every_dependency_declaration_shape_is_modeled_or_refused() {
+        let modeled = "[package]\nname = \"fixture\"\n\n[dependencies]\nplain = \"1\"\n\
+            shared.workspace = true\ninline = { workspace = true, features = [\n    \"x\",\n] }\n\n\
+            [target.'cfg(unix)'.dependencies]\nunix = \"1\"\n\n[dev-dependencies.tested]\n\
+            version = \"1\"\n\n[build-dependencies]\nbuilt = \"1\"\n";
+        let names = manifest_dependencies(modeled)
+            .unwrap()
+            .into_iter()
+            .map(|dependency| dependency.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["plain", "shared", "inline", "unix"]);
+
+        for (manifest, diagnostic) in [
+            (
+                "[dependencies.detailed]\nversion = \"1\"\n",
+                "`[dependencies.detailed]` is a dependency table",
+            ),
+            (
+                "[target.'cfg(unix)'.dependencies.detailed]\nversion = \"1\"\n",
+                "is a dependency table the runtime-scope reader does not model",
+            ),
+            (
+                "[dependencies]\ndotted.version = \"1\"\n",
+                "dotted dependency key `dotted.version`",
+            ),
+            (
+                "[dependencies]\nalias = { package = \"real\", version = \"1\" }\n",
+                "renamed dependency `alias`",
+            ),
+            (
+                "[dependencies]\nalias = { version = \"1\", package=\"real\" }\n",
+                "renamed dependency `alias`",
+            ),
+        ] {
+            let error = manifest_dependencies(manifest).unwrap_err().to_string();
+            assert!(error.contains(diagnostic), "{manifest}: {error}");
+        }
+    }
+
+    #[test]
+    fn each_runtime_component_has_exactly_one_exact_notice_entry() {
+        let (inventory, _) = records();
+        let preamble =
+            "See `foundation.spdx`. SIL Open Font License 1.1 (`OFL-1.1`); BSD-2-Clause.\n";
+        let entries = [
+            "- `limine` `0.5.0`, the crate: MIT.\n",
+            "- `bitflags` `2.13.1`: MIT.\n",
+            "- `noto-sans-mono-bitmap` `0.3.2`: MIT and OFL-1.1.\n",
+            "- `boot/limine/BOOTX64.EFI` `v10.x-binary-2026-07-18`: BSD-2-Clause.\n",
+        ];
+        let notices = |entries: &[&str]| format!("{preamble}{}", entries.concat());
+        require_notices(&notices(&entries), &inventory).unwrap();
+
+        let decoy = notices(&[
+            entries[0],
+            "- bitflags 2.13.1 appears here only as prose.\n",
+            entries[2],
+            entries[3],
+        ]);
+        let wrong_version = notices(&[
+            entries[0],
+            "- `bitflags` `2.13.0`: MIT.\n",
+            entries[2],
+            entries[3],
+        ]);
+        let extra = notices(&[
+            entries[0],
+            entries[1],
+            entries[2],
+            entries[3],
+            "- `syn` `2.0.119`: development only.\n",
+        ]);
+        for (label, text) in [
+            ("decoy", decoy),
+            ("wrong version", wrong_version),
+            ("extra", extra),
+        ] {
+            let error = require_notices(&text, &inventory).unwrap_err().to_string();
+            assert!(
+                error.contains("differ from the runtime inventory"),
+                "{label}: {error}"
+            );
+        }
+        let repeated = notices(&[entries[0], entries[1], entries[1], entries[2], entries[3]]);
+        let error = require_notices(&repeated, &inventory)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("repeat `bitflags` `2.13.1`"), "{error}");
     }
 
     #[test]

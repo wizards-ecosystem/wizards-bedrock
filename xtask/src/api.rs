@@ -6718,8 +6718,7 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
         parent,
         "API audit copied-file parent",
     )?;
-    let mut input = File::open(source)
-        .with_context(|| format!("opening API audit source {}", source.display()))?;
+    let mut input = crate::mutation_workspace::open_real_file(source, "API audit source file")?;
     let mut output_options = OpenOptions::new();
     OpenOptions::create_new(&mut output_options, true);
     OpenOptions::write(&mut output_options, true);

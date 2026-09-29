@@ -50,3 +50,8 @@ A bare `wizard-os.img` is a build artifact. A public distribution must carry
 `licenses/` directory beside it. The runtime rows are the shipped Rust and
 boot inputs. Development rows affect builds or verification but do not reach
 the disk image.
+
+Each runtime row has exactly one entry in `THIRD-PARTY-NOTICES.md`, and that entry
+opens with the row's name and version as two backticked fields. `cargo xtask
+supply-chain` compares those entries with the runtime rows in both directions
+(D-345).

@@ -13,7 +13,7 @@ use crate::cargo::Profile;
 use crate::paths::Paths;
 use crate::{bounded_process, gate, image, mutate, qemu, qualification, sha256, tasks, vendor};
 
-const FORMAT: &str = "wizard-evidence-v7";
+const FORMAT: &str = "wizard-evidence-v8";
 const MANIFEST_NAME: &str = "MANIFEST";
 const MANIFEST_TEMP: &str = "MANIFEST.incomplete";
 const PASS: &str = "pass";
@@ -277,6 +277,7 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
     record.insert("result.shipped-artifact-boot", PASS)?;
 
     verify_record(paths, &root, &record)?;
+    crate::git::resolved()?.require_unchanged()?;
     let manifest = root.join(MANIFEST_NAME);
     write_manifest(&root, &manifest, &record.render())?;
     println!("[xtask] release evidence ready at {}", manifest.display());
@@ -356,6 +357,9 @@ fn input_record(paths: &Paths) -> Result<Record> {
     let (commit, tree) = clean_source(paths.root())?;
     record.insert("source.commit", commit)?;
     record.insert("source.tree", tree)?;
+    for (key, value) in crate::git::resolved()?.fields() {
+        record.insert(key, value)?;
+    }
     add_digest_bounded(
         &mut record,
         "source.cargo-lock",
@@ -841,18 +845,16 @@ fn is_git_id(value: &str) -> bool {
 }
 
 fn git_output(root: &Path, args: &[&str], maximum: usize, label: &str) -> Result<String> {
-    let mut command = Command::new("git");
-    bounded_process::isolate_git_environment(&mut command);
-    command.current_dir(root).args(args);
+    let mut command = crate::git::resolved()?.command(root);
+    command.args(args);
     let output = bounded_process::output_with_limit(command, IDENTITY_DEADLINE, label, maximum)
         .with_context(|| format!("running git {}", args.join(" ")))?;
     normalize_command_output(Path::new("git"), args, output)
 }
 
 fn git_output_bytes(root: &Path, args: &[&str], maximum: usize, label: &str) -> Result<Vec<u8>> {
-    let mut command = Command::new("git");
-    bounded_process::isolate_git_environment(&mut command);
-    command.current_dir(root).args(args);
+    let mut command = crate::git::resolved()?.command(root);
+    command.args(args);
     let output = bounded_process::output_with_limit(command, IDENTITY_DEADLINE, label, maximum)
         .with_context(|| format!("running git {}", args.join(" ")))?;
     ensure!(
@@ -1017,7 +1019,7 @@ where
         .with_context(|| format!("{label} has no parent directory"))?;
     crate::mutation_workspace::canonical_existing_real_directory(parent, label)?;
     crate::mutation_workspace::require_direct_file(parent, path, label)?;
-    let file = File::open(path).with_context(|| format!("opening {label} {}", path.display()))?;
+    let file = crate::mutation_workspace::open_real_file(path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -1040,8 +1042,7 @@ where
     after_hash()?;
     crate::mutation_workspace::require_direct_file(parent, path, label)?;
     ensure!(
-        File::open(path)
-            .with_context(|| format!("reopening {label} {}", path.display()))?
+        crate::mutation_workspace::open_real_file(path, label)?
             .metadata()
             .with_context(|| format!("remeasuring {label} {}", path.display()))?
             .len()
@@ -1074,7 +1075,7 @@ where
         .with_context(|| format!("{label} has no parent directory"))?;
     crate::mutation_workspace::canonical_existing_real_directory(parent, label)?;
     crate::mutation_workspace::require_direct_file(parent, path, label)?;
-    let file = File::open(path).with_context(|| format!("opening {label} {}", path.display()))?;
+    let file = crate::mutation_workspace::open_real_file(path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -1117,7 +1118,7 @@ fn byte_identical(first: &Digest, second: &Digest) -> bool {
 }
 
 fn copy_exact(source: &Path, destination: &Path, expected: &Digest) -> Result<()> {
-    let mut input = File::open(source).with_context(|| format!("opening {}", source.display()))?;
+    let mut input = crate::mutation_workspace::open_real_file(source, "evidence source artifact")?;
     let mut output_options = OpenOptions::new();
     OpenOptions::create_new(&mut output_options, true);
     OpenOptions::write(&mut output_options, true);

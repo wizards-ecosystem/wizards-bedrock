@@ -333,8 +333,8 @@ impl RunVars {
             };
             after_reservation(&path);
             let copied = (|| -> Result<()> {
-                let mut source = File::open(template)
-                    .with_context(|| format!("opening {}", template.display()))?;
+                let mut source =
+                    crate::mutation_workspace::open_real_file(template, "QEMU variable firmware")?;
                 std::io::copy(&mut source, &mut destination).with_context(|| {
                     format!("copying {} to {}", template.display(), path.display())
                 })?;
@@ -355,14 +355,15 @@ impl RunVars {
                     "QEMU private run directory changed while copying firmware"
                 );
                 let source = crate::sha256::digest_reader(
-                    File::open(template)
-                        .with_context(|| format!("reopening {}", template.display()))?,
+                    crate::mutation_workspace::open_real_file(template, "QEMU variable firmware")?,
                 )
                 .with_context(|| format!("hashing private firmware {}", template.display()))?;
-                let copied = crate::sha256::digest_reader(
-                    File::open(&path).with_context(|| format!("reopening {}", path.display()))?,
-                )
-                .with_context(|| format!("hashing private firmware copy {}", path.display()))?;
+                let copied =
+                    crate::sha256::digest_reader(crate::mutation_workspace::open_real_file(
+                        &path,
+                        "private QEMU variable store",
+                    )?)
+                    .with_context(|| format!("hashing private firmware copy {}", path.display()))?;
                 ensure!(copied == source, "private firmware copy changed bytes");
                 Ok(())
             })();
@@ -585,10 +586,10 @@ fn publish_namespace(
             )? == canonical_parent,
             "QEMU storage directory changed during image construction"
         );
-        let expected = crate::sha256::digest_reader(
-            File::open(&staging)
-                .with_context(|| format!("opening NVMe staging image {}", staging.display()))?,
-        )
+        let expected = crate::sha256::digest_reader(crate::mutation_workspace::open_real_file(
+            &staging,
+            "NVMe staging image",
+        )?)
         .with_context(|| format!("hashing NVMe staging image {}", staging.display()))?;
 
         crate::mutation_workspace::publish_staged_file(
@@ -597,13 +598,10 @@ fn publish_namespace(
             backing,
             "NVMe image",
             |published| {
-                let digest =
-                    crate::sha256::digest_reader(File::open(published).with_context(|| {
-                        format!("opening published NVMe image {}", published.display())
-                    })?)
-                    .with_context(|| {
-                        format!("hashing published NVMe image {}", published.display())
-                    })?;
+                let digest = crate::sha256::digest_reader(
+                    crate::mutation_workspace::open_real_file(published, "published NVMe image")?,
+                )
+                .with_context(|| format!("hashing published NVMe image {}", published.display()))?;
                 ensure!(
                     digest == expected,
                     "published NVMe image differs from its staged bytes"

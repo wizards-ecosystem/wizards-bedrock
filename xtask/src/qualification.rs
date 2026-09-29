@@ -21,7 +21,7 @@ use crate::mutation_workspace::{CurrentPass, PassEvidence};
 use crate::paths::Paths;
 use crate::sha256;
 
-const FORMAT: &str = "wizard-qualification-v3";
+const FORMAT: &str = "wizard-qualification-v4";
 const RECORD: &str = "record";
 const RECORD_TEMP: &str = "record.incomplete";
 const PASS: &str = "pass";
@@ -2147,6 +2147,9 @@ fn base_record_for_source(kind: Kind, source: &SourceIdentity) -> Result<Record>
     record.insert("kind", kind.slug())?;
     record.insert("source.commit", &source.commit)?;
     record.insert("source.tree", &source.tree)?;
+    for (key, value) in crate::git::resolved()?.fields() {
+        record.insert(key, value)?;
+    }
     Ok(record)
 }
 
@@ -2356,6 +2359,7 @@ fn invalidate_record(paths: &Paths, kind: Kind) -> Result<()> {
 
 fn commit_record(paths: &Paths, kind: Kind, record: &Record) -> Result<()> {
     validate_record(record, kind)?;
+    crate::git::resolved()?.require_unchanged()?;
     let directory = kind_directory(paths, kind)?;
     let temporary = directory.join(RECORD_TEMP);
     let final_path = directory.join(RECORD);
@@ -2433,6 +2437,7 @@ fn validate_record(record: &Record, kind: Kind) -> Result<()> {
         "source.commit".to_string(),
         "source.tree".to_string(),
     ]);
+    expected.extend(crate::git::FIELDS.map(str::to_string));
     match kind {
         Kind::Advisory => {
             add_tool_keys(&mut expected, "input.cargo-audit");
@@ -2606,6 +2611,7 @@ fn validate_record(record: &Record, kind: Kind) -> Result<()> {
         is_git_id(record.get("source.tree")?),
         "qualification tree is malformed"
     );
+    crate::git::validate_fields(|key| record.get(key))?;
     for (key, value) in &record.fields {
         if key.ends_with(".sha256") {
             ensure!(
@@ -2722,16 +2728,18 @@ fn digest_bytes(bytes: &[u8]) -> Digest {
 }
 
 pub(crate) fn read_bounded_file(path: &Path, maximum: u64, label: &str) -> Result<Vec<u8>> {
-    read_bounded_file_with(path, maximum, label, || Ok(()))
+    read_bounded_file_with(path, maximum, label, || Ok(()), || Ok(()))
 }
 
-fn read_bounded_file_with<F>(
+fn read_bounded_file_with<E, F>(
     path: &Path,
     maximum: u64,
     label: &str,
+    before_open: E,
     after_metadata: F,
 ) -> Result<Vec<u8>>
 where
+    E: FnOnce() -> Result<()>,
     F: FnOnce() -> Result<()>,
 {
     let parent = path
@@ -2739,8 +2747,8 @@ where
         .with_context(|| format!("{label} has no parent directory"))?;
     crate::mutation_workspace::canonical_existing_real_directory(parent, label)?;
     crate::mutation_workspace::require_direct_file(parent, path, label)?;
-    let mut file =
-        File::open(path).with_context(|| format!("opening {label} {}", path.display()))?;
+    before_open()?;
+    let mut file = crate::mutation_workspace::open_real_file(path, label)?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {label} {}", path.display()))?
@@ -2824,8 +2832,7 @@ where
         | VMWARE_OBSERVER => (MAX_VMWARE_TEXT_BYTES, false, "VMware text artifact"),
         _ => bail!("unregistered VMware artifact `{name}`"),
     };
-    let mut input =
-        File::open(source).with_context(|| format!("opening {label} {}", source.display()))?;
+    let mut input = crate::mutation_workspace::open_real_file(source, label)?;
     let initial = input
         .metadata()
         .with_context(|| format!("measuring {label} {}", source.display()))?
@@ -3022,7 +3029,8 @@ pub(crate) fn bundle_file_size_policy(spec: &BundleFile) -> Result<(u64, bool)> 
 
 fn copy_exact(source: &Path, destination: &Path, expected: &Digest) -> Result<()> {
     require_regular_file(source, "qualification source artifact")?;
-    let mut input = File::open(source).with_context(|| format!("opening {}", source.display()))?;
+    let mut input =
+        crate::mutation_workspace::open_real_file(source, "qualification source artifact")?;
     let mut options = OpenOptions::new();
     OpenOptions::create_new(&mut options, true);
     OpenOptions::write(&mut options, true);
@@ -3098,8 +3106,7 @@ fn tracked_tree_digest(root: &Path, directory: &str) -> Result<TreeDigest> {
     for relative in &paths {
         let path = root.join(relative);
         require_contained_regular_file(root, &path, "tracked model input")?;
-        let mut file =
-            File::open(&path).with_context(|| format!("opening model input {relative}"))?;
+        let mut file = crate::mutation_workspace::open_real_file(&path, "tracked model input")?;
         let length = file
             .metadata()
             .with_context(|| format!("measuring model input {relative}"))?
@@ -3697,9 +3704,8 @@ fn git_output_bytes_with<F>(
 where
     F: FnOnce(Command, Duration, &str, usize) -> Result<Output>,
 {
-    let mut command = Command::new("git");
-    crate::bounded_process::isolate_git_environment(&mut command);
-    command.current_dir(root).args(args);
+    let mut command = crate::git::resolved()?.command(root);
+    command.args(args);
     let command_label = format!("{label}: git {}", args.join(" "));
     let output = run(command, PROBE_TIMEOUT, &command_label, maximum)?;
     ensure!(
@@ -3937,12 +3943,25 @@ fn normalize(text: &str) -> String {
 mod tests {
     use super::*;
 
+    fn fixture_git(record: &mut Record) {
+        let path = std::env::current_dir().unwrap().join("git");
+        for (key, value) in [
+            ("tool.git.bytes", "1".to_string()),
+            ("tool.git.path", path.to_string_lossy().into_owned()),
+            ("tool.git.sha256", "f".repeat(64)),
+            ("tool.git.version", "git version 2.44.0".to_string()),
+        ] {
+            record.insert(key, value).unwrap();
+        }
+    }
+
     fn complete_record(kind: Kind) -> Record {
         let mut record = Record::default();
         record.insert("kind", kind.slug()).unwrap();
         record.insert("result", PASS).unwrap();
         record.insert("source.commit", "a".repeat(40)).unwrap();
         record.insert("source.tree", "b".repeat(40)).unwrap();
+        fixture_git(&mut record);
         match kind {
             Kind::Advisory => {
                 fixture_tool(&mut record, "input.cargo-audit");
@@ -4289,6 +4308,16 @@ mod tests {
     #[cfg(windows)]
     fn create_directory_symlink(target: &Path, link: &Path) {
         std::os::windows::fs::symlink_dir(target, link).expect("creating directory symlink");
+    }
+
+    #[cfg(unix)]
+    fn create_file_symlink(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("creating file symlink");
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(target: &Path, link: &Path) {
+        std::os::windows::fs::symlink_file(target, link).expect("creating file symlink");
     }
 
     fn write_snapshot_bundle(root: &Path) {
@@ -4782,14 +4811,57 @@ mod tests {
 
         std::fs::write(&path, b"x").unwrap();
         let changed = path.clone();
-        let error = read_bounded_file_with(&path, 32, "fixture artifact", move || {
-            OpenOptions::open(OpenOptions::write(&mut OpenOptions::new(), true), changed)?
-                .set_len(33)?;
-            Ok(())
-        })
+        let error = read_bounded_file_with(
+            &path,
+            32,
+            "fixture artifact",
+            || Ok(()),
+            move || {
+                OpenOptions::open(OpenOptions::write(&mut OpenOptions::new(), true), changed)?
+                    .set_len(33)?;
+                Ok(())
+            },
+        )
         .unwrap_err()
         .to_string();
         assert!(error.contains("grew beyond the 32-byte allocation limit"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_artifact_swapped_for_a_link_after_its_check_is_never_read() {
+        let nonce = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "wizard-swapped-artifact-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("report.md");
+        let parked = root.join("parked");
+        let secret = root.join("secret");
+        std::fs::write(&path, b"producer report").unwrap();
+        std::fs::write(&secret, b"operator secret").unwrap();
+        let (link, target, original, restored) =
+            (path.clone(), secret.clone(), path.clone(), parked.clone());
+        let result = read_bounded_file_with(
+            &path,
+            64,
+            "fixture report",
+            move || {
+                std::fs::rename(&link, &parked)?;
+                create_file_symlink(&target, &link);
+                Ok(())
+            },
+            move || {
+                std::fs::remove_file(&original)?;
+                std::fs::rename(&restored, &original)?;
+                Ok(())
+            },
+        );
+        let error = result
+            .expect_err("a link swapped in after the path check was read")
+            .to_string();
+        assert!(error.contains("is not a real file"), "{error}");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -5031,7 +5103,13 @@ mod tests {
             32,
             "fixture Git query",
             |command, timeout, label, limit| {
-                assert_eq!(command.get_program(), std::ffi::OsStr::new("git"));
+                assert_eq!(
+                    command.get_program(),
+                    crate::git::resolved()
+                        .unwrap()
+                        .command(Path::new("."))
+                        .get_program()
+                );
                 assert_eq!(timeout, PROBE_TIMEOUT);
                 assert_eq!(limit, 32);
                 let mut noisy = Command::new(&executable);

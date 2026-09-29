@@ -5,7 +5,6 @@
 //! than an opaque one.
 
 use std::collections::BTreeSet;
-use std::fs::File;
 use std::io::Read;
 use std::path::{Component, Path};
 
@@ -113,8 +112,7 @@ pub fn verify_listing(listing: &Path) -> Result<usize> {
     for entry in &entries {
         let file = dir.join(&entry.name);
         crate::mutation_workspace::require_direct_file(dir, &file, "vendored payload")?;
-        let length = File::open(&file)
-            .with_context(|| format!("opening {}", file.display()))?
+        let length = crate::mutation_workspace::open_real_file(&file, "vendored payload")?
             .metadata()
             .with_context(|| format!("measuring {}", file.display()))?
             .len();
@@ -136,14 +134,13 @@ pub fn verify_listing(listing: &Path) -> Result<usize> {
 
     for (entry, file, length) in measured {
         crate::mutation_workspace::require_direct_file(dir, &file, "vendored payload")?;
-        let input = File::open(&file).with_context(|| format!("opening {}", file.display()))?;
+        let input = crate::mutation_workspace::open_real_file(&file, "vendored payload")?;
         let (bytes, digest) = sha256::digest_reader(input.take(length + 1))
             .with_context(|| format!("hashing {}", file.display()))?;
         crate::mutation_workspace::require_direct_file(dir, &file, "vendored payload")?;
         ensure!(
             bytes == length
-                && File::open(&file)
-                    .with_context(|| format!("reopening {}", file.display()))?
+                && crate::mutation_workspace::open_real_file(&file, "vendored payload")?
                     .metadata()
                     .with_context(|| format!("remeasuring {}", file.display()))?
                     .len()
@@ -201,7 +198,7 @@ where
     let parent = path.parent().unwrap_or(Path::new("."));
     crate::mutation_workspace::canonical_existing_real_directory(parent, "vendor directory")?;
     crate::mutation_workspace::require_direct_file(parent, path, "vendor checksum listing")?;
-    let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut file = crate::mutation_workspace::open_real_file(path, "vendor checksum listing")?;
     let initial = file
         .metadata()
         .with_context(|| format!("measuring {}", path.display()))?
@@ -258,6 +255,8 @@ pub fn verify(paths: &Paths) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+
     use super::*;
 
     const DIGEST: &str = "91ef81c1f95c4ac8bf77c4393a0b2fcd2628550827d7abf89a43194400e17a85";
