@@ -739,11 +739,11 @@ not this slice's.
 ### The harness can press a key
 
 D-28's machinery can only observe what the machine does to itself; input
-needs an outside hand. The hand is QMP, QEMU's JSON control socket, spoken
-by a hand-rolled client in `xtask/src/qmp.rs` — three fixed exchanges, no
-JSON dependency, on the same argument as the hand-rolled SHA-256. The
-harness binds a loopback listener before the spawn and QEMU dials out to
-it, so there is no port to guess and no connect to race.
+needs an outside hand. The hand is QMP, QEMU's JSON control protocol, spoken
+by a hand-rolled client in `xtask/src/qmp.rs` with no JSON dependency, on the
+same argument as the hand-rolled SHA-256. It runs over QEMU's own standard
+input and output, which only the harness that spawned it holds, so no other
+local process can reach the channel (D-346).
 
 The injection is gated on a marker, not sprayed from power-on: early
 keys would land in firmware setup prompts or the bootloader's menu, and the

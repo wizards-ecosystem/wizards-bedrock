@@ -123,6 +123,7 @@ const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
     ),
     ("xtask/src/qemu.rs", "qemu::DebugMachine"),
     ("xtask/src/qemu.rs", "qemu::RunVars"),
+    ("xtask/src/qemu.rs", "qemu::SerialFile"),
     ("xtask/src/qemu.rs", "qemu::tests::QemuFixture"),
 ];
 
@@ -260,6 +261,13 @@ const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
         member: "create_with",
         implemented_trait: None,
         produced: "qemu::RunVars",
+    },
+    ReviewedDropProducer {
+        relative: "xtask/src/qemu.rs",
+        owner: "qemu::SerialFile",
+        member: "create",
+        implemented_trait: None,
+        produced: "qemu::SerialFile",
     },
     ReviewedDropProducer {
         relative: "xtask/src/qemu.rs",

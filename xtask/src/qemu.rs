@@ -3,9 +3,8 @@
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
@@ -15,7 +14,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use panic_record::{COMPLETE_MARKER, OPEN_PREFIX};
 
 use crate::paths::Paths;
-use crate::qmp::Qmp;
+use crate::qmp::{NOT_CANCELLED, Qmp};
 
 /// Default install location on Windows, checked before `PATH`.
 const WINDOWS_DEFAULT: &str = r"C:\Program Files\qemu";
@@ -187,6 +186,7 @@ pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
 pub(crate) struct DebugMachine {
     child: Option<Child>,
     endpoint: String,
+    _qmp: Qmp,
     _vars: RunVars,
 }
 
@@ -195,13 +195,11 @@ impl DebugMachine {
     pub(crate) fn start(paths: &Paths, image: &Path) -> Result<Self> {
         let installation = installation()?;
         let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
-        let monitor_listener = control_listener("debug monitor")?;
-        let monitor_endpoint = control_endpoint(&monitor_listener, MONITOR_CLIENT_SUFFIX)?;
 
         let mut child = Command::new(&installation.emulator)
             .args(MACHINE)
             .args(["-S", "-display", "none", "-serial", "null", "-no-reboot"])
-            .args(["-monitor", &monitor_endpoint])
+            .args(QMP_ON_STDIO)
             .args(drive_file(
                 "if=pflash,format=raw,readonly=on",
                 &installation.code_firmware,
@@ -209,26 +207,28 @@ impl DebugMachine {
             .args(drive_file("if=pflash,format=raw", vars.path()))
             .args(snapshot_drive_file("format=raw", image))
             .args(storage(paths.root())?)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
             .spawn()
             .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
 
-        let endpoint = (|| -> Result<String> {
+        let started = (|| -> Result<(Qmp, String)> {
             let deadline = Instant::now() + DEBUG_CONTROL_TIMEOUT;
-            let mut monitor = Monitor::accept(&monitor_listener, deadline)
-                .context("accepting the paused machine's monitor")?;
-            monitor
-                .command("gdbserver tcp:127.0.0.1:0\n")
+            let mut qmp = attach_qmp(&mut child, deadline, &NOT_CANCELLED)
+                .context("negotiating the paused machine's QMP session")?;
+            qmp.human("gdbserver tcp:127.0.0.1:0", deadline, &NOT_CANCELLED)
                 .context("starting QEMU's dynamic GDB server")?;
-            let report = monitor
-                .command("info chardev\n")
+            let report = qmp
+                .human("info chardev", deadline, &NOT_CANCELLED)
                 .context("querying QEMU's dynamic GDB endpoint")?;
-            parse_debug_endpoint(&report)
+            Ok((qmp, parse_debug_endpoint(&report)?))
         })();
 
-        match endpoint {
-            Ok(endpoint) => Ok(Self {
+        match started {
+            Ok((qmp, endpoint)) => Ok(Self {
                 child: Some(child),
                 endpoint,
+                _qmp: qmp,
                 _vars: vars,
             }),
             Err(error) => {
@@ -302,6 +302,34 @@ fn snapshot_drive_file(options: &str, path: &Path) -> [OsString; 2] {
 
 static NEXT_RUN: AtomicU64 = AtomicU64::new(0);
 
+/// Create a fresh file in the private QEMU run directory; a name another run
+/// already holds is skipped, never reused.
+fn reserve_run_file(
+    target: &Path,
+    stem: &str,
+    extension: &str,
+) -> Result<(PathBuf, PathBuf, File)> {
+    let directory = crate::image::qemu_run_directory(target)?;
+    for _ in 0..1024 {
+        let sequence = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
+        let path = directory.join(format!(
+            "{stem}-{}-{sequence}.{extension}",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        OpenOptions::write(&mut options, true);
+        OpenOptions::create_new(&mut options, true);
+        match OpenOptions::open(&options, &path) {
+            Ok(file) => return Ok((directory, path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("creating {}", path.display()));
+            }
+        }
+    }
+    bail!("could not reserve a private QEMU {stem} file")
+}
+
 struct RunVars {
     path: PathBuf,
 }
@@ -316,66 +344,49 @@ impl RunVars {
         template: &Path,
         after_reservation: impl Fn(&Path),
     ) -> Result<Self> {
-        let directory = crate::image::qemu_run_directory(target)?;
-
-        for _ in 0..1024 {
-            let sequence = NEXT_RUN.fetch_add(1, Ordering::Relaxed);
-            let path = directory.join(format!("efi-vars-{}-{sequence}.fd", std::process::id()));
-            let mut destination_options = OpenOptions::new();
-            OpenOptions::write(&mut destination_options, true);
-            OpenOptions::create_new(&mut destination_options, true);
-            let mut destination = match OpenOptions::open(&destination_options, &path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => {
-                    return Err(error).with_context(|| format!("creating {}", path.display()));
-                }
-            };
-            after_reservation(&path);
-            let copied = (|| -> Result<()> {
-                let mut source =
-                    crate::mutation_workspace::open_real_file(template, "QEMU variable firmware")?;
-                std::io::copy(&mut source, &mut destination).with_context(|| {
-                    format!("copying {} to {}", template.display(), path.display())
-                })?;
-                destination
-                    .sync_all()
-                    .with_context(|| format!("flushing {}", path.display()))?;
-                drop(destination);
-                crate::mutation_workspace::require_direct_file(
-                    &directory,
-                    &path,
-                    "private QEMU variable store",
-                )?;
-                ensure!(
-                    crate::mutation_workspace::canonical_existing_real_directory(
-                        &directory,
-                        "QEMU private run directory",
-                    )? == directory,
-                    "QEMU private run directory changed while copying firmware"
-                );
-                let source = crate::sha256::digest_reader(
-                    crate::mutation_workspace::open_real_file(template, "QEMU variable firmware")?,
-                )
-                .with_context(|| format!("hashing private firmware {}", template.display()))?;
-                let copied =
-                    crate::sha256::digest_reader(crate::mutation_workspace::open_real_file(
-                        &path,
-                        "private QEMU variable store",
-                    )?)
-                    .with_context(|| format!("hashing private firmware copy {}", path.display()))?;
-                ensure!(copied == source, "private firmware copy changed bytes");
-                Ok(())
-            })();
-            crate::mutation_workspace::finish_staged_operation(
+        let (directory, path, mut destination) = reserve_run_file(target, "efi-vars", "fd")?;
+        after_reservation(&path);
+        let copied = (|| -> Result<()> {
+            let mut source =
+                crate::mutation_workspace::open_real_file(template, "QEMU variable firmware")?;
+            std::io::copy(&mut source, &mut destination)
+                .with_context(|| format!("copying {} to {}", template.display(), path.display()))?;
+            destination
+                .sync_all()
+                .with_context(|| format!("flushing {}", path.display()))?;
+            drop(destination);
+            crate::mutation_workspace::require_direct_file(
                 &directory,
                 &path,
                 "private QEMU variable store",
-                copied,
             )?;
-            return Ok(Self { path });
-        }
-        bail!("could not reserve a private QEMU variable store")
+            ensure!(
+                crate::mutation_workspace::canonical_existing_real_directory(
+                    &directory,
+                    "QEMU private run directory",
+                )? == directory,
+                "QEMU private run directory changed while copying firmware"
+            );
+            let source = crate::sha256::digest_reader(crate::mutation_workspace::open_real_file(
+                template,
+                "QEMU variable firmware",
+            )?)
+            .with_context(|| format!("hashing private firmware {}", template.display()))?;
+            let copied = crate::sha256::digest_reader(crate::mutation_workspace::open_real_file(
+                &path,
+                "private QEMU variable store",
+            )?)
+            .with_context(|| format!("hashing private firmware copy {}", path.display()))?;
+            ensure!(copied == source, "private firmware copy changed bytes");
+            Ok(())
+        })();
+        crate::mutation_workspace::finish_staged_operation(
+            &directory,
+            &path,
+            "private QEMU variable store",
+            copied,
+        )?;
+        Ok(Self { path })
     }
 
     fn path(&self) -> &Path {
@@ -1404,14 +1415,15 @@ fn correlate_selftest(
     }
 }
 
-// Monitor registers are the only hang evidence when the serial log is empty.
-fn report_hang(listener: &TcpListener) {
-    let Ok(mut monitor) = Monitor::accept(listener, Instant::now() + MONITOR_TIMEOUT) else {
-        println!("[xtask] no monitor: where the kernel hung is unknown");
+// Registers are the only hang evidence when the serial log is empty.
+fn report_hang(qmp: Option<&mut Qmp>) {
+    let Some(qmp) = qmp else {
+        println!("[xtask] no QMP session: where the kernel hung is unknown");
         return;
     };
-    let Ok(state) = monitor.command("info registers\n") else {
-        println!("[xtask] no monitor: where the kernel hung is unknown");
+    let deadline = Instant::now() + MONITOR_TIMEOUT;
+    let Ok(state) = qmp.human("info registers", deadline, &NOT_CANCELLED) else {
+        println!("[xtask] no monitor reply: where the kernel hung is unknown");
         return;
     };
     for line in state
@@ -1426,7 +1438,7 @@ fn report_hang(listener: &TcpListener) {
     else {
         return;
     };
-    let Ok(code) = monitor.command(&format!("x/8i 0x{rip}\n")) else {
+    let Ok(code) = qmp.human(&format!("x/8i 0x{rip}"), deadline, &NOT_CANCELLED) else {
         return;
     };
     for line in code
@@ -1437,87 +1449,94 @@ fn report_hang(listener: &TcpListener) {
     }
 }
 
-struct ControlSockets {
-    qmp: TcpListener,
-    monitor: TcpListener,
+/// QMP on the child's own standard streams, which only the harness holds
+/// (D-346). Serial output therefore goes to a private run file.
+const QMP_ON_STDIO: [&str; 2] = ["-qmp", "stdio"];
+
+/// Negotiate QMP over the piped standard streams of a freshly spawned QEMU.
+fn attach_qmp(child: &mut Child, deadline: Instant, cancelled: &AtomicBool) -> Result<Qmp> {
+    let input = child.stdin.take().context("taking QEMU's stdin pipe")?;
+    let output = child.stdout.take().context("taking QEMU's stdout pipe")?;
+    Qmp::negotiate(input, output, deadline, cancelled)
 }
 
-impl ControlSockets {
-    fn bind() -> Result<Self> {
-        let qmp = control_listener("QMP")?;
-        let monitor = control_listener("monitor")?;
-        Ok(Self { qmp, monitor })
+/// One run's serial transcript file, created exclusively and removed on drop.
+struct SerialFile {
+    path: PathBuf,
+    closed: Arc<AtomicBool>,
+}
+
+impl SerialFile {
+    fn create(target: &Path) -> Result<Self> {
+        let (_, path, _) = reserve_run_file(target, "serial", "log")?;
+        Ok(Self {
+            path,
+            closed: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// The character device that sends the guest's first serial port here.
+    fn arguments(&self) -> [OsString; 4] {
+        let escaped = self.path.to_string_lossy().replace(',', ",,");
+        [
+            OsString::from("-chardev"),
+            OsString::from(format!("file,id=serial0,path={escaped}")),
+            OsString::from("-serial"),
+            OsString::from("chardev:serial0"),
+        ]
+    }
+
+    /// A reader that follows the file until [`Self::close`] is called.
+    fn follow(&self) -> Result<SerialTail> {
+        Ok(SerialTail {
+            file: crate::mutation_workspace::open_real_file(&self.path, "QEMU serial transcript")?,
+            closed: Arc::clone(&self.closed),
+        })
+    }
+
+    /// Record that QEMU has exited, so the follower drains and ends.
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
     }
 }
 
-fn control_listener(label: &str) -> Result<TcpListener> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .with_context(|| format!("binding the {label} loopback listener"))?;
-    listener
-        .set_nonblocking(true)
-        .with_context(|| format!("making the {label} listener non-blocking"))?;
-    Ok(listener)
-}
-
-fn control_endpoint(listener: &TcpListener, suffix: &str) -> Result<String> {
-    Ok(format!(
-        "tcp:{}{suffix}",
-        listener
-            .local_addr()
-            .context("reading a control-socket address")?
-    ))
-}
-
-struct Monitor {
-    stream: TcpStream,
-    reader: BufReader<TcpStream>,
-}
-
-impl Monitor {
-    fn accept(listener: &TcpListener, deadline: Instant) -> Result<Self> {
-        let stream = accept_stream_before(listener, deadline, None)?;
-        stream
-            .set_nonblocking(false)
-            .context("switching the monitor stream to blocking")?;
-        stream
-            .set_read_timeout(Some(MONITOR_TIMEOUT))
-            .context("setting the QEMU monitor read timeout")?;
-        let reader = BufReader::new(stream.try_clone().context("cloning the monitor stream")?);
-        let mut monitor = Self { stream, reader };
-        monitor.read_reply().context("reading the monitor prompt")?;
-        Ok(monitor)
+impl Drop for SerialFile {
+    fn drop(&mut self) {
+        self.close();
+        let _ = std::fs::remove_file(&self.path);
     }
+}
 
-    fn command(&mut self, command: &str) -> Result<String> {
-        self.stream
-            .write_all(command.as_bytes())
-            .context("writing a QEMU monitor command")?;
-        self.read_reply()
-    }
+/// Reads a serial transcript as QEMU appends it, and ends once QEMU has exited
+/// and every byte it wrote has been read.
+struct SerialTail {
+    file: File,
+    closed: Arc<AtomicBool>,
+}
 
-    fn read_reply(&mut self) -> Result<String> {
-        let mut text = String::new();
-        let mut buffer = [0u8; 4096];
-        while !text.contains(MONITOR_PROMPT) {
-            let read = Read::read(&mut self.reader, &mut buffer)
-                .context("reading a QEMU monitor reply")?;
-            if read == 0 {
-                bail!("QEMU monitor closed before completing its reply");
+impl Read for SerialTail {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            // Observed before reading: a read begun after QEMU exited sees
+            // every byte it wrote, so an empty read then is the true end.
+            let closed = self.closed.load(Ordering::Acquire);
+            let read = self.file.read(buffer)?;
+            if read > 0 || buffer.is_empty() || closed {
+                return Ok(read);
             }
-            text.push_str(&String::from_utf8_lossy(&buffer[..read]));
+            std::thread::sleep(SERIAL_POLL);
         }
-        Ok(text)
     }
 }
+
+/// How often a serial follower looks for newly appended bytes.
+const SERIAL_POLL: Duration = Duration::from_millis(10);
 
 /// Long enough for a reply, short enough not to extend a failing run.
 const MONITOR_TIMEOUT: Duration = Duration::from_millis(1500);
 
-/// What the monitor prints when it wants a command.
-const MONITOR_PROMPT: &str = "(qemu)";
-
-/// Make QEMU dial the listener already owned by the harness.
-const MONITOR_CLIENT_SUFFIX: &str = ",server=off";
+/// How long QEMU has to greet and accept capabilities after it starts.
+const QMP_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A kernel that neither passes nor fails within `timeout` is a hang, which is
 /// itself a failure — so the emulator is killed rather than left running.
@@ -1570,18 +1589,16 @@ fn observe_selftest_run(
 ) -> Result<(SelftestOutcome, Option<PerformanceSample>)> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
-    let ControlSockets { qmp, monitor } = ControlSockets::bind()?;
-    let qmp_endpoint = control_endpoint(&qmp, "")?;
-    let monitor_endpoint = control_endpoint(&monitor, MONITOR_CLIENT_SUFFIX)?;
+    let serial = SerialFile::create(paths.target_dir())?;
 
     println!("[xtask] booting the self-test kernel");
 
     let mut child = Command::new(&installation.emulator)
         .args(MACHINE)
-        .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
+        .args(["-display", "none", "-no-reboot"])
+        .args(serial.arguments())
         .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
-        .args(["-qmp", &qmp_endpoint])
-        .args(["-monitor", &monitor_endpoint])
+        .args(QMP_ON_STDIO)
         .args(drive_file(
             "if=pflash,format=raw,readonly=on",
             &installation.code_firmware,
@@ -1589,16 +1606,16 @@ fn observe_selftest_run(
         .args(drive_file("if=pflash,format=raw", vars.path()))
         .args(snapshot_drive_file("format=raw", image))
         .args(storage(paths.root())?)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
 
-    let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
     let markers_seen = Arc::new(AtomicUsize::new(0));
     let panicked = Arc::new(AtomicBool::new(false));
     let serial_failed = Arc::new(AtomicBool::new(false));
     let forwarder = forward_serial(
-        stdout,
+        serial.follow()?,
         Arc::clone(&markers_seen),
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
@@ -1608,11 +1625,11 @@ fn observe_selftest_run(
     let deadline = Instant::now() + timeout;
     let injection_cancelled = Arc::new(AtomicBool::new(false));
     let injector = inject_on_marker(
-        qmp,
+        &mut child,
         markers_seen,
         deadline,
         Arc::clone(&injection_cancelled),
-    );
+    )?;
     let status = loop {
         if let Some(status) = child.try_wait().context("waiting for QEMU")? {
             break status;
@@ -1621,6 +1638,7 @@ fn observe_selftest_run(
         // would otherwise be the only way it ever ends.
         if panicked.load(Ordering::Acquire) {
             stop_qemu(&mut child)?;
+            serial.close();
             let observation = finish_selftest_serial(forwarder)?;
             finish_injector(injector, &injection_cancelled)?;
             let baseline = observation.baseline;
@@ -1628,15 +1646,17 @@ fn observe_selftest_run(
         }
         if serial_failed.load(Ordering::Acquire) {
             stop_qemu(&mut child)?;
+            serial.close();
             finish_selftest_serial(forwarder)?;
             finish_injector(injector, &injection_cancelled)?;
             unreachable!("a flagged serial failure returned success");
         }
         if Instant::now() >= deadline {
-            report_hang(&monitor);
+            let mut qmp = finish_injector(injector, &injection_cancelled)?;
+            report_hang(qmp.as_mut());
             stop_qemu(&mut child)?;
+            serial.close();
             finish_selftest_serial(forwarder)?;
-            finish_injector(injector, &injection_cancelled)?;
             bail!(
                 "self-test did not finish within {} seconds",
                 timeout.as_secs()
@@ -1646,6 +1666,7 @@ fn observe_selftest_run(
     };
 
     // Drain serial before correlation so late failure lines are not lost.
+    serial.close();
     let observation = finish_selftest_serial(forwarder)?;
     finish_injector(injector, &injection_cancelled)?;
 
@@ -1673,7 +1694,7 @@ fn require_selftest(outcome: SelftestOutcome) -> Result<()> {
 /// A kernel that dies mid-line still shows its last words: the unterminated
 /// remainder at end-of-stream is forwarded too.
 fn forward_serial(
-    stdout: ChildStdout,
+    serial: impl Read + Send + 'static,
     markers_seen: Arc<AtomicUsize>,
     panicked: Arc<AtomicBool>,
     serial_failed: Arc<AtomicBool>,
@@ -1681,7 +1702,7 @@ fn forward_serial(
     marker_order: InteractiveMarkerOrder,
 ) -> JoinHandle<Result<SerialObservation>> {
     std::thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
+        let mut reader = BufReader::new(serial);
         let mut line = Vec::new();
         let mut observation = SerialObservation::default();
         let mut next_interactive_marker = 0;
@@ -1742,86 +1763,69 @@ fn finish_selftest_serial(
 }
 
 /// Inject each key after its marker without letting a QMP stall delay the boot
-/// deadline; every exit path cancels and joins this dedicated thread.
+/// deadline; every exit path cancels and joins this dedicated thread, which
+/// hands its negotiated session back for any later hang report.
 fn inject_on_marker(
-    listener: TcpListener,
+    child: &mut Child,
     markers_seen: Arc<AtomicUsize>,
     deadline: Instant,
     cancelled: Arc<AtomicBool>,
-) -> JoinHandle<()> {
-    std::thread::spawn(move || {
-        let outcome = accept_stream_before(&listener, deadline, Some(&cancelled))
-            .and_then(Qmp::handshake)
-            .and_then(|mut qmp| {
-                let mut injected = 0;
-                for (round, keys) in [
-                    (1, STORAGE_DELAY_QCODES),
-                    (2, INJECTED_QCODES),
-                    (3, TRANSLATED_QCODES),
-                ] {
-                    let action = loop {
-                        let observed = markers_seen.load(Ordering::Acquire);
-                        let action = injection_action(observed, round);
-                        if action != InjectionAction::Wait {
-                            break action;
-                        }
-                        if cancelled.load(Ordering::Acquire) {
-                            bail!("QMP injection was cancelled");
-                        }
-                        if Instant::now() >= deadline {
-                            bail!("QMP injection reached the run deadline");
-                        }
-                        std::thread::sleep(POLL_INTERVAL);
-                    };
-                    if action == InjectionAction::Skip {
-                        continue;
+) -> Result<JoinHandle<Option<Qmp>>> {
+    let input = child.stdin.take().context("taking QEMU's stdin pipe")?;
+    let output = child.stdout.take().context("taking QEMU's stdout pipe")?;
+    Ok(std::thread::spawn(move || {
+        let mut session = None;
+        let outcome = (|| -> Result<usize> {
+            let negotiation = deadline.min(Instant::now() + QMP_NEGOTIATION_TIMEOUT);
+            let qmp = session.insert(Qmp::negotiate(input, output, negotiation, &cancelled)?);
+            let mut injected = 0;
+            for (round, keys) in [
+                (1, STORAGE_DELAY_QCODES),
+                (2, INJECTED_QCODES),
+                (3, TRANSLATED_QCODES),
+            ] {
+                let action = loop {
+                    let observed = markers_seen.load(Ordering::Acquire);
+                    let action = injection_action(observed, round);
+                    if action != InjectionAction::Wait {
+                        break action;
                     }
-                    keys.iter().try_for_each(|qcode| qmp.inject_key(qcode))?;
-                    injected += keys.len();
+                    if cancelled.load(Ordering::Acquire) {
+                        bail!("QMP injection was cancelled");
+                    }
+                    if Instant::now() >= deadline {
+                        bail!("QMP injection reached the run deadline");
+                    }
+                    std::thread::sleep(POLL_INTERVAL);
+                };
+                if action == InjectionAction::Skip {
+                    continue;
                 }
-                Ok(injected)
-            });
+                keys.iter()
+                    .try_for_each(|qcode| qmp.inject_key(qcode, deadline, &cancelled))?;
+                injected += keys.len();
+            }
+            Ok(injected)
+        })();
         match outcome {
             Ok(injected) => println!("[xtask] qmp: {injected} keystrokes injected"),
             Err(reason) => {
                 println!("[xtask] qmp: {reason:#}; the keystroke check will report it");
             }
         }
-    })
+        session
+    }))
 }
 
-/// Cancel and join the self-test injector.
-fn finish_injector(injector: JoinHandle<()>, cancelled: &AtomicBool) -> Result<()> {
+/// Cancel and join the self-test injector, recovering its QMP session.
+fn finish_injector(
+    injector: JoinHandle<Option<Qmp>>,
+    cancelled: &AtomicBool,
+) -> Result<Option<Qmp>> {
     cancelled.store(true, Ordering::Release);
     injector
         .join()
         .map_err(|_| anyhow!("the QMP injector panicked"))
-}
-
-fn accept_before(listener: &TcpListener, deadline: Instant) -> Result<Qmp> {
-    Qmp::handshake(accept_stream_before(listener, deadline, None)?)
-}
-
-fn accept_stream_before(
-    listener: &TcpListener,
-    deadline: Instant,
-    cancelled: Option<&AtomicBool>,
-) -> Result<TcpStream> {
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => return Ok(stream),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-                    bail!("QEMU control connection was cancelled");
-                }
-                if Instant::now() >= deadline {
-                    bail!("QEMU did not open its control connection");
-                }
-                std::thread::sleep(POLL_INTERVAL);
-            }
-            Err(error) => return Err(error).context("accepting QEMU's QMP connection"),
-        }
-    }
 }
 
 /// How often to check whether QEMU has exited. Short enough that a passing run
@@ -1898,9 +1902,13 @@ fn irq_count(report: &str, irq: u8) -> Option<u64> {
     recognized.then_some(total)
 }
 
-fn keyboard_irq_count(monitor: &mut Monitor) -> Result<u64> {
-    let report = monitor
-        .command("info irq\n")
+fn keyboard_irq_count(qmp: &mut Qmp) -> Result<u64> {
+    let report = qmp
+        .human(
+            "info irq",
+            Instant::now() + SHIPPED_CHALLENGE_TIMEOUT,
+            &NOT_CANCELLED,
+        )
         .context("querying keyboard IRQ progress")?;
     irq_count(&report, 1).context("QEMU monitor returned no IRQ statistics")
 }
@@ -1909,7 +1917,7 @@ fn await_keyboard_irq(
     child: &mut Child,
     panicked: &AtomicBool,
     serial_failed: &AtomicBool,
-    monitor: &mut Monitor,
+    qmp: &mut Qmp,
     before: u64,
 ) -> Result<u64> {
     let deadline = Instant::now() + SHIPPED_CHALLENGE_TIMEOUT;
@@ -1921,7 +1929,7 @@ fn await_keyboard_irq(
             Duration::from_millis(1),
             None,
         )?;
-        let after = keyboard_irq_count(monitor)?;
+        let after = keyboard_irq_count(qmp)?;
         if after > before {
             return Ok(after);
         }
@@ -1938,17 +1946,15 @@ fn await_keyboard_irq(
 pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
-    let ControlSockets { qmp, monitor } = ControlSockets::bind()?;
-    let qmp_endpoint = control_endpoint(&qmp, "")?;
-    let monitor_endpoint = control_endpoint(&monitor, MONITOR_CLIENT_SUFFIX)?;
+    let serial = SerialFile::create(paths.target_dir())?;
 
     println!("[xtask] booting the shipped kernel");
 
     let mut child = Command::new(&installation.emulator)
         .args(MACHINE)
-        .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
-        .args(["-qmp", &qmp_endpoint])
-        .args(["-monitor", &monitor_endpoint])
+        .args(["-display", "none", "-no-reboot"])
+        .args(serial.arguments())
+        .args(QMP_ON_STDIO)
         .args(drive_file(
             "if=pflash,format=raw,readonly=on",
             &installation.code_firmware,
@@ -1956,11 +1962,16 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
         .args(drive_file("if=pflash,format=raw", vars.path()))
         .args(snapshot_drive_file("format=raw", image))
         .args(storage(paths.root())?)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
 
-    let stdout = child.stdout.take().context("taking QEMU's stdout pipe")?;
+    let qmp = attach_qmp(
+        &mut child,
+        Instant::now() + QMP_NEGOTIATION_TIMEOUT,
+        &NOT_CANCELLED,
+    );
     let settled = Arc::new(AtomicBool::new(false));
     let panicked = Arc::new(AtomicBool::new(false));
     let serial_failed = Arc::new(AtomicBool::new(false));
@@ -1970,34 +1981,35 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
         .map(|marker| (marker, Arc::new(AtomicBool::new(false))))
         .collect();
     let forwarder = watch_serial(
-        stdout,
+        serial.follow()?,
         Arc::clone(&settled),
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
         required.clone(),
     );
 
-    let outcome = watch(
-        &mut child,
-        &panicked,
-        &serial_failed,
-        BOOT_TIMEOUT,
-        Some(&settled),
-    )
-    .and_then(|()| {
-        let mut monitor = Monitor::accept(&monitor, Instant::now() + SHIPPED_CHALLENGE_TIMEOUT)?;
-        let before = keyboard_irq_count(&mut monitor)?;
-        let mut qmp = accept_before(&qmp, Instant::now() + SHIPPED_CHALLENGE_TIMEOUT)?;
-        qmp.inject_key(SHIPPED_CHALLENGE_QCODE)
-            .context("injecting the shipped-kernel liveness key")?;
-        let after =
-            await_keyboard_irq(&mut child, &panicked, &serial_failed, &mut monitor, before)?;
+    let outcome = qmp.and_then(|mut qmp| {
+        watch(
+            &mut child,
+            &panicked,
+            &serial_failed,
+            BOOT_TIMEOUT,
+            Some(&settled),
+        )?;
+        let before = keyboard_irq_count(&mut qmp)?;
+        qmp.inject_key(
+            SHIPPED_CHALLENGE_QCODE,
+            Instant::now() + SHIPPED_CHALLENGE_TIMEOUT,
+            &NOT_CANCELLED,
+        )
+        .context("injecting the shipped-kernel liveness key")?;
+        let after = await_keyboard_irq(&mut child, &panicked, &serial_failed, &mut qmp, before)?;
         println!("[xtask] shipped liveness: keyboard IRQ count {before} -> {after}");
-        Ok(())
-    })
-    .and_then(|()| watch(&mut child, &panicked, &serial_failed, settle, None));
+        watch(&mut child, &panicked, &serial_failed, settle, None)
+    });
 
     let stop_outcome = stop_qemu(&mut child);
+    serial.close();
     let serial_outcome = finish_boot_serial(forwarder);
 
     stop_outcome?;
@@ -2236,14 +2248,14 @@ fn watch(
 
 /// Forward every serial line, flagging the markers the boot check requires.
 fn watch_serial(
-    stdout: ChildStdout,
+    serial: impl Read + Send + 'static,
     settled: Arc<AtomicBool>,
     panicked: Arc<AtomicBool>,
     serial_failed: Arc<AtomicBool>,
     required: Vec<(RequiredLogRecord, Arc<AtomicBool>)>,
 ) -> JoinHandle<Result<BootSerialObservation>> {
     std::thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
+        let mut reader = BufReader::new(serial);
         let mut line = Vec::new();
         let mut observation = BootSerialObservation::default();
         loop {
@@ -3027,35 +3039,89 @@ mod tests {
     }
 
     #[test]
-    fn simultaneous_control_sets_reserve_four_distinct_ports() {
-        let first = ControlSockets::bind().expect("first control set");
-        let second = ControlSockets::bind().expect("second control set");
-        let addresses = [
-            first.qmp.local_addr().expect("first QMP address"),
-            first.monitor.local_addr().expect("first monitor address"),
-            second.qmp.local_addr().expect("second QMP address"),
-            second.monitor.local_addr().expect("second monitor address"),
-        ];
-        let mut unique = addresses.to_vec();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(unique.len(), addresses.len());
-        for address in addresses {
+    fn qemu_control_stays_on_the_child_s_own_streams() {
+        assert_eq!(QMP_ON_STDIO, ["-qmp", "stdio"]);
+        let source = include_str!("qemu.rs");
+        let (production, _) = source
+            .split_once("#[cfg(test)]\nmod tests")
+            .expect("qemu.rs has its test module");
+        for forbidden in ["TcpListener", "\"-monitor\"", "server=off"] {
             assert!(
-                TcpListener::bind(address).is_err(),
-                "reserved control port {address} could be stolen"
+                !production.contains(forbidden),
+                "QEMU control regained `{forbidden}`"
             );
         }
     }
 
     #[test]
-    fn the_monitor_dials_the_reserved_listener() {
-        let controls = ControlSockets::bind().expect("control set");
-        let address = controls.monitor.local_addr().expect("monitor address");
-        assert_eq!(
-            control_endpoint(&controls.monitor, MONITOR_CLIENT_SUFFIX).unwrap(),
-            format!("tcp:{address},server=off")
+    fn a_serial_file_is_named_as_one_chardev_path() {
+        let fixture = QemuFixture::create();
+        let serial = SerialFile::create(&fixture.root).unwrap();
+        let path = serial.path.to_string_lossy().into_owned();
+        assert!(
+            path.contains(','),
+            "the fixture path exercises comma escaping"
         );
+        assert_eq!(
+            serial.arguments(),
+            [
+                OsString::from("-chardev"),
+                OsString::from(format!("file,id=serial0,path={}", path.replace(',', ",,"))),
+                OsString::from("-serial"),
+                OsString::from("chardev:serial0"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_serial_file_never_reuses_an_existing_name() {
+        let fixture = QemuFixture::create();
+        let directory = crate::image::qemu_run_directory(&fixture.root).unwrap();
+        let next = NEXT_RUN.load(Ordering::Relaxed);
+        let occupied = (next..next + 256)
+            .map(|sequence| {
+                let path = directory.join(format!("serial-{}-{sequence}.log", std::process::id()));
+                std::fs::write(&path, b"another run").unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+        let serial = SerialFile::create(&fixture.root).unwrap();
+        assert!(
+            !occupied.contains(&serial.path),
+            "an occupied name was reused"
+        );
+        for path in &occupied {
+            assert_eq!(std::fs::read(path).unwrap(), b"another run");
+        }
+    }
+
+    #[test]
+    fn a_serial_follower_reads_every_appended_byte_and_ends_after_close() {
+        let fixture = QemuFixture::create();
+        let serial = SerialFile::create(&fixture.root).unwrap();
+        let mut follower = serial.follow().unwrap();
+        let path = serial.path.clone();
+        let writer = std::thread::spawn(move || {
+            let mut file = OpenOptions::new().append(true).open(path).unwrap();
+            for chunk in [b"first ".as_slice(), b"second\n", b"late tail"] {
+                file.write_all(chunk).unwrap();
+                file.flush().unwrap();
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        });
+        let reader = std::thread::spawn(move || {
+            let mut text = Vec::new();
+            follower.read_to_end(&mut text).unwrap();
+            text
+        });
+        writer.join().unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(
+            !reader.is_finished(),
+            "the follower ended before QEMU exited"
+        );
+        serial.close();
+        assert_eq!(reader.join().unwrap(), b"first second\nlate tail");
     }
 
     #[test]
@@ -3207,19 +3273,6 @@ mod tests {
                 .to_string()
                 .contains("disappeared after it was opened")
         );
-    }
-
-    #[test]
-    fn a_cancelled_control_wait_returns_without_a_connection() {
-        let listener = control_listener("cancelled test").unwrap();
-        let cancelled = AtomicBool::new(true);
-        let error = accept_stream_before(
-            &listener,
-            Instant::now() + Duration::from_millis(1),
-            Some(&cancelled),
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("cancelled"));
     }
 
     #[test]

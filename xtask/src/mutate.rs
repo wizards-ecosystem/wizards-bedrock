@@ -77,10 +77,10 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1510;
+pub const NEXT_MUTATION_ID: u16 = 1521;
 
 /// Identities of deleted mutations, which no later entry may take.
-pub const RETIRED_MUTATION_IDS: &[u16] = &[];
+pub const RETIRED_MUTATION_IDS: &[u16] = &[514, 515, 517];
 
 /// The defects, each of which some check must notice.
 ///
@@ -5824,47 +5824,14 @@ pub const MUTATIONS: &[Mutation] = &[
         },
     },
     Mutation {
-        id: 514,
-        file: "xtask/src/qemu.rs",
-        find: "        let monitor = control_listener(\"monitor\")?;",
-        replace: "        let monitor = qmp.try_clone().context(\"cloning the QMP listener\")?;",
-        breaks: "QMP and the human monitor contend for one control port",
-        reddens: Caught::HostTest {
-            package: "xtask",
-            name: "qemu::tests::simultaneous_control_sets_reserve_four_distinct_ports",
-        },
-    },
-    Mutation {
-        id: 515,
-        file: "xtask/src/qemu.rs",
-        find: "const MONITOR_CLIENT_SUFFIX: &str = \",server=off\";",
-        replace: "const MONITOR_CLIENT_SUFFIX: &str = \",server=on\";",
-        breaks: "QEMU tries to bind the monitor port already held by the harness",
-        reddens: Caught::HostTest {
-            package: "xtask",
-            name: "qemu::tests::the_monitor_dials_the_reserved_listener",
-        },
-    },
-    Mutation {
         id: 516,
         file: "xtask/src/qemu.rs",
-        find: "            let sequence = NEXT_RUN.fetch_add(1, Ordering::Relaxed);",
-        replace: "            let sequence = NEXT_RUN.load(Ordering::Relaxed);",
+        find: "        let sequence = NEXT_RUN.fetch_add(1, Ordering::Relaxed);",
+        replace: "        let sequence = NEXT_RUN.load(Ordering::Relaxed);",
         breaks: "concurrent QEMU runs reuse one firmware-store name",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "qemu::tests::simultaneous_runs_get_distinct_writable_firmware",
-        },
-    },
-    Mutation {
-        id: 517,
-        file: "xtask/src/qemu.rs",
-        find: "                if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {",
-        replace: "                if cancelled.is_some_and(|_| false) {",
-        breaks: "a cancelled QEMU control accept waits until its old deadline",
-        reddens: Caught::HostTest {
-            package: "xtask",
-            name: "qemu::tests::a_cancelled_control_wait_returns_without_a_connection",
         },
     },
     Mutation {
@@ -8872,10 +8839,10 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 797,
         file: "xtask/src/qemu.rs",
-        find: "        let directory = crate::image::qemu_run_directory(target)?;",
-        replace: r#"        let directory = target.join(crate::paths::QEMU_RUN_DIRECTORY);
-        std::fs::create_dir_all(&directory)
-            .with_context(|| format!("creating {}", directory.display()))?;"#,
+        find: "    let directory = crate::image::qemu_run_directory(target)?;",
+        replace: r#"    let directory = target.join(crate::paths::QEMU_RUN_DIRECTORY);
+    std::fs::create_dir_all(&directory)
+        .with_context(|| format!("creating {}", directory.display()))?;"#,
         breaks: "private firmware can be created through a redirected QEMU run root",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -17113,6 +17080,127 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "supply_chain::tests::each_runtime_component_has_exactly_one_exact_notice_entry",
+        },
+    },
+    Mutation {
+        id: 1510,
+        file: "xtask/src/qmp.rs",
+        find: "            Message::Return {\n                id: Some(answered),\n                value,\n            } if answered == id => Ok(value),",
+        replace: "            Message::Return { value, .. } => Ok(value),",
+        breaks: "a QMP reply for another command answers this one",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qmp::tests::only_the_reply_naming_a_command_can_answer_it",
+        },
+    },
+    Mutation {
+        id: 1511,
+        file: "xtask/src/qmp.rs",
+        find: "    if let Some(error) = object.remove(\"error\") {",
+        replace: "    if let Some(error) = object\n        .remove(\"error\")\n        .filter(|_| !object.contains_key(\"return\"))\n    {",
+        breaks: "a QMP refusal that also carries a return reads as success",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qmp::tests::a_refusal_names_the_command_and_wins_over_a_return",
+        },
+    },
+    Mutation {
+        id: 1512,
+        file: "xtask/src/qmp.rs",
+        find: "        let message = if line.len() > MAX_MESSAGE_BYTES {",
+        replace: "        let message = if line.len() > MAX_MESSAGE_BYTES + 1 {",
+        breaks: "an oversized QMP message reaches the JSON parser",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qmp::tests::an_oversized_message_is_refused_while_output_keeps_draining",
+        },
+    },
+    Mutation {
+        id: 1513,
+        file: "xtask/src/qmp.rs",
+        find: "        if failed {\n            continue;\n        }",
+        replace: "        if failed {\n            return;\n        }",
+        breaks: "a refused QMP session stops draining QEMU's output",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qmp::tests::an_oversized_message_is_refused_while_output_keeps_draining",
+        },
+    },
+    Mutation {
+        id: 1514,
+        file: "xtask/src/qmp.rs",
+        find: "            ensure!(now < deadline, \"QMP did not answer before its deadline\");",
+        replace: "            ensure!(\n                now < deadline + Duration::from_secs(30),\n                \"QMP did not answer before its deadline\"\n            );",
+        breaks: "a silent QMP peer outlives its deadline",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qmp::tests::a_silent_peer_ends_at_the_deadline",
+        },
+    },
+    Mutation {
+        id: 1515,
+        file: "xtask/src/qmp.rs",
+        find: "                !cancelled.load(Ordering::Acquire),",
+        replace: "                true,",
+        breaks: "a cancelled QMP exchange waits for its deadline",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qmp::tests::a_cancelled_exchange_returns_before_its_deadline",
+        },
+    },
+    Mutation {
+        id: 1516,
+        file: "xtask/src/qmp.rs",
+        find: "            '\"' => quoted.push_str(\"\\\\\\\"\"),",
+        replace: "            '\"' => quoted.push('\"'),",
+        breaks: "a quote in a monitor command ends its JSON string early",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qmp::tests::command_text_is_quoted_as_one_json_string",
+        },
+    },
+    Mutation {
+        id: 1517,
+        file: "xtask/src/qemu.rs",
+        find: "const QMP_ON_STDIO: [&str; 2] = [\"-qmp\", \"stdio\"];",
+        replace: "const QMP_ON_STDIO: [&str; 2] = [\"-qmp\", \"tcp:127.0.0.1:4444,server=on,wait=off\"];",
+        breaks: "QMP returns to a loopback port any local process can reach",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::qemu_control_stays_on_the_child_s_own_streams",
+        },
+    },
+    Mutation {
+        id: 1518,
+        file: "xtask/src/qemu.rs",
+        find: "    let input = child.stdin.take().context(\"taking QEMU's stdin pipe\")?;\n    let output = child.stdout.take().context(\"taking QEMU's stdout pipe\")?;\n    Qmp::negotiate(input, output, deadline, cancelled)",
+        replace: "    let _monitor = std::net::TcpListener::bind((\"127.0.0.1\", 0));\n    let input = child.stdin.take().context(\"taking QEMU's stdin pipe\")?;\n    let output = child.stdout.take().context(\"taking QEMU's stdout pipe\")?;\n    Qmp::negotiate(input, output, deadline, cancelled)",
+        breaks: "a loopback control listener returns beside the private QMP session",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::qemu_control_stays_on_the_child_s_own_streams",
+        },
+    },
+    Mutation {
+        id: 1519,
+        file: "xtask/src/qemu.rs",
+        find: "            if read > 0 || buffer.is_empty() || closed {",
+        replace: "            if read > 0 || buffer.is_empty() || !closed {",
+        breaks: "the serial follower ends while QEMU is still writing",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::a_serial_follower_reads_every_appended_byte_and_ends_after_close",
+        },
+    },
+    Mutation {
+        id: 1520,
+        file: "xtask/src/qemu.rs",
+        find: "        OpenOptions::create_new(&mut options, true);\n        match OpenOptions::open(&options, &path) {",
+        replace: "        OpenOptions::create(&mut options, true);\n        match OpenOptions::open(&options, &path) {",
+        breaks: "a QEMU run file reuses a name another run created",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::a_serial_file_never_reuses_an_existing_name",
         },
     },
 ];
