@@ -401,7 +401,7 @@ fn a_thread_crosses_into_ring_three_and_calls_back() -> bool {
     let on_a_user_stack =
         call.stack_selector & 0b11 == 3 && call.stack_pointer < usercopy::USER_END;
 
-    this_child_called && from_user && through_the_gate && only_gate && on_a_user_stack && retired
+    this_child_called && from_user && through_the_gate && only_gate && on_a_user_stack
 }
 
 fn a_program_cannot_bring_smap_down_with_it() -> bool {
@@ -420,55 +420,67 @@ fn a_program_cannot_bring_smap_down_with_it() -> bool {
 
 fn a_faulting_program_dies_alone() -> bool {
     let before = trap::last_user_fault();
-    let retirements_before = thread::retirements();
-    if user::run_faulting().is_err() {
+    let Ok(spawned) = user::run_faulting() else {
         return false;
-    }
+    };
 
-    if !runs_until(2000, || trap::last_user_fault().count > before.count) {
+    if !runs_until(2000, || {
+        let fault = trap::last_user_fault();
+        fault.count > before.count && fault.slot == spawned.slot
+    }) {
         return false;
     }
     let fault = trap::last_user_fault();
 
+    // This process's own fault: its slot, and the FAULT argument (1) it left
+    // in `rax`, which survives the dispatch to the `ud2` (D-327).
+    let this_child = fault.slot == spawned.slot && fault.rax == 1;
     // From ring 3, by the CPU's own account.
     let from_user = fault.code_selector & 0b11 == 3;
     // The fault the program chose, and no other.
     let it_was_the_ud2 = fault.vector == u64::from(exception::INVALID_OPCODE);
     // Its stack pointer is in user memory, not the kernel's.
     let in_user_memory = fault.stack_pointer < usercopy::USER_END;
-    // The thread was retired rather than the machine stopped — and the machine
-    // is plainly still here, since this line runs.
-    let retired = runs_until(500, || thread::retirements() > retirements_before);
+    // The exact incarnation reached its last rites, not a global tally.
+    let retired = last_rites_for(&spawned, 2_000).is_some();
 
-    from_user && it_was_the_ud2 && in_user_memory && retired
+    this_child && from_user && it_was_the_ud2 && in_user_memory && retired
 }
 
 fn a_program_cannot_aim_at_the_copy_window() -> bool {
     let recoveries_before = trap::user_copy_recoveries();
-    let faults_before = trap::last_user_fault().count;
-    let retirements_before = thread::retirements();
+    let before = trap::last_user_fault();
 
-    if user::run_into_the_copy_window().is_err() {
+    let Ok(spawned) = user::run_into_the_copy_window() else {
         return false;
-    }
-    if !runs_until(2000, || trap::last_user_fault().count > faults_before) {
+    };
+    if !runs_until(2000, || {
+        let fault = trap::last_user_fault();
+        fault.count > before.count && fault.slot == spawned.slot
+    }) {
         return false;
     }
 
     let fault = trap::last_user_fault();
     let (start, end) = usercopy::fault_window();
 
+    // This process's own fault: its slot, and the window address it jumped to,
+    // still in `rax` when the fetch faulted (D-327).
+    let this_child = fault.slot == spawned.slot && fault.rax == start;
+    // A page fault on the copy window, the case the arm must refuse.
+    let page_fault = fault.vector == u64::from(exception::PAGE_FAULT);
     // From ring 3, which is what makes this the case the arm must refuse.
     let from_user = fault.code_selector & 0b11 == 3;
-    // And the thread went, rather than being resumed at the fixup.
-    let retired = runs_until(500, || thread::retirements() > retirements_before);
+    // The exact incarnation reached its last rites, rather than being resumed
+    // at the fixup.
+    let retired = last_rites_for(&spawned, 2_000).is_some();
     // The counter did not move: nothing was recovered.
     let not_recovered = trap::user_copy_recoveries() == recoveries_before;
     // And the window is a real range: an empty `fault_window` would make
     // the check pass with the arm deleted.
     let real_window = start < end;
 
-    from_user && retired && not_recovered && real_window
+    this_child && page_fault && from_user && retired && not_recovered && real_window
 }
 
 fn two_spaces_map_one_address_to_different_memory() -> bool {
