@@ -19,12 +19,6 @@ use crate::sync::SpinLock;
 
 use super::port::{self, Port};
 
-/// The address port: which register the next data access names.
-const ADDRESS_PORT: u16 = 0x0CF8;
-
-/// The data port: the register itself.
-const DATA_PORT: u16 = 0x0CFC;
-
 /// Functions that may be held by drivers at once.
 const FUNCTION_CLAIMS: usize = 8;
 
@@ -61,7 +55,8 @@ pub fn init() -> bool {
         return true;
     }
     // Claim before taking this module's leaf guard to preserve lock order.
-    let Some(pair) = port::claim_pair::<u32, u32>(ADDRESS_PORT, DATA_PORT) else {
+    // The one typed door to configuration space mints the pair (D-351).
+    let Some(pair) = port::pci_configuration() else {
         return is_available();
     };
 

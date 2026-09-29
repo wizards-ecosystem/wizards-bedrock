@@ -16766,8 +16766,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1481,
         file: "wost/src/arch/x86_64/pci.rs",
-        find: "/// The address port: which register the next data access names.\n",
-        replace: "macro_rules! claim_twin {\n    ($claim:expr) => {\n        // SAFETY: the claim is one valid aligned value; this defect deliberately leaves both copies live.\n        unsafe { core::ptr::read($claim) }\n    };\n}\n\n/// The address port: which register the next data access names.\n",
+        find: "/// Functions that may be held by drivers at once.\n",
+        replace: "macro_rules! claim_twin {\n    ($claim:expr) => {\n        // SAFETY: the claim is one valid aligned value; this defect deliberately leaves both copies live.\n        unsafe { core::ptr::read($claim) }\n    };\n}\n\n/// Functions that may be held by drivers at once.\n",
         breaks: "a macro can generate PCI authority doors the inventory cannot see",
         reddens: Caught::HostTest {
             package: "xtask",

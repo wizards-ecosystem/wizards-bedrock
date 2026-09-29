@@ -236,7 +236,7 @@ mod tests {
             "wost/src/mm/mod.rs",
             15,
             3,
-            "7a0c07d05ddcf4820e0091ad314d2380b49e0911403639295fd98f1e90829995",
+            "475e768da3729a43248a3dede09a29088cd5afb029c6fa55349b2d2f05815aeb",
         ),
         (
             "wost/src/mmio.rs",

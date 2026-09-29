@@ -224,17 +224,6 @@ pub(crate) fn device_range_is_eligible(start: Paddr, end: Paddr) -> bool {
 /// The memory map [`init`] was given, for ownership and firmware checks.
 static MAP: SpinLock<Option<MemoryMap>> = SpinLock::new(None);
 
-/// Whether the memory map covers `start..end` **with memory**.
-///
-/// Returns `false` before initialization. A query avoids lending `MemoryMap`
-/// under its leaf lock, where a callback would violate the lock contract
-/// (D-121).
-pub fn map_covers_memory(start: Paddr, end: Paddr) -> bool {
-    MAP.lock_leaf()
-        .as_ref()
-        .is_some_and(|map| map.covers_memory(start, end))
-}
-
 /// The one cache type the direct map gives `start..end`, if it has one.
 pub(crate) fn map_direct_cache(start: Paddr, end: Paddr) -> Option<crate::boot::DirectMapCache> {
     MAP.lock_leaf()
