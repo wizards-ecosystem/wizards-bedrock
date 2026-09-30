@@ -42,5 +42,9 @@
 # mutation gates require an untracked-clean tree.
 /PRE_WIZZY_HANDOFF.md
 
+# In-flight remaining-work handoff for the pre-Wizzy pass. Local operational
+# state; folded into PRE_WIZZY_HANDOFF.md at close, then removed.
+/HANDOFF_REMAINING_WORK.md
+
 # Local research clones; not part of the build and not ours.
 /exploration/

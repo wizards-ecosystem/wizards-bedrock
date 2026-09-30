@@ -1,0 +1,11 @@
+[package]
+name = "vtd"
+description = "Pure arithmetic for Intel VT-d (DMA remapping): register, table and invalidation encoding, host-testable."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

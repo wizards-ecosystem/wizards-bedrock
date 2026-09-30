@@ -1,8 +1,8 @@
 //! Parsing for the ACPI tables this kernel reads.
 //!
-//! The RSDP points at the XSDT, the XSDT lists tables by signature, and the
-//! MADT describes the interrupt controllers. Nothing more, until something
-//! reads it.
+//! The RSDP points at the XSDT, the XSDT lists tables by signature, the
+//! MADT describes the interrupt controllers, and the DMAR describes the
+//! VT-d IOMMU hardware. Nothing more, until something reads it.
 //!
 //! Works on `&[u8]` and validates before it trusts. Firmware is the least
 //! trustworthy input the kernel has, so a malformed table must produce an
@@ -176,6 +176,11 @@ fn u64_at(bytes: &[u8], offset: usize) -> Option<u64> {
     Some(u64::from_le_bytes(field.try_into().ok()?))
 }
 
+fn u16_at(bytes: &[u8], offset: usize) -> Option<u16> {
+    let field = bytes.get(offset..offset + 2)?;
+    Some(u16::from_le_bytes(field.try_into().ok()?))
+}
+
 /// The Root System Description Pointer: where the table tree starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rsdp {
@@ -330,6 +335,9 @@ impl Sdt {
 
     /// Signature of the Multiple APIC Description Table.
     pub const MADT: [u8; 4] = *b"APIC";
+
+    /// Signature of the DMA Remapping Reporting table.
+    pub const DMAR: [u8; 4] = *b"DMAR";
 
     /// The length a header claims, without validating anything else.
     ///
@@ -817,6 +825,563 @@ impl<const IO_APICS: usize> MadtInterrupts<IO_APICS> {
     /// Firmware's explicit override for `irq`, if it supplied one.
     pub fn override_for(&self, irq: u8) -> Option<(u32, u16)> {
         self.overrides.get(irq as usize).copied().flatten()
+    }
+}
+
+/// A remapping structure of the DMA Remapping Reporting table.
+///
+/// Only the kinds a VT-d driver acts on are named; everything else is
+/// [`Other`](Self::Other) with its type word, the same shape as
+/// [`MadtEntry::Other`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DmarStructure<'a> {
+    /// A DMA remapping hardware unit: one IOMMU and the segment or devices
+    /// it covers.
+    Drhd {
+        /// Whether this unit covers every device in `segment` that no other
+        /// unit scopes explicitly.
+        include_pci_all: bool,
+        /// The PCI segment group this unit serves.
+        segment: u16,
+        /// Physical address of the unit's register set.
+        register_base: u64,
+        /// Raw device-scope bytes; walk with [`DeviceScopes`].
+        scopes: &'a [u8],
+    },
+    /// A reserved memory region a device DMAs into directly, which
+    /// remapping must identity-map rather than translate.
+    Rmrr {
+        /// The PCI segment group the scoped device is in.
+        segment: u16,
+        /// First byte of the reserved region.
+        base: u64,
+        /// Last byte of the reserved region, inclusive.
+        limit: u64,
+        /// Raw device-scope bytes; walk with [`DeviceScopes`].
+        scopes: &'a [u8],
+    },
+    /// A root-port ATS capability report.
+    Atsr {
+        /// The PCI segment group the scoped devices are in.
+        segment: u16,
+        /// Raw device-scope bytes; walk with [`DeviceScopes`].
+        scopes: &'a [u8],
+    },
+    /// A remapping hardware static affinity, linking a unit to a NUMA
+    /// proximity domain from the SRAT.
+    Rhsa {
+        /// Physical address of the DRHD this affinity describes.
+        register_base: u64,
+        /// The proximity domain.
+        proximity_domain: u32,
+    },
+    /// A kind this crate does not act on, with its type word.
+    Other {
+        /// The structure type.
+        kind: u16,
+    },
+}
+
+/// The remapping structures of a validated DMAR.
+#[derive(Debug)]
+pub struct DmarEntries<'a> {
+    body: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> DmarEntries<'a> {
+    /// Bytes of DMAR-specific header before the remapping structures begin:
+    /// the host address width, flags, and ten reserved bytes.
+    const HEADER: usize = Sdt::LEN + 12;
+
+    /// Validate a DMAR and walk its remapping structures.
+    ///
+    /// Validation covers every variable-length structure — and any device
+    /// scope nested inside a DRHD, RMRR, or ATSR — before iteration starts,
+    /// so a corrupt tail invalidates the table as a whole instead of
+    /// leaving callers with a trusted prefix.
+    ///
+    /// # Errors
+    ///
+    /// If the table is not a valid DMAR, or a structure or a nested device
+    /// scope is truncated, has a non-advancing length, or runs past its
+    /// container.
+    pub fn new(table: &'a [u8]) -> Result<Self, AcpiError> {
+        let header = Sdt::parse(table)?;
+        if header.signature() != Sdt::DMAR {
+            return Err(AcpiError::WrongTable {
+                expected: Sdt::DMAR,
+                found: header.signature(),
+            });
+        }
+        let length = header.length() as usize;
+        if length < Self::HEADER {
+            return Err(AcpiError::BadLength(header.length()));
+        }
+        let body = &table[..length];
+        let mut offset = Self::HEADER;
+        while offset < body.len() {
+            let available = body.len() - offset;
+            let Some(prefix) = body.get(offset..offset.saturating_add(4)) else {
+                return Err(AcpiError::MalformedEntry {
+                    offset,
+                    length: 0,
+                    available,
+                });
+            };
+            let kind = u16::from_le_bytes([prefix[0], prefix[1]]);
+            let entry_len = usize::from(u16::from_le_bytes([prefix[2], prefix[3]]));
+            // Each kind's minimum is the sum of its own fixed fields, so it
+            // also rejects a non-advancing (zero) length.
+            let (minimum, scope_start) = match kind {
+                0 => (16, Some(16)), // DRHD
+                1 => (24, Some(24)), // RMRR
+                2 => (8, Some(8)),   // ATSR
+                3 => (20, None),     // RHSA, no device scope
+                _ => (4, None),      // unknown: only the header need be there
+            };
+            if entry_len < minimum || entry_len > available {
+                return Err(AcpiError::MalformedEntry {
+                    offset,
+                    length: entry_len,
+                    available,
+                });
+            }
+            if let Some(scope_start) = scope_start {
+                let structure = &body[offset..offset + entry_len];
+                let scope_base = offset.saturating_add(scope_start);
+                validate_device_scopes(scope_base, &structure[scope_start..])?;
+            }
+            offset += entry_len;
+        }
+        Ok(Self {
+            body,
+            offset: Self::HEADER,
+        })
+    }
+}
+
+/// Bounds-check every device scope nested in a DRHD, RMRR, or ATSR
+/// structure.
+///
+/// `base` is the scope list's absolute offset in the table, so a refusal
+/// names the byte a firmware author would need to fix.
+fn validate_device_scopes(base: usize, scopes: &[u8]) -> Result<(), AcpiError> {
+    let mut offset = 0;
+    while offset < scopes.len() {
+        let available = scopes.len() - offset;
+        let Some(prefix) = scopes.get(offset..offset.saturating_add(2)) else {
+            return Err(AcpiError::MalformedEntry {
+                offset: base.saturating_add(offset),
+                length: 0,
+                available,
+            });
+        };
+        let entry_len = usize::from(prefix[1]);
+        if entry_len < DeviceScope::MIN_LEN || entry_len > available {
+            return Err(AcpiError::MalformedEntry {
+                offset: base.saturating_add(offset),
+                length: entry_len,
+                available,
+            });
+        }
+        offset += entry_len;
+    }
+    Ok(())
+}
+
+impl<'a> Iterator for DmarEntries<'a> {
+    type Item = DmarStructure<'a>;
+
+    fn next(&mut self) -> Option<DmarStructure<'a>> {
+        let prefix = self.body.get(self.offset..self.offset + 4)?;
+        let kind = u16::from_le_bytes([prefix[0], prefix[1]]);
+        let length = usize::from(u16::from_le_bytes([prefix[2], prefix[3]]));
+        let entry = self.body.get(self.offset..self.offset + length)?;
+        self.offset += length;
+
+        Some(match kind {
+            0 => DmarStructure::Drhd {
+                include_pci_all: entry[4] & 1 != 0,
+                segment: u16_at(entry, 6).unwrap_or(0),
+                register_base: u64_at(entry, 8).unwrap_or(0),
+                scopes: &entry[16..],
+            },
+            1 => DmarStructure::Rmrr {
+                segment: u16_at(entry, 6).unwrap_or(0),
+                base: u64_at(entry, 8).unwrap_or(0),
+                limit: u64_at(entry, 16).unwrap_or(0),
+                scopes: &entry[24..],
+            },
+            2 => DmarStructure::Atsr {
+                segment: u16_at(entry, 6).unwrap_or(0),
+                scopes: &entry[8..],
+            },
+            3 => DmarStructure::Rhsa {
+                register_base: u64_at(entry, 8).unwrap_or(0),
+                proximity_domain: u32_at(entry, 16).unwrap_or(0),
+            },
+            kind => DmarStructure::Other { kind },
+        })
+    }
+}
+
+/// The kind of hardware a device-scope entry names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DeviceScopeKind {
+    /// A PCI endpoint device.
+    PciEndpoint,
+    /// A PCI-to-PCI bridge, and everything behind it.
+    PciSubHierarchy,
+    /// An I/O APIC, named by its ACPI enumeration id rather than a path.
+    IoApic,
+    /// An HPET, named by its ACPI enumeration id rather than a path.
+    Hpet,
+    /// An ACPI namespace device.
+    AcpiNamespaceDevice,
+    /// A kind this crate does not act on, with its type byte.
+    Other {
+        /// The scope type.
+        kind: u8,
+    },
+}
+
+impl DeviceScopeKind {
+    fn from_raw(kind: u8) -> Self {
+        match kind {
+            1 => Self::PciEndpoint,
+            2 => Self::PciSubHierarchy,
+            3 => Self::IoApic,
+            4 => Self::Hpet,
+            5 => Self::AcpiNamespaceDevice,
+            kind => Self::Other { kind },
+        }
+    }
+}
+
+/// One device-scope entry nested in a DRHD, RMRR, or ATSR structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceScope<'a> {
+    kind: DeviceScopeKind,
+    enumeration_id: u8,
+    start_bus: u8,
+    path: &'a [u8],
+}
+
+impl<'a> DeviceScope<'a> {
+    /// Bytes in a scope entry with no path hops: the type, length, flags,
+    /// reserved byte, enumeration id, and start bus.
+    const MIN_LEN: usize = 6;
+
+    /// The hardware this scope names.
+    pub const fn kind(self) -> DeviceScopeKind {
+        self.kind
+    }
+
+    /// The ACPI enumeration id: an I/O APIC or HPET identifier, meaningless
+    /// for a PCI-addressed scope.
+    pub const fn enumeration_id(self) -> u8 {
+        self.enumeration_id
+    }
+
+    /// The first bus number in the hierarchical path to the device.
+    pub const fn start_bus(self) -> u8 {
+        self.start_bus
+    }
+
+    /// The (device, function) hops from `start_bus` down to the target.
+    pub const fn path(self) -> PciPath<'a> {
+        PciPath { bytes: self.path }
+    }
+
+    /// The target of a single-hop PCI scope, as `(bus, device, function)`.
+    ///
+    /// `None` for a path of any other length: a bridge's secondary bus
+    /// number, needed to resolve a multi-hop path, is read from live PCI
+    /// configuration space, which is outside a byte-level table parser.
+    pub fn pci_target(self) -> Option<(u8, u8, u8)> {
+        let mut hops = self.path();
+        let (device, function) = hops.next()?;
+        if hops.next().is_some() {
+            return None;
+        }
+        Some((self.start_bus, device, function))
+    }
+}
+
+/// The (device, function) hops of a [`DeviceScope`]'s PCI path.
+#[derive(Debug)]
+pub struct PciPath<'a> {
+    bytes: &'a [u8],
+}
+
+impl Iterator for PciPath<'_> {
+    type Item = (u8, u8);
+
+    fn next(&mut self) -> Option<(u8, u8)> {
+        let pair = self.bytes.get(..2)?;
+        self.bytes = &self.bytes[2..];
+        Some((pair[0], pair[1]))
+    }
+}
+
+/// The device-scope entries nested in a DRHD, RMRR, or ATSR
+/// [`DmarStructure`].
+#[derive(Debug)]
+pub struct DeviceScopes<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> DeviceScopes<'a> {
+    /// Walk the raw device-scope bytes a [`DmarStructure`] carries.
+    pub const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+}
+
+impl<'a> Iterator for DeviceScopes<'a> {
+    type Item = DeviceScope<'a>;
+
+    fn next(&mut self) -> Option<DeviceScope<'a>> {
+        let kind = *self.bytes.first()?;
+        let length = usize::from(*self.bytes.get(1)?);
+        // Defensive rather than trusting: unlike `DmarEntries`, this
+        // iterator is reachable without going through a validating
+        // constructor, so a malformed slice must stop cleanly, not index
+        // out of bounds.
+        if length < DeviceScope::MIN_LEN {
+            return None;
+        }
+        let entry = self.bytes.get(..length)?;
+        self.bytes = &self.bytes[length..];
+
+        Some(DeviceScope {
+            kind: DeviceScopeKind::from_raw(kind),
+            enumeration_id: entry[4],
+            start_bus: entry[5],
+            path: &entry[6..],
+        })
+    }
+}
+
+/// A PCI function, addressed the way a DMAR device scope names one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bdf {
+    segment: u16,
+    bus: u8,
+    device: u8,
+    function: u8,
+}
+
+impl Bdf {
+    /// Name a PCI function by its segment, bus, device, and function
+    /// numbers.
+    pub const fn new(segment: u16, bus: u8, device: u8, function: u8) -> Self {
+        Self {
+            segment,
+            bus,
+            device,
+            function,
+        }
+    }
+
+    /// The PCI segment group.
+    pub const fn segment(self) -> u16 {
+        self.segment
+    }
+
+    /// The bus number.
+    pub const fn bus(self) -> u8 {
+        self.bus
+    }
+
+    /// The device number.
+    pub const fn device(self) -> u8 {
+        self.device
+    }
+
+    /// The function number.
+    pub const fn function(self) -> u8 {
+        self.function
+    }
+}
+
+/// Why a DMAR could not become a validated VT-d inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DmarError {
+    /// The DMAR itself is not structurally valid.
+    Table(AcpiError),
+    /// An RMRR's limit precedes its base.
+    ReservedRegionInverted {
+        /// First byte of the declared region.
+        base: u64,
+        /// Last byte of the declared region.
+        limit: u64,
+    },
+    /// Two DRHDs advertise the same register base.
+    DuplicateUnit {
+        /// The register base both units claim.
+        register_base: u64,
+    },
+}
+
+impl fmt::Display for DmarError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Table(error) => write!(f, "dmar is unusable: {error}"),
+            Self::ReservedRegionInverted { base, limit } => write!(
+                f,
+                "dmar reserved region [{base:#x}, {limit:#x}] has its limit before its base"
+            ),
+            Self::DuplicateUnit { register_base } => write!(
+                f,
+                "dmar has two drhd units at register base {register_base:#x}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for DmarError {}
+
+/// A validated DMAR: every remapping structure and nested device scope
+/// checked once, so the queries below are pure arithmetic over trusted
+/// bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dmar<'a> {
+    body: &'a [u8],
+}
+
+impl<'a> Dmar<'a> {
+    /// Validate `table` as a DMAR, and additionally enforce the two rules
+    /// bytes alone cannot express: an RMRR's limit must not precede its
+    /// base, and no two DRHDs may claim the same register base.
+    ///
+    /// # Errors
+    ///
+    /// [`DmarError::Table`] if the table is not a structurally valid DMAR,
+    /// [`DmarError::ReservedRegionInverted`] for a backwards RMRR range, or
+    /// [`DmarError::DuplicateUnit`] if two DRHDs share a register base.
+    pub fn new(table: &'a [u8]) -> Result<Self, DmarError> {
+        let entries = DmarEntries::new(table).map_err(DmarError::Table)?;
+        let dmar = Self { body: entries.body };
+
+        // O(n^2), not a growable set: real firmware lists a handful of
+        // units, and there is no allocator here to collect them into one.
+        for (index, structure) in dmar.entries().enumerate() {
+            match structure {
+                DmarStructure::Drhd { register_base, .. } => {
+                    let duplicate = dmar.entries().skip(index + 1).any(|later| {
+                        matches!(
+                            later,
+                            DmarStructure::Drhd { register_base: other, .. }
+                                if other == register_base
+                        )
+                    });
+                    if duplicate {
+                        return Err(DmarError::DuplicateUnit { register_base });
+                    }
+                }
+                DmarStructure::Rmrr { base, limit, .. } if base > limit => {
+                    return Err(DmarError::ReservedRegionInverted { base, limit });
+                }
+                _ => {}
+            }
+        }
+
+        Ok(dmar)
+    }
+
+    // Skips `DmarEntries::new`'s validation: `Dmar::new` already ran it
+    // once, and repeating it on every query would defeat the point of
+    // validating once.
+    fn entries(&self) -> DmarEntries<'a> {
+        DmarEntries {
+            body: self.body,
+            offset: DmarEntries::HEADER,
+        }
+    }
+
+    /// The register base of the DRHD unit that governs `bdf`.
+    ///
+    /// An explicit PCI-endpoint scope on some unit outranks an
+    /// `INCLUDE_PCI_ALL` unit in the same segment: firmware uses
+    /// `INCLUDE_PCI_ALL` to mean "everything I did not call out by name".
+    pub fn unit_for(&self, bdf: Bdf) -> Option<u64> {
+        let mut catch_all = None;
+        for structure in self.entries() {
+            let DmarStructure::Drhd {
+                include_pci_all,
+                segment,
+                register_base,
+                scopes,
+            } = structure
+            else {
+                continue;
+            };
+            if segment != bdf.segment() {
+                continue;
+            }
+            let target = (bdf.bus(), bdf.device(), bdf.function());
+            let scoped = DeviceScopes::new(scopes).any(|scope| {
+                scope.kind() == DeviceScopeKind::PciEndpoint && scope.pci_target() == Some(target)
+            });
+            if scoped {
+                return Some(register_base);
+            }
+            if include_pci_all && catch_all.is_none() {
+                catch_all = Some(register_base);
+            }
+        }
+        catch_all
+    }
+
+    /// Every reserved memory region a device at `bdf` must have
+    /// identity-mapped rather than translated.
+    pub fn reserved_regions_for(&self, bdf: Bdf) -> ReservedRegions<'a> {
+        ReservedRegions {
+            entries: self.entries(),
+            bdf,
+        }
+    }
+}
+
+/// The `(base, limit)` ranges [`Dmar::reserved_regions_for`] finds for one
+/// device, inclusive of both ends.
+#[derive(Debug)]
+pub struct ReservedRegions<'a> {
+    entries: DmarEntries<'a>,
+    bdf: Bdf,
+}
+
+impl Iterator for ReservedRegions<'_> {
+    type Item = (u64, u64);
+
+    fn next(&mut self) -> Option<(u64, u64)> {
+        for structure in self.entries.by_ref() {
+            let DmarStructure::Rmrr {
+                segment,
+                base,
+                limit,
+                scopes,
+            } = structure
+            else {
+                continue;
+            };
+            if segment != self.bdf.segment() {
+                continue;
+            }
+            let target = (self.bdf.bus(), self.bdf.device(), self.bdf.function());
+            let scoped = DeviceScopes::new(scopes).any(|scope| {
+                scope.kind() == DeviceScopeKind::PciEndpoint && scope.pci_target() == Some(target)
+            });
+            if scoped {
+                return Some((base, limit));
+            }
+        }
+        None
     }
 }
 
@@ -1560,5 +2125,361 @@ mod tests {
         // self-referential fixture from accepting a changed header size.
         assert_eq!(Sdt::LEN, 36);
         assert_eq!(4 + 4 + 1 + 1 + 6 + 8 + 4 + 4 + 4, Sdt::LEN);
+    }
+
+    fn dmar_body(structures: &[u8]) -> Vec<u8> {
+        let mut body = vec![0u8; 12]; // host address width, flags, 10 reserved
+        body.extend_from_slice(structures);
+        body
+    }
+
+    fn drhd_bytes(
+        include_pci_all: bool,
+        segment: u16,
+        register_base: u64,
+        scopes: &[u8],
+    ) -> Vec<u8> {
+        let mut bytes = vec![0u8; 16];
+        bytes[0..2].copy_from_slice(&0u16.to_le_bytes());
+        bytes[4] = u8::from(include_pci_all);
+        bytes[6..8].copy_from_slice(&segment.to_le_bytes());
+        bytes[8..16].copy_from_slice(&register_base.to_le_bytes());
+        bytes.extend_from_slice(scopes);
+        let len = u16::try_from(bytes.len()).expect("fits");
+        bytes[2..4].copy_from_slice(&len.to_le_bytes());
+        bytes
+    }
+
+    fn rmrr_bytes(segment: u16, base: u64, limit: u64, scopes: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0u8; 24];
+        bytes[0..2].copy_from_slice(&1u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&segment.to_le_bytes());
+        bytes[8..16].copy_from_slice(&base.to_le_bytes());
+        bytes[16..24].copy_from_slice(&limit.to_le_bytes());
+        bytes.extend_from_slice(scopes);
+        let len = u16::try_from(bytes.len()).expect("fits");
+        bytes[2..4].copy_from_slice(&len.to_le_bytes());
+        bytes
+    }
+
+    fn atsr_bytes(segment: u16, scopes: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0u8; 8];
+        bytes[0..2].copy_from_slice(&2u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&segment.to_le_bytes());
+        bytes.extend_from_slice(scopes);
+        let len = u16::try_from(bytes.len()).expect("fits");
+        bytes[2..4].copy_from_slice(&len.to_le_bytes());
+        bytes
+    }
+
+    fn rhsa_bytes(register_base: u64, proximity_domain: u32) -> Vec<u8> {
+        let mut bytes = vec![0u8; 20];
+        bytes[0..2].copy_from_slice(&3u16.to_le_bytes());
+        bytes[2..4].copy_from_slice(&20u16.to_le_bytes());
+        bytes[8..16].copy_from_slice(&register_base.to_le_bytes());
+        bytes[16..20].copy_from_slice(&proximity_domain.to_le_bytes());
+        bytes
+    }
+
+    fn pci_endpoint_scope(start_bus: u8, device: u8, function: u8) -> Vec<u8> {
+        vec![1, 8, 0, 0, 0, start_bus, device, function]
+    }
+
+    #[test]
+    fn a_dmar_yields_its_structures_and_resolves_each_bdf_to_its_unit_and_regions() {
+        let scoped_target = pci_endpoint_scope(2, 3, 0);
+        let rmrr_scope = pci_endpoint_scope(2, 3, 0);
+        let mut structures = Vec::new();
+        structures.extend_from_slice(&drhd_bytes(true, 0, 0xfed9_0000, &[]));
+        structures.extend_from_slice(&drhd_bytes(false, 0, 0xfed9_1000, &scoped_target));
+        structures.extend_from_slice(&rmrr_bytes(0, 0x1000, 0x1fff, &rmrr_scope));
+        structures.extend_from_slice(&atsr_bytes(0, &[]));
+        structures.extend_from_slice(&rhsa_bytes(0xfed9_1000, 1));
+        let bytes = table(&Sdt::DMAR, &dmar_body(&structures));
+
+        let parsed: Vec<_> = DmarEntries::new(&bytes).expect("validated dmar").collect();
+        assert_eq!(
+            parsed,
+            [
+                DmarStructure::Drhd {
+                    include_pci_all: true,
+                    segment: 0,
+                    register_base: 0xfed9_0000,
+                    scopes: &[],
+                },
+                DmarStructure::Drhd {
+                    include_pci_all: false,
+                    segment: 0,
+                    register_base: 0xfed9_1000,
+                    scopes: &scoped_target,
+                },
+                DmarStructure::Rmrr {
+                    segment: 0,
+                    base: 0x1000,
+                    limit: 0x1fff,
+                    scopes: &rmrr_scope,
+                },
+                DmarStructure::Atsr {
+                    segment: 0,
+                    scopes: &[],
+                },
+                DmarStructure::Rhsa {
+                    register_base: 0xfed9_1000,
+                    proximity_domain: 1,
+                },
+            ]
+        );
+
+        let dmar = Dmar::new(&bytes).expect("no duplicate units, no inverted regions");
+        let scoped_bdf = Bdf::new(0, 2, 3, 0);
+        let unscoped_bdf = Bdf::new(0, 9, 0, 0);
+        assert_eq!(dmar.unit_for(scoped_bdf), Some(0xfed9_1000));
+        assert_eq!(dmar.unit_for(unscoped_bdf), Some(0xfed9_0000));
+        assert_eq!(
+            dmar.reserved_regions_for(scoped_bdf).collect::<Vec<_>>(),
+            [(0x1000, 0x1fff)]
+        );
+        assert_eq!(
+            dmar.reserved_regions_for(unscoped_bdf).collect::<Vec<_>>(),
+            []
+        );
+    }
+
+    #[test]
+    fn a_dmar_view_refuses_a_table_that_is_not_a_dmar() {
+        let bytes = table(&Sdt::MADT, &[0; 12]);
+        assert!(matches!(
+            DmarEntries::new(&bytes),
+            Err(AcpiError::WrongTable {
+                expected: Sdt::DMAR,
+                found: Sdt::MADT,
+            })
+        ));
+    }
+
+    #[test]
+    fn a_dmar_without_its_fixed_preamble_is_invalid() {
+        let bytes = table(&Sdt::DMAR, &[]);
+        assert_eq!(
+            DmarEntries::new(&bytes).map(|entries| entries.count()),
+            Err(AcpiError::BadLength(Sdt::LEN as u32))
+        );
+    }
+
+    #[test]
+    fn a_truncated_dmar_structure_header_is_refused_not_read() {
+        let mut body = dmar_body(&[]);
+        body.extend_from_slice(&[0, 0, 16]); // an incomplete type+length prefix
+        let bytes = table(&Sdt::DMAR, &body);
+        assert!(matches!(
+            DmarEntries::new(&bytes),
+            Err(AcpiError::MalformedEntry { length: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn a_dmar_structure_claiming_zero_length_invalidates_the_table() {
+        // The corrupt input that would otherwise loop forever: a length
+        // that never advances the cursor.
+        let mut body = dmar_body(&[]);
+        body.extend_from_slice(&[0, 0, 0, 0]); // kind 0 (DRHD), length 0
+        let bytes = table(&Sdt::DMAR, &body);
+        assert!(matches!(
+            DmarEntries::new(&bytes),
+            Err(AcpiError::MalformedEntry { length: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn a_dmar_structure_running_past_the_table_invalidates_it() {
+        let mut body = dmar_body(&[]);
+        body.extend_from_slice(&[0, 0, 40, 0]); // kind 0, length 40, 4 bytes actually present
+        let bytes = table(&Sdt::DMAR, &body);
+        assert!(matches!(
+            DmarEntries::new(&bytes),
+            Err(AcpiError::MalformedEntry {
+                length: 40,
+                available: 4,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_device_scope_running_past_its_structure_invalidates_the_table() {
+        let short_scope = [1u8, 8, 0, 0, 0, 0]; // claims 8 bytes; only 6 are present
+        let drhd = drhd_bytes(false, 0, 0x1000, &short_scope);
+        let bytes = table(&Sdt::DMAR, &dmar_body(&drhd));
+        assert!(matches!(
+            DmarEntries::new(&bytes),
+            Err(AcpiError::MalformedEntry {
+                length: 8,
+                available: 6,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn an_unknown_dmar_structure_is_preserved_as_other_and_does_not_stop_the_walk() {
+        let mut structures = vec![9, 0, 8, 0, 1, 2, 3, 4]; // kind 9, length 8
+        structures.extend_from_slice(&drhd_bytes(true, 0, 0x2000, &[]));
+        let bytes = table(&Sdt::DMAR, &dmar_body(&structures));
+
+        let parsed: Vec<_> = DmarEntries::new(&bytes)
+            .expect("unknown kinds still validate")
+            .collect();
+        assert_eq!(
+            parsed,
+            [
+                DmarStructure::Other { kind: 9 },
+                DmarStructure::Drhd {
+                    include_pci_all: true,
+                    segment: 0,
+                    register_base: 0x2000,
+                    scopes: &[],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_dmar_structure_shorter_than_its_fields_is_refused_not_read() {
+        // Independent field widths from the Intel VT-d specification's
+        // DRHD, RMRR, ATSR, and RHSA structure layouts keep the bounds from
+        // merely restating the parser (D-142).
+        for (kind, minimum) in [(0u16, 16usize), (1, 24), (2, 8), (3, 20), (0x80, 4)] {
+            let short_len = minimum - 1;
+            let mut short = vec![0u8; short_len];
+            if short_len >= 4 {
+                short[0..2].copy_from_slice(&kind.to_le_bytes());
+                let len = u16::try_from(short_len).expect("fits");
+                short[2..4].copy_from_slice(&len.to_le_bytes());
+            }
+            let bytes = table(&Sdt::DMAR, &dmar_body(&short));
+            assert!(
+                DmarEntries::new(&bytes).is_err(),
+                "kind {kind} accepted {short_len} bytes, one short of {minimum}"
+            );
+
+            let mut exact = vec![0u8; minimum];
+            exact[0..2].copy_from_slice(&kind.to_le_bytes());
+            let len = u16::try_from(minimum).expect("fits");
+            exact[2..4].copy_from_slice(&len.to_le_bytes());
+            let bytes = table(&Sdt::DMAR, &dmar_body(&exact));
+            assert_eq!(
+                DmarEntries::new(&bytes).map(|entries| entries.count()),
+                Ok(1),
+                "kind {kind} refused exactly {minimum} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn the_first_remapping_structure_begins_after_the_dmar_preamble() {
+        // Independent field widths from the Intel VT-d specification's DMAR
+        // table header (host address width, flags, ten reserved bytes)
+        // prevent a self-referential fixture from accepting a changed
+        // preamble size.
+        assert_eq!(DmarEntries::HEADER, 48);
+        assert_eq!(Sdt::LEN + 1 + 1 + 10, DmarEntries::HEADER);
+    }
+
+    #[test]
+    fn dmar_errors_name_the_table_or_domain_rule_broken() {
+        assert_eq!(
+            DmarError::Table(AcpiError::BadChecksum).to_string(),
+            "dmar is unusable: table checksum does not sum to zero"
+        );
+        assert_eq!(
+            DmarError::ReservedRegionInverted {
+                base: 0x2000,
+                limit: 0x1000,
+            }
+            .to_string(),
+            "dmar reserved region [0x2000, 0x1000] has its limit before its base"
+        );
+        assert_eq!(
+            DmarError::DuplicateUnit {
+                register_base: 0xfed9_0000
+            }
+            .to_string(),
+            "dmar has two drhd units at register base 0xfed90000"
+        );
+    }
+
+    #[test]
+    fn an_inverted_reserved_region_is_refused_by_the_validated_view() {
+        let rmrr = rmrr_bytes(0, 0x2000, 0x1000, &[]);
+        let bytes = table(&Sdt::DMAR, &dmar_body(&rmrr));
+
+        // The raw walk does not know the domain rule and still yields the
+        // structure; only the validated `Dmar` view refuses it.
+        assert!(DmarEntries::new(&bytes).is_ok());
+        assert_eq!(
+            Dmar::new(&bytes),
+            Err(DmarError::ReservedRegionInverted {
+                base: 0x2000,
+                limit: 0x1000,
+            })
+        );
+    }
+
+    #[test]
+    fn a_one_byte_reserved_region_has_base_equal_to_limit_and_is_accepted() {
+        let rmrr = rmrr_bytes(0, 0x3000, 0x3000, &[]);
+        let bytes = table(&Sdt::DMAR, &dmar_body(&rmrr));
+        assert!(Dmar::new(&bytes).is_ok());
+    }
+
+    #[test]
+    fn two_drhds_at_the_same_register_base_are_refused_by_the_validated_view() {
+        let mut structures = drhd_bytes(true, 0, 0xfed9_0000, &[]);
+        structures.extend_from_slice(&drhd_bytes(false, 1, 0xfed9_0000, &[]));
+        let bytes = table(&Sdt::DMAR, &dmar_body(&structures));
+
+        assert!(DmarEntries::new(&bytes).is_ok());
+        assert_eq!(
+            Dmar::new(&bytes),
+            Err(DmarError::DuplicateUnit {
+                register_base: 0xfed9_0000
+            })
+        );
+    }
+
+    #[test]
+    fn a_multi_hop_device_scope_path_is_exposed_but_not_resolved_to_a_bdf() {
+        let scope_bytes = [1u8, 10, 0, 0, 0, 2, 3, 0, 4, 0]; // kind 1, length 10, two hops
+        let drhd = drhd_bytes(false, 0, 0x4000, &scope_bytes);
+        let bytes = table(&Sdt::DMAR, &dmar_body(&drhd));
+
+        let structure = DmarEntries::new(&bytes)
+            .expect("validated dmar")
+            .next()
+            .expect("one drhd");
+        let DmarStructure::Drhd { scopes, .. } = structure else {
+            unreachable!("only structure in the table is the drhd")
+        };
+        let scope = DeviceScopes::new(scopes).next().expect("one device scope");
+        assert_eq!(scope.start_bus(), 2);
+        assert_eq!(scope.path().collect::<Vec<_>>(), [(3, 0), (4, 0)]);
+        assert_eq!(scope.pci_target(), None);
+    }
+
+    #[test]
+    fn an_unknown_device_scope_kind_is_preserved_as_other() {
+        let scope_bytes = [0x7fu8, 6, 0, 0, 0, 0]; // kind 0x7f, length 6, no path
+        let drhd = drhd_bytes(false, 0, 0x5000, &scope_bytes);
+        let bytes = table(&Sdt::DMAR, &dmar_body(&drhd));
+
+        let structure = DmarEntries::new(&bytes)
+            .expect("validated dmar")
+            .next()
+            .expect("one drhd");
+        let DmarStructure::Drhd { scopes, .. } = structure else {
+            unreachable!("only structure in the table is the drhd")
+        };
+        let scope = DeviceScopes::new(scopes).next().expect("one device scope");
+        assert_eq!(scope.kind(), DeviceScopeKind::Other { kind: 0x7f });
     }
 }

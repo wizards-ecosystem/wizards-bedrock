@@ -49,12 +49,6 @@ pub const ABSENT: &[Absent] = &[
         because: "`010` §11: a fault-injecting block device for testing WizFS's crash \
                   consistency. Belongs to that phase.",
     },
-    Absent {
-        crate_name: "vtd",
-        because: "D-357's DMA-isolation design names it as the VT-d root, context, \
-                  second-level and invalidation encoder. It lands in the VT-d encoding \
-                  slice, whose commit removes this line.",
-    },
 ];
 
 /// Every `libs/<name>` the documents mention.
