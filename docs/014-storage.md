@@ -979,7 +979,7 @@ first, because a caller freezes the interface it uses.
 | Machine checks | 265 |
 | Mutations | 1534 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-356 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-357 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but mutation registration is not a current full-sweep
@@ -1155,3 +1155,93 @@ directions in ten slices: an input, a corpus of disk blocks, a directory tree,
 and a rights word whose low half was valid. D-165's (a check must reach the
 code it is about) arrived three times. Both are in `005` now, and both were
 found by breaking checks rather than by reading them.
+
+---
+
+## DMA isolation through the IOMMU (post-phase)
+
+**2026-09-29.** D-357.
+
+The storage controller is a bus-mastering PCI device: it reads and writes
+physical memory directly, without the CPU, so the page tables that separate
+kernel from user and enforce W^X do not constrain it. Every DMA safety property
+this phase built is a property of *when* a frame is device-owned (PW-200,
+PW-206, PW-213, D-339): a segment's bytes return to the host only after a
+matching completion or a proven controller reset. None of them constrains
+*which* physical addresses the controller may name. A controller that is wedged,
+buggy, or reprogrammed by firmware or an attacker holding its function can DMA
+to any frame: kernel text, the page tables, another owner's data. The census
+recorded the lifetime; it did not record the reach.
+
+The IOMMU is the hardware that constrains the reach. Intel calls it VT-d: a
+second address-translation unit between every PCI function and memory that checks
+each DMA access against tables the kernel owns, and faults anything they do not
+map. This section is how the storage device comes to run behind one.
+
+### The model: identity-mapped, scoped to live segments
+
+The controller keeps naming physical addresses, and the IOMMU's second-level
+tables map only the frames a live `DmaSegment` currently owns, so IOVA equals
+host physical for a mapped frame and every other address faults. The queues and
+each in-flight read or write buffer are mapped before the frame is handed to the
+device and unmapped, with the IOMMU's cache invalidated, only after the existing
+lifecycle proves the frame device-quiescent. The set the device can reach is
+exactly the set the driver has published and not yet retired, which is the
+property the software lifecycle already maintains, now enforced by hardware
+rather than trusted of the device.
+
+Per-segment address translation, where the IOMMU hands the device an address
+unequal to the physical one and hides the memory map, is a strengthening this
+does not need: identity-mapped-and-scoped already faults every access outside the
+live set, which is the reach guarantee. It is a trigger row (PW-712) rather than
+a shortcut taken here.
+
+### Fail closed
+
+Isolation is a precondition of storage rather than a feature of it. If the
+firmware reports no DMAR table, or no remapping unit governs the controller's
+function, or the unit cannot be taken over, the storage stack does not start and
+the boot says `storage: no DMA isolation`. Bus mastering is gated on an active
+domain for that exact function: `admit_bus_master` requires a `DmaDomain` proof,
+so there is no path that reaches a doorbell without the fence in place. A
+degraded boot without the IOMMU device exists precisely to prove the refusal
+fires.
+
+If firmware handed the machine over with translation already enabled, which a
+VMware EFI can do, the kernel takes the unit over explicitly, quiescing it and
+installing its own root before re-enabling translation, rather than riding tables
+it did not write.
+
+The tables the IOMMU walks (the root table, the per-function context table, and
+the second-level page tables) are ordinary kernel-owned frames written through
+the existing memory abstractions, and their physical addresses are programmed
+into the unit's registers. They are never themselves mapped into any device's
+second-level tables, so the device cannot reach the structures that constrain it.
+
+### What is deferred, and why it is safe to defer
+
+DMA remapping is the whole reach guarantee for a polled storage device.
+Interrupt remapping (PW-710) governs a different surface, the interrupts a device
+delivers, and triggers when a device the kernel does not fully trust delivers
+one; the QEMU unit runs with `intremap=off`. AMD's IOMMU (PW-711) is a different
+encoding for the same idea and triggers on a qualified AMD host; the Intel unit
+is what the qualified hosts present. Each deferral is a named trigger row with
+the surface its arrival would open.
+
+### How it is checked
+
+The table parse and the register encoding are host arithmetic and are checked
+under `cargo test`: `libs/acpi-tables` parses the DMAR structures and refuses
+truncation, a region whose base exceeds its limit, and a duplicate unit;
+`libs/vtd` encodes the root, context and second-level entries and the
+invalidation descriptors, and its capability and width arithmetic is walked
+exhaustively. The programming and the fault behaviour need a real unit and are
+checked by booting: translation is active for the controller's function before
+its first doorbell, storage and the filesystem read through it, a deliberate
+controller read into an unmapped address records a fault and changes no memory,
+and an unmap invalidates the unit's cache before the frame returns to the
+allocator. The QEMU fixed profile presents `-device intel-iommu`, a degraded
+profile without it requires the named refusal, and the VMware template enables
+its virtual unit. Each check is broken once and its mutation kept: a skipped
+invalidation, an extra mapped page, bus mastering admitted before the domain,
+translation left disabled, and a context programmed for the wrong function.
