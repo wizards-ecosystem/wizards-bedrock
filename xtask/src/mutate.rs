@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1539;
+pub const NEXT_MUTATION_ID: u16 = 1540;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1521];
@@ -7633,6 +7633,17 @@ pub const MUTATIONS: &[Mutation] = &[
         reddens: Caught::Panic {
             marker: "terminal work no longer owns its pending entry",
             why: "only the exact settling snapshot carries terminal removal authority, so clearing any other state would discard or replace live work",
+        },
+    },
+    Mutation {
+        id: 1539,
+        file: "kernel/src/queue.rs",
+        find: "            *state = ReadState::Running;",
+        replace: "            *state = ReadState::Queued;",
+        breaks: "a read begins without advancing its pending entry into the running state",
+        reddens: Caught::Panic {
+            marker: "running file work was made without a running read",
+            why: "the request path destructures a running read's state, so a read that begins while its entry stays queued reaches the unreachable arm the ring model proves cannot occur",
         },
     },
     Mutation {
