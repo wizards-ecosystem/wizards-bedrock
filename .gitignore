@@ -32,19 +32,10 @@
 # settings file gets committed.
 /.claude/
 
-# The shared ecosystem working note. Local to this machine, not a repo artifact.
-/ecosystem_todo.md
-
-# Task handoff note for agents picking up in-flight work. Local, not a product.
+# The one handoff note for agents picking up in-flight work. Local operational
+# state, not a product; the evidence and mutation gates require an
+# untracked-clean tree.
 /HANDOFF.md
-
-# The pre-Wizzy qualification handoff. Local operational state; the evidence and
-# mutation gates require an untracked-clean tree.
-/PRE_WIZZY_HANDOFF.md
-
-# In-flight remaining-work handoff for the pre-Wizzy pass. Local operational
-# state; folded into PRE_WIZZY_HANDOFF.md at close, then removed.
-/HANDOFF_REMAINING_WORK.md
 
 # Local research clones; not part of the build and not ours.
 /exploration/
