@@ -4202,7 +4202,7 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
                 ("NVME_BME_REFUSAL_PROVED", 3),
                 ("NVME_BAR_ADMISSION_PROVED", 3),
                 ("ROUTING_ROLLBACK_PROVED", 3),
-                ("CandidateBaseline", 5),
+                ("CandidateBaseline", 4),
             ],
         ),
         (

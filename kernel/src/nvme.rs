@@ -884,7 +884,7 @@ fn program_admin_registers(
     preparation: AdminPreparation,
 ) -> PrepareOutcome {
     let AdminPreparation {
-        disabled,
+        mut disabled,
         capabilities,
         admin,
         capacity,
@@ -894,39 +894,22 @@ fn program_admin_registers(
         observed_window,
     } = preparation;
     let aqa = (capacity.as_zero_based() << 16) | capacity.as_zero_based();
-    let disabled = match write_disabled_register(disabled, register::AQA, aqa) {
-        DisabledRegisterWrite::Written(disabled) => disabled,
-        DisabledRegisterWrite::Failed(failure) => {
-            return PrepareOutcome::Failed(retire_failed_preparation_access(context, failure));
-        }
-    };
     // The controller latches ASQ and ACQ when their high half is written.
-    let disabled = match write_disabled_register(disabled, register::ASQ, submission as u32) {
-        DisabledRegisterWrite::Written(disabled) => disabled,
-        DisabledRegisterWrite::Failed(failure) => {
-            return PrepareOutcome::Failed(retire_failed_preparation_access(context, failure));
-        }
-    };
-    let disabled =
-        match write_disabled_register(disabled, register::ASQ + 4, (submission >> 32) as u32) {
+    let writes = [
+        (register::AQA, aqa),
+        (register::ASQ, submission as u32),
+        (register::ASQ + 4, (submission >> 32) as u32),
+        (register::ACQ, completion as u32),
+        (register::ACQ + 4, (completion >> 32) as u32),
+    ];
+    for (offset, value) in writes {
+        disabled = match write_disabled_register(disabled, offset, value) {
             DisabledRegisterWrite::Written(disabled) => disabled,
             DisabledRegisterWrite::Failed(failure) => {
                 return PrepareOutcome::Failed(retire_failed_preparation_access(context, failure));
             }
         };
-    let disabled = match write_disabled_register(disabled, register::ACQ, completion as u32) {
-        DisabledRegisterWrite::Written(disabled) => disabled,
-        DisabledRegisterWrite::Failed(failure) => {
-            return PrepareOutcome::Failed(retire_failed_preparation_access(context, failure));
-        }
-    };
-    let disabled =
-        match write_disabled_register(disabled, register::ACQ + 4, (completion >> 32) as u32) {
-            DisabledRegisterWrite::Written(disabled) => disabled,
-            DisabledRegisterWrite::Failed(failure) => {
-                return PrepareOutcome::Failed(retire_failed_preparation_access(context, failure));
-            }
-        };
+    }
     finish_preparation(
         disabled.into_owner(),
         capabilities,

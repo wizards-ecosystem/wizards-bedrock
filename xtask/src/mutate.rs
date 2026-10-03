@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1570;
+pub const NEXT_MUTATION_ID: u16 = 1571;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521];
@@ -13366,6 +13366,17 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "pci-config",
             name: "tests::a_bridge_subordinate_bus_is_read_from_its_own_byte",
+        },
+    },
+    Mutation {
+        id: 1570,
+        file: "kernel/src/main.rs",
+        find: "    CandidateStage::Prepared(device, prepared)\n}",
+        replace: "    admit_candidate(&mut CandidateStage::Prepared(device, prepared), context)\n}",
+        breaks: "the claim stage runs the admit stage inside its own frame, so both debug frames share the boot stack",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::only_the_candidate_sequencer_calls_its_stages",
         },
     },
     Mutation {

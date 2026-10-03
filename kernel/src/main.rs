@@ -472,30 +472,148 @@ enum StorageSelection {
     Halted,
 }
 
+/// Where a storage candidate stands between the stages of [`try_controller`].
+#[derive(Debug)]
+enum CandidateStage {
+    /// Leased, mapped and verified disabled, with bus mastering still off.
+    Prepared(pci::Device, nvme::DisabledController),
+    /// Bus mastering admitted behind the installed domain.
+    Admitted(pci::Device, nvme::BusMasterAdmittedController),
+    /// A stage failed and only the lease remains, for [`retire_candidate`].
+    Retire(pci::Device),
+    /// Selection is decided and no lease remains to return.
+    Settled(StorageSelection),
+}
+
+impl CandidateStage {
+    /// Move the owners out, leaving selection halted until a stage returns.
+    fn take(&mut self) -> Self {
+        core::mem::replace(self, Self::Settled(StorageSelection::Halted))
+    }
+
+    /// The owners of a prepared candidate; any other stage stays in place.
+    fn take_prepared(&mut self) -> Option<(pci::Device, nvme::DisabledController)> {
+        match self.take() {
+            Self::Prepared(device, prepared) => Some((device, prepared)),
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
+
+    /// The owners of an admitted candidate; any other stage stays in place.
+    fn take_admitted(&mut self) -> Option<(pci::Device, nvme::BusMasterAdmittedController)> {
+        match self.take() {
+            Self::Admitted(device, admitted) => Some((device, admitted)),
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
+}
+
 /// Claim one storage candidate and either commit or retire it.
 ///
 /// Selection advances only after the failed candidate has stopped DMA,
 /// unmapped its registers, returned its queues, restored its command word and
-/// released its function and I/O claims (D-199).
+/// released its function and I/O claims (D-199). Every stage returns its
+/// owners here, so one stage frame at a time sits on the boot stack (D-359).
 fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
     let mut context = thread::ThreadContext::require();
     #[cfg(feature = "selftest")]
     let baseline = CandidateBaseline::capture(&mut context);
-    let bus = at.bus();
-    let device_number = at.device();
-    let function = at.function();
+    #[cfg(feature = "selftest")]
+    let bme_activity = nvme::activity_for_test();
+    #[cfg(feature = "selftest")]
+    let forced_before = pci::bus_master_refusal_was_observed();
     #[cfg(feature = "selftest")]
     NVME_CANDIDATE_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
 
+    // Stages borrow the candidate, so the debug frame holds one copy of its
+    // owners rather than one per stage call.
+    let mut stage = claim_candidate(at, ordinal, &mut context);
+    let device = loop {
+        stage = match stage {
+            CandidateStage::Prepared(..) => admit_candidate(&mut stage, &mut context),
+            CandidateStage::Admitted(..) => start_candidate(&mut stage, &mut context, ordinal),
+            CandidateStage::Retire(device) => break device,
+            CandidateStage::Settled(selection) => return selection,
+        };
+    };
+    let selection = retire_candidate(
+        device,
+        &mut context,
+        #[cfg(feature = "selftest")]
+        baseline,
+        ordinal,
+    );
+    #[cfg(feature = "selftest")]
+    if !forced_before && pci::bus_master_refusal_was_observed() {
+        NVME_BME_REFUSAL_PROVED.store(
+            selection == StorageSelection::Seeking
+                && nvme::activity_for_test() == bme_activity
+                && nvme::refused_bus_master_followed_disable_for_test(),
+            Ordering::Release,
+        );
+    }
+    selection
+}
+
+/// Lease, map, prepare and isolate a candidate before it may bus-master.
+fn claim_candidate(
+    at: pci_config::Address,
+    ordinal: usize,
+    context: &mut thread::ThreadContext,
+) -> CandidateStage {
     let mut device = match pci::lease(at) {
         Ok(device) => device,
-        Err(pci::ClaimError::ProbeRestore(recovery)) => match recovery.retry() {
+        Err(reason) => return CandidateStage::Settled(refused_lease(at, reason)),
+    };
+    let (vendor, model) = device.identity();
+    info!(
+        "nvme: claimed {:02x}:{:02x}.{} — {vendor:04x}:{model:04x}",
+        at.bus(),
+        at.device(),
+        at.function()
+    );
+
+    let registers = match admit_controller_window(&mut device, context) {
+        ControllerWindowAdmission::Admitted(registers) => registers,
+        ControllerWindowAdmission::Refused => return CandidateStage::Retire(device),
+        ControllerWindowAdmission::Quarantined => {
+            pci::retain_failed_release(device);
+            return CandidateStage::Settled(StorageSelection::Halted);
+        }
+    };
+    let prepared = match nvme::prepare(context, registers) {
+        nvme::PrepareOutcome::Prepared(prepared) => prepared,
+        nvme::PrepareOutcome::Failed(failure) => {
+            return failed_preparation(failure, device, ordinal);
+        }
+    };
+    // Translation goes on while the controller is still disabled and its
+    // function cannot bus-master, so no DMA ever runs outside the domain.
+    if !iommu::establish(context, at) {
+        warn!("storage: no DMA isolation");
+    }
+    CandidateStage::Prepared(device, prepared)
+}
+
+/// Report a refused lease, and whether selection may try the next function.
+fn refused_lease(at: pci_config::Address, reason: pci::ClaimError) -> StorageSelection {
+    let bus = at.bus();
+    let device_number = at.device();
+    let function = at.function();
+    match reason {
+        pci::ClaimError::ProbeRestore(recovery) => match recovery.retry() {
             pci::ProbeRecoveryOutcome::Recovered => {
                 warn!(
                     "nvme: {:02x}:{:02x}.{} probe failed but restored on retry",
                     bus, device_number, function
                 );
-                return StorageSelection::Seeking;
+                StorageSelection::Seeking
             }
             pci::ProbeRecoveryOutcome::Refused(failure) => {
                 warn!(
@@ -506,104 +624,61 @@ fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
                     failure.reason()
                 );
                 pci::retain_failed_probe(failure.into_recovery());
-                return StorageSelection::Halted;
+                StorageSelection::Halted
             }
             pci::ProbeRecoveryOutcome::FunctionRetained => {
                 warn!(
                     "nvme: {:02x}:{:02x}.{} probe restored but its function claim remains retained",
                     bus, device_number, function
                 );
-                return StorageSelection::Halted;
+                StorageSelection::Halted
             }
         },
-        Err(pci::ClaimError::FunctionRetained) => {
+        pci::ClaimError::FunctionRetained => {
             warn!(
                 "nvme: {:02x}:{:02x}.{} preparation failed with its function claim retained",
                 bus, device_number, function
             );
-            return StorageSelection::Halted;
+            StorageSelection::Halted
         }
-        Err(reason) => {
+        reason => {
             warn!(
                 "nvme: {:02x}:{:02x}.{} could not be claimed: {reason}",
                 bus, device_number, function
             );
-            return StorageSelection::Seeking;
+            StorageSelection::Seeking
         }
-    };
-
-    let (vendor, model) = device.identity();
-    info!(
-        "nvme: claimed {:02x}:{:02x}.{} — {vendor:04x}:{model:04x}",
-        bus, device_number, function
-    );
-
-    let registers = match admit_controller_window(&mut device, &mut context) {
-        ControllerWindowAdmission::Admitted(registers) => registers,
-        ControllerWindowAdmission::Refused => {
-            return retire_candidate(
-                device,
-                &mut context,
-                #[cfg(feature = "selftest")]
-                baseline,
-                ordinal,
-            );
-        }
-        ControllerWindowAdmission::Quarantined => {
-            pci::retain_failed_release(device);
-            return StorageSelection::Halted;
-        }
-    };
-
-    let prepared = match nvme::prepare(&mut context, registers) {
-        nvme::PrepareOutcome::Prepared(prepared) => prepared,
-        nvme::PrepareOutcome::Failed(failure) => {
-            let reason = failure.reason();
-            if let Some(quarantine) = failure.into_quarantine() {
-                warn!(
-                    "nvme: candidate {ordinal} left uncertain controller state after {}",
-                    reason
-                );
-                nvme::keep_prepare_quarantine(quarantine, device);
-                return StorageSelection::Halted;
-            }
-            return retire_candidate(
-                device,
-                &mut context,
-                #[cfg(feature = "selftest")]
-                baseline,
-                ordinal,
-            );
-        }
-    };
-    // Translation goes on while the controller is still disabled and its
-    // function cannot bus-master, so no DMA ever runs outside the domain.
-    if !iommu::establish(&mut context, at) {
-        warn!("storage: no DMA isolation");
     }
-    finish_controller_candidate(
-        device,
-        &mut context,
-        #[cfg(feature = "selftest")]
-        baseline,
-        ordinal,
-        prepared,
-    )
 }
 
-fn finish_controller_candidate(
-    mut device: pci::Device,
-    context: &mut thread::ThreadContext,
-    #[cfg(feature = "selftest")] baseline: CandidateBaseline,
+/// Keep an uncertain preparation with its lease, or hand the lease back.
+fn failed_preparation(
+    failure: nvme::PrepareFailure,
+    device: pci::Device,
     ordinal: usize,
-    prepared: nvme::DisabledController,
-) -> StorageSelection {
-    #[cfg(feature = "selftest")]
-    let bme_activity = nvme::activity_for_test();
-    #[cfg(feature = "selftest")]
-    let forced_before = pci::bus_master_refusal_was_observed();
-    let prepared = match prepared.admit_bus_master(&mut device) {
-        nvme::BusMasterAdmission::Admitted(prepared) => prepared,
+) -> CandidateStage {
+    let reason = failure.reason();
+    let Some(quarantine) = failure.into_quarantine() else {
+        return CandidateStage::Retire(device);
+    };
+    warn!(
+        "nvme: candidate {ordinal} left uncertain controller state after {}",
+        reason
+    );
+    nvme::keep_prepare_quarantine(quarantine, device);
+    CandidateStage::Settled(StorageSelection::Halted)
+}
+
+/// Admit bus mastering for a prepared candidate behind its installed domain.
+fn admit_candidate(
+    stage: &mut CandidateStage,
+    context: &mut thread::ThreadContext,
+) -> CandidateStage {
+    let Some((mut device, prepared)) = stage.take_prepared() else {
+        return stage.take();
+    };
+    let admitted = match prepared.admit_bus_master(&mut device) {
+        nvme::BusMasterAdmission::Admitted(admitted) => admitted,
         nvme::BusMasterAdmission::Refused(failure) => {
             warn!(
                 "nvme: bus master refused after verified disable: {}",
@@ -613,51 +688,38 @@ fn finish_controller_candidate(
                 nvme::ControllerRetirement::Retired => {}
                 nvme::ControllerRetirement::Quarantined(quarantine) => {
                     nvme::keep_controller_quarantine(quarantine, device);
-                    return StorageSelection::Halted;
+                    return CandidateStage::Settled(StorageSelection::Halted);
                 }
             }
-            let selection = retire_candidate(
-                device,
-                context,
-                #[cfg(feature = "selftest")]
-                baseline,
-                ordinal,
-            );
-            #[cfg(feature = "selftest")]
-            if !forced_before && pci::bus_master_refusal_was_observed() {
-                NVME_BME_REFUSAL_PROVED.store(
-                    selection == StorageSelection::Seeking
-                        && nvme::activity_for_test() == bme_activity
-                        && nvme::refused_bus_master_followed_disable_for_test(),
-                    Ordering::Release,
-                );
-            }
-            return selection;
+            return CandidateStage::Retire(device);
         }
     };
     info!("nvme: bus master on after verified controller disable");
+    CandidateStage::Admitted(device, admitted)
+}
 
-    let mut controller = match nvme::start(context, prepared) {
+/// Start an admitted controller, read block 0 through it, and keep it.
+fn start_candidate(
+    stage: &mut CandidateStage,
+    context: &mut thread::ThreadContext,
+    ordinal: usize,
+) -> CandidateStage {
+    let Some((mut device, admitted)) = stage.take_admitted() else {
+        return stage.take();
+    };
+    let mut controller = match nvme::start(context, admitted) {
         Ok(controller) => controller,
         Err(failure) => {
             let reason = failure.reason();
             match failure.into_retirement() {
-                nvme::ControllerRetirement::Retired => {
-                    return retire_candidate(
-                        device,
-                        context,
-                        #[cfg(feature = "selftest")]
-                        baseline,
-                        ordinal,
-                    );
-                }
+                nvme::ControllerRetirement::Retired => return CandidateStage::Retire(device),
                 nvme::ControllerRetirement::Quarantined(quarantine) => {
                     warn!(
                         "nvme: candidate {ordinal} left uncertain controller state after {}",
                         reason
                     );
                     nvme::keep_controller_quarantine(quarantine, device);
-                    return StorageSelection::Halted;
+                    return CandidateStage::Settled(StorageSelection::Halted);
                 }
             }
         }
@@ -671,16 +733,10 @@ fn finish_controller_candidate(
             nvme::ControllerRetirement::Retired => {}
             nvme::ControllerRetirement::Quarantined(quarantine) => {
                 nvme::keep_controller_quarantine(quarantine, device);
-                return StorageSelection::Halted;
+                return CandidateStage::Settled(StorageSelection::Halted);
             }
         }
-        return retire_candidate(
-            device,
-            context,
-            #[cfg(feature = "selftest")]
-            baseline,
-            ordinal,
-        );
+        return CandidateStage::Retire(device);
     };
     let mut buffer = wost::mm::DmaSegment::from(segment);
     match controller.read_blocks(0, 1, &mut buffer) {
@@ -693,29 +749,23 @@ fn finish_controller_candidate(
                 nvme::ControllerRetirement::Quarantined(quarantine) => {
                     nvme::keep_controller_quarantine(quarantine, device);
                     drop(buffer);
-                    return StorageSelection::Halted;
+                    return CandidateStage::Settled(StorageSelection::Halted);
                 }
             }
             drop(buffer);
-            return retire_candidate(
-                device,
-                context,
-                #[cfg(feature = "selftest")]
-                baseline,
-                ordinal,
-            );
+            return CandidateStage::Retire(device);
         }
     }
     if let Err(reason) = device.commit() {
         warn!("nvme: pci command commit refused: {reason}");
         pci::retain_failed_commit(device);
         nvme::keep(controller, buffer);
-        return StorageSelection::Halted;
+        return CandidateStage::Settled(StorageSelection::Halted);
     }
     nvme::keep(controller, buffer);
     #[cfg(feature = "selftest")]
     NVME_SELECTED_ORDINAL.store(ordinal, Ordering::Release);
-    StorageSelection::Selected
+    CandidateStage::Settled(StorageSelection::Selected)
 }
 
 /// Finish one failed lease, stopping selection unless restoration is exact.

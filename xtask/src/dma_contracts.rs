@@ -423,9 +423,15 @@ fn controller_quarantine_arm_is_exact(arm: &syn::Arm) -> bool {
         .count();
     let halted = matches!(body.block.stmts.last(),
         Some(Stmt::Expr(Expr::Return(returned), Some(_)))
-            if returned.expr.as_deref().is_some_and(|expression|
-                path_expression_is(expression, &["StorageSelection", "Halted"])));
+            if returned.expr.as_deref().is_some_and(settles_halted));
     keepers == 1 && halted
+}
+
+fn settles_halted(expression: &Expr) -> bool {
+    matches!(expression, Expr::Call(settled)
+        if path_expression_is(&settled.func, &["CandidateStage", "Settled"])
+            && settled.args.len() == 1
+            && path_expression_is(&settled.args[0], &["StorageSelection", "Halted"]))
 }
 
 #[derive(Default)]
@@ -480,6 +486,72 @@ fn routing_retention_block_is_exact(block: &syn::Block) -> bool {
 }
 
 #[derive(Default)]
+struct CalledFunctions {
+    names: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for CalledFunctions {
+    fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+        if let Expr::Path(path) = &*call.func
+            && let Some(last) = path.path.segments.last()
+        {
+            self.names.push(last.ident.to_string());
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+}
+
+struct StageReferences<'name> {
+    watched: &'name [String],
+    enclosing: Vec<String>,
+    found: Vec<(String, String)>,
+}
+
+impl StageReferences<'_> {
+    fn record(&mut self, name: String) {
+        if self.watched.contains(&name) {
+            let caller = self.enclosing.last().cloned().unwrap_or_default();
+            self.found.push((caller, name));
+        }
+    }
+
+    fn record_tokens(&mut self, tokens: proc_macro2::TokenStream) {
+        for token in tokens {
+            match token {
+                proc_macro2::TokenTree::Group(group) => self.record_tokens(group.stream()),
+                proc_macro2::TokenTree::Ident(identifier) => self.record(identifier.to_string()),
+                proc_macro2::TokenTree::Literal(_) | proc_macro2::TokenTree::Punct(_) => {}
+            }
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for StageReferences<'_> {
+    fn visit_item_fn(&mut self, function: &'ast ItemFn) {
+        self.enclosing.push(function.sig.ident.to_string());
+        syn::visit::visit_item_fn(self, function);
+        self.enclosing.pop();
+    }
+
+    fn visit_impl_item_fn(&mut self, method: &'ast syn::ImplItemFn) {
+        self.enclosing.push(method.sig.ident.to_string());
+        syn::visit::visit_impl_item_fn(self, method);
+        self.enclosing.pop();
+    }
+
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        if let Some(last) = path.path.segments.last() {
+            self.record(last.ident.to_string());
+        }
+        syn::visit::visit_expr_path(self, path);
+    }
+
+    fn visit_token_stream(&mut self, tokens: &'ast proc_macro2::TokenStream) {
+        self.record_tokens(tokens.clone());
+    }
+}
+
+#[derive(Default)]
 struct WindowQuarantineArms<'ast> {
     found: Vec<&'ast syn::Arm>,
 }
@@ -505,8 +577,7 @@ fn window_quarantine_arm_is_exact(arm: &syn::Arm) -> bool {
     ] if path_expression_is(&retain.func, &["pci", "retain_failed_release"])
         && retain.args.len() == 1
         && path_expression_is(&retain.args[0], &["device"])
-        && returned.expr.as_deref().is_some_and(|expression|
-            path_expression_is(expression, &["StorageSelection", "Halted"])))
+        && returned.expr.as_deref().is_some_and(settles_halted))
 }
 
 #[derive(Default)]
@@ -1883,6 +1954,59 @@ fn every_failed_controller_retirement_keeps_its_controller_and_pci_lease() {
 }
 
 #[test]
+fn only_the_candidate_sequencer_calls_its_stages() {
+    let main = parse("kernel/src/main.rs");
+    let mut calls = CalledFunctions::default();
+    calls.visit_block(&function(&main, "try_controller").block);
+    let stages: Vec<String> = main
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Fn(stage)
+                if calls.names.contains(&stage.sig.ident.to_string())
+                    && matches!(&stage.sig.output, ReturnType::Type(_, returned)
+                        if matches!(&**returned, Type::Path(path)
+                            if path.path.is_ident("CandidateStage"))) =>
+            {
+                Some(stage.sig.ident.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        stages.len(),
+        3,
+        "try_controller must sequence its claim, admit and start stages: {stages:?}"
+    );
+
+    let mut watched = stages;
+    watched.push("retire_candidate".to_owned());
+    let mut references = StageReferences {
+        watched: &watched,
+        enclosing: Vec::new(),
+        found: Vec::new(),
+    };
+    references.visit_file(&main);
+    for (caller, stage) in &references.found {
+        assert_eq!(
+            caller, "try_controller",
+            "{caller} calls {stage}, so two candidate frames share the boot stack (D-359)"
+        );
+    }
+    for stage in &watched {
+        assert_eq!(
+            references
+                .found
+                .iter()
+                .filter(|(_, named)| named == stage)
+                .count(),
+            1,
+            "try_controller must call {stage} exactly once"
+        );
+    }
+}
+
+#[test]
 fn device_unmap_retry_returns_the_exact_remaining_owner() {
     let memory = parse("kernel/src/mem.rs");
     let retirement = memory
@@ -1960,7 +2084,7 @@ fn bar_admission_quarantine_keeps_every_exact_owner() {
     let mut quarantine_arms = WindowQuarantineArms::default();
     <WindowQuarantineArms as Visit<'_>>::visit_item_fn(
         &mut quarantine_arms,
-        function(&main, "try_controller"),
+        function(&main, "claim_candidate"),
     );
     assert_eq!(quarantine_arms.found.len(), 1);
     assert!(window_quarantine_arm_is_exact(quarantine_arms.found[0]));
