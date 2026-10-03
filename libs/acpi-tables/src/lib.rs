@@ -1065,7 +1065,6 @@ impl DeviceScopeKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceScope<'a> {
     kind: DeviceScopeKind,
-    enumeration_id: u8,
     start_bus: u8,
     path: &'a [u8],
 }
@@ -1075,15 +1074,12 @@ impl<'a> DeviceScope<'a> {
     /// reserved byte, enumeration id, and start bus.
     const MIN_LEN: usize = 6;
 
+    /// Path hops a scope may take; a longer path is refused, not walked.
+    const MAX_HOPS: usize = 8;
+
     /// The hardware this scope names.
     pub const fn kind(self) -> DeviceScopeKind {
         self.kind
-    }
-
-    /// The ACPI enumeration id: an I/O APIC or HPET identifier, meaningless
-    /// for a PCI-addressed scope.
-    pub const fn enumeration_id(self) -> u8 {
-        self.enumeration_id
     }
 
     /// The first bus number in the hierarchical path to the device.
@@ -1096,18 +1092,38 @@ impl<'a> DeviceScope<'a> {
         PciPath { bytes: self.path }
     }
 
-    /// The target of a single-hop PCI scope, as `(bus, device, function)`.
+    /// What this scope names in `segment`, walked through the live topology.
     ///
-    /// `None` for a path of any other length: a bridge's secondary bus
-    /// number, needed to resolve a multi-hop path, is read from live PCI
-    /// configuration space, which is outside a byte-level table parser.
-    pub fn pci_target(self) -> Option<(u8, u8, u8)> {
-        let mut hops = self.path();
-        let (device, function) = hops.next()?;
-        if hops.next().is_some() {
+    /// Each hop before the last must be a bridge, and the next hop lies on
+    /// its secondary bus. `None` for a kind that names no PCI function, an
+    /// empty or overlong path, or a hop the topology does not vouch for.
+    fn walk(self, segment: u16, bridge: &impl Fn(Bdf) -> Option<BusRange>) -> Option<Named> {
+        let hierarchy = match self.kind() {
+            DeviceScopeKind::PciEndpoint => false,
+            DeviceScopeKind::PciSubHierarchy => true,
+            // No PCI function: I/O APIC and HPET scopes serve interrupt remapping (PW-710).
+            DeviceScopeKind::IoApic
+            | DeviceScopeKind::Hpet
+            | DeviceScopeKind::AcpiNamespaceDevice
+            | DeviceScopeKind::Other { .. } => return None,
+        };
+        if self.path.len() > 2 * Self::MAX_HOPS {
             return None;
         }
-        Some((self.start_bus, device, function))
+        let mut hops = self.path();
+        let (mut device, mut function) = hops.next()?;
+        let mut bus = self.start_bus();
+        for (next_device, next_function) in hops {
+            let buses = behind(Bdf::new(segment, bus, device, function), bridge)?;
+            bus = buses.secondary;
+            (device, function) = (next_device, next_function);
+        }
+        let at = Bdf::new(segment, bus, device, function);
+        if hierarchy {
+            Some(Named::Hierarchy(at, behind(at, bridge)?))
+        } else {
+            Some(Named::Function(at))
+        }
     }
 }
 
@@ -1159,7 +1175,6 @@ impl<'a> Iterator for DeviceScopes<'a> {
 
         Some(DeviceScope {
             kind: DeviceScopeKind::from_raw(kind),
-            enumeration_id: entry[4],
             start_bus: entry[5],
             path: &entry[6..],
         })
@@ -1206,6 +1221,65 @@ impl Bdf {
     pub const fn function(self) -> u8 {
         self.function
     }
+}
+
+/// The buses a PCI-to-PCI bridge forwards to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BusRange {
+    /// The bus directly behind the bridge.
+    pub secondary: u8,
+    /// The highest-numbered bus behind the bridge.
+    pub subordinate: u8,
+}
+
+/// The buses behind the bridge `bridge` reports at `at`, if its numbering
+/// leads forward: a secondary bus past its own and no later than its
+/// subordinate, so a walk never returns to a bus it left.
+fn behind(at: Bdf, bridge: &impl Fn(Bdf) -> Option<BusRange>) -> Option<BusRange> {
+    let buses = bridge(at)?;
+    (at.bus() < buses.secondary && buses.secondary <= buses.subordinate).then_some(buses)
+}
+
+/// What a PCI device scope names once its path is walked.
+#[derive(Debug, Clone, Copy)]
+enum Named {
+    /// Exactly one function.
+    Function(Bdf),
+    /// A bridge, and every function on the buses behind it.
+    Hierarchy(Bdf, BusRange),
+}
+
+impl Named {
+    /// Whether this names `bdf`, as itself or behind a named bridge.
+    fn covers(self, bdf: Bdf) -> bool {
+        match self {
+            Self::Function(at) => at == bdf,
+            Self::Hierarchy(at, buses) => {
+                at == bdf || (buses.secondary..=buses.subordinate).contains(&bdf.bus())
+            }
+        }
+    }
+}
+
+/// How a remapping unit's scope reaches one function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coverage {
+    /// An endpoint scope names the function itself.
+    Endpoint,
+    /// A sub-hierarchy scope names this bridge, and the function is the
+    /// bridge or behind it.
+    Bridge(Bdf),
+    /// No scope names the function, and the unit sets `INCLUDE_PCI_ALL`.
+    CatchAll,
+}
+
+/// The remapping unit that governs one function, and the scope that chose it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoverningUnit {
+    /// Physical address of the unit's register set.
+    pub register_base: u64,
+    /// How the unit's scope reaches the function.
+    pub coverage: Coverage,
 }
 
 /// Why a DMAR could not become a validated VT-d inventory.
@@ -1304,12 +1378,28 @@ impl<'a> Dmar<'a> {
         }
     }
 
-    /// The register base of the DRHD unit that governs `bdf`.
+    /// How many remapping units the table describes.
+    pub fn unit_count(&self) -> usize {
+        self.entries()
+            .filter(|structure| matches!(structure, DmarStructure::Drhd { .. }))
+            .count()
+    }
+
+    /// The DRHD unit that governs `bdf`, and the scope that decided it.
     ///
-    /// An explicit PCI-endpoint scope on some unit outranks an
-    /// `INCLUDE_PCI_ALL` unit in the same segment: firmware uses
-    /// `INCLUDE_PCI_ALL` to mean "everything I did not call out by name".
-    pub fn unit_for(&self, bdf: Bdf) -> Option<u64> {
+    /// Scopes resolve through the live topology: `bridge` reports the buses
+    /// behind a function, or `None` when the function is absent or is not a
+    /// bridge. The most specific scope wins: an endpoint scope naming `bdf`
+    /// outranks a bridge scope enclosing it, an inner bridge outranks the
+    /// bridges above it, and an `INCLUDE_PCI_ALL` unit governs only what no
+    /// scope in its segment names. Between equals the earlier unit wins.
+    pub fn unit_for(
+        &self,
+        bdf: Bdf,
+        bridge: impl Fn(Bdf) -> Option<BusRange>,
+    ) -> Option<GoverningUnit> {
+        let mut endpoint = None;
+        let mut enclosing: Option<(u8, GoverningUnit)> = None;
         let mut catch_all = None;
         for structure in self.entries() {
             let DmarStructure::Drhd {
@@ -1324,26 +1414,57 @@ impl<'a> Dmar<'a> {
             if segment != bdf.segment() {
                 continue;
             }
-            let target = (bdf.bus(), bdf.device(), bdf.function());
-            let scoped = DeviceScopes::new(scopes).any(|scope| {
-                scope.kind() == DeviceScopeKind::PciEndpoint && scope.pci_target() == Some(target)
-            });
-            if scoped {
-                return Some(register_base);
+            for scope in DeviceScopes::new(scopes) {
+                match scope.walk(segment, &bridge) {
+                    Some(named @ Named::Function(_)) if named.covers(bdf) && endpoint.is_none() => {
+                        endpoint = Some(GoverningUnit {
+                            register_base,
+                            coverage: Coverage::Endpoint,
+                        });
+                    }
+                    // Bridge ranges nest, so the innermost enclosing bridge
+                    // is the one with the highest secondary bus.
+                    Some(named @ Named::Hierarchy(at, buses))
+                        if named.covers(bdf)
+                            && enclosing
+                                .is_none_or(|(innermost, _)| buses.secondary > innermost) =>
+                    {
+                        enclosing = Some((
+                            buses.secondary,
+                            GoverningUnit {
+                                register_base,
+                                coverage: Coverage::Bridge(at),
+                            },
+                        ));
+                    }
+                    _ => {}
+                }
             }
             if include_pci_all && catch_all.is_none() {
-                catch_all = Some(register_base);
+                catch_all = Some(GoverningUnit {
+                    register_base,
+                    coverage: Coverage::CatchAll,
+                });
             }
         }
-        catch_all
+        endpoint.or(enclosing.map(|(_, unit)| unit)).or(catch_all)
     }
 
     /// Every reserved memory region a device at `bdf` must have
     /// identity-mapped rather than translated.
-    pub fn reserved_regions_for(&self, bdf: Bdf) -> ReservedRegions<'a> {
+    ///
+    /// An RMRR's scopes resolve through `bridge` as [`Self::unit_for`]'s do,
+    /// and its region applies when any of them names `bdf`, as itself or
+    /// behind a named bridge.
+    pub fn reserved_regions_for<F: Fn(Bdf) -> Option<BusRange>>(
+        &self,
+        bdf: Bdf,
+        bridge: F,
+    ) -> ReservedRegions<'a, F> {
         ReservedRegions {
             entries: self.entries(),
             bdf,
+            bridge,
         }
     }
 }
@@ -1351,12 +1472,13 @@ impl<'a> Dmar<'a> {
 /// The `(base, limit)` ranges [`Dmar::reserved_regions_for`] finds for one
 /// device, inclusive of both ends.
 #[derive(Debug)]
-pub struct ReservedRegions<'a> {
+pub struct ReservedRegions<'a, F> {
     entries: DmarEntries<'a>,
     bdf: Bdf,
+    bridge: F,
 }
 
-impl Iterator for ReservedRegions<'_> {
+impl<F: Fn(Bdf) -> Option<BusRange>> Iterator for ReservedRegions<'_, F> {
     type Item = (u64, u64);
 
     fn next(&mut self) -> Option<(u64, u64)> {
@@ -1373,11 +1495,12 @@ impl Iterator for ReservedRegions<'_> {
             if segment != self.bdf.segment() {
                 continue;
             }
-            let target = (self.bdf.bus(), self.bdf.device(), self.bdf.function());
-            let scoped = DeviceScopes::new(scopes).any(|scope| {
-                scope.kind() == DeviceScopeKind::PciEndpoint && scope.pci_target() == Some(target)
+            let named = DeviceScopes::new(scopes).any(|scope| {
+                scope
+                    .walk(segment, &self.bridge)
+                    .is_some_and(|named| named.covers(self.bdf))
             });
-            if scoped {
+            if named {
                 return Some((base, limit));
             }
         }
@@ -2231,16 +2354,31 @@ mod tests {
         );
 
         let dmar = Dmar::new(&bytes).expect("no duplicate units, no inverted regions");
+        assert_eq!(dmar.unit_count(), 2);
         let scoped_bdf = Bdf::new(0, 2, 3, 0);
         let unscoped_bdf = Bdf::new(0, 9, 0, 0);
-        assert_eq!(dmar.unit_for(scoped_bdf), Some(0xfed9_1000));
-        assert_eq!(dmar.unit_for(unscoped_bdf), Some(0xfed9_0000));
         assert_eq!(
-            dmar.reserved_regions_for(scoped_bdf).collect::<Vec<_>>(),
+            dmar.unit_for(scoped_bdf, no_bridges),
+            Some(GoverningUnit {
+                register_base: 0xfed9_1000,
+                coverage: Coverage::Endpoint,
+            })
+        );
+        assert_eq!(
+            dmar.unit_for(unscoped_bdf, no_bridges),
+            Some(GoverningUnit {
+                register_base: 0xfed9_0000,
+                coverage: Coverage::CatchAll,
+            })
+        );
+        assert_eq!(
+            dmar.reserved_regions_for(scoped_bdf, no_bridges)
+                .collect::<Vec<_>>(),
             [(0x1000, 0x1fff)]
         );
         assert_eq!(
-            dmar.reserved_regions_for(unscoped_bdf).collect::<Vec<_>>(),
+            dmar.reserved_regions_for(unscoped_bdf, no_bridges)
+                .collect::<Vec<_>>(),
             []
         );
     }
@@ -2448,7 +2586,7 @@ mod tests {
     }
 
     #[test]
-    fn a_multi_hop_device_scope_path_is_exposed_but_not_resolved_to_a_bdf() {
+    fn a_device_scope_exposes_its_kind_start_bus_and_every_hop() {
         let scope_bytes = [1u8, 10, 0, 0, 0, 2, 3, 0, 4, 0]; // kind 1, length 10, two hops
         let drhd = drhd_bytes(false, 0, 0x4000, &scope_bytes);
         let bytes = table(&Sdt::DMAR, &dmar_body(&drhd));
@@ -2461,9 +2599,9 @@ mod tests {
             unreachable!("only structure in the table is the drhd")
         };
         let scope = DeviceScopes::new(scopes).next().expect("one device scope");
+        assert_eq!(scope.kind(), DeviceScopeKind::PciEndpoint);
         assert_eq!(scope.start_bus(), 2);
         assert_eq!(scope.path().collect::<Vec<_>>(), [(3, 0), (4, 0)]);
-        assert_eq!(scope.pci_target(), None);
     }
 
     #[test]
@@ -2481,5 +2619,372 @@ mod tests {
         };
         let scope = DeviceScopes::new(scopes).next().expect("one device scope");
         assert_eq!(scope.kind(), DeviceScopeKind::Other { kind: 0x7f });
+    }
+
+    // Device-scope type bytes from the VT-d specification's DMAR chapter.
+    const ENDPOINT: u8 = 1;
+    const SUB_HIERARCHY: u8 = 2;
+    const IO_APIC: u8 = 3;
+    const HPET: u8 = 4;
+    const NAMESPACE_DEVICE: u8 = 5;
+
+    const SCOPED: u64 = 0xfed9_1000;
+    const INNER: u64 = 0xfed9_2000;
+    const EXACT: u64 = 0xfed9_3000;
+    const CATCH_ALL: u64 = 0xfed9_0000;
+
+    fn scope(kind: u8, start_bus: u8, path: &[(u8, u8)]) -> Vec<u8> {
+        let mut bytes = vec![kind, 0, 0, 0, 0, start_bus];
+        for &(device, function) in path {
+            bytes.extend_from_slice(&[device, function]);
+        }
+        bytes[1] = u8::try_from(bytes.len()).expect("fits");
+        bytes
+    }
+
+    fn buses(secondary: u8, subordinate: u8) -> BusRange {
+        BusRange {
+            secondary,
+            subordinate,
+        }
+    }
+
+    /// A topology in which only the listed functions are bridges.
+    fn topology(bridges: &[(Bdf, BusRange)]) -> impl Fn(Bdf) -> Option<BusRange> + '_ {
+        move |at| {
+            bridges
+                .iter()
+                .find(|(bridge, _)| *bridge == at)
+                .map(|(_, behind)| *behind)
+        }
+    }
+
+    fn no_bridges(_: Bdf) -> Option<BusRange> {
+        None
+    }
+
+    fn dmar_of(structures: &[Vec<u8>]) -> Vec<u8> {
+        table(&Sdt::DMAR, &dmar_body(&structures.concat()))
+    }
+
+    const fn catch_all() -> GoverningUnit {
+        GoverningUnit {
+            register_base: CATCH_ALL,
+            coverage: Coverage::CatchAll,
+        }
+    }
+
+    #[test]
+    fn an_endpoint_scope_resolves_through_each_bridge_on_its_path() {
+        // Every bus number differs, so a walk that stops early, descends to a
+        // subordinate or asks another segment misses the target.
+        let root_port = Bdf::new(3, 0x10, 0x1c, 4);
+        let switch_port = Bdf::new(3, 0x20, 0x03, 2);
+        let bridges = [
+            (root_port, buses(0x20, 0x2f)),
+            (switch_port, buses(0x24, 0x26)),
+        ];
+        let topology = topology(&bridges);
+        let endpoint = scope(ENDPOINT, 0x10, &[(0x1c, 4), (0x03, 2), (0x05, 1)]);
+        let bytes = dmar_of(&[
+            drhd_bytes(false, 3, SCOPED, &endpoint),
+            drhd_bytes(true, 3, CATCH_ALL, &[]),
+            rmrr_bytes(3, 0x7000, 0x7fff, &endpoint),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+
+        let target = Bdf::new(3, 0x24, 0x05, 1);
+        assert_eq!(
+            dmar.unit_for(target, &topology),
+            Some(GoverningUnit {
+                register_base: SCOPED,
+                coverage: Coverage::Endpoint,
+            })
+        );
+        assert_eq!(
+            dmar.reserved_regions_for(target, &topology)
+                .collect::<Vec<_>>(),
+            [(0x7000, 0x7fff)]
+        );
+        for elsewhere in [
+            Bdf::new(3, 0x10, 0x05, 1),
+            Bdf::new(3, 0x20, 0x05, 1),
+            Bdf::new(3, 0x26, 0x05, 1),
+            Bdf::new(3, 0x24, 0x05, 0),
+        ] {
+            assert_eq!(
+                dmar.unit_for(elsewhere, &topology),
+                Some(catch_all()),
+                "{elsewhere:?}"
+            );
+            assert_eq!(
+                dmar.reserved_regions_for(elsewhere, &topology).count(),
+                0,
+                "{elsewhere:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bridge_scope_covers_its_bridge_and_exactly_the_buses_behind_it() {
+        let bridge = Bdf::new(0, 0x00, 0x1c, 0);
+        let bridges = [(bridge, buses(0x20, 0x2f))];
+        let topology = topology(&bridges);
+        let hierarchy = scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)]);
+        let bytes = dmar_of(&[
+            drhd_bytes(false, 0, SCOPED, &hierarchy),
+            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            rmrr_bytes(0, 0x7000, 0x7fff, &hierarchy),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+
+        let behind_bridge = GoverningUnit {
+            register_base: SCOPED,
+            coverage: Coverage::Bridge(bridge),
+        };
+        let functions = [
+            (bridge, Some(behind_bridge)),
+            (Bdf::new(0, 0x1f, 0x05, 1), Some(catch_all())),
+            (Bdf::new(0, 0x20, 0x05, 1), Some(behind_bridge)),
+            (Bdf::new(0, 0x2f, 0x05, 1), Some(behind_bridge)),
+            (Bdf::new(0, 0x30, 0x05, 1), Some(catch_all())),
+        ];
+        for (function, governed) in functions {
+            assert_eq!(dmar.unit_for(function, &topology), governed, "{function:?}");
+            let reserved = dmar.reserved_regions_for(function, &topology).count();
+            assert_eq!(reserved, usize::from(governed == Some(behind_bridge)));
+        }
+    }
+
+    #[test]
+    fn a_path_through_a_function_that_is_not_a_bridge_names_nothing() {
+        // Nothing here is a bridge, so neither scope may name a function.
+        let through = scope(ENDPOINT, 0x00, &[(0x1c, 0), (0x05, 1)]);
+        let hierarchy = scope(SUB_HIERARCHY, 0x00, &[(0x1d, 0)]);
+        let bytes = dmar_of(&[
+            drhd_bytes(false, 0, SCOPED, &[through, hierarchy].concat()),
+            drhd_bytes(true, 0, CATCH_ALL, &[]),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+
+        for function in [
+            Bdf::new(0, 0x00, 0x05, 1),
+            Bdf::new(0, 0x00, 0x1c, 0),
+            Bdf::new(0, 0x00, 0x1d, 0),
+        ] {
+            assert_eq!(
+                dmar.unit_for(function, no_bridges),
+                Some(catch_all()),
+                "{function:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bridge_that_does_not_lead_past_its_own_bus_names_nothing() {
+        // A secondary bus at or before the bridge's own would let a walk
+        // return to a bus it left.
+        let bridges = [
+            (Bdf::new(0, 0x04, 0x1c, 0), buses(0x04, 0x08)),
+            (Bdf::new(0, 0x30, 0x1c, 0), buses(0x20, 0x2f)),
+        ];
+        let topology = topology(&bridges);
+        let looping = scope(ENDPOINT, 0x04, &[(0x1c, 0), (0x05, 1)]);
+        let backward = scope(ENDPOINT, 0x30, &[(0x1c, 0), (0x06, 1)]);
+        let bytes = dmar_of(&[
+            drhd_bytes(false, 0, SCOPED, &[looping, backward].concat()),
+            drhd_bytes(true, 0, CATCH_ALL, &[]),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+
+        for function in [Bdf::new(0, 0x04, 0x05, 1), Bdf::new(0, 0x20, 0x06, 1)] {
+            assert_eq!(
+                dmar.unit_for(function, &topology),
+                Some(catch_all()),
+                "{function:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bridge_whose_secondary_bus_exceeds_its_subordinate_names_nothing() {
+        let bridge = Bdf::new(0, 0x00, 0x1c, 0);
+        let bridges = [(bridge, buses(0x30, 0x20))];
+        let topology = topology(&bridges);
+        let hierarchy = scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)]);
+        let through = scope(ENDPOINT, 0x00, &[(0x1c, 0), (0x05, 1)]);
+        let bytes = dmar_of(&[
+            drhd_bytes(false, 0, SCOPED, &[hierarchy, through].concat()),
+            drhd_bytes(true, 0, CATCH_ALL, &[]),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+
+        for function in [
+            bridge,
+            Bdf::new(0, 0x30, 0x05, 1),
+            Bdf::new(0, 0x25, 0x05, 1),
+        ] {
+            assert_eq!(
+                dmar.unit_for(function, &topology),
+                Some(catch_all()),
+                "{function:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_longer_than_the_hop_bound_names_nothing() {
+        // A chain of bridges, each leading to the next bus, deep enough for
+        // one hop past the bound.
+        let bridges = (0..=u8::try_from(DeviceScope::MAX_HOPS).expect("fits"))
+            .map(|bus| (Bdf::new(0, bus, 0x01, 0), buses(bus + 1, 0xff)))
+            .collect::<Vec<_>>();
+        let topology = topology(&bridges);
+        let governing = |hops: usize| {
+            let mut path = vec![(0x01, 0); hops - 1];
+            path.push((0x05, 1));
+            let bytes = dmar_of(&[
+                drhd_bytes(false, 0, SCOPED, &scope(ENDPOINT, 0x00, &path)),
+                drhd_bytes(true, 0, CATCH_ALL, &[]),
+            ]);
+            let dmar = Dmar::new(&bytes).expect("valid dmar");
+            let target = Bdf::new(0, u8::try_from(hops - 1).expect("fits"), 0x05, 1);
+            dmar.unit_for(target, &topology)
+                .map(|unit| unit.register_base)
+        };
+
+        assert_eq!(governing(DeviceScope::MAX_HOPS), Some(SCOPED));
+        assert_eq!(governing(DeviceScope::MAX_HOPS + 1), Some(CATCH_ALL));
+    }
+
+    #[test]
+    fn scopes_that_name_no_pci_function_never_govern_one() {
+        // Each carries the path an endpoint scope for the target would.
+        let target = Bdf::new(0, 0x00, 0x1f, 0);
+        let foreign = [IO_APIC, HPET, NAMESPACE_DEVICE, 0x7f]
+            .map(|kind| scope(kind, 0x00, &[(0x1f, 0)]))
+            .concat();
+        let bytes = dmar_of(&[
+            drhd_bytes(false, 0, SCOPED, &foreign),
+            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            rmrr_bytes(0, 0x7000, 0x7fff, &foreign),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+
+        assert_eq!(dmar.unit_for(target, no_bridges), Some(catch_all()));
+        assert_eq!(dmar.reserved_regions_for(target, no_bridges).count(), 0);
+    }
+
+    #[test]
+    fn the_most_specific_scope_governs_across_units() {
+        // An outer bridge, an inner bridge behind it, and an endpoint behind
+        // both, each on its own unit and listed outermost first.
+        let outer = Bdf::new(0, 0x00, 0x1c, 0);
+        let inner = Bdf::new(0, 0x20, 0x00, 0);
+        let bridges = [(outer, buses(0x20, 0x2f)), (inner, buses(0x21, 0x22))];
+        let topology = topology(&bridges);
+        let bytes = dmar_of(&[
+            drhd_bytes(false, 0, SCOPED, &scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)])),
+            drhd_bytes(
+                false,
+                0,
+                INNER,
+                &scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0), (0x00, 0)]),
+            ),
+            drhd_bytes(
+                false,
+                0,
+                EXACT,
+                &scope(ENDPOINT, 0x00, &[(0x1c, 0), (0x00, 0), (0x00, 0)]),
+            ),
+            drhd_bytes(true, 0, CATCH_ALL, &[]),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+
+        let governed = [
+            (Bdf::new(0, 0x21, 0x00, 0), EXACT, Coverage::Endpoint),
+            (Bdf::new(0, 0x22, 0x03, 0), INNER, Coverage::Bridge(inner)),
+            (Bdf::new(0, 0x25, 0x00, 0), SCOPED, Coverage::Bridge(outer)),
+            (Bdf::new(0, 0x30, 0x00, 0), CATCH_ALL, Coverage::CatchAll),
+        ];
+        for (function, register_base, coverage) in governed {
+            assert_eq!(
+                dmar.unit_for(function, &topology),
+                Some(GoverningUnit {
+                    register_base,
+                    coverage,
+                }),
+                "{function:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_catch_all_unit_governs_only_functions_no_scope_names() {
+        // Listed first, against the specification's ordering, so table
+        // order cannot be what keeps it from claiming a named function.
+        let bridge = Bdf::new(0, 0x00, 0x1c, 0);
+        let bridges = [(bridge, buses(0x20, 0x20))];
+        let topology = topology(&bridges);
+        let bytes = dmar_of(&[
+            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            drhd_bytes(false, 0, EXACT, &pci_endpoint_scope(0x00, 0x05, 0)),
+            drhd_bytes(false, 0, SCOPED, &scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)])),
+            drhd_bytes(false, 2, INNER, &pci_endpoint_scope(0x00, 0x07, 0)),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+
+        let governed = [
+            (
+                Bdf::new(0, 0x00, 0x05, 0),
+                Some((EXACT, Coverage::Endpoint)),
+            ),
+            (
+                Bdf::new(0, 0x20, 0x00, 0),
+                Some((SCOPED, Coverage::Bridge(bridge))),
+            ),
+            (
+                Bdf::new(0, 0x00, 0x06, 0),
+                Some((CATCH_ALL, Coverage::CatchAll)),
+            ),
+            (Bdf::new(2, 0x00, 0x08, 0), None),
+            (Bdf::new(1, 0x00, 0x05, 0), None),
+        ];
+        for (function, expected) in governed {
+            let expected = expected.map(|(register_base, coverage)| GoverningUnit {
+                register_base,
+                coverage,
+            });
+            assert_eq!(dmar.unit_for(function, &topology), expected, "{function:?}");
+        }
+    }
+
+    #[test]
+    fn a_reserved_region_follows_scopes_resolved_through_the_topology() {
+        let bridge = Bdf::new(0, 0x00, 0x1c, 0);
+        let bridges = [(bridge, buses(0x20, 0x22))];
+        let topology = topology(&bridges);
+        let bytes = dmar_of(&[
+            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            rmrr_bytes(
+                0,
+                0x7000,
+                0x7fff,
+                &scope(ENDPOINT, 0x00, &[(0x1c, 0), (0x00, 0)]),
+            ),
+            rmrr_bytes(0, 0x9000, 0x9fff, &scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)])),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+
+        let regions = |function| {
+            dmar.reserved_regions_for(function, &topology)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            regions(Bdf::new(0, 0x20, 0x00, 0)),
+            [(0x7000, 0x7fff), (0x9000, 0x9fff)]
+        );
+        assert_eq!(regions(Bdf::new(0, 0x22, 0x01, 0)), [(0x9000, 0x9fff)]);
+        assert_eq!(regions(Bdf::new(0, 0x23, 0x00, 0)), []);
     }
 }

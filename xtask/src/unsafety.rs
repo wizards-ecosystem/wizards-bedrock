@@ -83,7 +83,7 @@ pub const BUDGET: usize = 380;
 /// What the crate measured when [`BUDGET`] was last reviewed.
 ///
 /// Kept separately because a ceiling cannot reveal drift below it.
-pub const MEASURED: usize = 377;
+pub const MEASURED: usize = 379;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///
@@ -144,9 +144,9 @@ mod tests {
         ),
         (
             "wost/src/arch/x86_64/cpu.rs",
-            21,
-            2,
-            "e243e50835d0b49fa75b366d6254c7372ef9b0f24d497c9a5afc363c2c1471b2",
+            22,
+            3,
+            "2bd0f8afe4ce429f77659607e83e0f2396f0916c44904dfdcab36187032d76ba",
         ),
         (
             "wost/src/arch/x86_64/interrupt.rs",
@@ -234,9 +234,9 @@ mod tests {
         ),
         (
             "wost/src/mm/mod.rs",
-            15,
+            16,
             3,
-            "475e768da3729a43248a3dede09a29088cd5afb029c6fa55349b2d2f05815aeb",
+            "184bb27dc0b99f148f6317a5a26a495afbb5f013536f7752e631d7c6d20a2d9d",
         ),
         (
             "wost/src/mmio.rs",

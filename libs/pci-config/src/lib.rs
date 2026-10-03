@@ -922,6 +922,8 @@ pub enum EnableError {
     Refused(u16),
     /// The original command could not be read back exactly after failure.
     Restore,
+    /// The DMA domain offered as isolation names another function.
+    ForeignDomain,
 }
 
 impl core::fmt::Display for EnableError {
@@ -944,6 +946,9 @@ impl core::fmt::Display for EnableError {
             }
             Self::Restore => {
                 core::fmt::Write::write_str(f, "the original command could not be verified")
+            }
+            Self::ForeignDomain => {
+                core::fmt::Write::write_str(f, "the DMA domain isolates another function")
             }
         }
     }
@@ -1479,18 +1484,24 @@ impl<const N: usize> FunctionClaims<N> {
     }
 }
 
-/// Add bus mastering through one live function-bound BAR mapping.
+/// Add bus mastering through one live function-bound BAR mapping, isolated by
+/// a DMA domain established for that same function.
 ///
 /// # Errors
 ///
-/// Refuses a stale or foreign BAR mapping, a command state from another
-/// function, or any configuration access or exact-readback failure.
+/// Refuses a domain for another function before any access, then a stale or
+/// foreign BAR mapping, a command state from another function, or any
+/// configuration access or exact-readback failure.
 pub fn admit_mapped_bus_master<const N: usize>(
     functions: &mut FunctionClaims<N>,
     authority: &BarAuthority,
+    isolated: Address,
     state: &mut CommandState,
     access: impl FnMut(Address, CommandAccess) -> Option<u32>,
 ) -> Result<(), EnableError> {
+    if authority.function.at.function_base() != isolated.function_base() {
+        return Err(EnableError::ForeignDomain);
+    }
     if !functions.holds_bar(authority) {
         return Err(EnableError::Stale);
     }
@@ -2273,6 +2284,14 @@ pub const fn is_absent(vendor: u16) -> bool {
 /// The bus behind it, which is the number a recursive enumeration descends to.
 pub const fn secondary_bus(bits: u32) -> u8 {
     (bits >> 8) as u8
+}
+
+/// A bridge's subordinate bus number, out of the word at [`header::BUS_NUMBERS`].
+///
+/// The highest bus behind it: the bridge forwards to every bus from its
+/// secondary through this one.
+pub const fn subordinate_bus(bits: u32) -> u8 {
+    (bits >> 16) as u8
 }
 
 #[cfg(test)]
@@ -4841,17 +4860,39 @@ mod tests {
         let calls = command.calls;
 
         assert_eq!(
-            admit_mapped_bus_master(&mut functions, &second_bar, &mut state, |_, access| {
-                command.access(access)
-            }),
+            admit_mapped_bus_master(
+                &mut functions,
+                &second_bar,
+                command_address(1),
+                &mut state,
+                |_, access| command.access(access)
+            ),
             Err(EnableError::Stale)
         );
         assert_eq!(command.calls, calls, "a foreign BAR reached configuration");
+        assert_eq!(
+            admit_mapped_bus_master(
+                &mut functions,
+                &first_bar,
+                command_address(1),
+                &mut state,
+                |_, access| command.access(access)
+            ),
+            Err(EnableError::ForeignDomain)
+        );
+        assert_eq!(
+            command.calls, calls,
+            "a domain for another function reached configuration"
+        );
 
-        admit_mapped_bus_master(&mut functions, &first_bar, &mut state, |_, access| {
-            command.access(access)
-        })
-        .expect("the mapped issuing BAR admits bus master");
+        admit_mapped_bus_master(
+            &mut functions,
+            &first_bar,
+            command_address(0),
+            &mut state,
+            |_, access| command.access(access),
+        )
+        .expect("the mapped issuing BAR admits bus master behind its own domain");
         assert_eq!(command.command, command::MEMORY_SPACE | command::BUS_MASTER);
         super::restore_command(&mut functions, &first, state, |_, access| {
             command.access(access)
@@ -4880,5 +4921,12 @@ mod tests {
     fn a_bridge_secondary_bus_is_read_from_its_own_byte() {
         let bits = 0x0044_3322u32 << 8 | 0x11;
         assert_eq!(secondary_bus(bits), 0x22);
+    }
+
+    #[test]
+    fn a_bridge_subordinate_bus_is_read_from_its_own_byte() {
+        // Primary, secondary, subordinate and latency timer, each distinct.
+        let bits = 0x4433_2211u32;
+        assert_eq!(subordinate_bus(bits), 0x33);
     }
 }

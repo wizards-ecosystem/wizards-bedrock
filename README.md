@@ -131,13 +131,16 @@ Ordered `cargo xtask ci` stages:
 | 8 | `cargo xtask test-boot --release` | run all machine checks on the release kernel |
 | 9 | `cargo xtask test-boot --debug` | run all machine checks with overflow checks enabled |
 | 10 | `cargo xtask boot-check --release` | boot, exercise and settle the shipped image |
-| 11 | `cargo xtask degraded-check --release` | prove the no-PCI and no-x2APIC refusals |
+| 11 | `cargo xtask degraded-check --release` | prove the no-PCI, no-x2APIC and no-IOMMU refusals |
 <!-- CI-REGISTRY:END -->
 
 `boot-check` boots the shipped kernel and requires it to settle at its prompt;
 `degraded-check` boots it with PCI configuration forced unavailable and on a
 processor with no x2APIC. It requires both refusals, the hardware-free tmpfs and
-devfs surveys, and a steady state rather than a triple fault.
+devfs surveys, and a steady state rather than a triple fault. It then boots the
+shipped image on a machine with no remapping unit and requires storage to say
+`storage: no DMA isolation` and stay unmounted rather than run a controller the
+IOMMU does not constrain (D-357).
 
 Nine tasks are deliberately **not** in `ci`: `debug` needs the pinned native
 GDB and is normally interactive, `model-check` needs TLC and Java, `vmware`

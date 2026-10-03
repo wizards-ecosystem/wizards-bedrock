@@ -96,7 +96,7 @@ impl Step {
             Self::SelfTest(Profile::Release) => "run all machine checks on the release kernel",
             Self::SelfTest(Profile::Dev) => "run all machine checks with overflow checks enabled",
             Self::ShippedBoot => "boot, exercise and settle the shipped image",
-            Self::DegradedBoot => "prove the no-PCI and no-x2APIC refusals",
+            Self::DegradedBoot => "prove the no-PCI, no-x2APIC and no-IOMMU refusals",
         }
     }
 }

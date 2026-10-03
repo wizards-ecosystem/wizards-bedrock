@@ -132,17 +132,27 @@ pub(crate) fn boot_shipped_image(paths: &Paths, image: &std::path::Path) -> Resu
     qemu::run_boot_check(paths, image, BOOT_SETTLE)
 }
 
-/// Boot without PCI configuration or x2APIC and require both refusals.
+/// Boot without PCI configuration or x2APIC and require both refusals, then
+/// boot the shipped kernel without a remapping unit and require storage to
+/// refuse rather than run unisolated (D-357).
 pub fn degraded_check(paths: &Paths, profile: Profile) -> Result<()> {
     match observe_degraded_boot(paths, profile)? {
         qemu::DegradedOutcome::Settled => {
             println!(
                 "[xtask] degraded kernel keeps optional protection fallback diagnostic-only and settles"
             );
-            Ok(())
         }
         qemu::DegradedOutcome::Panicked { transcript, .. } => {
             anyhow::bail!("the degraded kernel panicked during the settle window: {transcript}")
+        }
+    }
+    match observe_unisolated_boot(paths, profile)? {
+        qemu::DegradedOutcome::Settled => {
+            println!("[xtask] unisolated kernel refuses storage and settles");
+            Ok(())
+        }
+        qemu::DegradedOutcome::Panicked { transcript, .. } => {
+            anyhow::bail!("the unisolated kernel panicked during the settle window: {transcript}")
         }
     }
 }
@@ -154,6 +164,15 @@ pub(crate) fn observe_degraded_boot(
 ) -> Result<qemu::DegradedOutcome> {
     let image = image::build_degraded_for_run(paths, profile)?;
     qemu::observe_degraded(paths, image.path(), BOOT_SETTLE)
+}
+
+/// Boot the shipped kernel on a machine with no remapping unit.
+pub(crate) fn observe_unisolated_boot(
+    paths: &Paths,
+    profile: Profile,
+) -> Result<qemu::DegradedOutcome> {
+    let image = image::build_for_run(paths, profile, image::Kernel::Shipped)?;
+    qemu::observe_unisolated(paths, image.path(), BOOT_SETTLE)
 }
 
 /// Seconds of running after the kernel says it has settled, so one that dies

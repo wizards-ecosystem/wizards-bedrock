@@ -19,7 +19,7 @@ use frame_space::{FRAME_SIZE, FrameSpace, words_for};
 use mmio_range::AccessRange;
 use ring_proto::SharedLayout;
 
-use crate::arch::current::shared_memory;
+use crate::arch::current::{cpu, shared_memory};
 #[cfg(feature = "selftest")]
 use crate::boot::MemoryKind;
 use crate::boot::{DirectMap, MemoryMap, MemoryRegion};
@@ -571,6 +571,27 @@ impl<'authority> DirectSpan<'authority> {
         true
     }
 
+    /// Push the cache line holding `offset` to memory for a non-snooping reader.
+    fn flush_line_at(&self, offset: usize) -> bool {
+        if offset >= self.len {
+            return false;
+        }
+        let line = self.base.wrapping_add(offset);
+        // SAFETY: the span's authority keeps the run live in the direct map, and
+        // the checked offset names a byte within it, so the line is mapped.
+        unsafe { cpu::flush_cache_line(line) };
+        true
+    }
+
+    /// Push every line of the span to memory, ordered before whatever follows.
+    fn flush_all(&self) -> bool {
+        let flushed = (0..self.len)
+            .step_by(CACHE_LINE)
+            .all(|offset| self.flush_line_at(offset));
+        core::sync::atomic::fence(Ordering::SeqCst);
+        flushed
+    }
+
     #[cfg(feature = "selftest")]
     fn all_bytes_equal(&self, byte: u8) -> bool {
         let Ok(range) = AccessRange::repeated(0, self.len, 1, self.len) else {
@@ -698,6 +719,92 @@ impl From<Segment> for DmaSegment {
         Self {
             segment: Some(segment),
         }
+    }
+}
+
+/// Bytes in one processor cache line, the granule `clflush` moves.
+///
+/// Every x86-64 processor reports 64, and the flush walks a table at this
+/// stride; a smaller line would be flushed in full by the same walk.
+const CACHE_LINE: usize = 64;
+
+/// How an IOMMU reads the tables the CPU writes for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableWalks {
+    /// The unit snoops the processor caches, so a volatile write is visible to
+    /// it as soon as it lands.
+    Coherent,
+    /// The unit reads memory directly, so every written line is flushed out of
+    /// the caches before the unit may depend on it.
+    Uncached,
+}
+
+/// A run of kernel-owned frames an IOMMU walks: a root, context, or
+/// second-level table.
+///
+/// The CPU writes it through the direct map and the unit reads it at the
+/// physical address, so it is never mapped into any device's translation and
+/// a device cannot reach the structure that constrains it. Its frames free on
+/// drop with the rest of the domain (D-357).
+#[derive(Debug)]
+pub(crate) struct IommuTable {
+    frames: Segment,
+    walks: TableWalks,
+}
+
+impl IommuTable {
+    /// Allocate `frames` contiguous zeroed frames for one structure or arena,
+    /// with the zeros already visible to a unit that walks `walks`.
+    pub(crate) fn new(frames: usize, walks: TableWalks) -> Option<Self> {
+        let mut segment = allocate_contiguous(frames, 1)?;
+        if !segment.fill(0) {
+            return None;
+        }
+        let table = Self {
+            frames: segment,
+            walks,
+        };
+        let published = match walks {
+            TableWalks::Coherent => true,
+            TableWalks::Uncached => {
+                DirectSpan::from_segment(&table.frames).is_some_and(|span| span.flush_all())
+            }
+        };
+        published.then_some(table)
+    }
+
+    /// The physical address programmed into the unit or a parent entry.
+    pub(crate) const fn address(&self) -> Paddr {
+        self.frames.address()
+    }
+
+    /// Overwrite the eight-byte entry at `index`, visibly to the unit.
+    #[must_use = "a refused IOMMU-table write changed no bytes"]
+    pub(crate) fn write_u64(&mut self, index: usize, value: u64) -> bool {
+        let walks = self.walks;
+        let Some(span) = DirectSpan::from_segment(&self.frames) else {
+            return false;
+        };
+        let offset = index * 8;
+        if !span.write_volatile_at(offset, &value.to_le_bytes()) {
+            return false;
+        }
+        match walks {
+            TableWalks::Coherent => true,
+            TableWalks::Uncached => {
+                let flushed = span.flush_line_at(offset);
+                core::sync::atomic::fence(Ordering::SeqCst);
+                flushed
+            }
+        }
+    }
+
+    /// Read the eight-byte entry at `index`.
+    pub(crate) fn read_u64(&self, index: usize) -> Option<u64> {
+        let span = DirectSpan::from_segment(&self.frames)?;
+        let mut bytes = [0u8; 8];
+        span.read_volatile_at(index * 8, &mut bytes)
+            .then(|| u64::from_le_bytes(bytes))
     }
 }
 

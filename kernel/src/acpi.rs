@@ -32,23 +32,14 @@ pub(crate) type Interrupts = MadtInterrupts<MAX_IO_APICS>;
 pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
     // Each refusal says so: a boot that lost its routing to the ACPI-only
     // reader is otherwise a keyboard that stopped for no stated reason.
-    let Some(firmware) = mm::firmware_memory() else {
-        warn!("acpi: no reader for firmware memory");
-        return None;
-    };
-    let Some(root) = read_root_pointer(firmware, rsdp) else {
-        warn!("acpi: the root pointer at {rsdp:#x} is not readable acpi storage");
-        return None;
-    };
-    let root = match Rsdp::parse(&root) {
-        Ok(root) => root,
-        Err(reason) => {
-            warn!("acpi: root pointer unusable: {reason}");
+    let (firmware, root) = parse_root(rsdp)?;
+    let madt = match find_table(firmware, root, Sdt::MADT) {
+        Some(madt) => madt,
+        None => {
+            warn!("acpi: no madt among the tables listed");
             return None;
         }
     };
-
-    let madt = find_madt(firmware, root)?;
     let interrupts = match Interrupts::parse(&madt) {
         Ok(interrupts) => interrupts,
         Err(reason) => {
@@ -77,8 +68,33 @@ pub(crate) fn interrupts(rsdp: u64) -> Option<Interrupts> {
     (interrupts.io_apic_count() != 0).then_some(interrupts)
 }
 
-/// The MADT, found by walking whichever root table the RSDP offers.
-fn find_madt(firmware: FirmwareMemory, root: Rsdp) -> Option<Vec<u8>> {
+/// The ACPI-only firmware reader and the parsed root pointer, or `None` with a
+/// stated reason. Shared by every table walk (D-45).
+pub(crate) fn parse_root(rsdp: u64) -> Option<(FirmwareMemory, Rsdp)> {
+    let Some(firmware) = mm::firmware_memory() else {
+        warn!("acpi: no reader for firmware memory");
+        return None;
+    };
+    let Some(root) = read_root_pointer(firmware, rsdp) else {
+        warn!("acpi: the root pointer at {rsdp:#x} is not readable acpi storage");
+        return None;
+    };
+    match Rsdp::parse(&root) {
+        Ok(root) => Some((firmware, root)),
+        Err(reason) => {
+            warn!("acpi: root pointer unusable: {reason}");
+            None
+        }
+    }
+}
+
+/// The first table with `signature`, found by walking whichever root table the
+/// RSDP offers. The caller names the table it wanted when this returns `None`.
+pub(crate) fn find_table(
+    firmware: FirmwareMemory,
+    root: Rsdp,
+    signature: [u8; 4],
+) -> Option<Vec<u8>> {
     let (address, extended) = match (root.xsdt(), root.rsdt()) {
         // The XSDT wherever it exists: the RSDT's entries are 32-bit and
         // cannot name a table above 4 GiB.
@@ -115,12 +131,11 @@ fn find_madt(firmware: FirmwareMemory, root: Rsdp) -> Option<Vec<u8>> {
             continue;
         };
         if let Ok(header) = Sdt::parse(&table)
-            && header.signature() == Sdt::MADT
+            && header.signature() == signature
         {
             return Some(table);
         }
     }
-    warn!("acpi: no madt among the tables listed");
     None
 }
 

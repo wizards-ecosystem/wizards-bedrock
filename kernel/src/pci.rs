@@ -27,6 +27,7 @@ use pci_config::{
     Address, Bar, BarEnableError, Class, CommandState, EnableError, HeaderType, ProbeError,
     ProbeRetry, ProbedBars, Window, header,
 };
+use wost::arch::current::vtd::DmaDomain;
 use wost::arch::current::{paging, pci};
 use wost::sync::SpinLock;
 
@@ -177,6 +178,16 @@ fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
 fn secondary_of(entry: &Function) -> Option<u8> {
     let at = entry.at.at(header::BUS_NUMBERS)?;
     Some(pci_config::secondary_bus(pci::read(at)?))
+}
+
+/// The bus-number word of the bridge at `bus:device.function`, or `None` unless
+/// a function there passes both of the bridge tests enumeration descends on.
+pub(crate) fn bridge_numbers(bus: u8, device: u8, function: u8) -> Option<u32> {
+    let entry = read_function(bus, device, function)?;
+    if !(entry.class.is_bridge() && entry.header.is_bridge()) {
+        return None;
+    }
+    pci::read(entry.at.at(header::BUS_NUMBERS)?)
 }
 
 /// A committed controller whose command word no longer matched its lease.
@@ -513,7 +524,8 @@ impl Device {
             .map_err(BarAdmissionError::Bind)
     }
 
-    /// Admit bus mastering with fresh proof from this function's mapped BAR.
+    /// Admit bus mastering with fresh proof from this function's mapped BAR,
+    /// behind a DMA domain established for this exact function (D-357).
     ///
     /// # Errors
     ///
@@ -522,6 +534,7 @@ impl Device {
     pub(crate) fn admit_bus_master(
         &mut self,
         authority: pci::NvmeBusMasterAuthority<'_>,
+        domain: DmaDomain,
     ) -> Result<(), EnableError> {
         #[cfg(feature = "selftest")]
         {
@@ -539,7 +552,7 @@ impl Device {
         let Some(state) = self.command_state.as_mut() else {
             return Err(EnableError::Stale);
         };
-        let result = pci::admit_bus_master(authority, state);
+        let result = pci::admit_bus_master(authority, domain, state);
         if let Err(error) = result {
             self.uncertain |= matches!(error, EnableError::Restore);
             return Err(error);

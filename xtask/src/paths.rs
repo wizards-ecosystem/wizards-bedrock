@@ -130,6 +130,7 @@ pub const HOST_PACKAGES: &[&str] = &[
     "stack-layout",
     "timebase",
     "trap-cause",
+    "vtd",
     "wizzy-handoff",
     "x86-apic",
     "x86-cpuid",

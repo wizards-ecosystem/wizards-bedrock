@@ -99,6 +99,7 @@ slab-layout = { path = "libs/slab-layout" }
 stack-layout = { path = "libs/stack-layout" }
 timebase = { path = "libs/timebase" }
 trap-cause = { path = "libs/trap-cause" }
+vtd = { path = "libs/vtd" }
 wizzy-handoff = { path = "libs/wizzy-handoff" }
 x86-apic = { path = "libs/x86-apic" }
 x86-cpuid = { path = "libs/x86-cpuid" }

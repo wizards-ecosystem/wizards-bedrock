@@ -756,6 +756,7 @@ dependencies = [
  "slab-layout",
  "stack-layout",
  "trap-cause",
+ "vtd",
  "x86-apic",
  "x86-cpuid",
  "x86-paging",

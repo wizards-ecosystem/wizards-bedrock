@@ -39,6 +39,7 @@ use stack_layout::{Slot as StackSlot, StackUsage};
 #[cfg(feature = "selftest")]
 use wost::arch::current::cpu;
 use wost::arch::current::pci::MappedBar;
+use wost::arch::current::vtd::Vtd;
 use wost::mm::{self, DmaSegment};
 use wost::sync::ThreadLock;
 use x86_paging::PAGE_SIZE;
@@ -46,7 +47,7 @@ use x86_paging::PAGE_SIZE;
 #[cfg(feature = "selftest")]
 use crate::thread;
 use crate::thread::ThreadContext;
-use crate::{info, mem};
+use crate::{info, mem, warn};
 
 #[cfg(feature = "selftest")]
 static BME_PRECEDING_CC: AtomicUsize = AtomicUsize::new(usize::MAX);
@@ -267,6 +268,37 @@ impl QueuePair {
         self.submission.retain();
         self.completion.retain();
     }
+
+    /// Make both queues reachable by the device, or neither (D-357).
+    #[must_use = "unmapped queues cannot be published to the controller"]
+    fn map_into(&self, isolation: &mut Vtd) -> bool {
+        let (Some(submission), Some(submission_len), Some(completion), Some(completion_len)) = (
+            self.submission.address(),
+            self.submission.len(),
+            self.completion.address(),
+            self.completion.len(),
+        ) else {
+            return false;
+        };
+        if !isolation.map_segment(submission, submission_len) {
+            return false;
+        }
+        if !isolation.map_segment(completion, completion_len) {
+            let _unmapped = isolation.unmap_segment(submission, submission_len);
+            return false;
+        }
+        true
+    }
+
+    /// Every frame of both queues, for a check that reads the domain back.
+    #[cfg(feature = "selftest")]
+    fn frames(&self, into: &mut alloc::vec::Vec<u64>) -> Option<()> {
+        for queue in [&self.submission, &self.completion] {
+            let (address, len) = queue.address().zip(queue.len())?;
+            into.extend((address..address + len).step_by(PAGE_SIZE as usize));
+        }
+        Some(())
+    }
 }
 
 /// Frames enough to hold `bytes`.
@@ -309,6 +341,10 @@ pub(crate) struct Controller {
     /// Queue creations which crossed namespace validation during the witness.
     #[cfg(feature = "selftest")]
     intercepted_io_queue_creations: u32,
+    /// Publish the next transfer buffer without mapping it, so a check can
+    /// watch the domain refuse the device.
+    #[cfg(feature = "selftest")]
+    leave_data_unmapped: bool,
     /// What `Identify` said, kept so a check can ask rather than infer.
     pub(crate) blocks: u64,
     /// Bytes in one logical block.
@@ -415,7 +451,8 @@ pub(crate) struct BusMasterAdmittedController(DisabledController);
 /// The two ownership-preserving results of bus-master admission.
 #[derive(Debug)]
 pub(crate) enum BusMasterAdmission {
-    /// PCI admitted DMA and minted controller-start authority.
+    /// PCI admitted DMA behind the installed domain and minted controller-start
+    /// authority.
     Admitted(BusMasterAdmittedController),
     /// PCI refused DMA and returned retirement authority.
     Refused(BusMasterAdmissionFailure),
@@ -431,6 +468,10 @@ pub(crate) struct BusMasterAdmissionFailure {
 /// Why fresh controller proof or the PCI command transition refused DMA.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BusMasterAdmissionError {
+    /// No DMA-remapping domain is installed for the function (D-357).
+    Unisolated,
+    /// The admin queues could not be made reachable through the domain.
+    QueuesUnreachable,
     /// The disabled controller no longer retained its mapped register BAR.
     NotMapped,
     /// BAR identity, register access, or live disabled state was refused.
@@ -442,6 +483,13 @@ pub(crate) enum BusMasterAdmissionError {
 impl core::fmt::Display for BusMasterAdmissionError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::Unisolated => {
+                core::fmt::Write::write_str(formatter, "no DMA domain isolates the function")
+            }
+            Self::QueuesUnreachable => core::fmt::Write::write_str(
+                formatter,
+                "the admin queues could not enter the DMA domain",
+            ),
             Self::NotMapped => core::fmt::Write::write_str(formatter, "register BAR is absent"),
             Self::Observation(reason) => write!(formatter, "controller observation: {reason}"),
             Self::Command(reason) => write!(formatter, "PCI command: {reason}"),
@@ -488,6 +536,9 @@ pub(crate) enum BringUpError {
     InvalidTransfer(TransferError),
     /// Identify Namespace data did not fit the supported storage contract.
     InvalidNamespace(NamespaceError),
+    /// No DMA domain is installed, or the one installed refused a queue or
+    /// transfer buffer, so nothing may be published (D-357).
+    Isolation,
 }
 
 impl core::fmt::Display for BringUpError {
@@ -516,6 +567,7 @@ impl core::fmt::Display for BringUpError {
             ),
             Self::InvalidTransfer(reason) => write!(f, "an invalid transfer: {reason}"),
             Self::InvalidNamespace(reason) => write!(f, "an invalid namespace: {reason}"),
+            Self::Isolation => core::fmt::Write::write_str(f, "no dma domain admits the buffer"),
         }
     }
 }
@@ -933,6 +985,8 @@ fn finish_preparation(
         intercept_io_queue_creation: false,
         #[cfg(feature = "selftest")]
         intercepted_io_queue_creations: 0,
+        #[cfg(feature = "selftest")]
+        leave_data_unmapped: false,
         blocks: 0,
         block_bytes: 0,
     };
@@ -1054,6 +1108,14 @@ impl Controller {
         self.run_admin(negotiation, None)?;
 
         let pair = QueuePair::new(IO_QUEUE, capacity).ok_or(BringUpError::NoMemory)?;
+        // Reachable before the controller can be told about either queue.
+        {
+            let mut installed = crate::iommu::installed();
+            let isolation = installed.as_mut().ok_or(BringUpError::Isolation)?;
+            if !pair.map_into(isolation) {
+                return Err(BringUpError::Isolation);
+            }
+        }
         let completion_address = pair.completion.address().ok_or(BringUpError::NoMemory)?;
         let submission_address = pair.submission.address().ok_or(BringUpError::NoMemory)?;
         // Once either command is published, the controller can retain these
@@ -1335,6 +1397,11 @@ impl Controller {
     }
 
     /// Submit `command` to queue `which` and spin until it is answered.
+    ///
+    /// Nothing is published without an installed DMA domain. The transfer
+    /// buffer enters the domain before the doorbell and leaves it once the
+    /// completion proves the device is done with it, so the device reaches
+    /// exactly the published-and-unretired set (D-357).
     fn run_on(
         &mut self,
         which: u16,
@@ -1355,7 +1422,30 @@ impl Controller {
         if self.registers.is_none() {
             return Err(BringUpError::NotMapped);
         }
+        let mut installed = crate::iommu::installed();
+        let isolation = installed.as_mut().ok_or(BringUpError::Isolation)?;
+        let reach = match data.as_deref() {
+            Some(buffer) => Some(
+                buffer
+                    .address()
+                    .zip(buffer.len())
+                    .ok_or(BringUpError::NotReady)?,
+            ),
+            None => None,
+        };
+        #[cfg(feature = "selftest")]
+        let reach = if self.leave_data_unmapped {
+            None
+        } else {
+            reach
+        };
+        if let Some((address, len)) = reach
+            && !isolation.map_segment(address, len)
+        {
+            return Err(BringUpError::Isolation);
+        }
         if !self.dma.reserve() {
+            let _unmapped = unmap_reach(isolation, reach);
             return Err(BringUpError::NotReady);
         }
 
@@ -1377,6 +1467,7 @@ impl Controller {
                 if !self.dma.cancel_unpublished() {
                     panic!("an unpublished DMA reservation must be cancellable");
                 }
+                let _unmapped = unmap_reach(isolation, reach);
                 return Err(reason);
             }
         };
@@ -1392,7 +1483,7 @@ impl Controller {
             panic!("a prepared DMA reservation must publish exactly once");
         };
         if let Err(error) = rung {
-            return self.fail_submitted(error, data.as_deref_mut());
+            return self.fail_submitted(error, data.as_deref_mut(), isolation);
         }
         #[cfg(feature = "selftest")]
         {
@@ -1418,17 +1509,29 @@ impl Controller {
         while limit.permit(clock_ns()) {
             let found = {
                 let Some(queue) = self.queue_mut(which) else {
-                    return self.fail_submitted(BringUpError::NotReady, data.as_deref_mut());
+                    return self.fail_submitted(
+                        BringUpError::NotReady,
+                        data.as_deref_mut(),
+                        isolation,
+                    );
                 };
                 let at = queue.completion_head as usize * nvme::COMPLETION_ENTRY_BYTES;
                 let mut bytes = [0u8; nvme::COMPLETION_ENTRY_BYTES];
                 if !queue.completion.read_at(at, &mut bytes) {
-                    return self.fail_submitted(BringUpError::NoMemory, data.as_deref_mut());
+                    return self.fail_submitted(
+                        BringUpError::NoMemory,
+                        data.as_deref_mut(),
+                        isolation,
+                    );
                 }
                 if Completion::from_bytes(bytes).phase == queue.phase {
                     DmaSegment::observe_device();
                     if !queue.completion.read_at(at, &mut bytes) {
-                        return self.fail_submitted(BringUpError::NoMemory, data.as_deref_mut());
+                        return self.fail_submitted(
+                            BringUpError::NoMemory,
+                            data.as_deref_mut(),
+                            isolation,
+                        );
                     }
                     Some(Completion::from_bytes(bytes))
                 } else {
@@ -1449,15 +1552,24 @@ impl Controller {
                             submission_head: entry.submission_head,
                         },
                         data.as_deref_mut(),
+                        isolation,
                     );
                 }
                 let Some(queue) = self.queue_mut(which) else {
-                    return self.fail_submitted(BringUpError::NotReady, data.as_deref_mut());
+                    return self.fail_submitted(
+                        BringUpError::NotReady,
+                        data.as_deref_mut(),
+                        isolation,
+                    );
                 };
                 queue.submission_head = u32::from(entry.submission_head);
                 let Some(completion_head) = Capacity::next(queue.capacity, queue.completion_head)
                 else {
-                    return self.fail_submitted(BringUpError::NotReady, data.as_deref_mut());
+                    return self.fail_submitted(
+                        BringUpError::NotReady,
+                        data.as_deref_mut(),
+                        isolation,
+                    );
                 };
                 if completion_head == 0 {
                     queue.phase = !queue.phase;
@@ -1465,6 +1577,11 @@ impl Controller {
                 queue.completion_head = completion_head;
                 if !self.dma.complete() {
                     panic!("a matching completion must finish one published command");
+                }
+                // The completion is the proof the device is done with the
+                // buffer; it leaves the domain before anything else happens.
+                if !unmap_reach(isolation, reach) {
+                    return self.fail_controller(BringUpError::Isolation);
                 }
 
                 let Some(doorbell) =
@@ -1490,16 +1607,26 @@ impl Controller {
             }
             core::hint::spin_loop();
         }
-        self.fail_submitted(BringUpError::NotReady, data)
+        self.fail_submitted(BringUpError::NotReady, data, isolation)
     }
 
     /// Stop uncertain DMA before exposing an error to the caller.
+    ///
+    /// A buffer the stop proved quiescent leaves the domain; a retained one
+    /// stays mapped, because the device may still reach it.
     fn fail_submitted<T>(
         &mut self,
         error: BringUpError,
         data: Option<&mut DmaSegment>,
+        isolation: &mut Vtd,
     ) -> Result<T, BringUpError> {
+        let reach = data
+            .as_deref()
+            .and_then(|buffer| buffer.address().zip(buffer.len()));
         self.stop_dma(data);
+        if !self.dma.must_retain() && !unmap_reach(isolation, reach) {
+            warn!("nvme: a quiesced transfer buffer stays mapped in the dma domain");
+        }
         Err(error)
     }
 
@@ -1573,6 +1700,22 @@ impl Controller {
         }
         self.io.as_mut().filter(|queue| queue.id == which)
     }
+
+    /// Every frame the domain must reach while the controller idles.
+    #[cfg(feature = "selftest")]
+    fn queue_frames(&self) -> Option<alloc::vec::Vec<u64>> {
+        let mut frames = alloc::vec::Vec::new();
+        self.admin.frames(&mut frames)?;
+        if let Some(io) = self.io.as_ref() {
+            io.frames(&mut frames)?;
+        }
+        Some(frames)
+    }
+}
+
+/// Take a published buffer out of the domain, or report that it is still in.
+fn unmap_reach(isolation: &mut Vtd, reach: Option<(u64, u64)>) -> bool {
+    reach.is_none_or(|(address, len)| isolation.unmap_segment(address, len))
 }
 
 impl Drop for Controller {
@@ -1749,22 +1892,31 @@ pub(crate) fn start(
 }
 
 impl DisabledController {
-    /// Admit DMA from a fresh observation through the retained mapped BAR.
-    pub(crate) fn admit_bus_master(self, device: &mut crate::pci::Device) -> BusMasterAdmission {
+    /// The admission steps: the installed domain reaches the admin queues and
+    /// mints its proof, then the fresh disabled observation reaches PCI.
+    ///
+    /// Separate from [`admit_bus_master`](Self::admit_bus_master) so that each
+    /// refusal builds a small value rather than a whole admission result: the
+    /// debug build gives every such temporary its own stack slot (D-287).
+    fn admit(&self, device: &mut crate::pci::Device) -> Result<(), BusMasterAdmissionError> {
+        let domain = {
+            let mut installed = crate::iommu::installed();
+            let Some(isolation) = installed.as_mut() else {
+                return Err(BusMasterAdmissionError::Unisolated);
+            };
+            if !self.controller.admin.map_into(isolation) {
+                return Err(BusMasterAdmissionError::QueuesUnreachable);
+            }
+            isolation
+                .domain()
+                .ok_or(BusMasterAdmissionError::Unisolated)?
+        };
         let Some(registers) = self.controller.registers.as_ref() else {
-            return BusMasterAdmission::Refused(BusMasterAdmissionFailure {
-                reason: BusMasterAdmissionError::NotMapped,
-                disabled: self,
-            });
+            return Err(BusMasterAdmissionError::NotMapped);
         };
         let authority = match registers.observe_nvme_disabled() {
             Ok(authority) => authority,
-            Err(reason) => {
-                return BusMasterAdmission::Refused(BusMasterAdmissionFailure {
-                    reason: BusMasterAdmissionError::Observation(reason),
-                    disabled: self,
-                });
-            }
+            Err(reason) => return Err(BusMasterAdmissionError::Observation(reason)),
         };
         #[cfg(feature = "selftest")]
         let observed = authority.observation_for_test();
@@ -1773,19 +1925,28 @@ impl DisabledController {
             BME_PRECEDING_CC.store(observed.0 as usize, Ordering::Release);
             BME_PRECEDING_CSTS.store(observed.1 as usize, Ordering::Release);
         }
-        match device.admit_bus_master(authority) {
-            Ok(()) => BusMasterAdmission::Admitted(BusMasterAdmittedController(self)),
+        match device.admit_bus_master(authority, domain) {
+            Ok(()) => Ok(()),
             Err(reason) => {
                 #[cfg(feature = "selftest")]
                 {
                     REFUSED_BME_PRECEDING_CC.store(observed.0 as usize, Ordering::Release);
                     REFUSED_BME_PRECEDING_CSTS.store(observed.1 as usize, Ordering::Release);
                 }
-                BusMasterAdmission::Refused(BusMasterAdmissionFailure {
-                    reason: BusMasterAdmissionError::Command(reason),
-                    disabled: self,
-                })
+                Err(BusMasterAdmissionError::Command(reason))
             }
+        }
+    }
+
+    /// Admit DMA from a fresh observation through the retained mapped BAR,
+    /// behind the installed domain, which must already reach the admin queues.
+    pub(crate) fn admit_bus_master(self, device: &mut crate::pci::Device) -> BusMasterAdmission {
+        match self.admit(device) {
+            Ok(()) => BusMasterAdmission::Admitted(BusMasterAdmittedController(self)),
+            Err(reason) => BusMasterAdmission::Refused(BusMasterAdmissionFailure {
+                reason,
+                disabled: self,
+            }),
         }
     }
 
@@ -1999,6 +2160,114 @@ pub(crate) fn measure_buffered_read_for_test() -> Option<(u64, u64)> {
     let mut held = CONTROLLER.lock();
     let (controller, buffer) = held.as_mut()?;
     controller.measure_buffered_read(buffer)
+}
+
+/// Whether the installed domain mints a proof and the unit walks the kernel's
+/// root table, for the controller that was kept.
+#[cfg(feature = "selftest")]
+pub(crate) fn isolation_is_active_for_test() -> Option<(bool, bool)> {
+    let held = CONTROLLER.lock();
+    held.as_ref()?;
+    let installed = crate::iommu::installed();
+    let isolation = installed.as_ref()?;
+    Some((
+        isolation.domain().is_some(),
+        isolation.walks_kernel_root_for_test()?,
+    ))
+}
+
+/// The pages the domain reaches, read back from its tables, beside the frames
+/// of every live queue, both sorted.
+#[cfg(feature = "selftest")]
+pub(crate) fn reachable_frames_for_test() -> Option<(alloc::vec::Vec<u64>, alloc::vec::Vec<u64>)> {
+    let held = CONTROLLER.lock();
+    let (controller, _) = held.as_ref()?;
+    let mut expected = controller.queue_frames()?;
+    expected.sort_unstable();
+    let installed = crate::iommu::installed();
+    let mut reachable = installed.as_ref()?.reachable_pages_for_test()?;
+    reachable.sort_unstable();
+    Some((reachable, expected))
+}
+
+/// Switch translation off and on while the controller idles, asking for a
+/// domain proof at each step.
+#[cfg(feature = "selftest")]
+pub(crate) fn domain_proof_follows_translation_for_test() -> bool {
+    let held = CONTROLLER.lock();
+    if held.is_none() {
+        return false;
+    }
+    let mut installed = crate::iommu::installed();
+    let Some(isolation) = installed.as_mut() else {
+        return false;
+    };
+    let minted = isolation.domain().is_some();
+    if !isolation.disable_translation_for_test() {
+        return false;
+    }
+    let refused = isolation.domain().is_none();
+    let restored = isolation.enable_translation_for_test();
+    minted && refused && restored && isolation.domain().is_some()
+}
+
+/// What a device write into a buffer the domain does not map produced.
+#[cfg(feature = "selftest")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FenceWitness {
+    /// The command completed or was refused rather than hanging.
+    pub(crate) completed: bool,
+    /// Every byte of the buffer still holds the pattern written before.
+    pub(crate) unchanged: bool,
+    /// The unit recorded a write from the storage function at the buffer's page.
+    pub(crate) faulted: bool,
+}
+
+/// Publish a read into the kept buffer without mapping it, then ask the unit
+/// and the buffer what happened.
+///
+/// A priming read maps and unmaps the same frame first, so a unit whose cache
+/// was not invalidated at the unmap would still translate the frame and let
+/// the device write through.
+#[cfg(feature = "selftest")]
+pub(crate) fn unmapped_write_is_fenced_for_test() -> Option<FenceWitness> {
+    const PATTERN: u8 = 0xA5;
+
+    let mut held = CONTROLLER.lock();
+    let (controller, buffer) = held.as_mut()?;
+    controller.read_blocks(0, 1, buffer).ok()?;
+    let source = {
+        let mut installed = crate::iommu::installed();
+        let isolation = installed.as_mut()?;
+        isolation.drain_faults();
+        let function = isolation.function();
+        (u16::from(function.bus()) << 8)
+            | (u16::from(function.device()) << 3)
+            | u16::from(function.function())
+    };
+    if !buffer.fill(PATTERN) {
+        return None;
+    }
+    let page = buffer.address()? & !(PAGE_SIZE - 1);
+
+    controller.leave_data_unmapped = true;
+    let result = controller.read_blocks(0, 1, buffer);
+    controller.leave_data_unmapped = false;
+
+    let mut bytes = alloc::vec![0u8; controller.block_bytes as usize];
+    if !buffer.read_at(0, &mut bytes) {
+        return None;
+    }
+    let mut faulted = false;
+    let mut installed = crate::iommu::installed();
+    while let Some(fault) = installed.as_mut()?.take_fault() {
+        faulted |= fault.source == source && fault.address == page && fault.write;
+    }
+    Some(FenceWitness {
+        completed: matches!(result, Ok(()) | Err(BringUpError::Command(_))),
+        unchanged: bytes.iter().all(|byte| *byte == PATTERN),
+        faulted,
+    })
 }
 
 /// Hold the next submitted command inside its preemptible polling owner.

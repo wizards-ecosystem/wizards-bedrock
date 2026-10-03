@@ -11,6 +11,7 @@ pub mod port;
 pub mod segment;
 pub mod task;
 pub mod usercopy;
+pub mod vtd;
 pub mod xstate;
 
 pub(crate) mod shared_memory;

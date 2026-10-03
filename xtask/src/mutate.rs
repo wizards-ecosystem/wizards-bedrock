@@ -77,10 +77,10 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1540;
+pub const NEXT_MUTATION_ID: u16 = 1570;
 
 /// Identities of deleted mutations, which no later entry may take.
-pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1521];
+pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521];
 
 /// The defects, each of which some check must notice.
 ///
@@ -691,8 +691,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 56,
         file: "kernel/src/nvme.rs",
-        find: "        match device.admit_bus_master(authority) {",
-        replace: "        match device\n            .admit_bus_master(authority)\n            .or(Ok::<(), pci_config::EnableError>(()))\n        {",
+        find: "        match device.admit_bus_master(authority, domain) {",
+        replace: "        match device\n            .admit_bus_master(authority, domain)\n            .or(Ok::<(), pci_config::EnableError>(()))\n        {",
         breaks: "a refused bus-master transition mints start authority",
         reddens: Caught::Check("a failed bus master admission stops before nvme start"),
     },
@@ -3532,7 +3532,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 300,
         file: "kernel/src/nvme.rs",
-        find: "            core::hint::spin_loop();\n        }\n        self.fail_submitted(BringUpError::NotReady, data)",
+        find: "            core::hint::spin_loop();\n        }\n        self.fail_submitted(BringUpError::NotReady, data, isolation)",
         replace: "            core::hint::spin_loop();\n        }\n        Err(BringUpError::NotReady)",
         breaks: "a command timeout settles dma before returning",
         reddens: Caught::Check("an nvme timeout quiesces before dma memory returns"),
@@ -6879,8 +6879,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 617,
         file: "xtask/src/qemu.rs",
-        find: "    \"-no-user-config\",\n    \"-accel\",",
-        replace: "    \"-accel\",",
+        find: "        \"-no-user-config\",\n        \"-accel\",",
+        replace: "        \"-accel\",",
         breaks: "ambient QEMU configuration can replace the qualified machine profile",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -6890,8 +6890,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 618,
         file: "xtask/src/qemu.rs",
-        find: "    \"-accel\",\n    \"tcg\",\n    \"-machine\",",
-        replace: "    \"-accel\",\n    \"whpx\",\n    \"-machine\",",
+        find: "        \"-accel\",\n        \"tcg\",\n        \"-machine\",",
+        replace: "        \"-accel\",\n        \"whpx\",\n        \"-machine\",",
         breaks: "the qualified machine can run under an unqualified accelerator",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -6901,8 +6901,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 619,
         file: "xtask/src/qemu.rs",
-        find: "    \"-cpu\",\n    \"max,hypervisor=on,tcg-cpuid=on\",\n    \"-m\",",
-        replace: "    \"-cpu\",\n    \"max\",\n    \"-m\",",
+        find: "        \"-cpu\",\n        \"max,hypervisor=on,tcg-cpuid=on\",\n        \"-m\",",
+        replace: "        \"-cpu\",\n        \"max\",\n        \"-m\",",
         breaks: "the shipped QEMU CPU omits the exact TCG identity witness",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -11353,17 +11353,6 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
-        id: 1005,
-        file: "libs/pci-config/src/lib.rs",
-        find: "pub const BARS: usize = 6;",
-        replace: "pub const BARS: usize = 6;\n\nfn subordinate_bus() -> u8 {\n    0\n}",
-        breaks: "PCI bridge traversal regrows a speculative subordinate-bus helper",
-        reddens: Caught::HostTest {
-            package: "xtask",
-            name: "contracts::speculative_and_callback_authority_does_not_regrow",
-        },
-    },
-    Mutation {
         id: 1006,
         file: "libs/stack-layout/src/lib.rs",
         find: "pub const PAGE_SIZE: u64 = 4096;",
@@ -11498,7 +11487,7 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1018,
         file: "xtask/src/contracts.rs",
-        find: "let _ = pci::admit_bus_master(at, state);",
+        find: "let _ = pci::admit_bus_master(at, domain, state);",
         replace: "let _ = pci::read(at);",
         breaks: "the raw-address compile probe stops exercising PCI bus-master upgrades",
         reddens: Caught::HostTest {
@@ -13069,6 +13058,317 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
+        id: 1540,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "dmar.entries().skip(index + 1)",
+        replace: "dmar.entries().skip(index)",
+        breaks: "the duplicate-unit scan compares each unit to itself, so a valid table is rejected",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_dmar_yields_its_structures_and_resolves_each_bdf_to_its_unit_and_regions",
+        },
+    },
+    Mutation {
+        id: 1541,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "DmarStructure::Rmrr { base, limit, .. } if base > limit",
+        replace: "DmarStructure::Rmrr { base, limit, .. } if base < limit",
+        breaks: "a reserved region whose base exceeds its limit is admitted instead of refused",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::an_inverted_reserved_region_is_refused_by_the_validated_view",
+        },
+    },
+    Mutation {
+        id: 1542,
+        file: "libs/vtd/src/lib.rs",
+        find: "    pub const TE: u32 = 1 << 31;",
+        replace: "    pub const TE: u32 = 1 << 30;",
+        breaks: "the translation-enable command bit is encoded at the wrong position",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::global_command_and_status_bits_match_the_spec",
+        },
+    },
+    Mutation {
+        id: 1543,
+        file: "libs/vtd/src/lib.rs",
+        find: "    const READ: u64 = 1 << 0;",
+        replace: "    const READ: u64 = 1 << 1;",
+        breaks: "a second-level entry's read permission collides with its write bit",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::second_level_entries_encode_permission_and_address",
+        },
+    },
+    // The unit caches the stale translation, so the device reaches the frame
+    // it was told to forget.
+    Mutation {
+        id: 1544,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        self.invalidate(false).is_ok()\n    }\n\n    /// Mint a proof that this domain isolates",
+        replace: "        true\n    }\n\n    /// Mint a proof that this domain isolates",
+        breaks: "an unmapped segment stays reachable through the unit's cache",
+        reddens: Caught::Check("a device write into an unmapped frame faults and changes nothing"),
+    },
+    Mutation {
+        id: 1545,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        while page <= last {\n            if self.map_page(page).is_err() {",
+        replace: "        while page <= last + PAGE {\n            if self.map_page(page).is_err() {",
+        breaks: "every mapped segment reaches one frame past its end",
+        reddens: Caught::Check("the dma domain reaches exactly the live queue frames"),
+    },
+    Mutation {
+        id: 1546,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if !translation_enabled(status) {\n            return None;\n        }\n        let root = RootEntry {",
+        replace: "        let _translation = translation_enabled(status);\n        let root = RootEntry {",
+        breaks: "a domain proof is minted while translation is off",
+        reddens: Caught::Check("a domain proof is refused while translation is off"),
+    },
+    Mutation {
+        id: 1547,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        self.set_root_table()?;\n        self.invalidate(true)?;\n        self.switch_translation(true)\n    }",
+        replace: "        self.set_root_table()?;\n        self.invalidate(true)\n    }",
+        breaks: "the unit is programmed but translation is never switched on",
+        reddens: Caught::Check("translation is active for the storage function"),
+    },
+    Mutation {
+        id: 1548,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        (self.function.device() << 3) | self.function.function()\n",
+        replace: "        (self.function.device() << 3) | (self.function.function() ^ 1)\n",
+        breaks: "the context entry is written for a sibling function, so the storage function has no translation",
+        reddens: Caught::Check("translation is active for the storage function"),
+    },
+    Mutation {
+        id: 1549,
+        file: "kernel/src/main.rs",
+        find: "        warn!(\"storage: no DMA isolation\");",
+        replace: "        warn!(\"storage: DMA isolation unavailable\");",
+        breaks: "the unisolated boot loses its exact refusal record",
+        reddens: Caught::BootMarker(qemu::NO_ISOLATION_MARKER),
+    },
+    Mutation {
+        id: 1550,
+        file: "libs/pci-config/src/lib.rs",
+        find: "    if authority.function.at.function_base() != isolated.function_base() {\n        return Err(EnableError::ForeignDomain);\n    }\n",
+        replace: "    let _isolated = isolated;\n",
+        breaks: "a domain established for another function admits this one's bus mastering",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::mapped_bus_master_admission_requires_its_bar_and_command_owner",
+        },
+    },
+    Mutation {
+        id: 1551,
+        file: "libs/vtd/src/lib.rs",
+        find: "        address >> self.address_bits() == 0",
+        replace: "        address >> (self.address_bits() + 1) == 0",
+        breaks: "an address one bit above the walk's width counts as covered",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::a_width_covers_every_address_below_its_power_of_two_and_none_above",
+        },
+    },
+    Mutation {
+        id: 1552,
+        file: "libs/vtd/src/lib.rs",
+        find: "    if status & gsts::CFIS != 0 {\n        command |= gcmd::CFI;\n    }\n",
+        replace: "",
+        breaks: "taking the unit over silently switches firmware's compatibility-format interrupts off",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::the_inherited_command_keeps_only_interrupt_state",
+        },
+    },
+    Mutation {
+        id: 1553,
+        file: "libs/vtd/src/lib.rs",
+        find: "    (status & (gsts::TES | gsts::QIES)) == 0",
+        replace: "    (status & gsts::TES) == 0",
+        breaks: "a unit with queued invalidation still enabled counts as quiesced",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::quiescence_requires_translation_and_queued_invalidation_off",
+        },
+    },
+    Mutation {
+        id: 1554,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "pub struct DmaDomain {\n    function: Address,\n}",
+        replace: "pub struct DmaDomain {\n    pub function: Address,\n}",
+        breaks: "a DMA domain proof can be forged without a unit",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::pci_configuration_writes_require_function_authority",
+        },
+    },
+    Mutation {
+        id: 1555,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "            self.root.address(),\n        )?;\n        let command = set_root_table_pointer(self.gcmd);\n        write_u32(&mut self.registers, vtd::GCMD as usize, command)?;\n        self.poll_status(root_table_pointer_set, VtdError::RootTableRefused)?;\n        let pointer = read_u64(&self.registers, vtd::RTADDR as usize)?;\n        if root_table_address(pointer) == self.root.address() {\n",
+        replace: "            self.context.address(),\n        )?;\n        let command = set_root_table_pointer(self.gcmd);\n        write_u32(&mut self.registers, vtd::GCMD as usize, command)?;\n        self.poll_status(root_table_pointer_set, VtdError::RootTableRefused)?;\n        let pointer = read_u64(&self.registers, vtd::RTADDR as usize)?;\n        if root_table_address(pointer) == self.context.address() {\n",
+        breaks: "the root pointer is programmed with the context table's address and read back as expected, so the unit walks a table the kernel never meant as its root",
+        reddens: Caught::Check("the unit walks the kernel's root table"),
+    },
+    Mutation {
+        id: 1556,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "            bus = buses.secondary;\n",
+        replace: "            bus = buses.subordinate;\n",
+        breaks: "a scope's walk descends to a bridge's subordinate bus instead of its secondary",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::an_endpoint_scope_resolves_through_each_bridge_on_its_path",
+        },
+    },
+    Mutation {
+        id: 1557,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "            let buses = behind(Bdf::new(segment, bus, device, function), bridge)?;",
+        replace: "            let buses = behind(Bdf::new(0, bus, device, function), bridge)?;",
+        breaks: "a scope's walk looks its bridges up in segment zero instead of its own segment",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::an_endpoint_scope_resolves_through_each_bridge_on_its_path",
+        },
+    },
+    Mutation {
+        id: 1558,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "(buses.secondary..=buses.subordinate).contains(&bdf.bus())",
+        replace: "(buses.secondary..buses.subordinate).contains(&bdf.bus())",
+        breaks: "a bridge scope stops one bus short of its bridge's subordinate bus",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_bridge_scope_covers_its_bridge_and_exactly_the_buses_behind_it",
+        },
+    },
+    Mutation {
+        id: 1559,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "            Self::Hierarchy(at, buses) => {\n                at == bdf || (buses.secondary..=buses.subordinate)",
+        replace: "            Self::Hierarchy(_, buses) => {\n                (buses.secondary..=buses.subordinate)",
+        breaks: "a bridge scope covers the buses behind its bridge but not the bridge itself",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_bridge_scope_covers_its_bridge_and_exactly_the_buses_behind_it",
+        },
+    },
+    Mutation {
+        id: 1560,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "            let buses = behind(Bdf::new(segment, bus, device, function), bridge)?;\n            bus = buses.secondary;\n",
+        replace: "            let buses = behind(Bdf::new(segment, bus, device, function), bridge);\n            bus = buses.map_or(bus, |buses| buses.secondary);\n",
+        breaks: "a hop that is not a bridge is stepped over as if the path went on along its bus",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_path_through_a_function_that_is_not_a_bridge_names_nothing",
+        },
+    },
+    Mutation {
+        id: 1561,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "    (at.bus() < buses.secondary && buses.secondary <= buses.subordinate).then_some(buses)",
+        replace: "    (at.bus() <= buses.secondary && buses.secondary <= buses.subordinate).then_some(buses)",
+        breaks: "a bridge whose secondary bus is its own bus is followed, so a walk can return to a bus",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_bridge_that_does_not_lead_past_its_own_bus_names_nothing",
+        },
+    },
+    Mutation {
+        id: 1562,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: " && buses.secondary <= buses.subordinate).then_some(buses)",
+        replace: ").then_some(buses)",
+        breaks: "a bridge whose secondary bus exceeds its subordinate is walked as if its numbering held",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_bridge_whose_secondary_bus_exceeds_its_subordinate_names_nothing",
+        },
+    },
+    Mutation {
+        id: 1563,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "        if self.path.len() > 2 * Self::MAX_HOPS {",
+        replace: "        if self.path.len() > 2 * Self::MAX_HOPS + 2 {",
+        breaks: "a scope path one hop longer than the bound is walked rather than refused",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_path_longer_than_the_hop_bound_names_nothing",
+        },
+    },
+    Mutation {
+        id: 1564,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "            DeviceScopeKind::IoApic\n            | DeviceScopeKind::Hpet\n            | DeviceScopeKind::AcpiNamespaceDevice\n            | DeviceScopeKind::Other { .. } => return None,",
+        replace: "            _ => false,",
+        breaks: "an I/O APIC, HPET, namespace-device or unknown scope is walked as a PCI endpoint",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::scopes_that_name_no_pci_function_never_govern_one",
+        },
+    },
+    Mutation {
+        id: 1565,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "        endpoint.or(enclosing.map(|(_, unit)| unit)).or(catch_all)",
+        replace: "        enclosing.map(|(_, unit)| unit).or(endpoint).or(catch_all)",
+        breaks: "a bridge scope enclosing a function outranks an endpoint scope naming it",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::the_most_specific_scope_governs_across_units",
+        },
+    },
+    Mutation {
+        id: 1566,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: ".is_none_or(|(innermost, _)| buses.secondary > innermost)",
+        replace: ".is_none_or(|(innermost, _)| buses.secondary < innermost)",
+        breaks: "an outer bridge scope outranks an inner one enclosing the same function",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::the_most_specific_scope_governs_across_units",
+        },
+    },
+    Mutation {
+        id: 1567,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                catch_all = Some(GoverningUnit {\n                    register_base,\n                    coverage: Coverage::CatchAll,\n                });\n",
+        replace: "                catch_all = Some(GoverningUnit {\n                    register_base,\n                    coverage: Coverage::CatchAll,\n                });\n                return catch_all;\n",
+        breaks: "a catch-all unit listed before a named scope claims the function that scope names",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::the_catch_all_unit_governs_only_functions_no_scope_names",
+        },
+    },
+    Mutation {
+        id: 1568,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                    .walk(segment, &self.bridge)",
+        replace: "                    .walk(segment, &|at| (self.bridge)(at).and(None))",
+        breaks: "reserved regions ignore the topology, so a region named through a bridge is never identity-mapped",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_reserved_region_follows_scopes_resolved_through_the_topology",
+        },
+    },
+    Mutation {
+        id: 1569,
+        file: "libs/pci-config/src/lib.rs",
+        find: "pub const fn subordinate_bus(bits: u32) -> u8 {\n    (bits >> 16) as u8\n}",
+        replace: "pub const fn subordinate_bus(bits: u32) -> u8 {\n    (bits >> 24) as u8\n}",
+        breaks: "a bridge's subordinate bus is read from its latency-timer byte",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_bridge_subordinate_bus_is_read_from_its_own_byte",
+        },
+    },
+    Mutation {
         id: 1161,
         file: "wost/src/arch/x86_64/cpu.rs",
         find: "pub(super) unsafe fn set_page_table_base(address: u64) {",
@@ -13428,8 +13728,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1194,
         file: "xtask/src/qemu.rs",
-        find: "    RequiredLogRecord::info(NVME_FALLBACK_MARKER),",
-        replace: "",
+        find: "    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n];",
+        replace: "];",
         breaks: "the shipped boot can settle without proving first-candidate NVMe retirement",
         reddens: Caught::HostTest {
             package: "xtask",

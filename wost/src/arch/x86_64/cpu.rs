@@ -785,6 +785,21 @@ pub fn page_invalidations_for_test() -> usize {
     PAGE_INVALIDATIONS.load(Ordering::Relaxed)
 }
 
+/// Write the cache line holding `address` back to memory and drop it.
+///
+/// For a device that reads memory without snooping the processor caches, so a
+/// table entry the CPU wrote reaches the bytes the device will read (D-358).
+///
+/// # Safety
+///
+/// `address` must be mapped: `clflush` references its operand and faults on an
+/// unmapped one.
+pub(crate) unsafe fn flush_cache_line(address: *const u8) {
+    // SAFETY: the caller promises a mapped operand, and the instruction writes
+    // no register; it only moves one line out of this CPU's caches.
+    unsafe { asm!("clflush [{}]", in(reg) address, options(nostack, preserves_flags)) };
+}
+
 /// Point the CPU at a different top-level page table.
 ///
 /// # Safety

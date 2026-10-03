@@ -2594,6 +2594,34 @@ fn an_nvme_timeout_quiesces_before_dma_memory_returns() -> bool {
     nvme::timeout_quiesces_for_test()
 }
 
+fn translation_is_active_for_the_storage_function() -> bool {
+    nvme::isolation_is_active_for_test().is_some_and(|(minted, _)| minted)
+}
+
+fn the_unit_walks_the_kernels_root_table() -> bool {
+    nvme::isolation_is_active_for_test().is_some_and(|(_, walks_kernel_root)| walks_kernel_root)
+}
+
+/// Read back from the second-level tables the unit walks, not from the
+/// driver's index of them: the reachable set is exactly the live queue frames
+/// while no transfer is published (D-357).
+fn the_dma_domain_reaches_exactly_the_live_queue_frames() -> bool {
+    nvme::reachable_frames_for_test()
+        .is_some_and(|(reachable, expected)| !expected.is_empty() && reachable == expected)
+}
+
+fn a_domain_proof_is_refused_while_translation_is_off() -> bool {
+    nvme::domain_proof_follows_translation_for_test()
+}
+
+/// The hook reads into the buffer once first, so a stale cached translation
+/// would let the unmapped write through; the fault proves the unmap
+/// invalidated the unit's cache and the device cannot reach the frame.
+fn a_device_write_into_an_unmapped_frame_faults_and_changes_nothing() -> bool {
+    nvme::unmapped_write_is_fenced_for_test()
+        .is_some_and(|witness| witness.completed && witness.unchanged && witness.faulted)
+}
+
 /// The first eight bytes of block `lba` on the check machine's namespace.
 ///
 /// Written by `xtask` when it makes the backing file, and transcribed here —
@@ -7659,7 +7687,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 265;
+const EXPECTED_CHECKS: usize = 270;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -8775,6 +8803,29 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a full-buffer nvme read is measurable",
         a_full_buffer_nvme_read_is_measurable(),
+    );
+
+    report.check(
+        "translation is active for the storage function",
+        translation_is_active_for_the_storage_function(),
+    );
+    report.check(
+        "the unit walks the kernel's root table",
+        the_unit_walks_the_kernels_root_table(),
+    );
+    report.check(
+        "the dma domain reaches exactly the live queue frames",
+        the_dma_domain_reaches_exactly_the_live_queue_frames(),
+    );
+    // Before the translation toggle below, which flushes the unit's caches
+    // and would hide a stale translation this check exists to expose.
+    report.check(
+        "a device write into an unmapped frame faults and changes nothing",
+        a_device_write_into_an_unmapped_frame_faults_and_changes_nothing(),
+    );
+    report.check(
+        "a domain proof is refused while translation is off",
+        a_domain_proof_is_refused_while_translation_is_off(),
     );
 
     // Last of all: the timeout proof resets the only storage controller.

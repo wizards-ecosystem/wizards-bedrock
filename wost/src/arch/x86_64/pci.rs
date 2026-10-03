@@ -14,6 +14,7 @@ use pci_config::{
 };
 
 use crate::arch::current::paging::{AdmittedDeviceRange, DeviceMapping, ReleasableDevice};
+use crate::arch::current::vtd::DmaDomain;
 use crate::mmio::MmioError;
 use crate::sync::SpinLock;
 
@@ -453,30 +454,39 @@ pub fn release_function(function: FunctionClaim) -> Result<(), ReleaseFailure> {
     })
 }
 
-/// Admit DMA through freshly observed, function-bound NVMe registers.
+/// Admit DMA through freshly observed, function-bound NVMe registers, behind
+/// a remapping domain established for that exact function (D-357).
 ///
 /// # Errors
 ///
-/// Refuses a stale BAR or command owner and every configuration access or
-/// exact-readback failure without consuming the command state.
+/// Refuses a stale BAR or command owner, a domain for another function, and
+/// every configuration access or exact-readback failure without consuming the
+/// command state.
 pub fn admit_bus_master(
     authority: NvmeBusMasterAuthority<'_>,
+    domain: DmaDomain,
     state: &mut CommandState,
 ) -> Result<(), EnableError> {
     let NvmeBusMasterAuthority { bar, _observed: _ } = authority;
     let mut configuration = CONFIGURATION.lock_leaf();
     let Configuration { ports, functions } = &mut *configuration;
-    pci_config::admit_mapped_bus_master(functions, &bar.authority, state, |at, access| {
-        let (address, data) = ports.as_mut()?;
-        Port::write(address, at.bits());
-        match access {
-            CommandAccess::Read => Some(Port::read(data)),
-            CommandAccess::Write(value) => {
-                Port::write(data, u32::from(value));
-                Some(0)
+    pci_config::admit_mapped_bus_master(
+        functions,
+        &bar.authority,
+        domain.function(),
+        state,
+        |at, access| {
+            let (address, data) = ports.as_mut()?;
+            Port::write(address, at.bits());
+            match access {
+                CommandAccess::Read => Some(Port::read(data)),
+                CommandAccess::Write(value) => {
+                    Port::write(data, u32::from(value));
+                    Some(0)
+                }
             }
-        }
-    })
+        },
+    )
 }
 
 /// Restore a captured command word as one verified transaction.

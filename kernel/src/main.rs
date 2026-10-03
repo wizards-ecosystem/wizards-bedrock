@@ -27,6 +27,7 @@ mod devfs;
 mod fs;
 mod handle;
 mod input;
+mod iommu;
 mod log;
 mod mem;
 mod nvme;
@@ -110,6 +111,9 @@ fn kernel_main(boot: BootInfo) -> ! {
     // address the bootloader chose; before everything else, which may want a frame.
     mem::init(boot.memory_map, boot.direct_map);
     let interrupts = mem::init_paging(boot.memory_map, boot.direct_map, boot.image, boot.rsdp);
+    if let Ok(rsdp) = boot.rsdp {
+        iommu::discover(rsdp);
+    }
 
     // The bootloader's stack has nothing below it and sits inside the
     // unsplittable direct map, so the only guard is to leave it (D-92).
@@ -572,6 +576,11 @@ fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
             );
         }
     };
+    // Translation goes on while the controller is still disabled and its
+    // function cannot bus-master, so no DMA ever runs outside the domain.
+    if !iommu::establish(&mut context, at) {
+        warn!("storage: no DMA isolation");
+    }
     finish_controller_candidate(
         device,
         &mut context,
@@ -678,6 +687,7 @@ fn finish_controller_candidate(
         Ok(()) => info!("nvme: read block 0"),
         Err(reason) => {
             warn!("nvme: block 0 could not be read: {reason}");
+            iommu::report_faults();
             match controller.retire(context) {
                 nvme::ControllerRetirement::Retired => {}
                 nvme::ControllerRetirement::Quarantined(quarantine) => {
@@ -728,6 +738,12 @@ fn retire_candidate(
             pci::retain_failed_release(device);
             return StorageSelection::Halted;
         }
+    }
+    // After the lease: the stop is proven and firmware's command word restored
+    // before translation goes off, so that interval rests on the stop (D-358).
+    if !iommu::release_candidate(context) {
+        warn!("nvme: candidate {ordinal} could not return its dma domain; selection halted");
+        return StorageSelection::Halted;
     }
     #[cfg(feature = "selftest")]
     if !baseline.is_restored(context) {

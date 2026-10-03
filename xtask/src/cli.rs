@@ -31,7 +31,7 @@ CHECK TASKS:
     test              run the host test suite
     test-boot         boot a self-test kernel in QEMU and require its verdict
     boot-check        boot the shipped kernel and require it to settle
-    degraded-check    boot without PCI/x2apic and require both refusals
+    degraded-check    boot without PCI/x2apic, then without an IOMMU; require every refusal
     supply-chain      verify lock, licenses, artifacts and the SPDX SBOM
     verify-vendor     check vendored binaries against their CHECKSUMS files
     ci                run the registered local gate shown below
@@ -129,7 +129,8 @@ pub enum Task {
     TestBoot(Profile),
     /// Boot the shipped kernel and require it to settle without panicking.
     BootCheck(Profile),
-    /// Boot without PCI configuration or x2APIC and require both refusals.
+    /// Boot without PCI configuration or x2APIC and require both refusals,
+    /// then without a remapping unit and require storage to refuse.
     DegradedCheck(Profile),
     /// Check vendored binaries against their recorded digests.
     VerifyVendor,

@@ -7,11 +7,14 @@
 //! layout where `cargo test` can reach it.
 //!
 //! Transcribed from the Intel Virtualization Technology for Directed I/O
-//! Architecture Specification, rev 3.x/4.x (the Capability, Extended
-//! Capability, Global Command/Status, Context Command, IOTLB, Fault Status and
-//! Fault Recording registers; the root/context/second-level table entries; and
-//! the register-based and queued invalidation forms). Every field's shift and
-//! mask is a named constant, and the tests restate each bit position from the
+//! Architecture Specification, rev 3.x/4.x: the Capability, Extended
+//! Capability, Global Command/Status, Root Table Address, Context Command,
+//! IOTLB, Fault Status and Fault Recording registers, and the root, context and
+//! second-level table entries. Only the register-based invalidation interface
+//! is encoded; the unit disables queued invalidation before it uses the
+//! Context Command and IOTLB registers, because the specification reserves them
+//! while queued invalidation is enabled (D-358). Every field's shift and mask is
+//! a named constant, and the tests restate each bit position from the
 //! specification rather than from these constants, so a transcription error
 //! fails a test instead of agreeing with itself.
 //!
@@ -23,11 +26,12 @@
 //! let cap = Capability::from_bits((1 << (8 + 2)) | (47 << 16));
 //! let width = AddressWidth::choose(cap).expect("4-level fits within MGAW");
 //! assert_eq!(width.levels(), 4);
+//! assert!(width.covers(0xFFFF_FFFF_FFFF) && !width.covers(1 << 48));
 //!
 //! // Root and context entries for domain 7, and a writable second-level leaf.
-//! let root = RootEntry::present(0x1000);
+//! let root = RootEntry::try_present(0x1000).expect("page aligned");
 //! assert_eq!(root.context_table_address(), 0x1000);
-//! let context = ContextEntry::present(0x2000, width, 7);
+//! let context = ContextEntry::try_present(0x2000, width, 7).expect("page aligned");
 //! assert_eq!(context.domain_id(), 7);
 //! assert_eq!(second_level::pte(0x3000, true, true), 0x3000 | 0b11);
 //!
@@ -54,8 +58,6 @@ const ADDRESS_MASK: u64 = 0xFFFF_FFFF_FFFF_F000;
 // Register offsets, in bytes from the unit's register base.
 // ---------------------------------------------------------------------------
 
-/// Version register (32-bit).
-pub const VER: u64 = 0x00;
 /// Capability register (64-bit).
 pub const CAP: u64 = 0x08;
 /// Extended Capability register (64-bit).
@@ -70,28 +72,13 @@ pub const RTADDR: u64 = 0x20;
 pub const CCMD: u64 = 0x28;
 /// Fault Status register (32-bit).
 pub const FSTS: u64 = 0x34;
-/// Fault Event Control register (32-bit).
-pub const FECTL: u64 = 0x38;
-/// Fault Event Data register (32-bit).
-pub const FEDATA: u64 = 0x3C;
-/// Fault Event Address register (32-bit).
-pub const FEADDR: u64 = 0x40;
 
-/// Invalidation Queue Head register (64-bit).
-pub const IQH: u64 = 0x80;
-/// Invalidation Queue Tail register (64-bit).
-pub const IQT: u64 = 0x88;
-/// Invalidation Queue Address register (64-bit).
-pub const IQA: u64 = 0x90;
-
-/// Encode the Invalidation Queue Address register value.
+/// The root-table pointer the unit walks, read back from the register.
 ///
-/// Bits 63:12 hold the 4-KiB-aligned queue base; bits 2:0 hold the queue size
-/// field (`size_field`), so the queue spans `2^size_field` pages, i.e.
-/// `2^(size_field + 8)` 128-bit descriptors. Bit 11 (descriptor width) is left
-/// clear, selecting the 128-bit descriptors this crate encodes.
-pub const fn iqa_value(queue_paddr: u64, size_field: u8) -> u64 {
-    (queue_paddr & ADDRESS_MASK) | ((size_field as u64) & 0x7)
+/// Bits 63:12 hold the 4-KiB-aligned table address; bits 11:10 select the
+/// translation-table mode, which this crate leaves at legacy mode (zero).
+pub const fn root_table_address(rtaddr: u64) -> u64 {
+    rtaddr & ADDRESS_MASK
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +204,10 @@ impl ExtendedCapability {
     }
 
     /// Whether page-table walks are coherent with processor caches (C).
+    ///
+    /// When clear, the unit may read a table entry from memory before the
+    /// processor's cached write reaches it, so every entry write must be
+    /// followed by a cache-line flush before the unit can be relied on.
     pub const fn page_walk_coherent(self) -> bool {
         (self.0 & Self::C) != 0
     }
@@ -233,9 +224,8 @@ impl ExtendedCapability {
 
     /// Byte offset of the IOTLB register block: IRO times sixteen.
     ///
-    /// Within that block the Invalidate Address register (IVA_REG) sits at
-    /// [`iotlb_command::ADDRESS_REGISTER`] and the IOTLB Invalidate register
-    /// (IOTLB_REG) at [`iotlb_command::COMMAND_REGISTER`].
+    /// Within that block the IOTLB Invalidate register (IOTLB_REG) sits at
+    /// [`iotlb_command::COMMAND_REGISTER`].
     pub const fn iotlb_register_offset_bytes(self) -> u64 {
         ((self.0 >> Self::IRO_SHIFT) & Self::IRO_MASK) * 16
     }
@@ -249,8 +239,8 @@ impl ExtendedCapability {
 ///
 /// GCMD is driven from a software-preserved shadow: each write sets one command
 /// bit while leaving the other enable bits in their intended state, which is
-/// what the [`set_root_table_pointer`], [`enable_translation`] and
-/// [`enable_queued_invalidation`] helpers do.
+/// what [`set_root_table_pointer`], [`enable_translation`] and
+/// [`inherited_command`] do.
 pub mod gcmd {
     /// Translation Enable, bit 31.
     pub const TE: u32 = 1 << 31;
@@ -258,10 +248,10 @@ pub mod gcmd {
     pub const SRTP: u32 = 1 << 30;
     /// Write Buffer Flush, bit 27.
     pub const WBF: u32 = 1 << 27;
-    /// Queued Invalidation Enable, bit 26.
-    pub const QIE: u32 = 1 << 26;
-    /// Set Interrupt Remap Table Pointer, bit 24.
-    pub const SIRTP: u32 = 1 << 24;
+    /// Interrupt Remapping Enable, bit 25.
+    pub const IRE: u32 = 1 << 25;
+    /// Compatibility Format Interrupt, bit 23.
+    pub const CFI: u32 = 1 << 23;
 }
 
 /// Global Status register bits.
@@ -274,8 +264,29 @@ pub mod gsts {
     pub const WBFS: u32 = 1 << 27;
     /// Queued Invalidation Enable Status, bit 26.
     pub const QIES: u32 = 1 << 26;
-    /// Interrupt Remap Table Pointer Status, bit 24.
-    pub const IRTPS: u32 = 1 << 24;
+    /// Interrupt Remapping Enable Status, bit 25.
+    pub const IRES: u32 = 1 << 25;
+    /// Compatibility Format Interrupt Status, bit 23.
+    pub const CFIS: u32 = 1 << 23;
+}
+
+/// The command word that takes a unit over from firmware.
+///
+/// Every enable bit the unit does not drive keeps the state firmware left it in,
+/// so interrupt remapping and compatibility-format interrupts are neither
+/// switched on nor off here. Translation and queued invalidation are left clear
+/// on purpose: the kernel installs its own root before enabling translation,
+/// and the Context Command and IOTLB registers this crate encodes are reserved
+/// while queued invalidation is enabled.
+pub const fn inherited_command(status: u32) -> u32 {
+    let mut command = 0;
+    if status & gsts::IRES != 0 {
+        command |= gcmd::IRE;
+    }
+    if status & gsts::CFIS != 0 {
+        command |= gcmd::CFI;
+    }
+    command
 }
 
 /// OR the Set-Root-Table-Pointer bit into a preserved command word.
@@ -288,11 +299,6 @@ pub const fn enable_translation(cmd: u32) -> u32 {
     cmd | gcmd::TE
 }
 
-/// OR the Queued-Invalidation-Enable bit into a preserved command word.
-pub const fn enable_queued_invalidation(cmd: u32) -> u32 {
-    cmd | gcmd::QIE
-}
-
 /// Whether the root table pointer has been accepted (RTPS).
 pub const fn root_table_pointer_set(status: u32) -> bool {
     (status & gsts::RTPS) != 0
@@ -301,6 +307,12 @@ pub const fn root_table_pointer_set(status: u32) -> bool {
 /// Whether DMA translation is enabled (TES).
 pub const fn translation_enabled(status: u32) -> bool {
     (status & gsts::TES) != 0
+}
+
+/// Whether neither translation nor queued invalidation is enabled, which is the
+/// state the kernel requires before it installs its own root table.
+pub const fn quiesced(status: u32) -> bool {
+    (status & (gsts::TES | gsts::QIES)) == 0
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +347,14 @@ impl AddressWidth {
             Self::Level4 => 48,
             Self::Level5 => 57,
         }
+    }
+
+    /// Whether `address` can be named by a walk of this width.
+    ///
+    /// An address above the width would alias into the top table's index bits
+    /// if it were mapped, so a caller refuses it instead.
+    pub const fn covers(self, address: u64) -> bool {
+        address >> self.address_bits() == 0
     }
 
     /// The context-entry AW field encoding: 1, 2 or 3.
@@ -372,17 +392,12 @@ impl AddressWidth {
     ///
     /// Level 0 is the leaf page table; each level up is nine bits higher. The
     /// split points (12, 21, 30, 39, 48) are the standard x86-style ones and do
-    /// not depend on the width — the width only bounds how many levels a walk
-    /// uses, so a caller iterates `0..self.levels()`.
+    /// not depend on the width, which only bounds how many levels a walk uses,
+    /// so a caller iterates `0..self.levels()`.
     pub const fn index(self, iova: u64, level: u8) -> u16 {
         let shift = 12 + 9 * (level as u32);
         ((iova >> shift) & 0x1FF) as u16
     }
-}
-
-/// The 12-bit offset within a 4-KiB page.
-pub const fn page_offset(iova: u64) -> u64 {
-    iova & 0xFFF
 }
 
 // ---------------------------------------------------------------------------
@@ -404,11 +419,6 @@ pub struct RootEntry {
 impl RootEntry {
     /// Present, bit 0.
     const PRESENT: u64 = 1 << 0;
-
-    /// An all-zero, not-present root entry.
-    pub const fn not_present() -> Self {
-        Self { lo: 0, hi: 0 }
-    }
 
     /// A present root entry naming a context table.
     ///
@@ -460,11 +470,6 @@ impl ContextEntry {
     /// Domain identifier, bits 23:8 of the high qword.
     const DID_SHIFT: u32 = 8;
 
-    /// An all-zero, not-present context entry.
-    pub const fn not_present() -> Self {
-        Self { lo: 0, hi: 0 }
-    }
-
     /// A present context entry for legacy second-level-only translation.
     ///
     /// The translation-type field (bits 3:2 of the low qword) is left zero,
@@ -472,11 +477,7 @@ impl ContextEntry {
     /// must be 4-KiB aligned; its low twelve bits are masked off. Use
     /// [`try_present`](Self::try_present) to reject a misaligned pointer.
     #[must_use]
-    pub const fn present(
-        second_level_root_paddr: u64,
-        aw: AddressWidth,
-        domain_id: u16,
-    ) -> Self {
+    pub const fn present(second_level_root_paddr: u64, aw: AddressWidth, domain_id: u16) -> Self {
         Self {
             lo: (second_level_root_paddr & ADDRESS_MASK) | Self::PRESENT,
             hi: aw.context_encoding() | ((domain_id as u64) << Self::DID_SHIFT),
@@ -530,7 +531,8 @@ impl ContextEntry {
 ///
 /// A second-level structure encodes read/write permission in bits 1:0 and a
 /// 4-KiB-aligned physical address in bits 63:12. A leaf and a non-leaf pointer
-/// share that layout, so an intermediate [`table_pointer`] is `R | W | addr`.
+/// share that layout, so an intermediate
+/// [`table_pointer`](second_level::table_pointer) is `R | W | addr`.
 pub mod second_level {
     use super::ADDRESS_MASK;
 
@@ -563,6 +565,16 @@ pub mod second_level {
     pub const fn table_pointer(paddr: u64) -> u64 {
         (paddr & ADDRESS_MASK) | READ | WRITE
     }
+
+    /// Whether an entry read back from a table is present with any permission.
+    pub const fn is_present(entry: u64) -> bool {
+        entry & (READ | WRITE) != 0
+    }
+
+    /// The physical address an entry names, whatever its permission bits.
+    pub const fn address(entry: u64) -> u64 {
+        entry & ADDRESS_MASK
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -577,47 +589,26 @@ pub mod context_command {
     const CIRG_SHIFT: u32 = 61;
     /// Global-granularity request (CIRG = 1).
     const GLOBAL: u64 = 1 << CIRG_SHIFT;
-    /// Domain-granularity request (CIRG = 2).
-    const DOMAIN: u64 = 2 << CIRG_SHIFT;
-    /// Context Actual Invalidation Granularity, bits 60:59.
-    const CAIG_SHIFT: u32 = 59;
 
     /// A global context-cache invalidation command word.
     pub const fn global() -> u64 {
         ICC | GLOBAL
     }
 
-    /// A domain-selective context-cache invalidation command word.
-    pub const fn domain(domain_id: u16) -> u64 {
-        ICC | DOMAIN | (domain_id as u64)
-    }
-
     /// Whether a read-back value shows the invalidation complete (ICC clear).
     pub const fn completed(value: u64) -> bool {
         (value & ICC) == 0
-    }
-
-    /// The actual granularity the unit reported (CAIG), bits 60:59.
-    pub const fn actual_granularity(value: u64) -> u8 {
-        ((value >> CAIG_SHIFT) & 0x3) as u8
     }
 }
 
 /// IOTLB invalidation through the IOTLB Invalidate register (IOTLB_REG).
 ///
-/// The register sits at [`COMMAND_REGISTER`] within the IOTLB register block
-/// that [`ExtendedCapability::iotlb_register_offset_bytes`] locates; the
-/// Invalidate Address register (IVA_REG) sits at [`ADDRESS_REGISTER`].
+/// The register sits at [`COMMAND_REGISTER`](iotlb_command::COMMAND_REGISTER)
+/// within the IOTLB register block that
+/// [`ExtendedCapability::iotlb_register_offset_bytes`] locates.
 pub mod iotlb_command {
-    /// Offset of the Invalidate Address register (IVA_REG) within the block.
-    pub const ADDRESS_REGISTER: u64 = 0x00;
     /// Offset of the IOTLB Invalidate register (IOTLB_REG) within the block.
     pub const COMMAND_REGISTER: u64 = 0x08;
-
-    /// Drain Reads, bit 49: complete in-flight read requests before reporting.
-    pub const DRAIN_READ: u64 = 1 << 49;
-    /// Drain Writes, bit 48: complete in-flight write requests before reporting.
-    pub const DRAIN_WRITE: u64 = 1 << 48;
 
     /// Invalidate IOTLB, bit 63 (set by software, cleared when done).
     const IVT: u64 = 1 << 63;
@@ -625,104 +616,15 @@ pub mod iotlb_command {
     const IIRG_SHIFT: u32 = 60;
     /// Global-granularity request (IIRG = 1).
     const GLOBAL: u64 = 1 << IIRG_SHIFT;
-    /// Domain-granularity request (IIRG = 2).
-    const DOMAIN: u64 = 2 << IIRG_SHIFT;
-    /// IOTLB Actual Invalidation Granularity, bits 58:57.
-    const IAIG_SHIFT: u32 = 57;
-    /// Domain identifier, bits 47:32.
-    const DID_SHIFT: u32 = 32;
 
     /// A global IOTLB invalidation command word.
     pub const fn global() -> u64 {
         IVT | GLOBAL
     }
 
-    /// A domain-selective IOTLB invalidation command word.
-    pub const fn domain(domain_id: u16) -> u64 {
-        IVT | DOMAIN | ((domain_id as u64) << DID_SHIFT)
-    }
-
     /// Whether a read-back value shows the invalidation complete (IVT clear).
     pub const fn completed(value: u64) -> bool {
         (value & IVT) == 0
-    }
-
-    /// The actual granularity the unit reported (IAIG), bits 58:57.
-    pub const fn actual_granularity(value: u64) -> u8 {
-        ((value >> IAIG_SHIFT) & 0x3) as u8
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Queued invalidation: 128-bit descriptors.
-// ---------------------------------------------------------------------------
-
-/// Queued-invalidation descriptors, each a 128-bit `[low, high]` pair.
-///
-/// The descriptor type is bits 3:0 of the low qword; the invalidation
-/// granularity is bits 5:4 (1 = global, 2 = domain-selective); a domain
-/// identifier, when present, is bits 31:16.
-pub mod queued {
-    /// Drain Reads for an IOTLB descriptor, bit 6.
-    pub const IOTLB_DRAIN_READ: u64 = 1 << 6;
-    /// Drain Writes for an IOTLB descriptor, bit 7.
-    pub const IOTLB_DRAIN_WRITE: u64 = 1 << 7;
-
-    /// Context-cache invalidate descriptor type.
-    const CC_TYPE: u64 = 0x1;
-    /// IOTLB invalidate descriptor type.
-    const IOTLB_TYPE: u64 = 0x2;
-    /// Invalidation-wait descriptor type.
-    const WAIT_TYPE: u64 = 0x5;
-    /// Granularity field, bits 5:4.
-    const GRAN_SHIFT: u32 = 4;
-    /// Global granularity (field = 1).
-    const GRAN_GLOBAL: u64 = 1 << GRAN_SHIFT;
-    /// Domain granularity (field = 2).
-    const GRAN_DOMAIN: u64 = 2 << GRAN_SHIFT;
-    /// Domain identifier, bits 31:16.
-    const DID_SHIFT: u32 = 16;
-    /// Status Write, bit 5 of a wait descriptor.
-    const WAIT_SW: u64 = 1 << 5;
-    /// Status data, bits 63:32 of a wait descriptor's low qword.
-    const WAIT_DATA_SHIFT: u32 = 32;
-    /// Status address, bits 63:2 of a wait descriptor's high qword.
-    const STATUS_ADDRESS_MASK: u64 = !0b11;
-
-    /// A global context-cache invalidate descriptor.
-    pub const fn context_cache_inval_descriptor_global() -> [u64; 2] {
-        [CC_TYPE | GRAN_GLOBAL, 0]
-    }
-
-    /// A domain-selective context-cache invalidate descriptor.
-    pub const fn context_cache_inval_descriptor_domain(domain_id: u16) -> [u64; 2] {
-        [CC_TYPE | GRAN_DOMAIN | ((domain_id as u64) << DID_SHIFT), 0]
-    }
-
-    /// A global IOTLB invalidate descriptor.
-    pub const fn iotlb_inval_descriptor_global() -> [u64; 2] {
-        [IOTLB_TYPE | GRAN_GLOBAL, 0]
-    }
-
-    /// A domain-selective IOTLB invalidate descriptor.
-    pub const fn iotlb_inval_descriptor_domain(domain_id: u16) -> [u64; 2] {
-        [IOTLB_TYPE | GRAN_DOMAIN | ((domain_id as u64) << DID_SHIFT), 0]
-    }
-
-    /// An invalidation-wait descriptor that writes `status_data` to
-    /// `status_write_paddr` once earlier descriptors have completed.
-    ///
-    /// The low qword carries the type (bits 3:0 = 5), the Status Write flag
-    /// (bit 5), and `status_data` in bits 63:32. The high qword carries the
-    /// status address in bits 63:2; its low two bits are masked off, so the
-    /// address is 4-byte aligned.
-    pub const fn invalidation_wait_descriptor(
-        status_write_paddr: u64,
-        status_data: u32,
-    ) -> [u64; 2] {
-        let low = WAIT_TYPE | WAIT_SW | ((status_data as u64) << WAIT_DATA_SHIFT);
-        let high = status_write_paddr & STATUS_ADDRESS_MASK;
-        [low, high]
     }
 }
 
@@ -749,17 +651,15 @@ impl FaultStatus {
         Self(bits)
     }
 
-    /// The raw register value.
-    pub const fn bits(self) -> u32 {
-        self.0
-    }
-
     /// Whether a primary fault is pending (PPF).
     pub const fn primary_pending(self) -> bool {
         (self.0 & Self::PPF) != 0
     }
 
     /// Whether the fault log overflowed (PFO).
+    ///
+    /// While set, the unit records no new fault, so a reader must clear it with
+    /// [`acknowledge_overflow`](Self::acknowledge_overflow) to see later ones.
     pub const fn overflow(self) -> bool {
         (self.0 & Self::PFO) != 0
     }
@@ -767,6 +667,12 @@ impl FaultStatus {
     /// Index of the fault-recording register holding the first pending fault.
     pub const fn fault_record_index(self) -> u8 {
         ((self.0 >> Self::FRI_SHIFT) & Self::FRI_MASK) as u8
+    }
+
+    /// The value to write back to clear an overflow: PFO is write-1-to-clear,
+    /// and nothing else in the register is written.
+    pub const fn acknowledge_overflow() -> u32 {
+        Self::PFO
     }
 }
 
@@ -817,8 +723,9 @@ impl FaultRecording {
     /// Whether the faulting request was a read (the T bit).
     ///
     /// The T field (bit 126) distinguishes the request type; this crate reads a
-    /// set bit as a read request. Some specification revisions also define an
-    /// address-type field in the neighbouring bits, which is not decoded here.
+    /// set bit as a read request, so a clear bit is a device write into host
+    /// memory. Some specification revisions also define an address-type field
+    /// in the neighbouring bits, which is not decoded here.
     pub const fn is_read_request(self) -> bool {
         (self.hi & Self::TYPE) != 0
     }
@@ -841,7 +748,6 @@ mod tests {
 
     #[test]
     fn register_offsets_are_the_spec_byte_offsets() {
-        assert_eq!(VER, 0x00);
         assert_eq!(CAP, 0x08);
         assert_eq!(ECAP, 0x10);
         assert_eq!(GCMD, 0x18);
@@ -849,12 +755,6 @@ mod tests {
         assert_eq!(RTADDR, 0x20);
         assert_eq!(CCMD, 0x28);
         assert_eq!(FSTS, 0x34);
-        assert_eq!(FECTL, 0x38);
-        assert_eq!(FEDATA, 0x3C);
-        assert_eq!(FEADDR, 0x40);
-        assert_eq!(IQH, 0x80);
-        assert_eq!(IQT, 0x88);
-        assert_eq!(IQA, 0x90);
     }
 
     /// The address field is bits 63:12 (52 bits), independent of the constant.
@@ -863,6 +763,16 @@ mod tests {
         assert_eq!(ADDRESS_MASK, !0xFFFu64);
         assert_eq!(ADDRESS_MASK.trailing_zeros(), 12);
         assert_eq!(ADDRESS_MASK.count_ones(), 52);
+    }
+
+    #[test]
+    fn the_root_table_address_drops_the_mode_and_reserved_bits() {
+        assert_eq!(
+            root_table_address(0x1234_5000 | 0b1100_0000_0000),
+            0x1234_5000
+        );
+        assert_eq!(root_table_address(0x1234_5FFF), 0x1234_5000);
+        assert_eq!(root_table_address(0), 0);
     }
 
     /// Capability field positions, restated from the spec rather than from the
@@ -965,23 +875,39 @@ mod tests {
         assert_eq!(gcmd::TE, 1 << 31);
         assert_eq!(gcmd::SRTP, 1 << 30);
         assert_eq!(gcmd::WBF, 1 << 27);
-        assert_eq!(gcmd::QIE, 1 << 26);
-        assert_eq!(gcmd::SIRTP, 1 << 24);
+        assert_eq!(gcmd::IRE, 1 << 25);
+        assert_eq!(gcmd::CFI, 1 << 23);
         assert_eq!(gsts::TES, 1 << 31);
         assert_eq!(gsts::RTPS, 1 << 30);
         assert_eq!(gsts::WBFS, 1 << 27);
         assert_eq!(gsts::QIES, 1 << 26);
-        assert_eq!(gsts::IRTPS, 1 << 24);
+        assert_eq!(gsts::IRES, 1 << 25);
+        assert_eq!(gsts::CFIS, 1 << 23);
     }
 
     #[test]
     fn command_helpers_or_one_bit_into_a_preserved_word() {
-        let preserved = gcmd::QIE | gcmd::TE;
+        let preserved = gcmd::IRE | gcmd::TE;
         assert_eq!(set_root_table_pointer(preserved), preserved | gcmd::SRTP);
         assert_eq!(enable_translation(0), gcmd::TE);
-        assert_eq!(enable_queued_invalidation(0), gcmd::QIE);
         // The preserved bits survive.
-        assert_eq!(enable_translation(gcmd::QIE) & gcmd::QIE, gcmd::QIE);
+        assert_eq!(enable_translation(gcmd::IRE) & gcmd::IRE, gcmd::IRE);
+    }
+
+    /// The takeover word keeps exactly the two facilities the unit does not
+    /// drive, with each status bit mapped to its own command bit, and clears
+    /// translation, queued invalidation and every one-shot status.
+    #[test]
+    fn the_inherited_command_keeps_only_interrupt_state() {
+        assert_eq!(inherited_command(0), 0);
+        assert_eq!(inherited_command(1 << 25), 1 << 25, "IRES becomes IRE");
+        assert_eq!(inherited_command(1 << 23), 1 << 23, "CFIS becomes CFI");
+        assert_eq!(
+            inherited_command((1 << 31) | (1 << 30) | (1 << 27) | (1 << 26) | (1 << 25)),
+            1 << 25,
+            "translation, root-pointer, flush and queued-invalidation status are dropped"
+        );
+        assert_eq!(inherited_command(u32::MAX), (1 << 25) | (1 << 23));
     }
 
     #[test]
@@ -990,6 +916,17 @@ mod tests {
         assert!(!root_table_pointer_set(gsts::TES));
         assert!(translation_enabled(gsts::TES));
         assert!(!translation_enabled(gsts::RTPS));
+    }
+
+    /// Quiescence needs both translation and queued invalidation off, and no
+    /// other status bit disturbs it.
+    #[test]
+    fn quiescence_requires_translation_and_queued_invalidation_off() {
+        assert!(quiesced(0));
+        assert!(quiesced(gsts::RTPS | gsts::WBFS | gsts::IRES | gsts::CFIS));
+        assert!(!quiesced(gsts::TES));
+        assert!(!quiesced(gsts::QIES));
+        assert!(!quiesced(gsts::TES | gsts::QIES));
     }
 
     #[test]
@@ -1003,6 +940,24 @@ mod tests {
         assert_eq!(AddressWidth::Level3.context_encoding(), 1);
         assert_eq!(AddressWidth::Level4.context_encoding(), 2);
         assert_eq!(AddressWidth::Level5.context_encoding(), 3);
+    }
+
+    /// Coverage ends exactly at each width's power of two, on both sides.
+    #[test]
+    fn a_width_covers_every_address_below_its_power_of_two_and_none_above() {
+        for (width, bits) in [
+            (AddressWidth::Level3, 39u32),
+            (AddressWidth::Level4, 48),
+            (AddressWidth::Level5, 57),
+        ] {
+            assert!(width.covers(0));
+            assert!(width.covers((1u64 << bits) - 1), "{bits}-bit top page");
+            assert!(!width.covers(1u64 << bits), "{bits}-bit overflow");
+            assert!(!width.covers(u64::MAX));
+        }
+        // A 48-bit walk covers an address a 39-bit walk refuses.
+        assert!(AddressWidth::Level4.covers(1 << 39));
+        assert!(!AddressWidth::Level3.covers(1 << 39));
     }
 
     #[test]
@@ -1043,26 +998,14 @@ mod tests {
     #[test]
     fn index_splits_an_iova_nine_bits_at_a_time() {
         // Distinct multi-bit indices placed with independent literal shifts.
-        let iova = 0xABC
-            | (0x1F << 12)
-            | (0x2E << 21)
-            | (0x3D << 30)
-            | (0x4Cu64 << 39)
-            | (0x5Bu64 << 48);
+        let iova =
+            0xABC | (0x1F << 12) | (0x2E << 21) | (0x3D << 30) | (0x4Cu64 << 39) | (0x5Bu64 << 48);
         let w = AddressWidth::Level5;
         assert_eq!(w.index(iova, 0), 0x1F);
         assert_eq!(w.index(iova, 1), 0x2E);
         assert_eq!(w.index(iova, 2), 0x3D);
         assert_eq!(w.index(iova, 3), 0x4C);
         assert_eq!(w.index(iova, 4), 0x5B);
-        assert_eq!(page_offset(iova), 0xABC);
-    }
-
-    #[test]
-    fn page_offset_is_the_low_twelve_bits() {
-        assert_eq!(page_offset(0xFFF), 0xFFF);
-        assert_eq!(page_offset(0x1000), 0);
-        assert_eq!(page_offset(0x1234_5678), 0x678);
         // Every index is a 9-bit value.
         assert_eq!(AddressWidth::Level4.index(u64::MAX, 0), 0x1FF);
     }
@@ -1078,23 +1021,23 @@ mod tests {
         // A misaligned pointer loses its low bits but sets only bit 0 below 12.
         let masked = RootEntry::present(0x1234_5FFF);
         assert_eq!(masked.context_table_address(), 0x1234_5000);
-        assert_eq!(masked.lo & 0xFFE, 0, "no reserved low bit but present is set");
+        assert_eq!(
+            masked.lo & 0xFFE,
+            0,
+            "no reserved low bit but present is set"
+        );
         assert!(masked.is_present());
-    }
-
-    #[test]
-    fn a_not_present_root_entry_is_all_zero() {
-        let entry = RootEntry::not_present();
-        assert_eq!((entry.lo, entry.hi), (0, 0));
-        assert!(!entry.is_present());
-        assert_eq!(RootEntry::default(), entry);
+        assert!(!RootEntry::default().is_present());
     }
 
     #[test]
     fn root_entry_alignment_is_checked_only_by_try_present() {
         assert!(RootEntry::try_present(0x2000).is_some());
         assert_eq!(RootEntry::try_present(0x2001), None);
-        assert_eq!(RootEntry::try_present(0x2000), Some(RootEntry::present(0x2000)));
+        assert_eq!(
+            RootEntry::try_present(0x2000),
+            Some(RootEntry::present(0x2000))
+        );
     }
 
     #[test]
@@ -1125,12 +1068,14 @@ mod tests {
             assert_eq!(entry.domain_id(), 0xFFFF);
         }
 
-        let none = ContextEntry::not_present();
-        assert!(!none.is_present());
-        assert_eq!((none.lo, none.hi), (0, 0));
+        assert!(!ContextEntry::default().is_present());
         assert_eq!(
             ContextEntry::try_present(0x3001, AddressWidth::Level4, 0),
             None
+        );
+        assert_eq!(
+            ContextEntry::try_present(0x3000, AddressWidth::Level4, 9),
+            Some(ContextEntry::present(0x3000, AddressWidth::Level4, 9))
         );
     }
 
@@ -1151,84 +1096,57 @@ mod tests {
         assert_eq!(second_level::NOT_PRESENT, 0);
     }
 
+    /// Reading an entry back inverts the encoding: presence is either
+    /// permission bit, and the address is the page-aligned remainder.
+    #[test]
+    fn second_level_entries_read_back_their_presence_and_address() {
+        assert!(!second_level::is_present(second_level::NOT_PRESENT));
+        assert!(
+            !second_level::is_present(0x3000),
+            "an address with no permission is absent"
+        );
+        assert!(second_level::is_present(second_level::pte(
+            0x3000, true, false
+        )));
+        assert!(second_level::is_present(second_level::pte(
+            0x3000, false, true
+        )));
+        assert!(second_level::is_present(second_level::table_pointer(
+            0x4000
+        )));
+        assert_eq!(
+            second_level::address(second_level::pte(0x3000, true, true)),
+            0x3000
+        );
+        assert_eq!(
+            second_level::address(second_level::table_pointer(0x4000)),
+            0x4000
+        );
+        assert_eq!(second_level::address(0xFFFF_FFFF_FFFF_FFFF), ADDRESS_MASK);
+    }
+
     #[test]
     fn context_command_words_and_readback() {
         assert_eq!(context_command::global(), (1 << 63) | (1 << 61));
-        assert_eq!(
-            context_command::domain(0x1234),
-            (1 << 63) | (2 << 61) | 0x1234
-        );
         // ICC clear means complete; a fresh command has ICC set.
         assert!(!context_command::completed(context_command::global()));
         assert!(context_command::completed(0));
-        // CAIG is bits 60:59.
-        assert_eq!(context_command::actual_granularity(2 << 59), 2);
-        assert_eq!(context_command::actual_granularity(1 << 59), 1);
+        assert!(
+            context_command::completed(1 << 61),
+            "a stale granularity is not a pending command"
+        );
     }
 
     #[test]
     fn iotlb_command_words_and_readback() {
         assert_eq!(iotlb_command::global(), (1 << 63) | (1 << 60));
-        assert_eq!(
-            iotlb_command::domain(0x5678),
-            (1 << 63) | (2 << 60) | (0x5678u64 << 32)
-        );
         assert!(!iotlb_command::completed(iotlb_command::global()));
         assert!(iotlb_command::completed(0));
-        // IAIG is bits 58:57.
-        assert_eq!(iotlb_command::actual_granularity(2 << 57), 2);
-        assert_eq!(iotlb_command::actual_granularity(1 << 57), 1);
-        // Drain bits and register offsets.
-        assert_eq!(iotlb_command::DRAIN_READ, 1 << 49);
-        assert_eq!(iotlb_command::DRAIN_WRITE, 1 << 48);
-        assert_eq!(iotlb_command::ADDRESS_REGISTER, 0x00);
+        assert!(
+            iotlb_command::completed(1 << 60),
+            "a stale granularity is not a pending command"
+        );
         assert_eq!(iotlb_command::COMMAND_REGISTER, 0x08);
-    }
-
-    #[test]
-    fn queued_context_cache_descriptors_carry_type_and_granularity() {
-        assert_eq!(
-            queued::context_cache_inval_descriptor_global(),
-            [0x1 | (1 << 4), 0]
-        );
-        assert_eq!(
-            queued::context_cache_inval_descriptor_domain(0x9ABC),
-            [0x1 | (2 << 4) | (0x9ABCu64 << 16), 0]
-        );
-    }
-
-    #[test]
-    fn queued_iotlb_descriptors_carry_type_and_granularity() {
-        assert_eq!(queued::iotlb_inval_descriptor_global(), [0x2 | (1 << 4), 0]);
-        assert_eq!(
-            queued::iotlb_inval_descriptor_domain(0x9ABC),
-            [0x2 | (2 << 4) | (0x9ABCu64 << 16), 0]
-        );
-        assert_eq!(queued::IOTLB_DRAIN_READ, 1 << 6);
-        assert_eq!(queued::IOTLB_DRAIN_WRITE, 1 << 7);
-    }
-
-    #[test]
-    fn a_wait_descriptor_places_data_and_a_masked_address() {
-        let descriptor = queued::invalidation_wait_descriptor(0xDEAD_B000, 0xCAFE_F00D);
-        // low: type 5 | SW (bit 5) | data in bits 63:32.
-        assert_eq!(descriptor[0], 0x5 | (1 << 5) | (0xCAFE_F00Du64 << 32));
-        // high: 4-byte-aligned status address in bits 63:2.
-        assert_eq!(descriptor[1], 0xDEAD_B000);
-
-        // The address's low two bits are masked off.
-        let unaligned = queued::invalidation_wait_descriptor(0xDEAD_B003, 0);
-        assert_eq!(unaligned[1], 0xDEAD_B000);
-        assert_eq!(unaligned[0], 0x5 | (1 << 5));
-    }
-
-    #[test]
-    fn the_invalidation_queue_address_carries_size_and_a_masked_base() {
-        assert_eq!(iqa_value(0x7654_3000, 3), 0x7654_3000 | 3);
-        // The size field is three bits.
-        assert_eq!(iqa_value(0x1000, 0xFF), 0x1000 | 7);
-        // The base is masked to 4 KiB, and bit 11 stays clear.
-        assert_eq!(iqa_value(0x1FFF, 0), 0x1000);
     }
 
     #[test]
@@ -1242,7 +1160,6 @@ mod tests {
         assert!(status.overflow());
         assert!(status.primary_pending());
         assert_eq!(status.fault_record_index(), 0x2A);
-        assert_eq!(status.bits(), 1 | (1 << 1) | (0x2A << 8));
 
         // Overflow and pending are distinct bits.
         assert!(FaultStatus::from_bits(1).overflow());
@@ -1250,6 +1167,8 @@ mod tests {
         assert!(!FaultStatus::from_bits(2).overflow());
         assert!(FaultStatus::from_bits(2).primary_pending());
         assert_eq!(FaultStatus::from_bits(0xFF << 8).fault_record_index(), 0xFF);
+        // Acknowledging an overflow writes the one write-1-to-clear bit.
+        assert_eq!(FaultStatus::acknowledge_overflow(), 1);
     }
 
     #[test]
@@ -1275,12 +1194,13 @@ mod tests {
         assert_eq!(record.fault_address(), 0xDEAD_E000);
         assert!(record.is_read_request());
 
-        // The address is masked to a page.
+        // The address is masked to a page, and a clear T bit is a write.
         let unaligned = FaultRecording {
             lo: 0xDEAD_EFFF,
             hi: 1 << 63,
         };
         assert_eq!(unaligned.fault_address(), 0xDEAD_E000);
+        assert!(!unaligned.is_read_request());
     }
 
     #[test]

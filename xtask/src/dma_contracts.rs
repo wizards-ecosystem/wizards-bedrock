@@ -1068,8 +1068,9 @@ impl<'ast> Visit<'ast> for BusMasterUses {
         }
         if call.method == "admit_bus_master"
             && path_expression_is(&call.receiver, &["device"])
-            && call.args.len() == 1
+            && call.args.len() == 2
             && path_expression_is(&call.args[0], &["authority"])
+            && path_expression_is(&call.args[1], &["domain"])
         {
             self.device_admissions += 1;
         }
@@ -1086,17 +1087,22 @@ impl<'ast> Visit<'ast> for BusMasterUses {
         }
         if path_expression_is(&call.func, &["pci_config", "admit_mapped_bus_master"]) {
             self.mapped_admissions += 1;
-            if call.args.len() == 4
+            if call.args.len() == 5
                 && matches!(&call.args[1], Expr::Reference(reference)
                     if field_chain_is(&reference.expr, "bar", &["authority"]))
+                && matches!(&call.args[2], Expr::MethodCall(function)
+                    if function.method == "function"
+                        && function.args.is_empty()
+                        && path_expression_is(&function.receiver, &["domain"]))
             {
                 self.exact_mapped_admissions += 1;
             }
         }
         if path_expression_is(&call.func, &["pci", "admit_bus_master"])
-            && call.args.len() == 2
+            && call.args.len() == 3
             && path_expression_is(&call.args[0], &["authority"])
-            && path_expression_is(&call.args[1], &["state"])
+            && path_expression_is(&call.args[1], &["domain"])
+            && path_expression_is(&call.args[2], &["state"])
         {
             self.hardware_admissions += 1;
         }
@@ -1171,6 +1177,10 @@ fn nvme_bus_master_authority_is_fresh_linear_and_mapping_bound() {
         admission.sig.inputs.first(),
         "NvmeBusMasterAuthority"
     ));
+    assert!(
+        by_value_named_input(admission.sig.inputs.iter().nth(1), "DmaDomain"),
+        "the hardware door admits bus mastering without a DMA domain proof"
+    );
     let mut admitted = BusMasterUses::default();
     admitted.visit_block(&admission.block);
     assert_eq!(admitted.mapped_admissions, 1);
@@ -1184,6 +1194,10 @@ fn nvme_bus_master_authority_is_fresh_linear_and_mapping_bound() {
         device_admission.sig.inputs.iter().nth(1),
         "NvmeBusMasterAuthority"
     ));
+    assert!(
+        by_value_named_input(device_admission.sig.inputs.iter().nth(2), "DmaDomain"),
+        "the device door admits bus mastering without a DMA domain proof"
+    );
     let mut device = BusMasterUses::default();
     device.visit_block(&device_admission.block);
     assert_eq!(device.hardware_admissions, 1);
@@ -1195,12 +1209,22 @@ fn nvme_bus_master_authority_is_fresh_linear_and_mapping_bound() {
             .iter()
             .any(|item| matches!(item, Item::Struct(item) if item.ident == "DisabledObservation"))
     );
-    let controller_admission = method(&kernel_nvme, "DisabledController", "admit_bus_master")
-        .expect("disabled-controller admission boundary");
+    let controller_admission = method(&kernel_nvme, "DisabledController", "admit")
+        .expect("disabled-controller admission steps");
     let mut controller = BusMasterUses::default();
     controller.visit_block(&controller_admission.block);
     assert_eq!(controller.observations, 1);
     assert_eq!(controller.device_admissions, 1);
+    let mut all_nvme = BusMasterUses::default();
+    all_nvme.visit_file(&kernel_nvme);
+    assert_eq!(
+        all_nvme.observations, 1,
+        "a second observation door appeared"
+    );
+    assert_eq!(
+        all_nvme.device_admissions, 1,
+        "a second admission door appeared"
+    );
 }
 
 #[test]
@@ -1446,7 +1470,7 @@ fn dma_disposition_cannot_move_between_controllers() {
         "DMA state gained a cross-controller assignment path"
     );
     assert_eq!(
-        uses.dma_fields, 13,
+        uses.dma_fields, 14,
         "DMA state gained an unaudited access or transfer alias"
     );
 

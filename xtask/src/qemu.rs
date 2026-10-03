@@ -22,23 +22,45 @@ const WINDOWS_DEFAULT: &str = r"C:\Program Files\qemu";
 /// The q35 machine type shared by both runners.
 pub(crate) const MACHINE_TYPE: &str = "pc-q35-9.2";
 
-// Pin the CPU, TCG, and ambient configuration so protection checks cannot pass
-// under a weaker or different execution model (D-18).
-const MACHINE: &[&str] = &[
-    "-no-user-config",
-    "-accel",
-    "tcg",
-    "-machine",
-    MACHINE_TYPE,
-    "-cpu",
-    "max,hypervisor=on,tcg-cpuid=on",
-    "-m",
-    "512M",
+/// Whether the fixed machine presents the DMA-remapping unit storage requires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Remapping {
+    /// The ordinary machine: an Intel unit ahead of every PCI device (D-357).
+    Present,
+    /// The degraded machine that proves storage fails closed without one.
+    Absent,
+}
+
+/// The remapping unit: interrupt remapping stays off because polled storage
+/// delivers none (PW-710), and caching mode makes the unit cache not-present
+/// entries so every mapping change has to be invalidated, as D-357 requires.
+const IOMMU_DEVICE: [&str; 2] = ["-device", "intel-iommu,intremap=off,caching-mode=on"];
+
+/// The fixed machine profile, with or without the remapping unit.
+///
+/// Pins the CPU, TCG, and ambient configuration so protection checks cannot
+/// pass under a weaker or different execution model (D-18). The unit comes
+/// ahead of the bridge and the storage devices, which QEMU requires of it.
+fn machine_args(remapping: Remapping) -> Vec<&'static str> {
+    let mut arguments = vec![
+        "-no-user-config",
+        "-accel",
+        "tcg",
+        "-machine",
+        MACHINE_TYPE,
+        "-cpu",
+        "max,hypervisor=on,tcg-cpuid=on",
+        "-m",
+        "512M",
+    ];
+    if remapping == Remapping::Present {
+        arguments.extend(IOMMU_DEVICE);
+    }
     // Provide a downstream bus so a bus-zero-only scan fails as it would on
     // VMware's bridged topology (D-168).
-    "-device",
-    "pci-bridge,id=behind,chassis_nr=1",
-];
+    arguments.extend(["-device", "pci-bridge,id=behind,chassis_nr=1"]);
+    arguments
+}
 
 fn validate_run_arguments(extra: &[OsString]) -> Result<()> {
     for argument in extra {
@@ -161,7 +183,7 @@ pub fn run(paths: &Paths, image: &Path, extra: &[OsString]) -> Result<()> {
     println!("[xtask] launching QEMU (serial on stdio, close the window to exit)");
 
     let status = Command::new(&installation.emulator)
-        .args(MACHINE)
+        .args(machine_args(Remapping::Present))
         .args(["-serial", "stdio"])
         .args(drive_file(
             "if=pflash,format=raw,readonly=on",
@@ -197,7 +219,7 @@ impl DebugMachine {
         let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
 
         let mut child = Command::new(&installation.emulator)
-            .args(MACHINE)
+            .args(machine_args(Remapping::Present))
             .args(["-S", "-display", "none", "-serial", "null", "-no-reboot"])
             .args(QMP_ON_STDIO)
             .args(drive_file(
@@ -783,7 +805,7 @@ const QEMU_TCG_ISOLATION_MARKER: &str = "cpu: user isolation shared kernel mappi
 /// Checks the self-test kernel must report, held independently of its own
 /// tally so a deleted or skipped one turns the verdict red.
 /// Changes require mutation evidence (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 265;
+const EXPECTED_SELFTEST_CHECKS: usize = 270;
 
 /// Prefix of the strict performance/resource record emitted by self-test.
 const BASELINE_PREFIX: &str = "selftest: baseline ";
@@ -1594,7 +1616,7 @@ fn observe_selftest_run(
     println!("[xtask] booting the self-test kernel");
 
     let mut child = Command::new(&installation.emulator)
-        .args(MACHINE)
+        .args(machine_args(Remapping::Present))
         .args(["-display", "none", "-no-reboot"])
         .args(serial.arguments())
         .args(["-device", "isa-debug-exit,iobase=0xf4,iosize=0x04"])
@@ -1951,7 +1973,7 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
     println!("[xtask] booting the shipped kernel");
 
     let mut child = Command::new(&installation.emulator)
-        .args(MACHINE)
+        .args(machine_args(Remapping::Present))
         .args(["-display", "none", "-no-reboot"])
         .args(serial.arguments())
         .args(QMP_ON_STDIO)
@@ -2087,6 +2109,45 @@ const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::warning(DEGRADED_USER_MARKER),
 ];
 
+/// What a storage candidate says when no remapping unit can isolate it (D-357).
+pub const NO_ISOLATION_MARKER: &str = "storage: no DMA isolation";
+
+/// With every candidate refused, selection ends with no controller.
+pub const NO_USABLE_CONTROLLER_MARKER: &str = "nvme: no usable controller";
+
+/// The unisolated boot must refuse every candidate and still settle; the
+/// first candidate's clean retirement proves the refusal path returns the
+/// lease exactly.
+const UNISOLATED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
+    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),
+    RequiredLogRecord::warning(NO_ISOLATION_MARKER),
+    RequiredLogRecord::info(NVME_FALLBACK_MARKER),
+    RequiredLogRecord::info(NO_USABLE_CONTROLLER_MARKER),
+];
+
+/// One degraded machine: which facility is missing, and what the boot must say.
+#[derive(Debug, Clone, Copy)]
+struct DegradedProfile {
+    announcement: &'static str,
+    cpu: Option<&'static [&'static str; 2]>,
+    remapping: Remapping,
+    required: &'static [RequiredLogRecord],
+}
+
+const NO_PCI_PROFILE: DegradedProfile = DegradedProfile {
+    announcement: "booting a kernel with no PCI configuration or x2apic",
+    cpu: Some(&DEGRADED_CPU),
+    remapping: Remapping::Present,
+    required: DEGRADED_REQUIRED_MARKERS,
+};
+
+const UNISOLATED_PROFILE: DegradedProfile = DegradedProfile {
+    announcement: "booting the shipped kernel with no DMA-remapping unit",
+    cpu: None,
+    remapping: Remapping::Absent,
+    required: UNISOLATED_REQUIRED_MARKERS,
+};
+
 /// Boot with two independent platform prerequisites absent and require both.
 ///
 /// The negative half of D-32 and D-33: every other boot in the gate runs on
@@ -2099,14 +2160,33 @@ const DEGRADED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
 /// its steady state rather than triple-faulting on a missing register.
 /// Boot the degraded image while preserving an exact terminal panic.
 pub fn observe_degraded(paths: &Paths, image: &Path, settle: Duration) -> Result<DegradedOutcome> {
+    observe_profile(paths, image, settle, NO_PCI_PROFILE)
+}
+
+/// Boot the shipped image on a machine with no remapping unit and require
+/// storage to refuse every candidate rather than run unisolated (D-357).
+pub fn observe_unisolated(
+    paths: &Paths,
+    image: &Path,
+    settle: Duration,
+) -> Result<DegradedOutcome> {
+    observe_profile(paths, image, settle, UNISOLATED_PROFILE)
+}
+
+fn observe_profile(
+    paths: &Paths,
+    image: &Path,
+    settle: Duration,
+    profile: DegradedProfile,
+) -> Result<DegradedOutcome> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
 
-    println!("[xtask] booting a kernel with no PCI configuration or x2apic");
+    println!("[xtask] {}", profile.announcement);
 
     let mut child = Command::new(&installation.emulator)
-        .args(MACHINE)
-        .args(DEGRADED_CPU)
+        .args(machine_args(profile.remapping))
+        .args(profile.cpu.map_or(&[][..], |cpu| &cpu[..]))
         .args(["-display", "none", "-serial", "stdio", "-no-reboot"])
         .args(drive_file(
             "if=pflash,format=raw,readonly=on",
@@ -2123,7 +2203,8 @@ pub fn observe_degraded(paths: &Paths, image: &Path, settle: Duration) -> Result
     let settled = Arc::new(AtomicBool::new(false));
     let panicked = Arc::new(AtomicBool::new(false));
     let serial_failed = Arc::new(AtomicBool::new(false));
-    let required: Vec<_> = DEGRADED_REQUIRED_MARKERS
+    let required: Vec<_> = profile
+        .required
         .iter()
         .copied()
         .map(|marker| (marker, Arc::new(AtomicBool::new(false))))
@@ -2538,6 +2619,10 @@ mod tests {
                 "[warn ] pci: no storage controllers found\r\n",
             ),
             (
+                RequiredLogRecord::warning("storage: no DMA isolation"),
+                "[info ] storage: no DMA isolation\r\n",
+            ),
+            (
                 RequiredLogRecord::info("tmpfs: 1 file(s) and 1 directory(ies) at the root"),
                 "[warn ] tmpfs: the root would not list: NotFound\r\n",
             ),
@@ -2848,8 +2933,9 @@ mod tests {
 
     #[test]
     fn every_qemu_runner_pins_the_exact_tcg_profile() {
+        let machine = machine_args(Remapping::Present);
         assert_eq!(
-            MACHINE
+            machine
                 .iter()
                 .filter(|argument| **argument == "-no-user-config")
                 .count(),
@@ -2857,17 +2943,39 @@ mod tests {
             "ambient QEMU configuration can rewrite the fixed profile"
         );
 
-        let accelerator: Vec<_> = MACHINE
+        let accelerator: Vec<_> = machine
             .windows(2)
             .filter_map(|pair| (pair[0] == "-accel").then_some(pair[1]))
             .collect();
         assert_eq!(accelerator, ["tcg"]);
 
-        let cpu: Vec<_> = MACHINE
+        let cpu: Vec<_> = machine
             .windows(2)
             .filter_map(|pair| (pair[0] == "-cpu").then_some(pair[1]))
             .collect();
         assert_eq!(cpu, ["max,hypervisor=on,tcg-cpuid=on"]);
+
+        // The unit precedes every PCI device, and only the unisolated boot
+        // leaves it out; nothing else about the two machines differs.
+        let devices: Vec<_> = machine
+            .windows(2)
+            .filter_map(|pair| (pair[0] == "-device").then_some(pair[1]))
+            .collect();
+        assert_eq!(
+            devices,
+            [
+                "intel-iommu,intremap=off,caching-mode=on",
+                "pci-bridge,id=behind,chassis_nr=1"
+            ]
+        );
+        let unisolated = machine_args(Remapping::Absent);
+        let unit = machine
+            .iter()
+            .position(|argument| *argument == IOMMU_DEVICE[1])
+            .expect("the ordinary machine carries the unit");
+        let mut without_unit = machine.clone();
+        without_unit.drain(unit - 1..=unit);
+        assert_eq!(unisolated, without_unit);
         assert_eq!(
             DEGRADED_CPU,
             [
@@ -2878,7 +2986,7 @@ mod tests {
 
         let source = include_str!("qemu.rs");
         let command = ["Command::new", "(&installation.emulator)"].concat();
-        let profile = [".args", "(MACHINE)"].concat();
+        let profile = [".args", "(machine_args("].concat();
         let commands = source.matches(&command).count();
         assert_ne!(commands, 0, "no QEMU process construction was found");
         assert_eq!(
@@ -4421,6 +4529,19 @@ mod tests {
                 && NVME_FALLBACK_MARKER == "nvme: candidate 1 retired cleanly; trying next",
             "the exact first-candidate retirement record drifted from its producer"
         );
+        assert!(
+            main.contains("warn!(\"storage: no DMA isolation\")")
+                && NO_ISOLATION_MARKER == "storage: no DMA isolation"
+                && main
+                    .contains("StorageSelection::Seeking => info!(\"nvme: no usable controller\")")
+                && NO_USABLE_CONTROLLER_MARKER == "nvme: no usable controller",
+            "the exact unisolated refusal records drifted from their producers"
+        );
+        assert_eq!(
+            UNISOLATED_REQUIRED_MARKERS.len(),
+            4,
+            "the unisolated boot requires the TCG policy, the refusal, the clean retirement and the empty selection"
+        );
         let qemu = include_str!("qemu.rs");
         let storage = qemu
             .split_once("fn storage(root: &Path)")
@@ -4633,7 +4754,7 @@ mod tests {
             .find("PrepareOutcome::Prepared(DisabledController {\n        controller,")
             .expect("the cleanup owner is not retained by the disabled controller");
         let admission = source
-            .find("match device.admit_bus_master(authority) {")
+            .find("match device.admit_bus_master(authority, domain) {")
             .expect("no verified bus-master transition");
         let mint = source
             .find("Ok(()) => BusMasterAdmission::Admitted(BusMasterAdmittedController(self))")

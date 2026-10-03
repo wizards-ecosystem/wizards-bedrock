@@ -27,6 +27,7 @@ port-space.workspace = true
 ring-proto.workspace = true
 stack-layout.workspace = true
 trap-cause.workspace = true
+vtd.workspace = true
 x86-apic.workspace = true
 x86-cpuid.workspace = true
 x86-paging.workspace = true

@@ -57,7 +57,7 @@ its search order) and loads the kernel per `path: boot():/boot/wizard-kernel.elf
 ## Runners
 
 - **QEMU** (`cargo xtask run`): q35 machine, EDK2 firmware from the QEMU
-  install (copied into `target/` as pflash code+vars), serial → stdio.
+  install (copied into `target/` as pflash code+vars), serial to stdio.
 - **VMware** (`cargo xtask vmware`): generates the self-test machine in
   `vm/self-test/`
   with a flat-VMDK descriptor over a copy of the raw image and a

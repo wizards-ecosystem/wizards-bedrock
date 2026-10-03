@@ -28,9 +28,9 @@ first storage consumer. These became **Phase 6's first three slices**.
 Nothing here is a subsystem and no boot closes it. What closes it is that the
 VFS slices open against an interface nobody has to re-cut.
 
-References: `010-research-notes-3.md` §2 (the async ABI and its four hard
-problems), §3 (capabilities and the handle table), §5 (the POSIX bill), §12
-(what must be decided before code); `011-userspace.md` throughout, and
+References: `010-research-notes-3.md` section 2 (the async ABI and its four
+hard problems), section 3 (capabilities and the handle table), section 5 (the
+POSIX bill), section 12 (what must be decided before code); `011-userspace.md` throughout, and
 `userland/README.md` for the sysdep finding that motivates constraint C-3.
 Outside the project: io_uring's man pages and its CVE record; Watson,
 Anderson, Laurie and Kennaway, *Capsicum: practical capabilities for UNIX*

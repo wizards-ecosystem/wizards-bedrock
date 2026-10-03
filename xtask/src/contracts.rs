@@ -1009,6 +1009,15 @@ fn pci_configuration_writes_require_function_authority() {
         |diagnostics| panic!("NVMe bus-master authority became forgeable:\n{diagnostics}"),
     );
 
+    // The domain proof is minted only by a programmed unit (D-357).
+    let forged_domain = "#![no_std]\n\
+        fn forge(function: pci_config::Address) -> wost::arch::current::vtd::DmaDomain {\n\
+            wost::arch::current::vtd::DmaDomain { function }\n\
+        }\n";
+    require_error(&paths, "dma-domain-forgery", forged_domain, "E0451").unwrap_or_else(
+        |diagnostics| panic!("the DMA domain proof became forgeable:\n{diagnostics}"),
+    );
+
     let parallel_registry = "#![no_std]\nfn probe(_: pci_config::CommandLeases<1>) {}\n";
     require_error(
         &paths,
@@ -1038,7 +1047,7 @@ fn pci_configuration_writes_require_function_authority() {
         ("bus-master", "let _ = pci::enable_bus_master(at);", "E0425"),
         (
             "bus-master-upgrade",
-            "let _ = pci::admit_bus_master(at, state);",
+            "let _ = pci::admit_bus_master(at, domain, state);",
             "E0308",
         ),
         (
@@ -1056,7 +1065,9 @@ fn pci_configuration_writes_require_function_authority() {
         ("release", "let _ = pci::release_function(at);", "E0308"),
     ] {
         let arguments = match label {
-            "bus-master-upgrade" => ", state: &mut pci_config::CommandState",
+            "bus-master-upgrade" => {
+                ", domain: wost::arch::current::vtd::DmaDomain, state: &mut pci_config::CommandState"
+            }
             "restore" | "commit" => ", state: pci_config::CommandState",
             "probe-retry" => ", retry: pci_config::ProbeRetry",
             _ => "",
@@ -1076,8 +1087,8 @@ fn pci_configuration_writes_require_function_authority() {
     ] {
         let source = format!(
             "#![no_std]\nuse wost::arch::current::pci;\n\
-             fn probe(input: {input}, state: &mut pci_config::CommandState) {{\n\
-                 let _ = pci::admit_bus_master(input, state);\n\
+             fn probe(input: {input}, domain: wost::arch::current::vtd::DmaDomain, state: &mut pci_config::CommandState) {{\n\
+                 let _ = pci::admit_bus_master(input, domain, state);\n\
              }}\n"
         );
         require_error(
@@ -4865,7 +4876,6 @@ fn speculative_and_callback_authority_does_not_regrow() {
         ("libs/memory-map/src/lib.rs", "pub fn allocatable_bytes"),
         ("libs/path-walk/src/lib.rs", "pub fn is_a_name"),
         ("libs/pci-config/src/lib.rs", "pub const fn io_window_size"),
-        ("libs/pci-config/src/lib.rs", "fn subordinate_bus"),
         ("libs/stack-layout/src/lib.rs", "fn stack_overlaps"),
         ("wost/src/arch/x86_64/pci.rs", "fn write_command"),
         ("wost/src/mm/mod.rs", "fn first_region"),

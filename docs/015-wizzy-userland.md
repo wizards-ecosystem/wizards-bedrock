@@ -332,7 +332,7 @@ source-level caller; a low-level runtime shim needing `u32` is not one. A compac
 buffer is a real language/runtime question because file and channel payloads
 need one without boxing every byte.
 
-D-221 makes “volatile access” precise rather than using it as a synonym for
+D-221 makes "volatile access" precise rather than using it as a synonym for
 ordering. Each direction is SPSC. The producer volatile-writes an entry and
 any data it names, then release-stores the aligned 32-bit tail. The consumer
 acquire-loads the tail, volatile-copies the entry exactly once, and
@@ -458,7 +458,7 @@ mechanism to extend, not a parallel lifecycle.
 
 ## Terminal work before persistent writes
 
-D-73 remains in force: Phases 7–11 use a read-only third-party disk format and
+D-73 remains in force: Phases 7-11 use a read-only third-party disk format and
 WizFS remains Phase 13. A useful terminal does not require lying about that.
 
 - `echo` needs only the terminal.

@@ -25,6 +25,7 @@ mod tests {
         "stack-layout",
         "timebase",
         "trap-cause",
+        "vtd",
         "wizzy-handoff",
         "x86-apic",
         "x86-cpuid",
@@ -43,6 +44,7 @@ mod tests {
         "pci-config",
         "ps2-keys",
         "ring-proto",
+        "vtd",
         "wizzy-handoff",
         "x86-apic",
     ];
