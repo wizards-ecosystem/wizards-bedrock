@@ -1017,6 +1017,19 @@ fn pci_configuration_writes_require_function_authority() {
     require_error(&paths, "dma-domain-forgery", forged_domain, "E0451").unwrap_or_else(
         |diagnostics| panic!("the DMA domain proof became forgeable:\n{diagnostics}"),
     );
+    let reused_domain = "#![no_std]\n\
+        fn spend(_: wost::arch::current::vtd::DmaDomain) {}\n\
+        fn probe(domain: wost::arch::current::vtd::DmaDomain) {\n\
+            spend(domain);\n\
+            spend(domain);\n\
+        }\n";
+    require_error(&paths, "dma-domain-reuse", reused_domain, "E0382").unwrap_or_else(
+        |diagnostics| panic!("one DMA domain proof could be spent twice:\n{diagnostics}"),
+    );
+    let cloned_domain = "#![no_std]\nfn requires<T: Clone>() {}\n\
+        fn probe() { requires::<wost::arch::current::vtd::DmaDomain>(); }\n";
+    require_error(&paths, "dma-domain-clone", cloned_domain, "E0277")
+        .unwrap_or_else(|diagnostics| panic!("a DMA domain proof could be cloned:\n{diagnostics}"));
 
     let parallel_registry = "#![no_std]\nfn probe(_: pci_config::CommandLeases<1>) {}\n";
     require_error(
@@ -3278,6 +3291,66 @@ impl<'ast> Visit<'ast> for RawPortClaims {
         }
         visit::visit_expr_path(self, path);
     }
+
+    // An import can name a door, or the module, by a path with no `port` segment.
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        self.imports(&mut Vec::new(), &item.tree);
+        visit::visit_item_use(self, item);
+    }
+}
+
+impl RawPortClaims {
+    /// Record each import of a raw door, rename of `port` or glob from it.
+    fn imports(&mut self, prefix: &mut Vec<String>, tree: &syn::UseTree) {
+        let through_port = prefix.iter().any(|segment| segment == "port");
+        let path = |last: &str| {
+            prefix
+                .iter()
+                .map(String::as_str)
+                .chain([last])
+                .collect::<Vec<_>>()
+                .join("::")
+        };
+        match tree {
+            syn::UseTree::Path(next) => {
+                prefix.push(next.ident.to_string());
+                self.imports(prefix, &next.tree);
+                prefix.pop();
+            }
+            syn::UseTree::Group(group) => {
+                for item in &group.items {
+                    self.imports(prefix, item);
+                }
+            }
+            syn::UseTree::Name(name) => {
+                if through_port && RAW_PORT_CLAIMS.contains(&name.ident.to_string().as_str()) {
+                    self.calls
+                        .push(format!("use {}", path(&name.ident.to_string())));
+                }
+            }
+            syn::UseTree::Rename(rename) => {
+                let imported = if rename.ident == "self" {
+                    prefix.last().cloned().unwrap_or_default()
+                } else {
+                    rename.ident.to_string()
+                };
+                if imported == "port"
+                    || (through_port && RAW_PORT_CLAIMS.contains(&imported.as_str()))
+                {
+                    self.calls.push(format!(
+                        "use {} as {}",
+                        path(&rename.ident.to_string()),
+                        rename.rename
+                    ));
+                }
+            }
+            syn::UseTree::Glob(_) => {
+                if through_port {
+                    self.calls.push(format!("use {}", path("*")));
+                }
+            }
+        }
+    }
 }
 
 /// Production kernel code names a device, never a raw port number (D-351).
@@ -3311,7 +3384,7 @@ fn production_kernel_code_claims_no_port_by_number() {
     }
     assert!(
         offenders.is_empty(),
-        "production kernel code claims a port by number instead of by device:\n{}",
+        "production kernel code claims a port by number, or imports a door out of this scan's sight, instead of naming a device:\n{}",
         offenders.join("\n")
     );
 
@@ -3330,6 +3403,27 @@ fn production_kernel_code_claims_no_port_by_number() {
         [
             "wost::arch::current::port::claim".to_string(),
             "port::claim_block".to_string(),
+        ]
+    );
+
+    // An import that drops the `port` segment is refused where it is written.
+    let imports = "use wost::arch::current::port::{self, Port, claim_spans};\n\
+        use wost::arch::current::port::claim;\n\
+        use wost::arch::current::port::{claim_block as block, com1};\n\
+        use wost::arch::current::port as io;\n\
+        use wost::arch::current::port::{self as raw};\n\
+        fn drive() { use wost::arch::current::port::*; }\n";
+    let syntax = syn::parse_file(imports).expect("import fixture parses");
+    let mut raw = RawPortClaims::default();
+    raw.visit_file(&syntax);
+    assert_eq!(
+        raw.calls,
+        [
+            "use wost::arch::current::port::claim",
+            "use wost::arch::current::port::claim_block as block",
+            "use wost::arch::current::port as io",
+            "use wost::arch::current::port::self as raw",
+            "use wost::arch::current::port::*",
         ]
     );
 }

@@ -452,6 +452,20 @@ impl MemoryMap {
             })
     }
 
+    /// Whether a firmware-reserved region, given by its first and last byte,
+    /// reaches no page of RAM or firmware storage.
+    ///
+    /// A remapping unit maps such a region for a device in whole pages, so a
+    /// page it shares with memory the kernel owns refuses it, as does an
+    /// empty or inverted region.
+    pub fn allows_reserved_region(&self, base: u64, limit: u64) -> bool {
+        let start = base - base % PAGE_SIZE;
+        let end = limit
+            .checked_add(1)
+            .and_then(|end| end.checked_next_multiple_of(PAGE_SIZE));
+        base <= limit && end.is_some_and(|end| self.allows_device_mapping(start, end))
+    }
+
     /// Find a page-aligned, nonzero memory run of at least `len` bytes.
     ///
     /// Callers use this rather than assuming a conventional low page exists,
@@ -1098,6 +1112,152 @@ mod tests {
 
         assert!(map.allows_device_mapping(PAGE_SIZE, PAGE_SIZE * 2));
         assert!(!map.allows_device_mapping(PAGE_SIZE, PAGE_SIZE * 2 + 1));
+    }
+
+    /// Memory of kind `around`, then a hole of `kind`, then `around` again.
+    fn hole_between(kind: MemoryKind, around: MemoryKind) -> MemoryMap {
+        MemoryMap::try_from_regions([
+            MemoryRegion {
+                base: PAGE_SIZE,
+                len: PAGE_SIZE * 2,
+                kind: around,
+            },
+            MemoryRegion {
+                base: PAGE_SIZE * 3,
+                len: PAGE_SIZE * 2,
+                kind,
+            },
+            MemoryRegion {
+                base: PAGE_SIZE * 5,
+                len: PAGE_SIZE * 2,
+                kind: around,
+            },
+        ])
+        .expect("a hole between two regions")
+    }
+
+    #[test]
+    fn a_reserved_region_inside_a_device_hole_is_admitted() {
+        for case in memory_kind_cases()
+            .into_iter()
+            .filter(|case| case.device_mapping)
+        {
+            let map = hole_between(case.kind, MemoryKind::Usable);
+            assert!(
+                map.allows_reserved_region(PAGE_SIZE * 3, PAGE_SIZE * 5 - 1),
+                "{:?}",
+                case.kind
+            );
+            assert!(
+                map.allows_reserved_region(PAGE_SIZE * 4, PAGE_SIZE * 4),
+                "{:?} one byte",
+                case.kind
+            );
+        }
+    }
+
+    #[test]
+    fn a_reserved_region_one_byte_into_kernel_memory_is_refused() {
+        for case in memory_kind_cases()
+            .into_iter()
+            .filter(|case| !case.device_mapping)
+        {
+            let map = hole_between(MemoryKind::Reserved, case.kind);
+            assert!(
+                map.allows_reserved_region(PAGE_SIZE * 3, PAGE_SIZE * 5 - 1),
+                "{:?} around the hole",
+                case.kind
+            );
+            assert!(
+                !map.allows_reserved_region(PAGE_SIZE * 3 - 1, PAGE_SIZE * 5 - 1),
+                "{:?} below the hole",
+                case.kind
+            );
+            assert!(
+                !map.allows_reserved_region(PAGE_SIZE * 3, PAGE_SIZE * 5),
+                "{:?} above the hole",
+                case.kind
+            );
+        }
+    }
+
+    #[test]
+    fn a_reserved_region_sharing_a_page_with_kernel_memory_is_refused() {
+        let half = PAGE_SIZE / 2;
+        for case in memory_kind_cases()
+            .into_iter()
+            .filter(|case| !case.device_mapping)
+        {
+            let below = MemoryMap::try_from_regions([
+                MemoryRegion {
+                    base: PAGE_SIZE,
+                    len: PAGE_SIZE * 2 + half,
+                    kind: case.kind,
+                },
+                MemoryRegion {
+                    base: PAGE_SIZE * 3 + half,
+                    len: PAGE_SIZE * 2 - half,
+                    kind: MemoryKind::Reserved,
+                },
+            ])
+            .expect("kernel memory ending inside a page");
+            assert!(
+                below.allows_reserved_region(PAGE_SIZE * 4, PAGE_SIZE * 5 - 1),
+                "{:?} below a whole page",
+                case.kind
+            );
+            assert!(
+                !below.allows_reserved_region(PAGE_SIZE * 3 + half, PAGE_SIZE * 5 - 1),
+                "{:?} in the first page",
+                case.kind
+            );
+
+            let above = MemoryMap::try_from_regions([
+                MemoryRegion {
+                    base: PAGE_SIZE * 3,
+                    len: PAGE_SIZE + half,
+                    kind: MemoryKind::Reserved,
+                },
+                MemoryRegion {
+                    base: PAGE_SIZE * 4 + half,
+                    len: PAGE_SIZE * 2,
+                    kind: case.kind,
+                },
+            ])
+            .expect("kernel memory starting inside a page");
+            assert!(
+                above.allows_reserved_region(PAGE_SIZE * 3, PAGE_SIZE * 4 - 1),
+                "{:?} above a whole page",
+                case.kind
+            );
+            assert!(
+                !above.allows_reserved_region(PAGE_SIZE * 3, PAGE_SIZE * 4 + half - 1),
+                "{:?} in the last page",
+                case.kind
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_or_inverted_reserved_region_is_refused() {
+        let map = MemoryMap::try_from_regions([MemoryRegion {
+            base: PAGE_SIZE,
+            len: PAGE_SIZE * 8,
+            kind: MemoryKind::Reserved,
+        }])
+        .expect("one reserved span");
+        let middle = PAGE_SIZE * 3 + PAGE_SIZE / 2;
+        assert!(map.allows_reserved_region(middle, middle));
+        for (base, limit) in [
+            (middle, middle - 1),
+            (middle + 1, middle - 1),
+            (PAGE_SIZE * 4, PAGE_SIZE * 3),
+        ] {
+            assert!(
+                !map.allows_reserved_region(base, limit),
+                "[{base:#x}, {limit:#x}]"
+            );
+        }
     }
 
     /// A run this names is one `covers_memory` agrees is memory.

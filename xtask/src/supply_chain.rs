@@ -570,6 +570,7 @@ fn verify_runtime_scope(
     packages: &[LockedPackage],
 ) -> Result<()> {
     let local_dependencies = local_normal_dependencies(root_path)?;
+    verify_path_packages(packages, &local_dependencies)?;
     let root = packages
         .iter()
         .position(|package| package.name == "wizard-kernel" && !package.registry)
@@ -614,6 +615,26 @@ fn verify_runtime_scope(
         actual == expected,
         "runtime crate scope differs from wizard-kernel's locked closure\n  inventory: {actual:?}\n  closure:   {expected:?}"
     );
+    Ok(())
+}
+
+/// Every source-less locked package is a distinct workspace member.
+///
+/// A path crate outside the workspace has no inventory row or SPDX package,
+/// so the lock may not carry one, even under a member's name.
+fn verify_path_packages(
+    packages: &[LockedPackage],
+    members: &std::collections::BTreeMap<String, Vec<Dependency>>,
+) -> Result<()> {
+    let mut unclaimed: BTreeSet<_> = members.keys().collect();
+    for package in packages.iter().filter(|package| !package.registry) {
+        ensure!(
+            unclaimed.remove(&package.name),
+            "locked path package {} {} is not a distinct workspace member",
+            package.name,
+            package.version
+        );
+    }
     Ok(())
 }
 
@@ -677,6 +698,10 @@ fn manifest_dependencies(manifest: &str) -> Result<Vec<Dependency>> {
     let mut dependencies = Vec::new();
     for line in manifest.lines().map(str::trim) {
         if line.starts_with('[') {
+            ensure!(
+                canonical_header(line),
+                "`{line}` is a table header spelling the runtime-scope reader does not model"
+            );
             let header = line.trim_start_matches('[').trim_end_matches(']');
             ensure!(
                 !header.starts_with("dependencies.")
@@ -710,6 +735,38 @@ fn manifest_dependencies(manifest: &str) -> Result<Vec<Dependency>> {
         }
     }
     Ok(dependencies)
+}
+
+/// Whether a table header is spelled the one way `manifest_dependencies` compares.
+///
+/// Whitespace, a quoted key other than a target's specifier, or text after the
+/// closing bracket can name a dependency table those comparisons never match,
+/// and only a TOML parser could say which (D-345).
+fn canonical_header(line: &str) -> bool {
+    let Some(path) = line
+        .strip_prefix("[[")
+        .and_then(|rest| rest.strip_suffix("]]"))
+        .or_else(|| line.strip_prefix('[')?.strip_suffix(']'))
+    else {
+        return false;
+    };
+    let path = match path.strip_prefix("target.'") {
+        Some(quoted) => match quoted.split_once('\'') {
+            Some((_, "")) => return true,
+            Some((_, rest)) => match rest.strip_prefix('.') {
+                Some(rest) => rest,
+                None => return false,
+            },
+            None => return false,
+        },
+        None => path,
+    };
+    path.split('.').all(|key| {
+        !key.is_empty()
+            && key
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    })
 }
 
 fn renames_package(declaration: &str) -> bool {
@@ -1439,9 +1496,66 @@ mod tests {
                 "[dependencies]\nalias = { version = \"1\", package=\"real\" }\n",
                 "renamed dependency `alias`",
             ),
+            (
+                "[dependencies] # c\nhidden = \"1\"\n",
+                "`[dependencies] # c` is a table header spelling",
+            ),
+            (
+                "[ dependencies ]\nhidden = \"1\"\n",
+                "`[ dependencies ]` is a table header spelling",
+            ),
+            (
+                "[\"dependencies\"]\nhidden = \"1\"\n",
+                "`[\"dependencies\"]` is a table header spelling",
+            ),
+            (
+                "[dependencies . x]\nversion = \"1\"\n",
+                "`[dependencies . x]` is a table header spelling",
+            ),
+            (
+                "[target.'cfg(unix)'.dependencies] # c\nhidden = \"1\"\n",
+                "`[target.'cfg(unix)'.dependencies] # c` is a table header spelling",
+            ),
         ] {
-            let error = manifest_dependencies(manifest).unwrap_err().to_string();
+            let Err(error) = manifest_dependencies(manifest) else {
+                panic!("{manifest:?} was read rather than refused");
+            };
+            let error = error.to_string();
             assert!(error.contains(diagnostic), "{manifest}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_locked_path_package_must_be_a_distinct_workspace_member() {
+        let lock = |paths: &[&str]| {
+            let mut text = format!(
+                "version = 4\n\n[[package]]\nname = \"bitflags\"\nversion = \"2.13.1\"\nsource = \"{CRATES_IO}\"\nchecksum = \"{}\"\n",
+                "a".repeat(64)
+            );
+            for name in paths {
+                text.push_str(&format!(
+                    "\n[[package]]\nname = \"{name}\"\nversion = \"0.1.0\"\n"
+                ));
+            }
+            parse_lock(&text).unwrap()
+        };
+        let members = ["wizard-kernel", "wost"]
+            .map(|name| (name.to_string(), Vec::new()))
+            .into_iter()
+            .collect();
+        verify_path_packages(&lock(&["wizard-kernel", "wost"]), &members).unwrap();
+        for (label, paths) in [
+            ("outside the workspace", ["wizard-kernel", "helper"]),
+            ("under a member's name", ["wost", "wost"]),
+        ] {
+            let Err(error) = verify_path_packages(&lock(&paths), &members) else {
+                panic!("a path package {label} was admitted");
+            };
+            let error = error.to_string();
+            assert!(
+                error.contains("is not a distinct workspace member"),
+                "{label}: {error}"
+            );
         }
     }
 
@@ -1483,7 +1597,10 @@ mod tests {
             ("wrong version", wrong_version),
             ("extra", extra),
         ] {
-            let error = require_notices(&text, &inventory).unwrap_err().to_string();
+            let Err(error) = require_notices(&text, &inventory) else {
+                panic!("the {label} notices were accepted");
+            };
+            let error = error.to_string();
             assert!(
                 error.contains("differ from the runtime inventory"),
                 "{label}: {error}"

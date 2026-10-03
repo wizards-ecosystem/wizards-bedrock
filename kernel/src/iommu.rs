@@ -4,8 +4,9 @@
 //! module reads that table once at boot, then for each storage candidate maps
 //! the governing unit's register window into the device window and hands it
 //! to `wost`'s unit, which takes the hardware over and leaves translation on
-//! with only firmware's reserved regions mapped. The established unit lives in
-//! one kernel-owned slot that every DMA seam locks and refuses without: queue
+//! with only firmware's reserved regions mapped, each refused first if it
+//! reaches memory the kernel owns. The established unit lives in one
+//! kernel-owned slot that every DMA seam locks and refuses without: queue
 //! frames, transfer buffers and bus-master admission all go through it, and
 //! the domain is released after the candidate's lease, so a retired candidate
 //! restores every frame and mapping it took (D-199). When no unit can be
@@ -20,6 +21,7 @@ use acpi_tables::{Bdf, BusRange, Coverage, Dmar, Sdt};
 use pci_config::Address;
 use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
 use wost::arch::current::vtd::{Release, Vtd};
+use wost::mm;
 use wost::sync::{SpinLock, ThreadLock, ThreadLockGuard};
 
 use crate::mem::{self, DeviceRetirement};
@@ -183,6 +185,28 @@ fn unit_for(at: Address) -> Option<Unit> {
     }
 }
 
+/// Whether every region firmware reserves for the function stays clear of the
+/// kernel's memory, which the domain would otherwise hand the device; the first
+/// that does not is logged.
+fn reserved_regions_are_clear(reserved: &[(u64, u64)]) -> bool {
+    match reserved
+        .iter()
+        .find(|&&(base, limit)| !mm::reserved_region_is_eligible(base, limit))
+    {
+        Some(&(base, limit)) => {
+            warn!("iommu: reserved region [{base:#x}, {limit:#x}] reaches memory the kernel owns");
+            false
+        }
+        None => true,
+    }
+}
+
+/// The screen `establish` applies, for the machine check that feeds it regions.
+#[cfg(feature = "selftest")]
+pub(crate) fn reserved_regions_are_clear_for_test(reserved: &[(u64, u64)]) -> bool {
+    reserved_regions_are_clear(reserved)
+}
+
 /// The installed unit, or nothing: every DMA seam locks this and refuses
 /// without it.
 pub(crate) fn installed() -> ThreadLockGuard<'static, Option<Vtd>> {
@@ -191,14 +215,19 @@ pub(crate) fn installed() -> ThreadLockGuard<'static, Option<Vtd>> {
 
 /// Establish and install a DMA-remapping domain for the function at `at`.
 ///
-/// False means the candidate must not bus-master: no unit governs it, its
-/// unit could not be mapped or taken over, or a reserved region it needs would
-/// not map. Every refusal has already been logged, and a register window whose
-/// return refused is retained rather than leaked.
+/// False means the candidate must not bus-master: no unit governs it, a
+/// reserved region it needs reaches the kernel's memory or would not map, or
+/// its unit could not be mapped or taken over. Every refusal has already been
+/// logged, and a register window whose return refused is retained rather than
+/// leaked.
 pub(crate) fn establish(context: &mut ThreadContext, at: Address) -> bool {
     let Some(unit) = unit_for(at) else {
         return false;
     };
+    let reserved = &unit.reserved[..unit.reserved_count];
+    if !reserved_regions_are_clear(reserved) {
+        return false;
+    }
     let mapping = match mem::map_device(context, unit.register_base, REGISTER_WINDOW) {
         Some(Ok(mapping)) => mapping,
         Some(Err(reason)) => {
@@ -221,7 +250,6 @@ pub(crate) fn establish(context: &mut ThreadContext, at: Address) -> bool {
             return false;
         }
     };
-    let reserved = &unit.reserved[..unit.reserved_count];
     let mut isolation = match Vtd::establish(registers, at, reserved) {
         Ok(isolation) => isolation,
         Err((reason, registers)) => {

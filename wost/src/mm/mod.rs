@@ -221,6 +221,14 @@ pub(crate) fn device_range_is_eligible(start: Paddr, end: Paddr) -> bool {
     map.allows_device_mapping(start, end)
 }
 
+/// Whether a region firmware reserves for a device, given by its first and
+/// last byte, reaches no page of RAM or firmware storage.
+pub fn reserved_region_is_eligible(base: Paddr, limit: Paddr) -> bool {
+    MAP.lock_leaf()
+        .as_ref()
+        .is_some_and(|map| map.allows_reserved_region(base, limit))
+}
+
 /// The memory map [`init`] was given, for ownership and firmware checks.
 static MAP: SpinLock<Option<MemoryMap>> = SpinLock::new(None);
 

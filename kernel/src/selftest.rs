@@ -36,6 +36,7 @@ use crate::arch::current::vector;
 use crate::devfs;
 use crate::fs;
 use crate::handle::{HandleError, HandleTable};
+use crate::iommu;
 use crate::nvme;
 use crate::object::{self, ObjectType};
 use crate::pci;
@@ -2620,6 +2621,59 @@ fn a_domain_proof_is_refused_while_translation_is_off() -> bool {
 fn a_device_write_into_an_unmapped_frame_faults_and_changes_nothing() -> bool {
     nvme::unmapped_write_is_fenced_for_test()
         .is_some_and(|witness| witness.completed && witness.unchanged && witness.faulted)
+}
+
+/// The screen `iommu::establish` applies admits a page wholly inside a device
+/// hole and refuses a page of usable RAM; QEMU's DMAR names no region to try.
+fn a_reserved_dma_region_over_kernel_memory_refuses_isolation() -> bool {
+    let Some(map) = mm::memory_map_for_test() else {
+        return false;
+    };
+    let device = |kind: boot::MemoryKind| {
+        matches!(
+            kind,
+            boot::MemoryKind::Reserved | boot::MemoryKind::Unknown(_)
+        )
+    };
+    let mut hole = None;
+    let mut attempted = 0usize;
+    'regions: for region in map.regions().filter(|region| device(region.kind)) {
+        let (Some(mut physical), Some(region_end)) = (
+            region.base.checked_next_multiple_of(PAGE_SIZE),
+            region.base.checked_add(region.len),
+        ) else {
+            continue;
+        };
+        while let Some(end) = physical
+            .checked_add(PAGE_SIZE)
+            .filter(|&end| end <= region_end)
+        {
+            attempted += 1;
+            if attempted > 256 {
+                break 'regions;
+            }
+            if map.regions().all(|other| {
+                let overlaps = physical < other.base + other.len && other.base < end;
+                !overlaps || device(other.kind)
+            }) {
+                hole = Some(physical);
+                break 'regions;
+            }
+            physical = end;
+        }
+    }
+    let usable = map
+        .regions()
+        .filter(|region| region.kind == boot::MemoryKind::Usable)
+        .find_map(|region| {
+            let base = region.base.checked_next_multiple_of(PAGE_SIZE)?;
+            (base.checked_add(PAGE_SIZE)? <= region.base.checked_add(region.len)?).then_some(base)
+        });
+    let (Some(hole), Some(usable)) = (hole, usable) else {
+        return false;
+    };
+    iommu::reserved_regions_are_clear_for_test(&[(hole, hole + PAGE_SIZE - 1)])
+        && !iommu::reserved_regions_are_clear_for_test(&[(usable, usable + PAGE_SIZE - 1)])
 }
 
 /// The first eight bytes of block `lba` on the check machine's namespace.
@@ -7687,7 +7741,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 270;
+const EXPECTED_CHECKS: usize = 271;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -8826,6 +8880,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a domain proof is refused while translation is off",
         a_domain_proof_is_refused_while_translation_is_off(),
+    );
+    report.check(
+        "a reserved dma region over kernel memory refuses isolation",
+        a_reserved_dma_region_over_kernel_memory_refuses_isolation(),
     );
 
     // Last of all: the timeout proof resets the only storage controller.

@@ -164,8 +164,9 @@ pub struct Vtd {
 /// Minted only by [`Vtd::domain`] after translation is confirmed on and the
 /// function's context entry names the domain's own tables, and consumed by
 /// `wost::pci::admit_bus_master`, so no path enables bus mastering without the
-/// fence in place (D-357).
-#[derive(Debug, Clone, Copy)]
+/// fence in place (D-357). Neither `Clone` nor `Copy`, so no proof outlives the
+/// admission that spends it.
+#[derive(Debug)]
 #[must_use = "a DMA domain proof is required to admit bus mastering"]
 pub struct DmaDomain {
     function: Address,

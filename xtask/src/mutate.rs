@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1573;
+pub const NEXT_MUTATION_ID: u16 = 1590;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521];
@@ -13400,6 +13400,190 @@ fn mint_stopped<'controller>(
             package: "xtask",
             name: "vmware::tests::a_vmware_transcript_without_translation_is_refused",
         },
+    },
+    Mutation {
+        id: 1573,
+        file: "libs/memory-map/src/lib.rs",
+        find: "        base <= limit && end.is_some_and(|end| self.allows_device_mapping(start, end))",
+        replace: "        base <= limit && end.is_some_and(|end| !self.covers(start, end))",
+        breaks: "a reserved DMA region is refused wherever the boot map describes it, device holes included",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::a_reserved_region_inside_a_device_hole_is_admitted",
+        },
+    },
+    Mutation {
+        id: 1574,
+        file: "libs/memory-map/src/lib.rs",
+        find: "        let start = base - base % PAGE_SIZE;",
+        replace: "        let start = base.next_multiple_of(PAGE_SIZE);",
+        breaks: "a reserved DMA region's first page is rounded up past the kernel memory it starts in",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::a_reserved_region_one_byte_into_kernel_memory_is_refused",
+        },
+    },
+    Mutation {
+        id: 1575,
+        file: "libs/memory-map/src/lib.rs",
+        find: "        let end = limit\n            .checked_add(1)",
+        replace: "        let end = limit\n            .checked_add(0)",
+        breaks: "a reserved DMA region's last byte is read as its exclusive end",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::a_reserved_region_one_byte_into_kernel_memory_is_refused",
+        },
+    },
+    Mutation {
+        id: 1576,
+        file: "libs/memory-map/src/lib.rs",
+        find: "        base <= limit && end.is_some_and(",
+        replace: "        end.is_some_and(",
+        breaks: "an empty or inverted reserved DMA region is admitted as the page it rounds to",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::an_empty_or_inverted_reserved_region_is_refused",
+        },
+    },
+    Mutation {
+        id: 1577,
+        file: "libs/memory-map/src/lib.rs",
+        find: "        let start = base - base % PAGE_SIZE;",
+        replace: "        let start = base;",
+        breaks: "a reserved DMA region may share its first page with kernel memory",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::a_reserved_region_sharing_a_page_with_kernel_memory_is_refused",
+        },
+    },
+    Mutation {
+        id: 1578,
+        file: "libs/memory-map/src/lib.rs",
+        find: "            .checked_add(1)\n            .and_then(|end| end.checked_next_multiple_of(PAGE_SIZE));",
+        replace: "            .checked_add(1);",
+        breaks: "a reserved DMA region may share its last page with kernel memory",
+        reddens: Caught::HostTest {
+            package: "memory-map",
+            name: "tests::a_reserved_region_sharing_a_page_with_kernel_memory_is_refused",
+        },
+    },
+    Mutation {
+        id: 1579,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "#[derive(Debug)]\n#[must_use = \"a DMA domain proof is required to admit bus mastering\"]",
+        replace: "#[derive(Debug, Clone, Copy)]\n#[must_use = \"a DMA domain proof is required to admit bus mastering\"]",
+        breaks: "a DMA domain proof can be copied and outlive the release that invalidated it",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::pci_configuration_writes_require_function_authority",
+        },
+    },
+    Mutation {
+        id: 1580,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "#[derive(Debug)]\n#[must_use = \"a DMA domain proof is required to admit bus mastering\"]",
+        replace: "#[derive(Debug, Clone)]\n#[must_use = \"a DMA domain proof is required to admit bus mastering\"]",
+        breaks: "a DMA domain proof can be cloned and kept past the admission it permits",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::pci_configuration_writes_require_function_authority",
+        },
+    },
+    Mutation {
+        id: 1581,
+        file: "kernel/src/arch/x86_64/uart.rs",
+        find: "        let registers = port::com1().ok_or(UartError::PortsUnavailable)?;",
+        replace: "        let registers = { use wost::arch::current::port::claim_block; claim_block::<8>(0x3F8) }.ok_or(UartError::PortsUnavailable)?;",
+        breaks: "a production driver claims a port through an imported raw door",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::production_kernel_code_claims_no_port_by_number",
+        },
+    },
+    Mutation {
+        id: 1582,
+        file: "kernel/src/arch/x86_64/i8042.rs",
+        find: "        let (data, control) = port::i8042().ok_or(I8042Error::PortsUnavailable)?;",
+        replace: "        let (data, control) = { use wost::arch::current::port::claim_pair as pair; pair::<u8, u8>(0x60, 0x64) }.ok_or(I8042Error::PortsUnavailable)?;",
+        breaks: "a production driver claims a port through a renamed raw door",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::production_kernel_code_claims_no_port_by_number",
+        },
+    },
+    Mutation {
+        id: 1583,
+        file: "kernel/src/arch/x86_64/pit.rs",
+        find: "        let registers = port::pit().ok_or(PitError::PortsUnavailable)?;",
+        replace: "        let registers = { use wost::arch::current::port as io; io::claim_block::<4>(0x40) }.ok_or(PitError::PortsUnavailable)?;",
+        breaks: "a production driver claims a port through a renamed port module",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::production_kernel_code_claims_no_port_by_number",
+        },
+    },
+    Mutation {
+        id: 1584,
+        file: "kernel/src/arch/x86_64/debug_exit.rs",
+        find: "    if let Some(mut device) = port::debug_exit() {",
+        replace: "    if let Some(mut device) = { use wost::arch::current::port::*; claim::<u32>(0xF4) } {",
+        breaks: "a production driver claims a port through a glob import of the port module",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::production_kernel_code_claims_no_port_by_number",
+        },
+    },
+    Mutation {
+        id: 1585,
+        file: "xtask/src/supply_chain.rs",
+        find: "            ensure!(\n                canonical_header(line),\n                \"`{line}` is a table header spelling the runtime-scope reader does not model\"\n            );\n",
+        replace: "",
+        breaks: "a dependency table header spelled another way is skipped rather than refused",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::every_dependency_declaration_shape_is_modeled_or_refused",
+        },
+    },
+    Mutation {
+        id: 1586,
+        file: "xtask/src/supply_chain.rs",
+        find: "            unclaimed.remove(&package.name),",
+        replace: "            !package.name.is_empty(),",
+        breaks: "a path crate outside the workspace is locked without an inventory row",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::a_locked_path_package_must_be_a_distinct_workspace_member",
+        },
+    },
+    Mutation {
+        id: 1587,
+        file: "xtask/src/supply_chain.rs",
+        find: "            unclaimed.remove(&package.name),",
+        replace: "            members.contains_key(&package.name),",
+        breaks: "a path crate locked under a workspace member's name escapes the inventory",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::a_locked_path_package_must_be_a_distinct_workspace_member",
+        },
+    },
+    Mutation {
+        id: 1588,
+        file: "xtask/src/supply_chain.rs",
+        find: "        noticed == runtime,",
+        replace: "        noticed.is_subset(&runtime),",
+        breaks: "a notice may omit a component the image ships",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::each_runtime_component_has_exactly_one_exact_notice_entry",
+        },
+    },
+    Mutation {
+        id: 1589,
+        file: "kernel/src/iommu.rs",
+        find: "        .find(|&&(base, limit)| !mm::reserved_region_is_eligible(base, limit))",
+        replace: "        .find(|&&(base, limit)| base > limit)",
+        breaks: "a storage candidate's reserved-region screen admits a region over kernel memory",
+        reddens: Caught::Check("a reserved dma region over kernel memory refuses isolation"),
     },
     Mutation {
         id: 1161,
