@@ -4,6 +4,9 @@ virtualHW.version = "19"
 displayName = "{{DISPLAY_NAME}}"
 guestOS = "other-64"
 firmware = "efi"
+# Storage fails closed without a DMA-remapping unit (D-357): this is VMware's
+# virtual VT-d unit, as `-device intel-iommu` is QEMU's (D-358).
+vvtd.enable = "TRUE"
 memsize = "512"
 numvcpus = "2"
 sata0.present = "TRUE"

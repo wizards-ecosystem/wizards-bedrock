@@ -280,6 +280,7 @@ where
         !text.contains("KERNEL PANIC"),
         "VMware transcript contains a kernel panic"
     );
+    require_translation_before_storage(text)?;
     match kernel {
         Kernel::SelfTest => verify_selftest_transcript(root, text),
         Kernel::Shipped => verify_shipped_transcript(text),
@@ -403,6 +404,34 @@ fn local_apic_record(message: &str) -> bool {
     canonical_decimal(id).is_some() && positive_hexadecimal(version)
 }
 
+fn translation_record(message: &str) -> bool {
+    let Some(body) = message.strip_prefix("iommu: translation on for ") else {
+        return false;
+    };
+    let Some((address, body)) = body.split_once(" through the unit at 0x") else {
+        return false;
+    };
+    let Some((unit, _)) = body.split_once(": ") else {
+        return false;
+    };
+    let Some((bus, address)) = address.split_once(':') else {
+        return false;
+    };
+    let Some((device, function)) = address.split_once('.') else {
+        return false;
+    };
+    let hex_byte = |text: &str| {
+        text.len() == 2
+            && text
+                .bytes()
+                .all(|digit| digit.is_ascii_digit() || (b'a'..=b'f').contains(&digit))
+    };
+    hex_byte(bus)
+        && hex_byte(device)
+        && matches!(function.as_bytes(), [b'0'..=b'7'])
+        && positive_hexadecimal(unit)
+}
+
 fn nvme_record(message: &str) -> bool {
     let Some(body) = message.strip_prefix("nvme: up \u{2014} ") else {
         return false;
@@ -518,6 +547,32 @@ fn verify_shipped_transcript(text: &str) -> Result<()> {
         "the shipped VMware image did not launch its program"
     );
     require_once_in_order(text, SHIPPED_MARKERS)?;
+    Ok(())
+}
+
+// Each storage candidate logs its own translation record and a retired one's
+// comes first, so the last record is the kept controller's (D-358).
+fn require_translation_before_storage(text: &str) -> Result<()> {
+    let translation = info_records(text)
+        .filter(|(_, message)| translation_record(message))
+        .map(|(at, _)| at)
+        .last()
+        .context("VMware transcript has no canonical `iommu: translation on` record")?;
+    let storage = info_records(text)
+        .filter(|(_, message)| nvme_record(message))
+        .map(|(at, _)| at)
+        .collect::<Vec<_>>();
+    let [up] = storage.as_slice() else {
+        bail!(
+            "VMware transcript contains canonical `{}` {} times",
+            TranscriptMarker::Nvme.example(),
+            storage.len()
+        );
+    };
+    ensure!(
+        translation < *up,
+        "VMware transcript turns translation on after `nvme: up`"
+    );
     Ok(())
 }
 
@@ -817,6 +872,18 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    // One translation record per storage candidate: the retired first one's,
+    // then the kept controller's.
+    const RETIRED_TRANSLATION: &str = "[info ] iommu: translation on for 00:04.0 through the unit at 0xfed90000: 4-level walks, flushed tables, caching mode, cap 0x80d2008c222f06c6, ecap 0xf02\n";
+    const KEPT_TRANSLATION: &str = "[info ] iommu: translation on for 00:05.0 through the unit at 0xfed90000: 4-level walks, flushed tables, caching mode, cap 0x80d2008c222f06c6, ecap 0xf02\n";
+
+    fn storage_records() -> String {
+        format!(
+            "{RETIRED_TRANSLATION}{KEPT_TRANSLATION}[info ] {}\n",
+            TranscriptMarker::Nvme.example()
+        )
+    }
+
     fn selftest_transcript() -> String {
         let expected = expected_selftest_checks(&repository_root()).expect("current check count");
         let mut transcript = String::new();
@@ -824,6 +891,9 @@ mod tests {
             transcript.push_str("[info ] ");
             transcript.push_str(marker.example());
             transcript.push('\n');
+            if marker.example() == VMWARE_ISOLATION_MARKER {
+                transcript.push_str(&storage_records());
+            }
         }
         transcript.push_str(&format!(
             "[info ] selftest: verdict v1 PASS passed={expected} failed=0 expected={expected}\n"
@@ -834,8 +904,26 @@ mod tests {
     fn shipped_transcript() -> String {
         SHIPPED_MARKERS
             .iter()
-            .map(|marker| format!("[info ] {}\n", marker.example()))
+            .map(|marker| match marker {
+                TranscriptMarker::Nvme => storage_records(),
+                _ => format!("[info ] {}\n", marker.example()),
+            })
             .collect()
+    }
+
+    /// The transcript with two markers' records exchanged.
+    fn swapped(transcript: &str, first: TranscriptMarker, second: TranscriptMarker) -> String {
+        let mut lines: Vec<&str> = transcript.lines().collect();
+        let at = |marker: TranscriptMarker| {
+            let record = format!("[info ] {}", marker.example());
+            lines
+                .iter()
+                .position(|line| *line == record)
+                .expect("marker record")
+        };
+        let (first, second) = (at(first), at(second));
+        lines.swap(first, second);
+        format!("{}\n", lines.join("\n"))
     }
 
     #[test]
@@ -956,9 +1044,7 @@ mod tests {
         assert!(verify_transcript(&root, Kernel::SelfTest, duplicated_marker.as_bytes()).is_err());
         let duplicated = format!("{valid}{}", valid.lines().last().expect("verdict line"));
         assert!(verify_transcript(&root, Kernel::SelfTest, duplicated.as_bytes()).is_err());
-        let mut reordered: Vec<&str> = valid.lines().collect();
-        reordered.swap(4, 5);
-        let reordered = format!("{}\n", reordered.join("\n"));
+        let reordered = swapped(&valid, SELFTEST_MARKERS[4], SELFTEST_MARKERS[5]);
         assert!(verify_transcript(&root, Kernel::SelfTest, reordered.as_bytes()).is_err());
         let split_compound = valid.replace(", compacted", "\n[info ] , compacted");
         assert!(verify_transcript(&root, Kernel::SelfTest, split_compound.as_bytes()).is_err());
@@ -1023,9 +1109,7 @@ mod tests {
                 marker.example()
             );
         }
-        let mut reordered: Vec<&str> = valid.lines().collect();
-        reordered.swap(0, 1);
-        let reordered = format!("{}\n", reordered.join("\n"));
+        let reordered = swapped(&valid, SHIPPED_MARKERS[0], SHIPPED_MARKERS[1]);
         assert!(verify_transcript(&root, Kernel::Shipped, reordered.as_bytes()).is_err());
         let selftest = format!("{valid}selftest: verdict v1 PASS passed=1 failed=0 expected=1\n");
         assert!(verify_transcript(&root, Kernel::Shipped, selftest.as_bytes()).is_err());
@@ -1080,6 +1164,89 @@ mod tests {
                 verify_transcript(&root, Kernel::SelfTest, forged.as_bytes()).is_err(),
                 "accepted a noncanonical self-test verdict"
             );
+        }
+    }
+
+    #[test]
+    fn a_vmware_transcript_without_translation_is_refused() {
+        let root = repository_root();
+        let storage = format!("[info ] {}\n", TranscriptMarker::Nvme.example());
+        for (kernel, valid) in [
+            (Kernel::SelfTest, selftest_transcript()),
+            (Kernel::Shipped, shipped_transcript()),
+        ] {
+            let untranslated = valid.replacen(&storage_records(), &storage, 1);
+            let error = verify_transcript(&root, kernel, untranslated.as_bytes()).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("no canonical `iommu: translation on` record"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_vmware_translation_after_storage_is_refused() {
+        let root = repository_root();
+        let storage = format!("[info ] {}\n", TranscriptMarker::Nvme.example());
+        // The retired candidate's record still precedes storage, so only the
+        // last record can decide.
+        let late = format!("{RETIRED_TRANSLATION}{storage}{KEPT_TRANSLATION}");
+        for (kernel, valid) in [
+            (Kernel::SelfTest, selftest_transcript()),
+            (Kernel::Shipped, shipped_transcript()),
+        ] {
+            let reordered = valid.replacen(&storage_records(), &late, 1);
+            let error = verify_transcript(&root, kernel, reordered.as_bytes()).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("translation on after `nvme: up`"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn two_vmware_translations_before_storage_qualify() {
+        let root = repository_root();
+        let storage = format!("[info ] {}\n", TranscriptMarker::Nvme.example());
+        let retirement = "[info ] nvme: candidate 1 retired cleanly; trying next\n";
+        let separated = format!("{RETIRED_TRANSLATION}{retirement}{KEPT_TRANSLATION}{storage}");
+        for (kernel, valid) in [
+            (Kernel::SelfTest, selftest_transcript()),
+            (Kernel::Shipped, shipped_transcript()),
+        ] {
+            assert!(valid.contains(&storage_records()));
+            verify_transcript(&root, kernel, valid.as_bytes()).unwrap();
+            let spaced = valid.replacen(&storage_records(), &separated, 1);
+            verify_transcript(&root, kernel, spaced.as_bytes()).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_warning_translation_record_does_not_count() {
+        let root = repository_root();
+        let storage = format!("[info ] {}\n", TranscriptMarker::Nvme.example());
+        let retired = RETIRED_TRANSLATION.replacen("[info ]", "[warn ]", 1);
+        let kept = KEPT_TRANSLATION.replacen("[info ]", "[warn ]", 1);
+        let warned = format!("{retired}{kept}{storage}");
+        for (kernel, valid) in [
+            (Kernel::SelfTest, selftest_transcript()),
+            (Kernel::Shipped, shipped_transcript()),
+        ] {
+            let demoted = valid.replacen(&storage_records(), &warned, 1);
+            let error = verify_transcript(&root, kernel, demoted.as_bytes()).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("no canonical `iommu: translation on` record"),
+                "{error}"
+            );
+
+            let late_warning = valid.replacen(&storage, &format!("{storage}{kept}"), 1);
+            verify_transcript(&root, kernel, late_warning.as_bytes()).unwrap();
         }
     }
 
@@ -1318,6 +1485,8 @@ mod tests {
         .unwrap();
 
         assert!(vmx.contains(r#"firmware = "efi""#));
+        // Storage fails closed on a machine with no remapping unit (D-357).
+        assert!(vmx.contains(r#"vvtd.enable = "TRUE""#));
         assert!(vmx.contains(&format!(r#"serial0.fileName = "{serial}""#)));
         assert!(vmx.contains(r#"sata0:0.fileName = "wizard-os.vmdk""#));
         // A namespace-less candidate before the usable controller makes the

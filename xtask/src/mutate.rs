@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1571;
+pub const NEXT_MUTATION_ID: u16 = 1573;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521];
@@ -13377,6 +13377,28 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "dma_contracts::only_the_candidate_sequencer_calls_its_stages",
+        },
+    },
+    Mutation {
+        id: 1571,
+        file: "xtask/templates/wizard-os.vmx.in",
+        find: "vvtd.enable = \"TRUE\"\n",
+        replace: "",
+        breaks: "the VMware machine presents the remapping unit storage requires",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::the_vmx_boots_efi_and_logs_serial_to_a_file",
+        },
+    },
+    Mutation {
+        id: 1572,
+        file: "xtask/src/vmware.rs",
+        find: "    require_translation_before_storage(text)?;",
+        replace: "    let _ = (text, require_translation_before_storage);",
+        breaks: "VMware qualification accepts storage without translation first",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::a_vmware_transcript_without_translation_is_refused",
         },
     },
     Mutation {

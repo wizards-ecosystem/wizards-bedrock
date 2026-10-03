@@ -977,7 +977,7 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 270 |
-| Mutations | 1564 registered; complete-sweep verdicts live in source-bound qualification records |
+| Mutations | 1566 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
 | Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-359 |
 
