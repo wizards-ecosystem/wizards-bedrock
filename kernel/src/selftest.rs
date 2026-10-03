@@ -2523,20 +2523,21 @@ fn the_controller_was_read_rather_than_assumed() -> bool {
     nvme::controller_facts_hold_for_test() && nvme::bus_master_followed_disable_for_test()
 }
 
-fn nvme_preparation_preserves_boot_stack_headroom() -> bool {
+fn nvme_candidates_preserve_boot_stack_headroom() -> bool {
     const CAPACITY: u64 = 32 * 1024;
     const MINIMUM_HEADROOM: u64 = 2 * PAGE_SIZE;
 
-    let Some(usage) = nvme::preparation_stack_usage_for_test() else {
+    let Some(stack) = nvme::candidate_stack_usage_for_test() else {
         return false;
     };
     info!(
-        "selftest: nvme-stack v1 used={} capacity={} headroom={}",
-        usage.used(),
-        usage.capacity(),
-        usage.headroom()
+        "selftest: nvme-stack v2 used={} capacity={} headroom={} leaf={}",
+        stack.deepest.used(),
+        stack.deepest.capacity(),
+        stack.deepest.headroom(),
+        stack.leaf.used()
     );
-    usage.capacity() == CAPACITY && usage.headroom() >= MINIMUM_HEADROOM
+    stack.deepest.capacity() == CAPACITY && stack.deepest.headroom() >= MINIMUM_HEADROOM
 }
 
 fn a_failed_bus_master_admission_stops_before_nvme_start() -> bool {
@@ -8001,8 +8002,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         the_controller_was_read_rather_than_assumed(),
     );
     report.check(
-        "nvme preparation preserves two pages of boot-stack headroom",
-        nvme_preparation_preserves_boot_stack_headroom(),
+        "nvme candidates preserve two pages of boot-stack headroom",
+        nvme_candidates_preserve_boot_stack_headroom(),
     );
     report.check(
         "a later nvme controller survives an earlier failure",

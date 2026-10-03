@@ -38,6 +38,8 @@ use nvme::{
 use stack_layout::{Slot as StackSlot, StackUsage};
 #[cfg(feature = "selftest")]
 use wost::arch::current::cpu;
+#[cfg(feature = "selftest")]
+use wost::arch::current::paging::{self, PaintedStack};
 use wost::arch::current::pci::MappedBar;
 use wost::arch::current::vtd::Vtd;
 use wost::mm::{self, DmaSegment};
@@ -85,7 +87,9 @@ static STACK_LOWEST: AtomicU64 = AtomicU64::new(u64::MAX);
 #[cfg(feature = "selftest")]
 static STACK_MAX_USED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "selftest")]
-static STACK_PREPARATIONS: AtomicUsize = AtomicUsize::new(0);
+static STACK_MAX_LEAF: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "selftest")]
+static STACK_CANDIDATES: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "selftest")]
 static STACK_MEASUREMENTS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "selftest")]
@@ -103,15 +107,29 @@ fn count(observation: &AtomicUsize) {
     );
 }
 
+/// The boot stack painted and the register-access leaf armed for one storage candidate.
 #[cfg(feature = "selftest")]
 #[derive(Debug)]
-struct PreparationStackMeasurement {
+pub(crate) struct CandidateStackMeasurement {
     slot: StackSlot,
+    painted: PaintedStack,
+}
+
+/// A candidate's stack use: the painted high-water mark and the deepest live leaf.
+#[cfg(feature = "selftest")]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CandidateStack {
+    /// From the stack's top to the lowest word the candidate wrote.
+    pub(crate) deepest: StackUsage,
+    /// From the stack's top to the lowest pointer a register access observed.
+    pub(crate) leaf: StackUsage,
 }
 
 #[cfg(feature = "selftest")]
-impl PreparationStackMeasurement {
-    fn begin() -> Option<Self> {
+impl CandidateStackMeasurement {
+    /// Paint the dead boot stack below this frame and arm the leaf meter.
+    pub(crate) fn begin() -> Option<Self> {
+        count(&STACK_CANDIDATES);
         let slot = thread::boot_stack_layout()?.slot(0)?;
         let pointer = cpu::stack_pointer();
         slot.usage_at(pointer)?;
@@ -123,12 +141,16 @@ impl PreparationStackMeasurement {
                 Ordering::Acquire,
             )
             .ok()?;
+        let Some(painted) = paging::paint_current_permanent_stack_for_test() else {
+            STACK_METER_STATE.store(STACK_METER_IDLE, Ordering::Release);
+            return None;
+        };
         STACK_LOWEST.store(pointer, Ordering::Relaxed);
         STACK_METER_STATE.store(STACK_METER_ACTIVE, Ordering::Release);
-        Some(Self { slot })
+        Some(Self { slot, painted })
     }
 
-    fn finish(self) -> Option<StackUsage> {
+    fn finish(&self) -> Option<CandidateStack> {
         STACK_METER_STATE
             .compare_exchange(
                 STACK_METER_ACTIVE,
@@ -137,15 +159,33 @@ impl PreparationStackMeasurement {
                 Ordering::Acquire,
             )
             .ok()?;
-        let usage = self.slot.usage_at(STACK_LOWEST.load(Ordering::Acquire));
+        let leaf = self.slot.usage_at(STACK_LOWEST.load(Ordering::Acquire));
+        let deepest = self
+            .painted
+            .deepest_touch()
+            .and_then(|touch| self.slot.usage_at(touch));
         STACK_METER_STATE.store(STACK_METER_IDLE, Ordering::Release);
-        usage
+        let (leaf, deepest) = (leaf?, deepest?);
+        // Each leaf pointer names a word its own call wrote, so a shallower scan missed one.
+        (deepest.used() >= leaf.used()).then_some(CandidateStack { deepest, leaf })
     }
+}
+
+/// Scan one candidate's paint and keep its use, or invalidate the meter if either failed.
+#[cfg(feature = "selftest")]
+pub(crate) fn finish_candidate_stack(measurement: Option<&CandidateStackMeasurement>) {
+    let Some(stack) = measurement.and_then(CandidateStackMeasurement::finish) else {
+        STACK_MEASUREMENT_VALID.store(false, Ordering::Release);
+        return;
+    };
+    STACK_MAX_USED.fetch_max(stack.deepest.used(), Ordering::AcqRel);
+    STACK_MAX_LEAF.fetch_max(stack.leaf.used(), Ordering::AcqRel);
+    count(&STACK_MEASUREMENTS);
 }
 
 #[cfg(feature = "selftest")]
 #[inline(never)]
-fn observe_preparation_stack() {
+fn observe_candidate_stack() {
     if STACK_METER_STATE
         .compare_exchange(
             STACK_METER_ACTIVE,
@@ -161,30 +201,26 @@ fn observe_preparation_stack() {
     STACK_METER_STATE.store(STACK_METER_ACTIVE, Ordering::Release);
 }
 
+/// The deepest stack use across every measured candidate, once each one was measured.
 #[cfg(feature = "selftest")]
-fn finish_stack_measurement(measurement: Option<PreparationStackMeasurement>) {
-    let Some(usage) = measurement.and_then(PreparationStackMeasurement::finish) else {
-        STACK_MEASUREMENT_VALID.store(false, Ordering::Release);
-        return;
-    };
-    STACK_MAX_USED.fetch_max(usage.used(), Ordering::AcqRel);
-    count(&STACK_MEASUREMENTS);
-}
-
-#[cfg(feature = "selftest")]
-pub(crate) fn preparation_stack_usage_for_test() -> Option<StackUsage> {
-    let preparations = STACK_PREPARATIONS.load(Ordering::Acquire);
+pub(crate) fn candidate_stack_usage_for_test() -> Option<CandidateStack> {
+    let candidates = STACK_CANDIDATES.load(Ordering::Acquire);
     if !STACK_MEASUREMENT_VALID.load(Ordering::Acquire)
-        || preparations == 0
-        || STACK_MEASUREMENTS.load(Ordering::Acquire) != preparations
+        || candidates == 0
+        || STACK_MEASUREMENTS.load(Ordering::Acquire) != candidates
     {
         return None;
     }
     let slot = thread::boot_stack_layout()?.slot(0)?;
-    let pointer = slot
-        .stack_top()
-        .checked_sub(STACK_MAX_USED.load(Ordering::Acquire))?;
-    slot.usage_at(pointer)
+    let usage = |used: u64| {
+        slot.stack_top()
+            .checked_sub(used)
+            .and_then(|pointer| slot.usage_at(pointer))
+    };
+    Some(CandidateStack {
+        deepest: usage(STACK_MAX_USED.load(Ordering::Acquire))?,
+        leaf: usage(STACK_MAX_LEAF.load(Ordering::Acquire))?,
+    })
 }
 
 /// Entries in the queues this driver builds.
@@ -695,19 +731,6 @@ impl StartFailure {
 /// The specification's initialisation sequence, in order, with the two waits
 /// bounded by `CAP.TO` rather than by a number chosen here.
 pub(crate) fn prepare(context: &mut ThreadContext, registers: MappedBar) -> PrepareOutcome {
-    #[cfg(feature = "selftest")]
-    count(&STACK_PREPARATIONS);
-    #[cfg(feature = "selftest")]
-    let stack_measurement = PreparationStackMeasurement::begin();
-
-    let outcome = prepare_stages(context, registers);
-
-    #[cfg(feature = "selftest")]
-    finish_stack_measurement(stack_measurement);
-    outcome
-}
-
-fn prepare_stages(context: &mut ThreadContext, registers: MappedBar) -> PrepareOutcome {
     #[cfg(feature = "selftest")]
     let observed_window = registers.address();
 
@@ -1802,13 +1825,13 @@ fn clock_ns() -> Option<u64> {
 
 fn read(registers: &MappedBar, offset: usize) -> Result<u32, BringUpError> {
     #[cfg(feature = "selftest")]
-    observe_preparation_stack();
+    observe_candidate_stack();
     MappedBar::read_u32(registers, offset).map_err(|_| BringUpError::NotMapped)
 }
 
 fn write(registers: &mut MappedBar, offset: usize, value: u32) -> Result<(), BringUpError> {
     #[cfg(feature = "selftest")]
-    observe_preparation_stack();
+    observe_candidate_stack();
     MappedBar::write_u32(registers, offset, value).map_err(|_| BringUpError::NotMapped)
 }
 

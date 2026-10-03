@@ -18,6 +18,9 @@
 /// Bytes in a page, the granularity mappings and guards come in.
 pub const PAGE_SIZE: u64 = 4096;
 
+/// Bytes in the word a stack paint and its scan step by.
+const WORD: u64 = 8;
+
 /// A window carved into equal slots of guard-then-stack.
 ///
 /// Slots ascend from `base`, each `guard_len + stack_len` bytes: the guard
@@ -120,6 +123,36 @@ impl Slot {
             capacity: self.stack_len,
             used: self.stack_top() - pointer,
         })
+    }
+
+    /// The word-aligned span from the stack's base to `clearance` below `pointer`.
+    ///
+    /// A frame at `pointer` whose own calls stay within `clearance` holds
+    /// nothing there. `None` when `pointer` is outside the stack or no whole
+    /// word fits below the clearance.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stack_layout::StackLayout;
+    ///
+    /// let slot = StackLayout::new(0x1000_0000, 16 * 1024, 4096, 1).unwrap().slot(0).unwrap();
+    /// assert_eq!(slot.span_below(0x1000_4ff4, 1024), Some(0x1000_1000..0x1000_4bf0));
+    /// assert_eq!(slot.span_below(0x1000_1404, 1024), None);
+    /// assert_eq!(slot.span_below(0x1000_0ff8, 0), None);
+    /// ```
+    pub const fn span_below(&self, pointer: u64, clearance: u64) -> Option<core::ops::Range<u64>> {
+        if self.usage_at(pointer).is_none() {
+            return None;
+        }
+        let Some(limit) = pointer.checked_sub(clearance) else {
+            return None;
+        };
+        let end = limit - limit % WORD;
+        if end <= self.stack_base {
+            return None;
+        }
+        Some(self.stack_base..end)
     }
 }
 

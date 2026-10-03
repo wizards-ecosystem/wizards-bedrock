@@ -212,12 +212,16 @@ recycle memory only through a linear stop token borrowing that controller's
 register mapping and DMA state after fresh reads prove both `CC.EN = 0` and
 `CSTS.RDY = 0`; otherwise queues and the current buffer remain retained.
 Preparation itself is split into capability, disable, allocation, programming
-and enable stages that carry one linear owner. The retained live-leaf meter
-reports the largest linked path across both candidates and requires two pages
-of headroom on the guarded 32 KiB boot stack: current debug uses 22,480 bytes
-and release 9,496 (D-287, D-326). Calibrated live-frame defects cross the bound
-and fail only its named machine check. An individual function-frame ceiling
-could not have detected the original nested overflow.
+and enable stages that carry one linear owner. A self-test meter paints the
+dead boot stack when each storage candidate starts and scans it when the
+candidate settles, so frames that never reach a register access count as well,
+and it refuses a scan that saw less than the deepest live register-access
+pointer. Across both candidates the painted high-water mark must leave two
+pages of the guarded 32 KiB boot stack free: debug uses 23,792 bytes and
+release 13,240 (D-287, D-326, D-359, D-361). A frame below preparation's
+register accesses, which the leaf alone never saw, fails only the named machine
+check, as do the calibrated live-frame defects. An individual function-frame
+ceiling could not have detected the original nested overflow.
 
 CF8/CFC rather than ECAM: it reaches everything a read-only driver needs, and
 it is the only mechanism guaranteed present on **both** boot targets: QEMU's
@@ -977,9 +981,9 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 271 |
-| Mutations | 1583 registered; complete-sweep verdicts live in source-bound qualification records |
+| Mutations | 1590 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-360 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-361 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but mutation registration is not a current full-sweep

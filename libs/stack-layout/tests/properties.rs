@@ -5,7 +5,8 @@
 //! can check by hand; this asks it of every layout the constructor accepts.
 //!
 //! `ranges_overlap` states three separate rules in its own doc, and each is a
-//! property here rather than a case (D-242).
+//! property here rather than a case (D-242). So do `Slot::usage_at` and
+//! `Slot::span_below`, whose answers a stack meter reads for every pointer.
 //!
 //! What is *not* here: whether the guard is large enough. The doc says plainly
 //! that "a stack frame larger than the guard can step clean over it without
@@ -15,7 +16,10 @@
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config, TestRunner};
-use stack_layout::{PAGE_SIZE, StackLayout, ranges_overlap};
+use stack_layout::{PAGE_SIZE, Slot, StackLayout, ranges_overlap};
+
+/// Bytes in the word a paint is aligned to.
+const WORD: u64 = 8;
 
 /// Page-multiple lengths, the granularity the crate says guards come in.
 fn pages(max: u64) -> impl Strategy<Value = u64> {
@@ -65,6 +69,49 @@ fn touching_pair() -> impl Strategy<Value = (u64, u64, u64, u64, Contact, Side)>
 /// A window, a stack size, a guard size and a slot count.
 fn layout() -> impl Strategy<Value = (u64, u64, u64, usize)> {
     (pages(64), pages(8), pages(4), 1usize..12)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    InGuard,
+    Base,
+    Interior,
+    Top,
+    AboveTop,
+}
+
+type Placed = ((u64, u64, u64, usize), prop::sample::Index, Placement, u64);
+
+/// A layout, one of its slots, and a pointer placed against that slot.
+fn placed() -> impl Strategy<Value = Placed> {
+    (
+        layout(),
+        any::<prop::sample::Index>(),
+        prop_oneof![
+            Just(Placement::InGuard),
+            Just(Placement::Base),
+            Just(Placement::Interior),
+            Just(Placement::Top),
+            Just(Placement::AboveTop),
+        ],
+        1u64..8 * PAGE_SIZE,
+    )
+}
+
+/// The slot a placement names and the pointer it puts there.
+fn slot_and_pointer(
+    ((base, stack, guard, slots), index, placement, offset): Placed,
+) -> Option<(Slot, u64)> {
+    let layout = StackLayout::new(base, stack, guard, slots)?;
+    let slot = layout.slot(index.index(layout.slots()))?;
+    let pointer = match placement {
+        Placement::InGuard => slot.stack_base() - 1 - (offset - 1) % guard,
+        Placement::Base => slot.stack_base(),
+        Placement::Interior => slot.stack_base() + 1 + offset % (slot.stack_len() - 1),
+        Placement::Top => slot.stack_top(),
+        Placement::AboveTop => slot.stack_top() + offset,
+    };
+    Some((slot, pointer))
 }
 
 proptest! {
@@ -189,6 +236,70 @@ proptest! {
             );
         }
     }
+
+    /// "The top itself represents an unused stack and the base represents a
+    /// completely used one. A pointer outside the checked slot has no usage
+    /// meaning and is refused."
+    #[test]
+    fn usage_splits_a_slot_at_every_pointer_inside_it_and_refuses_the_rest(
+        placement in placed(),
+    ) {
+        let Some((slot, pointer)) = slot_and_pointer(placement) else {
+            return Ok(());
+        };
+        let place = placement.2;
+        let usage = slot.usage_at(pointer);
+        if matches!(place, Placement::InGuard | Placement::AboveTop) {
+            prop_assert_eq!(usage, None, "a pointer {:?} had a usage", place);
+            return Ok(());
+        }
+        let Some(usage) = usage else {
+            return Err(TestCaseError::fail(format!("a pointer at the {place:?} was refused")));
+        };
+        prop_assert_eq!(usage.capacity(), slot.stack_len(), "capacity is not the slot's length");
+        prop_assert_eq!(
+            usage.used().checked_add(usage.headroom()),
+            Some(usage.capacity()),
+            "used and headroom do not split the capacity"
+        );
+        match place {
+            Placement::Top => prop_assert_eq!(usage.used(), 0, "the top used the stack"),
+            Placement::Base => prop_assert_eq!(usage.headroom(), 0, "the base left headroom"),
+            _ => prop_assert_eq!(
+                slot.usage_at(pointer - 1).map(|deeper| deeper.used()),
+                Some(usage.used() + 1),
+                "one byte deeper did not use exactly one byte more"
+            ),
+        }
+    }
+
+    /// "The word-aligned span from the stack's base to `clearance` below
+    /// `pointer`. `None` when `pointer` is outside the stack or no whole word
+    /// fits below the clearance."
+    #[test]
+    fn a_span_below_a_pointer_starts_at_the_base_and_stops_a_clearance_short(
+        placement in placed(),
+        clearance in 0u64..3 * PAGE_SIZE,
+    ) {
+        let Some((slot, pointer)) = slot_and_pointer(placement) else {
+            return Ok(());
+        };
+        let room = slot.usage_at(pointer).is_some()
+            && slot.stack_base() + WORD + clearance <= pointer;
+        let Some(span) = slot.span_below(pointer, clearance) else {
+            prop_assert!(!room, "a pointer with a word below its clearance had no span");
+            return Ok(());
+        };
+        prop_assert!(room, "a pointer {:?} without a word of room had a span", placement.2);
+        prop_assert_eq!(span.start, slot.stack_base(), "the span does not start at the base");
+        prop_assert!(span.start < span.end, "the span is empty");
+        prop_assert_eq!(span.end % WORD, 0, "the span does not end on a word");
+        prop_assert!(span.end + clearance <= pointer, "the span reaches into the clearance");
+        prop_assert!(
+            span.end + WORD + clearance > pointer,
+            "the span stops more than a word short of the clearance"
+        );
+    }
 }
 
 #[test]
@@ -236,6 +347,49 @@ fn the_half_open_property_reaches_every_boundary_class() {
     }
     assert!(below > SAMPLES / 3, "only {below} pairs reached below");
     assert!(above > SAMPLES / 3, "only {above} pairs reached above");
+}
+
+/// How often the usage and span properties meet each placement, a span and a
+/// refusal, since D-242 asks a generated check to show it reaches its cases.
+#[test]
+fn the_usage_and_span_properties_reach_every_placement_and_both_answers() {
+    const SAMPLES: usize = 4096;
+    let mut runner = TestRunner::new(Config {
+        cases: SAMPLES as u32,
+        ..Config::default()
+    });
+    let mut places = [0usize; 5];
+    let mut spans = 0usize;
+    let mut refusals = 0usize;
+
+    for _ in 0..SAMPLES {
+        let (placement, clearance) = (placed(), 0u64..3 * PAGE_SIZE)
+            .new_tree(&mut runner)
+            .expect("a placed pointer")
+            .current();
+        places[placement.2 as usize] += 1;
+        let (slot, pointer) = slot_and_pointer(placement).expect("an accepted layout");
+        match slot.span_below(pointer, clearance) {
+            Some(_) => spans += 1,
+            None => refusals += 1,
+        }
+    }
+
+    println!("stack-layout placements: {places:?}; {spans} spans and {refusals} refusals");
+    for (place, reached) in places.into_iter().enumerate() {
+        assert!(
+            reached > SAMPLES / 8,
+            "only {reached} of {SAMPLES} pointers reached placement {place}"
+        );
+    }
+    assert!(
+        spans > SAMPLES / 8,
+        "only {spans} of {SAMPLES} pointers had a span"
+    );
+    assert!(
+        refusals > SAMPLES / 5,
+        "only {refusals} of {SAMPLES} pointers were refused"
+    );
 }
 
 /// How often the constructor accepts, and how often it yields more than one

@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1590;
+pub const NEXT_MUTATION_ID: u16 = 1597;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521];
@@ -271,7 +271,78 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "    match disabled.access(|registers| write(registers, offset, value)) {",
         replace: "    match disabled.access(|registers| {\n        #[cfg(debug_assertions)]\n        let stack_pressure = [0u8; 3072];\n        #[cfg(not(debug_assertions))]\n        let stack_pressure = [0u8; 16 * 1024];\n        core::hint::black_box(&stack_pressure);\n        let result = write(registers, offset, value);\n        core::hint::black_box(&stack_pressure);\n        result\n    }) {",
         breaks: "NVMe preparation consumes the two-page boot-stack safety margin",
-        reddens: Caught::Check("nvme preparation preserves two pages of boot-stack headroom"),
+        reddens: Caught::Check("nvme candidates preserve two pages of boot-stack headroom"),
+    },
+    Mutation {
+        id: 1590,
+        file: "kernel/src/nvme.rs",
+        find: "fn finish_preparation(\n    registers: MappedBar,\n    capabilities: Capabilities,\n    admin: QueuePair,\n    capacity: Capacity,\n    #[cfg(feature = \"selftest\")] observed_window: u64,\n) -> PrepareOutcome {\n",
+        replace: "#[inline(never)]\nfn finish_preparation(\n    registers: MappedBar,\n    capabilities: Capabilities,\n    admin: QueuePair,\n    capacity: Capacity,\n    #[cfg(feature = \"selftest\")] observed_window: u64,\n) -> PrepareOutcome {\n    #[cfg(debug_assertions)]\n    let stack_pressure = [0u8; 8 * 1024];\n    #[cfg(not(debug_assertions))]\n    let stack_pressure = [0u8; 16 * 1024];\n    core::hint::black_box(&stack_pressure);\n",
+        breaks: "a frame below preparation's register accesses consumes the boot-stack margin unseen by the live-leaf meter",
+        reddens: Caught::Check("nvme candidates preserve two pages of boot-stack headroom"),
+    },
+    Mutation {
+        id: 1591,
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        let mut address = self.span.start;\n",
+        replace: "        let mut address = self.span.end;\n",
+        breaks: "the painted-stack scan starts at its own boundary and reads none of the span the candidate wrote",
+        reddens: Caught::Check("nvme candidates preserve two pages of boot-stack headroom"),
+    },
+    Mutation {
+        id: 1592,
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "#[cfg(feature = \"selftest\")]\n#[derive(Debug)]\npub struct PaintedStack {",
+        replace: "#[derive(Debug)]\npub struct PaintedStack {",
+        breaks: "the painted-stack type reaches the shipped wost API",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::machine_probes_are_absent_from_the_shipped_wost_graph",
+        },
+    },
+    Mutation {
+        id: 1593,
+        file: "kernel/src/nvme.rs",
+        find: "fn read(registers: &MappedBar, offset: usize) -> Result<u32, BringUpError> {\n    #[cfg(feature = \"selftest\")]\n    observe_candidate_stack();",
+        replace: "fn read(registers: &MappedBar, offset: usize) -> Result<u32, BringUpError> {\n    observe_candidate_stack();",
+        breaks: "every shipped NVMe register read runs the stack meter's leaf hook",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::machine_evidence_writes_are_absent_from_shipped_paths",
+        },
+    },
+    Mutation {
+        id: 1594,
+        file: "libs/stack-layout/src/lib.rs",
+        find: "            capacity: self.stack_len,",
+        replace: "            capacity: 16 * 1024,",
+        breaks: "stack usage reports a fixed 16 KiB capacity whatever the slot holds",
+        reddens: Caught::HostTest {
+            package: "stack-layout",
+            name: "usage_splits_a_slot_at_every_pointer_inside_it_and_refuses_the_rest",
+        },
+    },
+    Mutation {
+        id: 1595,
+        file: "libs/stack-layout/src/lib.rs",
+        find: "        let end = limit - limit % WORD;",
+        replace: "        let end = limit - limit % WORD + WORD;",
+        breaks: "a paintable span reaches one word into the clearance it must leave",
+        reddens: Caught::HostTest {
+            package: "stack-layout",
+            name: "a_span_below_a_pointer_starts_at_the_base_and_stops_a_clearance_short",
+        },
+    },
+    Mutation {
+        id: 1596,
+        file: "xtask/src/qemu.rs",
+        find: "            sample.leaf <= sample.used,",
+        replace: "            sample.leaf <= sample.capacity,",
+        breaks: "a stack record whose live-leaf use exceeds its painted high-water mark is accepted",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::a_passing_selftest_requires_bounded_conservative_nvme_stack_evidence",
+        },
     },
     Mutation {
         id: 18,

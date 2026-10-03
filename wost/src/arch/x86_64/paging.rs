@@ -3284,6 +3284,82 @@ pub fn permanent_stack_rejects_lower_leaf_substitution_for_test(base: u64) -> Op
     })
 }
 
+/// A permanent stack's dead span, painted so a later scan finds the deepest word written.
+///
+/// The paint is non-zero because a stack probe stores zero, and non-canonical so
+/// no saved pointer can equal it.
+#[cfg(feature = "selftest")]
+#[derive(Debug)]
+pub struct PaintedStack {
+    identity: StackIdentity,
+    span: core::ops::Range<u64>,
+}
+
+#[cfg(feature = "selftest")]
+impl PaintedStack {
+    const PAINT: u64 = 0x5741_5A44_5354_4B21;
+    const WORD: u64 = size_of::<u64>() as u64;
+    /// Room below the painter for its own calls, which a debug build makes for every word.
+    const CLEARANCE: u64 = 1024;
+    /// The scan runs no deeper than the paint, so half that room keeps the scan's calls clear.
+    const SCAN_CLEARANCE: u64 = Self::CLEARANCE / 2;
+
+    /// The lowest painted word anything has written since the paint.
+    ///
+    /// `None` when every word still holds the paint, or unless this frame runs on
+    /// the painted stack in the same address space, at least half a kilobyte
+    /// above the span.
+    pub fn deepest_touch(&self) -> Option<u64> {
+        let pointer = cpu::stack_pointer();
+        let reach = self
+            .identity
+            .slot
+            .span_below(pointer, Self::SCAN_CLEARANCE)?;
+        if reach.end < self.span.end || current_mapping_root(self.identity.root).is_none() {
+            return None;
+        }
+        let mut address = self.span.start;
+        while address < self.span.end {
+            // SAFETY: the word is in the painted span of the pinned stack this frame runs on,
+            // at least `SCAN_CLEARANCE` below it, so it is mapped and holds no live value.
+            if unsafe { (address as *const u64).read_volatile() } != Self::PAINT {
+                return Some(address);
+            }
+            address += Self::WORD;
+        }
+        None
+    }
+}
+
+/// Paint the dead span of the permanent stack this code is running on.
+///
+/// Finds the live-root permanent stack that holds the stack pointer, re-walks
+/// its guard and pages, and fills every word from its base to a clearance below
+/// this frame.
+#[cfg(feature = "selftest")]
+pub fn paint_current_permanent_stack_for_test() -> Option<PaintedStack> {
+    let pointer = cpu::stack_pointer();
+    let identity = PERMANENT_STACKS
+        .lock_leaf()
+        .iter()
+        .flatten()
+        .find(|identity| identity.slot.usage_at(pointer).is_some())
+        .copied()?;
+    let root = current_mapping_root(identity.root)?;
+    if identity.invalid_page_in(root).is_some() {
+        return None;
+    }
+    let span = identity.slot.span_below(pointer, PaintedStack::CLEARANCE)?;
+    let mut address = span.start;
+    while address < span.end {
+        // SAFETY: the walk above proved this pinned stack mapped, owned and writable, and
+        // `span_below` keeps the word between its base and `CLEARANCE` below this frame.
+        unsafe { (address as *mut u64).write_volatile(PaintedStack::PAINT) };
+        address += PaintedStack::WORD;
+    }
+    Some(PaintedStack { identity, span })
+}
+
 /// A stack this address space mapped, with its guard verified absent.
 ///
 /// Not `Copy` or `Clone`, for the reason [`DeviceMapping`] is not: it is the

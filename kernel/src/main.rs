@@ -521,6 +521,8 @@ impl CandidateStage {
 /// released its function and I/O claims (D-199). Every stage returns its
 /// owners here, so one stage frame at a time sits on the boot stack (D-359).
 fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
+    #[cfg(feature = "selftest")]
+    let stack = nvme::CandidateStackMeasurement::begin();
     let mut context = thread::ThreadContext::require();
     #[cfg(feature = "selftest")]
     let baseline = CandidateBaseline::capture(&mut context);
@@ -539,7 +541,11 @@ fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
             CandidateStage::Prepared(..) => admit_candidate(&mut stage, &mut context),
             CandidateStage::Admitted(..) => start_candidate(&mut stage, &mut context, ordinal),
             CandidateStage::Retire(device) => break device,
-            CandidateStage::Settled(selection) => return selection,
+            CandidateStage::Settled(selection) => {
+                #[cfg(feature = "selftest")]
+                nvme::finish_candidate_stack(stack.as_ref());
+                return selection;
+            }
         };
     };
     let selection = retire_candidate(
@@ -558,6 +564,8 @@ fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
             Ordering::Release,
         );
     }
+    #[cfg(feature = "selftest")]
+    nvme::finish_candidate_stack(stack.as_ref());
     selection
 }
 

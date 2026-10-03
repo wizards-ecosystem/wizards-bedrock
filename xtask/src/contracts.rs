@@ -3501,7 +3501,9 @@ use wost::arch::current::interrupt::buffer_clears;
 use wost::arch::current::interrupt::gate_privilege;
 use wost::arch::current::interrupt::live_frame_address;
 use wost::arch::current::interrupt::table_is_loaded;
+use wost::arch::current::paging::PaintedStack;
 use wost::arch::current::paging::cleared_on_drop;
+use wost::arch::current::paging::paint_current_permanent_stack_for_test;
 use wost::arch::current::paging::reclaimed_refusals;
 use wost::arch::current::pic::masks;
 use wost::arch::current::segment::code_selector;
@@ -3544,7 +3546,9 @@ fn observe(
         ("E0432", "interrupt::gate_privilege"),
         ("E0432", "interrupt::live_frame_address"),
         ("E0432", "interrupt::table_is_loaded"),
+        ("E0432", "paging::PaintedStack"),
         ("E0432", "paging::cleared_on_drop"),
+        ("E0432", "paging::paint_current_permanent_stack_for_test"),
         ("E0432", "paging::reclaimed_refusals"),
         ("E0432", "pic::masks"),
         ("E0432", "segment::code_selector"),
@@ -3567,7 +3571,7 @@ fn observe(
         ("E0599", "has_back_buffer"),
         ("E0599", "pixel_at"),
     ];
-    assert_eq!(MISSING.len(), 33, "D-290's shipped wost inventory");
+    assert_eq!(MISSING.len(), 35, "D-290's shipped wost inventory");
     require_missing_items(&paths, "machine-only-observers", OBSERVERS, MISSING).unwrap_or_else(
         |diagnostics| panic!("a machine-only observer reached shipped code:\n{diagnostics}"),
     );
@@ -4297,6 +4301,8 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
                 ("NVME_BAR_ADMISSION_PROVED", 3),
                 ("ROUTING_ROLLBACK_PROVED", 3),
                 ("CandidateBaseline", 4),
+                ("CandidateStackMeasurement", 1),
+                ("finish_candidate_stack", 2),
             ],
         ),
         (
@@ -4321,6 +4327,16 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
                 ("intercepted_read_submissions", 5),
                 ("intercepted_io_queue_creations", 5),
                 ("observed_window", 14),
+                ("STACK_METER_STATE", 8),
+                ("STACK_LOWEST", 4),
+                ("STACK_MAX_USED", 3),
+                ("STACK_MAX_LEAF", 3),
+                ("STACK_CANDIDATES", 3),
+                ("STACK_MEASUREMENTS", 3),
+                ("STACK_MEASUREMENT_VALID", 3),
+                ("observe_candidate_stack", 3),
+                ("CandidateStackMeasurement", 4),
+                ("finish_candidate_stack", 1),
             ],
         ),
         (
@@ -4361,7 +4377,7 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
             .iter()
             .map(|(_, observers)| observers.len())
             .sum::<usize>(),
-        95,
+        107,
         "D-290's evidence-identifier inventory"
     );
     for &(relative, expected) in OBSERVERS {

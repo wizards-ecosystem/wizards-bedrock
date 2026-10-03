@@ -810,7 +810,7 @@ const EXPECTED_SELFTEST_CHECKS: usize = 271;
 /// Prefix of the strict performance/resource record emitted by self-test.
 const BASELINE_PREFIX: &str = "selftest: baseline ";
 
-/// Prefix and bounds of the retained linked NVMe preparation-stack record.
+/// Prefix and bounds of the painted NVMe candidate-stack record.
 const NVME_STACK_PREFIX: &str = "selftest: nvme-stack ";
 const NVME_STACK_CAPACITY: u64 = 32 * 1024;
 const NVME_STACK_MIN_HEADROOM: u64 = 2 * 4096;
@@ -921,6 +921,7 @@ struct StackSample {
     used: u64,
     capacity: u64,
     headroom: u64,
+    leaf: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1292,13 +1293,14 @@ fn parse_stack_sample(line: &str) -> Option<Result<StackSample>> {
     let message = log_message(line, LogSeverity::Info)?;
     let mut fields = message.strip_prefix(NVME_STACK_PREFIX)?.split(' ');
     let parsed = (|| {
-        if core::iter::Iterator::next(&mut fields) != Some("v1") {
+        if core::iter::Iterator::next(&mut fields) != Some("v2") {
             bail!("unsupported NVMe stack record version");
         }
         let sample = StackSample {
             used: parse_baseline_value(core::iter::Iterator::next(&mut fields), "used=")?,
             capacity: parse_baseline_value(core::iter::Iterator::next(&mut fields), "capacity=")?,
             headroom: parse_baseline_value(core::iter::Iterator::next(&mut fields), "headroom=")?,
+            leaf: parse_baseline_value(core::iter::Iterator::next(&mut fields), "leaf=")?,
         };
         if core::iter::Iterator::next(&mut fields).is_some() {
             bail!("trailing fields in NVMe stack record");
@@ -1418,8 +1420,14 @@ fn correlate_selftest(
             "NVMe stack record does not conserve its capacity"
         );
         ensure!(
+            sample.leaf <= sample.used,
+            "NVMe stack record's live-leaf use {} exceeds its painted high-water mark {}",
+            sample.leaf,
+            sample.used
+        );
+        ensure!(
             sample.headroom >= NVME_STACK_MIN_HEADROOM,
-            "NVMe preparation retained only {} bytes of stack headroom",
+            "NVMe candidates retained only {} bytes of stack headroom",
             sample.headroom
         );
     }
@@ -3586,11 +3594,12 @@ mod tests {
             used: 22_000,
             capacity: NVME_STACK_CAPACITY,
             headroom: NVME_STACK_CAPACITY - 22_000,
+            leaf: 21_000,
         }
     }
 
     fn stack_line() -> &'static str {
-        "[info ] selftest: nvme-stack v1 used=22000 capacity=32768 headroom=10768\r\n"
+        "[info ] selftest: nvme-stack v2 used=22000 capacity=32768 headroom=10768 leaf=21000\r\n"
     }
 
     #[test]
@@ -3802,7 +3811,10 @@ mod tests {
             passing_stack_sample()
         );
         for line in [
-            stack_line().replace("v1", "v2"),
+            stack_line().replace("v2", "v1"),
+            stack_line().replace(" leaf=21000", ""),
+            stack_line().replace("leaf=21000", "leaf=021000"),
+            stack_line().replace("headroom=10768 leaf=21000", "leaf=21000 headroom=10768"),
             stack_line().replace("used=22000 capacity=32768", "capacity=32768 used=22000"),
             stack_line().replace("used=22000", "used=022000"),
             stack_line().replace(" headroom=10768", ""),
@@ -3957,6 +3969,13 @@ mod tests {
                     ..passing_stack_sample()
                 }),
                 "does not conserve",
+            ),
+            (
+                Some(StackSample {
+                    leaf: passing_stack_sample().used + 1,
+                    ..passing_stack_sample()
+                }),
+                "exceeds its painted high-water mark",
             ),
             (
                 Some(StackSample {
