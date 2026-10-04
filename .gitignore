@@ -37,5 +37,10 @@
 # untracked-clean tree.
 /HANDOFF.md
 
+# The note's working files: the scripts, plans, triage and logs it cites, kept
+# beside it so they outlive the session scratchpad that produced them.
+# (`handoff/` itself is the tracked Wizzy handoff fixture directory.)
+/handoff-notes/
+
 # Local research clones; not part of the build and not ours.
 /exploration/
