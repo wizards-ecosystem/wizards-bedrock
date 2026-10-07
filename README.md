@@ -164,6 +164,9 @@ After booting each generated machine and completing its human input rounds, run
 `cargo xtask qualify-vmware --shipped` for the shipped image. Qualification
 validates and preserves each
 fresh transcript; generation alone is not phase-close execution evidence.
+Generate, boot and qualify each selector before generating the other. Keep
+exactly that machine running during qualification, then stop it: the record
+requires an exact one-machine `vmrun` observation and the matching build image.
 
 `cargo xtask baseline` builds the fixed-QEMU self-test image once in release
 and debug modes, then boots each three times. It requires a clean ordinary
@@ -184,7 +187,7 @@ deterministic bundle under `target/evidence/`; `cargo xtask verify-evidence`
 then rechecks its source identity, installed tool and firmware identities,
 vendored and machine inputs, artifact hashes, reproducibility result and boot
 result without network access. The QEMU hardware ABI is pinned to
-`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v7 requires
+`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v8 requires
 source-bound records for the current mutation sweep, the independent
 `cargo-mutants` grade, the canonical Codex Security Deep artifacts, the fresh
 RustSec review, all model runs and both generated-and-booted VMware selectors,

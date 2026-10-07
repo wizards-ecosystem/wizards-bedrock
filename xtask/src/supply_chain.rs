@@ -712,7 +712,14 @@ fn manifest_dependencies(manifest: &str) -> Result<Vec<Dependency>> {
                 || (header.starts_with("target.") && header.ends_with(".dependencies"));
             continue;
         }
-        if !in_normal_dependencies || line.is_empty() || line.starts_with('#') {
+        if !in_normal_dependencies {
+            ensure!(
+                canonical_outer_assignment(line),
+                "`{line}` is a key assignment the runtime-scope reader does not model"
+            );
+            continue;
+        }
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
         if let Some((key, declaration)) = line.split_once('=') {
@@ -767,6 +774,23 @@ fn canonical_header(line: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
     })
+}
+
+fn canonical_outer_assignment(line: &str) -> bool {
+    if line.starts_with('#') {
+        return true;
+    }
+    let Some((key, declaration)) = line.split_once('=') else {
+        return true;
+    };
+    let key = key.trim();
+    let bare = key.strip_suffix(".workspace").unwrap_or(key);
+    !bare.is_empty()
+        && bare
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        && bare != "dependencies"
+        && !(matches!(bare, "target" | "workspace") && declaration.trim_start().starts_with('{'))
 }
 
 fn renames_package(declaration: &str) -> bool {
@@ -1523,6 +1547,35 @@ mod tests {
             let error = error.to_string();
             assert!(error.contains(diagnostic), "{manifest}: {error}");
         }
+    }
+
+    #[test]
+    fn runtime_dependency_tables_cannot_hide_in_outer_assignments() {
+        for manifest in [
+            "dependencies.hidden = \"1\"\n",
+            "dependencies = { hidden = \"1\" }\n",
+            "[target.'cfg(unix)']\ndependencies = { hidden = \"1\" }\n",
+            "[target.'cfg(unix)']\ndependencies.hidden = \"1\"\n",
+            "[target]\n'cfg(unix)'.dependencies.hidden = \"1\"\n",
+            "\"dependencies\" = { hidden = \"1\" }\n",
+            "\"depen\\u0064encies\" = { hidden = \"1\" }\n",
+            "target = { 'cfg(unix)' = { dependencies = { hidden = \"1\" } } }\n",
+            "workspace = { dependencies = { hidden = \"1\" } }\n",
+            "[package]\nname = \"fixture\"\n[target.'cfg(unix)']\n\
+             dependencies = { hidden = \"1\" }\n[dependencies]\nvisible = \"1\"\n",
+        ] {
+            let error = manifest_dependencies(manifest)
+                .expect_err("a hidden runtime dependency must refuse the manifest")
+                .to_string();
+            assert!(error.contains("key assignment"), "{manifest}: {error}");
+        }
+        let modeled = "[package]\nname = \"fixture\"\nversion.workspace = true\n\
+            # dependencies = { decoy = \"1\" }\n\
+            [dev-dependencies]\nfixture = { version = \"1\", features = [\"test\"] }\n\
+            [dependencies]\nlive.workspace = true\n";
+        let dependencies = manifest_dependencies(modeled).expect("modeled member manifest");
+        assert_eq!(dependencies.len(), 1);
+        assert_eq!(dependencies[0].name, "live");
     }
 
     #[test]

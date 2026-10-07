@@ -3275,6 +3275,30 @@ struct RawPortClaims {
 }
 
 impl<'ast> Visit<'ast> for RawPortClaims {
+    fn visit_macro(&mut self, invocation: &'ast Macro) {
+        let mut tokens = Vec::new();
+        asm_tokens(invocation.tokens.clone(), &mut tokens);
+        let through_port = tokens
+            .iter()
+            .any(|token| token.trim_start_matches("r#") == "port");
+        if through_port {
+            for token in &tokens {
+                let door = token.trim_start_matches("r#");
+                if RAW_PORT_CLAIMS.contains(&door) || door == "*" {
+                    self.calls.push(format!("macro port::{door}"));
+                }
+            }
+            for rename in tokens.windows(2) {
+                if matches!(rename[0].trim_start_matches("r#"), "port" | "self")
+                    && rename[1] == "as"
+                {
+                    self.calls.push("macro port as".to_string());
+                }
+            }
+        }
+        visit::visit_macro(self, invocation);
+    }
+
     fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
         let segments = path
             .path
@@ -3426,6 +3450,60 @@ fn production_kernel_code_claims_no_port_by_number() {
             "use wost::arch::current::port::*",
         ]
     );
+}
+
+#[test]
+fn raw_port_claims_inside_macros_are_refused() {
+    for (source, door) in [
+        (
+            "fn drive() { info!(\"{:?}\", port::claim::<u8>(0x80)); }",
+            "claim",
+        ),
+        (
+            "fn drive() { assert!(port::claim_block(0x80).is_ok()); }",
+            "claim_block",
+        ),
+        (
+            "fn drive() { info!(\"{:?}\", nested!({ port::claim_pair::<u8>(0x80, 0x81) })); }",
+            "claim_pair",
+        ),
+        (
+            "macro_rules! drive { () => { wost::arch::current::port::claim_block_pair(0x80, 0x90) }; }",
+            "claim_block_pair",
+        ),
+        (
+            "fn drive() { check!(r#port::r#claim::<u8>(0x80)); }",
+            "claim",
+        ),
+        (
+            "macro_rules! drive { () => { use wost::arch::current::port::*; }; }",
+            "*",
+        ),
+        (
+            "macro_rules! drive { () => { use wost::arch::current::port::{com1, claim_block as block}; }; }",
+            "claim_block",
+        ),
+    ] {
+        let syntax = syn::parse_file(source).expect("macro fixture parses");
+        let mut raw = RawPortClaims::default();
+        raw.visit_file(&syntax);
+        assert_eq!(raw.calls, [format!("macro port::{door}")], "{source}");
+    }
+    for source in [
+        "macro_rules! door { () => { use wost::arch::current::port as io; }; }",
+        "macro_rules! door { () => { use wost::arch::current::port::{self as io}; }; }",
+    ] {
+        let syntax = syn::parse_file(source).expect("macro alias fixture parses");
+        let mut raw = RawPortClaims::default();
+        raw.visit_file(&syntax);
+        assert!(!raw.calls.is_empty(), "a macro hid a port alias: {source}");
+    }
+    let source = "fn drive() { info!(\"port::claim(0x80)\");\n\
+        assert!(port::com1().is_ok()); info!(\"{:?}\", port::claim_spans::<2>(&spans)); }";
+    let syntax = syn::parse_file(source).expect("literal and typed-door fixture parses");
+    let mut raw = RawPortClaims::default();
+    raw.visit_file(&syntax);
+    assert!(raw.calls.is_empty(), "literal or allowed door was refused");
 }
 
 #[test]

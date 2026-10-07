@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1597;
+pub const NEXT_MUTATION_ID: u16 = 1603;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521];
@@ -17950,6 +17950,72 @@ fn mint_stopped<'controller>(
         replace: "    let reaped_this_child = last_rites_for(&spawned, 2_000).is_none()",
         breaks: "the busy-reap witness accepts a reap without its child's own last rites",
         reddens: Caught::Check("a busy machine reaps a program without another spawn"),
+    },
+    Mutation {
+        id: 1597,
+        file: "xtask/src/supply_chain.rs",
+        find: "                canonical_outer_assignment(line),",
+        replace: "                true,",
+        breaks: "runtime dependency tables can hide behind outer manifest assignments",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "supply_chain::tests::runtime_dependency_tables_cannot_hide_in_outer_assignments",
+        },
+    },
+    Mutation {
+        id: 1598,
+        file: "xtask/src/contracts.rs",
+        find: "        asm_tokens(invocation.tokens.clone(), &mut tokens);",
+        replace: "        asm_tokens(proc_macro2::TokenStream::new(), &mut tokens);",
+        breaks: "a raw port claim inside a macro is invisible to the production source contract",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::raw_port_claims_inside_macros_are_refused",
+        },
+    },
+    Mutation {
+        id: 1599,
+        file: "xtask/src/prose.rs",
+        find: "        Ok(if live { \"READY\" } else { \"CLOSED\" })",
+        replace: "        let _ = live;\n        Ok(\"READY\")",
+        breaks: "completed historical handoff owners can never close their disposition",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::historical_handoffs_close_only_after_every_owner_finishes",
+        },
+    },
+    Mutation {
+        id: 1600,
+        file: "xtask/src/prose.rs",
+        find: "        Ok(if live { \"READY\" } else { \"CLOSED\" })",
+        replace: "        let _ = live;\n        Ok(\"CLOSED\")",
+        breaks: "a historical handoff closes while one finite owner is still live",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::historical_handoffs_close_only_after_every_owner_finishes",
+        },
+    },
+    Mutation {
+        id: 1601,
+        file: "xtask/src/prose.rs",
+        find: "                _ => anyhow::bail!(\"historical handoff owner {owner} has invalid state {state}\"),",
+        replace: "                _ => live = true,",
+        breaks: "a stopped or invalid historical handoff owner is treated as ordinary live work",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "prose::tests::historical_handoffs_close_only_after_every_owner_finishes",
+        },
+    },
+    Mutation {
+        id: 1602,
+        file: "xtask/src/contracts.rs",
+        find: "                if RAW_PORT_CLAIMS.contains(&door) || door == \"*\" {",
+        replace: "                if (RAW_PORT_CLAIMS.contains(&door) || door == \"*\") && !tokens.iter().any(|token| token == \"as\") {",
+        breaks: "a grouped macro import hides its renamed raw port door",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::raw_port_claims_inside_macros_are_refused",
+        },
     },
 ];
 

@@ -1079,6 +1079,72 @@ mod tests {
         );
     }
 
+    fn historical_owner_disposition(
+        evidence: &str,
+        states: &BTreeMap<&str, &str>,
+    ) -> Result<&'static str> {
+        let owners = evidence
+            .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
+            .filter(|token| token.starts_with("PW-") || token.starts_with("WZ-"))
+            .collect::<BTreeSet<_>>();
+        anyhow::ensure!(!owners.is_empty(), "historical handoff has no finite owner");
+        let mut live = false;
+        for owner in owners {
+            let state = states
+                .get(owner)
+                .with_context(|| format!("historical handoff cites unknown owner {owner}"))?;
+            match *state {
+                "REQUIRED" | "READY" | "VERIFY" | "DECIDE" => live = true,
+                "DONE" | "SUPERSEDED" => {}
+                _ => anyhow::bail!("historical handoff owner {owner} has invalid state {state}"),
+            }
+        }
+        Ok(if live { "READY" } else { "CLOSED" })
+    }
+
+    #[test]
+    fn historical_handoffs_close_only_after_every_owner_finishes() {
+        for active in ["REQUIRED", "READY", "VERIFY", "DECIDE"] {
+            for finished in ["DONE", "SUPERSEDED"] {
+                for states in [
+                    [("PW-128", active), ("PW-201", finished)],
+                    [("PW-128", finished), ("PW-201", active)],
+                ] {
+                    let states = states.into_iter().collect();
+                    assert_eq!(
+                        historical_owner_disposition("PW-128 and `PW-201`.", &states).unwrap(),
+                        "READY",
+                        "live owner {active} was hidden"
+                    );
+                }
+            }
+        }
+        for first in ["DONE", "SUPERSEDED"] {
+            for second in ["DONE", "SUPERSEDED"] {
+                let states = [("PW-128", first), ("PW-201", second)]
+                    .into_iter()
+                    .collect();
+                assert_eq!(
+                    historical_owner_disposition("PW-128 and PW-201", &states).unwrap(),
+                    "CLOSED",
+                    "completed owners stayed live"
+                );
+            }
+        }
+        let states = [("PW-128", "DONE")].into_iter().collect();
+        assert!(historical_owner_disposition("no owner", &states).is_err());
+        assert!(historical_owner_disposition("PW-128 and PW-201", &states).is_err());
+        for invalid in ["TRIGGER", "WIZZY", "", "UNKNOWN"] {
+            let states = [("PW-128", "READY"), ("PW-201", invalid)]
+                .into_iter()
+                .collect();
+            assert!(
+                historical_owner_disposition("PW-128 and PW-201", &states).is_err(),
+                "owner state {invalid:?} was admitted"
+            );
+        }
+    }
+
     #[test]
     fn every_historical_handoff_has_one_current_disposition() {
         const TRIGGERS: [usize; 4] = [121, 129, 143, 154];
@@ -1128,21 +1194,22 @@ mod tests {
             "the historical handoff reconciliation is incomplete"
         );
 
-        let register_ids = register
+        let register_states = register
             .lines()
             .filter_map(|line| {
                 let mut cells = line.trim_start().strip_prefix("| ")?.split('|');
                 let id = core::iter::Iterator::next(&mut cells)?.trim();
-                (id.starts_with("PW-") || id.starts_with("WZ-")).then_some(id)
+                let state = core::iter::Iterator::next(&mut cells)?.trim();
+                (id.starts_with("PW-") || id.starts_with("WZ-")).then_some((id, state))
             })
-            .collect::<BTreeSet<_>>();
+            .collect::<BTreeMap<_, _>>();
         for (decision, (_, evidence)) in &dispositions {
             for reference in evidence
                 .split(|character: char| !(character.is_ascii_alphanumeric() || character == '-'))
                 .filter(|token| token.starts_with("PW-") || token.starts_with("WZ-"))
             {
                 assert!(
-                    register_ids.contains(reference),
+                    register_states.contains_key(reference),
                     "D-{decision} cites unknown register row {reference}"
                 );
             }
@@ -1166,10 +1233,11 @@ mod tests {
         }
         for decision in READY {
             let (state, evidence) = dispositions[&decision];
-            assert_eq!(state, "READY", "D-{decision} hides active handoff work");
-            assert!(
-                evidence.contains("PW-"),
-                "D-{decision} has no finite current owner"
+            let expected = historical_owner_disposition(evidence, &register_states)
+                .unwrap_or_else(|error| panic!("D-{decision}: {error}"));
+            assert_eq!(
+                state, expected,
+                "D-{decision} disagrees with its finite owners"
             );
         }
         for decision in CLOSED_OR_SUPERSEDED {

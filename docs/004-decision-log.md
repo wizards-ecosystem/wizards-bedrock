@@ -21074,3 +21074,89 @@ debug image, which sums direct-call prologue frames and does not follow
 formatting code reached through trait objects, puts the deepest unexecuted
 path, the retirement of a controller whose start fails, at 24,256 bytes, which
 would leave 8,512 free.
+
+## D-362 The remaining manifest and macro source-check evasions fail closed — Status: Accepted (2026-10-07), amends D-345, D-351 and D-360; closes PW-576
+
+**Context.** D-360 left two observed proof gaps. The manifest line reader
+skips assignments outside a normal dependency section, including a root
+`dependencies.hidden` key and a `dependencies` inline table under a target
+header. The port visitor cannot see expressions inside macro arguments.
+Neither limit needs a runtime or a Wizzy artifact to resolve.
+
+**Decision.** Outside normal dependency sections, member-manifest assignment
+keys must be bare keys or one bare key followed by `.workspace`. A bare
+`dependencies` key is refused, as are inline `target` and `workspace` tables.
+This deliberately bounded spelling keeps the offline reader independent of
+Cargo's resolver and excludes the alternate routes to a runtime dependency
+table. Existing modeled dependency sections retain their declaration rules.
+
+The port visitor also reads macro token trees. An input naming `port` refuses
+any raw-door identifier, star token or rename of `port` or `self`, including
+grouped imports whose alias is used elsewhere. Matching only adjacent
+`port::claim` tokens would still let a group hide a renamed door or module.
+A string literal remains one token and never becomes code. This is a
+conservative source restriction, not a macro expander or a type-resolution
+claim. The public raw doors remain available to the self-test harness under
+D-351.
+
+**Proof required.** Host fixtures cover root and target key assignments,
+quoted and dotted spellings, inline target tables, nested macros, grouped
+imports and literal decoys. Persistent mutations remove the outer-assignment
+guard and the macro inspection separately and hide a renamed raw door; each
+must fail its named host witness before exact restoration. The ordinary gate
+must pass before this slice is committed.
+
+**Evidence.** On 2026-10-07 the new host witnesses passed. Mutation
+1,597 bypassed outer-assignment validation and failed
+`runtime_dependency_tables_cannot_hide_in_outer_assignments`; mutation 1,598
+removed macro tokens from inspection and failed
+`raw_port_claims_inside_macros_are_refused`. A grouped renamed-import fixture
+first failed the adjacent-token guard; the restored token inventory passed
+it, and mutation 1,602 hid the renamed door and failed that same witness.
+Mutation 1,598 failed again against the complete fixture set. Each command
+selected one test, returned exit 101 with that exact test marked `FAILED`, and its source was
+restored byte for byte. These are host proofs; the complete current-source
+sweep remains PW-001.
+
+**Alternatives.** A full TOML parser would admit more manifest spellings but
+adds a dependency for a declaration style this repository does not need.
+`cargo metadata` would give up the independent offline source check. Expanding
+macros would add compiler machinery to a narrow prohibition whose token
+spelling is sufficient to refuse the known escape.
+
+## D-363 Historical handoff dispositions follow their finite owners — Status: Accepted (2026-10-07), amends D-325 and D-330; closes PW-577
+
+**Context.** The PW-006 closing draft found that the historical reconciliation
+check unconditionally requires D-142 and D-148 to remain `READY`. Once their
+finite register owners close, that check would reject the documentation-only
+child D-330 permits, forcing another source change and another qualification.
+The README and PW-009 also still name superseded evidence format numbers.
+
+**Decision.** Each of these two dispositions is `READY` while any cited
+register owner is live and `CLOSED` only when every cited owner is `DONE` or
+`SUPERSEDED`. Every owner must exist and have an allowed state; absent,
+unknown and stopped owners fail the check. Independent fixtures exercise
+both directions and mixed ownership before the final qualification. Current
+documentation names evidence v8 and qualification v4 under D-344.
+
+The closing child records qualifications already completed on its parent.
+Its own ordinary gate and evidence are produced and verified after committing
+that child, as D-330 requires. No draft may assert those future results or
+invent their digest; completion is established only by the resulting verified
+artifacts. A failed closing gate or bundle keeps the foundation open.
+
+**Proof required.** Retained host mutations must independently make completed
+owners appear live and live owners appear completed. The real historical
+reconciliation and ordinary gate must pass before this slice is committed.
+
+**Evidence.** On 2026-10-07
+`historical_handoffs_close_only_after_every_owner_finishes` passed. Mutation
+1,599 forced `READY` after all owners completed, mutation 1,600 forced
+`CLOSED` with a live owner, and mutation 1,601 admitted an invalid owner
+state. Each selected that one test, returned exit 101 with the exact witness
+marked `FAILED`, and was restored byte for byte.
+
+**Alternatives.** Keeping `READY` after its owners finish would leave a false
+backlog. Editing the check in the closing child would violate D-330's source
+freeze. Weakening the check to accept either label would lose the relationship
+between a historical obligation and its finite current owners.
