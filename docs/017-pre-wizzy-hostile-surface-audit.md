@@ -305,3 +305,20 @@ and tooling tables remain an adversarial review census: the phase-close ADR
 must re-read them against the final source, enumerate every `OPEN` disposition,
 link the current mutation/model/machine/external-grader evidence and record any
 new defect in the finite register before calling PW-010 complete.
+
+### 2026-10-07 human VMware shakedown
+
+Two self-test boots on `96c906d` each passed 210 of 271 checks, with identical
+failures and passing keyboard rounds. PW-578 records the wrong relationship
+between VT-d table depth and MGAW; D-364 separates table selection from both
+effective coverage limits and binds the production mapping guard to that
+policy. PW-579 records refusal of normal CRLF and Workstation runtime VMX
+rewrites; D-365 keeps source-rendered input identity and exact runtime capture
+distinct while enforcing all generated assignments and constrained additions.
+Host and retained-red evidence does not replace fresh VMware qualification.
+
+PW-580 remains OPEN: the guest reports architectural capabilities `0x44`
+without RDCL_NO while Workstation's log describes guest MSR `0x2f`. Hyper-V
+ULM is observed, but the discrepancy's cause is unproved. D-250 still refuses
+ring 3 without affirmative isolation evidence. Neither a CPU signature nor
+the Workstation log substitutes for the guest's architectural read.

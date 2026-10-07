@@ -981,9 +981,9 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 271 |
-| Mutations | 1596 registered; complete-sweep verdicts live in source-bound qualification records |
+| Mutations | 1618 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-363 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-365 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but mutation registration is not a current full-sweep
@@ -1269,3 +1269,10 @@ switched on, a context programmed for a sibling function, the refusal text lost,
 a foreign domain admitted, a width that covers one bit too many, a takeover
 that drops firmware's interrupt state, a quiescence test that ignores the
 invalidation queue, and a forgeable proof.
+
+D-364 separates supported table depth from effective coverage: SAGAW chooses
+the walk and every mapped byte stays below both AGAW and MGAW. A supported
+deeper table may serve narrower addresses. Two 2026-10-07 VMware boots on
+`96c906d` refused width selection and each failed 61 of 271 checks; they are
+diagnostic evidence. Fresh hardware proof remains PW-578 and PW-571. D-365
+repairs CRLF and runtime VMX validation; the CPU discrepancy remains PW-580.

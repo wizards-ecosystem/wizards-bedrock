@@ -62,8 +62,11 @@ const TABLE_LIMIT: usize = 24;
 pub enum VtdError {
     /// The register window refused a read or write at the named offset.
     Register(usize),
-    /// No adjusted guest address width the unit reports is usable.
-    NoAddressWidth,
+    /// The unit reports no modelled page-table depth.
+    NoAddressWidth {
+        /// Raw capability register for the refused unit.
+        capability: u64,
+    },
     /// The unit reports fewer domains than the one it is asked to hold.
     TooFewDomains,
     /// A table frame was unavailable, or the arena is full.
@@ -94,8 +97,11 @@ impl fmt::Display for VtdError {
             Self::Register(offset) => {
                 write!(f, "the register window refused offset {offset:#x}")
             }
-            Self::NoAddressWidth => {
-                f.write_str("no supported address width fits the unit's maximum")
+            Self::NoAddressWidth { capability } => {
+                write!(
+                    f,
+                    "no modelled page-table depth in capability {capability:#x}"
+                )
             }
             Self::TooFewDomains => f.write_str("the unit reports no domain to isolate into"),
             Self::OutOfTables => f.write_str("no frame for a remapping table"),
@@ -350,7 +356,7 @@ impl Vtd {
         let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {
             return false;
         };
-        if !self.width.covers(last) {
+        if !self.width.covers_on(self.capability, last) {
             return false;
         }
         let start = paddr & !(PAGE - 1);
@@ -671,7 +677,9 @@ impl Plan {
     fn read(registers: &mut ReleasableDevice) -> Result<Self, VtdError> {
         let capability = Capability::from_bits(read_u64(registers, vtd::CAP as usize)?);
         let extended = ExtendedCapability::from_bits(read_u64(registers, vtd::ECAP as usize)?);
-        let width = AddressWidth::choose(capability).ok_or(VtdError::NoAddressWidth)?;
+        let width = AddressWidth::choose(capability).ok_or(VtdError::NoAddressWidth {
+            capability: capability.bits(),
+        })?;
         if u32::from(DOMAIN_ID) >= capability.number_of_domains() {
             return Err(VtdError::TooFewDomains);
         }

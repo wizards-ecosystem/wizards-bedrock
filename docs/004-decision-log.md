@@ -21160,3 +21160,89 @@ marked `FAILED`, and was restored byte for byte.
 backlog. Editing the check in the closing child would violate D-330's source
 freeze. Weakening the check to accept either label would lose the relationship
 between a historical obligation and its finite current owners.
+
+## D-364 VT-d table depth and effective address coverage are independent — Status: Accepted (2026-10-07), amends D-358; advances PW-578
+
+**Context.** Two human VMware boots on `96c906d` each passed 210 of 271
+checks. Both NVMe candidates refused VT-d width selection. The selector
+incorrectly requires AGAW to be no greater than MGAW. Intel's [Capability
+register definition](https://edc.intel.com/content/www/us/en/design/publications/13th-generation-core-processor-datasheet-volume-2-of-2/capability-register-cap-reg-0-0-0-vtdbar-offset-8/)
+limits addressability to the minimum of MGAW and the supported table's AGAW.
+The failing unit's raw CAP word was not logged; its exact tuple is unproved.
+
+**Decision.** SAGAW selects the widest supported modelled table depth. Every
+mapped byte must remain below both that table's AGAW and the unit's MGAW.
+A supported deeper table can serve narrower addresses. MGAW 64 must not
+cause a shift by 64. No supported depth still refuses takeover; DMA isolation
+and bus-master admission remain mandatory.
+Width refusal includes the raw CAP word so another refusal can be diagnosed.
+
+**Proof required.** Exhaustive host SAGAW/MGAW and address-boundary checks,
+retained mutations restoring the old selector and bypassing each coverage
+limit, release/debug boots and CI, then fresh VMware storage/fault witnesses.
+The failed human boots close no hardware row.
+
+**Alternatives.** Refusing a supported deeper table rejects a usable unit.
+Dropping MGAW without bounding mappings overstates the domain's reach.
+A VMware exception would hide the same error on other conforming units.
+
+**Host evidence.** On 2026-10-07 the 33 VT-d host checks and doctest passed.
+Mutations 1,603 through 1,605 each failed the selected selection or effective
+coverage witness with exit 101, then restored source byte for byte. Release,
+debug boots each passed 271/271 on the repair tree. The ordinary gate and the
+new VMware observation remain required.
+Mutation 1,623 reverted the production mapping seam to geometric coverage
+alone and failed its AST source contract before exact restoration.
+
+## D-365 VMware qualification binds configuration and preserves runtime bytes — Status: Accepted (2026-10-07), amends D-218, D-235 and D-244; advances PW-579
+
+**Context.** The human boots also expose refusal of the UART's normal CRLF
+and of the runtime VMX's postboot digest. Workstation rewrites line endings
+and comment encoding and adds assignments. Every original generated
+assignment in the observed runtime VMX still matches.
+
+**Decision.** Accept LF and CRLF terminators, refusing bare or embedded CR
+and every previously refused control. Preserve raw serial bytes. The
+one-boot, one-verdict and ordered hardware witnesses remain mandatory.
+
+The generation receipt continues to bind the exact source-rendered preboot
+VMX. Verification recreates it from source, selector and serial generation,
+checks runtime assignments against it, and uses the regenerated input digest
+when comparing the receipt. Every generated assignment must exist unchanged.
+Original key spellings are preserved; duplicate keys, including case-colliding
+keys, unknown additions and alternate quoting/escape forms refuse. Only
+individually constrained, observed runtime
+assignments are allowed. Device placements, graphics and USB defaults get
+explicit constraints rather than unrestricted metadata permission.
+The passing record separately hashes the exact captured runtime VMX and
+revalidates it before publication and offline verification. Neither receipts
+nor serial output are rewritten to pass.
+
+**Proof required.** Fixtures accept CRLF and the reviewed runtime additions;
+reject embedded/bare CR, missing or changed generated assignments, duplicate
+or case-colliding keys, unknown additions and invalid runtime values; and
+preserve exact capture while refusing mixed generations and later changes.
+Each new acceptance path and guard needs a retained red mutation, exact
+restoration and CI. Fresh human VMware records remain required.
+
+**Alternatives.** Ignoring VMX loses the machine contract. Updating the
+receipt to the postboot digest rewrites provenance. Removing arbitrary
+additions before hashing can hide CPU or device overrides. Stripping every
+CR turns terminal-control sequences into apparently canonical evidence.
+
+**Still unresolved.** Both guests report architectural capabilities `0x44`,
+without RDCL_NO, while Workstation logs guest MSR `0x2f`; the host uses the
+Hyper-V ULM monitor. PW-580 investigates the discrepancy. Its cause is not
+established, and D-250's affirmative isolation requirement stays unchanged.
+
+**Host evidence.** On 2026-10-07 all 38 VMware-focused host checks passed.
+Mutations 1,606 through 1,622 each selected one exact witness, returned exit
+101 with that witness marked FAILED and restored source byte for byte.
+They exercise CRLF admission, terminal-active CR refusal, generated-value
+binding, unknown and duplicate keys, bounded identity fields, assignment
+grammar, exact capture and source-generated input identity. Full CI is
+required before committing this slice; passing human records remain owed.
+Mutation 1,624 also failed changed-key-spelling admission. Tightening that
+rule initially masked the duplicate-key witness with the unknown-key guard;
+the repaired fixture independently rejects identical duplicate assignments
+at the parser, and mutation 1,610 then failed that exact witness again.

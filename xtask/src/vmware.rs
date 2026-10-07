@@ -3,6 +3,8 @@
 //! The raw image is copied in alongside the descriptors so the folder is
 //! self-contained and can be moved or archived on its own.
 
+mod config;
+
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -147,15 +149,7 @@ pub fn generate(paths: &Paths, image: &Path, kernel: Kernel) -> Result<()> {
     write_new(&vm_dir.join(NVME_VMDK_NAME), nvme_vmdk.as_bytes())?;
 
     let serial_name = qualification::fresh_vmware_transcript_name()?;
-    let vmx = render(
-        VMX_TEMPLATE,
-        &[
-            ("DISPLAY_NAME", display_name(kernel)),
-            ("VMDK_NAME", VMDK_NAME.to_string()),
-            ("NVME_VMDK_NAME", NVME_VMDK_NAME.to_string()),
-            ("SERIAL_LOG", serial_name.clone()),
-        ],
-    )?;
+    let vmx = generation_vmx(kernel, &serial_name)?;
     let vmx_path = vm_dir.join(VMX_NAME);
     write_new(&vmx_path, vmx.as_bytes())?;
     let serial_log = vm_dir.join(&serial_name);
@@ -226,6 +220,24 @@ pub(crate) fn invalidate_generation(paths: &Paths, kernel: Kernel) -> Result<()>
     )
 }
 
+/// Render the source-bound machine configuration for one serial generation.
+pub(crate) fn generation_vmx(kernel: Kernel, serial: &str) -> Result<String> {
+    render(
+        VMX_TEMPLATE,
+        &[
+            ("DISPLAY_NAME", display_name(kernel)),
+            ("VMDK_NAME", VMDK_NAME.to_string()),
+            ("NVME_VMDK_NAME", NVME_VMDK_NAME.to_string()),
+            ("SERIAL_LOG", serial.to_string()),
+        ],
+    )
+}
+
+/// Verify source-generated settings and constrained runtime additions.
+pub(crate) fn verify_runtime_vmx(generated: &[u8], runtime: &[u8]) -> Result<()> {
+    config::verify(generated, runtime)
+}
+
 /// Validate a fresh VMware transcript and preserve the exact machine it came from.
 pub(crate) fn qualify(paths: &Paths, kernel: Kernel) -> Result<()> {
     let attempt = qualification::begin_vmware(paths, kernel)?;
@@ -269,6 +281,8 @@ where
         "VMware transcript contains a NUL byte"
     );
     after_nul_check()?;
+    let normalized = text.replace("\r\n", "\n");
+    let text = normalized.as_str();
     ensure!(
         text.ends_with('\n')
             && text
@@ -1017,6 +1031,32 @@ mod tests {
                 verify_transcript(root, kernel, near_miss.as_bytes()).is_err(),
                 "accepted a non-VMware or inexact consumed-isolation marker"
             );
+        }
+    }
+
+    #[test]
+    fn uart_crlf_and_lf_are_both_valid_transcript_terminators() {
+        let root = repository_root();
+        for (kernel, transcript) in [
+            (Kernel::SelfTest, selftest_transcript()),
+            (Kernel::Shipped, shipped_transcript()),
+        ] {
+            verify_transcript(&root, kernel, transcript.as_bytes()).unwrap();
+            verify_transcript(&root, kernel, transcript.replace('\n', "\r\n").as_bytes()).unwrap();
+        }
+    }
+
+    #[test]
+    fn only_a_carriage_return_paired_with_line_feed_is_allowed() {
+        let root = repository_root();
+        let valid = selftest_transcript();
+        for poisoned in [
+            valid.replacen("[info ]", "[info\r ]", 1),
+            format!("\r{valid}"),
+            valid.replace('\n', "\r\r\n"),
+            format!("{valid}\r"),
+        ] {
+            assert!(verify_transcript(&root, Kernel::SelfTest, poisoned.as_bytes()).is_err());
         }
     }
 

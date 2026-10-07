@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1603;
+pub const NEXT_MUTATION_ID: u16 = 1625;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521];
@@ -18015,6 +18015,248 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "contracts::raw_port_claims_inside_macros_are_refused",
+        },
+    },
+    Mutation {
+        id: 1603,
+        file: "libs/vtd/src/lib.rs",
+        find: "        if cap.sagaw_supports(5) {",
+        replace: "        if cap.sagaw_supports(5) && Self::Level5.address_bits() <= cap.max_guest_address_width() {",
+        breaks: "a supported table is refused when its adjusted width exceeds MGAW",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::supported_table_depth_is_independent_of_guest_address_limit",
+        },
+    },
+    Mutation {
+        id: 1604,
+        file: "libs/vtd/src/lib.rs",
+        find: "        self.covers(address) && (bits == 64 || address >> bits == 0)",
+        replace: "        let _ = bits;\n        self.covers(address)",
+        breaks: "MGAW no longer bounds an address admitted by the table",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::effective_coverage_obeys_both_table_and_guest_limits",
+        },
+    },
+    Mutation {
+        id: 1605,
+        file: "libs/vtd/src/lib.rs",
+        find: "        self.covers(address) && (bits == 64 || address >> bits == 0)",
+        replace: "        bits == 64 || address >> bits == 0",
+        breaks: "an address beyond the table's depth is admitted by a wider MGAW",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::effective_coverage_obeys_both_table_and_guest_limits",
+        },
+    },
+    Mutation {
+        id: 1606,
+        file: "xtask/src/vmware.rs",
+        find: "    let normalized = text.replace(\"\\r\\n\", \"\\n\");",
+        replace: "    let normalized = text.to_string();",
+        breaks: "the kernel's normal CRLF output is refused as noncanonical",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::uart_crlf_and_lf_are_both_valid_transcript_terminators",
+        },
+    },
+    Mutation {
+        id: 1607,
+        file: "xtask/src/vmware.rs",
+        find: "    let normalized = text.replace(\"\\r\\n\", \"\\n\");",
+        replace: "    let normalized = text.replace('\\r', \"\");",
+        breaks: "terminal-active carriage returns are silently stripped from evidence",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::tests::only_a_carriage_return_paired_with_line_feed_is_allowed",
+        },
+    },
+    Mutation {
+        id: 1608,
+        file: "xtask/src/vmware/config.rs",
+        find: "            runtime.get(key) == Some(value),",
+        replace: "            runtime.contains_key(key),",
+        breaks: "a changed generated VMX value is accepted if its key exists",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::runtime_vmx_preserves_every_generated_assignment",
+        },
+    },
+    Mutation {
+        id: 1609,
+        file: "xtask/src/vmware/config.rs",
+        find: "            generated.contains_key(key) || runtime_value_is_valid(key, value),",
+        replace: "            generated.contains_key(key) || runtime_value_is_valid(key, value) || true,",
+        breaks: "unknown runtime assignments can change the machine contract",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::runtime_vmx_refuses_unknown_and_duplicate_assignments",
+        },
+    },
+    Mutation {
+        id: 1610,
+        file: "xtask/src/vmware/config.rs",
+        find: "            seen_keys.insert(key.to_ascii_lowercase()),",
+        replace: "            { seen_keys.insert(key.to_ascii_lowercase()); true },",
+        breaks: "duplicate case-insensitive VMX settings are accepted",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::runtime_vmx_refuses_unknown_and_duplicate_assignments",
+        },
+    },
+    Mutation {
+        id: 1611,
+        file: "xtask/src/vmware/config.rs",
+        find: "                byte.is_ascii_hexdigit()",
+        replace: "                true",
+        breaks: "a runtime UUID with nonhexadecimal digits counts as canonical",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::runtime_identity_values_have_bounded_canonical_shapes",
+        },
+    },
+    Mutation {
+        id: 1612,
+        file: "xtask/src/vmware/config.rs",
+        find: "        \"numa.autosize.cookie\" => canonical_decimal(value).is_some(),",
+        replace: "        \"numa.autosize.cookie\" => true,",
+        breaks: "a noncanonical runtime cookie is accepted",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::runtime_identity_values_have_bounded_canonical_shapes",
+        },
+    },
+    Mutation {
+        id: 1613,
+        file: "xtask/src/vmware/config.rs",
+        find: "            canonical_decimal(value).is_some_and(|bits| (32..=52).contains(&bits))",
+        replace: "            canonical_decimal(value).is_some()",
+        breaks: "a runtime physical-address width outside the reviewed bounds is accepted",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::runtime_identity_values_have_bounded_canonical_shapes",
+        },
+    },
+    Mutation {
+        id: 1614,
+        file: "xtask/src/vmware/config.rs",
+        find: "        \"cleanShutdown\" | \"softPowerOff\" => matches!(value, \"TRUE\" | \"FALSE\"),",
+        replace: "        \"cleanShutdown\" | \"softPowerOff\" => true,",
+        breaks: "invalid runtime power-state values are accepted",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::runtime_identity_values_have_bounded_canonical_shapes",
+        },
+    },
+    Mutation {
+        id: 1615,
+        file: "xtask/src/vmware/config.rs",
+        find: "                .all(|byte| !byte.is_ascii_control() || *byte == b'\\t'),",
+        replace: "                .all(|_| true),",
+        breaks: "a control character can hide an assignment in a VMX comment",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::vmx_controls_and_alternate_assignment_forms_are_refused",
+        },
+    },
+    Mutation {
+        id: 1616,
+        file: "xtask/src/vmware/config.rs",
+        find: "        ensure!(line.is_ascii(), \"VMX assignment is not ASCII\");",
+        replace: "        ensure!(true, \"VMX assignment is not ASCII\");",
+        breaks: "Unicode whitespace changes the accepted VMX assignment grammar",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::vmx_controls_and_alternate_assignment_forms_are_refused",
+        },
+    },
+    Mutation {
+        id: 1617,
+        file: "xtask/src/vmware/config.rs",
+        find: "                .all(|byte| (b' '..=b'~').contains(&byte) && !b\"\\\"|\\\\\".contains(&byte)),",
+        replace: "                .all(|_| true),",
+        breaks: "escaped VMX values bypass the bounded assignment grammar",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::vmx_controls_and_alternate_assignment_forms_are_refused",
+        },
+    },
+    Mutation {
+        id: 1618,
+        file: "xtask/src/vmware/config.rs",
+        find: "                    .all(|byte| byte.is_ascii_alphanumeric() || b\"._:\".contains(&byte)),",
+        replace: "                    .all(|_| true),",
+        breaks: "unsupported VMX key spelling is silently accepted",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::vmx_controls_and_alternate_assignment_forms_are_refused",
+        },
+    },
+    Mutation {
+        id: 1619,
+        file: "xtask/src/vmware/config.rs",
+        find: "            .and_then(|value| value.strip_suffix('\"'))",
+        replace: "            .and_then(|value| value.split_once('\"').map(|(value, _)| value))",
+        breaks: "trailing text after a quoted VMX value is silently discarded",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::vmx_controls_and_alternate_assignment_forms_are_refused",
+        },
+    },
+    Mutation {
+        id: 1620,
+        file: "xtask/src/qualification.rs",
+        find: "    Ok(digest_bytes(generated.as_bytes()))",
+        replace: "    Ok(digest_bytes(&runtime))",
+        breaks: "runtime metadata replaces the source-generated input identity",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::one_immutable_vmware_generation_is_captured_before_publication",
+        },
+    },
+    Mutation {
+        id: 1621,
+        file: "xtask/src/qualification.rs",
+        find: "    crate::vmware::verify_runtime_vmx(generated.as_bytes(), &runtime)?;",
+        replace: "    let _ = (generated.as_bytes(), &runtime);",
+        breaks: "a captured VMX from a different generation is accepted as source-equivalent",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::one_immutable_vmware_generation_is_captured_before_publication",
+        },
+    },
+    Mutation {
+        id: 1622,
+        file: "xtask/src/vmware/config.rs",
+        find: "            uuid_is_valid(value)",
+        replace: "            let _ = value;\n            false",
+        breaks: "reviewed Workstation UUID additions can never qualify",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::workstation_runtime_identity_preserves_generated_settings",
+        },
+    },
+    Mutation {
+        id: 1623,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if !self.width.covers_on(self.capability, last) {",
+        replace: "        if !self.width.covers(last) {",
+        breaks: "the production DMA mapping seam ignores the unit's MGAW",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_mapping_enforces_effective_coverage_before_the_walk",
+        },
+    },
+    Mutation {
+        id: 1624,
+        file: "xtask/src/vmware/config.rs",
+        find: "        let key = key.trim().to_string();",
+        replace: "        let key = key.trim().to_ascii_lowercase();",
+        breaks: "changed generated key spelling is normalized away before qualification",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "vmware::config::tests::runtime_vmx_preserves_every_generated_assignment",
         },
     },
 ];

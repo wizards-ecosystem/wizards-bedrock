@@ -167,6 +167,10 @@ fresh transcript; generation alone is not phase-close execution evidence.
 Generate, boot and qualify each selector before generating the other. Keep
 exactly that machine running during qualification, then stop it: the record
 requires an exact one-machine `vmrun` observation and the matching build image.
+Use one fresh boot per transcript; an appended second boot is diagnostic
+output rather than qualification evidence. The receipt binds the source-rendered
+configuration, while qualification preserves exact runtime VMX and serial
+bytes and admits only the reviewed Workstation additions (D-365).
 
 `cargo xtask baseline` builds the fixed-QEMU self-test image once in release
 and debug modes, then boots each three times. It requires a clean ordinary

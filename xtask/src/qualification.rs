@@ -300,11 +300,15 @@ impl CapturedVmwareGeneration {
                 == Some(generation_transcript_name(generation)?.as_str()),
             "captured VMware transcript belongs to another generation"
         );
-        let digests = self
+        let mut digests = self
             .files
             .iter()
             .map(|file| (file.name, file.digest.clone()))
-            .collect();
+            .collect::<BTreeMap<_, _>>();
+        digests.insert(
+            VMWARE_VMX,
+            verified_generation_vmx_digest(kind, generation, &self.file(VMWARE_VMX)?.captured)?,
+        );
         ensure!(
             receipt == generation_record_from_digests(source, kind, generation, &digests)?,
             "captured VMware receipt and machine artifacts are not one generation"
@@ -1815,7 +1819,19 @@ fn generation_record(
         require_regular_file(&path, "VMware generation artifact")?;
         digests.insert(name, digest_file(&path)?);
     }
+    digests.insert(
+        VMWARE_VMX,
+        verified_generation_vmx_digest(kind, generation, &directory.join(VMWARE_VMX))?,
+    );
     generation_record_from_digests(source, kind, generation, &digests)
+}
+
+fn verified_generation_vmx_digest(kind: Kind, generation: &str, path: &Path) -> Result<Digest> {
+    let generated =
+        crate::vmware::generation_vmx(kernel_for(kind)?, &generation_transcript_name(generation)?)?;
+    let runtime = read_bounded_file(path, MAX_VMWARE_TEXT_BYTES, "runtime VMX")?;
+    crate::vmware::verify_runtime_vmx(generated.as_bytes(), &runtime)?;
+    Ok(digest_bytes(generated.as_bytes()))
 }
 
 fn generation_record_from_digests(
@@ -5805,6 +5821,15 @@ mod tests {
             std::fs::write(directory.join(name), name).unwrap();
         }
         let generation = "1".repeat(64);
+        std::fs::write(
+            directory.join(VMWARE_VMX),
+            crate::vmware::generation_vmx(
+                Kernel::SelfTest,
+                &generation_transcript_name(&generation).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let transcript = directory.join(generation_transcript_name(&generation).unwrap());
         std::fs::write(&transcript, []).unwrap();
         require_empty_reset(&digest_file(&transcript).unwrap()).unwrap();
@@ -5872,6 +5897,15 @@ mod tests {
             ] {
                 std::fs::write(directory.join(name), format!("{tag}:{name}")).unwrap();
             }
+            std::fs::write(
+                directory.join(VMWARE_VMX),
+                crate::vmware::generation_vmx(
+                    Kernel::SelfTest,
+                    &generation_transcript_name(generation).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
             let transcript = directory.join(generation_transcript_name(generation).unwrap());
             std::fs::write(&transcript, format!("{tag}:transcript\n")).unwrap();
             let receipt =
@@ -5921,10 +5955,28 @@ mod tests {
         let transcript_a = write_generation(&directory_a, &source, &generation_a, "generation-a");
         let transcript_b = write_generation(&directory_b, &source, &generation_b, "generation-b");
 
+        let generated_vmx = std::fs::read(directory_a.join(VMWARE_VMX)).unwrap();
+        let mut runtime_vmx = generated_vmx.clone();
+        runtime_vmx.extend_from_slice(b"cleanShutdown = \"FALSE\"\n");
+        std::fs::write(directory_a.join(VMWARE_VMX), &runtime_vmx).unwrap();
+
         let valid = capture(&directory_a, &transcript_a, &root.join("captured-valid"));
         valid
             .validate_generation(&source, Kind::VmwareSelfTest)
             .unwrap();
+        assert_ne!(
+            valid.file(VMWARE_VMX).unwrap().digest,
+            digest_bytes(&generated_vmx)
+        );
+        verify_generation_with_source(&source, Kind::VmwareSelfTest, &directory_a, &transcript_a)
+            .unwrap();
+        verify_generation_with_source(
+            &source,
+            Kind::VmwareSelfTest,
+            &root.join("captured-valid"),
+            &root.join("captured-valid").join(VMWARE_TRANSCRIPT),
+        )
+        .unwrap();
 
         std::fs::copy(directory_b.join(VMWARE_VMX), directory_a.join(VMWARE_VMX)).unwrap();
         let mixed = capture(&directory_a, &transcript_a, &root.join("captured-mixed"));
@@ -5935,11 +5987,7 @@ mod tests {
             "machine bytes from two valid generations were combined"
         );
 
-        std::fs::write(
-            directory_a.join(VMWARE_VMX),
-            format!("generation-a:{VMWARE_VMX}"),
-        )
-        .unwrap();
+        std::fs::write(directory_a.join(VMWARE_VMX), &runtime_vmx).unwrap();
         let wrong_transcript = capture(
             &directory_a,
             &transcript_b,

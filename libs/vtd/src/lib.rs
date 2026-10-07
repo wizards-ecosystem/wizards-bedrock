@@ -366,23 +366,25 @@ impl AddressWidth {
         }
     }
 
-    /// Choose the widest supported width whose coverage fits the MGAW.
+    /// Whether `address` fits both this table and the unit's MGAW.
+    pub const fn covers_on(self, cap: Capability, address: u64) -> bool {
+        let bits = cap.max_guest_address_width();
+        self.covers(address) && (bits == 64 || address >> bits == 0)
+    }
+
+    /// Choose the widest modelled table depth supported by SAGAW.
     ///
-    /// Preference is largest first (Level5, then Level4, then Level3): a wider
-    /// table maps more of the address space with the same walk depth. A width
-    /// is eligible only when its SAGAW bit is set *and* its addressable width
-    /// does not exceed [`Capability::max_guest_address_width`], since the unit
-    /// cannot translate an address wider than the MGAW. The 2-level width is
-    /// never chosen; it is not modelled here.
+    /// MGAW independently limits usable addresses through [`Self::covers_on`];
+    /// it does not prohibit a deeper supported table. The 2-level width is not
+    /// modelled here.
     pub const fn choose(cap: Capability) -> Option<Self> {
-        let mgaw = cap.max_guest_address_width();
-        if cap.sagaw_supports(5) && Self::Level5.address_bits() <= mgaw {
+        if cap.sagaw_supports(5) {
             return Some(Self::Level5);
         }
-        if cap.sagaw_supports(4) && Self::Level4.address_bits() <= mgaw {
+        if cap.sagaw_supports(4) {
             return Some(Self::Level4);
         }
-        if cap.sagaw_supports(3) && Self::Level3.address_bits() <= mgaw {
+        if cap.sagaw_supports(3) {
             return Some(Self::Level3);
         }
         None
@@ -961,7 +963,7 @@ mod tests {
     }
 
     #[test]
-    fn choose_prefers_the_widest_supported_within_the_mgaw() {
+    fn choose_prefers_the_widest_supported_table() {
         // A large MGAW so only SAGAW decides.
         let big_mgaw = 62u64 << 16; // MGAW field 62 -> 63-bit
         let all = Capability::from_bits((1 << 9) | (1 << 10) | (1 << 11) | big_mgaw);
@@ -980,19 +982,44 @@ mod tests {
     }
 
     #[test]
-    fn choose_drops_a_width_that_exceeds_the_mgaw() {
-        // 4-level supported, MGAW only 39 bits: 48 > 39, and 3-level is not
-        // supported, so nothing fits.
-        let cap = Capability::from_bits((1 << 10) | (38u64 << 16));
-        assert_eq!(AddressWidth::choose(cap), None);
+    fn supported_table_depth_is_independent_of_guest_address_limit() {
+        for sagaw in 0u64..32 {
+            let expected = [
+                (3, AddressWidth::Level5),
+                (2, AddressWidth::Level4),
+                (1, AddressWidth::Level3),
+            ]
+            .into_iter()
+            .find_map(|(bit, width)| (sagaw & (1 << bit) != 0).then_some(width));
+            for mgaw_field in 0u64..64 {
+                let cap = Capability::from_bits((sagaw << 8) | (mgaw_field << 16));
+                assert_eq!(
+                    AddressWidth::choose(cap),
+                    expected,
+                    "{sagaw:#x}/{mgaw_field}"
+                );
+            }
+        }
+        let four_only = Capability::from_bits((1 << 10) | (38 << 16));
+        assert_eq!(AddressWidth::choose(four_only), Some(AddressWidth::Level4));
+    }
 
-        // Both 3- and 4-level supported; MGAW 48 admits 4-level.
-        let mgaw48 = Capability::from_bits((1 << 9) | (1 << 10) | (47u64 << 16));
-        assert_eq!(AddressWidth::choose(mgaw48), Some(AddressWidth::Level4));
-
-        // MGAW 47 rejects 4-level (48) and falls back to 3-level (39).
-        let mgaw47 = Capability::from_bits((1 << 9) | (1 << 10) | (46u64 << 16));
-        assert_eq!(AddressWidth::choose(mgaw47), Some(AddressWidth::Level3));
+    #[test]
+    fn effective_coverage_obeys_both_table_and_guest_limits() {
+        for (width, table_bits) in [
+            (AddressWidth::Level3, 39u32),
+            (AddressWidth::Level4, 48),
+            (AddressWidth::Level5, 57),
+        ] {
+            for guest_bits in 1u32..=64 {
+                let cap = Capability::from_bits(u64::from(guest_bits - 1) << 16);
+                let boundary = 1u64 << table_bits.min(guest_bits);
+                assert!(width.covers_on(cap, 0));
+                assert!(width.covers_on(cap, boundary - 1));
+                assert!(!width.covers_on(cap, boundary));
+                assert!(!width.covers_on(cap, u64::MAX));
+            }
+        }
     }
 
     #[test]

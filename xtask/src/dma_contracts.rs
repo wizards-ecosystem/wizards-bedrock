@@ -1479,6 +1479,42 @@ fn controller_stop_evidence_has_one_hardware_mint() {
 }
 
 #[test]
+fn vtd_mapping_enforces_effective_coverage_before_the_walk() {
+    let syntax = parse("wost/src/arch/x86_64/vtd.rs");
+    let mapping = method(&syntax, "Vtd", "map_segment").expect("missing VT-d mapping seam");
+    let Some(Stmt::Expr(Expr::If(gate), _)) = mapping.block.stmts.get(1) else {
+        panic!("the mapping seam has no leading coverage refusal");
+    };
+    assert!(gate.else_branch.is_none());
+    let Expr::Unary(refusal) = &*gate.cond else {
+        panic!("coverage must refuse on the negative result");
+    };
+    assert!(matches!(refusal.op, syn::UnOp::Not(_)));
+    let Expr::MethodCall(coverage) = &*refusal.expr else {
+        panic!("coverage refusal does not call the checked policy");
+    };
+    assert_eq!(coverage.method, "covers_on");
+    assert!(field_chain_is(&coverage.receiver, "self", &["width"]));
+    assert_eq!(coverage.args.len(), 2);
+    assert!(coverage.args.first().is_some_and(|argument| field_chain_is(
+        argument,
+        "self",
+        &["capability"]
+    )));
+    assert!(
+        coverage
+            .args
+            .last()
+            .is_some_and(|argument| path_expression_is(argument, &["last"]))
+    );
+    let [Stmt::Expr(Expr::Return(returned), _)] = gate.then_branch.stmts.as_slice() else {
+        panic!("coverage refusal must return before the table walk");
+    };
+    assert!(matches!(returned.expr.as_deref(), Some(Expr::Lit(literal))
+        if matches!(&literal.lit, syn::Lit::Bool(value) if !value.value)));
+}
+
+#[test]
 fn dma_disposition_cannot_move_between_controllers() {
     let syntax = parse("kernel/src/nvme.rs");
     let disposition = syntax
