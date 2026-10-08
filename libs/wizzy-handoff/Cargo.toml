@@ -1,6 +1,6 @@
 [package]
 name = "wizzy-handoff"
-description = "Route-neutral Wizzy artifact identity envelope for The Wizard's OS."
+description = "Route-neutral Wizzy artifact identity envelope for The Wizard's Bedrock."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

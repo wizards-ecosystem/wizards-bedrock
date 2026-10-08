@@ -3545,7 +3545,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 295,
-        file: "xtask/templates/wizard-os.vmx.in",
+        file: "xtask/templates/bedrock.vmx.in",
         find: "nvme0.present = \"TRUE\"\nnvme1.present = \"TRUE\"",
         replace: "nvme0.present = \"TRUE\"\nnvme0:0.present = \"TRUE\"\nnvme1.present = \"TRUE\"",
         breaks: "the VMware machine offers a candidate worth retiring",
@@ -5519,7 +5519,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 482,
         file: "supply-chain/foundation.spdx",
-        find: "DocumentName: wizards-os-foundation",
+        find: "DocumentName: wizards-bedrock-foundation",
         replace: "DocumentName: unrelated-foundation",
         breaks: "the committed SBOM differs from its deterministic source facts",
         reddens: Caught::HostTest {
@@ -5852,7 +5852,7 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 511,
-        file: "userland/abi/wizard_abi.h",
+        file: "fixtures/abi-pressure/abi/wizard_abi.h",
         find: "#define WIZ_TIME_VERSION 1u",
         replace: "#define WIZ_TIME_VERSION 2u",
         breaks: "platform ABI v1 cannot silently contain a version-two wire region",
@@ -13452,7 +13452,7 @@ fn mint_stopped<'controller>(
     },
     Mutation {
         id: 1571,
-        file: "xtask/templates/wizard-os.vmx.in",
+        file: "xtask/templates/bedrock.vmx.in",
         find: "vvtd.enable = \"TRUE\"\n",
         replace: "",
         breaks: "the VMware machine presents the remapping unit storage requires",

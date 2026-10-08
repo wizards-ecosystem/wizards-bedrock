@@ -969,30 +969,30 @@ fn render_spdx(inventory: &Inventory, source: &str) -> Result<String> {
     writeln!(out, "SPDXVersion: SPDX-2.3")?;
     writeln!(out, "DataLicense: CC0-1.0")?;
     writeln!(out, "SPDXID: SPDXRef-DOCUMENT")?;
-    writeln!(out, "DocumentName: wizards-os-foundation")?;
+    writeln!(out, "DocumentName: wizards-bedrock-foundation")?;
     writeln!(
         out,
-        "DocumentNamespace: https://github.com/wizards-ecosystem/wizards-os/sbom/{namespace}"
+        "DocumentNamespace: https://github.com/wizards-ecosystem/wizards-bedrock/sbom/{namespace}"
     )?;
-    writeln!(out, "Creator: Organization: The Wizard's OS")?;
+    writeln!(out, "Creator: Organization: The Wizard's Bedrock")?;
     writeln!(out, "Created: {}", inventory.created)?;
     writeln!(out)?;
     PackageRecord::write(
         PackageRecord {
-            name: "wizards-os",
-            id: "SPDXRef-Package-wizards-os",
+            name: "wizards-bedrock",
+            id: "SPDXRef-Package-wizards-bedrock",
             version: "0.1.0",
             digest: None,
             concluded_license: "MIT",
             declared_license: "MIT",
             comment: "runtime; project package",
-            download: "https://github.com/wizards-ecosystem/wizards-os",
+            download: "https://github.com/wizards-ecosystem/wizards-bedrock",
         },
         &mut out,
     )?;
     writeln!(
         out,
-        "Relationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package-wizards-os"
+        "Relationship: SPDXRef-DOCUMENT DESCRIBES SPDXRef-Package-wizards-bedrock"
     )?;
 
     for entry in &inventory.entries {
@@ -1029,7 +1029,7 @@ fn render_spdx(inventory: &Inventory, source: &str) -> Result<String> {
         };
         writeln!(
             out,
-            "Relationship: SPDXRef-Package-wizards-os {relationship} {id}"
+            "Relationship: SPDXRef-Package-wizards-bedrock {relationship} {id}"
         )?;
     }
     Ok(out)

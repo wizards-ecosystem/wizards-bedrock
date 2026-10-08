@@ -98,7 +98,7 @@ pub(crate) fn init() {
         &mut arena,
         ROOT,
         b"MOTD",
-        Some(b"the wizard's os, from memory\n"),
+        Some(b"the wizard's bedrock, from memory\n"),
     );
     let notes = add(&mut arena, ROOT, b"NOTES", None);
     add(

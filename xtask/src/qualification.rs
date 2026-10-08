@@ -40,11 +40,11 @@ const ADVISORY_REFRESH_TRANSCRIPT: &str = "cargo-audit-refresh.transcript";
 const ADVISORY_TRANSCRIPT_FORMAT: &str = "wizard-cargo-audit-transcript-v1";
 const ADVISORY_REFRESH_COMMAND: &str = "cargo-audit audit --color never --db <empty-qualification-database> --deny warnings --file <exact-repository-Cargo.lock> --json --url https://github.com/RustSec/advisory-db.git";
 const ADVISORY_COMMAND: &str = "cargo-audit audit --color never --db <refreshed-qualification-database> --deny warnings --file <exact-repository-Cargo.lock> --json --no-fetch --url https://github.com/RustSec/advisory-db.git";
-const VMWARE_IMAGE: &str = "wizard-os-flat.img";
+const VMWARE_IMAGE: &str = "bedrock-flat.img";
 const VMWARE_NAMESPACE: &str = "wizard-nvm-flat.img";
-const VMWARE_VMDK: &str = "wizard-os.vmdk";
+const VMWARE_VMDK: &str = "bedrock.vmdk";
 const VMWARE_NAMESPACE_VMDK: &str = "wizard-nvm.vmdk";
-const VMWARE_VMX: &str = "wizard-os.vmx";
+const VMWARE_VMX: &str = "bedrock.vmx";
 const VMWARE_TRANSCRIPT: &str = "serial.log";
 const VMWARE_OBSERVER: &str = "vmrun-list.txt";
 pub(crate) const VMWARE_GENERATION_RECEIPT: &str = "generation.receipt";
@@ -701,7 +701,7 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
     },
     BundleFile {
         prefix: "qualification.vmware-self-test.image",
-        relative: "qualification/vmware-self-test/wizard-os-flat.img",
+        relative: "qualification/vmware-self-test/bedrock-flat.img",
     },
     BundleFile {
         prefix: "qualification.vmware-self-test.namespace",
@@ -709,7 +709,7 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
     },
     BundleFile {
         prefix: "qualification.vmware-self-test.vmdk",
-        relative: "qualification/vmware-self-test/wizard-os.vmdk",
+        relative: "qualification/vmware-self-test/bedrock.vmdk",
     },
     BundleFile {
         prefix: "qualification.vmware-self-test.namespace-vmdk",
@@ -717,7 +717,7 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
     },
     BundleFile {
         prefix: "qualification.vmware-self-test.vmx",
-        relative: "qualification/vmware-self-test/wizard-os.vmx",
+        relative: "qualification/vmware-self-test/bedrock.vmx",
     },
     BundleFile {
         prefix: "qualification.vmware-self-test.transcript",
@@ -737,7 +737,7 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
     },
     BundleFile {
         prefix: "qualification.vmware-shipped.image",
-        relative: "qualification/vmware-shipped/wizard-os-flat.img",
+        relative: "qualification/vmware-shipped/bedrock-flat.img",
     },
     BundleFile {
         prefix: "qualification.vmware-shipped.namespace",
@@ -745,7 +745,7 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
     },
     BundleFile {
         prefix: "qualification.vmware-shipped.vmdk",
-        relative: "qualification/vmware-shipped/wizard-os.vmdk",
+        relative: "qualification/vmware-shipped/bedrock.vmdk",
     },
     BundleFile {
         prefix: "qualification.vmware-shipped.namespace-vmdk",
@@ -753,7 +753,7 @@ pub(crate) const BUNDLE_FILES: &[BundleFile] = &[
     },
     BundleFile {
         prefix: "qualification.vmware-shipped.vmx",
-        relative: "qualification/vmware-shipped/wizard-os.vmx",
+        relative: "qualification/vmware-shipped/bedrock.vmx",
     },
     BundleFile {
         prefix: "qualification.vmware-shipped.transcript",
@@ -5349,11 +5349,11 @@ mod tests {
             expected.push(record(slug));
             for (key, name, maximum, exact) in [
                 ("generation", "generation.receipt", 1_048_576, false),
-                ("image", "wizard-os-flat.img", 67_108_864, true),
+                ("image", "bedrock-flat.img", 67_108_864, true),
                 ("namespace", "wizard-nvm-flat.img", 68_157_440, true),
-                ("vmdk", "wizard-os.vmdk", 1_048_576, false),
+                ("vmdk", "bedrock.vmdk", 1_048_576, false),
                 ("namespace-vmdk", "wizard-nvm.vmdk", 1_048_576, false),
-                ("vmx", "wizard-os.vmx", 1_048_576, false),
+                ("vmx", "bedrock.vmx", 1_048_576, false),
                 ("transcript", "serial.log", 16_777_216, false),
                 ("observer", "vmrun-list.txt", 1_048_576, false),
             ] {

@@ -53,7 +53,7 @@ const ARTIFACTS: &[ArtifactSpec] = &[
     },
     ArtifactSpec {
         prefix: "artifact.path-a.image",
-        relative: "path-a/wizard-os.img",
+        relative: "path-a/bedrock.img",
     },
     ArtifactSpec {
         prefix: "artifact.path-b.kernel",
@@ -61,7 +61,7 @@ const ARTIFACTS: &[ArtifactSpec] = &[
     },
     ArtifactSpec {
         prefix: "artifact.path-b.image",
-        relative: "path-b/wizard-os.img",
+        relative: "path-b/bedrock.img",
     },
 ];
 
@@ -645,13 +645,13 @@ fn verify_qualification_artifact_identity_with_sizes(
 ) -> Result<()> {
     let selftest_image = digest_bundle_file_exact(
         root,
-        "qualification/vmware-self-test/wizard-os-flat.img",
+        "qualification/vmware-self-test/bedrock-flat.img",
         "VMware self-test image",
         expected_image_bytes,
     )?;
     let shipped_image = digest_bundle_file_exact(
         root,
-        "qualification/vmware-shipped/wizard-os-flat.img",
+        "qualification/vmware-shipped/bedrock-flat.img",
         "VMware shipped image",
         expected_image_bytes,
     )?;
@@ -2035,18 +2035,18 @@ mod tests {
                 "qualification/vmware-self-test/vmrun-list.txt",
                 "qualification/vmware-self-test/wizard-nvm-flat.img",
                 "qualification/vmware-self-test/wizard-nvm.vmdk",
-                "qualification/vmware-self-test/wizard-os-flat.img",
-                "qualification/vmware-self-test/wizard-os.vmdk",
-                "qualification/vmware-self-test/wizard-os.vmx",
+                "qualification/vmware-self-test/bedrock-flat.img",
+                "qualification/vmware-self-test/bedrock.vmdk",
+                "qualification/vmware-self-test/bedrock.vmx",
                 "qualification/vmware-shipped/generation.receipt",
                 "qualification/vmware-shipped/record",
                 "qualification/vmware-shipped/serial.log",
                 "qualification/vmware-shipped/vmrun-list.txt",
                 "qualification/vmware-shipped/wizard-nvm-flat.img",
                 "qualification/vmware-shipped/wizard-nvm.vmdk",
-                "qualification/vmware-shipped/wizard-os-flat.img",
-                "qualification/vmware-shipped/wizard-os.vmdk",
-                "qualification/vmware-shipped/wizard-os.vmx",
+                "qualification/vmware-shipped/bedrock-flat.img",
+                "qualification/vmware-shipped/bedrock.vmdk",
+                "qualification/vmware-shipped/bedrock.vmx",
             ])
         );
         let root = std::env::temp_dir().join(format!(
@@ -2122,8 +2122,8 @@ mod tests {
         let paths = Paths::new(repository.clone(), None);
         let files = [
             evidence.join(ARTIFACTS[1].relative),
-            evidence.join("qualification/vmware-self-test/wizard-os-flat.img"),
-            evidence.join("qualification/vmware-shipped/wizard-os-flat.img"),
+            evidence.join("qualification/vmware-self-test/bedrock-flat.img"),
+            evidence.join("qualification/vmware-shipped/bedrock-flat.img"),
             evidence.join("qualification/vmware-self-test/wizard-nvm-flat.img"),
             evidence.join("qualification/vmware-shipped/wizard-nvm-flat.img"),
             qemu::nvme_path(&repository),

@@ -1,5 +1,11 @@
 # 002 - Native architecture (2026)
 
+**Ownership after D-366 (2026-10-07).** Bedrock owns the kernel mechanisms
+and ABI described here. Product userland, graphics policy, compatibility ports
+and application delivery belong to [Realm](https://github.com/wizards-ecosystem/wizards-realm).
+The original phase numbers and dated observations remain historical; they do
+not create a second current product backlog in Bedrock.
+
 Decided 2026-07-18. This doc supersedes the "POSIX-ish core" framing in
 earlier discussion: the native OS is **capability-based and async-first**;
 POSIX exists only as a translation layer for ported software.
@@ -68,7 +74,7 @@ for evidence and citations behind the choices marked [cited].
 5. **Framekernel discipline.** [cited] (Adopted from Asterinas, USENIX ATC'25.)
    The kernel is one address space with monolithic performance, but ALL
    `unsafe` Rust is confined to a small privileged framework crate (`wost`,
-   Wizard OS Standard, our OSTD analogue: boot, paging, MMIO, port I/O,
+   Bedrock's OSTD analogue: boot, paging, MMIO, port I/O,
    DMA, context switch, interrupt entry). Every other kernel crate
    (scheduler, VFS, WizFS, network, drivers) is `#![forbid(unsafe_code)]`
    safe Rust against `wost`'s safe abstractions. The containment property is
@@ -241,7 +247,7 @@ could run two processes, not to run real software, but to find out whether a
 POSIX libc could sit on this ABI while the ABI was still cheap to change.
 Phase 5 slice 10 did that work against a toolchain wall recorded rather than
 worked around: the sysdeps are analysed, not compiled, and
-`userland/README.md` states what that cost.
+`fixtures/abi-pressure/README.md` states what that cost.
 
 **The surface was measured, so it is not costed at zero.** At D-74's
 unrecorded upstream snapshot, mlibc exposed 296 sysdep tags, called sixteen
@@ -289,7 +295,7 @@ Closed since this list was written:
 - *Whether a POSIX libc can sit on this ABI*: pressure-tested by D-114 rather
   than deferred. D-181 corrected the result: one label could not say both what
   the uncompiled C++ body does and what platform work remains. The exact
-  per-function BODY/REMAINDER register is in `userland/README.md`. At every
+  per-function BODY/REMAINDER register is in `fixtures/abi-pressure/README.md`. At every
   commit the BODY claims are checked against discovered, comment-free source;
   REMAINDER remains reviewed platform judgment with targeted evidence checks.
 
@@ -299,7 +305,7 @@ Closed since this list was written:
   were false for log, write, seek and futex. A checked row is stronger than a
   duplicated tally (D-94, D-124).
 
-  `userland/README.md` also has the four things writing the sysdeps surfaced
+  `fixtures/abi-pressure/README.md` also has the four things writing the sysdeps surfaced
   that the native ABI would never have raised.
 
 - *Handle table representation & rights taxonomy*: the taxonomy half by

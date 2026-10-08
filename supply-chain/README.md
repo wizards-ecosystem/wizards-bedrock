@@ -45,7 +45,7 @@ database nor claims that an absent scanner passed.
 
 ## Distribution
 
-A bare `wizard-os.img` is a build artifact. A public distribution must carry
+A bare `bedrock.img` is a build artifact. A public distribution must carry
 `foundation.spdx`, the repository `LICENSE`, `THIRD-PARTY-NOTICES.md` and the
 `licenses/` directory beside it. The runtime rows are the shipped Rust and
 boot inputs. Development rows affect builds or verification but do not reach

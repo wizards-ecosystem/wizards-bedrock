@@ -1,4 +1,4 @@
-/* The Wizard's OS native ABI, transcribed for a C consumer.
+/* The Wizard's Bedrock native ABI, transcribed for a C consumer.
  *
  * Written for slice 10 (D-74, D-114): a POSIX libc is the first consumer of
  * this ABI that is not the kernel's own checks, and the point of writing it

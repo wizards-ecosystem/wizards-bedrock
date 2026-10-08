@@ -1,6 +1,6 @@
 # 016 - The finite pre-Wizzy kernel foundation register
 
-This is the handoff and the only current backlog for work in the Wizard's OS
+This is the handoff and the only current backlog for work in the Bedrock kernel
 repository while the Wizzy compiler-readiness gate is closed. D-183 remains
 the language and sequencing authority. D-184 makes this register finite and
 prevents "kernel polish" from becoming an excuse to design the userland before
@@ -28,10 +28,15 @@ defects, all recorded below. VMware waits for a frozen candidate after the
 non-machine source and manual-red gaps close; its fresh boots are themselves
 required to close the machine-dependent rows.
 
-The compiler gate in `015-wizzy-userland.md` remains **CLOSED**. Closing this
-register does not open it.
+D-366 transfers compiler-readiness authority to Realm. The kernel handoff in
+`015-wizzy-userland.md` records the last admitted evidence as **CLOSED**.
+Closing this register does not open Realm's gate. WZ rows are external Ink
+dependencies; product/post-gate references now name Realm-owned callers.
+Their historical IDs and states remain intact, and kernel prerequisite work
+still requires the named trigger. The 2026-10-07 rename is a source migration,
+not a foundation close; Q's evidence does not qualify its successor.
 
-The OS-side foundation closes only when:
+The kernel foundation closes only when:
 
 1. every `REQUIRED`, `READY`, `VERIFY`, and `DECIDE` row below is changed to
    `DONE` or `SUPERSEDED`, with its proof or superseding ADR linked in the row;
@@ -352,8 +357,8 @@ P2 is qualification, reproducibility, maintainability, and evidence quality.
 | WZ-003 | WIZZY | GATE | The VM/runtime retains compiler structures and uses `std` host facilities | Separate the execution runtime behind a host-independent platform seam and build it with `no_std + alloc` | Target runtime dependency audit contains no compiler/AST/host I/O; host and minimal target adapter run the same fixture |
 | WZ-004 | WIZZY | GATE | Reproducible compiler output is not established | Lock inputs and make two clean builds byte-identical | Gate record includes both commands, environments and matching artifact hashes |
 | PW-600 | DONE | GATE | The shared handoff was described but had no single machine-readable version record | D-226 defines an exact route-neutral envelope and allocation-free parser without inventing the compiler-owned artifact/runtime/effect versions | 2026-08-29 the committed opaque fixture and digest verified without a sibling checkout; unknown format/fields, malformed encodings, every target/ABI mismatch, one-of-two identity matches and platform-version drift were refused, and all eight breaks persist as mutations 504-511 |
-| PW-601 | TRIGGER | WHEN-TRIGGERED | Consumer code before a real artifact would freeze guesses | Add only the loader/runner scaffold forced by WZ-002/WZ-003 after their command and format draft are reachable | Trigger: a pinned draft artifact plus runtime seam; proof consumes committed/vendored bytes and compares regenerated digests separately |
-| PW-602 | TRIGGER | WHEN-TRIGGERED | Opening from a developer checkout would make the gate non-reproducible | Write the D-183 gate-opening ADR only after WZ-001 through WZ-004 pass together | Trigger: all four rows at one revision; ADR records pins, commands, hashes, seam and keeps ordinary OS CI sibling-independent |
+| PW-601 | TRIGGER | WHEN-TRIGGERED | Consumer code before a real artifact would freeze guesses | Realm owns the loader/runner scaffold under D-366; Bedrock admits only kernel ABI work forced by that pinned WZ-002/WZ-003 caller | Trigger: a pinned draft artifact plus runtime seam; proof consumes committed/vendored bytes and compares regenerated digests separately |
+| PW-602 | TRIGGER | WHEN-TRIGGERED | Opening from a developer checkout would make the gate non-reproducible | Realm owns the D-183 gate-opening decision after WZ-001 through WZ-004 pass together; Bedrock separately pins that decision and admits its kernel integration under D-366 | Trigger: all four rows at one revision; Realm records pins, commands, hashes and seam, while Bedrock records exact admitted inputs and keeps ordinary kernel CI sibling-independent |
 
 ## Trigger-only kernel/platform work
 

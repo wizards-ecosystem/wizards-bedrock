@@ -1,4 +1,4 @@
-//! Build orchestrator for The Wizard's OS.
+//! Build orchestrator for The Wizard's Bedrock.
 //!
 //! Everything happens in-process in pure Rust — no xorriso, mtools, or other
 //! external imaging tools. The bootable artifact is a raw disk image with an

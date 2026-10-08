@@ -11,7 +11,7 @@ use anyhow::{Result, bail};
 use crate::cargo::Profile;
 
 const HELP_BEFORE_REGISTRY: &str = "\
-cargo xtask: build orchestrator for The Wizard's OS
+cargo xtask: build orchestrator for The Wizard's Bedrock
 
 USAGE:
     cargo xtask <TASK> [OPTIONS]

@@ -49,7 +49,7 @@ pub const DIRECTORY_NAME: &str = "DATA";
 pub const NESTED_NAME: &str = "NESTED.TXT";
 
 /// What [`SMALL_NAME`] holds.
-pub const SMALL_CONTENT: &[u8] = b"the wizard's os reads a disk\n";
+pub const SMALL_CONTENT: &[u8] = b"the wizard's bedrock reads a disk\n";
 
 /// What [`NESTED_NAME`] holds.
 pub const NESTED_CONTENT: &[u8] = b"one directory down\n";

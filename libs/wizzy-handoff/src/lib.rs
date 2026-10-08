@@ -1,4 +1,4 @@
-//! The route-neutral identity envelope between Wizzy and The Wizard's OS.
+//! The route-neutral identity envelope between Wizzy and The Wizard's Bedrock.
 //!
 //! The envelope says which target and ABI versions opaque artifact bytes need,
 //! where those bytes came from, which effects they request, and which digest
@@ -53,7 +53,7 @@ use core::{
 /// Version header accepted by this parser.
 pub const FORMAT: &str = "wizard-wizzy-handoff-v1";
 
-/// Target identifier owned by The Wizard's OS.
+/// Target identifier owned by The Wizard's Bedrock.
 pub const TARGET_ID: &str = "x86_64-unknown-wizard";
 
 /// Aggregate version of the native entry, ring and time-page contract.

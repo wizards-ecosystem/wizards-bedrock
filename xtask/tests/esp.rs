@@ -18,7 +18,7 @@ fn files_written_to_the_volume_read_back() {
     let mut volume = Cursor::new(vec![0u8; VOLUME_BYTES]);
     esp::format(&mut volume, FatType::Fat16).expect("format");
 
-    let payload = b"the wizard's os";
+    let payload = b"the wizard's bedrock";
     {
         let filesystem = FileSystem::new(&mut volume, FsOptions::new()).expect("mount");
         {

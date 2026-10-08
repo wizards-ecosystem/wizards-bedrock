@@ -20,7 +20,7 @@ with the component's exact inventory name and version.
   binary: BSD-2-Clause; the upstream copyright and license text are in
   `boot/limine/LICENSE`.
 
-Development-only crates and artifacts do not reach `wizard-os.img`; they
+Development-only crates and artifacts do not reach `bedrock.img`; they
 remain listed in the SBOM because they can affect construction or verification.
 Their upstream license conclusions are recorded row by row in the inventory.
 

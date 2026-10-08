@@ -1,13 +1,19 @@
 # 000 - Vision
 
-The Wizard's OS is a from-scratch operating system, built as a multi-year
-design-first project. We stand on a small set of lean open-source components
-(bootloader, TCP/IP stack, libc-for-porting) and design everything else
-ourselves from primary references.
+**Ownership after D-366 (2026-10-07).** Bedrock owns the kernel mechanisms
+and ABI described here. Product userland, graphics policy, compatibility ports
+and application delivery belong to [Realm](https://github.com/wizards-ecosystem/wizards-realm).
+The original phase numbers and dated observations remain historical; they do
+not create a second current product backlog in Bedrock.
+
+The Wizard's Bedrock is a from-scratch Rust kernel, built as a multi-year
+design-first project. The original combined OS vision below now spans Bedrock
+and Realm. Kernel mechanisms stay here; Realm owns the operating environment,
+compatibility ports and application experience.
 
 ## Destination
 
-A full OS with userspace that can, eventually:
+The inherited system destination, now owned jointly with Realm, is an OS that can:
 
 - run **Python**: RustPython as an early compatibility proof, then a real
   CPython port; neither is the native first-party userland (D-183)
@@ -100,7 +106,7 @@ reference, not followed linearly). Docs are numbered in creation order.
    compiled: the toolchain wall is measured in D-114. D-181 found that its
    three-bin summary conflated C++ body state with remaining platform work and
    replaced it with an exact two-axis row for each inspected function. The
-   register is in `userland/README.md`; the gate discovers active definitions,
+   register is in `fixtures/abi-pressure/README.md`; the gate discovers active definitions,
    checks BODY evidence in comment-free code and selected disputed REMAINDER
    labels against kernel witnesses. Slice table in
    `011-userspace.md`*

@@ -1,5 +1,9 @@
 # The POSIX layer, and what writing it found
 
+This is a Bedrock kernel ABI fixture retained under D-366. It is uncompiled
+historical contract evidence. Executable compatibility adapters and ports are
+owned by Realm; no Realm checkout is read by these checks.
+
 D-74 asked for an mlibc sysdep **immediately after the ABI stabilises**, and
 was explicit about why: *"not to run real software, but to find out whether a
 POSIX libc can sit on this ABI while the ABI is still cheap to change."*

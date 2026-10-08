@@ -1,4 +1,4 @@
-//! The Wizard's OS kernel — entry point.
+//! The Wizard's Bedrock kernel — entry point.
 //!
 //! Booted by Limine (base revision 4, D-42) on x86_64, higher-half. Every privileged
 //! operation goes through `wost`; this crate contains no hand-written `unsafe`.
@@ -62,7 +62,7 @@ use crate::arch::current::{ioapic, vector};
 
 fn kernel_main(boot: BootInfo) -> ! {
     let serial = dev::init_uart();
-    info!("The Wizard's OS awakens.");
+    info!("The Wizard's Bedrock awakens.");
 
     match boot.framebuffer {
         Ok(framebuffer) => dev::init_console(framebuffer),

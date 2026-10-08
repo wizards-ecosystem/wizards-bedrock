@@ -1,5 +1,11 @@
 # 013 - The application platform (Phase 6, slices 1-3)
 
+**Ownership after D-366 (2026-10-07).** Bedrock owns the kernel mechanisms
+and ABI described here. Product userland, graphics policy, compatibility ports
+and application delivery belong to [Realm](https://github.com/wizards-ecosystem/wizards-realm).
+The original phase numbers and dated observations remain historical; they do
+not create a second current product backlog in Bedrock.
+
 What a program is allowed to ask for, decided before the first deferred ring
 operation was written.
 
@@ -31,7 +37,7 @@ VFS slices open against an interface nobody has to re-cut.
 References: `010-research-notes-3.md` section 2 (the async ABI and its four
 hard problems), section 3 (capabilities and the handle table), section 5 (the
 POSIX bill), section 12 (what must be decided before code); `011-userspace.md` throughout, and
-`userland/README.md` for the sysdep finding that motivates constraint C-3.
+`fixtures/abi-pressure/README.md` for the sysdep finding that motivates constraint C-3.
 Outside the project: io_uring's man pages and its CVE record; Watson,
 Anderson, Laurie and Kennaway, *Capsicum: practical capabilities for UNIX*
 (USENIX Security 2010); the WASI 0.3 clocks and filesystem interfaces; Fuchsia

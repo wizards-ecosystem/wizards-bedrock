@@ -77,7 +77,7 @@ impl RunImage {
 
         for _ in 0..1024 {
             let sequence = NEXT_RUN_IMAGE.fetch_add(1, Ordering::Relaxed);
-            let path = directory.join(format!("wizard-os-{}-{sequence}.img", std::process::id()));
+            let path = directory.join(format!("bedrock-{}-{sequence}.img", std::process::id()));
             let mut options = OpenOptions::new();
             OpenOptions::read(&mut options, true);
             OpenOptions::write(&mut options, true);

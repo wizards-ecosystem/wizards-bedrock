@@ -2050,7 +2050,7 @@ fn a_second_backend_answers_the_same_three_operations() -> bool {
     let Ok(got) = vfs::read(motd, 0, &mut read) else {
         return false;
     };
-    if got == 0 || &read[..got] != b"the wizard's os, from memory\n" {
+    if got == 0 || &read[..got] != b"the wizard's bedrock, from memory\n" {
         return false;
     }
 
@@ -2502,7 +2502,7 @@ fn a_path_resolves_through_a_directory() -> bool {
 /// of one table, so a host test compares them (D-158, D-170).
 const SMALL_NAME: &[u8] = b"HELLO.TXT";
 /// See [`SMALL_NAME`].
-const SMALL_CONTENT: &[u8] = b"the wizard's os reads a disk\n";
+const SMALL_CONTENT: &[u8] = b"the wizard's bedrock reads a disk\n";
 /// See [`SMALL_NAME`].
 const LARGE_NAME: &[u8] = b"BIG.BIN";
 /// See [`SMALL_NAME`].

@@ -7027,9 +7027,11 @@ const LIVE: u32 = 7;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask sits below the workspace root");
-        let sysdeps = std::fs::read_to_string(root.join("userland/sysdeps/wizard/generic.cpp"))
-            .expect("generic.cpp");
-        let readme = std::fs::read_to_string(root.join("userland/README.md")).expect("README.md");
+        let sysdeps =
+            std::fs::read_to_string(root.join("fixtures/abi-pressure/sysdeps/wizard/generic.cpp"))
+                .expect("generic.cpp");
+        let readme = std::fs::read_to_string(root.join("fixtures/abi-pressure/README.md"))
+            .expect("README.md");
         let (active, comments) = cpp_without_comments(&sysdeps);
         let structure = cpp_structure(&active);
         let mut includes = Vec::new();
@@ -7329,8 +7331,9 @@ const LIVE: u32 = 7;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask sits below the workspace root");
-        let sysdeps = std::fs::read_to_string(root.join("userland/sysdeps/wizard/generic.cpp"))
-            .expect("generic.cpp");
+        let sysdeps =
+            std::fs::read_to_string(root.join("fixtures/abi-pressure/sysdeps/wizard/generic.cpp"))
+                .expect("generic.cpp");
         let (_, comments) = cpp_without_comments(&sysdeps);
         let annotations = sysdep_annotations(&comments);
         let remainder = |name: &str| {
@@ -7417,8 +7420,8 @@ const LIVE: u32 = 7;
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("xtask sits below the workspace root");
-        let header = std::fs::read_to_string(root.join("userland/abi/wizard_abi.h"))
-            .expect("userland/abi/wizard_abi.h");
+        let header = std::fs::read_to_string(root.join("fixtures/abi-pressure/abi/wizard_abi.h"))
+            .expect("fixtures/abi-pressure/abi/wizard_abi.h");
         let queue = rust_without_comments(
             &std::fs::read_to_string(root.join("kernel/src/queue.rs")).expect("queue.rs"),
         );

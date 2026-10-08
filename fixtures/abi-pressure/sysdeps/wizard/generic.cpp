@@ -1,4 +1,4 @@
-// mlibc sysdeps for The Wizard's OS: the sixteen functions inspected by D-114.
+// mlibc sysdeps for The Wizard's Bedrock: the sixteen functions inspected by D-114.
 //
 // D-74 asked for this immediately after the ABI stabilised, while changing it
 // was still cheap. This file is not a compiled port, and D-114 recorded no
@@ -12,7 +12,7 @@
 //   REMAINDER  WORKS, COMPAT, DOOR, PARTIAL, or MISSING.
 //
 // BODY describes this file. REMAINDER describes the platform work left. The
-// exact register and definitions are in `userland/README.md`.
+// exact register and definitions are in `fixtures/abi-pressure/README.md`.
 
 #include <mlibc/all-sysdeps.hpp>
 #include <mlibc/debug.hpp>

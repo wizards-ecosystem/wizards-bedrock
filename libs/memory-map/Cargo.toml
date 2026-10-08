@@ -1,6 +1,6 @@
 [package]
 name = "memory-map"
-description = "Bounded, allocation-free physical memory-map policy for The Wizard's OS."
+description = "Bounded, allocation-free physical memory-map policy for The Wizard's Bedrock."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

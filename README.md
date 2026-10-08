@@ -1,44 +1,40 @@
 <h1 align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/os-logo-dark.png">
-    <img src="docs/assets/os-logo.png" alt="The Wizard's OS" width="420">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/bedrock-logo-dark.png">
+    <img src="docs/assets/bedrock-logo.png" alt="The Wizard's Bedrock" width="420">
   </picture>
 </h1>
 
-A from-scratch operating system: Rust kernel, x86_64, UEFI, booted by
-[Limine](https://github.com/limine-bootloader/limine). **Capability-based
-and async-first**: handles + submission/completion queues are the native
-ABI (POSIX is just a translation layer for ports), `spawn()` not `fork()`.
-A CoW checksummed filesystem (WizFS) and WebAssembly with `wasip1` as a
-first-class app format are designed and not built (D-72, D-73); storage today
-is a read-only third-party FAT32.
-D-183 fixes the language boundary: the kernel remains Rust, and
-every feasible first-party target-side non-kernel component is written in
-Wizzy once its compiler-readiness gate opens. Phase 7 product userland stops at
-that gate; the OS may specify and validate the route-neutral handoff, while the
-separable runtime remains owned and gated by `wizards-ink` and the OS adapter
-remains post-gate integration. Host tooling, third-party libraries and ports,
-and compatibility runtimes keep their appropriate languages.
-The finite work still permitted before that gate is the D-184
-[pre-Wizzy foundation register](docs/016-pre-wizzy-foundation.md); it separates
-confirmed kernel defects and missing qualification evidence from trigger-only
-and post-gate product work.
-Multi-year project; destination: a full userspace with our own compositor,
-a ported Python, and NetSurf rendering the document web (D-75).
-See [docs/002-architecture.md](docs/002-architecture.md).
+Bedrock is a from-scratch **Rust kernel** for x86_64 and UEFI, booted by
+[Limine](https://github.com/limine-bootloader/limine). It owns hardware support,
+memory protection, scheduling, the capability-based async kernel ABI and kernel
+qualification. Handles and submission/completion queues are native; `spawn()`
+replaces `fork()`. Storage currently uses read-only FAT32 over NVMe.
+
+[The Wizard's Realm](https://github.com/wizards-ecosystem/wizards-realm) owns the
+operating environment: Wizzy services, Bedrock/Linux adapters, shell, desktop,
+applications, compatibility ports and product images. Ink owns Wizzy and its
+compiler/runtime. D-366 records the separation and history-preserving rename
+from wizards-os. Bedrock builds and qualifies independently of either checkout.
+
+D-183's Wizzy language choice remains in force. Realm's compiler-readiness
+gate is **CLOSED**; Bedrock's admitted integration evidence is recorded in
+[the kernel handoff](docs/015-wizzy-userland.md). D-184's finite
+[foundation register](docs/016-pre-wizzy-foundation.md) is the current kernel
+backlog. The kernel diagnostic image is not a Realm distribution.
 
 ## Status
 
 Working, and unfinished. The kernel boots on UEFI, brings up descriptor tables,
 x2APIC, paging and an EEVDF scheduler, reaches ring 3 with a handle table and an
 async queue ABI, claims a PCI NVMe device, and mounts read-only FAT32 over a
-VFS. It then settles at a prompt that echoes keystrokes. There is no `init`, no
-shell and no user programs: that is Phase 7, and it is gated.
+VFS. It then settles at a prompt that echoes keystrokes. There is no product `init`, shell or user program. Those belong to Realm
+and remain gated. The echo prompt is a kernel diagnostic.
 
 | Phases 0 to 5 | Closed, each by a dated VMware boot. Last close 2026-08-24 |
 | --- | --- |
 | Phase 6, VFS and storage | Slices landed 2026-08-25. **Not closed**: qualification evidence is still open |
-| Phase 7, userland | **Gated** on the Wizzy compiler-readiness gate (D-183), which is CLOSED |
+| Realm userland | Owned by Realm; **gated** on compiler readiness (D-183), currently CLOSED |
 
 [docs/000-vision.md](docs/000-vision.md) carries the phase-by-phase ledger, and
 the D-184 [pre-Wizzy foundation register](docs/016-pre-wizzy-foundation.md) is
@@ -48,7 +44,7 @@ separate repository and is not yet public.
 Design docs live in [docs/](docs/), one per subsystem, written before the
 code (design-first). Start with the
 [decision log](docs/004-decision-log.md) (every choice, its alternatives,
-and rationale) and the [architecture](docs/002-architecture.md). Research
+and rationale). See [docs/002-architecture.md](docs/002-architecture.md). Research
 evidence behind them is in [the founding pass](docs/003-research-notes.md),
 [the second pass](docs/008-research-notes-2.md), and
 [the foundation-verification pass](docs/010-research-notes-3.md) and
@@ -69,7 +65,7 @@ after installing rustup so `cargo` is on PATH; the pinned toolchain and
 
 ```
 cargo xtask build              # compile the kernel (x86_64-unknown-none)
-cargo xtask image              # build target/wizard-os.img, a bootable UEFI disk image
+cargo xtask image              # build target/bedrock.img, a bootable UEFI disk image
 cargo xtask run                # boot it in QEMU (serial output on stdio)
 cargo xtask vmware             # generate the self-test VM in vm/self-test/
 cargo xtask vmware --shipped   # generate the user-facing VM in vm/shipped/
@@ -277,6 +273,6 @@ models/     TLA+ ring-protocol specs, plus four deliberate mutant configs that
             must each fail, checked by `cargo xtask model-check` (D-112)
 tools/      pinned TLA+ jar and the foreign FAT32 corpus, both digest-checked
 supply-chain/  SBOM, third-party notices and license texts
-userland/   native ABI header + the uncompiled mlibc pressure test from Phase 5
-ports/      (future) recipes for mlibc, CPython, links, NetSurf
+fixtures/abi-pressure/  native ABI transcription + uncompiled Phase-5 pressure test
+                       (kernel contract evidence; executable ports belong to Realm)
 ```

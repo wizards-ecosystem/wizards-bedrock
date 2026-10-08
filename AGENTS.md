@@ -1,6 +1,6 @@
 # Working in this repository
 
-This is a from-scratch OS built design-first: **docs in `docs/` come before
+This is The Wizard's Bedrock, a Rust kernel built design-first: **docs in `docs/` come before
 code**, and every choice is recorded in `docs/004-decision-log.md` with its
 alternatives and rationale. Read the relevant doc before changing a subsystem,
 and add an ADR when you make a decision worth remembering.
@@ -9,17 +9,18 @@ and add an ADR when you make a decision worth remembering.
 
 D-183 fixes the language boundary: in-kernel code stays Rust, and every
 feasible first-party target-side program, service, library, tool and application
-is Wizzy. `docs/015-wizzy-userland.md` is canonical and its compiler-readiness
-gate is currently **CLOSED**. While closed, do not start Phase 7 product work or
+is Wizzy. Realm owns the canonical compiler-readiness gate and product plan under D-366.
+`docs/015-wizzy-userland.md` owns the kernel handoff and records Bedrock's
+last admitted compiler evidence as **CLOSED**. While closed, do not start Phase 7 product work or
 build a Rust fallback userland. Work is in scope only when it is kernel
 correctness, a language-neutral prerequisite with a concrete future Wizzy
 caller, or specification and validation of the versioned compiler handoff.
-Consumer scaffolding remains stopped until PW-601 has both a pinned draft
+Realm owns all target-side product implementation. Consumer scaffolding remains stopped until PW-601 has both a pinned draft
 artifact and a runtime seam; WZ-001 through WZ-004 are externally owned
-`wizards-ink` blockers, not OS-repo implementation work.
+`wizards-ink` blockers, not Bedrock implementation work.
 
 D-184 makes [docs/016-pre-wizzy-foundation.md](docs/016-pre-wizzy-foundation.md)
-the sole finite OS-side backlog while that gate is closed. Every new item needs
+the sole finite kernel backlog while that gate is closed. Every new item needs
 the defect, invariant, proof gap, handoff consumer or trigger the register
 requires; `TRIGGER` and post-gate rows are stopped work, not invitations.
 

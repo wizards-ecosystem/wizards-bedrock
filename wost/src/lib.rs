@@ -1,4 +1,4 @@
-//! Wizard OS Standard — the privileged kernel framework.
+//! Bedrock's privileged kernel framework.
 //!
 //! `wost` is the only crate in the kernel permitted to write `unsafe`. Every
 //! other kernel crate is safe Rust built on the abstractions exported here.

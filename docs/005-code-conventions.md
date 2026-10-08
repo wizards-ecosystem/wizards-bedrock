@@ -238,7 +238,7 @@ table to match the typed registry execution reads; `xtask/src/unsafety.rs` pins 
 unsafe line count rather than only capping it; `xtask/src/qemu.rs` compares the
 C header against the kernel's own constants, discovers every active sysdep,
 checks its BODY evidence, and checks its two-axis source marker against the exact
-register in `userland/README.md`. Prose that cannot be
+register in `fixtures/abi-pressure/README.md`. Prose that cannot be
 checked should not state a number: point at the place that can (D-124).
 
 If a check fits none of the three, that is usually a sign the logic should be

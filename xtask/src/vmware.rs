@@ -17,18 +17,18 @@ use crate::qemu::canonical_decimal;
 use crate::qualification;
 use crate::sha256;
 
-const VMDK_TEMPLATE: &str = include_str!("../templates/wizard-os.vmdk.in");
-const VMX_TEMPLATE: &str = include_str!("../templates/wizard-os.vmx.in");
+const VMDK_TEMPLATE: &str = include_str!("../templates/bedrock.vmdk.in");
+const VMX_TEMPLATE: &str = include_str!("../templates/bedrock.vmx.in");
 
-const FLAT_NAME: &str = "wizard-os-flat.img";
-const VMDK_NAME: &str = "wizard-os.vmdk";
+const FLAT_NAME: &str = "bedrock-flat.img";
+const VMDK_NAME: &str = "bedrock.vmdk";
 
 /// The NVMe namespace's descriptor, and the flat file behind it.
 const NVME_VMDK_NAME: &str = "wizard-nvm.vmdk";
 /// See [`NVME_VMDK_NAME`].
 const NVME_FLAT_NAME: &str = "wizard-nvm-flat.img";
-const VMX_NAME: &str = "wizard-os.vmx";
-const DISPLAY_NAME: &str = "The Wizard's OS";
+const VMX_NAME: &str = "bedrock.vmx";
+const DISPLAY_NAME: &str = "The Wizard's Bedrock";
 const VMWARE_ISOLATION_MARKER: &str = "cpu: user isolation shared kernel mappings: rdcl_no";
 const MAX_SOURCE_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -1341,7 +1341,7 @@ mod tests {
         std::fs::create_dir_all(&selftest).expect("self-test selector");
         std::fs::create_dir_all(&shipped).expect("shipped selector");
         std::fs::write(selftest.join("nvram"), "stale firmware state").unwrap();
-        std::fs::write(selftest.join("wizard-os.vmss"), "stale suspend state").unwrap();
+        std::fs::write(selftest.join("bedrock.vmss"), "stale suspend state").unwrap();
         std::fs::write(shipped.join("keep"), "other selector").unwrap();
 
         reset_vm_directory(&paths, Kernel::SelfTest).expect("reset self-test selector");
@@ -1490,7 +1490,7 @@ mod tests {
         .unwrap();
 
         assert!(!vmdk.contains("{{"));
-        assert!(vmdk.contains(r#"RW 131072 FLAT "wizard-os-flat.img" 0"#));
+        assert!(vmdk.contains(r#"RW 131072 FLAT "bedrock-flat.img" 0"#));
         assert!(vmdk.contains(r#"ddb.geometry.cylinders = "9""#));
     }
 
@@ -1528,7 +1528,7 @@ mod tests {
         // Storage fails closed on a machine with no remapping unit (D-357).
         assert!(vmx.contains(r#"vvtd.enable = "TRUE""#));
         assert!(vmx.contains(&format!(r#"serial0.fileName = "{serial}""#)));
-        assert!(vmx.contains(r#"sata0:0.fileName = "wizard-os.vmdk""#));
+        assert!(vmx.contains(r#"sata0:0.fileName = "bedrock.vmdk""#));
         // A namespace-less candidate before the usable controller makes the
         // retirement path observable on VMware (D-176, D-240).
         assert!(vmx.contains(r#"nvme0.present = "TRUE""#));

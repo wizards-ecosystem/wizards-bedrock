@@ -1,6 +1,6 @@
 [package]
 name = "wost"
-description = "Wizard OS Standard — the privileged kernel framework; the only crate permitted `unsafe`."
+description = "Bedrock's privileged kernel framework; the only crate permitted `unsafe`."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

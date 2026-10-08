@@ -193,7 +193,7 @@ pub const KERNEL_ON_ESP: &str = "wizard-kernel.elf";
 pub const PROGRAM_ON_ESP: &str = "hello.elf";
 
 /// File name of the bootable disk image.
-pub const IMAGE_NAME: &str = "wizard-os.img";
+pub const IMAGE_NAME: &str = "bedrock.img";
 
 /// Per-run QEMU state whose lifetime is shorter than a build artifact.
 pub(crate) const QEMU_RUN_DIRECTORY: &str = "qemu runs,private";

@@ -34,8 +34,9 @@ fn the_committed_handoff_fixture_is_self_contained() {
 
 #[test]
 fn platform_v1_is_entry_ring_and_time_v1() {
-    let platform_header = std::fs::read_to_string(root().join("userland/abi/wizard_abi.h"))
-        .expect("reading the platform ABI header");
+    let platform_header =
+        std::fs::read_to_string(root().join("fixtures/abi-pressure/abi/wizard_abi.h"))
+            .expect("reading the platform ABI header");
     for declaration in [
         "#define WIZ_ENTRY_VERSION             1u",
         "#define WIZ_RING_VERSION 1u",
