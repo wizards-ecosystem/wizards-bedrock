@@ -980,10 +980,10 @@ first, because a caller freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 273 |
-| Mutations | 1638 registered; complete-sweep verdicts live in source-bound qualification records |
+| Machine checks | 275 |
+| Mutations | 1644 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-367 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-368 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but mutation registration is not a current full-sweep

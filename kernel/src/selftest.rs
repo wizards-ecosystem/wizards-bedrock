@@ -448,6 +448,70 @@ fn a_faulting_program_dies_alone() -> bool {
     this_child && from_user && it_was_the_ud2 && in_user_memory && retired
 }
 
+fn a_noncanonical_user_return_stack_retires_only_its_program() -> bool {
+    let (before, _) = trap::last_invalid_user_return();
+    let expiries = time::expiries();
+    let Ok(spawned) = user::run_with_invalid_return_stack() else {
+        return false;
+    };
+
+    if !runs_until(2_000, || {
+        let (refused, _) = trap::last_invalid_user_return();
+        refused.count > before.count && refused.slot == spawned.slot
+    }) {
+        return false;
+    }
+    let (refused, kind) = trap::last_invalid_user_return();
+    let this_child = refused.slot == spawned.slot
+        && refused.stack_pointer == usercopy::USER_END
+        && kind == trap::InvalidUserReturnKind::StackPointer;
+    let retired = last_rites_for(&spawned, 2_000).is_some();
+
+    // A refusal is process-local: the timer keeps arriving and a clean child
+    // can still cross the same gate, return through the same tail and exit.
+    let calls = trap::last_syscall();
+    let Ok(successor) = user::run_for_bootstrap() else {
+        return false;
+    };
+    let successor_retired = last_rites_for(&successor, 2_000).is_some();
+    let successor_call = trap::last_syscall();
+    let successor_ran = successor_call.count > calls.count && successor_call.slot == successor.slot;
+
+    this_child && retired && successor_retired && successor_ran && time::expiries() > expiries
+}
+
+fn unsafe_user_return_flags_retire_only_their_program() -> bool {
+    const NESTED_TASK: u64 = 1 << 14;
+
+    let (before, _) = trap::last_invalid_user_return();
+    let expiries = time::expiries();
+    let Ok(spawned) = user::run_with_invalid_return_flags() else {
+        return false;
+    };
+
+    if !runs_until(2_000, || {
+        let (refused, _) = trap::last_invalid_user_return();
+        refused.count > before.count && refused.slot == spawned.slot
+    }) {
+        return false;
+    }
+    let (refused, kind) = trap::last_invalid_user_return();
+    let this_child = refused.slot == spawned.slot
+        && refused.flags & NESTED_TASK != 0
+        && kind == trap::InvalidUserReturnKind::Flags;
+    let retired = last_rites_for(&spawned, 2_000).is_some();
+
+    let calls = trap::last_syscall();
+    let Ok(successor) = user::run_for_bootstrap() else {
+        return false;
+    };
+    let successor_retired = last_rites_for(&successor, 2_000).is_some();
+    let successor_call = trap::last_syscall();
+    let successor_ran = successor_call.count > calls.count && successor_call.slot == successor.slot;
+
+    this_child && retired && successor_retired && successor_ran && time::expiries() > expiries
+}
+
 fn a_program_cannot_aim_at_the_copy_window() -> bool {
     let recoveries_before = trap::user_copy_recoveries();
     let before = trap::last_user_fault();
@@ -7806,7 +7870,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 273;
+const EXPECTED_CHECKS: usize = 275;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -7971,6 +8035,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a faulting program dies alone",
         a_faulting_program_dies_alone(),
+    );
+    report.check(
+        "a noncanonical user return stack retires only its program",
+        a_noncanonical_user_return_stack_retires_only_its_program(),
+    );
+    report.check(
+        "unsafe user return flags retire only their program",
+        unsafe_user_return_flags_retire_only_their_program(),
     );
     report.check(
         "a program cannot aim at the copy window",

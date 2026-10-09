@@ -157,6 +157,19 @@ It also observes live kernel `SS` on the first ring-3 call independently from
 the saved user stack selector and repeats the frame check after scheduling
 (D-289).
 
+Before that common tail can consume an outer-privilege frame, the dispatcher
+validates the final five `iretq` words (D-368). `CS` and `SS` must be the exact
+installed user selectors; `RIP` and `RSP` must remain below the low-half user
+boundary; `RIP` must still translate as user-executable in the active address
+space; and `RFLAGS` is an allowlist with bit 1 and `IF` required and system
+state such as `NT`, `VM`, `IOPL` and virtual-interrupt bits forbidden. The
+check is after the ordinary handler and any resumed trap switch, with
+interrupts still disabled. A refusal therefore retires that program through a
+diverging kernel callback instead of letting a malformed `iretq` raise a
+ring-zero fault. Host tests cover every field; two ring-three witnesses cover
+a noncanonical stack and `NT` while proving the timer and a successor program
+remain alive.
+
 **At this Phase 2 checkpoint, not saved:** floating-point and SSE state.
 `x86_64-unknown-none` uses `+soft-float`, so the kernel cannot disturb it. D-108
 later added eager per-thread `XSAVEC`/`XSAVE` and `XRSTOR` when ring 3 made the

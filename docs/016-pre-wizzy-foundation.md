@@ -75,7 +75,7 @@ What remains, and exactly how to run it:
    and 24 inconclusive outcomes. D-302 through D-322 repair and adversarially
    prove all 58 non-caught outcomes; repeat the complete current registry, whose
    size the 014 closing table states, on a clean qualification commit. The
-   runner journals every outcome and resumes after interruption, and 253 of its
+   runner journals every outcome and resumes after interruption, and 255 of its
    entries boot QEMU, so do not run anything CPU-heavy beside it. Its pass supplies the current-source rerun for every
    still-live row whose close requires a retained mutation; the register below,
    rather than a duplicated range summary, is authoritative.

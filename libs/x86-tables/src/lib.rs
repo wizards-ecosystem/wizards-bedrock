@@ -29,6 +29,7 @@
 pub mod exception;
 pub mod gdt;
 pub mod idt;
+pub mod return_state;
 pub mod tss;
 
 /// A reference to one descriptor table entry, as loaded into a segment register.

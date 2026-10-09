@@ -27,9 +27,24 @@ use wost::arch::current::segment;
 
 use super::vector;
 
+static HANDLERS: interrupt::Handlers =
+    interrupt::Handlers::new(on_trap, reject_invalid_user_return);
+
 /// Route every vector to this module.
 pub(crate) fn init() {
-    interrupt::init(on_trap, Some(vector::SYSCALL));
+    interrupt::init(&HANDLERS, Some(vector::SYSCALL));
+}
+
+fn reject_invalid_user_return(frame: &TrapFrame, error: interrupt::UserReturnError) -> ! {
+    #[cfg(feature = "selftest")]
+    {
+        LAST_INVALID_USER_RETURN_KIND.store(invalid_user_return_kind(error), Ordering::Relaxed);
+        LAST_INVALID_USER_RETURN.record(frame);
+    }
+    if crate::thread::retire_from_trap(frame) {
+        unreachable!("retiring an invalid user return resumed its context");
+    }
+    panic!("invalid user return could not be retired: {error:?}");
 }
 
 /// The kernel's response to every vector.
@@ -261,6 +276,62 @@ static LAST_USER_FAULT: Recorder = Recorder::new();
 #[cfg(feature = "selftest")]
 pub(crate) fn last_user_fault() -> Record {
     Recorder::read(&LAST_USER_FAULT)
+}
+
+/// What the last outer-privilege frame refusal looked like.
+#[cfg(feature = "selftest")]
+static LAST_INVALID_USER_RETURN: Recorder = Recorder::new();
+
+#[cfg(feature = "selftest")]
+static LAST_INVALID_USER_RETURN_KIND: AtomicUsize = AtomicUsize::new(0);
+
+/// Which part of an outer-privilege frame was refused.
+#[cfg(feature = "selftest")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InvalidUserReturnKind {
+    /// No refusal has been recorded.
+    None,
+    /// The user code selector differed from the installed selector.
+    CodeSelector,
+    /// The user stack selector differed from the installed selector.
+    StackSelector,
+    /// The instruction pointer was not admitted user state.
+    InstructionPointer,
+    /// The instruction pointer was not executable in the live space.
+    InstructionNotExecutable,
+    /// The stack pointer was not admitted user state.
+    StackPointer,
+    /// The saved flags were unsafe for `iretq`.
+    Flags,
+}
+
+#[cfg(feature = "selftest")]
+fn invalid_user_return_kind(error: interrupt::UserReturnError) -> usize {
+    match error {
+        interrupt::UserReturnError::CodeSelector(_) => 1,
+        interrupt::UserReturnError::StackSelector(_) => 2,
+        interrupt::UserReturnError::InstructionPointer(_) => 3,
+        interrupt::UserReturnError::InstructionNotExecutable(_) => 4,
+        interrupt::UserReturnError::StackPointer(_) => 5,
+        interrupt::UserReturnError::Flags(_) => 6,
+        _ => 0,
+    }
+}
+
+/// The most recent refused user return and its reason.
+#[cfg(feature = "selftest")]
+pub(crate) fn last_invalid_user_return() -> (Record, InvalidUserReturnKind) {
+    let frame = Recorder::read(&LAST_INVALID_USER_RETURN);
+    let kind = match LAST_INVALID_USER_RETURN_KIND.load(Ordering::Relaxed) {
+        1 => InvalidUserReturnKind::CodeSelector,
+        2 => InvalidUserReturnKind::StackSelector,
+        3 => InvalidUserReturnKind::InstructionPointer,
+        4 => InvalidUserReturnKind::InstructionNotExecutable,
+        5 => InvalidUserReturnKind::StackPointer,
+        6 => InvalidUserReturnKind::Flags,
+        _ => InvalidUserReturnKind::None,
+    };
+    (frame, kind)
 }
 
 /// One if SMAP was still on when the last ring-3 call reached the handler.

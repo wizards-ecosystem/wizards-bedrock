@@ -805,7 +805,7 @@ const QEMU_TCG_ISOLATION_MARKER: &str = "cpu: user isolation shared kernel mappi
 /// Checks the self-test kernel must report, held independently of its own
 /// tally so a deleted or skipped one turns the verdict red.
 /// Changes require mutation evidence (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 273;
+const EXPECTED_SELFTEST_CHECKS: usize = 275;
 
 /// Prefix of the strict performance/resource record emitted by self-test.
 const BASELINE_PREFIX: &str = "selftest: baseline ";
@@ -6410,6 +6410,7 @@ mod tests {
         pops: Vec<&'static str>,
         rcx_imm8_rejections: Vec<(u8, usize)>,
         ring_bases: Vec<u64>,
+        stack_immediates: Vec<u64>,
         eax_immediates: Vec<u32>,
         interrupts: Vec<u8>,
         writes32: Vec<(u32, u32)>,
@@ -6443,6 +6444,7 @@ mod tests {
             pops: Vec::new(),
             rcx_imm8_rejections: Vec::new(),
             ring_bases: Vec::new(),
+            stack_immediates: Vec::new(),
             eax_immediates: Vec::new(),
             interrupts: Vec::new(),
             writes32: Vec::new(),
@@ -6511,6 +6513,14 @@ mod tests {
                     .get(2..10)
                     .unwrap_or_else(|| panic!("truncated mov rbx, imm64 at byte {at}"));
                 operands.ring_bases.push(u64::from_le_bytes(
+                    immediate.try_into().expect("eight immediate bytes"),
+                ));
+                10
+            } else if rest.starts_with(&[0x48, 0xBC]) {
+                let immediate = rest
+                    .get(2..10)
+                    .unwrap_or_else(|| panic!("truncated mov rsp, imm64 at byte {at}"));
+                operands.stack_immediates.push(u64::from_le_bytes(
                     immediate.try_into().expect("eight immediate bytes"),
                 ));
                 10
@@ -7851,10 +7861,8 @@ const LIVE: u32 = 7;
         );
         let syscall_number = rust_interrupt_vector(&vectors_source, "SYSCALL");
         expect_macro!("WIZ_SYSCALL_VECTOR", syscall_number);
-        expect_macro!(
-            "WIZ_USER_END",
-            rust_uint(&paging_source, "pub const USER_END: u64")
-        );
+        let user_end = rust_uint(&paging_source, "pub const USER_END: u64");
+        expect_macro!("WIZ_USER_END", user_end);
         expect_macro!("WIZ_ENOSYS", rust_negated_errno(&user, "ENOSYS"));
         expect_macro!("WIZ_EINVAL", rust_negated_errno(&user, "EINVAL"));
         assert_eq!(
@@ -8040,6 +8048,11 @@ const LIVE: u32 = 7;
             [ring],
             "the emitted mov rbx, imm64 does not load the kernel ring base"
         );
+        assert_eq!(
+            operands.stack_immediates,
+            [user_end],
+            "the hostile emitted mov rsp, imm64 does not load the kernel user boundary"
+        );
         let ring_enter = decoded_call_arms
             .iter()
             .find_map(|(number, variant)| (variant == "RingEnter").then_some(*number))
@@ -8052,14 +8065,14 @@ const LIVE: u32 = 7;
             .expect("Call::RingWait fits in an emitted imm32");
         assert_eq!(
             operands.eax_immediates,
-            [0x0BAD_0BAD, ring_enter, ring_wait],
+            [0x0BAD_0BAD, 0x0BAD_0BAD, 0x0BAD_0BAD, ring_enter, ring_wait,],
             "the emitted mov eax immediates are not refusal, RingEnter and RingWait"
         );
         let syscall_immediate =
             u8::try_from(syscall_number).expect("the syscall vector fits in imm8");
         assert_eq!(
             operands.interrupts,
-            vec![syscall_immediate; 5],
+            vec![syscall_immediate; 7],
             "an emitted int imm8 uses a vector other than the kernel syscall gate"
         );
         let completion_at = entries_at + submissions * submission_bytes;

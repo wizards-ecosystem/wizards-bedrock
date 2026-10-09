@@ -2099,11 +2099,30 @@ pub(crate) fn run_probing() -> Result<Spawned, SpawnError> {
     spawn("user-probe", 4, PROBE)
 }
 
+/// A program that asks the kernel to return to a non-canonical stack.
+#[cfg(feature = "selftest")]
+pub(crate) fn run_with_invalid_return_stack() -> Result<Spawned, SpawnError> {
+    spawn("user-invalid-rsp", 10, INVALID_RETURN_STACK)
+}
+
+/// A program that asks the kernel to return with `RFLAGS.NT` set.
+#[cfg(feature = "selftest")]
+pub(crate) fn run_with_invalid_return_flags() -> Result<Spawned, SpawnError> {
+    spawn("user-invalid-flags", 11, INVALID_RETURN_FLAGS)
+}
+
 /// The argument that makes the program ask for an unserved call.
 ///
 /// Must match the behaviour `xtask/src/image/program.rs` emits for it.
 #[cfg(feature = "selftest")]
 const PROBE: u64 = 2;
+
+/// Must match the hostile return behaviours emitted by
+/// `xtask/src/image/program.rs`.
+#[cfg(feature = "selftest")]
+const INVALID_RETURN_STACK: u64 = 6;
+#[cfg(feature = "selftest")]
+const INVALID_RETURN_FLAGS: u64 = 7;
 
 /// A fourth, for the check that counts what a program is given at birth.
 #[cfg(feature = "selftest")]

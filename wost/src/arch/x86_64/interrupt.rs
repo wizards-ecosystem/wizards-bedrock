@@ -15,8 +15,11 @@ use core::mem::size_of;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
 use x86_apic::vector::InterruptVector;
+use x86_paging::Flags;
 use x86_tables::exception;
 use x86_tables::idt::{self, Gate};
+pub use x86_tables::return_state::UserReturnError;
+use x86_tables::return_state::UserReturnState;
 
 use super::cpu;
 use super::pic;
@@ -168,9 +171,36 @@ impl TrapFrame {
 /// their saved instruction pointer still names the faulting instruction.
 pub type Handler = fn(&TrapFrame);
 
+/// Retire a context whose outer-privilege frame cannot be consumed safely.
+///
+/// The callback diverges because returning would hand the rejected frame to
+/// `iretq`. It runs after the ordinary handler, while that exact frame remains
+/// live and every device interrupt has been dismissed (D-368).
+pub type InvalidUserReturnHandler = fn(&TrapFrame, UserReturnError) -> !;
+
+/// The two kernel callbacks installed before the interrupt table is loaded.
+///
+/// Keeping them in one immutable, statically lived value gives dispatch one
+/// typed registration pointer and one audited dereference (D-368).
+#[derive(Debug)]
+pub struct Handlers {
+    on_trap: Handler,
+    invalid_user_return: InvalidUserReturnHandler,
+}
+
+impl Handlers {
+    /// Bind ordinary dispatch and rejected-return retirement together.
+    pub const fn new(on_trap: Handler, invalid_user_return: InvalidUserReturnHandler) -> Self {
+        Self {
+            on_trap,
+            invalid_user_return,
+        }
+    }
+}
+
 static IDT: HardwareCell<[Gate; idt::TABLE_LEN]> =
     HardwareCell::new([Gate::MISSING; idt::TABLE_LEN]);
-static HANDLER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static HANDLERS: AtomicPtr<Handlers> = AtomicPtr::new(core::ptr::null_mut());
 static INIT: Once = Once::new();
 
 /// How many trap handlers are on this CPU's stack — zero in thread context.
@@ -309,7 +339,7 @@ pub(crate) struct TrapSuspension {
 /// Panics if the global descriptor table has not been installed — the gates
 /// name its code selector — or if the generated stub table is not the size the
 /// indexing assumes.
-pub fn init(handler: Handler, user_gate: Option<InterruptVector>) {
+pub fn init(handlers: &'static Handlers, user_gate: Option<InterruptVector>) {
     if !INIT.claim() {
         return;
     }
@@ -326,7 +356,7 @@ pub fn init(handler: Handler, user_gate: Option<InterruptVector>) {
         "entry stub table is the wrong size for a stub of STUB_BYTES"
     );
 
-    HANDLER.store(handler as *const () as *mut (), Ordering::Release);
+    HANDLERS.store(core::ptr::from_ref(handlers).cast_mut(), Ordering::Release);
 
     // SAFETY: `INIT` admitted this caller alone and the table is reachable only
     // through this module, so no other reference to it exists. The CPU is not
@@ -805,15 +835,14 @@ pub fn breakpoint() {
 
 /// Call the registered handler with the frame the entry path saved.
 extern "C" fn dispatch(raw: *mut RawTrapFrame) {
-    let registered = HANDLER.load(Ordering::Acquire);
+    let registered = HANDLERS.load(Ordering::Acquire);
     if registered.is_null() {
         cpu::halt_forever();
     }
 
-    // SAFETY: the slot is written only by `init`, from a `Handler`, and only
-    // before the table naming this entry path is loaded. A function pointer and
-    // a data pointer are the same width on x86_64.
-    let handler: Handler = unsafe { core::mem::transmute(registered) };
+    // SAFETY: `init` stores only a statically lived `Handlers` reference before
+    // loading the IDT, and never changes it afterwards.
+    let handlers = unsafe { &*registered };
 
     // SAFETY: the entry path passes a properly aligned, fully initialised
     // register block with the exact `RawTrapFrame` layout. Copying it leaves
@@ -828,9 +857,40 @@ extern "C" fn dispatch(raw: *mut RawTrapFrame) {
     TRAP_DEPTH.fetch_add(1, Ordering::Relaxed);
     // Swapped so a nested trap restores its outer frame on the way out.
     let outer = LIVE_FRAME.swap(raw, Ordering::Relaxed);
-    handler(&frame);
+    (handlers.on_trap)(&frame);
+    if let Some(error) = invalid_user_return(&frame) {
+        (handlers.invalid_user_return)(&frame, error);
+    }
     LIVE_FRAME.store(outer, Ordering::Relaxed);
     TRAP_DEPTH.fetch_sub(1, Ordering::Relaxed);
+}
+
+fn invalid_user_return(frame: &TrapFrame) -> Option<UserReturnError> {
+    if frame.code_selector() & 0b11 != 3 {
+        return None;
+    }
+    let state = UserReturnState::new(
+        frame.instruction_pointer(),
+        frame.code_selector(),
+        frame.flags(),
+        frame.stack_pointer(),
+        frame.stack_selector(),
+    );
+    if let Err(error) = state.validate(
+        segment::USER_CODE,
+        segment::USER_DATA,
+        super::paging::USER_END,
+    ) {
+        return Some(error);
+    }
+    match super::paging::translate(frame.instruction_pointer()) {
+        Some((_, flags)) if flags.contains(Flags::USER) && !flags.contains(Flags::NO_EXECUTE) => {
+            None
+        }
+        _ => Some(UserReturnError::InstructionNotExecutable(
+            frame.instruction_pointer(),
+        )),
+    }
 }
 
 unsafe extern "C" {

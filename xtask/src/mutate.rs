@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1645;
+pub const NEXT_MUTATION_ID: u16 = 1651;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521];
@@ -18469,6 +18469,68 @@ fn mint_stopped<'controller>(
             package: "xtask",
             name: "elf::tests::section_count_and_owned_name_bytes_are_bounded_before_amplification",
         },
+    },
+    Mutation {
+        id: 1645,
+        file: "libs/x86-tables/src/return_state.rs",
+        find: "        if self.code_selector != user_code.bits() as u64 {",
+        replace: "        if self.code_selector == user_code.bits() as u64 {",
+        breaks: "an ordinary ring-three code selector is rejected at the return boundary",
+        reddens: Caught::HostTest {
+            package: "x86-tables",
+            name: "return_state::tests::an_ordinary_user_return_is_accepted",
+        },
+    },
+    Mutation {
+        id: 1646,
+        file: "libs/x86-tables/src/return_state.rs",
+        find: "        if self.instruction_pointer >= user_end {",
+        replace: "        if self.instruction_pointer > user_end {",
+        breaks: "the first address outside the user half is admitted as a return instruction",
+        reddens: Caught::HostTest {
+            package: "x86-tables",
+            name: "return_state::tests::both_return_addresses_stay_in_the_low_user_half",
+        },
+    },
+    Mutation {
+        id: 1647,
+        file: "libs/x86-tables/src/return_state.rs",
+        find: "        if self.stack_selector != user_data.bits() as u64 {",
+        replace: "        if self.stack_selector == user_data.bits() as u64 {",
+        breaks: "the installed user stack selector is rejected while a foreign one is admitted",
+        reddens: Caught::HostTest {
+            package: "x86-tables",
+            name: "return_state::tests::both_user_selectors_are_exact",
+        },
+    },
+    Mutation {
+        id: 1648,
+        file: "libs/x86-tables/src/return_state.rs",
+        find: "    | (1 << 21);",
+        replace: "    | (1 << 21)\n    | (1 << 14);",
+        breaks: "nested-task state is admitted to a 64-bit ring-three return",
+        reddens: Caught::HostTest {
+            package: "x86-tables",
+            name: "return_state::tests::user_flags_are_an_allowlist_with_required_state",
+        },
+    },
+    Mutation {
+        id: 1649,
+        file: "kernel/src/user.rs",
+        find: "const INVALID_RETURN_STACK: u64 = 6;",
+        replace: "const INVALID_RETURN_STACK: u64 = 0;",
+        breaks: "the noncanonical-stack machine witness launches an ordinary program",
+        reddens: Caught::Check(
+            "a noncanonical user return stack retires only its program",
+        ),
+    },
+    Mutation {
+        id: 1650,
+        file: "kernel/src/user.rs",
+        find: "const INVALID_RETURN_FLAGS: u64 = 7;",
+        replace: "const INVALID_RETURN_FLAGS: u64 = 0;",
+        breaks: "the nested-task machine witness launches an ordinary program",
+        reddens: Caught::Check("unsafe user return flags retire only their program"),
     },
 ];
 

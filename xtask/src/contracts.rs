@@ -313,7 +313,9 @@ fn interrupt_programming_doors_reject_raw_vectors() {
         (
             "raw-idt-vector",
             "#![no_std]\nfn handler(_: &wost::arch::current::interrupt::TrapFrame) {}\n\
-             fn probe() { wost::arch::current::interrupt::init(handler, Some(0x80)); }\n",
+             fn reject(_: &wost::arch::current::interrupt::TrapFrame, _: wost::arch::current::interrupt::UserReturnError) -> ! { loop {} }\n\
+             static HANDLERS: wost::arch::current::interrupt::Handlers = wost::arch::current::interrupt::Handlers::new(handler, reject);\n\
+             fn probe() { wost::arch::current::interrupt::init(&HANDLERS, Some(0x80)); }\n",
         ),
     ] {
         require_error(&paths, label, source, "E0308")

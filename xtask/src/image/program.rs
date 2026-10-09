@@ -31,6 +31,12 @@ fn code() -> Result<Vec<u8>> {
     code.extend_from_slice(&[0x59]);
     code.extend_from_slice(&[0x48, 0x83, 0xF9, 0x01]);
     let wrong_version = branch(&mut code, 0x75);
+    let right_version = branch(&mut code, 0xEB);
+    let wrong = code.len();
+    patch(&mut code, wrong_version, wrong)?;
+    code.extend_from_slice(&[0x0F, 0x0B, 0xEB, 0xFE]);
+    let version_ok = code.len();
+    patch(&mut code, right_version, version_ok)?;
     code.extend_from_slice(&[0x58]);
     code.extend_from_slice(&[0x5E]);
     code.extend_from_slice(&[0x48, 0x85, 0xC0]);
@@ -42,6 +48,28 @@ fn code() -> Result<Vec<u8>> {
 
     let dispatch = code.len();
     patch(&mut code, dispatching, dispatch)?;
+
+    code.extend_from_slice(&[0x48, 0x83, 0xF8, INVALID_STACK_BEHAVIOUR]);
+    let ordinary_stack = branch(&mut code, 0x75);
+    code.extend_from_slice(&[0xB8]);
+    code.extend_from_slice(&UNSERVED_CALL.to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xBC]);
+    code.extend_from_slice(&NONCANONICAL_STACK.to_le_bytes());
+    code.extend_from_slice(&[0xCD, 0x80, 0x0F, 0x0B]);
+
+    let choose_flags = code.len();
+    patch(&mut code, ordinary_stack, choose_flags)?;
+    code.extend_from_slice(&[0x48, 0x83, 0xF8, INVALID_FLAGS_BEHAVIOUR]);
+    let ordinary_flags = branch(&mut code, 0x75);
+    code.extend_from_slice(&[0x9C]);
+    code.extend_from_slice(&[0x48, 0x81, 0x0C, 0x24]);
+    code.extend_from_slice(&(1u32 << 14).to_le_bytes());
+    code.extend_from_slice(&[0x9D, 0xB8]);
+    code.extend_from_slice(&UNSERVED_CALL.to_le_bytes());
+    code.extend_from_slice(&[0xCD, 0x80, 0x0F, 0x0B]);
+
+    let choose_probe = code.len();
+    patch(&mut code, ordinary_flags, choose_probe)?;
     code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x02]);
     let not_probing = branch(&mut code, 0x75);
 
@@ -86,7 +114,6 @@ fn code() -> Result<Vec<u8>> {
     let benchmarking = branch(&mut code, 0xEB);
 
     let early_die = code.len();
-    patch(&mut code, wrong_version, early_die)?;
     patch(&mut code, unknown_behaviour, early_die)?;
     code.extend_from_slice(&[0x0F, 0x0B, 0xEB, 0xFE]);
 
@@ -261,6 +288,16 @@ const DUPLICATE_RIGHTS: u32 = 1 << 3;
 /// into a real one by accident.
 const UNSERVED_CALL: u32 = 0x0BAD_0BAD;
 
+/// Behaviour that enters the kernel with the first noncanonical low address
+/// as its stack pointer (D-368).
+const INVALID_STACK_BEHAVIOUR: u8 = 6;
+
+/// Behaviour that enters the kernel with `RFLAGS.NT` set (D-368).
+const INVALID_FLAGS_BEHAVIOUR: u8 = 7;
+
+/// The first address in the canonical hole.
+const NONCANONICAL_STACK: u64 = 0x0000_8000_0000_0000;
+
 fn branch(code: &mut Vec<u8>, opcode: u8) -> usize {
     code.push(opcode);
     code.push(0);
@@ -408,13 +445,14 @@ mod tests {
         let code = code().expect("building the test program code");
 
         assert_eq!(
-            &code[..12],
+            &code[..18],
             &[
-                0x59, 0x48, 0x83, 0xF9, 0x01, 0x75, code[6], 0x58, 0x5E, 0x48, 0x85, 0xC0,
+                0x59, 0x48, 0x83, 0xF9, 0x01, 0x75, 0x02, 0xEB, 0x04, 0x0F, 0x0B, 0xEB, 0xFE, 0x58,
+                0x5E, 0x48, 0x85, 0xC0,
             ],
-            "pop rcx; cmp rcx, 1; jne die; pop rax; pop rsi; test rax, rax"
+            "pop rcx; cmp rcx, 1; jne fail; jmp payload; ud2; loop; pop rax; pop rsi; test rax, rax"
         );
-        assert_eq!(code[12], 0x78, "js leap");
+        assert_eq!(code[18], 0x78, "js leap");
         assert!(
             code.windows(4)
                 .any(|bytes| bytes == [0x48, 0x83, 0xF8, 0x02]),
@@ -434,6 +472,16 @@ mod tests {
             code.windows(4)
                 .any(|bytes| bytes == [0x48, 0x83, 0xF8, 0x05]),
             "cmp rax, 5"
+        );
+        assert!(
+            code.windows(4)
+                .any(|bytes| bytes == [0x48, 0x83, 0xF8, INVALID_STACK_BEHAVIOUR]),
+            "cmp rax, invalid-stack behaviour"
+        );
+        assert!(
+            code.windows(4)
+                .any(|bytes| bytes == [0x48, 0x83, 0xF8, INVALID_FLAGS_BEHAVIOUR]),
+            "cmp rax, invalid-flags behaviour"
         );
         assert!(code.windows(2).any(|pair| pair == [0xFF, 0xE0]), "jmp rax");
 
@@ -521,24 +569,48 @@ mod tests {
             .filter(|(_, pair)| *pair == [0xCD, 0x80])
             .map(|(at, _)| at)
             .collect();
-        assert_eq!(calls.len(), 5, "three calls and two exits");
         assert_eq!(
-            &code[calls[0] - 5..calls[0]],
+            calls.len(),
+            7,
+            "two hostile returns, three calls and two exits"
+        );
+        assert_eq!(
+            &code[calls[0] - 10..calls[0] - 8],
+            &[0x48, 0xBC],
+            "mov rsp, imm64 before the hostile call"
+        );
+        assert_eq!(
+            u64::from_le_bytes(
+                code[calls[0] - 8..calls[0]]
+                    .try_into()
+                    .expect("eight-byte stack immediate")
+            ),
+            NONCANONICAL_STACK,
+            "the hostile call carries the canonical-hole boundary in rsp"
+        );
+        assert_eq!(
+            &code[calls[1] - 15..calls[1] - 6],
+            &[0x9C, 0x48, 0x81, 0x0C, 0x24, 0x00, 0x40, 0x00, 0x00],
+            "pushfq; or qword [rsp], NT"
+        );
+        assert_eq!(code[calls[1] - 6], 0x9D, "popfq");
+        assert_eq!(
+            &code[calls[2] - 5..calls[2]],
             &[0xB8, 0xAD, 0x0B, 0xAD, 0x0B],
             "mov eax, a call the kernel does not serve"
         );
-        assert_eq!(&code[calls[1] - 2..calls[1]], &[0x31, 0xC0], "xor eax, eax");
+        assert_eq!(&code[calls[3] - 2..calls[3]], &[0x31, 0xC0], "xor eax, eax");
         assert_eq!(
-            &code[calls[2] - 5..calls[2]],
+            &code[calls[4] - 5..calls[4]],
             &[0xB8, 1, 0, 0, 0],
             "mov eax, 1"
         );
         assert_eq!(
-            &code[calls[3] - 5..calls[3]],
+            &code[calls[5] - 5..calls[5]],
             &[0xB8, 3, 0, 0, 0],
             "mov eax, 3"
         );
-        assert_eq!(&code[calls[4] - 2..calls[4]], &[0x31, 0xC0], "xor eax, eax");
+        assert_eq!(&code[calls[6] - 2..calls[6]], &[0x31, 0xC0], "xor eax, eax");
 
         let die = code.len() - 4;
         assert_eq!(&code[die..], &[0x0F, 0x0B, 0xEB, 0xFE], "ud2; jmp .");
