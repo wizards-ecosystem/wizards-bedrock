@@ -200,12 +200,16 @@ impl DerefMut for InstalledUnit {
 /// What the DMAR says about one function.
 enum LookupError {
     NoTable,
+    UnsafeTopology,
     UnsafeInventory(RequesterInventoryError),
     TooManyReserved,
 }
 
 fn look_up(bdf: Bdf) -> Result<Unit, LookupError> {
-    // Copied out so the bridge reads below run with no guard held (D-121).
+    if !pci::topology_is_sealed() {
+        return Err(LookupError::UnsafeTopology);
+    }
+    // Copied out so topology queries below run with no DMAR guard held (D-121).
     let table = *DMAR.lock_leaf();
     let Some(table) = table else {
         return Err(LookupError::NoTable);
@@ -216,6 +220,7 @@ fn look_up(bdf: Bdf) -> Result<Unit, LookupError> {
     let requesters = match dmar.requester_inventory::<{ pci::FUNCTION_AUTHORITY_LIMIT }>(
         bdf,
         bridge_buses,
+        hierarchy_contains,
         requester_is_present,
     ) {
         Ok(requesters) => requesters,
@@ -224,7 +229,7 @@ fn look_up(bdf: Bdf) -> Result<Unit, LookupError> {
     let governing = requesters.unit();
     let mut reserved = [(0, 0); RESERVED_LIMIT];
     let mut reserved_count = 0;
-    for region in dmar.reserved_regions_for(bdf, bridge_buses) {
+    for region in dmar.reserved_regions_for(bdf, bridge_buses, hierarchy_contains) {
         let Some(slot) = reserved.get_mut(reserved_count) else {
             return Err(LookupError::TooManyReserved);
         };
@@ -239,7 +244,7 @@ fn look_up(bdf: Bdf) -> Result<Unit, LookupError> {
     })
 }
 
-/// The buses behind the bridge at `at`, read live from configuration space.
+/// The buses behind the bridge at `at` in the sealed topology snapshot.
 ///
 /// `None` for an absent function, one that is not a bridge, or a segment the
 /// configuration ports do not reach.
@@ -247,20 +252,37 @@ fn bridge_buses(at: Bdf) -> Option<BusRange> {
     if at.segment() != SEGMENT {
         return None;
     }
-    let numbers = pci::bridge_numbers(at.bus(), at.device(), at.function())?;
+    let address = Address::new(at.bus(), at.device(), at.function(), 0)?;
+    let range = pci::topology_bridge_range(address)?;
     Some(BusRange {
-        secondary: pci_config::secondary_bus(numbers),
-        subordinate: pci_config::subordinate_bus(numbers),
+        secondary: range.secondary,
+        subordinate: range.subordinate,
     })
+}
+
+/// Whether one requester lies below one bridge in the sealed parent chain.
+fn hierarchy_contains(root: Bdf, target: Bdf) -> bool {
+    if root.segment() != SEGMENT || target.segment() != SEGMENT {
+        return false;
+    }
+    let Some(root) = Address::new(root.bus(), root.device(), root.function(), 0) else {
+        return false;
+    };
+    let Some(target) = Address::new(target.bus(), target.device(), target.function(), 0) else {
+        return false;
+    };
+    pci::topology_hierarchy_contains(root, target)
 }
 
 /// Whether one exact requester ID currently answers configuration reads.
 ///
-/// Hierarchy inventories ask every function number independently; unlike the
-/// ordinary topology walk, this proof does not trust a device's multifunction
-/// bit to omit possible DMA sources.
+/// Presence comes from the same sealed, all-function snapshot as ancestry.
 fn requester_is_present(at: Bdf) -> bool {
-    at.segment() == SEGMENT && pci::function_is_present(at.bus(), at.device(), at.function())
+    if at.segment() != SEGMENT {
+        return false;
+    }
+    Address::new(at.bus(), at.device(), at.function(), 0)
+        .is_some_and(pci::topology_contains_function)
 }
 
 fn unit_for(at: Address) -> Option<Unit> {
@@ -279,6 +301,10 @@ fn unit_for(at: Address) -> Option<Unit> {
         }
         Err(LookupError::NoTable) => {
             warn!("iommu: no validated dmar; every candidate stays unisolated");
+            None
+        }
+        Err(LookupError::UnsafeTopology) => {
+            warn!("iommu: no sealed PCI topology; every candidate stays unisolated");
             None
         }
         Err(LookupError::UnsafeInventory(reason)) => {

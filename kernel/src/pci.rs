@@ -24,8 +24,8 @@
 //! thirty-two kilobytes and a malicious or broken bridge topology is a cycle.
 
 use pci_config::{
-    Address, Bar, BarEnableError, Class, CommandState, EnableError, HeaderType, ProbeError,
-    ProbeRetry, ProbedBars, Window, header,
+    Address, Bar, BarEnableError, Class, CommandState, EnableError, HeaderType, PciTopology,
+    ProbeError, ProbeRetry, ProbedBars, TopologyError, Window, header,
 };
 use wost::arch::current::vtd::DmaDomain;
 use wost::arch::current::{paging, pci};
@@ -48,6 +48,12 @@ pub(crate) const FUNCTION_AUTHORITY_LIMIT: usize = 12;
 /// here because a bridge that reports itself as its own secondary bus is a
 /// cycle, and a kernel that trusts the machine's numbering hangs on it.
 const MAX_BUSES: usize = 256;
+
+/// Complete segment-zero function and bridge inventory used by VT-d lookup.
+///
+/// The roughly ten-kibibyte snapshot stays in static storage so proving a
+/// hostile topology never consumes the candidate's fixed boot stack.
+static TOPOLOGY: SpinLock<PciTopology> = SpinLock::new(PciTopology::new());
 
 /// One function found on the bus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,29 +180,61 @@ fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
     })
 }
 
-/// Whether one exact requester ID currently answers configuration reads.
+/// Probe every function number and seal one rooted, immutable PCI topology.
 ///
-/// This deliberately makes no inference from function zero or the
-/// multifunction bit; VT-d hierarchy admission probes every possible
-/// function independently.
-pub(crate) fn function_is_present(bus: u8, device: u8, function: u8) -> bool {
-    read_function(bus, device, function).is_some()
+/// Unlike ordinary enumeration, this proof never trusts multifunction hints
+/// and probes buses which a malformed bridge may have made unreachable.
+///
+/// # Errors
+///
+/// Returns [`TopologyError`] when bridge identity or routing cannot form one
+/// unambiguous tree rooted at bus zero.
+pub(crate) fn snapshot_topology() -> Result<(), TopologyError> {
+    TOPOLOGY.lock_leaf().reset();
+    for bus in 0..=u8::MAX {
+        for device in 0..pci_config::DEVICES {
+            for function in 0..pci_config::FUNCTIONS {
+                let Some(entry) = read_function(bus, device, function) else {
+                    continue;
+                };
+                let bus_numbers = if entry.class.is_bridge() && entry.header.is_bridge() {
+                    entry.at.at(header::BUS_NUMBERS).and_then(pci::read)
+                } else {
+                    None
+                };
+                TOPOLOGY
+                    .lock_leaf()
+                    .observe(entry.at, entry.class, entry.header, bus_numbers)?;
+            }
+        }
+    }
+    TOPOLOGY.lock_leaf().seal()
+}
+
+/// Whether the complete segment-zero topology passed its rooted-tree proof.
+pub(crate) fn topology_is_sealed() -> bool {
+    TOPOLOGY.lock_leaf().is_sealed()
+}
+
+/// The sealed bus range behind one exact bridge function.
+pub(crate) fn topology_bridge_range(at: Address) -> Option<pci_config::BridgeRange> {
+    TOPOLOGY.lock_leaf().bridge_range(at)
+}
+
+/// Whether one exact function answered the sealed independent probe.
+pub(crate) fn topology_contains_function(at: Address) -> bool {
+    TOPOLOGY.lock_leaf().contains_function(at)
+}
+
+/// Whether `target` lies below `root` in the sealed parent chain.
+pub(crate) fn topology_hierarchy_contains(root: Address, target: Address) -> bool {
+    TOPOLOGY.lock_leaf().hierarchy_contains(root, target)
 }
 
 /// The bus behind a bridge.
 fn secondary_of(entry: &Function) -> Option<u8> {
     let at = entry.at.at(header::BUS_NUMBERS)?;
     Some(pci_config::secondary_bus(pci::read(at)?))
-}
-
-/// The bus-number word of the bridge at `bus:device.function`, or `None` unless
-/// a function there passes both of the bridge tests enumeration descends on.
-pub(crate) fn bridge_numbers(bus: u8, device: u8, function: u8) -> Option<u32> {
-    let entry = read_function(bus, device, function)?;
-    if !(entry.class.is_bridge() && entry.header.is_bridge()) {
-        return None;
-    }
-    pci::read(entry.at.at(header::BUS_NUMBERS)?)
 }
 
 /// A committed controller whose command word no longer matched its lease.

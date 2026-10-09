@@ -430,6 +430,11 @@ fn survey_the_bus() {
         return;
     }
 
+    match pci::snapshot_topology() {
+        Ok(()) => info!("pci: complete segment-zero topology sealed"),
+        Err(reason) => warn!("pci: DMA topology refused: {reason}"),
+    }
+
     // These checks need an ordinary unclaimed function. Run them before a
     // complete VT-d requester inventory deliberately owns every function in
     // the unit, and cache only their verdicts for the later report.

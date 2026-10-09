@@ -986,9 +986,33 @@ fn validate_device_scopes(base: usize, scopes: &[u8]) -> Result<(), AcpiError> {
                 available,
             });
         }
+        let entry = &scopes[offset..offset + entry_len];
+        if !device_scope_is_well_formed(entry) {
+            return Err(AcpiError::MalformedEntry {
+                offset: base.saturating_add(offset),
+                length: entry_len,
+                available,
+            });
+        }
         offset += entry_len;
     }
     Ok(())
+}
+
+/// Whether one bounded device scope has complete, encodable PCI path hops.
+fn device_scope_is_well_formed(entry: &[u8]) -> bool {
+    let Some((&kind, path)) = entry.first().zip(entry.get(DeviceScope::MIN_LEN..)) else {
+        return false;
+    };
+    if !path.len().is_multiple_of(2)
+        || matches!(
+            DeviceScopeKind::from_raw(kind),
+            DeviceScopeKind::PciEndpoint | DeviceScopeKind::PciSubHierarchy
+        ) && path.is_empty()
+    {
+        return false;
+    }
+    path.chunks_exact(2).all(|hop| hop[0] < 32 && hop[1] < 8)
 }
 
 impl<'a> Iterator for DmarEntries<'a> {
@@ -1074,9 +1098,6 @@ impl<'a> DeviceScope<'a> {
     /// reserved byte, enumeration id, and start bus.
     const MIN_LEN: usize = 6;
 
-    /// Path hops a scope may take; a longer path is refused, not walked.
-    const MAX_HOPS: usize = 8;
-
     /// The hardware this scope names.
     pub const fn kind(self) -> DeviceScopeKind {
         self.kind
@@ -1096,7 +1117,7 @@ impl<'a> DeviceScope<'a> {
     ///
     /// Each hop before the last must be a bridge, and the next hop lies on
     /// its secondary bus. `None` for a kind that names no PCI function, an
-    /// empty or overlong path, or a hop the topology does not vouch for.
+    /// empty path, or a hop the topology does not vouch for.
     fn walk(self, segment: u16, bridge: &impl Fn(Bdf) -> Option<BusRange>) -> Option<Named> {
         let hierarchy = match self.kind() {
             DeviceScopeKind::PciEndpoint => false,
@@ -1107,31 +1128,20 @@ impl<'a> DeviceScope<'a> {
             | DeviceScopeKind::AcpiNamespaceDevice
             | DeviceScopeKind::Other { .. } => return None,
         };
-        if self.path.len() > 2 * Self::MAX_HOPS {
-            return None;
-        }
         let mut hops = self.path();
         let (mut device, mut function) = hops.next()?;
         let mut bus = self.start_bus();
-        let mut bridge_path = [None; Self::MAX_HOPS];
-        let mut bridge_count = 0usize;
         for (next_device, next_function) in hops {
             let at = Bdf::new(segment, bus, device, function);
-            bridge_path[bridge_count] = Some(at);
-            bridge_count += 1;
             let buses = behind(at, bridge)?;
             bus = buses.secondary;
             (device, function) = (next_device, next_function);
         }
         let at = Bdf::new(segment, bus, device, function);
         if hierarchy {
-            bridge_path[bridge_count] = Some(at);
-            bridge_count += 1;
             Some(Named::Hierarchy(Hierarchy {
                 root: at,
                 buses: behind(at, bridge)?,
-                bridge_path,
-                bridge_count,
             }))
         } else {
             Some(Named::Function(at))
@@ -1180,9 +1190,17 @@ impl<'a> Iterator for DeviceScopes<'a> {
         // constructor, so a malformed slice must stop cleanly, not index
         // out of bounds.
         if length < DeviceScope::MIN_LEN {
+            self.bytes = &[];
             return None;
         }
-        let entry = self.bytes.get(..length)?;
+        let Some(entry) = self.bytes.get(..length) else {
+            self.bytes = &[];
+            return None;
+        };
+        if !device_scope_is_well_formed(entry) {
+            self.bytes = &[];
+            return None;
+        }
         self.bytes = &self.bytes[length..];
 
         Some(DeviceScope {
@@ -1266,31 +1284,29 @@ enum Named {
 struct Hierarchy {
     root: Bdf,
     buses: BusRange,
-    bridge_path: [Option<Bdf>; DeviceScope::MAX_HOPS],
-    bridge_count: usize,
 }
 
 impl Named {
-    /// Whether this names `bdf`, as itself or behind a named bridge.
-    fn covers(self, bdf: Bdf) -> bool {
+    /// Whether this names `bdf`, as itself or below a proved ancestor bridge.
+    fn covers(self, bdf: Bdf, contains: &impl Fn(Bdf, Bdf) -> bool) -> bool {
         match self {
             Self::Function(at) => at == bdf,
-            Self::Hierarchy(hierarchy) => {
-                hierarchy.root == bdf
-                    || (hierarchy.buses.secondary..=hierarchy.buses.subordinate)
-                        .contains(&bdf.bus())
+            Self::Hierarchy(scope) => {
+                scope.root == bdf
+                    || (scope.buses.secondary..=scope.buses.subordinate).contains(&bdf.bus())
+                        && contains(scope.root, bdf)
             }
         }
     }
 
     /// Whether this hierarchy strictly contains another through the live
     /// bridge topology, rather than merely overlapping its numeric bus range.
-    fn strictly_contains(self, inner: Self) -> bool {
+    fn strictly_contains(self, inner: Self, contains: &impl Fn(Bdf, Bdf) -> bool) -> bool {
         let (Self::Hierarchy(outer), Self::Hierarchy(inner)) = (self, inner) else {
             return false;
         };
         outer.root != inner.root
-            && inner.bridge_path[..inner.bridge_count].contains(&Some(outer.root))
+            && contains(outer.root, inner.root)
             && outer.buses.secondary <= inner.buses.secondary
             && inner.buses.subordinate <= outer.buses.subordinate
     }
@@ -1506,12 +1522,13 @@ fn push_requester<const N: usize>(
 fn add_live_requester<const N: usize>(
     dmar: &Dmar<'_>,
     bridge: &impl Fn(Bdf) -> Option<BusRange>,
+    hierarchy: &impl Fn(Bdf, Bdf) -> bool,
     register_base: u64,
     requester: Bdf,
     requesters: &mut [Option<Bdf>; N],
     count: &mut usize,
 ) -> Result<(), RequesterInventoryError> {
-    match dmar.unit_for(requester, bridge) {
+    match dmar.unit_for(requester, bridge, hierarchy) {
         Some(governing) if governing.register_base == register_base => {
             push_requester(requesters, count, requester)
         }
@@ -1602,17 +1619,18 @@ impl<'a> Dmar<'a> {
 
     /// The DRHD unit that governs `bdf`, and the scope that decided it.
     ///
-    /// Scopes resolve through the live topology: `bridge` reports the buses
-    /// behind a function, or `None` when the function is absent or is not a
-    /// bridge. The most specific scope wins: an endpoint scope naming `bdf`
-    /// outranks a bridge scope enclosing it, an inner bridge outranks the
-    /// bridges above it, and an `INCLUDE_PCI_ALL` unit governs only what no
-    /// scope in its segment names. Equal-specificity claims from distinct
-    /// units are ambiguous and fail closed as `None`.
+    /// Scopes resolve through one sealed topology: `bridge` reports the buses
+    /// behind a function and `hierarchy` proves that its first function is an
+    /// ancestor of the second. The most specific scope wins: an endpoint
+    /// scope naming `bdf` outranks a bridge scope enclosing it, an inner
+    /// bridge outranks the bridges above it, and an `INCLUDE_PCI_ALL` unit
+    /// governs only what no scope in its segment names. Equal-specificity
+    /// claims from distinct units are ambiguous and fail closed as `None`.
     pub fn unit_for(
         &self,
         bdf: Bdf,
         bridge: impl Fn(Bdf) -> Option<BusRange>,
+        hierarchy: impl Fn(Bdf, Bdf) -> bool,
     ) -> Option<GoverningUnit> {
         let mut endpoint: Option<GoverningUnit> = None;
         let mut endpoint_ambiguous = false;
@@ -1635,7 +1653,7 @@ impl<'a> Dmar<'a> {
             }
             for scope in DeviceScopes::new(scopes) {
                 match scope.walk(segment, &bridge) {
-                    Some(named @ Named::Function(_)) if named.covers(bdf) => {
+                    Some(named @ Named::Function(_)) if named.covers(bdf, &hierarchy) => {
                         let candidate = GoverningUnit {
                             register_base,
                             coverage: Coverage::Endpoint,
@@ -1646,21 +1664,21 @@ impl<'a> Dmar<'a> {
                             endpoint.get_or_insert(candidate);
                         }
                     }
-                    Some(named @ Named::Hierarchy(hierarchy)) if named.covers(bdf) => {
+                    Some(named @ Named::Hierarchy(scope)) if named.covers(bdf, &hierarchy) => {
                         let candidate = GoverningUnit {
                             register_base,
-                            coverage: Coverage::Bridge(hierarchy.root),
+                            coverage: Coverage::Bridge(scope.root),
                         };
                         match enclosing {
                             Some((current, unit)) if unit.register_base == register_base => {
-                                if current.strictly_contains(named) {
+                                if current.strictly_contains(named, &hierarchy) {
                                     enclosing = Some((named, candidate));
                                 }
                             }
-                            Some((current, _)) if current.strictly_contains(named) => {
+                            Some((current, _)) if current.strictly_contains(named, &hierarchy) => {
                                 enclosing = Some((named, candidate));
                             }
-                            Some((current, _)) if named.strictly_contains(current) => {}
+                            Some((current, _)) if named.strictly_contains(current, &hierarchy) => {}
                             Some(_) => {
                                 enclosing_ambiguous = true;
                             }
@@ -1708,10 +1726,11 @@ impl<'a> Dmar<'a> {
         &self,
         selected: Bdf,
         bridge: impl Fn(Bdf) -> Option<BusRange>,
+        hierarchy: impl Fn(Bdf, Bdf) -> bool,
         present: impl Fn(Bdf) -> bool,
     ) -> Result<RequesterInventory<N>, RequesterInventoryError> {
         let unit = self
-            .unit_for(selected, &bridge)
+            .unit_for(selected, &bridge, &hierarchy)
             .ok_or(RequesterInventoryError::Ungoverned)?;
         if unit.coverage == Coverage::CatchAll {
             return Err(RequesterInventoryError::SelectedUsesCatchAll);
@@ -1756,7 +1775,7 @@ impl<'a> Dmar<'a> {
                             return Err(RequesterInventoryError::UnresolvedScope);
                         };
                         if self
-                            .unit_for(endpoint, &bridge)
+                            .unit_for(endpoint, &bridge, &hierarchy)
                             .is_none_or(|governing| governing.register_base != register_base)
                         {
                             return Err(RequesterInventoryError::ForeignEndpoint);
@@ -1764,18 +1783,22 @@ impl<'a> Dmar<'a> {
                         push_requester(&mut requesters, &mut count, endpoint)?;
                     }
                     DeviceScopeKind::PciSubHierarchy => {
-                        let Some(Named::Hierarchy(hierarchy)) = scope.walk(segment, &bridge) else {
+                        let Some(Named::Hierarchy(scope_hierarchy)) = scope.walk(segment, &bridge)
+                        else {
                             return Err(RequesterInventoryError::UnresolvedScope);
                         };
                         add_live_requester(
                             self,
                             &bridge,
+                            &hierarchy,
                             register_base,
-                            hierarchy.root,
+                            scope_hierarchy.root,
                             &mut requesters,
                             &mut count,
                         )?;
-                        for bus in hierarchy.buses.secondary..=hierarchy.buses.subordinate {
+                        for bus in
+                            scope_hierarchy.buses.secondary..=scope_hierarchy.buses.subordinate
+                        {
                             for device in 0..32 {
                                 for function in 0..8 {
                                     let requester = Bdf::new(segment, bus, device, function);
@@ -1783,6 +1806,7 @@ impl<'a> Dmar<'a> {
                                         add_live_requester(
                                             self,
                                             &bridge,
+                                            &hierarchy,
                                             register_base,
                                             requester,
                                             &mut requesters,
@@ -1817,15 +1841,17 @@ impl<'a> Dmar<'a> {
     /// An RMRR's scopes resolve through `bridge` as [`Self::unit_for`]'s do,
     /// and its region applies when any of them names `bdf`, as itself or
     /// behind a named bridge.
-    pub fn reserved_regions_for<F: Fn(Bdf) -> Option<BusRange>>(
+    pub fn reserved_regions_for<F: Fn(Bdf) -> Option<BusRange>, H: Fn(Bdf, Bdf) -> bool>(
         &self,
         bdf: Bdf,
         bridge: F,
-    ) -> ReservedRegions<'a, F> {
+        hierarchy: H,
+    ) -> ReservedRegions<'a, F, H> {
         ReservedRegions {
             entries: self.entries(),
             bdf,
             bridge,
+            hierarchy,
         }
     }
 }
@@ -1833,13 +1859,16 @@ impl<'a> Dmar<'a> {
 /// The `(base, limit)` ranges [`Dmar::reserved_regions_for`] finds for one
 /// device, inclusive of both ends.
 #[derive(Debug)]
-pub struct ReservedRegions<'a, F> {
+pub struct ReservedRegions<'a, F, H> {
     entries: DmarEntries<'a>,
     bdf: Bdf,
     bridge: F,
+    hierarchy: H,
 }
 
-impl<F: Fn(Bdf) -> Option<BusRange>> Iterator for ReservedRegions<'_, F> {
+impl<F: Fn(Bdf) -> Option<BusRange>, H: Fn(Bdf, Bdf) -> bool> Iterator
+    for ReservedRegions<'_, F, H>
+{
     type Item = (u64, u64);
 
     fn next(&mut self) -> Option<(u64, u64)> {
@@ -1859,7 +1888,7 @@ impl<F: Fn(Bdf) -> Option<BusRange>> Iterator for ReservedRegions<'_, F> {
             let named = DeviceScopes::new(scopes).any(|scope| {
                 scope
                     .walk(segment, &self.bridge)
-                    .is_some_and(|named| named.covers(self.bdf))
+                    .is_some_and(|named| named.covers(self.bdf, &self.hierarchy))
             });
             if named {
                 return Some((base, limit));
@@ -2719,26 +2748,26 @@ mod tests {
         let scoped_bdf = Bdf::new(0, 2, 3, 0);
         let unscoped_bdf = Bdf::new(0, 9, 0, 0);
         assert_eq!(
-            dmar.unit_for(scoped_bdf, no_bridges),
+            dmar.unit_for(scoped_bdf, no_bridges, no_hierarchies),
             Some(GoverningUnit {
                 register_base: 0xfed9_1000,
                 coverage: Coverage::Endpoint,
             })
         );
         assert_eq!(
-            dmar.unit_for(unscoped_bdf, no_bridges),
+            dmar.unit_for(unscoped_bdf, no_bridges, no_hierarchies),
             Some(GoverningUnit {
                 register_base: 0xfed9_0000,
                 coverage: Coverage::CatchAll,
             })
         );
         assert_eq!(
-            dmar.reserved_regions_for(scoped_bdf, no_bridges)
+            dmar.reserved_regions_for(scoped_bdf, no_bridges, no_hierarchies)
                 .collect::<Vec<_>>(),
             [(0x1000, 0x1fff)]
         );
         assert_eq!(
-            dmar.reserved_regions_for(unscoped_bdf, no_bridges)
+            dmar.reserved_regions_for(unscoped_bdf, no_bridges, no_hierarchies)
                 .collect::<Vec<_>>(),
             []
         );
@@ -2947,6 +2976,54 @@ mod tests {
     }
 
     #[test]
+    fn odd_and_empty_pci_paths_in_every_scoped_dmar_structure_are_refused() {
+        for kind in [ENDPOINT, SUB_HIERARCHY] {
+            for length in [6u8, 7, 9] {
+                let mut malformed = vec![kind, length, 0, 0, 0, 0, 3, 1, 0xff];
+                malformed.truncate(usize::from(length));
+                for structure in [
+                    drhd_bytes(false, 0, 0x4000, &malformed),
+                    rmrr_bytes(0, 0x7000, 0x7fff, &malformed),
+                    atsr_bytes(0, &malformed),
+                ] {
+                    let bytes = table(&Sdt::DMAR, &dmar_body(&structure));
+                    assert!(
+                        DmarEntries::new(&bytes).is_err(),
+                        "kind {kind} length {length} passed structural validation"
+                    );
+                    assert!(Dmar::new(&bytes).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn device_scope_iteration_defensively_refuses_every_bad_pci_hop() {
+        let valid = scope(ENDPOINT, 0, &[(31, 7)]);
+        for malformed in [
+            vec![ENDPOINT, 6, 0, 0, 0, 0],
+            vec![SUB_HIERARCHY, 9, 0, 0, 0, 0, 3, 1, 0xff],
+            vec![ENDPOINT, 8, 0, 0, 0, 0, 32, 0],
+            vec![ENDPOINT, 8, 0, 0, 0, 0, 31, 8],
+        ] {
+            let joined = [malformed.as_slice(), valid.as_slice()].concat();
+            let mut scopes = DeviceScopes::new(&joined);
+            assert_eq!(scopes.next(), None);
+            assert_eq!(
+                scopes.next(),
+                None,
+                "iteration resumed after malformed bytes"
+            );
+        }
+
+        let parsed = DeviceScopes::new(&valid)
+            .next()
+            .expect("maximum encodable PCI hop remains valid");
+        assert_eq!(parsed.path().collect::<Vec<_>>(), [(31, 7)]);
+        assert!(DeviceScopes::new(&[0x7f, 6, 0, 0, 0, 0]).next().is_some());
+    }
+
+    #[test]
     fn a_device_scope_exposes_its_kind_start_bus_and_every_hop() {
         let scope_bytes = [1u8, 10, 0, 0, 0, 2, 3, 0, 4, 0]; // kind 1, length 10, two hops
         let drhd = drhd_bytes(false, 0, 0x4000, &scope_bytes);
@@ -3020,8 +3097,39 @@ mod tests {
         }
     }
 
+    /// The unique direct-parent chain represented by the listed bridges.
+    fn hierarchy(bridges: &[(Bdf, BusRange)]) -> impl Fn(Bdf, Bdf) -> bool + '_ {
+        move |root, target| {
+            if root == target {
+                return true;
+            }
+            let mut bus = target.bus();
+            for _ in 0..u8::MAX {
+                let mut parents = bridges.iter().filter(|(_, range)| range.secondary == bus);
+                let Some((parent, _)) = parents.next() else {
+                    return false;
+                };
+                if parents.next().is_some() {
+                    return false;
+                }
+                if *parent == root {
+                    return true;
+                }
+                bus = parent.bus();
+                if bus == 0 {
+                    return false;
+                }
+            }
+            false
+        }
+    }
+
     fn no_bridges(_: Bdf) -> Option<BusRange> {
         None
+    }
+
+    fn no_hierarchies(_: Bdf, _: Bdf) -> bool {
+        false
     }
 
     fn no_requesters(_: Bdf) -> bool {
@@ -3060,7 +3168,7 @@ mod tests {
         let dmar = Dmar::new(&bytes).expect("valid dmar");
 
         let inventory = dmar
-            .requester_inventory::<2>(second, no_bridges, no_requesters)
+            .requester_inventory::<2>(second, no_bridges, no_hierarchies, no_requesters)
             .expect("bounded requester inventory");
         assert_eq!(inventory.unit().register_base, SCOPED);
         assert_eq!(inventory.len(), 2);
@@ -3077,23 +3185,28 @@ mod tests {
         assert_eq!(
             Dmar::new(&include_all)
                 .expect("valid dmar")
-                .requester_inventory::<2>(selected, no_bridges, no_requesters),
+                .requester_inventory::<2>(selected, no_bridges, no_hierarchies, no_requesters,),
             Err(RequesterInventoryError::IncludesAllPci)
         );
 
         let bridge = Bdf::new(0, 0, 0x1c, 0);
         let bridges = [(bridge, buses(0x20, 0x20))];
         let downstream = Bdf::new(0, 0x20, 3, 1);
-        let hierarchy = scope(SUB_HIERARCHY, 0, &[(0x1c, 0)]);
+        let hierarchy_scope = scope(SUB_HIERARCHY, 0, &[(0x1c, 0)]);
         let shared = dmar_of(&[drhd_bytes(
             false,
             0,
             SCOPED,
-            &[endpoint.as_slice(), hierarchy.as_slice()].concat(),
+            &[endpoint.as_slice(), hierarchy_scope.as_slice()].concat(),
         )]);
         let inventory = Dmar::new(&shared)
             .expect("valid dmar")
-            .requester_inventory::<3>(selected, topology(&bridges), present(&[downstream]))
+            .requester_inventory::<3>(
+                selected,
+                topology(&bridges),
+                hierarchy(&bridges),
+                present(&[downstream]),
+            )
             .expect("bounded hierarchy inventory");
         assert_eq!(
             inventory.iter().collect::<Vec<_>>(),
@@ -3113,7 +3226,7 @@ mod tests {
         assert_eq!(
             Dmar::new(&crowded)
                 .expect("valid dmar")
-                .requester_inventory::<1>(selected, no_bridges, no_requesters),
+                .requester_inventory::<1>(selected, no_bridges, no_hierarchies, no_requesters,),
             Err(RequesterInventoryError::TooManyRequesters { maximum: 1 })
         );
     }
@@ -3132,7 +3245,7 @@ mod tests {
         assert_eq!(
             Dmar::new(&bytes)
                 .expect("valid dmar")
-                .requester_inventory::<2>(selected, no_bridges, no_requesters),
+                .requester_inventory::<2>(selected, no_bridges, no_hierarchies, no_requesters,),
             Err(RequesterInventoryError::UnresolvedScope)
         );
 
@@ -3149,7 +3262,7 @@ mod tests {
         assert_eq!(
             Dmar::new(&ambiguous)
                 .expect("valid dmar")
-                .requester_inventory::<2>(selected, no_bridges, no_requesters),
+                .requester_inventory::<2>(selected, no_bridges, no_hierarchies, no_requesters,),
             Err(RequesterInventoryError::ForeignEndpoint)
         );
 
@@ -3157,13 +3270,18 @@ mod tests {
         assert_eq!(
             Dmar::new(&catch_all)
                 .expect("valid dmar")
-                .requester_inventory::<2>(selected, no_bridges, no_requesters),
+                .requester_inventory::<2>(selected, no_bridges, no_hierarchies, no_requesters,),
             Err(RequesterInventoryError::SelectedUsesCatchAll)
         );
         assert_eq!(
             Dmar::new(&catch_all)
                 .expect("valid dmar")
-                .requester_inventory::<2>(Bdf::new(1, 0, 4, 0), no_bridges, no_requesters,),
+                .requester_inventory::<2>(
+                    Bdf::new(1, 0, 4, 0),
+                    no_bridges,
+                    no_hierarchies,
+                    no_requesters,
+                ),
             Err(RequesterInventoryError::Ungoverned)
         );
     }
@@ -3182,7 +3300,12 @@ mod tests {
 
         let inventory = Dmar::new(&bytes)
             .expect("valid dmar")
-            .requester_inventory::<2>(selected, topology(&bridges), present(&[selected]))
+            .requester_inventory::<2>(
+                selected,
+                topology(&bridges),
+                hierarchy(&bridges),
+                present(&[selected]),
+            )
             .expect("complete hierarchy inventory");
         assert_eq!(inventory.unit().coverage, Coverage::Bridge(bridge));
         assert_eq!(inventory.iter().collect::<Vec<_>>(), [bridge, selected]);
@@ -3200,10 +3323,44 @@ mod tests {
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
 
-        assert_eq!(dmar.unit_for(target, topology(&bridges)), None);
+        let contradictory =
+            |root, descendant| descendant == target && (root == first || root == second);
         assert_eq!(
-            dmar.requester_inventory::<4>(first, topology(&bridges), present(&[target])),
+            dmar.unit_for(target, topology(&bridges), contradictory),
+            None
+        );
+        assert_eq!(
+            dmar.requester_inventory::<4>(
+                first,
+                topology(&bridges),
+                contradictory,
+                present(&[target]),
+            ),
             Err(RequesterInventoryError::AmbiguousRequester)
+        );
+    }
+
+    #[test]
+    fn a_numeric_bus_range_without_ancestry_names_no_requester_or_reserved_region() {
+        let bridge = Bdf::new(0, 0, 0x1c, 0);
+        let target = Bdf::new(0, 0x30, 3, 0);
+        let bridges = [(bridge, buses(0x20, 0x3f))];
+        let hierarchy_scope = scope(SUB_HIERARCHY, 0, &[(0x1c, 0)]);
+        let bytes = dmar_of(&[
+            drhd_bytes(false, 0, SCOPED, &hierarchy_scope),
+            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            rmrr_bytes(0, 0x7000, 0x7fff, &hierarchy_scope),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+
+        assert_eq!(
+            dmar.unit_for(target, topology(&bridges), no_hierarchies),
+            Some(catch_all())
+        );
+        assert_eq!(
+            dmar.reserved_regions_for(target, topology(&bridges), no_hierarchies)
+                .count(),
+            0
         );
     }
 
@@ -3212,10 +3369,10 @@ mod tests {
         let selected = Bdf::new(0, 0, 4, 0);
         let bridge = Bdf::new(0, 0, 0x1c, 0);
         let endpoint = scope(ENDPOINT, 0, &[(4, 0)]);
-        let hierarchy = scope(SUB_HIERARCHY, 0, &[(0x1c, 0)]);
+        let hierarchy_scope = scope(SUB_HIERARCHY, 0, &[(0x1c, 0)]);
         let mut scopes = endpoint;
         for _ in 0..MAX_REQUESTER_SCOPES {
-            scopes.extend_from_slice(&hierarchy);
+            scopes.extend_from_slice(&hierarchy_scope);
         }
         let bytes = dmar_of(&[drhd_bytes(false, 0, SCOPED, &scopes)]);
         let bridges = [(bridge, buses(0x20, 0x20))];
@@ -3223,7 +3380,12 @@ mod tests {
         assert_eq!(
             Dmar::new(&bytes)
                 .expect("valid dmar")
-                .requester_inventory::<4>(selected, topology(&bridges), no_requesters),
+                .requester_inventory::<4>(
+                    selected,
+                    topology(&bridges),
+                    hierarchy(&bridges),
+                    no_requesters,
+                ),
             Err(RequesterInventoryError::TooManyRequesterScopes {
                 maximum: MAX_REQUESTER_SCOPES,
             })
@@ -3240,7 +3402,7 @@ mod tests {
             assert_eq!(
                 Dmar::new(&bytes)
                     .expect("valid dmar")
-                    .requester_inventory::<2>(selected, no_bridges, no_requesters),
+                    .requester_inventory::<2>(selected, no_bridges, no_hierarchies, no_requesters,),
                 Err(RequesterInventoryError::UnsupportedScope)
             );
         }
@@ -3257,6 +3419,7 @@ mod tests {
             (switch_port, buses(0x24, 0x26)),
         ];
         let topology = topology(&bridges);
+        let ancestry = hierarchy(&bridges);
         let endpoint = scope(ENDPOINT, 0x10, &[(0x1c, 4), (0x03, 2), (0x05, 1)]);
         let bytes = dmar_of(&[
             drhd_bytes(false, 3, SCOPED, &endpoint),
@@ -3267,14 +3430,14 @@ mod tests {
 
         let target = Bdf::new(3, 0x24, 0x05, 1);
         assert_eq!(
-            dmar.unit_for(target, &topology),
+            dmar.unit_for(target, &topology, &ancestry),
             Some(GoverningUnit {
                 register_base: SCOPED,
                 coverage: Coverage::Endpoint,
             })
         );
         assert_eq!(
-            dmar.reserved_regions_for(target, &topology)
+            dmar.reserved_regions_for(target, &topology, &ancestry)
                 .collect::<Vec<_>>(),
             [(0x7000, 0x7fff)]
         );
@@ -3285,12 +3448,13 @@ mod tests {
             Bdf::new(3, 0x24, 0x05, 0),
         ] {
             assert_eq!(
-                dmar.unit_for(elsewhere, &topology),
+                dmar.unit_for(elsewhere, &topology, &ancestry),
                 Some(catch_all()),
                 "{elsewhere:?}"
             );
             assert_eq!(
-                dmar.reserved_regions_for(elsewhere, &topology).count(),
+                dmar.reserved_regions_for(elsewhere, &topology, &ancestry)
+                    .count(),
                 0,
                 "{elsewhere:?}"
             );
@@ -3300,8 +3464,13 @@ mod tests {
     #[test]
     fn a_bridge_scope_covers_its_bridge_and_exactly_the_buses_behind_it() {
         let bridge = Bdf::new(0, 0x00, 0x1c, 0);
-        let bridges = [(bridge, buses(0x20, 0x2f))];
+        let last_bus_bridge = Bdf::new(0, 0x20, 0, 0);
+        let bridges = [
+            (bridge, buses(0x20, 0x2f)),
+            (last_bus_bridge, buses(0x2f, 0x2f)),
+        ];
         let topology = topology(&bridges);
+        let ancestry = hierarchy(&bridges);
         let hierarchy = scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)]);
         let bytes = dmar_of(&[
             drhd_bytes(false, 0, SCOPED, &hierarchy),
@@ -3322,8 +3491,14 @@ mod tests {
             (Bdf::new(0, 0x30, 0x05, 1), Some(catch_all())),
         ];
         for (function, governed) in functions {
-            assert_eq!(dmar.unit_for(function, &topology), governed, "{function:?}");
-            let reserved = dmar.reserved_regions_for(function, &topology).count();
+            assert_eq!(
+                dmar.unit_for(function, &topology, &ancestry),
+                governed,
+                "{function:?}"
+            );
+            let reserved = dmar
+                .reserved_regions_for(function, &topology, &ancestry)
+                .count();
             assert_eq!(reserved, usize::from(governed == Some(behind_bridge)));
         }
     }
@@ -3345,7 +3520,7 @@ mod tests {
             Bdf::new(0, 0x00, 0x1d, 0),
         ] {
             assert_eq!(
-                dmar.unit_for(function, no_bridges),
+                dmar.unit_for(function, no_bridges, no_hierarchies),
                 Some(catch_all()),
                 "{function:?}"
             );
@@ -3361,6 +3536,7 @@ mod tests {
             (Bdf::new(0, 0x30, 0x1c, 0), buses(0x20, 0x2f)),
         ];
         let topology = topology(&bridges);
+        let ancestry = hierarchy(&bridges);
         let looping = scope(ENDPOINT, 0x04, &[(0x1c, 0), (0x05, 1)]);
         let backward = scope(ENDPOINT, 0x30, &[(0x1c, 0), (0x06, 1)]);
         let bytes = dmar_of(&[
@@ -3371,7 +3547,7 @@ mod tests {
 
         for function in [Bdf::new(0, 0x04, 0x05, 1), Bdf::new(0, 0x20, 0x06, 1)] {
             assert_eq!(
-                dmar.unit_for(function, &topology),
+                dmar.unit_for(function, &topology, &ancestry),
                 Some(catch_all()),
                 "{function:?}"
             );
@@ -3383,6 +3559,7 @@ mod tests {
         let bridge = Bdf::new(0, 0x00, 0x1c, 0);
         let bridges = [(bridge, buses(0x30, 0x20))];
         let topology = topology(&bridges);
+        let ancestry = hierarchy(&bridges);
         let hierarchy = scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)]);
         let through = scope(ENDPOINT, 0x00, &[(0x1c, 0), (0x05, 1)]);
         let bytes = dmar_of(&[
@@ -3397,7 +3574,7 @@ mod tests {
             Bdf::new(0, 0x25, 0x05, 1),
         ] {
             assert_eq!(
-                dmar.unit_for(function, &topology),
+                dmar.unit_for(function, &topology, &ancestry),
                 Some(catch_all()),
                 "{function:?}"
             );
@@ -3405,28 +3582,31 @@ mod tests {
     }
 
     #[test]
-    fn a_path_longer_than_the_hop_bound_names_nothing() {
-        // A chain of bridges, each leading to the next bus, deep enough for
-        // one hop past the bound.
-        let bridges = (0..=u8::try_from(DeviceScope::MAX_HOPS).expect("fits"))
-            .map(|bus| (Bdf::new(0, bus, 0x01, 0), buses(bus + 1, 0xff)))
+    fn a_long_endpoint_path_still_outranks_another_units_outer_hierarchy() {
+        // Nine valid hops exceed the retired bridge-path array's old bound.
+        // Dropping the endpoint would let the less-specific outer unit win.
+        const HOPS: usize = 9;
+        let bridges = (0..u8::try_from(HOPS - 1).expect("fits"))
+            .map(|bus| (Bdf::new(0, bus, 0x01, 0), buses(bus + 1, 8)))
             .collect::<Vec<_>>();
         let topology = topology(&bridges);
-        let governing = |hops: usize| {
-            let mut path = vec![(0x01, 0); hops - 1];
-            path.push((0x05, 1));
-            let bytes = dmar_of(&[
-                drhd_bytes(false, 0, SCOPED, &scope(ENDPOINT, 0x00, &path)),
-                drhd_bytes(true, 0, CATCH_ALL, &[]),
-            ]);
-            let dmar = Dmar::new(&bytes).expect("valid dmar");
-            let target = Bdf::new(0, u8::try_from(hops - 1).expect("fits"), 0x05, 1);
-            dmar.unit_for(target, &topology)
-                .map(|unit| unit.register_base)
-        };
+        let ancestry = hierarchy(&bridges);
+        let mut endpoint_path = vec![(0x01, 0); HOPS - 1];
+        endpoint_path.push((0x05, 1));
+        let bytes = dmar_of(&[
+            drhd_bytes(false, 0, INNER, &scope(SUB_HIERARCHY, 0, &[(0x01, 0)])),
+            drhd_bytes(false, 0, EXACT, &scope(ENDPOINT, 0, &endpoint_path)),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+        let target = Bdf::new(0, 8, 0x05, 1);
 
-        assert_eq!(governing(DeviceScope::MAX_HOPS), Some(SCOPED));
-        assert_eq!(governing(DeviceScope::MAX_HOPS + 1), Some(CATCH_ALL));
+        assert_eq!(
+            dmar.unit_for(target, &topology, &ancestry),
+            Some(GoverningUnit {
+                register_base: EXACT,
+                coverage: Coverage::Endpoint,
+            })
+        );
     }
 
     #[test]
@@ -3443,8 +3623,15 @@ mod tests {
         ]);
         let dmar = Dmar::new(&bytes).expect("valid dmar");
 
-        assert_eq!(dmar.unit_for(target, no_bridges), Some(catch_all()));
-        assert_eq!(dmar.reserved_regions_for(target, no_bridges).count(), 0);
+        assert_eq!(
+            dmar.unit_for(target, no_bridges, no_hierarchies),
+            Some(catch_all())
+        );
+        assert_eq!(
+            dmar.reserved_regions_for(target, no_bridges, no_hierarchies)
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -3455,6 +3642,7 @@ mod tests {
         let inner = Bdf::new(0, 0x20, 0x00, 0);
         let bridges = [(outer, buses(0x20, 0x2f)), (inner, buses(0x21, 0x22))];
         let topology = topology(&bridges);
+        let ancestry = hierarchy(&bridges);
         let bytes = dmar_of(&[
             drhd_bytes(false, 0, SCOPED, &scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)])),
             drhd_bytes(
@@ -3475,13 +3663,13 @@ mod tests {
 
         let governed = [
             (Bdf::new(0, 0x21, 0x00, 0), EXACT, Coverage::Endpoint),
-            (Bdf::new(0, 0x22, 0x03, 0), INNER, Coverage::Bridge(inner)),
-            (Bdf::new(0, 0x25, 0x00, 0), SCOPED, Coverage::Bridge(outer)),
+            (Bdf::new(0, 0x21, 0x03, 0), INNER, Coverage::Bridge(inner)),
+            (Bdf::new(0, 0x20, 0x05, 0), SCOPED, Coverage::Bridge(outer)),
             (Bdf::new(0, 0x30, 0x00, 0), CATCH_ALL, Coverage::CatchAll),
         ];
         for (function, register_base, coverage) in governed {
             assert_eq!(
-                dmar.unit_for(function, &topology),
+                dmar.unit_for(function, &topology, &ancestry),
                 Some(GoverningUnit {
                     register_base,
                     coverage,
@@ -3498,6 +3686,7 @@ mod tests {
         let bridge = Bdf::new(0, 0x00, 0x1c, 0);
         let bridges = [(bridge, buses(0x20, 0x20))];
         let topology = topology(&bridges);
+        let ancestry = hierarchy(&bridges);
         let bytes = dmar_of(&[
             drhd_bytes(true, 0, CATCH_ALL, &[]),
             drhd_bytes(false, 0, EXACT, &pci_endpoint_scope(0x00, 0x05, 0)),
@@ -3527,7 +3716,11 @@ mod tests {
                 register_base,
                 coverage,
             });
-            assert_eq!(dmar.unit_for(function, &topology), expected, "{function:?}");
+            assert_eq!(
+                dmar.unit_for(function, &topology, &ancestry),
+                expected,
+                "{function:?}"
+            );
         }
     }
 
@@ -3551,7 +3744,7 @@ mod tests {
             drhd_bytes(true, 0, CATCH_ALL, &[]),
         ]);
         let dmar = Dmar::new(&bytes).expect("structurally valid ambiguous endpoints");
-        assert_eq!(dmar.unit_for(target, no_bridges), None);
+        assert_eq!(dmar.unit_for(target, no_bridges, no_hierarchies), None);
 
         let elsewhere = Bdf::new(0, 0x00, 0x06, 0);
         let bytes = dmar_of(&[
@@ -3559,25 +3752,31 @@ mod tests {
             drhd_bytes(true, 0, INNER, &[]),
         ]);
         let dmar = Dmar::new(&bytes).expect("structurally valid ambiguous catch-all units");
-        assert_eq!(dmar.unit_for(elsewhere, no_bridges), None);
+        assert_eq!(dmar.unit_for(elsewhere, no_bridges, no_hierarchies), None);
 
         let bridge = Bdf::new(0, 0x00, 0x1c, 0);
         let bridges = [(bridge, buses(0x20, 0x2f))];
         let topology = topology(&bridges);
+        let ancestry = hierarchy(&bridges);
         let hierarchy = scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)]);
         let bytes = dmar_of(&[
             drhd_bytes(false, 0, SCOPED, &hierarchy),
             drhd_bytes(false, 0, INNER, &hierarchy),
         ]);
         let dmar = Dmar::new(&bytes).expect("structurally valid ambiguous bridges");
-        assert_eq!(dmar.unit_for(Bdf::new(0, 0x20, 0x01, 0), &topology), None);
+        assert_eq!(
+            dmar.unit_for(Bdf::new(0, 0x20, 0x01, 0), &topology, &ancestry),
+            None
+        );
     }
 
     #[test]
     fn a_reserved_region_follows_scopes_resolved_through_the_topology() {
         let bridge = Bdf::new(0, 0x00, 0x1c, 0);
-        let bridges = [(bridge, buses(0x20, 0x22))];
+        let child = Bdf::new(0, 0x20, 0x02, 0);
+        let bridges = [(bridge, buses(0x20, 0x22)), (child, buses(0x22, 0x22))];
         let topology = topology(&bridges);
+        let ancestry = hierarchy(&bridges);
         let bytes = dmar_of(&[
             drhd_bytes(true, 0, CATCH_ALL, &[]),
             rmrr_bytes(
@@ -3591,7 +3790,7 @@ mod tests {
         let dmar = Dmar::new(&bytes).expect("valid dmar");
 
         let regions = |function| {
-            dmar.reserved_regions_for(function, &topology)
+            dmar.reserved_regions_for(function, &topology, &ancestry)
                 .collect::<Vec<_>>()
         };
         assert_eq!(

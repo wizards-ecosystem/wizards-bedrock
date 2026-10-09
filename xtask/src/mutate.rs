@@ -77,10 +77,10 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1680;
+pub const NEXT_MUTATION_ID: u16 = 1703;
 
 /// Identities of deleted mutations, which no later entry may take.
-pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521];
+pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
 
 /// The defects, each of which some check must notice.
 ///
@@ -13313,8 +13313,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1558,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "(hierarchy.buses.secondary..=hierarchy.buses.subordinate)\n                        .contains(&bdf.bus())",
-        replace: "(hierarchy.buses.secondary..hierarchy.buses.subordinate)\n                        .contains(&bdf.bus())",
+        find: "(scope.buses.secondary..=scope.buses.subordinate).contains(&bdf.bus())",
+        replace: "(scope.buses.secondary..scope.buses.subordinate).contains(&bdf.bus())",
         breaks: "a bridge scope stops one bus short of its bridge's subordinate bus",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -13324,8 +13324,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1559,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "            Self::Hierarchy(hierarchy) => {\n                hierarchy.root == bdf\n                    || (hierarchy.buses.secondary..=hierarchy.buses.subordinate)",
-        replace: "            Self::Hierarchy(hierarchy) => {\n                (hierarchy.buses.secondary..=hierarchy.buses.subordinate)",
+        find: "            Self::Hierarchy(scope) => {\n                scope.root == bdf\n                    || (scope.buses.secondary..=scope.buses.subordinate)",
+        replace: "            Self::Hierarchy(scope) => {\n                (scope.buses.secondary..=scope.buses.subordinate)",
         breaks: "a bridge scope covers the buses behind its bridge but not the bridge itself",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -13366,17 +13366,6 @@ fn mint_stopped<'controller>(
         },
     },
     Mutation {
-        id: 1563,
-        file: "libs/acpi-tables/src/lib.rs",
-        find: "        if self.path.len() > 2 * Self::MAX_HOPS {",
-        replace: "        if self.path.len() > 2 * Self::MAX_HOPS + 2 {",
-        breaks: "a scope path one hop longer than the bound is walked rather than refused",
-        reddens: Caught::HostTest {
-            package: "acpi-tables",
-            name: "tests::a_path_longer_than_the_hop_bound_names_nothing",
-        },
-    },
-    Mutation {
         id: 1564,
         file: "libs/acpi-tables/src/lib.rs",
         find: "            DeviceScopeKind::IoApic\n            | DeviceScopeKind::Hpet\n            | DeviceScopeKind::AcpiNamespaceDevice\n            | DeviceScopeKind::Other { .. } => return None,",
@@ -13401,8 +13390,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1566,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "                            Some((current, _)) if current.strictly_contains(named) => {\n                                enclosing = Some((named, candidate));\n                            }",
-        replace: "                            Some((current, _)) if current.strictly_contains(named) => {}",
+        find: "                            Some((current, _)) if current.strictly_contains(named, &hierarchy) => {\n                                enclosing = Some((named, candidate));\n                            }",
+        replace: "                            Some((current, _)) if current.strictly_contains(named, &hierarchy) => {}",
         breaks: "an outer bridge scope outranks an inner one enclosing the same function",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -18713,8 +18702,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1667,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "                        for bus in hierarchy.buses.secondary..=hierarchy.buses.subordinate {",
-        replace: "                        for bus in hierarchy.buses.secondary..hierarchy.buses.secondary {",
+        find: "                        for bus in\n                            scope_hierarchy.buses.secondary..=scope_hierarchy.buses.subordinate\n                        {",
+        replace: "                        for bus in\n                            scope_hierarchy.buses.secondary..scope_hierarchy.buses.secondary\n                        {",
         breaks: "a sub-hierarchy requester scan visits none of the buses behind its bridge",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -18735,8 +18724,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1669,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "                        add_live_requester(\n                            self,\n                            &bridge,\n                            register_base,\n                            hierarchy.root,\n                            &mut requesters,\n                            &mut count,\n                        )?;",
-        replace: "                        let _unowned_hierarchy_root = hierarchy.root;",
+        find: "                        add_live_requester(\n                            self,\n                            &bridge,\n                            &hierarchy,\n                            register_base,\n                            scope_hierarchy.root,\n                            &mut requesters,\n                            &mut count,\n                        )?;",
+        replace: "                        let _unowned_hierarchy_root = scope_hierarchy.root;",
         breaks: "the bridge named by a sub-hierarchy is omitted from its unit owner",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -18849,6 +18838,259 @@ fn mint_stopped<'controller>(
         replace: "fn isolate_candidate(stage: &mut CandidateStage, context: &mut thread::ThreadContext) {\n    let stack_regression = [0u8; 4096];\n    core::hint::black_box(&stack_regression);\n    let outcome = match stage {",
         breaks: "unit isolation again consumes a large candidate-stack frame instead of borrowing its owners in a thin sibling stage",
         reddens: Caught::Check("nvme candidates preserve two pages of boot-stack headroom"),
+    },
+    Mutation {
+        id: 1680,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "    if !path.len().is_multiple_of(2)\n        || matches!(",
+        replace: "    if matches!(",
+        breaks: "a trailing byte in a DMAR device-scope path is silently discarded",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::odd_and_empty_pci_paths_in_every_scoped_dmar_structure_are_refused",
+        },
+    },
+    Mutation {
+        id: 1681,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "        ) && path.is_empty()\n    {",
+        replace: "        ) && false\n    {",
+        breaks: "an endpoint or hierarchy device scope is accepted without a PCI path",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::odd_and_empty_pci_paths_in_every_scoped_dmar_structure_are_refused",
+        },
+    },
+    Mutation {
+        id: 1682,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "    path.chunks_exact(2).all(|hop| hop[0] < 32 && hop[1] < 8)",
+        replace: "    path.chunks_exact(2).all(|_hop| true)",
+        breaks: "a DMAR path hop can encode a nonexistent PCI device or function number",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::device_scope_iteration_defensively_refuses_every_bad_pci_hop",
+        },
+    },
+    Mutation {
+        id: 1683,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "        if !device_scope_is_well_formed(entry) {\n            self.bytes = &[];\n            return None;\n        }",
+        replace: "        let _unchecked_device_scope = entry;",
+        breaks: "the defensive device-scope iterator resumes through malformed path bytes",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::device_scope_iteration_defensively_refuses_every_bad_pci_hop",
+        },
+    },
+    Mutation {
+        id: 1684,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        if *slot != 0 && *slot != at.bits() {\n            return Err(TopologyError::DuplicateParent {\n                bus: secondary,\n                first: Address(*slot),\n                second: at,\n            });\n        }",
+        replace: "        let _competing_parent = *slot;",
+        breaks: "a PCI bus can acquire two different direct parent bridges",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::duplicate_unrooted_and_contradictory_functions_refuse_topology",
+        },
+    },
+    Mutation {
+        id: 1685,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            if at.bus() != 0 && !self.bus_reaches_root(at.bus()) {\n                return Err(TopologyError::UnrootedFunction { at });\n            }",
+        replace: "            let _unrooted_function = at;",
+        breaks: "a present DMA requester can exist outside the proved bus-zero parent chain",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::duplicate_unrooted_and_contradictory_functions_refuse_topology",
+        },
+    },
+    Mutation {
+        id: 1686,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            if secondary < parent_secondary\n                || self.subordinate[usize::from(secondary)]\n                    > self.subordinate[usize::from(parent_secondary)]\n            {\n                return Err(TopologyError::ChildEscapesParent { child, parent });\n            }",
+        replace: "            let _unbounded_child_range = parent_secondary;",
+        breaks: "a child bridge forwards buses outside its direct parent's admitted range",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::child_escape_and_unrelated_overlap_refuse_topology",
+        },
+    },
+    Mutation {
+        id: 1687,
+        file: "libs/pci-config/src/lib.rs",
+        find: "                if overlap\n                    && !self.bridge_is_ancestor(first, second)\n                    && !self.bridge_is_ancestor(second, first)\n                {\n                    return Err(TopologyError::UnrelatedOverlap { first, second });\n                }",
+        replace: "                let _unrelated_overlap = overlap;",
+        breaks: "unrelated PCI bridge branches may advertise overlapping bus intervals",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::child_escape_and_unrelated_overlap_refuse_topology",
+        },
+    },
+    Mutation {
+        id: 1688,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                    || (scope.buses.secondary..=scope.buses.subordinate).contains(&bdf.bus())\n                        && contains(scope.root, bdf)",
+        replace: "                    || (scope.buses.secondary..=scope.buses.subordinate).contains(&bdf.bus())",
+        breaks: "a numeric bridge bus interval is accepted as DMAR hierarchy ancestry",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_numeric_bus_range_without_ancestry_names_no_requester_or_reserved_region",
+        },
+    },
+    Mutation {
+        id: 1689,
+        file: "kernel/src/iommu.rs",
+        find: "    if !pci::topology_is_sealed() {\n        return Err(LookupError::UnsafeTopology);\n    }",
+        replace: "    let _unsealed_topology = pci::topology_is_sealed();",
+        breaks: "DMAR authority can be derived before the complete PCI topology is sealed",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::dmar_authority_uses_one_complete_sealed_pci_topology",
+        },
+    },
+    Mutation {
+        id: 1690,
+        file: "kernel/src/pci.rs",
+        find: "    for bus in 0..=u8::MAX {",
+        replace: "    for bus in 0..u8::MAX {",
+        breaks: "the sealed PCI snapshot omits every function on bus 255",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::dmar_authority_uses_one_complete_sealed_pci_topology",
+        },
+    },
+    Mutation {
+        id: 1691,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "        let mut hops = self.path();",
+        replace: "        if self.path.len() > 16 {\n            return None;\n        }\n        let mut hops = self.path();",
+        breaks: "a valid nine-hop endpoint disappears and lets another unit's outer hierarchy govern it",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_long_endpoint_path_still_outranks_another_units_outer_hierarchy",
+        },
+    },
+    Mutation {
+        id: 1692,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        let Some(bits) = bus_numbers else {\n            return Err(TopologyError::MissingBusNumbers { at });\n        };",
+        replace: "        let bits = bus_numbers.unwrap_or(0);",
+        breaks: "an unreadable bridge bus-number register is fabricated as zero",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::unreadable_and_invalid_bridge_bus_numbers_refuse_topology",
+        },
+    },
+    Mutation {
+        id: 1693,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        if primary != at.bus() || secondary <= at.bus() || secondary > subordinate {",
+        replace: "        if secondary <= at.bus() || secondary > subordinate {",
+        breaks: "a bridge may claim a primary bus different from the bus containing it",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::unreadable_and_invalid_bridge_bus_numbers_refuse_topology",
+        },
+    },
+    Mutation {
+        id: 1694,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        if primary != at.bus() || secondary <= at.bus() || secondary > subordinate {",
+        replace: "        if primary != at.bus() || secondary > subordinate {",
+        breaks: "a bridge may forward to its own bus instead of a strict child bus",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::unreadable_and_invalid_bridge_bus_numbers_refuse_topology",
+        },
+    },
+    Mutation {
+        id: 1695,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        if primary != at.bus() || secondary <= at.bus() || secondary > subordinate {",
+        replace: "        if primary != at.bus() || secondary <= at.bus() {",
+        breaks: "a bridge may advertise a secondary bus above its subordinate limit",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::unreadable_and_invalid_bridge_bus_numbers_refuse_topology",
+        },
+    },
+    Mutation {
+        id: 1696,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        if class.is_bridge() != header.is_bridge() {\n            return Err(TopologyError::BridgeIdentity { at });\n        }",
+        replace: "        let _contradictory_bridge_identity = header.is_bridge();",
+        breaks: "a function's bridge class and header layout may contradict each other",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::duplicate_unrooted_and_contradictory_functions_refuse_topology",
+        },
+    },
+    Mutation {
+        id: 1697,
+        file: "libs/pci-config/src/lib.rs",
+        find: "pub const fn primary_bus(bits: u32) -> u8 {\n    bits as u8\n}",
+        replace: "pub const fn primary_bus(bits: u32) -> u8 {\n    (bits >> 8) as u8\n}",
+        breaks: "the bridge primary bus is decoded from the secondary byte",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_bridge_primary_bus_is_read_from_its_own_byte",
+        },
+    },
+    Mutation {
+        id: 1698,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        self.bridge_range(root).is_some()\n            && self.contains_function(target)\n            && self.bridge_is_ancestor(root, target)",
+        replace: "        self.bridge_range(root).is_some() && self.contains_function(target)",
+        breaks: "any present target is treated as below any bridge regardless of its parent chain",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_sealed_topology_binds_presence_ranges_and_ancestry",
+        },
+    },
+    Mutation {
+        id: 1699,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        * usize::from(FUNCTIONS)\n        + usize::from(at.function())",
+        replace: "        * usize::from(FUNCTIONS)",
+        breaks: "the sealed presence bitmap aliases all functions of one PCI device",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_sealed_topology_binds_presence_ranges_and_ancestry",
+        },
+    },
+    Mutation {
+        id: 1700,
+        file: "libs/pci-config/src/lib.rs",
+        find: "                    subordinate: self.subordinate[usize::from(secondary)],",
+        replace: "                    subordinate: secondary,",
+        breaks: "a sealed bridge query truncates its forwarded range to the secondary bus",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_sealed_topology_binds_presence_ranges_and_ancestry",
+        },
+    },
+    Mutation {
+        id: 1701,
+        file: "kernel/src/pci.rs",
+        find: "pub(crate) fn snapshot_topology() -> Result<(), TopologyError> {\n    TOPOLOGY.lock_leaf().reset();",
+        replace: "pub(crate) fn snapshot_topology() -> Result<(), TopologyError> {\n    let stack_topology = PciTopology::new();\n    core::hint::black_box(&stack_topology);\n    TOPOLOGY.lock_leaf().reset();",
+        breaks: "the complete PCI topology consumes a large fixed boot-stack frame",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::dmar_authority_uses_one_complete_sealed_pci_topology",
+        },
+    },
+    Mutation {
+        id: 1702,
+        file: "libs/pci-config/src/lib.rs",
+        find: "        self.sealed = true;\n        Ok(())",
+        replace: "        self.sealed = false;\n        Ok(())",
+        breaks: "a fully validated PCI topology never becomes queryable as sealed",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::a_sealed_topology_binds_presence_ranges_and_ancestry",
+        },
     },
 ];
 

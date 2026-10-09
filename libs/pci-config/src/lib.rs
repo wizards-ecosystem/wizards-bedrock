@@ -2411,6 +2411,421 @@ pub const fn is_absent(vendor: u16) -> bool {
     vendor == 0xFFFF
 }
 
+/// Buses in one legacy PCI segment.
+const BUSES: usize = 256;
+
+/// Function identities in one legacy PCI segment.
+const SEGMENT_FUNCTIONS: usize = BUSES * DEVICES as usize * FUNCTIONS as usize;
+
+/// Machine words needed to remember every function identity in one segment.
+const PRESENCE_WORDS: usize = SEGMENT_FUNCTIONS.div_ceil(u64::BITS as usize);
+
+/// A bridge range admitted into a sealed [`PciTopology`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BridgeRange {
+    /// Bus immediately behind the bridge.
+    pub secondary: u8,
+    /// Highest bus the bridge forwards to.
+    pub subordinate: u8,
+}
+
+/// Why a complete PCI topology snapshot cannot be trusted for DMA authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TopologyError {
+    /// The class and header layout disagree about whether a function is a bridge.
+    BridgeIdentity {
+        /// Function with contradictory bridge identity.
+        at: Address,
+    },
+    /// A bridge function had no readable bus-number register.
+    MissingBusNumbers {
+        /// Bridge whose routing could not be read.
+        at: Address,
+    },
+    /// A bridge's primary or forwarded range cannot describe a child bus.
+    InvalidRange {
+        /// Bridge with invalid bus numbers.
+        at: Address,
+        /// Primary bus encoded by the bridge.
+        primary: u8,
+        /// First forwarded bus.
+        secondary: u8,
+        /// Last forwarded bus.
+        subordinate: u8,
+    },
+    /// Two different bridges claim to be one bus's direct parent.
+    DuplicateParent {
+        /// Bus with two parent bridges.
+        bus: u8,
+        /// First parent found.
+        first: Address,
+        /// Second parent found.
+        second: Address,
+    },
+    /// A present function is on a bus with no rooted parent chain.
+    UnrootedFunction {
+        /// Present function outside the proved tree.
+        at: Address,
+    },
+    /// A child bridge forwards beyond the range admitted by its parent.
+    ChildEscapesParent {
+        /// Child bridge whose range escapes.
+        child: Address,
+        /// Direct parent bridge.
+        parent: Address,
+    },
+    /// Two unrelated bridge branches advertise intersecting ranges.
+    UnrelatedOverlap {
+        /// First bridge in the overlap.
+        first: Address,
+        /// Second bridge in the overlap.
+        second: Address,
+    },
+}
+
+impl core::fmt::Display for TopologyError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::BridgeIdentity { at } => write!(
+                f,
+                "PCI function {:02x}:{:02x}.{} has contradictory bridge class and header",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
+            Self::MissingBusNumbers { at } => write!(
+                f,
+                "PCI bridge {:02x}:{:02x}.{} has no readable bus numbers",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
+            Self::InvalidRange {
+                at,
+                primary,
+                secondary,
+                subordinate,
+            } => write!(
+                f,
+                "PCI bridge {:02x}:{:02x}.{} reports invalid buses {primary:#04x}/{secondary:#04x}/{subordinate:#04x}",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
+            Self::DuplicateParent { bus, first, second } => write!(
+                f,
+                "PCI bus {bus:#04x} has parent bridges {:02x}:{:02x}.{} and {:02x}:{:02x}.{}",
+                first.bus(),
+                first.device(),
+                first.function(),
+                second.bus(),
+                second.device(),
+                second.function()
+            ),
+            Self::UnrootedFunction { at } => write!(
+                f,
+                "PCI function {:02x}:{:02x}.{} has no unique path to bus zero",
+                at.bus(),
+                at.device(),
+                at.function()
+            ),
+            Self::ChildEscapesParent { child, parent } => write!(
+                f,
+                "PCI bridge {:02x}:{:02x}.{} escapes parent {:02x}:{:02x}.{}",
+                child.bus(),
+                child.device(),
+                child.function(),
+                parent.bus(),
+                parent.device(),
+                parent.function()
+            ),
+            Self::UnrelatedOverlap { first, second } => write!(
+                f,
+                "unrelated PCI bridges {:02x}:{:02x}.{} and {:02x}:{:02x}.{} advertise overlapping buses",
+                first.bus(),
+                first.device(),
+                first.function(),
+                second.bus(),
+                second.device(),
+                second.function()
+            ),
+        }
+    }
+}
+
+impl core::error::Error for TopologyError {}
+
+/// A fixed, allocation-free snapshot of one rooted legacy PCI segment.
+///
+/// Each non-root bus is indexed by its unique direct parent bridge. Queries
+/// return nothing until [`Self::seal`] proves that all present functions reach
+/// bus zero, child ranges stay inside their parents, and unrelated branches
+/// do not overlap.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PciTopology {
+    parent: [u32; BUSES],
+    subordinate: [u8; BUSES],
+    present: [u64; PRESENCE_WORDS],
+    sealed: bool,
+}
+
+impl PciTopology {
+    /// Begin an empty, unsealed segment-zero snapshot.
+    pub const fn new() -> Self {
+        Self {
+            parent: [0; BUSES],
+            subordinate: [0; BUSES],
+            present: [0; PRESENCE_WORDS],
+            sealed: false,
+        }
+    }
+
+    /// Discard every observation and begin another snapshot.
+    pub fn reset(&mut self) {
+        self.parent.fill(0);
+        self.subordinate.fill(0);
+        self.present.fill(0);
+        self.sealed = false;
+    }
+
+    /// Record one independently probed function and, for a bridge, its routing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError`] for contradictory bridge identity, unreadable
+    /// bus numbers, an invalid range, or a second direct parent for one bus.
+    pub fn observe(
+        &mut self,
+        at: Address,
+        class: Class,
+        header: HeaderType,
+        bus_numbers: Option<u32>,
+    ) -> Result<(), TopologyError> {
+        self.sealed = false;
+        let at = at.function_base();
+        let index = function_index(at);
+        self.present[index / u64::BITS as usize] |= 1 << (index % u64::BITS as usize);
+
+        if class.is_bridge() != header.is_bridge() {
+            return Err(TopologyError::BridgeIdentity { at });
+        }
+        if !class.is_bridge() {
+            return Ok(());
+        }
+        let Some(bits) = bus_numbers else {
+            return Err(TopologyError::MissingBusNumbers { at });
+        };
+        let primary = primary_bus(bits);
+        let secondary = secondary_bus(bits);
+        let subordinate = subordinate_bus(bits);
+        if primary != at.bus() || secondary <= at.bus() || secondary > subordinate {
+            return Err(TopologyError::InvalidRange {
+                at,
+                primary,
+                secondary,
+                subordinate,
+            });
+        }
+        let slot = &mut self.parent[usize::from(secondary)];
+        if *slot != 0 && *slot != at.bits() {
+            return Err(TopologyError::DuplicateParent {
+                bus: secondary,
+                first: Address(*slot),
+                second: at,
+            });
+        }
+        *slot = at.bits();
+        self.subordinate[usize::from(secondary)] = subordinate;
+        Ok(())
+    }
+
+    /// Seal the snapshot after validating its complete rooted interval tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TopologyError`] when a present function is unrooted, a child
+    /// range escapes its parent, or unrelated branches overlap.
+    pub fn seal(&mut self) -> Result<(), TopologyError> {
+        self.sealed = false;
+        for index in 0..SEGMENT_FUNCTIONS {
+            if self.present[index / u64::BITS as usize] & (1 << (index % u64::BITS as usize)) == 0 {
+                continue;
+            }
+            let at = address_for_index(index);
+            if at.bus() != 0 && !self.bus_reaches_root(at.bus()) {
+                return Err(TopologyError::UnrootedFunction { at });
+            }
+        }
+
+        for secondary in 1u16..=u16::from(u8::MAX) {
+            let secondary = secondary as u8;
+            let Some(child) = self.parent(secondary) else {
+                continue;
+            };
+            if child.bus() == 0 {
+                continue;
+            }
+            let Some(parent) = self.parent(child.bus()) else {
+                return Err(TopologyError::UnrootedFunction { at: child });
+            };
+            let parent_secondary = self.secondary_for(parent);
+            if secondary < parent_secondary
+                || self.subordinate[usize::from(secondary)]
+                    > self.subordinate[usize::from(parent_secondary)]
+            {
+                return Err(TopologyError::ChildEscapesParent { child, parent });
+            }
+        }
+
+        for first_bus in 1u16..=u16::from(u8::MAX) {
+            let first_bus = first_bus as u8;
+            let Some(first) = self.parent(first_bus) else {
+                continue;
+            };
+            for second_bus in (u16::from(first_bus) + 1)..=u16::from(u8::MAX) {
+                let second_bus = second_bus as u8;
+                let Some(second) = self.parent(second_bus) else {
+                    continue;
+                };
+                let overlap = first_bus <= self.subordinate[usize::from(second_bus)]
+                    && second_bus <= self.subordinate[usize::from(first_bus)];
+                if overlap
+                    && !self.bridge_is_ancestor(first, second)
+                    && !self.bridge_is_ancestor(second, first)
+                {
+                    return Err(TopologyError::UnrelatedOverlap { first, second });
+                }
+            }
+        }
+        self.sealed = true;
+        Ok(())
+    }
+
+    /// Whether the complete snapshot passed validation.
+    pub const fn is_sealed(&self) -> bool {
+        self.sealed
+    }
+
+    /// Whether one exact function was present in the sealed snapshot.
+    pub fn contains_function(&self, at: Address) -> bool {
+        if !self.sealed {
+            return false;
+        }
+        let index = function_index(at.function_base());
+        self.present[index / u64::BITS as usize] & (1 << (index % u64::BITS as usize)) != 0
+    }
+
+    /// The sealed routing range of one exact bridge function.
+    pub fn bridge_range(&self, at: Address) -> Option<BridgeRange> {
+        if !self.sealed {
+            return None;
+        }
+        let at = at.function_base();
+        for secondary in 1u16..=u16::from(u8::MAX) {
+            let secondary = secondary as u8;
+            if self.parent(secondary) == Some(at) {
+                return Some(BridgeRange {
+                    secondary,
+                    subordinate: self.subordinate[usize::from(secondary)],
+                });
+            }
+        }
+        None
+    }
+
+    /// Whether `target` is `root` or lies below that bridge in the sealed tree.
+    pub fn hierarchy_contains(&self, root: Address, target: Address) -> bool {
+        if !self.sealed {
+            return false;
+        }
+        let root = root.function_base();
+        let target = target.function_base();
+        if root == target {
+            return self.contains_function(root);
+        }
+        self.bridge_range(root).is_some()
+            && self.contains_function(target)
+            && self.bridge_is_ancestor(root, target)
+    }
+
+    fn parent(&self, bus: u8) -> Option<Address> {
+        let bits = self.parent[usize::from(bus)];
+        (bits != 0).then_some(Address(bits))
+    }
+
+    fn secondary_for(&self, bridge: Address) -> u8 {
+        for secondary in 1u16..=u16::from(u8::MAX) {
+            let secondary = secondary as u8;
+            if self.parent(secondary) == Some(bridge) {
+                return secondary;
+            }
+        }
+        0
+    }
+
+    fn bus_reaches_root(&self, mut bus: u8) -> bool {
+        for _ in 0..BUSES_BELOW_ROOT {
+            let Some(parent) = self.parent(bus) else {
+                return false;
+            };
+            bus = parent.bus();
+            if bus == 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn bridge_is_ancestor(&self, ancestor: Address, descendant: Address) -> bool {
+        let ancestor = ancestor.function_base();
+        let mut bus = descendant.bus();
+        for _ in 0..BUSES_BELOW_ROOT {
+            let Some(parent) = self.parent(bus) else {
+                return false;
+            };
+            if parent == ancestor {
+                return true;
+            }
+            bus = parent.bus();
+            if bus == 0 {
+                return false;
+            }
+        }
+        false
+    }
+}
+
+impl Default for PciTopology {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Non-root buses in one segment; parent walks must strictly approach bus zero.
+const BUSES_BELOW_ROOT: usize = BUSES - 1;
+
+fn function_index(at: Address) -> usize {
+    (usize::from(at.bus()) * usize::from(DEVICES) + usize::from(at.device()))
+        * usize::from(FUNCTIONS)
+        + usize::from(at.function())
+}
+
+fn address_for_index(index: usize) -> Address {
+    let bus = index / (usize::from(DEVICES) * usize::from(FUNCTIONS));
+    let on_bus = index % (usize::from(DEVICES) * usize::from(FUNCTIONS));
+    let device = on_bus / usize::from(FUNCTIONS);
+    let function = on_bus % usize::from(FUNCTIONS);
+    Address(
+        Address::ENABLE | ((bus as u32) << 16) | ((device as u32) << 11) | ((function as u32) << 8),
+    )
+}
+
+/// A bridge's primary bus number, out of the word at [`header::BUS_NUMBERS`].
+pub const fn primary_bus(bits: u32) -> u8 {
+    bits as u8
+}
+
 /// A bridge's secondary bus number, out of the word at [`header::BUS_NUMBERS`].
 ///
 /// The bus behind it, which is the number a recursive enumeration descends to.
@@ -5302,10 +5717,223 @@ mod tests {
         assert_eq!(secondary_bus(bits), 0x22);
     }
 
+    fn topology_address(bus: u8, device: u8, function: u8) -> Address {
+        Address::new(bus, device, function, 0).expect("fixture address")
+    }
+
+    fn bridge_class() -> Class {
+        Class::from_bits(0x06_04_00_00)
+    }
+
+    fn endpoint_class() -> Class {
+        Class::from_bits(0x01_08_02_00)
+    }
+
+    fn bridge_header() -> HeaderType {
+        HeaderType::from_bits(1)
+    }
+
+    fn endpoint_header() -> HeaderType {
+        HeaderType::from_bits(0)
+    }
+
+    fn bus_numbers(primary: u8, secondary: u8, subordinate: u8) -> u32 {
+        u32::from(primary) | (u32::from(secondary) << 8) | (u32::from(subordinate) << 16)
+    }
+
+    #[test]
+    fn a_sealed_topology_binds_presence_ranges_and_ancestry() {
+        let root = topology_address(0, 0x1c, 0);
+        let child = topology_address(0x20, 0, 0);
+        let root_device = topology_address(0x20, 3, 0);
+        let child_device = topology_address(0x30, 4, 1);
+        let mut topology = PciTopology::new();
+        topology
+            .observe(
+                root,
+                bridge_class(),
+                bridge_header(),
+                Some(bus_numbers(0, 0x20, 0x3f)),
+            )
+            .expect("root bridge");
+        topology
+            .observe(
+                child,
+                bridge_class(),
+                bridge_header(),
+                Some(bus_numbers(0x20, 0x30, 0x35)),
+            )
+            .expect("child bridge");
+        for at in [root_device, child_device] {
+            topology
+                .observe(at, endpoint_class(), endpoint_header(), None)
+                .expect("endpoint");
+        }
+
+        topology.seal().expect("rooted topology");
+        assert!(topology.is_sealed());
+        assert!(topology.contains_function(child_device));
+        assert!(!topology.contains_function(topology_address(0x30, 4, 0)));
+        assert_eq!(
+            topology.bridge_range(root),
+            Some(BridgeRange {
+                secondary: 0x20,
+                subordinate: 0x3f,
+            })
+        );
+        assert!(topology.hierarchy_contains(root, root_device));
+        assert!(topology.hierarchy_contains(root, child_device));
+        assert!(topology.hierarchy_contains(child, child_device));
+        assert!(!topology.hierarchy_contains(child, root_device));
+    }
+
+    #[test]
+    fn duplicate_unrooted_and_contradictory_functions_refuse_topology() {
+        let first = topology_address(0, 0x1c, 0);
+        let second = topology_address(0, 0x1d, 0);
+        let mut duplicate = PciTopology::new();
+        duplicate
+            .observe(
+                first,
+                bridge_class(),
+                bridge_header(),
+                Some(bus_numbers(0, 0x20, 0x20)),
+            )
+            .expect("first parent");
+        assert!(matches!(
+            duplicate.observe(
+                second,
+                bridge_class(),
+                bridge_header(),
+                Some(bus_numbers(0, 0x20, 0x20)),
+            ),
+            Err(TopologyError::DuplicateParent { bus: 0x20, .. })
+        ));
+
+        let mut unrooted = PciTopology::new();
+        let endpoint = topology_address(0x40, 2, 0);
+        unrooted
+            .observe(endpoint, endpoint_class(), endpoint_header(), None)
+            .expect("unrooted observation");
+        assert_eq!(
+            unrooted.seal(),
+            Err(TopologyError::UnrootedFunction { at: endpoint })
+        );
+
+        let mut contradictory = PciTopology::new();
+        assert_eq!(
+            contradictory.observe(first, bridge_class(), endpoint_header(), None),
+            Err(TopologyError::BridgeIdentity { at: first })
+        );
+    }
+
+    #[test]
+    fn unreadable_and_invalid_bridge_bus_numbers_refuse_topology() {
+        let bridge = topology_address(0x20, 0x1c, 0);
+        for (numbers, expected) in [
+            (None, TopologyError::MissingBusNumbers { at: bridge }),
+            (
+                Some(bus_numbers(0x21, 0x30, 0x3f)),
+                TopologyError::InvalidRange {
+                    at: bridge,
+                    primary: 0x21,
+                    secondary: 0x30,
+                    subordinate: 0x3f,
+                },
+            ),
+            (
+                Some(bus_numbers(0x20, 0x20, 0x3f)),
+                TopologyError::InvalidRange {
+                    at: bridge,
+                    primary: 0x20,
+                    secondary: 0x20,
+                    subordinate: 0x3f,
+                },
+            ),
+            (
+                Some(bus_numbers(0x20, 0x30, 0x2f)),
+                TopologyError::InvalidRange {
+                    at: bridge,
+                    primary: 0x20,
+                    secondary: 0x30,
+                    subordinate: 0x2f,
+                },
+            ),
+        ] {
+            assert_eq!(
+                PciTopology::new().observe(bridge, bridge_class(), bridge_header(), numbers),
+                Err(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn child_escape_and_unrelated_overlap_refuse_topology() {
+        let outer = topology_address(0, 0x1c, 0);
+        let child = topology_address(0x20, 0, 0);
+        let mut escaped = PciTopology::new();
+        escaped
+            .observe(
+                outer,
+                bridge_class(),
+                bridge_header(),
+                Some(bus_numbers(0, 0x20, 0x2f)),
+            )
+            .expect("outer bridge");
+        escaped
+            .observe(
+                child,
+                bridge_class(),
+                bridge_header(),
+                Some(bus_numbers(0x20, 0x30, 0x40)),
+            )
+            .expect("locally forward child");
+        assert_eq!(
+            escaped.seal(),
+            Err(TopologyError::ChildEscapesParent {
+                child,
+                parent: outer,
+            })
+        );
+
+        let sibling = topology_address(0, 0x1d, 0);
+        let mut overlap = PciTopology::new();
+        overlap
+            .observe(
+                outer,
+                bridge_class(),
+                bridge_header(),
+                Some(bus_numbers(0, 0x20, 0x3f)),
+            )
+            .expect("first root bridge");
+        overlap
+            .observe(
+                sibling,
+                bridge_class(),
+                bridge_header(),
+                Some(bus_numbers(0, 0x30, 0x35)),
+            )
+            .expect("second root bridge");
+        assert_eq!(
+            overlap.seal(),
+            Err(TopologyError::UnrelatedOverlap {
+                first: outer,
+                second: sibling,
+            })
+        );
+    }
+
     #[test]
     fn a_bridge_subordinate_bus_is_read_from_its_own_byte() {
         // Primary, secondary, subordinate and latency timer, each distinct.
         let bits = 0x4433_2211u32;
         assert_eq!(subordinate_bus(bits), 0x33);
+    }
+
+    #[test]
+    fn a_bridge_primary_bus_is_read_from_its_own_byte() {
+        // Primary, secondary, subordinate and latency timer, each distinct.
+        let bits = 0x4433_2211;
+        assert_eq!(primary_bus(bits), 0x11);
     }
 }

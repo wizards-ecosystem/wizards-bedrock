@@ -501,6 +501,20 @@ impl<'ast> Visit<'ast> for CalledFunctions {
     }
 }
 
+#[derive(Default)]
+struct ReferencedPaths {
+    names: Vec<String>,
+}
+
+impl Visit<'_> for ReferencedPaths {
+    fn visit_expr_path(&mut self, path: &syn::ExprPath) {
+        if let Some(last) = path.path.segments.last() {
+            self.names.push(last.ident.to_string());
+        }
+        syn::visit::visit_expr_path(self, path);
+    }
+}
+
 struct StageReferences<'name> {
     watched: &'name [String],
     enclosing: Vec<String>,
@@ -2851,4 +2865,175 @@ fn unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving() {
     domain.visit_impl_item_fn(method(&vtd, "Vtd", "domain").expect("DMA-domain mint"));
     assert_eq!(domain.translation_checks, 1);
     assert_eq!(domain.none_returns, 2);
+}
+
+#[derive(Default)]
+struct DmarTopologyArguments {
+    inventory: usize,
+    reserved: usize,
+}
+
+#[derive(Default)]
+struct PciTopologyConstructions(usize);
+
+impl Visit<'_> for PciTopologyConstructions {
+    fn visit_expr_call(&mut self, call: &ExprCall) {
+        if matches!(&*call.func, Expr::Path(path)
+            if path_ends(&path.path, &["PciTopology", "new"]))
+        {
+            self.0 += 1;
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+}
+
+fn for_loop_named<'a>(block: &'a syn::Block, name: &str) -> &'a syn::ExprForLoop {
+    block
+        .stmts
+        .iter()
+        .find_map(|statement| match statement {
+            Stmt::Expr(Expr::ForLoop(loop_), None)
+                if matches!(&*loop_.pat, Pat::Ident(binding) if binding.ident == name) =>
+            {
+                Some(loop_)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("missing complete topology `{name}` loop"))
+}
+
+fn range_from_zero_to(expression: &Expr, end: &[&str], inclusive: bool) -> bool {
+    matches!(expression, Expr::Range(range)
+        if matches!(range.start.as_deref(), Some(Expr::Lit(literal))
+            if matches!(&literal.lit, syn::Lit::Int(value) if value.base10_digits() == "0"))
+            && range.end.as_deref().is_some_and(|end_expression|
+                path_expression_is(end_expression, end))
+            && matches!((&range.limits, inclusive),
+                (syn::RangeLimits::Closed(_), true)
+                    | (syn::RangeLimits::HalfOpen(_), false)))
+}
+
+impl Visit<'_> for DmarTopologyArguments {
+    fn visit_expr_method_call(&mut self, call: &ExprMethodCall) {
+        if call.method == "requester_inventory"
+            && matches!(call.args.iter().collect::<Vec<_>>().as_slice(),
+                [bdf, bridge, hierarchy, present]
+                    if path_expression_is(bdf, &["bdf"])
+                        && path_expression_is(bridge, &["bridge_buses"])
+                        && path_expression_is(hierarchy, &["hierarchy_contains"])
+                        && path_expression_is(present, &["requester_is_present"]))
+        {
+            self.inventory += 1;
+        }
+        if call.method == "reserved_regions_for"
+            && matches!(call.args.iter().collect::<Vec<_>>().as_slice(),
+                [bdf, bridge, hierarchy]
+                    if path_expression_is(bdf, &["bdf"])
+                        && path_expression_is(bridge, &["bridge_buses"])
+                        && path_expression_is(hierarchy, &["hierarchy_contains"]))
+        {
+            self.reserved += 1;
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+}
+
+#[test]
+fn dmar_authority_uses_one_complete_sealed_pci_topology() {
+    let main = parse("kernel/src/main.rs");
+    let mut boot_calls = CallNames::default();
+    boot_calls.visit_item_fn(function(&main, "survey_the_bus"));
+    assert!(
+        call_position(&boot_calls, "snapshot_topology") < call_position(&boot_calls, "enumerate"),
+        "the complete topology must seal before enumeration can select a DMA candidate"
+    );
+
+    let pci = parse("kernel/src/pci.rs");
+    let topology = pci
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Static(item) if item.ident == "TOPOLOGY" => Some(item),
+            _ => None,
+        })
+        .expect("the complete topology must live in static storage");
+    assert!(matches!(&*topology.ty, Type::Path(path)
+        if path.path.segments.last().is_some_and(|segment|
+            segment.ident == "SpinLock"
+                && matches!(&segment.arguments, syn::PathArguments::AngleBracketed(arguments)
+                    if matches!(arguments.args.first(), Some(syn::GenericArgument::Type(Type::Path(inner)))
+                        if inner.path.segments.last().is_some_and(|segment| segment.ident == "PciTopology"))))));
+
+    let mut snapshot_calls = CallNames::default();
+    snapshot_calls.visit_item_fn(function(&pci, "snapshot_topology"));
+    for required in ["reset", "read_function", "observe", "seal"] {
+        assert!(
+            snapshot_calls.0.iter().any(|call| call == required),
+            "topology snapshot lost its `{required}` stage"
+        );
+    }
+    let snapshot = function(&pci, "snapshot_topology");
+    let mut local_topologies = PciTopologyConstructions::default();
+    local_topologies.visit_item_fn(snapshot);
+    assert_eq!(
+        local_topologies.0, 0,
+        "the complete topology must not consume the fixed boot stack"
+    );
+    let buses = for_loop_named(&snapshot.block, "bus");
+    let devices = for_loop_named(&buses.body, "device");
+    let functions = for_loop_named(&devices.body, "function");
+    assert!(range_from_zero_to(&buses.expr, &["u8", "MAX"], true));
+    assert!(range_from_zero_to(
+        &devices.expr,
+        &["pci_config", "DEVICES"],
+        false
+    ));
+    assert!(range_from_zero_to(
+        &functions.expr,
+        &["pci_config", "FUNCTIONS"],
+        false
+    ));
+
+    let iommu = parse("kernel/src/iommu.rs");
+    let lookup = function(&iommu, "look_up");
+    let Some(Stmt::Expr(Expr::If(sealed), None)) = lookup.block.stmts.first() else {
+        panic!("DMAR lookup must begin with a sealed-topology refusal");
+    };
+    assert!(matches!(&*sealed.cond, Expr::Unary(unary)
+        if matches!(unary.op, syn::UnOp::Not(_))
+            && matches!(&*unary.expr, Expr::Call(call)
+                if path_expression_is(&call.func, &["pci", "topology_is_sealed"])
+                    && call.args.is_empty())));
+    assert!(matches!(sealed.then_branch.stmts.as_slice(),
+        [Stmt::Expr(Expr::Return(returned), Some(_))]
+            if returned.expr.as_deref().is_some_and(|expression|
+                matches!(expression, Expr::Call(call)
+                    if path_expression_is(&call.func, &["Err"])
+                        && matches!(call.args.first(), Some(Expr::Path(path))
+                            if path_ends(&path.path, &["LookupError", "UnsafeTopology"]))))));
+    let mut lookup_calls = CallNames::default();
+    lookup_calls.visit_item_fn(lookup);
+    assert!(
+        call_position(&lookup_calls, "topology_is_sealed")
+            < call_position(&lookup_calls, "requester_inventory"),
+        "DMAR lookup must fail closed before deriving requester authority"
+    );
+    let mut arguments = DmarTopologyArguments::default();
+    arguments.visit_item_fn(function(&iommu, "look_up"));
+    assert_eq!(arguments.inventory, 1);
+    assert_eq!(arguments.reserved, 1);
+
+    for (boundary, query) in [
+        ("bridge_buses", "topology_bridge_range"),
+        ("hierarchy_contains", "topology_hierarchy_contains"),
+        ("requester_is_present", "topology_contains_function"),
+    ] {
+        let mut paths = ReferencedPaths::default();
+        paths.visit_item_fn(function(&iommu, boundary));
+        assert!(paths.names.iter().any(|name| name == query));
+        assert!(
+            paths.names.iter().all(|name| name != "read"),
+            "{boundary} must not mix live configuration reads into the sealed snapshot"
+        );
+    }
 }

@@ -981,9 +981,9 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 276 |
-| Mutations | 1673 registered; complete-sweep verdicts live in source-bound qualification records |
+| Mutations | 1695 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-370 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-371 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but mutation registration is not a current full-sweep
@@ -1225,13 +1225,18 @@ Isolation is a precondition of storage rather than a feature of it. If the
 firmware reports no DMAR table, or no remapping unit governs the controller's
 function, or the unit cannot be taken over, the storage stack does not start and
 the boot says `storage: no DMA isolation`. The governing unit is found by
-walking each DMAR device scope's path through the live bridge topology: an
+walking each complete DMAR device scope's path through one sealed bridge
+topology: an
 endpoint scope names one function, a bridge scope names its bridge and every bus
-behind it, the most specific scope wins, and an `INCLUDE_PCI_ALL` unit takes only
-what no scope names. Bus mastering is gated on an active domain for that exact
-function: `admit_bus_master` requires a `DmaDomain` proof, so there is no path
-that reaches a doorbell without the fence in place. A degraded boot without the
-IOMMU device exists precisely to prove the refusal fires.
+proved below it, the most specific scope wins, and an `INCLUDE_PCI_ALL` unit
+takes only what no scope names. The snapshot independently probes every
+function number and admits DMA authority only after proving unique parents,
+bus-zero roots, contained child ranges and ancestor-related overlaps; malformed
+or odd scope paths and an unsealed topology refuse isolation (D-371). Bus
+mastering is gated on an active domain for that exact function:
+`admit_bus_master` requires a `DmaDomain` proof, so there is no path that reaches
+a doorbell without the fence in place. A degraded boot without the IOMMU device
+exists precisely to prove the refusal fires.
 
 If firmware handed the machine over with translation already enabled, which a
 VMware EFI can do, the kernel takes the unit over explicitly, quiescing it and
@@ -1258,8 +1263,10 @@ the surface its arrival would open.
 
 The table parse and the register encoding are host arithmetic and are checked
 under `cargo test`: `libs/acpi-tables` parses the DMAR structures, refuses
-truncation, a region whose base exceeds its limit, and a duplicate unit, and
-resolves scopes through a fake bridge topology;
+truncation, odd, empty or out-of-range PCI paths, a region whose base exceeds
+its limit, and a duplicate unit, and resolves scopes only through proved bridge
+ancestry; `libs/pci-config` seals complete fake topologies and refuses duplicate
+parents, unrooted functions, escaping children and unrelated overlaps;
 `libs/vtd` encodes the root, context and second-level entries and the
 register-based invalidation commands, its takeover word keeps only firmware's
 interrupt state, and its capability, coverage and width arithmetic is walked
