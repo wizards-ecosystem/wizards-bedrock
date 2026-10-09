@@ -31,7 +31,7 @@ use vtd::{
 };
 
 use crate::arch::x86_64::paging::ReleasableDevice;
-use crate::mm::{IommuTable, TableWalks};
+use crate::mm::{DmaSegment, IommuTable, TableWalks};
 
 /// The single domain identifier this unit programs.
 const DOMAIN_ID: u16 = 1;
@@ -60,6 +60,10 @@ const TABLE_LIMIT: usize = 24;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum VtdError {
+    /// The supplied run is empty or its last byte wraps the address space.
+    InvalidRange,
+    /// The supplied run extends beyond this unit's effective address width.
+    OutsideAddressWidth,
     /// The register window refused a read or write at the named offset.
     Register(usize),
     /// The unit reports no modelled page-table depth.
@@ -94,6 +98,10 @@ pub enum VtdError {
 impl fmt::Display for VtdError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidRange => f.write_str("the DMA run is empty or wraps the address space"),
+            Self::OutsideAddressWidth => {
+                f.write_str("the DMA run extends beyond the unit's address width")
+            }
             Self::Register(offset) => {
                 write!(f, "the register window refused offset {offset:#x}")
             }
@@ -116,6 +124,32 @@ impl fmt::Display for VtdError {
         }
     }
 }
+
+/// Whether a failed segment change left ownership safe to reuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SegmentChangeError {
+    /// No translation for the segment remains reachable or cached.
+    Refused(VtdError),
+    /// Device reachability is uncertain, so the segment was retained.
+    Retained(VtdError),
+}
+
+impl fmt::Display for SegmentChangeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused(reason) => write!(f, "DMA segment change refused cleanly: {reason}"),
+            Self::Retained(reason) => {
+                write!(
+                    f,
+                    "DMA segment retained after an uncertain change: {reason}"
+                )
+            }
+        }
+    }
+}
+
+impl core::error::Error for SegmentChangeError {}
 
 impl core::error::Error for VtdError {}
 
@@ -163,6 +197,8 @@ pub struct Vtd {
     /// context points at, and the first `table_count` are carved.
     tables: IommuTable,
     table_count: usize,
+    #[cfg(feature = "selftest")]
+    forced_invalidation_failures: u8,
 }
 
 /// Proof that a DMA-remapping domain is active for one exact function.
@@ -276,6 +312,8 @@ impl Vtd {
             context,
             tables,
             table_count: 1,
+            #[cfg(feature = "selftest")]
+            forced_invalidation_failures: 0,
         };
         match unit.program(reserved) {
             Ok(()) => Ok(unit),
@@ -300,7 +338,7 @@ impl Vtd {
         write_entry(&mut self.root, bus, root_entry.lo, root_entry.hi)?;
         for &(base, limit) in reserved {
             let len = limit.saturating_sub(base).saturating_add(1);
-            if !self.map_segment(base, len) {
+            if self.map_range(base, len).is_err() {
                 return Err(VtdError::ReservedRegion { base, limit });
             }
         }
@@ -347,52 +385,103 @@ impl Vtd {
         }
     }
 
-    /// Map every frame of `[paddr, paddr + len)` into the domain, identity, and
-    /// invalidate the unit's cache. Returns false, with nothing left mapped,
-    /// if the run lies above the unit's width, the arena is full or the
-    /// register window refuses the invalidation.
+    /// Map `segment` into the domain, identity, and invalidate the unit's
+    /// cache. Any failure that cannot prove rollback retains the segment here,
+    /// before a caller can accidentally recycle device-reachable frames.
     #[must_use = "an unmapped segment cannot be reached by the device"]
-    pub fn map_segment(&mut self, paddr: u64, len: u64) -> bool {
+    pub fn map_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
+        let Some((paddr, len)) = segment.address().zip(segment.len()) else {
+            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
+        };
+        match self.map_range(paddr, len) {
+            Err(error @ SegmentChangeError::Retained(_)) => {
+                segment.retain();
+                Err(error)
+            }
+            outcome => outcome,
+        }
+    }
+
+    fn map_range(&mut self, paddr: u64, len: u64) -> Result<(), SegmentChangeError> {
         let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {
-            return false;
+            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
         };
         if !self.width.covers_on(self.capability, last) {
-            return false;
+            return Err(SegmentChangeError::Refused(VtdError::OutsideAddressWidth));
         }
         let start = paddr & !(PAGE - 1);
         let mut page = start;
         while page <= last {
-            if self.map_page(page).is_err() {
-                let mut undo = start;
-                while undo < page {
-                    let _unmapped = self.unmap_page(undo);
-                    undo += PAGE;
+            if let Err(reason) = self.map_page(page) {
+                if page == start {
+                    return Err(SegmentChangeError::Refused(reason));
                 }
-                let _invalidated = self.invalidate(false);
-                return false;
+                return match self.rollback_range(start, page - PAGE) {
+                    Ok(()) => Err(SegmentChangeError::Refused(reason)),
+                    Err(rollback) => Err(SegmentChangeError::Retained(rollback)),
+                };
             }
             page += PAGE;
         }
-        self.invalidate(false).is_ok()
+        match self.invalidate(false) {
+            Ok(()) => Ok(()),
+            Err(reason) => match self.rollback_range(start, last) {
+                Ok(()) => Err(SegmentChangeError::Refused(reason)),
+                Err(rollback) => Err(SegmentChangeError::Retained(rollback)),
+            },
+        }
     }
 
-    /// Remove every frame of `[paddr, paddr + len)` from the domain and
-    /// invalidate the unit's cache before returning. Returns false if the
-    /// register window refuses the invalidation, in which case the device may
-    /// still reach the run and the caller must not recycle it.
+    /// Remove `segment` from the domain and invalidate the unit's cache before
+    /// returning. Any uncertain failure retains the segment before returning.
     #[must_use = "a still-mapped segment is still reachable by the device"]
-    pub fn unmap_segment(&mut self, paddr: u64, len: u64) -> bool {
+    pub fn unmap_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
+        let Some((paddr, len)) = segment.address().zip(segment.len()) else {
+            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
+        };
         let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {
-            return false;
+            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
         };
         let mut page = paddr & !(PAGE - 1);
+        let mut failure = None;
         while page <= last {
-            if self.unmap_page(page).is_err() {
-                return false;
+            if let Err(reason) = self.unmap_page(page) {
+                failure.get_or_insert(reason);
             }
             page += PAGE;
         }
-        self.invalidate(false).is_ok()
+        if let Err(reason) = self.invalidate(false) {
+            failure.get_or_insert(reason);
+        }
+        if let Some(reason) = failure {
+            segment.retain();
+            Err(SegmentChangeError::Retained(reason))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Clear an inclusive page range and prove the unit can no longer use a
+    /// cached translation for it.
+    fn rollback_range(&mut self, start: u64, last: u64) -> Result<(), VtdError> {
+        let mut page = start;
+        let mut failure = None;
+        while page <= last {
+            if let Err(reason) = self.unmap_page(page) {
+                failure.get_or_insert(reason);
+            }
+            page += PAGE;
+        }
+        if let Err(reason) = self.invalidate(false) {
+            failure.get_or_insert(reason);
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
+    /// Inject a bounded invalidation refusal for the machine ownership test.
+    #[cfg(feature = "selftest")]
+    pub fn force_invalidation_failures_for_test(&mut self, count: u8) {
+        self.forced_invalidation_failures = count;
     }
 
     /// Mint a proof that this domain isolates the function it was established
@@ -621,6 +710,11 @@ impl Vtd {
     }
 
     fn invalidate(&mut self, context: bool) -> Result<(), VtdError> {
+        #[cfg(feature = "selftest")]
+        if self.forced_invalidation_failures > 0 {
+            self.forced_invalidation_failures -= 1;
+            return Err(VtdError::InvalidationTimeout);
+        }
         if self.capability.requires_write_buffer_flush() {
             let command = self.gcmd | gcmd::WBF;
             write_u32(&mut self.registers, vtd::GCMD as usize, command)?;

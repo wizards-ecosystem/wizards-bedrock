@@ -29,3 +29,4 @@ wizzy-handoff.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 command-group.workspace = true
+getrandom.workspace = true

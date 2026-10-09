@@ -4078,7 +4078,7 @@ mod tests {
                     ("findings.total", "0"),
                     ("scan.id", "scan-fixture"),
                     ("scan.producer.name", "codex-security-plugin"),
-                    ("scan.producer.version", "0.1.31"),
+                    ("scan.producer.version", "0.1.32"),
                     ("scan.surfaces", "1"),
                 ] {
                     record.insert(key, value).unwrap();

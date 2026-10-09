@@ -253,7 +253,8 @@ fn kernel_bytes(
     features: &[&str],
 ) -> Result<Vec<u8>> {
     let kernel = cargo::build_kernel(paths, profile, features)?;
-    std::fs::read(&kernel).with_context(|| format!("reading {} kernel artifact", wanted.label()))
+    crate::elf::read_file(&kernel)
+        .with_context(|| format!("reading {} kernel artifact", wanted.label()))
 }
 
 fn assemble(

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use proc_macro2::{Delimiter, LineColumn, Span, TokenStream, TokenTree};
@@ -23,6 +24,18 @@ const SOURCE_ROOTS: [&str; 2] = ["libs", "wost/src"];
 const COPY_DIRECTORIES: [&str; 6] = [".cargo", "kernel", "libs", "tools", "wost", "xtask"];
 const COPY_FILES: [&str; 3] = ["Cargo.lock", "Cargo.toml", "rust-toolchain.toml"];
 const RESERVED_LANGUAGE_ROOTS: [&str; 3] = ["std", "core", "alloc"];
+/// Metadata is small but may still need to resolve the whole offline graph.
+const METADATA_TIMEOUT: Duration = Duration::from_secs(120);
+/// One pristine compilation graph may include every workspace package.
+const COMPILATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// Combined stdout and stderr accepted from either repository-derived child.
+/// A complete host compiler graph emits more than 16 MiB of JSON diagnostics;
+/// 64 MiB admits that reviewed workload while retaining a finite allocation
+/// and on-disk capture ceiling for every round.
+const MAX_AUDIT_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+const TOOL_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_TOOL_IDENTITY_BYTES: usize = 64 * 1024;
+const REGISTRY_MATERIALIZATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone)]
 struct Node {
@@ -124,7 +137,7 @@ const REVIEWED_IMPLICIT_DROP_TYPES: &[(&str, &str)] = &[
     ),
     ("xtask/src/qemu.rs", "qemu::DebugMachine"),
     ("xtask/src/qemu.rs", "qemu::RunVars"),
-    ("xtask/src/qemu.rs", "qemu::SerialFile"),
+    ("xtask/src/qemu.rs", "qemu::SerialChannel"),
     ("xtask/src/qemu.rs", "qemu::tests::QemuFixture"),
 ];
 
@@ -272,10 +285,10 @@ const REVIEWED_IMPLICIT_DROP_PRODUCERS: &[ReviewedDropProducer] = &[
     },
     ReviewedDropProducer {
         relative: "xtask/src/qemu.rs",
-        owner: "qemu::SerialFile",
+        owner: "qemu::SerialChannel",
         member: "create",
         implemented_trait: None,
-        produced: "qemu::SerialFile",
+        produced: "qemu::SerialChannel",
     },
     ReviewedDropProducer {
         relative: "xtask/src/qemu.rs",
@@ -626,9 +639,13 @@ impl CargoCatalog {
         if let Some(features) = pass.features {
             command.args(["--features", features]);
         }
-        let result = command
-            .output()
-            .context("spawning Cargo metadata for the API audit")?;
+        let result = crate::bounded_process::output_with_limit(
+            command,
+            METADATA_TIMEOUT,
+            "Cargo metadata for the API audit",
+            MAX_AUDIT_OUTPUT_BYTES,
+        )
+        .context("spawning Cargo metadata for the API audit")?;
         workspace.require_copy_unchanged(expected)?;
         workspace.require_source_unchanged(&workspace.source_root)?;
         workspace.require_cargo_inputs_unchanged()?;
@@ -6917,13 +6934,19 @@ fn materialize_locked_registry_source(
         }
     }
 
-    let result = base_cargo_command(execution_root, cargo_home, compiler)
+    let mut command = base_cargo_command(execution_root, cargo_home, compiler);
+    command
         .args(["vendor", "--offline", "--locked", "--versioned-dirs"])
         .arg(destination)
         .arg("--manifest-path")
-        .arg(workspace.join("Cargo.toml"))
-        .output()
-        .context("materializing checksum-verified registry archives for the API audit")?;
+        .arg(workspace.join("Cargo.toml"));
+    let result = crate::bounded_process::output_with_limit(
+        command,
+        REGISTRY_MATERIALIZATION_TIMEOUT,
+        "API audit registry materialization",
+        MAX_AUDIT_OUTPUT_BYTES,
+    )
+    .context("materializing checksum-verified registry archives for the API audit")?;
     ensure!(
         result.status.success(),
         "materializing the API audit registry source failed ({}):\n{}{}",
@@ -7635,11 +7658,15 @@ fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> {
             compiler.display()
         )
     })?;
-    let result = Command::new(&compiler)
-        .current_dir(source_root)
-        .arg("-vV")
-        .output()
-        .context("querying the API audit compiler host target")?;
+    let mut version_command = Command::new(&compiler);
+    version_command.current_dir(source_root).arg("-vV");
+    let result = crate::bounded_process::output_with_limit(
+        version_command,
+        TOOL_IDENTITY_TIMEOUT,
+        "API audit compiler identity",
+        MAX_TOOL_IDENTITY_BYTES,
+    )
+    .context("querying the API audit compiler host target")?;
     ensure!(
         result.status.success(),
         "querying the API audit compiler host target failed ({}): {}",
@@ -7662,11 +7689,17 @@ fn compiler_identity(source_root: &Path) -> Result<CompilerIdentity> {
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')),
         "the API audit compiler returned malformed host target `{target}`"
     );
-    let sysroot = Command::new(&compiler)
+    let mut sysroot_command = Command::new(&compiler);
+    sysroot_command
         .current_dir(source_root)
-        .args(["--print", "sysroot"])
-        .output()
-        .context("querying the API audit compiler sysroot")?;
+        .args(["--print", "sysroot"]);
+    let sysroot = crate::bounded_process::output_with_limit(
+        sysroot_command,
+        TOOL_IDENTITY_TIMEOUT,
+        "API audit compiler sysroot",
+        MAX_TOOL_IDENTITY_BYTES,
+    )
+    .context("querying the API audit compiler sysroot")?;
     ensure!(
         sysroot.status.success(),
         "querying the API audit compiler sysroot failed ({}): {}",
@@ -8102,23 +8135,29 @@ fn compile_graph(
 ) -> Result<Compilation> {
     let args = cargo_arguments(plan);
     let build = graph_build_directory(&workspace.build, graph)?;
-    let result = audited_cargo_command(
+    let mut command = audited_cargo_command(
         &workspace.execution_root,
         &workspace.cargo_home,
         &workspace.registry_source,
         compiler,
-    )?
-    .env("CARGO_TARGET_DIR", build)
-    .env(
-        "CARGO_ENCODED_RUSTFLAGS",
-        cargo_encoded_rustflags(plan.pass.target)?,
+    )?;
+    command
+        .env("CARGO_TARGET_DIR", build)
+        .env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            cargo_encoded_rustflags(plan.pass.target)?,
+        )
+        .env("CARGO_BUILD_WARNINGS", "warn")
+        .args(&args)
+        .arg("--manifest-path")
+        .arg(workspace.root.join("Cargo.toml"))
+        .arg("--color=never");
+    let result = crate::bounded_process::output_with_limit(
+        command,
+        COMPILATION_TIMEOUT,
+        "API audit compilation",
+        MAX_AUDIT_OUTPUT_BYTES,
     )
-    .env("CARGO_BUILD_WARNINGS", "warn")
-    .args(&args)
-    .arg("--manifest-path")
-    .arg(workspace.root.join("Cargo.toml"))
-    .arg("--color=never")
-    .output()
     .with_context(|| {
         format!(
             "spawning API audit round {round} for {}",
@@ -14232,6 +14271,14 @@ fn main() {}
     #[test]
     fn copied_source_is_bound_after_instrumentation_and_after_each_graph() {
         let source = include_str!("api.rs");
+        let production = source
+            .split_once("#[cfg(test)]\nmod tests")
+            .map(|(production, _)| production)
+            .expect("API audit test boundary");
+        assert!(
+            !production.contains(".output()"),
+            "an API-audit child bypasses bounded process execution"
+        );
         let pristine_compile = source
             .find("let _pristine = compile_graphs(&workspace, 0, &pristine_source, &plan, None)?;")
             .expect("pristine compilation step");
@@ -14276,7 +14323,7 @@ fn main() {}
             .map(|(source, _)| source)
             .expect("compile_graph body");
         let output = compile_graph
-            .find(".output()")
+            .find("bounded_process::output_with_limit")
             .expect("compiler completion");
         let copy_guard = compile_graph
             .find("workspace.require_copy_unchanged(expected)?;")

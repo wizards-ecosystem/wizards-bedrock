@@ -11,9 +11,11 @@
 //! dependency for four `u64`s per record.
 
 use std::fmt;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 
 /// Section type: occupies address space but no file space.
 const SHT_NOBITS: u32 = 8;
@@ -22,6 +24,13 @@ const SHT_NOBITS: u32 = 8;
 const SHF_ALLOC: u64 = 1 << 1;
 
 const SECTION_HEADER_BYTES: usize = 64;
+
+/// Largest linked kernel artifact the host verifier and image builder admit.
+pub(crate) const MAX_KERNEL_ELF_BYTES: u64 = 64 * 1024 * 1024;
+/// A kernel needs tens of sections; this leaves generous diagnostic headroom.
+const MAX_SECTION_COUNT: usize = 4096;
+/// Aggregate owned section-name bytes, independent of repeated name offsets.
+const MAX_SECTION_NAME_BYTES: usize = 1024 * 1024;
 
 /// Where the higher half begins — the base `kernel/linker.ld` links at, and
 /// the range the kernel code model can address.
@@ -283,6 +292,11 @@ impl Image {
 /// four file-header fields so this verifier does not privately transcribe the
 /// header, but a loader never needs the host-only entry walk (D-213).
 pub fn parse(bytes: &[u8]) -> Result<Image> {
+    ensure!(
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_KERNEL_ELF_BYTES,
+        "kernel ELF exceeds the {}-byte limit",
+        MAX_KERNEL_ELF_BYTES
+    );
     let image = elf64::Elf::parse(bytes).map_err(|error| anyhow::anyhow!("{error}"))?;
     let segments = image
         .segments()
@@ -329,36 +343,60 @@ fn parse_sections(bytes: &[u8], header: elf64::SectionTable) -> Result<Vec<Secti
     if count == 0 {
         return Ok(Vec::new());
     }
+    ensure!(
+        count <= MAX_SECTION_COUNT,
+        "kernel ELF has {count} sections; at most {MAX_SECTION_COUNT} are admitted"
+    );
     if stride != SECTION_HEADER_BYTES {
         bail!("section headers of {stride} bytes are not ELF64 section headers");
     }
     if names_index >= count {
         bail!("the section name table index is outside the section table");
     }
-    let names = usize::try_from(read_u64(
-        bytes,
-        field(entry_at(table, names_index, stride)?, 0x18)?,
-    )?)
-    .context("section name table offset is too large")?;
+    let names_header = entry_at(table, names_index, stride)?;
+    let names_at = usize::try_from(read_u64(bytes, field(names_header, 0x18)?)?)
+        .context("section name table offset is too large")?;
+    let names_len = usize::try_from(read_u64(bytes, field(names_header, 0x20)?)?)
+        .context("section name table length is too large")?;
+    let names_end = names_at
+        .checked_add(names_len)
+        .context("section name table extent overflowed")?;
+    let names = bytes
+        .get(names_at..names_end)
+        .context("section name table runs past the end of the file")?;
 
-    (0..count)
-        .map(|index| {
-            let at = entry_at(table, index, stride)?;
-            Ok(Section {
-                name: read_name(bytes, field(names, read_u32(bytes, at)? as usize)?)?,
-                // Check each field offset directly instead of relying on an
-                // earlier initializer to reject a large `at` (D-105, D-124).
-                kind: read_u32(bytes, field(at, 0x04)?)?,
-                flags: read_u64(bytes, field(at, 0x08)?)?,
-                addr: read_u64(bytes, field(at, 0x10)?)?,
-                size: read_u64(bytes, field(at, 0x20)?)?,
-            })
-        })
-        .collect()
+    let mut total_name_bytes = 0usize;
+    let mut sections = Vec::with_capacity(count);
+    for index in 0..count {
+        let at = entry_at(table, index, stride)?;
+        let name = read_name(names, read_u32(bytes, at)? as usize)?;
+        total_name_bytes = checked_name_budget(total_name_bytes, name.len())?;
+        sections.push(Section {
+            name: name.to_owned(),
+            // Check each field offset directly instead of relying on an
+            // earlier initializer to reject a large `at` (D-105, D-124).
+            kind: read_u32(bytes, field(at, 0x04)?)?,
+            flags: read_u64(bytes, field(at, 0x08)?)?,
+            addr: read_u64(bytes, field(at, 0x10)?)?,
+            size: read_u64(bytes, field(at, 0x20)?)?,
+        });
+    }
+    Ok(sections)
+}
+
+fn checked_name_budget(total: usize, additional: usize) -> Result<usize> {
+    let total = total
+        .checked_add(additional)
+        .context("aggregate section-name length overflowed")?;
+    ensure!(
+        total <= MAX_SECTION_NAME_BYTES,
+        "kernel ELF section names exceed the {MAX_SECTION_NAME_BYTES}-byte aggregate limit"
+    );
+    Ok(total)
 }
 
 /// The NUL-terminated name at `at`.
-fn read_name(bytes: &[u8], at: usize) -> Result<String> {
+fn read_name(bytes: &[u8], at: usize) -> Result<&str> {
     let rest = bytes
         .get(at..)
         .with_context(|| format!("section name at {at:#x} is past the end of the file"))?;
@@ -366,7 +404,7 @@ fn read_name(bytes: &[u8], at: usize) -> Result<String> {
         .iter()
         .position(|&byte| byte == 0)
         .with_context(|| format!("unterminated section name at {at:#x}"))?;
-    String::from_utf8(rest[..end].to_vec()).context("a section name is not valid UTF-8")
+    core::str::from_utf8(&rest[..end]).context("a section name is not valid UTF-8")
 }
 
 /// Read `N` bytes at `at`, or say where the file ran out.
@@ -388,9 +426,34 @@ fn read_u64(bytes: &[u8], at: usize) -> Result<u64> {
     read_bytes(bytes, at).map(u64::from_le_bytes)
 }
 
+/// Read one linked kernel without allowing the file to grow past its bound
+/// between metadata inspection and capture.
+pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>> {
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let length = file
+        .metadata()
+        .with_context(|| format!("measuring {}", path.display()))?
+        .len();
+    ensure!(
+        length <= MAX_KERNEL_ELF_BYTES,
+        "{} is {length} bytes; kernel ELF limit is {MAX_KERNEL_ELF_BYTES}",
+        path.display()
+    );
+    let mut bytes = Vec::with_capacity(usize::try_from(length).context("kernel ELF is too large")?);
+    file.take(MAX_KERNEL_ELF_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {}", path.display()))?;
+    ensure!(
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= MAX_KERNEL_ELF_BYTES,
+        "{} grew beyond the {MAX_KERNEL_ELF_BYTES}-byte kernel ELF limit while being read",
+        path.display()
+    );
+    Ok(bytes)
+}
+
 /// Read the ELF at `path` and require every property of a bootable image.
 pub fn verify_file(path: &Path) -> Result<()> {
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let bytes = read_file(path)?;
     let image = parse(&bytes).with_context(|| format!("parsing {}", path.display()))?;
 
     let faults = image.verify();
@@ -839,6 +902,84 @@ mod tests {
             );
         }
         assert!(parse(&encode(&good_image())).is_ok());
+    }
+
+    #[test]
+    fn section_count_and_owned_name_bytes_are_bounded_before_amplification() {
+        let mut too_many = encode(&good_image());
+        too_many[0x3C..0x3E]
+            .copy_from_slice(&(u16::try_from(MAX_SECTION_COUNT + 1).unwrap()).to_le_bytes());
+        let message = parse(&too_many).expect_err("too many sections").to_string();
+        assert!(message.contains("at most 4096"), "said {message:?}");
+
+        assert_eq!(
+            checked_name_budget(MAX_SECTION_NAME_BYTES - 1, 1).unwrap(),
+            MAX_SECTION_NAME_BYTES
+        );
+        let message = checked_name_budget(MAX_SECTION_NAME_BYTES, 1)
+            .expect_err("name amplification")
+            .to_string();
+        assert!(message.contains("aggregate limit"), "said {message:?}");
+
+        // Exercise the parser seam, not only the budget helper: every header
+        // names the same long string, so a parser that forgets to carry the
+        // running total would clone more than the admitted aggregate.
+        let repeated_name = "n".repeat(257);
+        let mut repeated_image = good_image();
+        repeated_image.sections = (0..MAX_SECTION_COUNT - 1)
+            .map(|_| section(&repeated_name, 0, 0, SHT_PROGBITS, 0))
+            .collect();
+        let mut repeated = encode(&repeated_image);
+        let mut table = [0u8; 8];
+        table.copy_from_slice(&repeated[0x28..0x30]);
+        let table = usize::try_from(u64::from_le_bytes(table)).unwrap();
+        for index in 0..MAX_SECTION_COUNT - 1 {
+            let at = table + index * SECTION_HEADER_BYTES;
+            repeated[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
+        }
+        let message = parse(&repeated)
+            .expect_err("repeated parsed name amplification")
+            .to_string();
+        assert!(message.contains("aggregate limit"), "said {message:?}");
+
+        let mut names_escape = encode(&good_image());
+        let mut offset = [0u8; 8];
+        offset.copy_from_slice(&names_escape[0x28..0x30]);
+        let table = usize::try_from(u64::from_le_bytes(offset)).unwrap();
+        let mut index = [0u8; 2];
+        index.copy_from_slice(&names_escape[0x3E..0x40]);
+        let names_header = table + usize::from(u16::from_le_bytes(index)) * SECTION_HEADER_BYTES;
+        names_escape[names_header + 0x20..names_header + 0x28].copy_from_slice(&1u64.to_le_bytes());
+        let message = parse(&names_escape)
+            .expect_err("section name outside the declared string table")
+            .to_string();
+        assert!(message.contains("section name"), "said {message:?}");
+    }
+
+    #[test]
+    fn a_kernel_file_over_the_shared_ceiling_is_refused_before_allocation() {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "bedrock-elf-limit-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .expect("exclusive sparse ELF fixture");
+        file.set_len(MAX_KERNEL_ELF_BYTES + 1)
+            .expect("sparse oversized ELF fixture");
+        drop(file);
+        let error = read_file(&path).expect_err("oversized kernel ELF");
+        std::fs::remove_file(path).expect("remove sparse ELF fixture");
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("is {} bytes", MAX_KERNEL_ELF_BYTES + 1))
+                && message.contains("kernel ELF limit"),
+            "said {message:?}"
+        );
     }
 
     /// A segment whose file size runs off the end does not overflow the

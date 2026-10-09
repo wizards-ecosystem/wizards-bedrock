@@ -1844,24 +1844,22 @@ static UNANSWERED: AtomicUsize = AtomicUsize::new(0);
 #[cfg(feature = "selftest")]
 static RING_ENTER_ARMS: AtomicUsize = AtomicUsize::new(0);
 
-/// Refusals already reported, so each is said once.
+/// Whether the one deferred refusal warning has already been emitted.
 static REPORTED: AtomicUsize = AtomicUsize::new(0);
 
 /// Say what the syscall handler could not, if there is anything new.
 ///
 /// Called from the idle thread because a kernel thread may take the console's
-/// lock and the handler may not (D-122). Reports once per refusal and then
-/// falls quiet, so a program in a loop cannot turn a refusal into a flood.
+/// lock and the handler may not (D-122). Reports at most once per boot and
+/// then falls quiet, so a program in a loop cannot turn refusals into a flood.
 ///
 /// `true` if something was said, so the caller knows it did work.
 pub(crate) fn report_refusals() -> bool {
     let refused = REFUSED_CALLS.load(Ordering::Acquire);
-    let reported = REPORTED.load(Ordering::Acquire);
-    if refused <= reported {
+    if refused == 0 || REPORTED.swap(1, Ordering::AcqRel) != 0 {
         return false;
     }
     let number = LAST_REFUSED.load(Ordering::Acquire);
-    REPORTED.store(refused, Ordering::Release);
     warn!("user: refused {refused} call(s), last was {number:#x}");
     true
 }

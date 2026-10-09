@@ -1481,7 +1481,39 @@ fn controller_stop_evidence_has_one_hardware_mint() {
 #[test]
 fn vtd_mapping_enforces_effective_coverage_before_the_walk() {
     let syntax = parse("wost/src/arch/x86_64/vtd.rs");
-    let mapping = method(&syntax, "Vtd", "map_segment").expect("missing VT-d mapping seam");
+    let public = method(&syntax, "Vtd", "map_segment").expect("missing VT-d mapping seam");
+    let Some(FnArg::Typed(segment)) = public.sig.inputs.iter().nth(1) else {
+        panic!("the public VT-d mapping seam has no segment owner");
+    };
+    assert!(matches!(&*segment.ty, Type::Reference(reference)
+        if reference.mutability.is_some()
+            && matches!(&*reference.elem, Type::Path(path)
+                if path_ends(&path.path, &["DmaSegment"]))));
+
+    struct RetainsSegment(usize);
+    impl<'ast> Visit<'ast> for RetainsSegment {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "retain" && path_expression_is(&call.receiver, &["segment"]) {
+                self.0 += 1;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+    for name in ["map_segment", "unmap_segment"] {
+        let boundary = method(&syntax, "Vtd", name).expect("missing owned VT-d segment boundary");
+        let Some(FnArg::Typed(segment)) = boundary.sig.inputs.iter().nth(1) else {
+            panic!("{name} has no DMA-segment owner");
+        };
+        assert!(matches!(&*segment.ty, Type::Reference(reference)
+            if reference.mutability.is_some()
+                && matches!(&*reference.elem, Type::Path(path)
+                    if path_ends(&path.path, &["DmaSegment"]))));
+        let mut retains = RetainsSegment(0);
+        retains.visit_block(&boundary.block);
+        assert_eq!(retains.0, 1, "{name} does not retain uncertain ownership");
+    }
+
+    let mapping = method(&syntax, "Vtd", "map_range").expect("missing private VT-d range walk");
     let Some(Stmt::Expr(Expr::If(gate), _)) = mapping.block.stmts.get(1) else {
         panic!("the mapping seam has no leading coverage refusal");
     };
@@ -1510,8 +1542,46 @@ fn vtd_mapping_enforces_effective_coverage_before_the_walk() {
     let [Stmt::Expr(Expr::Return(returned), _)] = gate.then_branch.stmts.as_slice() else {
         panic!("coverage refusal must return before the table walk");
     };
-    assert!(matches!(returned.expr.as_deref(), Some(Expr::Lit(literal))
-        if matches!(&literal.lit, syn::Lit::Bool(value) if !value.value)));
+    let refused = returned
+        .expr
+        .as_deref()
+        .and_then(|expression| call_is(expression, "Err"))
+        .and_then(|error| error.args.first())
+        .and_then(|expression| call_is(expression, "Refused"))
+        .and_then(|refused| refused.args.first())
+        .expect("coverage refusal must return a typed clean failure");
+    assert!(path_expression_is(
+        refused,
+        &["VtdError", "OutsideAddressWidth"]
+    ));
+}
+
+#[test]
+fn a_partial_queue_mapping_rolls_back_the_submission_queue() {
+    let syntax = parse("kernel/src/nvme.rs");
+    let mapping = method(&syntax, "QueuePair", "map_into").expect("queue mapping boundary");
+
+    struct SubmissionRollbacks(usize);
+    impl<'ast> Visit<'ast> for SubmissionRollbacks {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "unmap_segment"
+                && path_expression_is(&call.receiver, &["isolation"])
+                && matches!(call.args.first(), Some(Expr::Reference(reference))
+                    if reference.mutability.is_some()
+                        && field_chain_is(&reference.expr, "self", &["submission"]))
+            {
+                self.0 += 1;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+
+    let mut rollbacks = SubmissionRollbacks(0);
+    rollbacks.visit_block(&mapping.block);
+    assert_eq!(
+        rollbacks.0, 1,
+        "a completion-queue map refusal must roll back the submission queue"
+    );
 }
 
 #[test]

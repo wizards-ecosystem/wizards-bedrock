@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1625;
+pub const NEXT_MUTATION_ID: u16 = 1645;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521];
@@ -3603,7 +3603,7 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 300,
         file: "kernel/src/nvme.rs",
-        find: "            core::hint::spin_loop();\n        }\n        self.fail_submitted(BringUpError::NotReady, data, isolation)",
+        find: "            core::hint::spin_loop();\n        }\n        self.fail_submitted(BringUpError::NotReady, data, isolation, data_mapped)",
         replace: "            core::hint::spin_loop();\n        }\n        Err(BringUpError::NotReady)",
         breaks: "a command timeout settles dma before returning",
         reddens: Caught::Check("an nvme timeout quiesces before dma memory returns"),
@@ -11844,8 +11844,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1044,
         file: "xtask/src/api.rs",
-        find: "            .context(\"spawning Cargo metadata for the API audit\")?;\n        workspace.require_copy_unchanged(expected)?;\n        workspace.require_source_unchanged(&workspace.source_root)?;\n        workspace.require_cargo_inputs_unchanged()?;\n        compiler.require_unchanged()?;",
-        replace: "            .context(\"spawning Cargo metadata for the API audit\")?;\n        workspace.require_copy_unchanged(expected)?;\n        workspace.require_cargo_inputs_unchanged()?;\n        compiler.require_unchanged()?;",
+        find: "        .context(\"spawning Cargo metadata for the API audit\")?;\n        workspace.require_copy_unchanged(expected)?;\n        workspace.require_source_unchanged(&workspace.source_root)?;\n        workspace.require_cargo_inputs_unchanged()?;\n        compiler.require_unchanged()?;",
+        replace: "        .context(\"spawning Cargo metadata for the API audit\")?;\n        workspace.require_copy_unchanged(expected)?;\n        workspace.require_cargo_inputs_unchanged()?;\n        compiler.require_unchanged()?;",
         breaks: "Cargo metadata can outlive the original API-audit source snapshot before its output is trusted",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -13177,16 +13177,16 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1544,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        self.invalidate(false).is_ok()\n    }\n\n    /// Mint a proof that this domain isolates",
-        replace: "        true\n    }\n\n    /// Mint a proof that this domain isolates",
+        find: "        if let Err(reason) = self.invalidate(false) {\n            failure.get_or_insert(reason);\n        }\n        if let Some(reason) = failure {",
+        replace: "        if let Some(reason) = failure {",
         breaks: "an unmapped segment stays reachable through the unit's cache",
         reddens: Caught::Check("a device write into an unmapped frame faults and changes nothing"),
     },
     Mutation {
         id: 1545,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        while page <= last {\n            if self.map_page(page).is_err() {",
-        replace: "        while page <= last + PAGE {\n            if self.map_page(page).is_err() {",
+        find: "        while page <= last {\n            if let Err(reason) = self.map_page(page) {",
+        replace: "        while page <= last + PAGE {\n            if let Err(reason) = self.map_page(page) {",
         breaks: "every mapped segment reaches one frame past its end",
         reddens: Caught::Check("the dma domain reaches exactly the live queue frames"),
     },
@@ -13387,8 +13387,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1565,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "        endpoint.or(enclosing.map(|(_, unit)| unit)).or(catch_all)",
-        replace: "        enclosing.map(|(_, unit)| unit).or(endpoint).or(catch_all)",
+        find: "        if endpoint.is_some() {",
+        replace: "        if endpoint.is_some() && enclosing.is_none() {",
         breaks: "a bridge scope enclosing a function outranks an endpoint scope naming it",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -13398,8 +13398,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1566,
         file: "libs/acpi-tables/src/lib.rs",
-        find: ".is_none_or(|(innermost, _)| buses.secondary > innermost)",
-        replace: ".is_none_or(|(innermost, _)| buses.secondary < innermost)",
+        find: "                            Some((innermost, _)) if buses.secondary < innermost => {}",
+        replace: "                            Some((innermost, _)) if buses.secondary > innermost => {}",
         breaks: "an outer bridge scope outranks an inner one enclosing the same function",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -13409,8 +13409,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1567,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "                catch_all = Some(GoverningUnit {\n                    register_base,\n                    coverage: Coverage::CatchAll,\n                });\n",
-        replace: "                catch_all = Some(GoverningUnit {\n                    register_base,\n                    coverage: Coverage::CatchAll,\n                });\n                return catch_all;\n",
+        find: "                    catch_all.get_or_insert(candidate);\n                }\n            }",
+        replace: "                    catch_all.get_or_insert(candidate);\n                }\n                return catch_all;\n            }",
         breaks: "a catch-all unit listed before a named scope claims the function that scope names",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -17772,23 +17772,23 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1519,
         file: "xtask/src/qemu.rs",
-        find: "            if read > 0 || buffer.is_empty() || closed {",
-        replace: "            if read > 0 || buffer.is_empty() || !closed {",
-        breaks: "the serial follower ends while QEMU is still writing",
+        find: "        if closed.load(Ordering::Acquire) {\n            return Ok(0);\n        }",
+        replace: "        if !closed.load(Ordering::Acquire) {\n            return Ok(0);\n        }",
+        breaks: "the serial reader treats a live transport close as clean QEMU exit",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::a_serial_follower_reads_every_appended_byte_and_ends_after_close",
+            name: "qemu::tests::a_serial_reader_refuses_an_early_transport_close",
         },
     },
     Mutation {
         id: 1520,
         file: "xtask/src/qemu.rs",
-        find: "        OpenOptions::create_new(&mut options, true);\n        match OpenOptions::open(&options, &path) {",
-        replace: "        OpenOptions::create(&mut options, true);\n        match OpenOptions::open(&options, &path) {",
-        breaks: "a QEMU run file reuses a name another run created",
+        find: "            getrandom::fill(&mut random)\n                .map_err(|error| anyhow!(\"obtaining a private QEMU serial-pipe name: {error}\"))?;",
+        replace: "            random.fill(0);",
+        breaks: "two automated QEMU runs can reuse one guessable serial-pipe name",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "qemu::tests::a_serial_file_never_reuses_an_existing_name",
+            name: "qemu::tests::automated_serial_uses_a_private_backpressured_transport",
         },
     },
     Mutation {
@@ -18257,6 +18257,217 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "vmware::config::tests::runtime_vmx_preserves_every_generated_assignment",
+        },
+    },
+    Mutation {
+        id: 1625,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "            Err(error @ SegmentChangeError::Retained(_)) => {\n                segment.retain();\n                Err(error)\n            }",
+        replace: "            Err(error @ SegmentChangeError::Retained(_)) => Err(error),",
+        breaks: "an uncertain VT-d map can return a device-reachable segment to its caller",
+        reddens: Caught::Check("uncertain vtd mapping never recycles its frames"),
+    },
+    Mutation {
+        id: 1626,
+        file: "xtask/src/qemu.rs",
+        find: "            line_bytes <= line_limit,",
+        replace: "            line_bytes <= usize::MAX,",
+        breaks: "one unterminated guest serial record can grow without its reviewed ceiling",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::automated_serial_capture_bounds_each_record_and_the_whole_run",
+        },
+    },
+    Mutation {
+        id: 1627,
+        file: "xtask/src/qemu.rs",
+        find: "            aggregate <= total_limit,",
+        replace: "            aggregate <= usize::MAX,",
+        breaks: "many short guest serial records can exceed the run-wide capture ceiling",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::automated_serial_capture_bounds_each_record_and_the_whole_run",
+        },
+    },
+    Mutation {
+        id: 1628,
+        file: "xtask/src/qemu.rs",
+        find: "        let backend = OsString::from(format!(\"pipe,id=serial0,path={}\", self.name));",
+        replace: "        let backend = OsString::from(format!(\"file,id=serial0,path={}\", self.name));",
+        breaks: "automated QEMU serial returns to an unbounded disk-backed sink",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::automated_serial_uses_a_private_backpressured_transport",
+        },
+    },
+    Mutation {
+        id: 1629,
+        file: "xtask/src/qemu.rs",
+        find: "        if (b' '..=b'~').contains(&byte) {",
+        replace: "        if true {",
+        breaks: "guest terminal-control bytes are printed directly on the host console",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::automated_serial_display_escapes_guest_terminal_controls",
+        },
+    },
+    Mutation {
+        id: 1630,
+        file: "kernel/src/user.rs",
+        find: "    if refused == 0 || REPORTED.swap(1, Ordering::AcqRel) != 0 {",
+        replace: "    if refused == 0 || REPORTED.swap(refused, Ordering::AcqRel) == refused {",
+        breaks: "each new unknown syscall can re-arm synchronous UART warning output",
+        reddens: Caught::Check("an unserved call is refused without stopping the machine"),
+    },
+    Mutation {
+        id: 1631,
+        file: "xtask/src/api.rs",
+        find: "        let result = crate::bounded_process::output_with_limit(\n            command,\n            METADATA_TIMEOUT,\n            \"Cargo metadata for the API audit\",\n            MAX_AUDIT_OUTPUT_BYTES,\n        )",
+        replace: "        let result = command.output()",
+        breaks: "repository-derived Cargo metadata bypasses the API audit deadline and capture ceiling",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::copied_source_is_bound_after_instrumentation_and_after_each_graph",
+        },
+    },
+    Mutation {
+        id: 1632,
+        file: "xtask/src/elf.rs",
+        find: "        count <= MAX_SECTION_COUNT,",
+        replace: "        count <= u16::MAX as usize,",
+        breaks: "a kernel ELF can allocate its full hostile section-header cardinality",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "elf::tests::section_count_and_owned_name_bytes_are_bounded_before_amplification",
+        },
+    },
+    Mutation {
+        id: 1633,
+        file: "xtask/src/elf.rs",
+        find: "        total <= MAX_SECTION_NAME_BYTES,",
+        replace: "        total <= usize::MAX,",
+        breaks: "repeated ELF section-name offsets can amplify owned host memory without a budget",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "elf::tests::section_count_and_owned_name_bytes_are_bounded_before_amplification",
+        },
+    },
+    Mutation {
+        id: 1634,
+        file: "xtask/src/elf.rs",
+        find: "        length <= MAX_KERNEL_ELF_BYTES,",
+        replace: "        length <= u64::MAX,",
+        breaks: "an oversized kernel ELF reaches host allocation before its shared ceiling refuses it",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "elf::tests::a_kernel_file_over_the_shared_ceiling_is_refused_before_allocation",
+        },
+    },
+    Mutation {
+        id: 1635,
+        file: "xtask/src/security_deep.rs",
+        find: "const PRODUCER_VERSION: &str = \"0.1.32\";",
+        replace: "const PRODUCER_VERSION: &str = \"0.1.31\";",
+        breaks: "the Deep qualification consumer accepts the superseded security producer",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "security_deep::tests::strict_profile_rejects_provider_drift_reversed_time_and_caveats",
+        },
+    },
+    Mutation {
+        id: 1636,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "        if units > MAX_DRHD_UNITS {",
+        replace: "        if false {",
+        breaks: "hostile firmware can drive the allocation-free DRHD duplicate scan past its work ceiling",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::excessive_and_ambiguous_remapping_authority_fails_closed",
+        },
+    },
+    Mutation {
+        id: 1637,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                            endpoint_ambiguous = true;",
+        replace: "                            endpoint_ambiguous = false;",
+        breaks: "two endpoint-scoped units can make table order choose DMA authority",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::excessive_and_ambiguous_remapping_authority_fails_closed",
+        },
+    },
+    Mutation {
+        id: 1638,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                                    enclosing_ambiguous = true;",
+        replace: "                                    enclosing_ambiguous = false;",
+        breaks: "two equal-depth bridge scopes can make table order choose DMA authority",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::excessive_and_ambiguous_remapping_authority_fails_closed",
+        },
+    },
+    Mutation {
+        id: 1639,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                    catch_all_ambiguous = true;",
+        replace: "                    catch_all_ambiguous = false;",
+        breaks: "two catch-all units can make table order choose DMA authority",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::excessive_and_ambiguous_remapping_authority_fails_closed",
+        },
+    },
+    Mutation {
+        id: 1640,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if let Some(reason) = failure {\n            segment.retain();\n            Err(SegmentChangeError::Retained(reason))",
+        replace: "        if let Some(reason) = failure {\n            Err(SegmentChangeError::Retained(reason))",
+        breaks: "an uncertain VT-d unmap returns device-reachable frames to safe ownership",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_mapping_enforces_effective_coverage_before_the_walk",
+        },
+    },
+    Mutation {
+        id: 1641,
+        file: "xtask/src/elf.rs",
+        find: "    let names = bytes\n        .get(names_at..names_end)\n        .context(\"section name table runs past the end of the file\")?;",
+        replace: "    let names = bytes\n        .get(names_at..)\n        .context(\"section name table runs past the end of the file\")?;",
+        breaks: "section-name scanning escapes the ELF string table's declared extent",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "elf::tests::section_count_and_owned_name_bytes_are_bounded_before_amplification",
+        },
+    },
+    Mutation {
+        id: 1642,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "            Err(SegmentChangeError::Retained(reason))\n        } else {",
+        replace: "            Err(SegmentChangeError::Refused(reason))\n        } else {",
+        breaks: "an uncertain VT-d unmap disguises retained device reachability as a clean refusal",
+        reddens: Caught::Check("uncertain vtd unmapping never recycles its frames"),
+    },
+    Mutation {
+        id: 1643,
+        file: "kernel/src/nvme.rs",
+        find: "            let _unmapped = isolation.unmap_segment(&mut self.submission);\n            return false;",
+        replace: "            return false;",
+        breaks: "a completion-queue mapping refusal leaves the submission queue reachable",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::a_partial_queue_mapping_rolls_back_the_submission_queue",
+        },
+    },
+    Mutation {
+        id: 1644,
+        file: "xtask/src/elf.rs",
+        find: "        total_name_bytes = checked_name_budget(total_name_bytes, name.len())?;",
+        replace: "        let _ = checked_name_budget(total_name_bytes, name.len())?;",
+        breaks: "the ELF parser checks each name against a total it never advances",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "elf::tests::section_count_and_owned_name_bytes_are_bounded_before_amplification",
         },
     },
 ];
@@ -18930,7 +19141,9 @@ mod tests {
             ("Cargo metadata", metadata, "ensure!("),
             ("compiler graph", compilation, "if !result.status.success()"),
         ] {
-            let output = command.find(".output()").expect("command completion");
+            let output = command
+                .find("bounded_process::output_with_limit")
+                .expect("command completion");
             let copied = command
                 .find("workspace.require_copy_unchanged(expected)?;")
                 .expect("copied-source freshness guard");

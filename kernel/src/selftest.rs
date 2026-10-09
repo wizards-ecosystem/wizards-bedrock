@@ -2624,6 +2624,58 @@ fn a_device_write_into_an_unmapped_frame_faults_and_changes_nothing() -> bool {
         .is_some_and(|witness| witness.completed && witness.unchanged && witness.faulted)
 }
 
+fn an_uncertain_vtd_mapping_never_recycles_its_frames() -> bool {
+    let before = mm::free_frames();
+    let Some(segment) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    let mut dma = mm::DmaSegment::from(segment);
+    let reserved = mm::free_frames() == before - 1;
+    let retained = {
+        let mut installed = crate::iommu::installed();
+        let Some(isolation) = installed.as_mut() else {
+            return false;
+        };
+        // The first refusal makes the just-installed translation uncertain;
+        // the second makes rollback uncertainty explicit.
+        isolation.force_invalidation_failures_for_test(2);
+        matches!(
+            isolation.map_segment(&mut dma),
+            Err(wost::arch::current::vtd::SegmentChangeError::Retained(_))
+        ) && dma.is_retained()
+    };
+    drop(dma);
+    reserved && retained && mm::free_frames() == before - 1
+}
+
+fn an_uncertain_vtd_unmap_never_recycles_its_frames() -> bool {
+    let before = mm::free_frames();
+    let Some(segment) = mm::allocate_contiguous(1, 1) else {
+        return false;
+    };
+    let mut dma = mm::DmaSegment::from(segment);
+    let reserved = mm::free_frames() == before - 1;
+    let retained = {
+        let mut installed = crate::iommu::installed();
+        let Some(isolation) = installed.as_mut() else {
+            return false;
+        };
+        if isolation.map_segment(&mut dma).is_err() {
+            return false;
+        }
+        // The leaf is removed, but a failed invalidation means the device may
+        // still hold its old translation. Ownership must therefore disappear
+        // into the DMA segment's boot-lifetime retention state.
+        isolation.force_invalidation_failures_for_test(1);
+        matches!(
+            isolation.unmap_segment(&mut dma),
+            Err(wost::arch::current::vtd::SegmentChangeError::Retained(_))
+        ) && dma.is_retained()
+    };
+    drop(dma);
+    reserved && retained && mm::free_frames() == before - 1
+}
+
 /// The screen `iommu::establish` applies admits a page wholly inside a device
 /// hole and refuses a page of usable RAM; QEMU's DMAR names no region to try.
 fn a_reserved_dma_region_over_kernel_memory_refuses_isolation() -> bool {
@@ -5005,7 +5057,19 @@ fn an_unserved_call_is_refused_without_stopping_the_machine() -> bool {
     // return to ring 3 and the program ran on.
     let exited = trap::last_user_fault().count == faults_before;
 
-    counted && answered && exited
+    // Whichever observer wins says the one warning. A second real refusal
+    // still advances accounting but must not re-arm UART output.
+    let _first_observer_may_already_have_reported = user::report_refusals();
+    let second_retirements = thread::retirements();
+    let second_started = user::run_probing().is_ok();
+    let second_finished =
+        second_started && runs_until(2000, || thread::retirements() > second_retirements);
+    let (refused_final, final_number, unanswered_final) = user::refusals();
+    let second_counted =
+        refused_final == refused_after + 1 && final_number == 0x0BAD_0BAD && unanswered_final == 0;
+    let warning_is_one_shot = !user::report_refusals();
+
+    counted && answered && exited && second_finished && second_counted && warning_is_one_shot
 }
 
 fn last_rites_for(spawned: &user::Spawned, ms: u64) -> Option<user::LastRites> {
@@ -7742,7 +7806,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 271;
+const EXPECTED_CHECKS: usize = 273;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -8877,6 +8941,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a device write into an unmapped frame faults and changes nothing",
         a_device_write_into_an_unmapped_frame_faults_and_changes_nothing(),
+    );
+    report.check(
+        "uncertain vtd mapping never recycles its frames",
+        an_uncertain_vtd_mapping_never_recycles_its_frames(),
+    );
+    report.check(
+        "uncertain vtd unmapping never recycles its frames",
+        an_uncertain_vtd_unmap_never_recycles_its_frames(),
     );
     report.check(
         "a domain proof is refused while translation is off",

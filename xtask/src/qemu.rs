@@ -805,7 +805,7 @@ const QEMU_TCG_ISOLATION_MARKER: &str = "cpu: user isolation shared kernel mappi
 /// Checks the self-test kernel must report, held independently of its own
 /// tally so a deleted or skipped one turns the verdict red.
 /// Changes require mutation evidence (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 271;
+const EXPECTED_SELFTEST_CHECKS: usize = 273;
 
 /// Prefix of the strict performance/resource record emitted by self-test.
 const BASELINE_PREFIX: &str = "selftest: baseline ";
@@ -1480,7 +1480,7 @@ fn report_hang(qmp: Option<&mut Qmp>) {
 }
 
 /// QMP on the child's own standard streams, which only the harness holds
-/// (D-346). Serial output therefore goes to a private run file.
+/// (D-346). Serial output therefore uses a separate private OS transport.
 const QMP_ON_STDIO: [&str; 2] = ["-qmp", "stdio"];
 
 /// Negotiate QMP over the piped standard streams of a freshly spawned QEMU.
@@ -1490,77 +1490,255 @@ fn attach_qmp(child: &mut Child, deadline: Instant, cancelled: &AtomicBool) -> R
     Qmp::negotiate(input, output, deadline, cancelled)
 }
 
-/// One run's serial transcript file, created exclusively and removed on drop.
-struct SerialFile {
-    path: PathBuf,
+/// One run's private, backpressured serial transport.
+///
+/// Windows QEMU creates a duplex named pipe. Its default DACL and a fresh
+/// 256-bit name keep the endpoint private to this run; the kernel's output
+/// can fill only the operating system's bounded pipe buffer. Unix QEMU uses
+/// a socket beneath the private run directory. Neither route writes guest
+/// bytes to an unbounded host file (D-367).
+struct SerialChannel {
+    #[cfg(windows)]
+    name: String,
+    #[cfg(unix)]
+    socket: PathBuf,
+    #[cfg(unix)]
+    reservation: PathBuf,
     closed: Arc<AtomicBool>,
 }
 
-impl SerialFile {
+impl SerialChannel {
     fn create(target: &Path) -> Result<Self> {
-        let (_, path, _) = reserve_run_file(target, "serial", "log")?;
-        Ok(Self {
-            path,
-            closed: Arc::new(AtomicBool::new(false)),
-        })
+        #[cfg(windows)]
+        {
+            let _ = target;
+            let mut random = [0u8; 32];
+            getrandom::fill(&mut random)
+                .map_err(|error| anyhow!("obtaining a private QEMU serial-pipe name: {error}"))?;
+            let mut suffix = String::with_capacity(random.len() * 2);
+            for byte in random {
+                use core::fmt::Write as _;
+                write!(suffix, "{byte:02x}").expect("writing to a String cannot fail");
+            }
+            Ok(Self {
+                name: format!("wizard-bedrock-serial-{}-{suffix}", std::process::id()),
+                closed: Arc::new(AtomicBool::new(false)),
+            })
+        }
+
+        #[cfg(unix)]
+        {
+            let (_, reservation, guard) = reserve_run_file(target, "serial", "guard")?;
+            drop(guard);
+            let socket = reservation.with_extension("sock");
+            ensure!(
+                !socket.exists(),
+                "QEMU serial socket name is already occupied"
+            );
+            Ok(Self {
+                socket,
+                reservation,
+                closed: Arc::new(AtomicBool::new(false)),
+            })
+        }
+
+        #[cfg(not(any(windows, unix)))]
+        {
+            let _ = target;
+            bail!("automated QEMU serial transport is unsupported on this host")
+        }
     }
 
-    /// The character device that sends the guest's first serial port here.
+    /// The bounded character device that carries the guest's first serial port.
     fn arguments(&self) -> [OsString; 4] {
-        let escaped = self.path.to_string_lossy().replace(',', ",,");
+        #[cfg(windows)]
+        let backend = OsString::from(format!("pipe,id=serial0,path={}", self.name));
+        #[cfg(unix)]
+        let backend = OsString::from(format!(
+            "socket,id=serial0,path={},server=on,wait=on",
+            self.socket.to_string_lossy().replace(',', ",,")
+        ));
         [
             OsString::from("-chardev"),
-            OsString::from(format!("file,id=serial0,path={escaped}")),
+            backend,
             OsString::from("-serial"),
             OsString::from("chardev:serial0"),
         ]
     }
 
-    /// A reader that follows the file until [`Self::close`] is called.
-    fn follow(&self) -> Result<SerialTail> {
-        Ok(SerialTail {
-            file: crate::mutation_workspace::open_real_file(&self.path, "QEMU serial transcript")?,
-            closed: Arc::clone(&self.closed),
-        })
+    /// Connect after QEMU creates its endpoint, refusing an exited or silent
+    /// emulator rather than opening some ambient transport.
+    fn connect(&self, child: &mut Child, deadline: Instant) -> Result<SerialReader> {
+        loop {
+            #[cfg(windows)]
+            let opened = OpenOptions::new()
+                .read(true)
+                .open(format!(r"\\.\pipe\{}", self.name))
+                .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>);
+            #[cfg(unix)]
+            let opened = std::os::unix::net::UnixStream::connect(&self.socket)
+                .map(|socket| Box::new(socket) as Box<dyn Read + Send>);
+            #[cfg(not(any(windows, unix)))]
+            let opened: std::io::Result<Box<dyn Read + Send>> =
+                Err(std::io::Error::other("unsupported serial transport"));
+
+            match opened {
+                Ok(inner) => {
+                    return Ok(SerialReader {
+                        inner,
+                        closed: Arc::clone(&self.closed),
+                    });
+                }
+                Err(error) => {
+                    if let Some(status) = child.try_wait().context("waiting for QEMU serial")? {
+                        return Err(error).with_context(|| {
+                            format!("QEMU exited before its serial transport opened ({status})")
+                        });
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(error).context("QEMU did not open its serial transport");
+                    }
+                    std::thread::sleep(SERIAL_POLL);
+                }
+            }
+        }
     }
 
-    /// Record that QEMU has exited, so the follower drains and ends.
+    /// Record that QEMU has exited, so an observed pipe close is clean EOF.
     fn close(&self) {
         self.closed.store(true, Ordering::Release);
     }
 }
 
-impl Drop for SerialFile {
+impl Drop for SerialChannel {
     fn drop(&mut self) {
         self.close();
-        let _ = std::fs::remove_file(&self.path);
-    }
-}
-
-/// Reads a serial transcript as QEMU appends it, and ends once QEMU has exited
-/// and every byte it wrote has been read.
-struct SerialTail {
-    file: File,
-    closed: Arc<AtomicBool>,
-}
-
-impl Read for SerialTail {
-    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        loop {
-            // Observed before reading: a read begun after QEMU exited sees
-            // every byte it wrote, so an empty read then is the true end.
-            let closed = self.closed.load(Ordering::Acquire);
-            let read = self.file.read(buffer)?;
-            if read > 0 || buffer.is_empty() || closed {
-                return Ok(read);
-            }
-            std::thread::sleep(SERIAL_POLL);
+        #[cfg(unix)]
+        {
+            let _ = std::fs::remove_file(&self.socket);
+            let _ = std::fs::remove_file(&self.reservation);
         }
     }
 }
 
-/// How often a serial follower looks for newly appended bytes.
+/// The host side of the bounded serial transport.
+struct SerialReader {
+    inner: Box<dyn Read + Send>,
+    closed: Arc<AtomicBool>,
+}
+
+impl Read for SerialReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self.inner.read(buffer) {
+            Ok(0) => await_serial_close(&self.closed),
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                await_serial_close(&self.closed)
+            }
+            outcome => outcome,
+        }
+    }
+}
+
+fn await_serial_close(closed: &AtomicBool) -> std::io::Result<usize> {
+    let deadline = Instant::now() + SERIAL_CLOSE_GRACE;
+    loop {
+        if closed.load(Ordering::Acquire) {
+            return Ok(0);
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "QEMU closed its serial transport before it exited",
+            ));
+        }
+        std::thread::sleep(SERIAL_POLL);
+    }
+}
+
+/// How often a serial connector looks for QEMU's freshly created endpoint.
 const SERIAL_POLL: Duration = Duration::from_millis(10);
+/// Enough for the parent loop to observe a QEMU exit before pipe EOF is judged
+/// premature; the parent polls every 50 ms.
+const SERIAL_CLOSE_GRACE: Duration = Duration::from_millis(250);
+
+/// One guest record and one complete run are separately bounded. Once the
+/// reader refuses the aggregate, OS backpressure bounds any bytes QEMU can
+/// still write before the parent terminates it.
+const MAX_SERIAL_LINE_BYTES: usize = 64 * 1024;
+const MAX_SERIAL_BYTES: usize = 16 * 1024 * 1024;
+
+fn read_serial_line(
+    reader: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    total: &mut usize,
+) -> Result<usize> {
+    read_serial_line_with_limits(reader, line, total, MAX_SERIAL_LINE_BYTES, MAX_SERIAL_BYTES)
+}
+
+fn read_serial_line_with_limits(
+    reader: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    total: &mut usize,
+    line_limit: usize,
+    total_limit: usize,
+) -> Result<usize> {
+    line.clear();
+    loop {
+        let available = reader.fill_buf().context("buffering QEMU serial output")?;
+        if available.is_empty() {
+            return Ok(line.len());
+        }
+        let take = available
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(available.len(), |newline| newline + 1);
+        let line_bytes = line
+            .len()
+            .checked_add(take)
+            .context("QEMU serial line length overflowed")?;
+        ensure!(
+            line_bytes <= line_limit,
+            "QEMU serial line exceeded the {line_limit}-byte limit"
+        );
+        let aggregate = total
+            .checked_add(take)
+            .context("QEMU serial transcript length overflowed")?;
+        ensure!(
+            aggregate <= total_limit,
+            "QEMU serial transcript exceeded the {total_limit}-byte limit"
+        );
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        *total = aggregate;
+        if line.last() == Some(&b'\n') {
+            return Ok(line.len());
+        }
+    }
+}
+
+/// Render untrusted guest bytes without passing terminal controls through to
+/// the operator's console. The parser still receives the original bytes.
+fn escaped_serial_line(line: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let visible = line.strip_suffix(b"\n").unwrap_or(line);
+    let mut escaped = String::with_capacity(visible.len());
+    for &byte in visible {
+        if (b' '..=b'~').contains(&byte) {
+            escaped.push(char::from(byte));
+        } else {
+            escaped.push('\\');
+            escaped.push('x');
+            escaped.push(char::from(HEX[usize::from(byte >> 4)]));
+            escaped.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    escaped
+}
+
+fn echo_serial_line(line: &[u8]) {
+    println!("{}", escaped_serial_line(line));
+    let _ = Write::flush(&mut std::io::stdout());
+}
 
 /// Long enough for a reply, short enough not to extend a failing run.
 const MONITOR_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -1619,7 +1797,7 @@ fn observe_selftest_run(
 ) -> Result<(SelftestOutcome, Option<PerformanceSample>)> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
-    let serial = SerialFile::create(paths.target_dir())?;
+    let serial = SerialChannel::create(paths.target_dir())?;
 
     println!("[xtask] booting the self-test kernel");
 
@@ -1641,11 +1819,19 @@ fn observe_selftest_run(
         .spawn()
         .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
 
+    let serial_reader = match serial.connect(&mut child, Instant::now() + QMP_NEGOTIATION_TIMEOUT) {
+        Ok(reader) => reader,
+        Err(error) => {
+            stop_qemu(&mut child).context("stopping QEMU after serial connection failed")?;
+            return Err(error);
+        }
+    };
+
     let markers_seen = Arc::new(AtomicUsize::new(0));
     let panicked = Arc::new(AtomicBool::new(false));
     let serial_failed = Arc::new(AtomicBool::new(false));
     let forwarder = forward_serial(
-        serial.follow()?,
+        serial_reader,
         Arc::clone(&markers_seen),
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
@@ -1734,11 +1920,12 @@ fn forward_serial(
     std::thread::spawn(move || {
         let mut reader = BufReader::new(serial);
         let mut line = Vec::new();
+        let mut total = 0;
         let mut observation = SerialObservation::default();
         let mut next_interactive_marker = 0;
         loop {
             line.clear();
-            let read = match reader.read_until(b'\n', &mut line) {
+            let read = match read_serial_line(&mut reader, &mut line, &mut total) {
                 Ok(read) => read,
                 Err(error) => {
                     serial_failed.store(true, Ordering::Release);
@@ -1752,12 +1939,7 @@ fn forward_serial(
             if echo {
                 // One print per line, so a message from another thread cannot
                 // land between a dying kernel's last words and their newline.
-                if text.ends_with('\n') {
-                    print!("{text}");
-                } else {
-                    println!("{text}");
-                }
-                let _ = Write::flush(&mut std::io::stdout());
+                echo_serial_line(&line);
             }
             match observe_selftest_line(&mut observation, &text) {
                 Ok(transition) => {
@@ -1976,7 +2158,7 @@ fn await_keyboard_irq(
 pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<()> {
     let installation = installation()?;
     let vars = RunVars::create(paths.target_dir(), &installation.vars_firmware)?;
-    let serial = SerialFile::create(paths.target_dir())?;
+    let serial = SerialChannel::create(paths.target_dir())?;
 
     println!("[xtask] booting the shipped kernel");
 
@@ -1997,6 +2179,14 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
         .spawn()
         .with_context(|| format!("could not launch {}", installation.emulator.display()))?;
 
+    let serial_reader = match serial.connect(&mut child, Instant::now() + QMP_NEGOTIATION_TIMEOUT) {
+        Ok(reader) => reader,
+        Err(error) => {
+            stop_qemu(&mut child).context("stopping QEMU after serial connection failed")?;
+            return Err(error);
+        }
+    };
+
     let qmp = attach_qmp(
         &mut child,
         Instant::now() + QMP_NEGOTIATION_TIMEOUT,
@@ -2011,7 +2201,7 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
         .map(|marker| (marker, Arc::new(AtomicBool::new(false))))
         .collect();
     let forwarder = watch_serial(
-        serial.follow()?,
+        serial_reader,
         Arc::clone(&settled),
         Arc::clone(&panicked),
         Arc::clone(&serial_failed),
@@ -2346,10 +2536,11 @@ fn watch_serial(
     std::thread::spawn(move || {
         let mut reader = BufReader::new(serial);
         let mut line = Vec::new();
+        let mut total = 0;
         let mut observation = BootSerialObservation::default();
         loop {
             line.clear();
-            let read = match reader.read_until(b'\n', &mut line) {
+            let read = match read_serial_line(&mut reader, &mut line, &mut total) {
                 Ok(read) => read,
                 Err(error) => {
                     serial_failed.store(true, Ordering::Release);
@@ -2360,12 +2551,7 @@ fn watch_serial(
                 return Ok(observation);
             }
             let text = String::from_utf8_lossy(&line);
-            if text.ends_with('\n') {
-                print!("{text}");
-            } else {
-                println!("{text}");
-            }
-            let _ = Write::flush(&mut std::io::stdout());
+            echo_serial_line(&line);
             if is_settled_record(&text) {
                 settled.store(true, Ordering::Release);
             }
@@ -3170,58 +3356,40 @@ mod tests {
     }
 
     #[test]
-    fn a_serial_file_is_named_as_one_chardev_path() {
+    fn automated_serial_uses_a_private_backpressured_transport() {
         let fixture = QemuFixture::create();
-        let serial = SerialFile::create(&fixture.root).unwrap();
-        let path = serial.path.to_string_lossy().into_owned();
-        assert!(
-            path.contains(','),
-            "the fixture path exercises comma escaping"
-        );
-        assert_eq!(
-            serial.arguments(),
-            [
-                OsString::from("-chardev"),
-                OsString::from(format!("file,id=serial0,path={}", path.replace(',', ",,"))),
-                OsString::from("-serial"),
-                OsString::from("chardev:serial0"),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_serial_file_never_reuses_an_existing_name() {
-        let fixture = QemuFixture::create();
-        let directory = crate::image::qemu_run_directory(&fixture.root).unwrap();
-        let next = NEXT_RUN.load(Ordering::Relaxed);
-        let occupied = (next..next + 256)
-            .map(|sequence| {
-                let path = directory.join(format!("serial-{}-{sequence}.log", std::process::id()));
-                std::fs::write(&path, b"another run").unwrap();
-                path
-            })
-            .collect::<Vec<_>>();
-        let serial = SerialFile::create(&fixture.root).unwrap();
-        assert!(
-            !occupied.contains(&serial.path),
-            "an occupied name was reused"
-        );
-        for path in &occupied {
-            assert_eq!(std::fs::read(path).unwrap(), b"another run");
+        let first = SerialChannel::create(&fixture.root).unwrap();
+        let second = SerialChannel::create(&fixture.root).unwrap();
+        let arguments = first.arguments();
+        let backend = arguments[1].to_string_lossy();
+        assert_eq!(arguments[0], "-chardev");
+        assert_eq!(arguments[2], "-serial");
+        assert_eq!(arguments[3], "chardev:serial0");
+        assert!(!backend.starts_with("file,"), "serial regained a disk sink");
+        #[cfg(windows)]
+        {
+            assert!(backend.starts_with("pipe,id=serial0,path=wizard-bedrock-serial-"));
+            assert_ne!(first.name, second.name, "serial pipe names repeated");
+        }
+        #[cfg(unix)]
+        {
+            assert!(backend.starts_with("socket,id=serial0,path="));
+            assert_ne!(first.socket, second.socket, "serial socket names repeated");
         }
     }
 
     #[test]
-    fn a_serial_follower_reads_every_appended_byte_and_ends_after_close() {
-        let fixture = QemuFixture::create();
-        let serial = SerialFile::create(&fixture.root).unwrap();
-        let mut follower = serial.follow().unwrap();
-        let path = serial.path.clone();
+    fn a_serial_reader_reads_every_piped_byte_and_ends_after_close() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let closed = Arc::new(AtomicBool::new(false));
+        let mut follower = SerialReader {
+            inner: Box::new(reader),
+            closed: Arc::clone(&closed),
+        };
         let writer = std::thread::spawn(move || {
-            let mut file = OpenOptions::new().append(true).open(path).unwrap();
             for chunk in [b"first ".as_slice(), b"second\n", b"late tail"] {
-                file.write_all(chunk).unwrap();
-                file.flush().unwrap();
+                writer.write_all(chunk).unwrap();
+                writer.flush().unwrap();
                 std::thread::sleep(Duration::from_millis(40));
             }
         });
@@ -3236,8 +3404,60 @@ mod tests {
             !reader.is_finished(),
             "the follower ended before QEMU exited"
         );
-        serial.close();
+        closed.store(true, Ordering::Release);
         assert_eq!(reader.join().unwrap(), b"first second\nlate tail");
+    }
+
+    #[test]
+    fn automated_serial_capture_bounds_each_record_and_the_whole_run() {
+        let mut reader = BufReader::new(std::io::Cursor::new(b"abc\ndef\n"));
+        let mut line = Vec::new();
+        let mut total = 0;
+        assert_eq!(
+            read_serial_line_with_limits(&mut reader, &mut line, &mut total, 4, 8).unwrap(),
+            4
+        );
+        assert_eq!(line, b"abc\n");
+        assert_eq!(
+            read_serial_line_with_limits(&mut reader, &mut line, &mut total, 4, 8).unwrap(),
+            4
+        );
+        assert_eq!(total, 8);
+
+        let mut long = BufReader::new(std::io::Cursor::new(b"abcd\n"));
+        let error = read_serial_line_with_limits(&mut long, &mut line, &mut 0, 4, 32)
+            .expect_err("oversized record");
+        assert!(error.to_string().contains("serial line"));
+
+        let mut aggregate = BufReader::new(std::io::Cursor::new(b"a\nb\n"));
+        let mut total = 0;
+        read_serial_line_with_limits(&mut aggregate, &mut line, &mut total, 8, 3).unwrap();
+        let error = read_serial_line_with_limits(&mut aggregate, &mut line, &mut total, 8, 3)
+            .expect_err("aggregate overrun");
+        assert!(error.to_string().contains("transcript"));
+    }
+
+    #[test]
+    fn automated_serial_display_escapes_guest_terminal_controls() {
+        assert_eq!(
+            escaped_serial_line(b"ok\x1b[2J\r\x08\0\x80\n"),
+            r"ok\x1b[2J\x0d\x08\x00\x80"
+        );
+        assert_eq!(escaped_serial_line(b"plain ASCII\n"), "plain ASCII");
+    }
+
+    #[test]
+    fn a_serial_reader_refuses_an_early_transport_close() {
+        let (reader, writer) = std::io::pipe().unwrap();
+        let mut follower = SerialReader {
+            inner: Box::new(reader),
+            closed: Arc::new(AtomicBool::new(false)),
+        };
+        drop(writer);
+        let error = follower
+            .read(&mut [0u8; 1])
+            .expect_err("premature serial close");
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
     }
 
     #[test]
@@ -4800,7 +5020,7 @@ mod tests {
         );
         assert!(
             source
-                .contains("pub(crate) fn admit_bus_master(self, device: &mut crate::pci::Device)")
+                .contains("pub(crate) fn admit_bus_master(\n        mut self,\n        device: &mut crate::pci::Device,")
                 && source.contains(") -> BusMasterAdmission")
                 && source
                     .matches(

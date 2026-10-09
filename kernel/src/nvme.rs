@@ -307,20 +307,12 @@ impl QueuePair {
 
     /// Make both queues reachable by the device, or neither (D-357).
     #[must_use = "unmapped queues cannot be published to the controller"]
-    fn map_into(&self, isolation: &mut Vtd) -> bool {
-        let (Some(submission), Some(submission_len), Some(completion), Some(completion_len)) = (
-            self.submission.address(),
-            self.submission.len(),
-            self.completion.address(),
-            self.completion.len(),
-        ) else {
-            return false;
-        };
-        if !isolation.map_segment(submission, submission_len) {
+    fn map_into(&mut self, isolation: &mut Vtd) -> bool {
+        if isolation.map_segment(&mut self.submission).is_err() {
             return false;
         }
-        if !isolation.map_segment(completion, completion_len) {
-            let _unmapped = isolation.unmap_segment(submission, submission_len);
+        if isolation.map_segment(&mut self.completion).is_err() {
+            let _unmapped = isolation.unmap_segment(&mut self.submission);
             return false;
         }
         true
@@ -1113,7 +1105,7 @@ impl Controller {
             Command::number_of_queues(self.take_id(), 1, 1).ok_or(BringUpError::QueueSize)?;
         self.run_admin(negotiation, None)?;
 
-        let pair = QueuePair::new(IO_QUEUE, capacity).ok_or(BringUpError::NoMemory)?;
+        let mut pair = QueuePair::new(IO_QUEUE, capacity).ok_or(BringUpError::NoMemory)?;
         // Reachable before the controller can be told about either queue.
         {
             let mut installed = crate::iommu::installed();
@@ -1430,28 +1422,18 @@ impl Controller {
         }
         let mut installed = crate::iommu::installed();
         let isolation = installed.as_mut().ok_or(BringUpError::Isolation)?;
-        let reach = match data.as_deref() {
-            Some(buffer) => Some(
-                buffer
-                    .address()
-                    .zip(buffer.len())
-                    .ok_or(BringUpError::NotReady)?,
-            ),
-            None => None,
-        };
         #[cfg(feature = "selftest")]
-        let reach = if self.leave_data_unmapped {
-            None
-        } else {
-            reach
-        };
-        if let Some((address, len)) = reach
-            && !isolation.map_segment(address, len)
+        let data_mapped = !self.leave_data_unmapped;
+        #[cfg(not(feature = "selftest"))]
+        let data_mapped = true;
+        if data_mapped
+            && let Some(buffer) = data.as_deref_mut()
+            && isolation.map_segment(buffer).is_err()
         {
             return Err(BringUpError::Isolation);
         }
         if !self.dma.reserve() {
-            let _unmapped = unmap_reach(isolation, reach);
+            let _unmapped = unmap_data(isolation, data.as_deref_mut(), data_mapped);
             return Err(BringUpError::NotReady);
         }
 
@@ -1473,7 +1455,7 @@ impl Controller {
                 if !self.dma.cancel_unpublished() {
                     panic!("an unpublished DMA reservation must be cancellable");
                 }
-                let _unmapped = unmap_reach(isolation, reach);
+                let _unmapped = unmap_data(isolation, data.as_deref_mut(), data_mapped);
                 return Err(reason);
             }
         };
@@ -1489,7 +1471,7 @@ impl Controller {
             panic!("a prepared DMA reservation must publish exactly once");
         };
         if let Err(error) = rung {
-            return self.fail_submitted(error, data.as_deref_mut(), isolation);
+            return self.fail_submitted(error, data.as_deref_mut(), isolation, data_mapped);
         }
         #[cfg(feature = "selftest")]
         {
@@ -1519,6 +1501,7 @@ impl Controller {
                         BringUpError::NotReady,
                         data.as_deref_mut(),
                         isolation,
+                        data_mapped,
                     );
                 };
                 let at = queue.completion_head as usize * nvme::COMPLETION_ENTRY_BYTES;
@@ -1528,6 +1511,7 @@ impl Controller {
                         BringUpError::NoMemory,
                         data.as_deref_mut(),
                         isolation,
+                        data_mapped,
                     );
                 }
                 if Completion::from_bytes(bytes).phase == queue.phase {
@@ -1537,6 +1521,7 @@ impl Controller {
                             BringUpError::NoMemory,
                             data.as_deref_mut(),
                             isolation,
+                            data_mapped,
                         );
                     }
                     Some(Completion::from_bytes(bytes))
@@ -1559,6 +1544,7 @@ impl Controller {
                         },
                         data.as_deref_mut(),
                         isolation,
+                        data_mapped,
                     );
                 }
                 let Some(queue) = self.queue_mut(which) else {
@@ -1566,6 +1552,7 @@ impl Controller {
                         BringUpError::NotReady,
                         data.as_deref_mut(),
                         isolation,
+                        data_mapped,
                     );
                 };
                 queue.submission_head = u32::from(entry.submission_head);
@@ -1575,6 +1562,7 @@ impl Controller {
                         BringUpError::NotReady,
                         data.as_deref_mut(),
                         isolation,
+                        data_mapped,
                     );
                 };
                 if completion_head == 0 {
@@ -1586,7 +1574,7 @@ impl Controller {
                 }
                 // The completion is the proof the device is done with the
                 // buffer; it leaves the domain before anything else happens.
-                if !unmap_reach(isolation, reach) {
+                if !unmap_data(isolation, data.as_deref_mut(), data_mapped) {
                     return self.fail_controller(BringUpError::Isolation);
                 }
 
@@ -1613,7 +1601,7 @@ impl Controller {
             }
             core::hint::spin_loop();
         }
-        self.fail_submitted(BringUpError::NotReady, data, isolation)
+        self.fail_submitted(BringUpError::NotReady, data, isolation, data_mapped)
     }
 
     /// Stop uncertain DMA before exposing an error to the caller.
@@ -1623,14 +1611,12 @@ impl Controller {
     fn fail_submitted<T>(
         &mut self,
         error: BringUpError,
-        data: Option<&mut DmaSegment>,
+        mut data: Option<&mut DmaSegment>,
         isolation: &mut Vtd,
+        data_mapped: bool,
     ) -> Result<T, BringUpError> {
-        let reach = data
-            .as_deref()
-            .and_then(|buffer| buffer.address().zip(buffer.len()));
-        self.stop_dma(data);
-        if !self.dma.must_retain() && !unmap_reach(isolation, reach) {
+        self.stop_dma(data.as_deref_mut());
+        if !self.dma.must_retain() && !unmap_data(isolation, data, data_mapped) {
             warn!("nvme: a quiesced transfer buffer stays mapped in the dma domain");
         }
         Err(error)
@@ -1720,8 +1706,8 @@ impl Controller {
 }
 
 /// Take a published buffer out of the domain, or report that it is still in.
-fn unmap_reach(isolation: &mut Vtd, reach: Option<(u64, u64)>) -> bool {
-    reach.is_none_or(|(address, len)| isolation.unmap_segment(address, len))
+fn unmap_data(isolation: &mut Vtd, data: Option<&mut DmaSegment>, data_mapped: bool) -> bool {
+    !data_mapped || data.is_none_or(|segment| isolation.unmap_segment(segment).is_ok())
 }
 
 impl Drop for Controller {
@@ -1904,7 +1890,7 @@ impl DisabledController {
     /// Separate from [`admit_bus_master`](Self::admit_bus_master) so that each
     /// refusal builds a small value rather than a whole admission result: the
     /// debug build gives every such temporary its own stack slot (D-287).
-    fn admit(&self, device: &mut crate::pci::Device) -> Result<(), BusMasterAdmissionError> {
+    fn admit(&mut self, device: &mut crate::pci::Device) -> Result<(), BusMasterAdmissionError> {
         let domain = {
             let mut installed = crate::iommu::installed();
             let Some(isolation) = installed.as_mut() else {
@@ -1946,7 +1932,10 @@ impl DisabledController {
 
     /// Admit DMA from a fresh observation through the retained mapped BAR,
     /// behind the installed domain, which must already reach the admin queues.
-    pub(crate) fn admit_bus_master(self, device: &mut crate::pci::Device) -> BusMasterAdmission {
+    pub(crate) fn admit_bus_master(
+        mut self,
+        device: &mut crate::pci::Device,
+    ) -> BusMasterAdmission {
         match self.admit(device) {
             Ok(()) => BusMasterAdmission::Admitted(BusMasterAdmittedController(self)),
             Err(reason) => BusMasterAdmission::Refused(BusMasterAdmissionFailure {

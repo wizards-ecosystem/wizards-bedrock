@@ -805,6 +805,7 @@ dependencies = [
  "fat32",
  "fatfs",
  "fscommon",
+ "getrandom 0.3.1",
  "panic-record",
  "proc-macro2",
  "syn",

@@ -25,7 +25,7 @@ const MAX_FINDINGS_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_COVERAGE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REPORT_BYTES: u64 = 32 * 1024 * 1024;
 const PRODUCER_NAME: &str = "codex-security-plugin";
-const PRODUCER_VERSION: &str = "0.1.31";
+const PRODUCER_VERSION: &str = "0.1.32";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Scan {
@@ -521,7 +521,7 @@ mod tests {
         let finding = finding_level.map_or(String::new(), |level| format!(r#"{{"findingId":"csf_000000000000000000000001","fingerprints":{{"algorithm":"codex-security/v1","primary":"codex-security/v1:sha256:{}"}},"severity":{{"level":"{level}"}}}}"#, "1".repeat(64)));
         let findings = format!(r#"{{"documentType":"codex-security.findings","schemaVersion":"1.0","scanId":"scan-1","findings":[{finding}]}}"#).into_bytes();
         let coverage = format!(r#"{{"documentType":"codex-security.coverage","schemaVersion":"1.0","scanId":"scan-1","mode":"deep_repository","completeness":"{completeness}","inventoryStrategy":"repository","includePaths":["."],"excludePaths":[],"surfaces":[],"explicitExclusions":[],"deferred":[]}}"#).into_bytes();
-        let manifest = format!(r#"{{"documentType":"codex-security.scan-manifest","schemaVersion":"1.0","scan":{{"id":"scan-1","producer":{{"name":"codex-security-plugin","version":"0.1.31"}},"status":"completed","startedAt":"2026-09-28T00:00:00Z","completedAt":"2026-09-28T01:00:00Z","sealedAt":"2026-09-28T01:00:00Z","target":{{"kind":"git_revision","targetId":"target-1","displayName":"wizards-bedrock","revision":"{revision}"}},"scope":{{"includePaths":["."],"excludePaths":[]}},"coverageRef":"coverage.json","findingsRef":"findings.json","artifacts":[{{"path":"findings.json","sha256":"{}","mediaType":"application/json"}},{{"path":"coverage.json","sha256":"{}","mediaType":"application/json"}}]}}}}"#, sha256::hex(&sha256::digest(&findings)), sha256::hex(&sha256::digest(&coverage))).into_bytes();
+        let manifest = format!(r#"{{"documentType":"codex-security.scan-manifest","schemaVersion":"1.0","scan":{{"id":"scan-1","producer":{{"name":"codex-security-plugin","version":"0.1.32"}},"status":"completed","startedAt":"2026-09-28T00:00:00Z","completedAt":"2026-09-28T01:00:00Z","sealedAt":"2026-09-28T01:00:00Z","target":{{"kind":"git_revision","targetId":"target-1","displayName":"wizards-bedrock","revision":"{revision}"}},"scope":{{"includePaths":["."],"excludePaths":[]}},"coverageRef":"coverage.json","findingsRef":"findings.json","artifacts":[{{"path":"findings.json","sha256":"{}","mediaType":"application/json"}},{{"path":"coverage.json","sha256":"{}","mediaType":"application/json"}}]}}}}"#, sha256::hex(&sha256::digest(&findings)), sha256::hex(&sha256::digest(&coverage))).into_bytes();
         (manifest, findings, coverage, b"# report\n".to_vec())
     }
 
@@ -551,8 +551,12 @@ mod tests {
         let source = source();
         let (manifest, findings, coverage, report) = artifacts(None, "complete", &source.commit);
         let manifest = String::from_utf8(manifest).unwrap();
+        verify_scan(manifest.as_bytes(), &findings, &coverage, &report, &source)
+            .expect("current qualified producer");
         let foreign = manifest.replace("codex-security-plugin", "other-provider");
         assert!(verify_scan(foreign.as_bytes(), &findings, &coverage, &report, &source).is_err());
+        let stale = manifest.replace("0.1.32", "0.1.31");
+        assert!(verify_scan(stale.as_bytes(), &findings, &coverage, &report, &source).is_err());
         let reversed = manifest.replace("2026-09-28T00:00:00Z", "2026-09-28T02:00:00Z");
         assert!(verify_scan(reversed.as_bytes(), &findings, &coverage, &report, &source).is_err());
         let limited = manifest.replace(

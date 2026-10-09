@@ -1300,6 +1300,11 @@ pub enum DmarError {
         /// The register base both units claim.
         register_base: u64,
     },
+    /// More units were supplied than the allocation-free semantic pass admits.
+    TooManyUnits {
+        /// Maximum number of DRHD units accepted in one table.
+        maximum: usize,
+    },
 }
 
 impl fmt::Display for DmarError {
@@ -1314,6 +1319,9 @@ impl fmt::Display for DmarError {
                 f,
                 "dmar has two drhd units at register base {register_base:#x}"
             ),
+            Self::TooManyUnits { maximum } => {
+                write!(f, "dmar has more than {maximum} drhd units")
+            }
         }
     }
 }
@@ -1328,22 +1336,38 @@ pub struct Dmar<'a> {
     body: &'a [u8],
 }
 
+/// A platform needs only a handful of units. Bounding this allocation-free
+/// inventory also bounds the duplicate scan below on hostile firmware.
+const MAX_DRHD_UNITS: usize = 64;
+
 impl<'a> Dmar<'a> {
-    /// Validate `table` as a DMAR, and additionally enforce the two rules
-    /// bytes alone cannot express: an RMRR's limit must not precede its
-    /// base, and no two DRHDs may claim the same register base.
+    /// Validate `table` as a DMAR, bound its unit inventory, and additionally
+    /// enforce the two rules bytes alone cannot express: an RMRR's limit must
+    /// not precede its base, and no two DRHDs may claim the same register base.
     ///
     /// # Errors
     ///
     /// [`DmarError::Table`] if the table is not a structurally valid DMAR,
     /// [`DmarError::ReservedRegionInverted`] for a backwards RMRR range, or
-    /// [`DmarError::DuplicateUnit`] if two DRHDs share a register base.
+    /// [`DmarError::DuplicateUnit`] if two DRHDs share a register base, or
+    /// [`DmarError::TooManyUnits`] if the semantic pass would exceed its bound.
     pub fn new(table: &'a [u8]) -> Result<Self, DmarError> {
         let entries = DmarEntries::new(table).map_err(DmarError::Table)?;
         let dmar = Self { body: entries.body };
 
-        // O(n^2), not a growable set: real firmware lists a handful of
-        // units, and there is no allocator here to collect them into one.
+        let units = dmar
+            .entries()
+            .filter(|structure| matches!(structure, DmarStructure::Drhd { .. }))
+            .take(MAX_DRHD_UNITS + 1)
+            .count();
+        if units > MAX_DRHD_UNITS {
+            return Err(DmarError::TooManyUnits {
+                maximum: MAX_DRHD_UNITS,
+            });
+        }
+
+        // O(n^2), not a growable set; the explicit unit ceiling above keeps
+        // this allocation-free duplicate pass finite on hostile firmware.
         for (index, structure) in dmar.entries().enumerate() {
             match structure {
                 DmarStructure::Drhd { register_base, .. } => {
@@ -1392,15 +1416,19 @@ impl<'a> Dmar<'a> {
     /// bridge. The most specific scope wins: an endpoint scope naming `bdf`
     /// outranks a bridge scope enclosing it, an inner bridge outranks the
     /// bridges above it, and an `INCLUDE_PCI_ALL` unit governs only what no
-    /// scope in its segment names. Between equals the earlier unit wins.
+    /// scope in its segment names. Equal-specificity claims from distinct
+    /// units are ambiguous and fail closed as `None`.
     pub fn unit_for(
         &self,
         bdf: Bdf,
         bridge: impl Fn(Bdf) -> Option<BusRange>,
     ) -> Option<GoverningUnit> {
-        let mut endpoint = None;
+        let mut endpoint: Option<GoverningUnit> = None;
+        let mut endpoint_ambiguous = false;
         let mut enclosing: Option<(u8, GoverningUnit)> = None;
-        let mut catch_all = None;
+        let mut enclosing_ambiguous = false;
+        let mut catch_all: Option<GoverningUnit> = None;
+        let mut catch_all_ambiguous = false;
         for structure in self.entries() {
             let DmarStructure::Drhd {
                 include_pci_all,
@@ -1416,38 +1444,61 @@ impl<'a> Dmar<'a> {
             }
             for scope in DeviceScopes::new(scopes) {
                 match scope.walk(segment, &bridge) {
-                    Some(named @ Named::Function(_)) if named.covers(bdf) && endpoint.is_none() => {
-                        endpoint = Some(GoverningUnit {
+                    Some(named @ Named::Function(_)) if named.covers(bdf) => {
+                        let candidate = GoverningUnit {
                             register_base,
                             coverage: Coverage::Endpoint,
-                        });
+                        };
+                        if endpoint.is_some_and(|unit| unit.register_base != register_base) {
+                            endpoint_ambiguous = true;
+                        } else {
+                            endpoint.get_or_insert(candidate);
+                        }
                     }
                     // Bridge ranges nest, so the innermost enclosing bridge
                     // is the one with the highest secondary bus.
-                    Some(named @ Named::Hierarchy(at, buses))
-                        if named.covers(bdf)
-                            && enclosing
-                                .is_none_or(|(innermost, _)| buses.secondary > innermost) =>
-                    {
-                        enclosing = Some((
-                            buses.secondary,
-                            GoverningUnit {
-                                register_base,
-                                coverage: Coverage::Bridge(at),
-                            },
-                        ));
+                    Some(named @ Named::Hierarchy(at, buses)) if named.covers(bdf) => {
+                        let candidate = GoverningUnit {
+                            register_base,
+                            coverage: Coverage::Bridge(at),
+                        };
+                        match enclosing {
+                            Some((innermost, _)) if buses.secondary < innermost => {}
+                            Some((innermost, unit)) if buses.secondary == innermost => {
+                                if unit.register_base != register_base {
+                                    enclosing_ambiguous = true;
+                                }
+                            }
+                            _ => {
+                                enclosing = Some((buses.secondary, candidate));
+                                enclosing_ambiguous = false;
+                            }
+                        }
                     }
                     _ => {}
                 }
             }
-            if include_pci_all && catch_all.is_none() {
-                catch_all = Some(GoverningUnit {
+            if include_pci_all {
+                let candidate = GoverningUnit {
                     register_base,
                     coverage: Coverage::CatchAll,
-                });
+                };
+                if catch_all.is_some_and(|unit| unit.register_base != register_base) {
+                    catch_all_ambiguous = true;
+                } else {
+                    catch_all.get_or_insert(candidate);
+                }
             }
         }
-        endpoint.or(enclosing.map(|(_, unit)| unit)).or(catch_all)
+        if endpoint.is_some() {
+            return (!endpoint_ambiguous).then_some(endpoint).flatten();
+        }
+        if enclosing.is_some() {
+            return (!enclosing_ambiguous)
+                .then_some(enclosing.map(|(_, unit)| unit))
+                .flatten();
+        }
+        (!catch_all_ambiguous).then_some(catch_all).flatten()
     }
 
     /// Every reserved memory region a device at `bdf` must have
@@ -2957,6 +3008,48 @@ mod tests {
             });
             assert_eq!(dmar.unit_for(function, &topology), expected, "{function:?}");
         }
+    }
+
+    #[test]
+    fn excessive_and_ambiguous_remapping_authority_fails_closed() {
+        let units = (0..=MAX_DRHD_UNITS)
+            .map(|index| drhd_bytes(false, 0, 0x1000 + index as u64 * 0x1000, &[]))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            Dmar::new(&dmar_of(&units)),
+            Err(DmarError::TooManyUnits {
+                maximum: MAX_DRHD_UNITS
+            })
+        );
+
+        let target = Bdf::new(0, 0x00, 0x05, 0);
+        let endpoint = pci_endpoint_scope(0x00, 0x05, 0);
+        let bytes = dmar_of(&[
+            drhd_bytes(false, 0, EXACT, &endpoint),
+            drhd_bytes(false, 0, SCOPED, &endpoint),
+            drhd_bytes(true, 0, CATCH_ALL, &[]),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("structurally valid ambiguous endpoints");
+        assert_eq!(dmar.unit_for(target, no_bridges), None);
+
+        let elsewhere = Bdf::new(0, 0x00, 0x06, 0);
+        let bytes = dmar_of(&[
+            drhd_bytes(true, 0, CATCH_ALL, &[]),
+            drhd_bytes(true, 0, INNER, &[]),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("structurally valid ambiguous catch-all units");
+        assert_eq!(dmar.unit_for(elsewhere, no_bridges), None);
+
+        let bridge = Bdf::new(0, 0x00, 0x1c, 0);
+        let bridges = [(bridge, buses(0x20, 0x2f))];
+        let topology = topology(&bridges);
+        let hierarchy = scope(SUB_HIERARCHY, 0x00, &[(0x1c, 0)]);
+        let bytes = dmar_of(&[
+            drhd_bytes(false, 0, SCOPED, &hierarchy),
+            drhd_bytes(false, 0, INNER, &hierarchy),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("structurally valid ambiguous bridges");
+        assert_eq!(dmar.unit_for(Bdf::new(0, 0x20, 0x01, 0), &topology), None);
     }
 
     #[test]
