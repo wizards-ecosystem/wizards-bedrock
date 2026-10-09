@@ -981,9 +981,9 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 275 |
-| Mutations | 1644 registered; complete-sweep verdicts live in source-bound qualification records |
+| Mutations | 1658 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-368 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-369 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but mutation registration is not a current full-sweep
@@ -1209,6 +1209,15 @@ mapped before translation goes on, so translation is on before the function can
 bus-master; it lives in one kernel-owned slot that every DMA seam locks and
 refuses without, and it is released only after a retired candidate's lease has
 restored bus mastering off (D-358).
+
+D-369 makes rejection teardown independent of the endpoint's claimed stop
+state. The function-bound command owner first proves BME clear and excludes it
+from the rejected lease's restoration word. Every installed admin and I/O queue
+segment then leaves the domain with an invalidation before its frame can return
+to the allocator; uncertainty retains the segment, controller, device and live
+domain together. Only after safe command restoration does the unit switch
+translation off. Fault diagnostics on this path drain one inventory-bounded
+batch after retirement, so a device cannot keep boot inside live MMIO logging.
 
 ### Fail closed
 

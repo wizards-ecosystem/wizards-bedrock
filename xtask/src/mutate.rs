@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1651;
+pub const NEXT_MUTATION_ID: u16 = 1665;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521];
@@ -11061,8 +11061,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 977,
         file: "kernel/src/nvme.rs",
-        find: "        self.completion.retain();",
-        replace: "",
+        find: "    fn retain(&mut self) {\n        self.submission.retain();\n        self.completion.retain();\n    }",
+        replace: "    fn retain(&mut self) {\n        self.submission.retain();\n    }",
         breaks: "failed controller cleanup recycles the completion queue while hardware may reach it",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -15083,8 +15083,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1274,
         file: "libs/pci-config/src/lib.rs",
-        find: "    let current = access(at, CommandAccess::Read).ok_or(EnableError::Access)? as u16;",
-        replace: "    let current = access(at, CommandAccess::Read).unwrap_or(u32::from(state.installed)) as u16;",
+        find: "    let at = state.lease.command_address();\n    let current = access(at, CommandAccess::Read).ok_or(EnableError::Access)? as u16;\n    if current != state.installed {",
+        replace: "    let at = state.lease.command_address();\n    let current = access(at, CommandAccess::Read).unwrap_or(u32::from(state.installed)) as u16;\n    if current != state.installed {",
         breaks: "an unreadable bus-master upgrade borrows its expected command word",
         reddens: Caught::HostTest {
             package: "pci-config",
@@ -18451,8 +18451,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1643,
         file: "kernel/src/nvme.rs",
-        find: "            let _unmapped = isolation.unmap_segment(&mut self.submission);\n            return false;",
-        replace: "            return false;",
+        find: "        if !completion_mapped {\n            if isolation.unmap_segment(&mut self.submission).is_ok() {\n                self.submission_mapped = false;\n            }\n            return false;\n        }",
+        replace: "        if !completion_mapped {\n            return false;\n        }",
         breaks: "a completion-queue mapping refusal leaves the submission queue reachable",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -18531,6 +18531,160 @@ fn mint_stopped<'controller>(
         replace: "const INVALID_RETURN_FLAGS: u64 = 0;",
         breaks: "the nested-task machine witness launches an ordinary program",
         reddens: Caught::Check("unsafe user return flags retire only their program"),
+    },
+    Mutation {
+        id: 1651,
+        file: "libs/pci-config/src/lib.rs",
+        find: "            state.before &= !command::BUS_MASTER;",
+        replace: "            let _safe_before = state.before & !command::BUS_MASTER;",
+        breaks: "a rejected DMA lease restores firmware's inherited bus-master enable bit",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::retirement_disables_and_does_not_restore_inherited_bus_master",
+        },
+    },
+    Mutation {
+        id: 1652,
+        file: "libs/pci-config/src/lib.rs",
+        find: "    if current != state.installed && pending != Some(current) {\n        return Err(EnableError::Changed(current));\n    }\n\n    // `current` is now one of the command owner's exact recorded words. Make",
+        replace: "    if current != state.installed {\n        return Err(EnableError::Changed(current));\n    }\n\n    // `current` is now one of the command owner's exact recorded words. Make",
+        breaks: "an interrupted bus-master transition cannot settle through its recorded pending word",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::an_uncertain_retirement_transition_can_settle_disabled",
+        },
+    },
+    Mutation {
+        id: 1653,
+        file: "kernel/src/nvme.rs",
+        find: "        if !self.unmap_queues() {\n            warn!(\"nvme: a queue mapping stayed reachable during retirement\");\n            return quarantine_controller(self);\n        }",
+        replace: "",
+        breaks: "clean controller retirement drops queue owners without invalidating their domain leaves",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::rejected_controller_retirement_fences_and_unmaps_every_queue",
+        },
+    },
+    Mutation {
+        id: 1654,
+        file: "kernel/src/nvme.rs",
+        find: "        self.retain_mapped();",
+        replace: "        let _still_mapped = self.has_mappings();",
+        breaks: "an accidentally dropped mapped queue can recycle device-reachable frames",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::rejected_controller_retirement_fences_and_unmaps_every_queue",
+        },
+    },
+    Mutation {
+        id: 1655,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        while drained < usize::from(self.fault_registers) && self.take_fault().is_some() {",
+        replace: "        while drained <= usize::from(self.fault_registers) && self.take_fault().is_some() {",
+        breaks: "the bounded VT-d drain can inspect more live records than the hardware inventory",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::device_fault_reporting_is_bounded_and_follows_retirement",
+        },
+    },
+    Mutation {
+        id: 1656,
+        file: "kernel/src/main.rs",
+        find: "            let retirement = controller.retire(&mut device, context);\n            iommu::report_faults();",
+        replace: "            iommu::report_faults();\n            let retirement = controller.retire(&mut device, context);",
+        breaks: "device-controlled VT-d diagnostics run before the failed controller reaches its DMA fence",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::device_fault_reporting_is_bounded_and_follows_retirement",
+        },
+    },
+    Mutation {
+        id: 1657,
+        file: "kernel/src/nvme.rs",
+        find: "        self.io = Some(pair);",
+        replace: "        let _orphaned_queue_owner = pair;",
+        breaks: "an uncertain partial I/O queue map falls out of the controller retirement inventory",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::uncertain_io_queue_mapping_stays_reachable_for_retirement",
+        },
+    },
+    Mutation {
+        id: 1658,
+        file: "libs/pci-config/src/lib.rs",
+        find: "    disable_bus_master_for_retirement_with_leases(\n        &mut functions.commands,\n        authority.lease,\n        state,\n        access,\n    )",
+        replace: "    disable_bus_master_for_retirement_with_leases(\n        &mut functions.commands,\n        state.lease.function,\n        state,\n        access,\n    )",
+        breaks: "a foreign function authority can fence a command state issued to another function",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::configuration_cycles_require_the_issuing_function_registry",
+        },
+    },
+    Mutation {
+        id: 1659,
+        file: "libs/pci-config/src/lib.rs",
+        find: "    match change_command(at, current, wanted, &mut access) {\n        Ok(()) => {\n            state.before &= !command::BUS_MASTER;",
+        replace: "    state.before &= !command::BUS_MASTER;\n    match change_command(at, current, wanted, &mut access) {\n        Ok(()) => {",
+        breaks: "a refused retirement transition permanently weakens the captured restore word before verification",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::every_retirement_access_refusal_retains_exact_retry_authority",
+        },
+    },
+    Mutation {
+        id: 1660,
+        file: "kernel/src/nvme.rs",
+        find: "            Ok(()) => self.submission_mapped = true,",
+        replace: "            Ok(()) => {}",
+        breaks: "a successfully mapped submission queue is absent from conservative teardown state",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::queue_mapping_state_conserves_every_reachable_segment",
+        },
+    },
+    Mutation {
+        id: 1661,
+        file: "kernel/src/nvme.rs",
+        find: "        if self.submission_mapped {\n            self.submission.retain();\n        }",
+        replace: "        let _submission_may_be_mapped = self.submission_mapped;",
+        breaks: "the mapped-queue drop backstop omits a conservatively reachable submission segment",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::queue_mapping_state_conserves_every_reachable_segment",
+        },
+    },
+    Mutation {
+        id: 1662,
+        file: "kernel/src/nvme.rs",
+        find: "        if self.submission_mapped && isolation.unmap_segment(&mut self.submission).is_ok() {\n            self.submission_mapped = false;\n        }",
+        replace: "        if self.submission_mapped && isolation.unmap_segment(&mut self.submission).is_ok() {\n            self.submission_mapped = true;\n        }",
+        breaks: "a successfully invalidated submission queue stays marked live and forces false quarantine",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::queue_mapping_state_conserves_every_reachable_segment",
+        },
+    },
+    Mutation {
+        id: 1663,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        while drained < usize::from(self.fault_registers) && self.take_fault().is_some() {",
+        replace: "        while drained < usize::MAX && self.take_fault().is_some() {",
+        breaks: "the VT-d fault drain uses an unbounded constant instead of the hardware inventory",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::device_fault_reporting_is_bounded_and_follows_retirement",
+        },
+    },
+    Mutation {
+        id: 1664,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "            drained += 1;",
+        replace: "            let _record_did_not_spend_budget = drained;",
+        breaks: "the VT-d fault drain never spends its advertised record budget",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::device_fault_reporting_is_bounded_and_follows_retirement",
+        },
     },
 ];
 

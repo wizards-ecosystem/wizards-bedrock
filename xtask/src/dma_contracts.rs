@@ -898,22 +898,46 @@ fn returns_controller_quarantine(block: &syn::Block) -> bool {
             if returned.expr.as_deref().is_some_and(controller_quarantine_is))
 }
 
+fn ends_with_controller_quarantine(block: &syn::Block) -> bool {
+    matches!(block.stmts.last(), Some(Stmt::Expr(Expr::Return(returned), _))
+        if returned.expr.as_deref().is_some_and(controller_quarantine_is))
+}
+
 fn controller_retirement_is_exact(method: &syn::ImplItemFn) -> bool {
     let [
+        Stmt::Expr(Expr::If(fence), None),
         stop,
         Stmt::Expr(Expr::If(refusal), None),
+        Stmt::Expr(Expr::If(queues), None),
         Stmt::Local(registers),
         Stmt::Expr(Expr::Match(unmap), None),
     ] = method.block.stmts.as_slice()
     else {
         return false;
     };
+    let fenced = matches!(&*fence.cond, Expr::Let(condition)
+        if matches!(&*condition.pat, Pat::TupleStruct(pattern)
+            if path_ends(&pattern.path, &["Err"]))
+            && matches!(&*condition.expr, Expr::MethodCall(call)
+                if call.method == "disable_bus_master_for_retirement"
+                    && call.args.is_empty()
+                    && path_expression_is(&call.receiver, &["device"])))
+        && ends_with_controller_quarantine(&fence.then_branch)
+        && fence.else_branch.is_none();
     let stopped = calls_stop_dma_none(stop);
     let refused = matches!(&*refusal.cond, Expr::Unary(not)
         if matches!(not.op, syn::UnOp::Not(_))
             && dma_call(&not.expr, "is_quiesced", None))
         && returns_controller_quarantine(&refusal.then_branch)
         && refusal.else_branch.is_none();
+    let queues_retired = matches!(&*queues.cond, Expr::Unary(not)
+        if matches!(not.op, syn::UnOp::Not(_))
+            && matches!(&*not.expr, Expr::MethodCall(call)
+                if call.method == "unmap_queues"
+                    && call.args.is_empty()
+                    && path_expression_is(&call.receiver, &["self"])))
+        && ends_with_controller_quarantine(&queues.then_branch)
+        && queues.else_branch.is_none();
     let extracted = variant_binding(&registers.pat, "Some", Some("registers"))
         && matches!(&registers.init, Some(initializer)
             if matches!(&*initializer.expr, Expr::MethodCall(call)
@@ -945,7 +969,7 @@ fn controller_retirement_is_exact(method: &syn::ImplItemFn) -> bool {
         && matches!(&quarantined.pat, Pat::Path(path)
             if path_ends(&path.path, &["MappedPciBarRetirement", "Quarantined"]))
         && controller_quarantine_is(&quarantined.body));
-    stopped && refused && extracted && unmapped && exact_outcomes
+    fenced && stopped && refused && queues_retired && extracted && unmapped && exact_outcomes
 }
 
 fn drop_stops_dma_exactly(syntax: &syn::File) -> bool {
@@ -1585,6 +1609,389 @@ fn a_partial_queue_mapping_rolls_back_the_submission_queue() {
 }
 
 #[test]
+fn rejected_controller_retirement_fences_and_unmaps_every_queue() {
+    let syntax = parse("kernel/src/nvme.rs");
+    let retirement = method(&syntax, "Controller", "retire").expect("controller retirement");
+
+    #[derive(Default)]
+    struct RetirementOrder(Vec<&'static str>);
+    impl<'ast> Visit<'ast> for RetirementOrder {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            let named = if call.method == "disable_bus_master_for_retirement"
+                && path_expression_is(&call.receiver, &["device"])
+            {
+                Some("fence")
+            } else if call.method == "stop_dma" && path_expression_is(&call.receiver, &["self"]) {
+                Some("stop")
+            } else if call.method == "unmap_queues" && path_expression_is(&call.receiver, &["self"])
+            {
+                Some("queues")
+            } else {
+                None
+            };
+            if let Some(named) = named {
+                self.0.push(named);
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+            if path_expression_is(&call.func, &["mem", "unmap_mapped_pci_bar_exact"]) {
+                self.0.push("bar");
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+    }
+
+    let mut order = RetirementOrder::default();
+    order.visit_block(&retirement.block);
+    assert_eq!(order.0.first(), Some(&"fence"));
+    assert_eq!(order.0.iter().filter(|step| **step == "stop").count(), 2);
+    let queues = order
+        .0
+        .iter()
+        .position(|step| *step == "queues")
+        .expect("retirement does not unmap its queues");
+    let bar = order
+        .0
+        .iter()
+        .position(|step| *step == "bar")
+        .expect("retirement does not retire its BAR");
+    assert!(
+        order.0[..queues]
+            .iter()
+            .all(|step| matches!(*step, "fence" | "stop"))
+            && queues < bar,
+        "DMA fencing, stopping, queue invalidation and BAR retirement are out of order: {:?}",
+        order.0
+    );
+
+    let unmap = method(&syntax, "QueuePair", "unmap_from").expect("queue unmap boundary");
+    struct QueueUnmaps {
+        submission: usize,
+        completion: usize,
+    }
+    impl<'ast> Visit<'ast> for QueueUnmaps {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "unmap_segment" && path_expression_is(&call.receiver, &["isolation"])
+            {
+                if matches!(call.args.first(), Some(Expr::Reference(reference))
+                    if reference.mutability.is_some()
+                        && field_chain_is(&reference.expr, "self", &["submission"]))
+                {
+                    self.submission += 1;
+                }
+                if matches!(call.args.first(), Some(Expr::Reference(reference))
+                    if reference.mutability.is_some()
+                        && field_chain_is(&reference.expr, "self", &["completion"]))
+                {
+                    self.completion += 1;
+                }
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+    let mut unmaps = QueueUnmaps {
+        submission: 0,
+        completion: 0,
+    };
+    unmaps.visit_block(&unmap.block);
+    assert_eq!((unmaps.submission, unmaps.completion), (1, 1));
+
+    let queue_drop = implementations(&syntax, "QueuePair")
+        .into_iter()
+        .find(|implementation| {
+            implementation
+                .trait_
+                .as_ref()
+                .is_some_and(|(_, path, _)| path_ends(path, &["Drop"]))
+        })
+        .expect("mapped queues have no drop backstop");
+    let drop = queue_drop
+        .items
+        .iter()
+        .find_map(|item| match item {
+            ImplItem::Fn(method) if method.sig.ident == "drop" => Some(method),
+            _ => None,
+        })
+        .expect("QueuePair's Drop implementation has no drop method");
+    struct RetainMapped(usize);
+    impl<'ast> Visit<'ast> for RetainMapped {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "retain_mapped" && path_expression_is(&call.receiver, &["self"]) {
+                self.0 += 1;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+    let mut retains = RetainMapped(0);
+    retains.visit_block(&drop.block);
+    assert_eq!(retains.0, 1, "mapped queue frames can recycle from Drop");
+}
+
+#[test]
+fn uncertain_io_queue_mapping_stays_reachable_for_retirement() {
+    let syntax = parse("kernel/src/nvme.rs");
+    let creation =
+        method(&syntax, "Controller", "create_io_queues").expect("I/O queue creation boundary");
+
+    #[derive(Default)]
+    struct QueueOwnershipOrder(Vec<&'static str>);
+    impl<'ast> Visit<'ast> for QueueOwnershipOrder {
+        fn visit_expr_assign(&mut self, assignment: &'ast syn::ExprAssign) {
+            if field_chain_is(&assignment.left, "self", &["io"]) {
+                self.0.push("install");
+            }
+            syn::visit::visit_expr_assign(self, assignment);
+        }
+
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "map_into" && path_expression_is(&call.receiver, &["pair"]) {
+                self.0.push("map");
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+
+    let mut order = QueueOwnershipOrder::default();
+    order.visit_block(&creation.block);
+    assert_eq!(
+        order.0,
+        ["install", "map"],
+        "a fallible queue map must not precede installation in the controller owner"
+    );
+}
+
+#[test]
+fn queue_mapping_state_conserves_every_reachable_segment() {
+    let syntax = parse("kernel/src/nvme.rs");
+    let mapping = method(&syntax, "QueuePair", "map_into").expect("queue map boundary");
+    let unmapping = method(&syntax, "QueuePair", "unmap_from").expect("queue unmap boundary");
+    let retention =
+        method(&syntax, "QueuePair", "retain_mapped").expect("mapped queue retention boundary");
+
+    #[derive(Default)]
+    struct FlagAssignments {
+        submission_true: usize,
+        completion_true: usize,
+        submission_false: usize,
+        completion_false: usize,
+    }
+    impl<'ast> Visit<'ast> for FlagAssignments {
+        fn visit_expr_assign(&mut self, assignment: &'ast ExprAssign) {
+            let value = match &*assignment.right {
+                Expr::Lit(literal) => match &literal.lit {
+                    syn::Lit::Bool(value) => Some(value.value),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let counter = if field_chain_is(&assignment.left, "self", &["submission_mapped"]) {
+                value.map(|value| {
+                    if value {
+                        &mut self.submission_true
+                    } else {
+                        &mut self.submission_false
+                    }
+                })
+            } else if field_chain_is(&assignment.left, "self", &["completion_mapped"]) {
+                value.map(|value| {
+                    if value {
+                        &mut self.completion_true
+                    } else {
+                        &mut self.completion_false
+                    }
+                })
+            } else {
+                None
+            };
+            if let Some(counter) = counter {
+                *counter += 1;
+            }
+            syn::visit::visit_expr_assign(self, assignment);
+        }
+    }
+
+    let mut mapped = FlagAssignments::default();
+    mapped.visit_block(&mapping.block);
+    assert_eq!(
+        (mapped.submission_true, mapped.completion_true),
+        (2, 2),
+        "successful and uncertain maps must both conservatively mark each segment"
+    );
+    assert_eq!((mapped.submission_false, mapped.completion_false), (1, 0));
+
+    let mut unmapped = FlagAssignments::default();
+    unmapped.visit_block(&unmapping.block);
+    assert_eq!(
+        (unmapped.submission_false, unmapped.completion_false),
+        (1, 1),
+        "only successful invalidation may clear either mapped flag"
+    );
+    assert_eq!((unmapped.submission_true, unmapped.completion_true), (0, 0));
+
+    #[derive(Default)]
+    struct Retention {
+        submission_guard: usize,
+        completion_guard: usize,
+        submission_retain: usize,
+        completion_retain: usize,
+    }
+    impl<'ast> Visit<'ast> for Retention {
+        fn visit_expr_if(&mut self, branch: &'ast syn::ExprIf) {
+            if field_chain_is(&branch.cond, "self", &["submission_mapped"]) {
+                self.submission_guard += 1;
+            }
+            if field_chain_is(&branch.cond, "self", &["completion_mapped"]) {
+                self.completion_guard += 1;
+            }
+            syn::visit::visit_expr_if(self, branch);
+        }
+
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "retain" {
+                if field_chain_is(&call.receiver, "self", &["submission"]) {
+                    self.submission_retain += 1;
+                }
+                if field_chain_is(&call.receiver, "self", &["completion"]) {
+                    self.completion_retain += 1;
+                }
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+    let mut retained = Retention::default();
+    retained.visit_block(&retention.block);
+    assert_eq!(
+        (
+            retained.submission_guard,
+            retained.completion_guard,
+            retained.submission_retain,
+            retained.completion_retain,
+        ),
+        (1, 1, 1, 1),
+        "every possibly mapped segment must be retained behind its own flag"
+    );
+}
+
+#[test]
+fn device_fault_reporting_is_bounded_and_follows_retirement() {
+    let vtd = parse("wost/src/arch/x86_64/vtd.rs");
+    let drain = method(&vtd, "Vtd", "drain_faults").expect("bounded VT-d fault drain");
+    let Some(Stmt::Expr(Expr::While(drain_loop), None)) = drain.block.stmts.get(1) else {
+        panic!("the VT-d fault drain has no explicit loop");
+    };
+    let Expr::Binary(condition) = &*drain_loop.cond else {
+        panic!("the VT-d fault drain has no inventory comparison");
+    };
+    assert!(matches!(condition.op, syn::BinOp::And(_)));
+    let Expr::Binary(bound) = &*condition.left else {
+        panic!("the VT-d fault drain does not test its budget first");
+    };
+    assert!(
+        matches!(bound.op, syn::BinOp::Lt(_)),
+        "the live fault drain can inspect more records than the inventory"
+    );
+    assert!(
+        path_expression_is(&bound.left, &["drained"]),
+        "the VT-d fault bound does not count drained records"
+    );
+    let Expr::Call(limit) = &*bound.right else {
+        panic!("the VT-d fault bound does not derive from its register inventory");
+    };
+    assert!(path_expression_is(&limit.func, &["usize", "from"]));
+    assert!(matches!(limit.args.first(), Some(argument)
+        if field_chain_is(argument, "self", &["fault_registers"])));
+
+    struct DrainIncrement(usize);
+    impl<'ast> Visit<'ast> for DrainIncrement {
+        fn visit_expr_binary(&mut self, binary: &'ast syn::ExprBinary) {
+            if matches!(binary.op, syn::BinOp::AddAssign(_))
+                && path_expression_is(&binary.left, &["drained"])
+                && matches!(&*binary.right, Expr::Lit(literal)
+                    if matches!(&literal.lit, syn::Lit::Int(one) if one.base10_digits() == "1"))
+            {
+                self.0 += 1;
+            }
+            syn::visit::visit_expr_binary(self, binary);
+        }
+    }
+    let mut increment = DrainIncrement(0);
+    increment.visit_block(&drain_loop.body);
+    assert_eq!(
+        increment.0, 1,
+        "the bounded VT-d drain does not spend exactly one unit per record"
+    );
+
+    let iommu = parse("kernel/src/iommu.rs");
+    let report = function(&iommu, "report_faults");
+    struct FaultReporter {
+        drains: usize,
+        takes: usize,
+        loops: usize,
+    }
+    impl<'ast> Visit<'ast> for FaultReporter {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "drain_faults" {
+                self.drains += 1;
+            }
+            if call.method == "take_fault" {
+                self.takes += 1;
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_expr_while(&mut self, loop_: &'ast syn::ExprWhile) {
+            self.loops += 1;
+            syn::visit::visit_expr_while(self, loop_);
+        }
+    }
+    let mut reporter = FaultReporter {
+        drains: 0,
+        takes: 0,
+        loops: 0,
+    };
+    reporter.visit_block(&report.block);
+    assert_eq!((reporter.drains, reporter.takes, reporter.loops), (1, 0, 0));
+
+    let main = parse("kernel/src/main.rs");
+    let start = function(&main, "start_candidate");
+    struct FailureOrder(Vec<&'static str>);
+    impl<'ast> Visit<'ast> for FailureOrder {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "retire" && path_expression_is(&call.receiver, &["controller"]) {
+                self.0.push("retire");
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+            if path_expression_is(&call.func, &["iommu", "report_faults"]) {
+                self.0.push("report");
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+    }
+    let mut failure = FailureOrder(Vec::new());
+    failure.visit_block(&start.block);
+    let report = failure
+        .0
+        .iter()
+        .position(|step| *step == "report")
+        .expect("read failures never report VT-d faults");
+    let last_retirement = failure
+        .0
+        .iter()
+        .rposition(|step| *step == "retire")
+        .expect("read failures do not retire their controller");
+    assert!(
+        last_retirement < report,
+        "device-controlled reporting runs before the DMA fence: {:?}",
+        failure.0
+    );
+}
+
+#[test]
 fn dma_disposition_cannot_move_between_controllers() {
     let syntax = parse("kernel/src/nvme.rs");
     let disposition = syntax
@@ -2025,8 +2432,16 @@ fn every_failed_controller_retirement_keeps_its_controller_and_pci_lease() {
     );
 
     let retire = function(&main, "retire_candidate");
-    let Some(Stmt::Expr(Expr::If(first), None)) = retire.block.stmts.first() else {
-        panic!("candidate retirement must begin with its first owned retry");
+    let Some(Stmt::Expr(Expr::If(fence), None)) = retire.block.stmts.first() else {
+        panic!("candidate retirement must begin with its DMA fence");
+    };
+    assert!(matches!(&*fence.cond, Expr::Let(condition)
+        if matches!(&*condition.expr, Expr::MethodCall(call)
+            if call.method == "disable_bus_master_for_retirement"
+                && call.args.is_empty()
+                && path_expression_is(&call.receiver, &["device"]))));
+    let Some(Stmt::Expr(Expr::If(first), None)) = retire.block.stmts.get(1) else {
+        panic!("candidate retirement must release its fenced PCI lease");
     };
     let Some(Stmt::Expr(Expr::If(second), None)) = first.then_branch.stmts.get(1) else {
         panic!("candidate retirement must retain the owner after its second refusal");

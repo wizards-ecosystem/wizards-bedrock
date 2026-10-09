@@ -338,20 +338,17 @@ pub(crate) fn release_candidate(context: &mut ThreadContext) -> bool {
     }
 }
 
-/// Report and clear every fault the installed unit has recorded.
+/// Clear one inventory-bounded fault batch and report it once.
 pub(crate) fn report_faults() {
-    let mut installed = INSTALLED.lock();
-    let Some(isolation) = installed.as_mut() else {
-        return;
+    let drained = {
+        let mut installed = INSTALLED.lock();
+        let Some(isolation) = installed.as_mut() else {
+            return;
+        };
+        isolation.drain_faults()
     };
-    while let Some(fault) = isolation.take_fault() {
-        warn!(
-            "iommu: source {:#06x} {} {:#x}, reason {:#04x}",
-            fault.source,
-            if fault.write { "wrote" } else { "read" },
-            fault.address,
-            fault.reason
-        );
+    if drained != 0 {
+        warn!("iommu: cleared a bounded batch of {drained} translation fault(s)");
     }
 }
 

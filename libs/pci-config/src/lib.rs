@@ -1137,6 +1137,78 @@ fn admit_bus_master_with_leases<const N: usize>(
     }
 }
 
+/// Permanently withhold bus mastering from a transient function lease.
+///
+/// The command word is read and the BME-clear result is verified while the
+/// exact function and command generations remain live. Only a successful
+/// readback removes BME from the word a later [`restore_command`] will write;
+/// every other captured bit is still restored normally. An interrupted prior
+/// command change is accepted only at one of its two recorded words, which
+/// lets teardown settle an uncertain bus-master admission without inventing a
+/// third state.
+///
+/// # Errors
+///
+/// Refuses stale authority, an independently changed word, configuration
+/// access failure, or a transition whose exact result cannot be verified. The
+/// caller retains `state` for retry or quarantine in every case.
+pub fn disable_bus_master_for_retirement<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    authority: &FunctionAuthority,
+    state: &mut CommandState,
+    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), EnableError> {
+    if !functions.holds(authority) {
+        return Err(EnableError::Stale);
+    }
+    disable_bus_master_for_retirement_with_leases(
+        &mut functions.commands,
+        authority.lease,
+        state,
+        access,
+    )
+}
+
+fn disable_bus_master_for_retirement_with_leases<const N: usize>(
+    leases: &mut CommandLeases<N>,
+    function: FunctionLease,
+    state: &mut CommandState,
+    mut access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), EnableError> {
+    if !leases.holds_function(function, state.lease) {
+        return Err(EnableError::Stale);
+    }
+    let at = state.lease.command_address();
+    let current = access(at, CommandAccess::Read).ok_or(EnableError::Access)? as u16;
+    let pending = match state.phase {
+        CommandPhase::Installed => None,
+        CommandPhase::Restoring(word) => Some(word),
+    };
+    if current != state.installed && pending != Some(current) {
+        return Err(EnableError::Changed(current));
+    }
+
+    // `current` is now one of the command owner's exact recorded words. Make
+    // it the rollback word before publishing the next possible hardware word,
+    // so an interrupted retry still names both and only both possibilities.
+    state.installed = current;
+    let wanted = current & !command::BUS_MASTER;
+    state.phase = CommandPhase::Restoring(wanted);
+    match change_command(at, current, wanted, &mut access) {
+        Ok(()) => {
+            state.before &= !command::BUS_MASTER;
+            state.installed = wanted;
+            state.phase = CommandPhase::Installed;
+            Ok(())
+        }
+        Err(EnableError::Restore) => Err(EnableError::Restore),
+        Err(error) => {
+            state.phase = CommandPhase::Installed;
+            Err(error)
+        }
+    }
+}
+
 /// Restore the exact command word carried by a [`CommandState`].
 ///
 /// # Errors
@@ -2544,6 +2616,19 @@ mod tests {
         super::admit_bus_master_with_leases(leases, state.lease.function, state, access)
     }
 
+    fn disable_bus_master_for_retirement<const N: usize>(
+        leases: &mut CommandLeases<N>,
+        state: &mut CommandState,
+        access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+    ) -> Result<(), EnableError> {
+        super::disable_bus_master_for_retirement_with_leases(
+            leases,
+            state.lease.function,
+            state,
+            access,
+        )
+    }
+
     fn restore_command<const N: usize>(
         leases: &mut CommandLeases<N>,
         state: CommandState,
@@ -2819,6 +2904,7 @@ mod tests {
                 "access {fail_at} lost the command owner"
             );
 
+            fake.injected_read = None;
             fake.fail_at = None;
             admit_bus_master(&mut leases, &mut state, |_, event| fake.access(event))
                 .expect("the unchanged owner retries the upgrade");
@@ -3172,6 +3258,136 @@ mod tests {
     }
 
     #[test]
+    fn retirement_disables_and_does_not_restore_inherited_bus_master() {
+        const OTHER: u16 = 1 << 9;
+        let original = command::IO_SPACE | command::BUS_MASTER | OTHER;
+        let safe_original = original & !command::BUS_MASTER;
+        let memory_only = (original | command::MEMORY_SPACE) & !command::BUS_MASTER;
+        let admitted = original | command::MEMORY_SPACE | command::BUS_MASTER;
+        let mut fake = FakeCommand::new(original, u16::MAX);
+        let mut leases = CommandLeases::<1>::new();
+        let mut state = enable_memory_space(&mut leases, command_address(0), |_, event| {
+            fake.access(event)
+        })
+        .expect("memory decode enabled with inherited BME withheld");
+        admit_bus_master(&mut leases, &mut state, |_, event| fake.access(event))
+            .expect("isolated bus mastering admitted");
+
+        disable_bus_master_for_retirement(&mut leases, &mut state, |_, event| fake.access(event))
+            .expect("retirement fenced bus mastering");
+        assert_eq!(fake.command, memory_only);
+        assert_eq!(state.before, safe_original);
+
+        restore_command(&mut leases, state, |_, event| fake.access(event))
+            .expect("all safe firmware command bits restored");
+        assert_eq!(fake.command, safe_original);
+        assert_eq!(fake.command & command::BUS_MASTER, 0);
+        assert!(fake.events().windows(3).any(|events| events
+            == [
+                Some(CommandAccess::Read),
+                Some(CommandAccess::Write(admitted & !command::BUS_MASTER)),
+                Some(CommandAccess::Read),
+            ]));
+    }
+
+    #[test]
+    fn an_uncertain_retirement_transition_can_settle_disabled() {
+        const OTHER: u16 = 1 << 9;
+        let original = command::IO_SPACE | command::BUS_MASTER | OTHER;
+        let mut fake = FakeCommand::new(original, u16::MAX);
+        let mut leases = CommandLeases::<1>::new();
+        let mut state = enable_memory_space(&mut leases, command_address(0), |_, event| {
+            fake.access(event)
+        })
+        .expect("memory decode enabled");
+        let memory_only = fake.command;
+        admit_bus_master(&mut leases, &mut state, |_, event| fake.access(event))
+            .expect("isolated bus mastering admitted");
+        let admitted = fake.command;
+
+        fake.calls = 0;
+        fake.trace = [None; COMMAND_TRACE_CAPACITY];
+        fake.injected_read = Some((2, 1 << 10));
+        fake.fail_at = Some(3);
+        assert_eq!(
+            disable_bus_master_for_retirement(&mut leases, &mut state, |_, event| {
+                fake.access(event)
+            }),
+            Err(EnableError::Restore)
+        );
+        assert_eq!(fake.command, memory_only);
+        assert_eq!(state.installed, admitted);
+        assert_eq!(state.phase, CommandPhase::Restoring(memory_only));
+        assert_eq!(state.before, original);
+
+        fake.injected_read = None;
+        fake.fail_at = None;
+        disable_bus_master_for_retirement(&mut leases, &mut state, |_, event| fake.access(event))
+            .expect("the two recorded words settle at BME off");
+        assert_eq!(fake.command, memory_only);
+        assert_eq!(state.phase, CommandPhase::Installed);
+        assert_eq!(state.before, original & !command::BUS_MASTER);
+        restore_command(&mut leases, state, |_, event| fake.access(event))
+            .expect("the settled state remains exactly releasable");
+        assert_eq!(fake.command, original & !command::BUS_MASTER);
+    }
+
+    #[test]
+    fn every_retirement_access_refusal_retains_exact_retry_authority() {
+        const OTHER: u16 = 1 << 9;
+        let original = command::IO_SPACE | command::BUS_MASTER | OTHER;
+
+        for fail_at in 1..=4 {
+            let mut functions = FunctionClaims::<1>::new();
+            let authority = functions
+                .claim(command_address(0), HeaderType::from_bits(0))
+                .expect("function authority");
+            let mut fake = FakeCommand::new(original, u16::MAX);
+            let mut state = super::enable_memory_space(&mut functions, &authority, |_, event| {
+                fake.access(event)
+            })
+            .expect("memory decode enabled");
+            super::admit_bus_master(&mut functions, &authority, &mut state, |_, event| {
+                fake.access(event)
+            })
+            .expect("isolated bus mastering admitted");
+
+            fake.calls = 0;
+            fake.trace = [None; COMMAND_TRACE_CAPACITY];
+            fake.injected_read = (fail_at >= 3).then_some((2, 1 << 10));
+            fake.fail_at = Some(fail_at);
+            assert!(
+                super::disable_bus_master_for_retirement(
+                    &mut functions,
+                    &authority,
+                    &mut state,
+                    |_, event| fake.access(event),
+                )
+                .is_err(),
+                "access {fail_at} unexpectedly completed"
+            );
+            assert_eq!(state.before, original, "access {fail_at}");
+
+            fake.injected_read = None;
+            fake.fail_at = None;
+            super::disable_bus_master_for_retirement(
+                &mut functions,
+                &authority,
+                &mut state,
+                |_, event| fake.access(event),
+            )
+            .expect("the same command owner retries retirement");
+            assert_eq!(fake.command & command::BUS_MASTER, 0, "access {fail_at}");
+            super::restore_command(&mut functions, &authority, state, |_, event| {
+                fake.access(event)
+            })
+            .expect("safe command state remains exactly releasable");
+            assert_eq!(fake.command, original & !command::BUS_MASTER);
+            release_function(&mut functions, authority).expect("settled function releases");
+        }
+    }
+
+    #[test]
     fn every_enable_error_describes_its_cause() {
         assert_eq!(
             EnableError::Access.to_string(),
@@ -3454,10 +3670,13 @@ mod tests {
     #[test]
     fn configuration_cycles_require_the_issuing_function_registry() {
         let at = command_address(0);
-        let mut issuer = FunctionClaims::<1>::new();
+        let mut issuer = FunctionClaims::<2>::new();
         let authority = issuer
             .claim(at, HeaderType::from_bits(0))
             .expect("issuing function authority");
+        let other_authority = issuer
+            .claim(command_address(1), HeaderType::from_bits(0))
+            .expect("other function authority");
         let mut foreign = FunctionClaims::<1>::new();
         let mut foreign_accesses = 0;
 
@@ -3476,10 +3695,33 @@ mod tests {
         let state =
             super::enable_bus_master(&mut issuer, &authority, |_, access| fake.access(access))
                 .expect("the issuing registry reaches its function");
+        let mut state = state;
+        let issued_accesses = fake.calls;
+        assert_eq!(
+            super::disable_bus_master_for_retirement(
+                &mut issuer,
+                &other_authority,
+                &mut state,
+                |_, access| fake.access(access),
+            ),
+            Err(EnableError::Stale)
+        );
+        assert_eq!(
+            fake.calls, issued_accesses,
+            "a foreign registry reached retirement configuration"
+        );
+        super::disable_bus_master_for_retirement(
+            &mut issuer,
+            &authority,
+            &mut state,
+            |_, access| fake.access(access),
+        )
+        .expect("the issuing registry fences its function");
         super::restore_command(&mut issuer, &authority, state, |_, access| {
             fake.access(access)
         })
         .expect("the issuing registry restores its command");
+        release_function(&mut issuer, other_authority).expect("other function release");
         release_function(&mut issuer, authority).expect("settled function authority releases");
     }
 

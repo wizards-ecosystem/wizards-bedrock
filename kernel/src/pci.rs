@@ -560,6 +560,32 @@ impl Device {
         Ok(())
     }
 
+    /// Verify BME off and make that restriction survive transient release.
+    ///
+    /// The exact command/function owner stays in `self` on every refusal, so
+    /// the caller can retry once or quarantine the complete device beside its
+    /// DMA domain.
+    pub(crate) fn disable_bus_master_for_retirement(&mut self) -> Result<(), EnableError> {
+        let Some(function) = self.function.as_ref() else {
+            self.uncertain = true;
+            return Err(EnableError::Stale);
+        };
+        let Some(state) = self.command_state.as_mut() else {
+            self.uncertain = true;
+            return Err(EnableError::Stale);
+        };
+        match pci::disable_bus_master_for_retirement(function, state) {
+            Ok(()) => {
+                self.uncertain = false;
+                Ok(())
+            }
+            Err(reason) => {
+                self.uncertain = true;
+                Err(reason)
+            }
+        }
+    }
+
     /// Expose one mapped BAR only after its live identity enables memory decode.
     pub(crate) fn enable_memory_bar(&mut self, bar: pci::DisabledBar) -> BarDecodeOutcome {
         let Some(function) = self.function.as_ref() else {

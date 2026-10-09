@@ -692,7 +692,7 @@ fn admit_candidate(
                 "nvme: bus master refused after verified disable: {}",
                 failure.reason()
             );
-            match failure.into_disabled().retire(context) {
+            match failure.into_disabled().retire(&mut device, context) {
                 nvme::ControllerRetirement::Retired => {}
                 nvme::ControllerRetirement::Quarantined(quarantine) => {
                     nvme::keep_controller_quarantine(quarantine, device);
@@ -715,7 +715,7 @@ fn start_candidate(
     let Some((mut device, admitted)) = stage.take_admitted() else {
         return stage.take();
     };
-    let mut controller = match nvme::start(context, admitted) {
+    let mut controller = match nvme::start(context, &mut device, admitted) {
         Ok(controller) => controller,
         Err(failure) => {
             let reason = failure.reason();
@@ -737,7 +737,7 @@ fn start_candidate(
     // doorbell rung, phase tag recognised, completion matched by identifier.
     let Some(segment) = wost::mm::allocate_contiguous(1, 1) else {
         warn!("nvme: no memory for a read buffer");
-        match controller.retire(context) {
+        match controller.retire(&mut device, context) {
             nvme::ControllerRetirement::Retired => {}
             nvme::ControllerRetirement::Quarantined(quarantine) => {
                 nvme::keep_controller_quarantine(quarantine, device);
@@ -751,8 +751,9 @@ fn start_candidate(
         Ok(()) => info!("nvme: read block 0"),
         Err(reason) => {
             warn!("nvme: block 0 could not be read: {reason}");
+            let retirement = controller.retire(&mut device, context);
             iommu::report_faults();
-            match controller.retire(context) {
+            match retirement {
                 nvme::ControllerRetirement::Retired => {}
                 nvme::ControllerRetirement::Quarantined(quarantine) => {
                     nvme::keep_controller_quarantine(quarantine, device);
@@ -778,11 +779,21 @@ fn start_candidate(
 
 /// Finish one failed lease, stopping selection unless restoration is exact.
 fn retire_candidate(
-    device: pci::Device,
+    mut device: pci::Device,
     context: &mut thread::ThreadContext,
     #[cfg(feature = "selftest")] baseline: CandidateBaseline,
     ordinal: usize,
 ) -> StorageSelection {
+    if let Err(reason) = device.disable_bus_master_for_retirement() {
+        warn!("nvme: candidate {ordinal} bus-master fence was refused once: {reason}");
+        if let Err(reason) = device.disable_bus_master_for_retirement() {
+            warn!(
+                "nvme: candidate {ordinal} could not prove bus mastering off after retry: {reason}; selection halted"
+            );
+            pci::retain_failed_release(device);
+            return StorageSelection::Halted;
+        }
+    }
     if let Some((reason, device)) = device.release(context).into_retained() {
         warn!(
             "nvme: candidate {ordinal} pci lease retirement was refused once: {}",
@@ -797,8 +808,8 @@ fn retire_candidate(
             return StorageSelection::Halted;
         }
     }
-    // After the lease: the stop is proven and firmware's command word restored
-    // before translation goes off, so that interval rests on the stop (D-358).
+    // BME is verified off and excluded from the rejected lease's restoration
+    // word before translation goes away (D-369).
     if !iommu::release_candidate(context) {
         warn!("nvme: candidate {ordinal} could not return its dma domain; selection halted");
         return StorageSelection::Halted;

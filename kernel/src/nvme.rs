@@ -41,7 +41,7 @@ use wost::arch::current::cpu;
 #[cfg(feature = "selftest")]
 use wost::arch::current::paging::{self, PaintedStack};
 use wost::arch::current::pci::MappedBar;
-use wost::arch::current::vtd::Vtd;
+use wost::arch::current::vtd::{SegmentChangeError, Vtd};
 use wost::mm::{self, DmaSegment};
 use wost::sync::ThreadLock;
 use x86_paging::PAGE_SIZE;
@@ -260,6 +260,13 @@ struct QueuePair {
     submission: DmaSegment,
     /// The completion entries, likewise.
     completion: DmaSegment,
+    /// Whether each segment may still have a live or cached VT-d translation.
+    ///
+    /// These are conservative hardware-ownership facts, not publication
+    /// shadows. An uncertain map or unmap leaves its bit set and retains the
+    /// segment, so neither `Drop` nor candidate teardown can recycle it.
+    submission_mapped: bool,
+    completion_mapped: bool,
     /// Where the host will write next. **Shadowed**, because the doorbell is
     /// write-only and the controller's idea of the tail cannot be read back.
     tail: u32,
@@ -292,6 +299,8 @@ impl QueuePair {
             capacity,
             submission,
             completion,
+            submission_mapped: false,
+            completion_mapped: false,
             tail: 0,
             submission_head: 0,
             completion_head: 0,
@@ -305,17 +314,65 @@ impl QueuePair {
         self.completion.retain();
     }
 
+    /// Withhold only segments which may still be named by the domain.
+    fn retain_mapped(&mut self) {
+        if self.submission_mapped {
+            self.submission.retain();
+        }
+        if self.completion_mapped {
+            self.completion.retain();
+        }
+    }
+
+    const fn has_mappings(&self) -> bool {
+        self.submission_mapped || self.completion_mapped
+    }
+
     /// Make both queues reachable by the device, or neither (D-357).
     #[must_use = "unmapped queues cannot be published to the controller"]
     fn map_into(&mut self, isolation: &mut Vtd) -> bool {
-        if isolation.map_segment(&mut self.submission).is_err() {
+        if self.has_mappings() {
             return false;
         }
-        if isolation.map_segment(&mut self.completion).is_err() {
-            let _unmapped = isolation.unmap_segment(&mut self.submission);
+        match isolation.map_segment(&mut self.submission) {
+            Ok(()) => self.submission_mapped = true,
+            Err(SegmentChangeError::Refused(_)) => return false,
+            Err(_) => {
+                self.submission_mapped = true;
+                self.submission.retain();
+                return false;
+            }
+        }
+        let completion_mapped = match isolation.map_segment(&mut self.completion) {
+            Ok(()) => {
+                self.completion_mapped = true;
+                true
+            }
+            Err(SegmentChangeError::Refused(_)) => false,
+            Err(_) => {
+                self.completion_mapped = true;
+                self.completion.retain();
+                false
+            }
+        };
+        if !completion_mapped {
+            if isolation.unmap_segment(&mut self.submission).is_ok() {
+                self.submission_mapped = false;
+            }
             return false;
         }
         true
+    }
+
+    /// Remove and invalidate every queue translation before its frames drop.
+    fn unmap_from(&mut self, isolation: &mut Vtd) -> bool {
+        if self.submission_mapped && isolation.unmap_segment(&mut self.submission).is_ok() {
+            self.submission_mapped = false;
+        }
+        if self.completion_mapped && isolation.unmap_segment(&mut self.completion).is_ok() {
+            self.completion_mapped = false;
+        }
+        !self.has_mappings()
     }
 
     /// Every frame of both queues, for a check that reads the domain back.
@@ -326,6 +383,12 @@ impl QueuePair {
             into.extend((address..address + len).step_by(PAGE_SIZE as usize));
         }
         Some(())
+    }
+}
+
+impl Drop for QueuePair {
+    fn drop(&mut self) {
+        self.retain_mapped();
     }
 }
 
@@ -1105,20 +1168,26 @@ impl Controller {
             Command::number_of_queues(self.take_id(), 1, 1).ok_or(BringUpError::QueueSize)?;
         self.run_admin(negotiation, None)?;
 
-        let mut pair = QueuePair::new(IO_QUEUE, capacity).ok_or(BringUpError::NoMemory)?;
+        let pair = QueuePair::new(IO_QUEUE, capacity).ok_or(BringUpError::NoMemory)?;
+        // Install the owner before the first fallible domain transition. An
+        // uncertain partial map must remain visible to controller retirement,
+        // which keeps the device and domain quarantined until the exact queue
+        // leaves can be invalidated.
+        self.io = Some(pair);
         // Reachable before the controller can be told about either queue.
         {
             let mut installed = crate::iommu::installed();
             let isolation = installed.as_mut().ok_or(BringUpError::Isolation)?;
+            let pair = self.io.as_mut().ok_or(BringUpError::Isolation)?;
             if !pair.map_into(isolation) {
                 return Err(BringUpError::Isolation);
             }
         }
+        let pair = self.io.as_ref().ok_or(BringUpError::Isolation)?;
         let completion_address = pair.completion.address().ok_or(BringUpError::NoMemory)?;
         let submission_address = pair.submission.address().ok_or(BringUpError::NoMemory)?;
         // Once either command is published, the controller can retain these
         // runs. Keeping them here gives failure cleanup ownership of both.
-        self.io = Some(pair);
 
         // Completion first because submission names it; `IEN` stays clear so
         // bootstrap remains polled (`012` §2).
@@ -1648,10 +1717,45 @@ impl Controller {
         }
     }
 
-    /// Stop DMA and retire the mapping or return the complete controller owner.
-    pub(crate) fn retire(mut self, context: &mut ThreadContext) -> ControllerRetirement {
+    /// Remove every queue from the installed domain before its frames drop.
+    fn unmap_queues(&mut self) -> bool {
+        let io_mapped = self.io.as_ref().is_some_and(QueuePair::has_mappings);
+        if !self.admin.has_mappings() && !io_mapped {
+            return true;
+        }
+        let mut installed = crate::iommu::installed();
+        let Some(isolation) = installed.as_mut() else {
+            self.admin.retain_mapped();
+            if let Some(queue) = self.io.as_mut() {
+                queue.retain_mapped();
+            }
+            return false;
+        };
+        let admin = self.admin.unmap_from(isolation);
+        let io = self
+            .io
+            .as_mut()
+            .is_none_or(|queue| queue.unmap_from(isolation));
+        admin && io
+    }
+
+    /// Fence DMA, stop the engine, retire every queue and then retire the BAR.
+    pub(crate) fn retire(
+        mut self,
+        device: &mut crate::pci::Device,
+        context: &mut ThreadContext,
+    ) -> ControllerRetirement {
+        if let Err(reason) = device.disable_bus_master_for_retirement() {
+            warn!("nvme: bus-master retirement fence refused: {reason}");
+            self.stop_dma(None);
+            return quarantine_controller(self);
+        }
         self.stop_dma(None);
         if !self.dma.is_quiesced() {
+            return quarantine_controller(self);
+        }
+        if !self.unmap_queues() {
+            warn!("nvme: a queue mapping stayed reachable during retirement");
             return quarantine_controller(self);
         }
         let Some(registers) = self.registers.take() else {
@@ -1842,6 +1946,7 @@ fn write_submission(
 /// without storage, but may try a sibling only when teardown was exact.
 pub(crate) fn start(
     context: &mut ThreadContext,
+    device: &mut crate::pci::Device,
     prepared: BusMasterAdmittedController,
 ) -> Result<Controller, StartFailure> {
     #[cfg(feature = "selftest")]
@@ -1865,11 +1970,11 @@ pub(crate) fn start(
             wait_for_ready(registers, capabilities, Readiness::Ready)
         });
     if let Err(reason) = enabled {
-        let retirement = controller.retire(context);
+        let retirement = controller.retire(device, context);
         return Err(StartFailure { reason, retirement });
     }
     if let Err(reason) = controller.identify_namespace(capacity) {
-        let retirement = controller.retire(context);
+        let retirement = controller.retire(device, context);
         return Err(StartFailure { reason, retirement });
     }
 
@@ -1946,8 +2051,12 @@ impl DisabledController {
     }
 
     /// Return the mapping and all unpublished queues while DMA is still off.
-    pub(crate) fn retire(self, context: &mut ThreadContext) -> ControllerRetirement {
-        self.controller.retire(context)
+    pub(crate) fn retire(
+        self,
+        device: &mut crate::pci::Device,
+        context: &mut ThreadContext,
+    ) -> ControllerRetirement {
+        self.controller.retire(device, context)
     }
 }
 

@@ -565,7 +565,7 @@ impl Vtd {
     /// Clear every recorded fault, returning how many there were.
     pub fn drain_faults(&mut self) -> usize {
         let mut drained = 0;
-        while drained <= usize::from(self.fault_registers) && self.take_fault().is_some() {
+        while drained < usize::from(self.fault_registers) && self.take_fault().is_some() {
             drained += 1;
         }
         drained

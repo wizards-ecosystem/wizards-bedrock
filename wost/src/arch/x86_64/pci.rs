@@ -489,6 +489,40 @@ pub fn admit_bus_master(
     )
 }
 
+/// Disable bus mastering for a rejected DMA lease and remove BME from its
+/// eventual restoration word only after exact readback.
+pub fn disable_bus_master_for_retirement(
+    function: &FunctionClaim,
+    state: &mut CommandState,
+) -> Result<(), EnableError> {
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let Configuration { ports, functions } = &mut *configuration;
+    if !functions.holds(&function.authority) {
+        return pci_config::disable_bus_master_for_retirement(
+            functions,
+            &function.authority,
+            state,
+            |_, _| None,
+        );
+    }
+    pci_config::disable_bus_master_for_retirement(
+        functions,
+        &function.authority,
+        state,
+        |at, access| {
+            let (address, data) = ports.as_mut()?;
+            Port::write(address, at.bits());
+            match access {
+                CommandAccess::Read => Some(Port::read(data)),
+                CommandAccess::Write(value) => {
+                    Port::write(data, u32::from(value));
+                    Some(0)
+                }
+            }
+        },
+    )
+}
+
 /// Restore a captured command word as one verified transaction.
 pub fn restore_command(
     function: &FunctionClaim,
