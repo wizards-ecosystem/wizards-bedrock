@@ -2664,6 +2664,10 @@ fn translation_is_active_for_the_storage_function() -> bool {
     nvme::isolation_is_active_for_test().is_some_and(|(minted, _)| minted)
 }
 
+fn every_shared_vtd_requester_was_fenced_across_controller_fallback() -> bool {
+    iommu::requester_fences_cover_shared_unit_for_test()
+}
+
 fn the_unit_walks_the_kernels_root_table() -> bool {
     nvme::isolation_is_active_for_test().is_some_and(|(_, walks_kernel_root)| walks_kernel_root)
 }
@@ -2824,7 +2828,27 @@ fn the_bus_walk_descends_through_a_bridge() -> bool {
         && on_bus_zero >= 6
 }
 
+static DEVICE_CLAIM_CHECK: AtomicUsize = AtomicUsize::new(0);
+static DEVICE_PORT_CHECK: AtomicUsize = AtomicUsize::new(0);
+
+/// Run the two checks that require a free PCI function before VT-d requester
+/// takeover owns the complete unit. Each path returns every temporary owner;
+/// only the immutable verdict crosses into the later report.
+pub(crate) fn prepare_pci_claim_checks() {
+    if DEVICE_CLAIM_CHECK.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    let claim = check_device_is_claimed_once_and_a_refusal_strands_nothing();
+    let ports = check_claimed_devices_io_window_is_not_claimable_bare();
+    DEVICE_CLAIM_CHECK.store(usize::from(claim) + 1, Ordering::Release);
+    DEVICE_PORT_CHECK.store(usize::from(ports) + 1, Ordering::Release);
+}
+
 fn a_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
+    DEVICE_CLAIM_CHECK.load(Ordering::Acquire) == 2
+}
+
+fn check_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
     // The bridge behind bus zero: it has no windows to disturb, and it is
     // there on both boot targets.
     let mut bridge = None;
@@ -2846,10 +2870,10 @@ fn a_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
         return false;
     };
     pci::refuse_clean_preparation_for_test();
-    let clean_refusal = matches!(pci::claim(alias), Err(pci::ClaimError::WindowTaken))
+    let clean_refusal = matches!(pci::lease(alias), Err(pci::ClaimError::WindowTaken))
         && !pci::is_claimed(at)
         && pci::claims() == before;
-    let Ok(held) = pci::claim(alias) else {
+    let Ok(held) = pci::lease(alias) else {
         return false;
     };
     let recorded = pci::is_claimed(at) && pci::claims() == before + 1;
@@ -2857,7 +2881,7 @@ fn a_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
     // A different register offset is still the same function and the same
     // claim, so a second driver cannot enter through an alias.
     let refused = matches!(
-        pci::claim(at.at(pci_config::header::BAR0).expect("a BAR offset")),
+        pci::lease(at.at(pci_config::header::BAR0).expect("a BAR offset")),
         Err(pci::ClaimError::Taken)
     );
 
@@ -2875,10 +2899,18 @@ fn a_device_is_claimed_once_and_a_refusal_strands_nothing() -> bool {
         && held.window(4).is_none()
         && held.window(5).is_none();
 
-    clean_refusal && recorded && refused && intact && two_registers
+    let released = held.release(&mut context()).into_retained().is_none()
+        && !pci::is_claimed(at)
+        && pci::claims() == before;
+
+    clean_refusal && recorded && refused && intact && two_registers && released
 }
 
 fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
+    DEVICE_PORT_CHECK.load(Ordering::Acquire) == 2
+}
+
+fn check_claimed_devices_io_window_is_not_claimable_bare() -> bool {
     let claims_before = pci::claims();
     let mut candidate = None;
     if pci::enumerate(|function| {
@@ -2933,8 +2965,8 @@ fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
     let base_refused = wost::arch::current::port::claim::<u8>(port).is_none();
     let last_refused = wost::arch::current::port::claim::<u8>(last).is_none();
 
-    // Reacquiring the same function exercises both registries; the
-    // replacement is committed so permanent ownership stays true.
+    // Reacquiring the same function exercises both registries, then returns
+    // it so the later unit-wide requester takeover can own the exact function.
     let at = device.at();
     wost::arch::current::port::refuse_span_release_for_test();
     let (reason, device) = match device.release(&mut context).into_retained() {
@@ -2947,22 +2979,22 @@ fn a_claimed_devices_io_window_is_not_claimable_bare() -> bool {
         && wost::arch::current::port::claim::<u8>(port).is_none();
     retirement_clean &= device.release(&mut context).into_retained().is_none();
     let reclaimed = match pci::lease(at) {
-        Ok(mut reclaimed) => {
+        Ok(reclaimed) => {
             let same_window = (0..pci::BARS).any(|index| {
                 reclaimed.window(index).is_some_and(|window| {
                     window.bar == pci_config::Bar::Io { port } && window.size == size
                 })
             });
-            same_window && reclaimed.commit().is_ok()
+            same_window && reclaimed.release(&mut context).into_retained().is_none()
         }
         Err(_) => false,
     };
 
     // An outside claim proves refusal is limited to the device's window.
-    let outside = port
-        .checked_add(size as u16)
-        .and_then(wost::arch::current::port::claim::<u8>)
-        .is_some();
+    let outside = port.checked_add(size as u16).is_some_and(|outside| {
+        wost::arch::current::port::claim_spans::<1>(&[(outside, 1)])
+            .is_some_and(|span| wost::arch::current::port::release_spans(span).is_ok())
+    });
 
     surveyed && seen > 0 && base_refused && last_refused && retirement_clean && reclaimed && outside
 }
@@ -7870,7 +7902,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 275;
+const EXPECTED_CHECKS: usize = 276;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -8999,6 +9031,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "translation is active for the storage function",
         translation_is_active_for_the_storage_function(),
+    );
+    report.check(
+        "every shared vtd requester was fenced across controller fallback",
+        every_shared_vtd_requester_was_fenced_across_controller_fallback(),
     );
     report.check(
         "the unit walks the kernel's root table",

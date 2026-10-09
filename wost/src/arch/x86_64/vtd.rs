@@ -71,6 +71,9 @@ pub enum VtdError {
         /// Raw capability register for the refused unit.
         capability: u64,
     },
+    /// The unit cannot prove that completed TE transitions drain both DMA
+    /// directions.
+    NoDmaDraining,
     /// The unit reports fewer domains than the one it is asked to hold.
     TooFewDomains,
     /// A table frame was unavailable, or the arena is full.
@@ -84,7 +87,8 @@ pub enum VtdError {
         /// Last byte of the region.
         limit: u64,
     },
-    /// Firmware's translation or invalidation queue would not switch off.
+    /// Firmware's translation or invalidation queue did not reach the requested
+    /// quiescent state, so the live state is uncertain.
     QuiescenceTimeout,
     /// The root-table pointer did not take: the status never reported it set,
     /// or the pointer read back names another table.
@@ -111,13 +115,14 @@ impl fmt::Display for VtdError {
                     "no modelled page-table depth in capability {capability:#x}"
                 )
             }
+            Self::NoDmaDraining => f.write_str("the unit does not drain both DMA reads and writes"),
             Self::TooFewDomains => f.write_str("the unit reports no domain to isolate into"),
             Self::OutOfTables => f.write_str("no frame for a remapping table"),
             Self::Misaligned => f.write_str("a remapping table is not page aligned"),
             Self::ReservedRegion { base, limit } => {
                 write!(f, "reserved region [{base:#x}, {limit:#x}] would not map")
             }
-            Self::QuiescenceTimeout => f.write_str("firmware's translation would not switch off"),
+            Self::QuiescenceTimeout => f.write_str("firmware's translation state did not quiesce"),
             Self::RootTableRefused => f.write_str("the root-table pointer was not accepted"),
             Self::TranslationTimeout => f.write_str("translation did not switch"),
             Self::InvalidationTimeout => f.write_str("an invalidation did not complete"),
@@ -174,10 +179,14 @@ pub struct UnitFacts {
     pub interrupt_remapping: bool,
     /// Fault-recording registers the unit has.
     pub fault_registers: u16,
+    /// Whether completed translation transitions drain DMA reads and writes.
+    pub dma_draining: bool,
 }
 
-/// A programmed VT-d domain: translation is active and the storage function's
-/// context points at a second-level tree that reaches only mapped segments.
+/// A programmed VT-d domain owner: after successful establishment translation
+/// is active through tables that reach only mapped segments; after an
+/// uncertain transition the complete value is retained without assuming the
+/// live hardware state.
 #[derive(Debug)]
 pub struct Vtd {
     registers: ReleasableDevice,
@@ -227,12 +236,35 @@ impl DmaDomain {
 pub enum Release {
     /// Translation is off and the window can be unmapped.
     Released(ReleasableDevice),
-    /// Translation would not switch off, so the unit stays whole and on.
+    /// The disable transition was not proved complete, so the unit stays whole.
     Retained {
-        /// The unit, tables intact, still walking them.
+        /// The unit and its tables, intact for either possible live state.
         isolation: Vtd,
-        /// Why translation stayed on.
+        /// Why the resulting translation state is uncertain.
         reason: VtdError,
+    },
+}
+
+/// The ownership-preserving result of establishing one VT-d domain.
+#[derive(Debug)]
+#[must_use = "a post-transition VT-d owner must be installed or quarantined"]
+pub enum Establishment {
+    /// Translation is active through the complete new owner.
+    Established(Vtd),
+    /// Read-only preflight or unpublished table preparation refused.
+    Refused {
+        /// Why establishment did not begin.
+        reason: VtdError,
+        /// Register authority remains safe to return.
+        registers: ReleasableDevice,
+    },
+    /// A unit-wide write was attempted, so all possible hardware owners stay
+    /// inseparable.
+    Retained {
+        /// Why the transition could not be proved complete.
+        reason: VtdError,
+        /// Registers and every table the unit may be using.
+        isolation: Vtd,
     },
 }
 
@@ -277,13 +309,13 @@ impl Vtd {
     /// region would not map, or the hardware does not accept the root-table
     /// pointer or translation.
     pub fn establish(
-        mut registers: ReleasableDevice,
+        registers: ReleasableDevice,
         function: Address,
         reserved: &[(u64, u64)],
-    ) -> Result<Self, (VtdError, ReleasableDevice)> {
-        let plan = match Plan::read(&mut registers) {
+    ) -> Establishment {
+        let plan = match Plan::read(&registers) {
             Ok(plan) => plan,
-            Err(reason) => return Err((reason, registers)),
+            Err(reason) => return Establishment::Refused { reason, registers },
         };
         let walks = if plan.extended.page_walk_coherent() {
             TableWalks::Coherent
@@ -295,7 +327,10 @@ impl Vtd {
             IommuTable::new(1, walks),
             IommuTable::new(TABLE_LIMIT, walks),
         ) else {
-            return Err((VtdError::OutOfTables, registers));
+            return Establishment::Refused {
+                reason: VtdError::OutOfTables,
+                registers,
+            };
         };
         let mut unit = Self {
             registers,
@@ -315,19 +350,21 @@ impl Vtd {
             #[cfg(feature = "selftest")]
             forced_invalidation_failures: 0,
         };
-        match unit.program(reserved) {
-            Ok(()) => Ok(unit),
-            Err(reason) => {
-                let Self { registers, .. } = unit;
-                Err((reason, registers))
-            }
+        if let Err(reason) = unit.prepare(reserved) {
+            let Self { registers, .. } = unit;
+            return Establishment::Refused { reason, registers };
+        }
+        match unit.transition() {
+            Ok(()) => Establishment::Established(unit),
+            Err(reason) => Establishment::Retained {
+                reason,
+                isolation: unit,
+            },
         }
     }
 
-    /// Point the function's context at the top table and the bus's root entry
-    /// at the context table, map the regions firmware reserves for the
-    /// function, and switch translation on behind them.
-    fn program(&mut self, reserved: &[(u64, u64)]) -> Result<(), VtdError> {
+    /// Build every unpublished table entry before the first unit-wide write.
+    fn prepare(&mut self, reserved: &[(u64, u64)]) -> Result<(), VtdError> {
         let devfn = self.devfn();
         let bus = self.function.bus();
         let context_entry = ContextEntry::try_present(self.table_address(0), self.width, DOMAIN_ID)
@@ -343,6 +380,15 @@ impl Vtd {
             }
         }
 
+        Ok(())
+    }
+
+    /// Quiesce the unit, drain every request issued before its BME fences,
+    /// publish the prepared root, invalidate stale translations and enable the
+    /// new domain.
+    fn transition(&mut self) -> Result<(), VtdError> {
+        self.quiesce()?;
+        self.drain_dma()?;
         self.set_root_table()?;
         self.invalidate(true)?;
         self.switch_translation(true)
@@ -382,6 +428,7 @@ impl Vtd {
             queued_invalidation: self.extended.queued_invalidation(),
             interrupt_remapping: self.extended.interrupt_remapping(),
             fault_registers: self.fault_registers,
+            dma_draining: self.capability.dma_draining(),
         }
     }
 
@@ -574,9 +621,10 @@ impl Vtd {
     /// Switch translation off and give the register window back.
     ///
     /// The tables drop with the unit, which is why translation must be off
-    /// first: a unit that still walks them would read freed frames. When
-    /// translation will not switch off the unit comes back whole, so the
-    /// caller retains it rather than freeing tables the hardware still walks.
+    /// first: a unit that still walks them would read freed frames. When the
+    /// disable transition cannot be proved complete, the unit comes back whole
+    /// so the caller retains it rather than freeing tables hardware may still
+    /// walk.
     pub fn release(mut self) -> Release {
         if let Err(reason) = self.switch_translation(false) {
             return Release::Retained {
@@ -586,18 +634,6 @@ impl Vtd {
         }
         let Self { registers, .. } = self;
         Release::Released(registers)
-    }
-
-    /// Switch translation off while the caller holds the device idle.
-    #[cfg(feature = "selftest")]
-    pub fn disable_translation_for_test(&mut self) -> bool {
-        self.switch_translation(false).is_ok()
-    }
-
-    /// Switch translation back on after [`disable_translation_for_test`](Self::disable_translation_for_test).
-    #[cfg(feature = "selftest")]
-    pub fn enable_translation_for_test(&mut self) -> bool {
-        self.switch_translation(true).is_ok()
     }
 
     /// Every page the second-level tree the unit walks currently reaches,
@@ -709,6 +745,32 @@ impl Vtd {
         )
     }
 
+    /// Clear firmware translation and queued invalidation after the caller has
+    /// fenced every declared requester. A required TES-off transition drains;
+    /// an already-quiesced unit still needs [`Self::drain_dma`] because the
+    /// observed status alone says nothing about older requests.
+    fn quiesce(&mut self) -> Result<(), VtdError> {
+        let status = read_u32(&self.registers, vtd::GSTS as usize)?;
+        if quiesced(status) {
+            return Ok(());
+        }
+        write_u32(&mut self.registers, vtd::GCMD as usize, self.gcmd)?;
+        self.poll_status(quiesced, VtdError::QuiescenceTimeout)
+    }
+
+    /// Complete an architected read/write drain even when firmware already
+    /// left TES clear. With every requester BME-fenced, no later request can
+    /// enter behind this boundary before the new root is published.
+    fn drain_dma(&mut self) -> Result<(), VtdError> {
+        let command_register = self.iotlb_base + iotlb_command::COMMAND_REGISTER as usize;
+        write_u64(
+            &mut self.registers,
+            command_register,
+            iotlb_command::global_with_drain(),
+        )?;
+        self.poll_u64(command_register, iotlb_command::completed)
+    }
+
     fn invalidate(&mut self, context: bool) -> Result<(), VtdError> {
         #[cfg(feature = "selftest")]
         if self.forced_invalidation_failures > 0 {
@@ -762,13 +824,13 @@ impl Vtd {
 }
 
 impl Plan {
-    /// Read the capabilities and quiesce whatever firmware left enabled.
+    /// Read and validate every capability needed before the first unit write.
     ///
     /// The command shadow starts from the status firmware left, keeping the
-    /// facilities this unit does not drive and clearing translation and queued
-    /// invalidation, which must both be off before the root table changes and
-    /// before the register-based invalidation interface is valid (D-358).
-    fn read(registers: &mut ReleasableDevice) -> Result<Self, VtdError> {
+    /// facilities this unit does not drive and selecting translation and queued
+    /// invalidation as the bits the later, ownership-preserving transition will
+    /// clear before changing the root table (D-358, D-370).
+    fn read(registers: &ReleasableDevice) -> Result<Self, VtdError> {
         let capability = Capability::from_bits(read_u64(registers, vtd::CAP as usize)?);
         let extended = ExtendedCapability::from_bits(read_u64(registers, vtd::ECAP as usize)?);
         let width = AddressWidth::choose(capability).ok_or(VtdError::NoAddressWidth {
@@ -777,22 +839,11 @@ impl Plan {
         if u32::from(DOMAIN_ID) >= capability.number_of_domains() {
             return Err(VtdError::TooFewDomains);
         }
+        if !capability.dma_draining() {
+            return Err(VtdError::NoDmaDraining);
+        }
         let status = read_u32(registers, vtd::GSTS as usize)?;
         let gcmd = inherited_command(status);
-        if !quiesced(status) {
-            write_u32(registers, vtd::GCMD as usize, gcmd)?;
-            let mut settled = false;
-            for _ in 0..POLL_LIMIT {
-                if quiesced(read_u32(registers, vtd::GSTS as usize)?) {
-                    settled = true;
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-            if !settled {
-                return Err(VtdError::QuiescenceTimeout);
-            }
-        }
         Ok(Self {
             capability,
             extended,

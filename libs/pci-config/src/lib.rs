@@ -971,6 +971,66 @@ pub fn enable_memory_space<const N: usize>(
     enable_memory_space_with_leases(&mut functions.commands, authority, access)
 }
 
+/// Exclusively fence one requester's bus mastering for a unit-wide DMA
+/// transition.
+///
+/// The returned command owner records every captured bit except BME as its
+/// restoration target. It must therefore remain attached to the remapping
+/// unit until the unit transition is complete; restoring it can never revive
+/// unisolated DMA.
+///
+/// # Errors
+///
+/// See [`EnableError`]. An uncertain rollback returns its still-live
+/// [`CommandState`] through [`EnableFailure`] for quarantine or exact retry.
+pub fn fence_bus_master<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    authority: &FunctionAuthority,
+    access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<CommandState, EnableFailure> {
+    if !functions.holds(authority) {
+        return Err(EnableFailure::from(EnableError::Stale));
+    }
+    let mut state = begin_command(
+        &mut functions.commands,
+        authority,
+        0,
+        command::BUS_MASTER,
+        access,
+    )?;
+    // `begin_command` verified the installed word exactly. From this point a
+    // later restoration is deliberately safe rather than firmware-exact.
+    state.before &= !command::BUS_MASTER;
+    Ok(state)
+}
+
+/// Freshly verify that one live command owner still has BME clear.
+///
+/// This is the last selected-function check before a unit-wide VT-d write.
+/// It neither changes nor consumes the command owner.
+pub fn verify_bus_master_fence<const N: usize>(
+    functions: &mut FunctionClaims<N>,
+    authority: &FunctionAuthority,
+    state: &CommandState,
+    mut access: impl FnMut(Address, CommandAccess) -> Option<u32>,
+) -> Result<(), EnableError> {
+    if !functions.holds(authority)
+        || !functions.commands.holds(authority, state.lease)
+        || state.phase != CommandPhase::Installed
+    {
+        return Err(EnableError::Stale);
+    }
+    let current = access(state.lease.command_address(), CommandAccess::Read)
+        .ok_or(EnableError::Access)? as u16;
+    if current != state.installed {
+        return Err(EnableError::Changed(current));
+    }
+    if current & command::BUS_MASTER != 0 {
+        return Err(EnableError::Refused(current));
+    }
+    Ok(())
+}
+
 fn enable_memory_space_with_leases<const N: usize>(
     leases: &mut CommandLeases<N>,
     authority: &FunctionAuthority,
@@ -3288,6 +3348,83 @@ mod tests {
                 Some(CommandAccess::Write(admitted & !command::BUS_MASTER)),
                 Some(CommandAccess::Read),
             ]));
+    }
+
+    #[test]
+    fn unit_requester_fence_withholds_and_never_restores_inherited_bus_master() {
+        const OTHER: u16 = 1 << 9;
+        let original = command::IO_SPACE | command::BUS_MASTER | OTHER;
+        let safe = original & !command::BUS_MASTER;
+        let mut functions = FunctionClaims::<1>::new();
+        let authority = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("function authority");
+        let mut fake = FakeCommand::new(original, u16::MAX);
+
+        let state =
+            super::fence_bus_master(&mut functions, &authority, |_, access| fake.access(access))
+                .expect("requester fenced");
+        assert_eq!(fake.command, safe);
+        assert_eq!(state.before, safe);
+        super::verify_bus_master_fence(&mut functions, &authority, &state, |_, access| {
+            fake.access(access)
+        })
+        .expect("fresh exact fence readback");
+
+        super::restore_command(&mut functions, &authority, state, |_, access| {
+            fake.access(access)
+        })
+        .expect("safe command restoration");
+        assert_eq!(fake.command, safe);
+        super::release_function(&mut functions, authority).expect("function returned");
+    }
+
+    #[test]
+    fn requester_fence_and_fresh_verification_retain_exact_failure_authority() {
+        const OTHER: u16 = 1 << 9;
+        let original = command::IO_SPACE | command::BUS_MASTER | OTHER;
+
+        for fail_at in 0..=2 {
+            let mut functions = FunctionClaims::<1>::new();
+            let authority = functions
+                .claim(command_address(0), HeaderType::from_bits(0))
+                .expect("function authority");
+            let mut fake = FakeCommand::new(original, u16::MAX);
+            fake.fail_at = Some(fail_at);
+            let failure = super::fence_bus_master(&mut functions, &authority, |_, access| {
+                fake.access(access)
+            })
+            .expect_err("injected fence refusal");
+            fake.fail_at = None;
+            if let Some(state) = failure.into_state() {
+                super::restore_command(&mut functions, &authority, state, |_, access| {
+                    fake.access(access)
+                })
+                .expect("uncertain fence restored by its exact owner");
+            }
+            super::release_function(&mut functions, authority).expect("function returned");
+        }
+
+        let mut functions = FunctionClaims::<1>::new();
+        let authority = functions
+            .claim(command_address(0), HeaderType::from_bits(0))
+            .expect("function authority");
+        let mut fake = FakeCommand::new(original, u16::MAX);
+        let state =
+            super::fence_bus_master(&mut functions, &authority, |_, access| fake.access(access))
+                .expect("requester fenced");
+        fake.command ^= command::IO_SPACE;
+        assert!(matches!(
+            super::verify_bus_master_fence(&mut functions, &authority, &state, |_, access| fake
+                .access(access)),
+            Err(EnableError::Changed(_))
+        ));
+        fake.command ^= command::IO_SPACE;
+        super::restore_command(&mut functions, &authority, state, |_, access| {
+            fake.access(access)
+        })
+        .expect("fence remains exactly retryable");
+        super::release_function(&mut functions, authority).expect("function returned");
     }
 
     #[test]

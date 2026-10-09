@@ -430,6 +430,12 @@ fn survey_the_bus() {
         return;
     }
 
+    // These checks need an ordinary unclaimed function. Run them before a
+    // complete VT-d requester inventory deliberately owns every function in
+    // the unit, and cache only their verdicts for the later report.
+    #[cfg(feature = "selftest")]
+    selftest::prepare_pci_claim_checks();
+
     let mut selection = StorageSelection::Seeking;
     let mut storage = 0;
     let surveyed = pci::enumerate(|function| {
@@ -475,8 +481,9 @@ enum StorageSelection {
 /// Where a storage candidate stands between the stages of [`try_controller`].
 #[derive(Debug)]
 enum CandidateStage {
-    /// Leased, mapped and verified disabled, with bus mastering still off.
-    Prepared(pci::Device, nvme::DisabledController),
+    /// Leased, mapped and verified disabled, with bus mastering still off;
+    /// the flag records whether the sibling isolation stage has completed.
+    Prepared(pci::Device, nvme::DisabledController, bool),
     /// Bus mastering admitted behind the installed domain.
     Admitted(pci::Device, nvme::BusMasterAdmittedController),
     /// A stage failed and only the lease remains, for [`retire_candidate`].
@@ -494,7 +501,7 @@ impl CandidateStage {
     /// The owners of a prepared candidate; any other stage stays in place.
     fn take_prepared(&mut self) -> Option<(pci::Device, nvme::DisabledController)> {
         match self.take() {
-            Self::Prepared(device, prepared) => Some((device, prepared)),
+            Self::Prepared(device, prepared, true) => Some((device, prepared)),
             other => {
                 *self = other;
                 None
@@ -537,6 +544,10 @@ fn try_controller(at: pci_config::Address, ordinal: usize) -> StorageSelection {
     // owners rather than one per stage call.
     let mut stage = claim_candidate(at, ordinal, &mut context);
     let device = loop {
+        if matches!(&stage, CandidateStage::Prepared(_, _, false)) {
+            isolate_candidate(&mut stage, &mut context);
+            continue;
+        }
         stage = match stage {
             CandidateStage::Prepared(..) => admit_candidate(&mut stage, &mut context),
             CandidateStage::Admitted(..) => start_candidate(&mut stage, &mut context, ordinal),
@@ -601,12 +612,39 @@ fn claim_candidate(
             return failed_preparation(failure, device, ordinal);
         }
     };
-    // Translation goes on while the controller is still disabled and its
-    // function cannot bus-master, so no DMA ever runs outside the domain.
-    if !iommu::establish(context, at) {
-        warn!("storage: no DMA isolation");
+    CandidateStage::Prepared(device, prepared, false)
+}
+
+/// Establish unit-wide isolation without moving the prepared controller into
+/// the same debug frame as VT-d's bounded inventory and table construction.
+fn isolate_candidate(stage: &mut CandidateStage, context: &mut thread::ThreadContext) {
+    let outcome = match stage {
+        CandidateStage::Prepared(device, _, false) => iommu::establish(context, device),
+        _ => return,
+    };
+    match outcome {
+        iommu::EstablishOutcome::Established => {}
+        iommu::EstablishOutcome::Unavailable => warn!("storage: no DMA isolation"),
+        iommu::EstablishOutcome::Quarantined => {
+            quarantine_isolation(stage);
+            return;
+        }
     }
-    CandidateStage::Prepared(device, prepared)
+    let CandidateStage::Prepared(_, _, isolated) = stage else {
+        panic!("the isolation stage lost its prepared candidate");
+    };
+    *isolated = true;
+}
+
+/// Move uncertain isolation owners into their permanent quarantine only after
+/// the VT-d establishment frame has returned.
+fn quarantine_isolation(stage: &mut CandidateStage) {
+    let CandidateStage::Prepared(device, prepared, false) = stage.take() else {
+        panic!("an isolation quarantine lost its prepared candidate");
+    };
+    warn!("storage: DMA isolation state is uncertain; selection halted");
+    nvme::keep_iommu_quarantine(prepared, device);
+    *stage = CandidateStage::Settled(StorageSelection::Halted);
 }
 
 /// Report a refused lease, and whether selection may try the next function.
@@ -794,6 +832,23 @@ fn retire_candidate(
             return StorageSelection::Halted;
         }
     }
+    if let Err(reason) = device.settle_bus_master_fence_for_retirement() {
+        warn!("nvme: candidate {ordinal} safe command restoration was refused once: {reason}");
+        if let Err(reason) = device.settle_bus_master_fence_for_retirement() {
+            warn!(
+                "nvme: candidate {ordinal} could not settle its bus-master fence after retry: {reason}; selection halted"
+            );
+            pci::retain_failed_release(device);
+            return StorageSelection::Halted;
+        }
+    }
+    // BME is verified off, excluded from the restored command word and still
+    // protected by the selected function claim while translation goes away.
+    if !iommu::release_candidate(context) {
+        warn!("nvme: candidate {ordinal} could not return its dma domain; selection halted");
+        pci::retain_failed_release(device);
+        return StorageSelection::Halted;
+    }
     if let Some((reason, device)) = device.release(context).into_retained() {
         warn!(
             "nvme: candidate {ordinal} pci lease retirement was refused once: {}",
@@ -807,12 +862,6 @@ fn retire_candidate(
             pci::retain_failed_release(device);
             return StorageSelection::Halted;
         }
-    }
-    // BME is verified off and excluded from the rejected lease's restoration
-    // word before translation goes away (D-369).
-    if !iommu::release_candidate(context) {
-        warn!("nvme: candidate {ordinal} could not return its dma domain; selection halted");
-        return StorageSelection::Halted;
     }
     #[cfg(feature = "selftest")]
     if !baseline.is_restored(context) {

@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1665;
+pub const NEXT_MUTATION_ID: u16 = 1680;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521];
@@ -11437,8 +11437,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1007,
         file: "wost/src/arch/x86_64/pci.rs",
-        find: "const FUNCTION_CLAIMS: usize = 8;",
-        replace: "const FUNCTION_CLAIMS: usize = 8;\n\nfn write_command() {}",
+        find: "const FUNCTION_CLAIMS: usize = 12;",
+        replace: "const FUNCTION_CLAIMS: usize = 12;\n\nfn write_command() {}",
         breaks: "the PCI adapter regrows an unchecked command-register write helper",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -13196,7 +13196,10 @@ fn mint_stopped<'controller>(
         find: "        if !translation_enabled(status) {\n            return None;\n        }\n        let root = RootEntry {",
         replace: "        let _translation = translation_enabled(status);\n        let root = RootEntry {",
         breaks: "a domain proof is minted while translation is off",
-        reddens: Caught::Check("a domain proof is refused while translation is off"),
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
+        },
     },
     Mutation {
         id: 1547,
@@ -13217,8 +13220,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1549,
         file: "kernel/src/main.rs",
-        find: "        warn!(\"storage: no DMA isolation\");",
-        replace: "        warn!(\"storage: DMA isolation unavailable\");",
+        find: "        iommu::EstablishOutcome::Unavailable => warn!(\"storage: no DMA isolation\"),",
+        replace: "        iommu::EstablishOutcome::Unavailable => warn!(\"storage: DMA isolation unavailable\"),",
         breaks: "the unisolated boot loses its exact refusal record",
         reddens: Caught::BootMarker(qemu::NO_ISOLATION_MARKER),
     },
@@ -13299,8 +13302,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1557,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "            let buses = behind(Bdf::new(segment, bus, device, function), bridge)?;",
-        replace: "            let buses = behind(Bdf::new(0, bus, device, function), bridge)?;",
+        find: "        for (next_device, next_function) in hops {\n            let at = Bdf::new(segment, bus, device, function);",
+        replace: "        for (next_device, next_function) in hops {\n            let at = Bdf::new(0, bus, device, function);",
         breaks: "a scope's walk looks its bridges up in segment zero instead of its own segment",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -13310,8 +13313,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1558,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "(buses.secondary..=buses.subordinate).contains(&bdf.bus())",
-        replace: "(buses.secondary..buses.subordinate).contains(&bdf.bus())",
+        find: "(hierarchy.buses.secondary..=hierarchy.buses.subordinate)\n                        .contains(&bdf.bus())",
+        replace: "(hierarchy.buses.secondary..hierarchy.buses.subordinate)\n                        .contains(&bdf.bus())",
         breaks: "a bridge scope stops one bus short of its bridge's subordinate bus",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -13321,8 +13324,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1559,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "            Self::Hierarchy(at, buses) => {\n                at == bdf || (buses.secondary..=buses.subordinate)",
-        replace: "            Self::Hierarchy(_, buses) => {\n                (buses.secondary..=buses.subordinate)",
+        find: "            Self::Hierarchy(hierarchy) => {\n                hierarchy.root == bdf\n                    || (hierarchy.buses.secondary..=hierarchy.buses.subordinate)",
+        replace: "            Self::Hierarchy(hierarchy) => {\n                (hierarchy.buses.secondary..=hierarchy.buses.subordinate)",
         breaks: "a bridge scope covers the buses behind its bridge but not the bridge itself",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -13332,8 +13335,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1560,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "            let buses = behind(Bdf::new(segment, bus, device, function), bridge)?;\n            bus = buses.secondary;\n",
-        replace: "            let buses = behind(Bdf::new(segment, bus, device, function), bridge);\n            bus = buses.map_or(bus, |buses| buses.secondary);\n",
+        find: "            let buses = behind(at, bridge)?;\n            bus = buses.secondary;\n",
+        replace: "            let buses = behind(at, bridge);\n            bus = buses.map_or(bus, |buses| buses.secondary);\n",
         breaks: "a hop that is not a bridge is stepped over as if the path went on along its bus",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -13398,8 +13401,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1566,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "                            Some((innermost, _)) if buses.secondary < innermost => {}",
-        replace: "                            Some((innermost, _)) if buses.secondary > innermost => {}",
+        find: "                            Some((current, _)) if current.strictly_contains(named) => {\n                                enclosing = Some((named, candidate));\n                            }",
+        replace: "                            Some((current, _)) if current.strictly_contains(named) => {}",
         breaks: "an outer bridge scope outranks an inner one enclosing the same function",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -13442,9 +13445,9 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1570,
         file: "kernel/src/main.rs",
-        find: "    CandidateStage::Prepared(device, prepared)\n}",
-        replace: "    admit_candidate(&mut CandidateStage::Prepared(device, prepared), context)\n}",
-        breaks: "the claim stage runs the admit stage inside its own frame, so both debug frames share the boot stack",
+        find: "    *isolated = true;\n}",
+        replace: "    *isolated = true;\n    *stage = admit_candidate(stage, context);\n}",
+        breaks: "the isolation stage runs the admit stage inside its own frame, so both debug frames share the boot stack",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "dma_contracts::only_the_candidate_sequencer_calls_its_stages",
@@ -18399,8 +18402,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1638,
         file: "libs/acpi-tables/src/lib.rs",
-        find: "                                    enclosing_ambiguous = true;",
-        replace: "                                    enclosing_ambiguous = false;",
+        find: "                            Some(_) => {\n                                enclosing_ambiguous = true;\n                            }",
+        replace: "                            Some(_) => {\n                                enclosing_ambiguous = false;\n                            }",
         breaks: "two equal-depth bridge scopes can make table order choose DMA authority",
         reddens: Caught::HostTest {
             package: "acpi-tables",
@@ -18685,6 +18688,167 @@ fn mint_stopped<'controller>(
             package: "xtask",
             name: "dma_contracts::device_fault_reporting_is_bounded_and_follows_retirement",
         },
+    },
+    Mutation {
+        id: 1665,
+        file: "kernel/src/iommu.rs",
+        find: "    for requester in requesters.iter() {",
+        replace: "    for requester in requesters.iter().skip(1) {",
+        breaks: "the first governed requester is omitted from the unit-wide DMA fence boundary",
+        reddens: Caught::Check(
+            "every shared vtd requester was fenced across controller fallback",
+        ),
+    },
+    Mutation {
+        id: 1666,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "    if requesters[..*count].contains(&Some(requester)) {\n        return Ok(());\n    }",
+        replace: "    let _duplicate_requester = requesters[..*count].contains(&Some(requester));",
+        breaks: "duplicate endpoint declarations consume distinct requester owners",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::an_endpoint_inventory_owns_each_distinct_endpoint_on_the_unit",
+        },
+    },
+    Mutation {
+        id: 1667,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                        for bus in hierarchy.buses.secondary..=hierarchy.buses.subordinate {",
+        replace: "                        for bus in hierarchy.buses.secondary..hierarchy.buses.secondary {",
+        breaks: "a sub-hierarchy requester scan visits none of the buses behind its bridge",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::requester_inventory_expands_hierarchies_and_refuses_catch_all_and_overflow",
+        },
+    },
+    Mutation {
+        id: 1668,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "        if unit.coverage == Coverage::CatchAll {\n            return Err(RequesterInventoryError::SelectedUsesCatchAll);\n        }",
+        replace: "        let _selected_coverage = unit.coverage;",
+        breaks: "catch-all governance is allowed to masquerade as a fixed requester inventory",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::requester_inventory_refuses_unresolved_foreign_and_catch_all_selection",
+        },
+    },
+    Mutation {
+        id: 1669,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                        add_live_requester(\n                            self,\n                            &bridge,\n                            register_base,\n                            hierarchy.root,\n                            &mut requesters,\n                            &mut count,\n                        )?;",
+        replace: "                        let _unowned_hierarchy_root = hierarchy.root;",
+        breaks: "the bridge named by a sub-hierarchy is omitted from its unit owner",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::a_selected_requester_under_a_hierarchy_is_inventoried_with_its_bridge",
+        },
+    },
+    Mutation {
+        id: 1670,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                    DeviceScopeKind::AcpiNamespaceDevice | DeviceScopeKind::Other { .. } => {\n                        return Err(RequesterInventoryError::UnsupportedScope);\n                    }",
+        replace: "                    DeviceScopeKind::AcpiNamespaceDevice | DeviceScopeKind::Other { .. } => {}",
+        breaks: "an unfenceable non-PCI or unknown requester scope is silently ignored",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::requester_inventory_refuses_non_pci_and_unknown_requester_scopes",
+        },
+    },
+    Mutation {
+        id: 1671,
+        file: "libs/pci-config/src/lib.rs",
+        find: "    // `begin_command` verified the installed word exactly. From this point a\n    // later restoration is deliberately safe rather than firmware-exact.\n    state.before &= !command::BUS_MASTER;",
+        replace: "    // The inherited BME bit was incorrectly left in the restoration target.",
+        breaks: "requester-fence release restores inherited bus mastering",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::unit_requester_fence_withholds_and_never_restores_inherited_bus_master",
+        },
+    },
+    Mutation {
+        id: 1672,
+        file: "libs/pci-config/src/lib.rs",
+        find: "    if current != state.installed {\n        return Err(EnableError::Changed(current));\n    }\n    if current & command::BUS_MASTER != 0 {",
+        replace: "    if current & command::BUS_MASTER != 0 {",
+        breaks: "fresh fence verification accepts unrelated command-word drift",
+        reddens: Caught::HostTest {
+            package: "pci-config",
+            name: "tests::requester_fence_and_fresh_verification_retain_exact_failure_authority",
+        },
+    },
+    Mutation {
+        id: 1673,
+        file: "libs/vtd/src/lib.rs",
+        find: "        self.write_draining() && self.read_draining()",
+        replace: "        self.write_draining() || self.read_draining()",
+        breaks: "one DMA drain direction is treated as complete transition draining",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::dma_draining_requires_both_independent_capability_bits",
+        },
+    },
+    Mutation {
+        id: 1674,
+        file: "kernel/src/main.rs",
+        find: "    if !iommu::release_candidate(context) {\n        warn!(\"nvme: candidate {ordinal} could not return its dma domain; selection halted\");\n        pci::retain_failed_release(device);\n        return StorageSelection::Halted;\n    }\n    if let Some((reason, device)) = device.release(context).into_retained() {",
+        replace: "    if let Some((reason, device)) = device.release(context).into_retained() {",
+        breaks: "the selected function authority is returned before the unit-wide VT-d disable transition",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
+        },
+    },
+    Mutation {
+        id: 1675,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        self.drain_dma()?;",
+        replace: "        let _requests_issued_before_the_fences_may_remain_live = ();",
+        breaks: "an already-disabled unit publishes a new root without an architected DMA drain boundary",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
+        },
+    },
+    Mutation {
+        id: 1676,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                            Some(_) => {\n                                enclosing_ambiguous = true;\n                            }",
+        replace: "                            Some(_) => enclosing = Some((named, candidate)),",
+        breaks: "overlapping sibling hierarchies are ordered instead of refused as ambiguous",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::overlapping_sibling_hierarchies_are_ambiguous_not_numerically_nested",
+        },
+    },
+    Mutation {
+        id: 1677,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "                    if requester_scopes > MAX_REQUESTER_SCOPES {\n                        return Err(RequesterInventoryError::TooManyRequesterScopes {\n                            maximum: MAX_REQUESTER_SCOPES,\n                        });\n                    }",
+        replace: "                    let _unbounded_requester_scope_work = requester_scopes;",
+        breaks: "duplicate hierarchy scopes amplify a bounded requester result into unbounded PCI probing",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::requester_scope_work_is_bounded_before_duplicate_hierarchy_scans",
+        },
+    },
+    Mutation {
+        id: 1678,
+        file: "libs/vtd/src/lib.rs",
+        find: "    const DRAIN_READS: u64 = 1 << 49;",
+        replace: "    const DRAIN_READS: u64 = 1 << 50;",
+        breaks: "the pre-root DMA drain requests a reserved bit instead of draining reads",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::iotlb_command_words_and_readback",
+        },
+    },
+    Mutation {
+        id: 1679,
+        file: "kernel/src/main.rs",
+        find: "fn isolate_candidate(stage: &mut CandidateStage, context: &mut thread::ThreadContext) {\n    let outcome = match stage {",
+        replace: "fn isolate_candidate(stage: &mut CandidateStage, context: &mut thread::ThreadContext) {\n    let stack_regression = [0u8; 4096];\n    core::hint::black_box(&stack_regression);\n    let outcome = match stage {",
+        breaks: "unit isolation again consumes a large candidate-stack frame instead of borrowing its owners in a thin sibling stage",
+        reddens: Caught::Check("nvme candidates preserve two pages of boot-stack headroom"),
     },
 ];
 

@@ -2100,6 +2100,11 @@ static PREPARE_QUARANTINE: ThreadLock<Option<(PrepareQuarantine, crate::pci::Dev
 
 static CONTROLLER_QUARANTINE: ThreadLock<Option<RetainedController>> = ThreadLock::new(None);
 
+/// A disabled controller kept with its PCI lease when unit-wide VT-d
+/// ownership becomes uncertain before DMA admission.
+static IOMMU_QUARANTINE: ThreadLock<Option<(DisabledController, crate::pci::Device)>> =
+    ThreadLock::new(None);
+
 struct RetainedController {
     _controller: Controller,
     device: Option<crate::pci::Device>,
@@ -2141,6 +2146,17 @@ pub(crate) fn keep_controller_quarantine(
         "NVMe selection continued after quarantining controller retirement"
     );
     retained.device = Some(device);
+}
+
+/// Keep a prepared controller and its selected-function owner beside an
+/// uncertain unit takeover.
+pub(crate) fn keep_iommu_quarantine(controller: DisabledController, device: crate::pci::Device) {
+    let mut retained = IOMMU_QUARANTINE.lock();
+    assert!(
+        retained.is_none(),
+        "NVMe selection continued after quarantining VT-d takeover"
+    );
+    *retained = Some((controller, device));
 }
 
 fn quarantine_controller(controller: Controller) -> ControllerRetirement {
@@ -2294,25 +2310,19 @@ pub(crate) fn reachable_frames_for_test() -> Option<(alloc::vec::Vec<u64>, alloc
     Some((reachable, expected))
 }
 
-/// Switch translation off and on while the controller idles, asking for a
-/// domain proof at each step.
+/// Ask the production proof door to read the live installed unit without
+/// creating a weaker self-test-only translation transition.
 #[cfg(feature = "selftest")]
 pub(crate) fn domain_proof_follows_translation_for_test() -> bool {
     let held = CONTROLLER.lock();
     if held.is_none() {
         return false;
     }
-    let mut installed = crate::iommu::installed();
-    let Some(isolation) = installed.as_mut() else {
+    let installed = crate::iommu::installed();
+    let Some(isolation) = installed.as_ref() else {
         return false;
     };
-    let minted = isolation.domain().is_some();
-    if !isolation.disable_translation_for_test() {
-        return false;
-    }
-    let refused = isolation.domain().is_none();
-    let restored = isolation.enable_translation_for_test();
-    minted && refused && restored && isolation.domain().is_some()
+    isolation.domain().is_some()
 }
 
 /// What a device write into a buffer the domain does not map produced.

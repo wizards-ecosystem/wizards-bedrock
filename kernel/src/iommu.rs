@@ -1,26 +1,31 @@
 //! The storage controller's DMA-remapping domain (D-357).
 //!
 //! Firmware's DMAR names the VT-d unit that governs a PCI function; this
-//! module reads that table once at boot, then for each storage candidate maps
-//! the governing unit's register window into the device window and hands it
-//! to `wost`'s unit, which takes the hardware over and leaves translation on
-//! with only firmware's reserved regions mapped, each refused first if it
-//! reaches memory the kernel owns. The established unit lives in one
-//! kernel-owned slot that every DMA seam locks and refuses without: queue
-//! frames, transfer buffers and bus-master admission all go through it, and
-//! the domain is released after the candidate's lease, so a retired candidate
-//! restores every frame and mapping it took (D-199). When no unit can be
-//! established the candidate is refused and the boot says `storage: no DMA
-//! isolation`, because an unisolated controller is exactly the case the domain
-//! exists to prevent.
+//! module reads that table once at boot, then for each storage candidate proves
+//! a complete bounded inventory of the live PCI requesters governed by the
+//! exact unit. The candidate is already BME-off; every sibling requester is
+//! exclusively claimed and fenced BME-off before `wost` takes over the
+//! unit-wide registers. The installed owner keeps those fences together with
+//! every table and register mapping until observed release, and uncertain
+//! transition or owner return retains the whole boundary. Only firmware's
+//! eligible reserved regions begin mapped, each refused first if it reaches
+//! memory the kernel owns. Queue frames, transfer buffers and bus-master
+//! admission all go through the installed domain, while candidate retirement
+//! still restores every ordinary frame and mapping it took (D-199, D-370).
+//! When no complete unit can be established, the candidate is refused and the
+//! boot says `storage: no DMA isolation`, because an unisolated requester is
+//! exactly the case the domain exists to prevent.
 //!
 //! Nothing here allocates on the heap inside a candidate: a slab the heap grows
 //! into never returns its frame, and the candidate baseline counts frames.
 
-use acpi_tables::{Bdf, BusRange, Coverage, Dmar, Sdt};
+use acpi_tables::{Bdf, BusRange, Dmar, RequesterInventory, RequesterInventoryError, Sdt};
+use core::ops::{Deref, DerefMut};
+#[cfg(feature = "selftest")]
+use core::sync::atomic::{AtomicUsize, Ordering};
 use pci_config::Address;
 use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
-use wost::arch::current::vtd::{Release, Vtd};
+use wost::arch::current::vtd::{Establishment, Release, Vtd};
 use wost::mm;
 use wost::sync::{SpinLock, ThreadLock, ThreadLockGuard};
 
@@ -41,19 +46,41 @@ const RESERVED_LIMIT: usize = 8;
 /// for the rest of the boot.
 static DMAR: SpinLock<Option<&'static [u8]>> = SpinLock::new(None);
 
-/// The established unit, translation on: the candidate's while it runs and the
-/// kept controller's once one is selected. A thread lock rather than a leaf
+/// The established unit: the candidate's while it runs and the kept
+/// controller's once one is selected. A thread lock rather than a leaf
 /// lock because the seams that take it run commands under the guard, which a
 /// leaf guard forbids (D-121); it is the discipline the kept controller's own
-/// lock already follows. A quarantined controller leaves its unit here, on,
-/// for as long as the boot lasts.
-static INSTALLED: ThreadLock<Option<Vtd>> = ThreadLock::new(None);
+/// lock already follows. A quarantined transition leaves its complete unit
+/// owner here for as long as the boot lasts without guessing whether TES is
+/// on or off.
+static INSTALLED: ThreadLock<Option<InstalledUnit>> = ThreadLock::new(None);
 
 /// A register window whose exact unmap refused, kept owned (D-199).
 static RETAINED_REGISTERS: SpinLock<Option<ReleasableDevice>> = SpinLock::new(None);
 
 /// A register mapping the active root no longer showed, kept owned (D-199).
 static RETAINED_MAPPING: SpinLock<Option<DeviceMapping>> = SpinLock::new(None);
+
+/// Requester fences whose exact return refused after the unit was settled.
+static RETAINED_FENCES: SpinLock<Option<UnitFences>> = SpinLock::new(None);
+
+/// The opaque function and command authorities behind one unit-wide fence.
+///
+/// Keeping these large linear owners in a single fixed-capacity vault avoids
+/// materializing the whole array at every unoptimized move boundary. The
+/// private [`UnitFences`] token is still the only authority that may operate on
+/// occupied slots; dropping it leaks safe claims rather than making them
+/// available without an observed return.
+static UNIT_FENCE_SLOTS: SpinLock<[Option<pci::DmaFence>; pci::FUNCTION_AUTHORITY_LIMIT]> =
+    SpinLock::new([const { None }; pci::FUNCTION_AUTHORITY_LIMIT]);
+
+/// Last complete live requester inventory installed by a successful takeover.
+#[cfg(feature = "selftest")]
+static INSTALLED_REQUESTERS: AtomicUsize = AtomicUsize::new(0);
+
+/// Successful unit takeovers, including the candidate replaced by fallback.
+#[cfg(feature = "selftest")]
+static SUCCESSFUL_TAKEOVERS: AtomicUsize = AtomicUsize::new(0);
 
 /// Read and validate firmware's DMAR while the heap is still free to grow.
 ///
@@ -83,45 +110,133 @@ struct Unit {
     register_base: u64,
     reserved: [(u64, u64); RESERVED_LIMIT],
     reserved_count: usize,
+    requesters: RequesterInventory<{ pci::FUNCTION_AUTHORITY_LIMIT }>,
+}
+
+/// Every non-selected requester kept BME-off while its DRHD may transition.
+#[derive(Debug)]
+struct UnitFences {
+    count: usize,
+}
+
+impl UnitFences {
+    fn new() -> Self {
+        assert!(
+            UNIT_FENCE_SLOTS.lock_leaf().iter().all(Option::is_none),
+            "storage selection continued while requester fence authorities remained vaulted"
+        );
+        Self { count: 0 }
+    }
+
+    fn push(&mut self, fence: pci::DmaFence) {
+        let mut slots = UNIT_FENCE_SLOTS.lock_leaf();
+        let Some(slot) = slots.get_mut(self.count) else {
+            panic!("a validated requester inventory exceeded its fence capacity");
+        };
+        assert!(
+            slot.is_none(),
+            "a requester fence authority slot was occupied twice"
+        );
+        *slot = Some(fence);
+        self.count += 1;
+    }
+
+    /// Return whether every fence settled and the exact remainder, kept in a
+    /// fixed vault so an ownership-carrying refusal needs neither heap
+    /// indirection nor a pathologically large stack value.
+    fn release(self) -> (bool, Self) {
+        let mut retained_count = 0;
+        for index in 0..self.count {
+            let fence = {
+                let mut slots = UNIT_FENCE_SLOTS.lock_leaf();
+                let Some(fence) = slots[index].take() else {
+                    panic!("a live requester fence token named an empty vault slot");
+                };
+                fence
+            };
+            if let Err(failure) = fence.release() {
+                warn!("iommu: requester fence return refused: {}", failure.reason);
+                let mut slots = UNIT_FENCE_SLOTS.lock_leaf();
+                let slot = &mut slots[retained_count];
+                assert!(
+                    slot.is_none(),
+                    "a retained requester fence overwrote another authority"
+                );
+                *slot = Some(failure.fence);
+                retained_count += 1;
+            }
+        }
+        (
+            retained_count == 0,
+            Self {
+                count: retained_count,
+            },
+        )
+    }
+}
+
+/// The unit-wide owner: hardware tables and every sibling command fence stay
+/// inseparable through takeover, steady state and release.
+#[derive(Debug)]
+pub(crate) struct InstalledUnit {
+    isolation: Vtd,
+    fences: UnitFences,
+}
+
+impl Deref for InstalledUnit {
+    type Target = Vtd;
+
+    fn deref(&self) -> &Self::Target {
+        &self.isolation
+    }
+}
+
+impl DerefMut for InstalledUnit {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.isolation
+    }
 }
 
 /// What the DMAR says about one function.
-enum Lookup {
+enum LookupError {
     NoTable,
-    Ungoverned,
+    UnsafeInventory(RequesterInventoryError),
     TooManyReserved,
-    Governed(Unit, Coverage),
 }
 
-fn look_up(bdf: Bdf) -> Lookup {
+fn look_up(bdf: Bdf) -> Result<Unit, LookupError> {
     // Copied out so the bridge reads below run with no guard held (D-121).
     let table = *DMAR.lock_leaf();
     let Some(table) = table else {
-        return Lookup::NoTable;
+        return Err(LookupError::NoTable);
     };
     let Ok(dmar) = Dmar::new(table) else {
-        return Lookup::NoTable;
+        return Err(LookupError::NoTable);
     };
-    let Some(governing) = dmar.unit_for(bdf, bridge_buses) else {
-        return Lookup::Ungoverned;
+    let requesters = match dmar.requester_inventory::<{ pci::FUNCTION_AUTHORITY_LIMIT }>(
+        bdf,
+        bridge_buses,
+        requester_is_present,
+    ) {
+        Ok(requesters) => requesters,
+        Err(reason) => return Err(LookupError::UnsafeInventory(reason)),
     };
+    let governing = requesters.unit();
     let mut reserved = [(0, 0); RESERVED_LIMIT];
     let mut reserved_count = 0;
     for region in dmar.reserved_regions_for(bdf, bridge_buses) {
         let Some(slot) = reserved.get_mut(reserved_count) else {
-            return Lookup::TooManyReserved;
+            return Err(LookupError::TooManyReserved);
         };
         *slot = region;
         reserved_count += 1;
     }
-    Lookup::Governed(
-        Unit {
-            register_base: governing.register_base,
-            reserved,
-            reserved_count,
-        },
-        governing.coverage,
-    )
+    Ok(Unit {
+        register_base: governing.register_base,
+        reserved,
+        reserved_count,
+        requesters,
+    })
 }
 
 /// The buses behind the bridge at `at`, read live from configuration space.
@@ -139,46 +254,43 @@ fn bridge_buses(at: Bdf) -> Option<BusRange> {
     })
 }
 
-/// Say which DMAR scope tied the function to its unit.
-fn report_coverage(at: Address, register_base: u64, coverage: Coverage) {
-    let (bus, device, function) = (at.bus(), at.device(), at.function());
-    match coverage {
-        Coverage::Endpoint => info!(
-            "iommu: {bus:02x}:{device:02x}.{function} is governed by the unit at {register_base:#x} through an endpoint scope"
-        ),
-        Coverage::Bridge(bridge) => info!(
-            "iommu: {bus:02x}:{device:02x}.{function} is governed by the unit at {register_base:#x} through the bridge scope of {:02x}:{:02x}.{}",
-            bridge.bus(),
-            bridge.device(),
-            bridge.function()
-        ),
-        Coverage::CatchAll => info!(
-            "iommu: {bus:02x}:{device:02x}.{function} is governed by the catch-all unit at {register_base:#x}"
-        ),
-    }
+/// Whether one exact requester ID currently answers configuration reads.
+///
+/// Hierarchy inventories ask every function number independently; unlike the
+/// ordinary topology walk, this proof does not trust a device's multifunction
+/// bit to omit possible DMA sources.
+fn requester_is_present(at: Bdf) -> bool {
+    at.segment() == SEGMENT && pci::function_is_present(at.bus(), at.device(), at.function())
 }
 
 fn unit_for(at: Address) -> Option<Unit> {
     let bdf = Bdf::new(SEGMENT, at.bus(), at.device(), at.function());
     match look_up(bdf) {
-        Lookup::Governed(unit, coverage) => {
-            report_coverage(at, unit.register_base, coverage);
+        Ok(unit) => {
+            info!(
+                "iommu: {:02x}:{:02x}.{} is one of {} live PCI requester(s) governed by the unit at {:#x}",
+                at.bus(),
+                at.device(),
+                at.function(),
+                unit.requesters.len(),
+                unit.register_base
+            );
             Some(unit)
         }
-        Lookup::NoTable => {
+        Err(LookupError::NoTable) => {
             warn!("iommu: no validated dmar; every candidate stays unisolated");
             None
         }
-        Lookup::Ungoverned => {
+        Err(LookupError::UnsafeInventory(reason)) => {
             warn!(
-                "iommu: no remapping unit governs {:02x}:{:02x}.{}",
+                "iommu: no complete requester inventory governs {:02x}:{:02x}.{}: {reason}",
                 at.bus(),
                 at.device(),
                 at.function()
             );
             None
         }
-        Lookup::TooManyReserved => {
+        Err(LookupError::TooManyReserved) => {
             warn!("iommu: more than {RESERVED_LIMIT} reserved regions name the function");
             None
         }
@@ -207,39 +319,113 @@ pub(crate) fn reserved_regions_are_clear_for_test(reserved: &[(u64, u64)]) -> bo
     reserved_regions_are_clear(reserved)
 }
 
+/// Whether the candidate acquired a complete unit-wide DMA boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EstablishOutcome {
+    Established,
+    Unavailable,
+    Quarantined,
+}
+
+enum FenceAcquisition {
+    Ready(UnitFences),
+    Refused,
+    Retained(UnitFences),
+}
+
+fn acquire_fences(
+    requesters: &RequesterInventory<{ pci::FUNCTION_AUTHORITY_LIMIT }>,
+    selected: &pci::Device,
+) -> FenceAcquisition {
+    let selected_at = selected.at().function_base();
+    let mut fences = UnitFences::new();
+    for requester in requesters.iter() {
+        let Some(at) = Address::new(requester.bus(), requester.device(), requester.function(), 0)
+        else {
+            warn!("iommu: an inventoried function has an invalid PCI requester ID");
+            return release_refused_fences(fences);
+        };
+        if at == selected_at {
+            continue;
+        }
+        match pci::fence_dma_requester(at) {
+            pci::DmaFenceOutcome::Fenced(fence) => fences.push(fence),
+            pci::DmaFenceOutcome::Refused(reason) => {
+                warn!(
+                    "iommu: requester {:02x}:{:02x}.{} could not be fenced: {reason}",
+                    at.bus(),
+                    at.device(),
+                    at.function()
+                );
+                return release_refused_fences(fences);
+            }
+            pci::DmaFenceOutcome::Retained { reason, fence } => {
+                warn!(
+                    "iommu: requester {:02x}:{:02x}.{} has uncertain fence state: {reason}",
+                    at.bus(),
+                    at.device(),
+                    at.function()
+                );
+                fences.push(fence);
+                return FenceAcquisition::Retained(fences);
+            }
+        }
+    }
+    if let Err(reason) = selected.verify_bus_master_fence() {
+        warn!("iommu: selected requester lost its bus-master fence: {reason}");
+        return FenceAcquisition::Retained(fences);
+    }
+    FenceAcquisition::Ready(fences)
+}
+
+fn release_refused_fences(fences: UnitFences) -> FenceAcquisition {
+    let (released, fences) = fences.release();
+    if released {
+        FenceAcquisition::Refused
+    } else {
+        FenceAcquisition::Retained(fences)
+    }
+}
+
 /// The installed unit, or nothing: every DMA seam locks this and refuses
 /// without it.
-pub(crate) fn installed() -> ThreadLockGuard<'static, Option<Vtd>> {
+pub(crate) fn installed() -> ThreadLockGuard<'static, Option<InstalledUnit>> {
     INSTALLED.lock()
 }
 
-/// Establish and install a DMA-remapping domain for the function at `at`.
-///
-/// False means the candidate must not bus-master: no unit governs it, a
-/// reserved region it needs reaches the kernel's memory or would not map, or
-/// its unit could not be mapped or taken over. Every refusal has already been
-/// logged, and a register window whose return refused is retained rather than
-/// leaked.
-pub(crate) fn establish(context: &mut ThreadContext, at: Address) -> bool {
+/// Establish and install a unit-wide DMA-remapping owner for `device`.
+pub(crate) fn establish(context: &mut ThreadContext, device: &pci::Device) -> EstablishOutcome {
+    let at = device.at();
     let Some(unit) = unit_for(at) else {
-        return false;
+        return EstablishOutcome::Unavailable;
     };
-    let reserved = &unit.reserved[..unit.reserved_count];
+    let Unit {
+        register_base,
+        reserved,
+        reserved_count,
+        requesters,
+    } = unit;
+    let reserved = &reserved[..reserved_count];
     if !reserved_regions_are_clear(reserved) {
-        return false;
+        return EstablishOutcome::Unavailable;
     }
-    let mapping = match mem::map_device(context, unit.register_base, REGISTER_WINDOW) {
+    let fences = match acquire_fences(&requesters, device) {
+        FenceAcquisition::Ready(fences) => fences,
+        FenceAcquisition::Refused => return EstablishOutcome::Unavailable,
+        FenceAcquisition::Retained(fences) => {
+            retain_fences(fences);
+            return EstablishOutcome::Quarantined;
+        }
+    };
+    let mapping = match mem::map_device(context, register_base, REGISTER_WINDOW) {
         Some(Ok(mapping)) => mapping,
         Some(Err(reason)) => {
-            warn!(
-                "iommu: registers at {:#x} not mapped: {reason}",
-                unit.register_base
-            );
-            return false;
+            warn!("iommu: registers at {register_base:#x} not mapped: {reason}");
+            return release_unavailable_fences(fences);
         }
         None => {
             warn!("iommu: no active address space for the unit's registers");
-            return false;
+            return release_unavailable_fences(fences);
         }
     };
     let registers = match mapping.claim_releasable() {
@@ -247,22 +433,32 @@ pub(crate) fn establish(context: &mut ThreadContext, at: Address) -> bool {
         Err(mapping) => {
             warn!("iommu: the mapped registers are absent from the active root");
             retain_mapping(mapping);
-            return false;
+            retain_fences_after_failure(fences);
+            return EstablishOutcome::Quarantined;
         }
     };
     let mut isolation = match Vtd::establish(registers, at, reserved) {
-        Ok(isolation) => isolation,
-        Err((reason, registers)) => {
-            warn!(
-                "iommu: the unit at {:#x} refused takeover: {reason}",
-                unit.register_base
-            );
-            if let DeviceRetirement::Retained(registers) =
-                mem::unmap_device_exact(context, registers)
-            {
-                retain_registers(registers);
-            }
-            return false;
+        Establishment::Established(isolation) => isolation,
+        Establishment::Refused { reason, registers } => {
+            warn!("iommu: the unit at {register_base:#x} refused takeover: {reason}");
+            let registers_returned = match mem::unmap_device_exact(context, registers) {
+                DeviceRetirement::Retired => true,
+                DeviceRetirement::Retained(registers) => {
+                    retain_registers(registers);
+                    false
+                }
+            };
+            let fences_returned = release_fences(fences);
+            return if registers_returned && fences_returned {
+                EstablishOutcome::Unavailable
+            } else {
+                EstablishOutcome::Quarantined
+            };
+        }
+        Establishment::Retained { reason, isolation } => {
+            warn!("iommu: the unit at {register_base:#x} has uncertain takeover state: {reason}");
+            install(InstalledUnit { isolation, fences });
+            return EstablishOutcome::Quarantined;
         }
     };
     for &(base, limit) in reserved {
@@ -278,7 +474,7 @@ pub(crate) fn establish(context: &mut ThreadContext, at: Address) -> bool {
         at.bus(),
         at.device(),
         at.function(),
-        unit.register_base,
+        register_base,
         facts.levels,
         if facts.coherent {
             ""
@@ -298,13 +494,62 @@ pub(crate) fn establish(context: &mut ThreadContext, at: Address) -> bool {
         facts.capability,
         facts.extended
     );
+    #[cfg(feature = "selftest")]
+    {
+        INSTALLED_REQUESTERS.store(requesters.len(), Ordering::Release);
+        SUCCESSFUL_TAKEOVERS.fetch_add(1, Ordering::AcqRel);
+    }
+    install(InstalledUnit { isolation, fences });
+    EstablishOutcome::Established
+}
+
+/// Whether the default machine established two successive owners while the
+/// installed owner still holds one fence for every non-selected requester.
+#[cfg(feature = "selftest")]
+pub(crate) fn requester_fences_cover_shared_unit_for_test() -> bool {
+    if DMAR.lock_leaf().is_none() {
+        return true;
+    }
+    let requesters = INSTALLED_REQUESTERS.load(Ordering::Acquire);
+    let installed = INSTALLED.lock();
+    requesters > 1
+        && SUCCESSFUL_TAKEOVERS.load(Ordering::Acquire) >= 2
+        && installed
+            .as_ref()
+            .is_some_and(|unit| unit.fences.count + 1 == requesters)
+        && pci::claims() == requesters
+}
+
+fn install(unit: InstalledUnit) {
     let mut installed = INSTALLED.lock();
     assert!(
         installed.is_none(),
         "a storage candidate began while a DMA domain was installed"
     );
-    *installed = Some(isolation);
-    true
+    *installed = Some(unit);
+}
+
+fn release_unavailable_fences(fences: UnitFences) -> EstablishOutcome {
+    if release_fences(fences) {
+        EstablishOutcome::Unavailable
+    } else {
+        EstablishOutcome::Quarantined
+    }
+}
+
+fn release_fences(fences: UnitFences) -> bool {
+    let (released, fences) = fences.release();
+    if !released {
+        retain_fences(fences);
+    }
+    released
+}
+
+fn retain_fences_after_failure(fences: UnitFences) {
+    let (released, fences) = fences.release();
+    if !released {
+        retain_fences(fences);
+    }
 }
 
 /// Switch the candidate's translation off and return its register window,
@@ -312,30 +557,34 @@ pub(crate) fn establish(context: &mut ThreadContext, at: Address) -> bool {
 ///
 /// True when nothing was installed or everything came back. False means the
 /// unit or its window had to be retained instead, so the caller halts
-/// selection rather than carry on beside a leaked owner; a unit whose
-/// translation will not switch off stays installed, on.
+/// selection rather than carry on beside a leaked owner. A failed observation
+/// after the disable write makes unit state uncertain, so the complete owner
+/// remains installed without claiming whether TES is on or off.
 pub(crate) fn release_candidate(context: &mut ThreadContext) -> bool {
     let mut installed = INSTALLED.lock();
-    let Some(isolation) = installed.take() else {
+    let Some(unit) = installed.take() else {
         return true;
     };
+    let InstalledUnit { isolation, fences } = unit;
     let registers = match isolation.release() {
         Release::Released(registers) => registers,
         Release::Retained { isolation, reason } => {
-            warn!("iommu: translation stays on: {reason}");
-            *installed = Some(isolation);
+            warn!("iommu: translation state is uncertain; unit retained: {reason}");
+            *installed = Some(InstalledUnit { isolation, fences });
             return false;
         }
     };
     drop(installed);
-    match mem::unmap_device_exact(context, registers) {
+    let registers_returned = match mem::unmap_device_exact(context, registers) {
         DeviceRetirement::Retired => true,
         DeviceRetirement::Retained(registers) => {
             warn!("iommu: the register window remained owned during cleanup");
             retain_registers(registers);
             false
         }
-    }
+    };
+    let fences_returned = release_fences(fences);
+    registers_returned && fences_returned
 }
 
 /// Clear one inventory-bounded fault batch and report it once.
@@ -368,4 +617,16 @@ fn retain_registers(registers: ReleasableDevice) {
         "storage selection continued after a unit's registers were quarantined"
     );
     *retained = Some(registers);
+}
+
+fn retain_fences(fences: UnitFences) {
+    if fences.count == 0 {
+        return;
+    }
+    let mut retained = RETAINED_FENCES.lock_leaf();
+    assert!(
+        retained.is_none(),
+        "storage selection continued after requester fences were quarantined"
+    );
+    *retained = Some(fences);
 }

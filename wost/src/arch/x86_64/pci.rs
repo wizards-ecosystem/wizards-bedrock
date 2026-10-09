@@ -8,9 +8,9 @@ use nvme::{ControllerStateError, DisabledRegisters, register};
 use pci_config::{
     Address, Bar, BarAuthority, BarAuthorityError, BarAuthorityFailure, BarEnableAccess,
     BarEnableError as ConfigBarEnableError, CommandAccess, CommandState, EnableError,
-    FunctionAuthority, FunctionClaimError, FunctionClaims, FunctionReleaseError, HeaderType,
-    ProbeAccess, ProbeError, ProbeFailure, ProbeRetry, ProbedBars, RestoreFailure, StagedProbe,
-    Window, header,
+    EnableFailure, FunctionAuthority, FunctionClaimError, FunctionClaims, FunctionReleaseError,
+    HeaderType, ProbeAccess, ProbeError, ProbeFailure, ProbeRetry, ProbedBars, RestoreFailure,
+    StagedProbe, Window, header,
 };
 
 use crate::arch::current::paging::{AdmittedDeviceRange, DeviceMapping, ReleasableDevice};
@@ -21,7 +21,7 @@ use crate::sync::SpinLock;
 use super::port::{self, Port};
 
 /// Functions that may be held by drivers at once.
-const FUNCTION_CLAIMS: usize = 8;
+const FUNCTION_CLAIMS: usize = 12;
 
 struct Configuration {
     ports: Option<(Port<u32>, Port<u32>)>,
@@ -521,6 +521,57 @@ pub fn disable_bus_master_for_retirement(
             }
         },
     )
+}
+
+/// Claim a command sublease and keep one unit sibling unable to bus-master.
+///
+/// Successful restoration of the returned state preserves every captured
+/// command bit except BME.
+pub fn fence_bus_master(function: &FunctionClaim) -> Result<CommandState, EnableFailure> {
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let Configuration { ports, functions } = &mut *configuration;
+    if !functions.holds(&function.authority) {
+        return pci_config::fence_bus_master(functions, &function.authority, |_, _| None);
+    }
+    pci_config::fence_bus_master(functions, &function.authority, |at, access| {
+        let (address, data) = ports.as_mut()?;
+        Port::write(address, at.bits());
+        match access {
+            CommandAccess::Read => Some(Port::read(data)),
+            CommandAccess::Write(value) => {
+                Port::write(data, u32::from(value));
+                Some(0)
+            }
+        }
+    })
+}
+
+/// Re-read one exact command owner immediately before a unit-wide transition.
+pub fn verify_bus_master_fence(
+    function: &FunctionClaim,
+    state: &CommandState,
+) -> Result<(), EnableError> {
+    let mut configuration = CONFIGURATION.lock_leaf();
+    let Configuration { ports, functions } = &mut *configuration;
+    if !functions.holds(&function.authority) {
+        return pci_config::verify_bus_master_fence(
+            functions,
+            &function.authority,
+            state,
+            |_, _| None,
+        );
+    }
+    pci_config::verify_bus_master_fence(functions, &function.authority, state, |at, access| {
+        let (address, data) = ports.as_mut()?;
+        Port::write(address, at.bits());
+        match access {
+            CommandAccess::Read => Some(Port::read(data)),
+            CommandAccess::Write(value) => {
+                Port::write(data, u32::from(value));
+                Some(0)
+            }
+        }
+    })
 }
 
 /// Restore a captured command word as one verified transaction.

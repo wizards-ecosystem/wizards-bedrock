@@ -2440,7 +2440,18 @@ fn every_failed_controller_retirement_keeps_its_controller_and_pci_lease() {
             if call.method == "disable_bus_master_for_retirement"
                 && call.args.is_empty()
                 && path_expression_is(&call.receiver, &["device"]))));
-    let Some(Stmt::Expr(Expr::If(first), None)) = retire.block.stmts.get(1) else {
+    let Some(first) = retire.block.stmts.iter().find_map(|statement| {
+        let Stmt::Expr(Expr::If(first), None) = statement else {
+            return None;
+        };
+        matches!(&*first.cond, Expr::Let(condition)
+            if matches!(&*condition.expr, Expr::MethodCall(into_retained)
+                if into_retained.method == "into_retained"
+                    && matches!(&*into_retained.receiver, Expr::MethodCall(release)
+                        if release.method == "release"
+                            && path_expression_is(&release.receiver, &["device"]))))
+        .then_some(first)
+    }) else {
         panic!("candidate retirement must release its fenced PCI lease");
     };
     let Some(Stmt::Expr(Expr::If(second), None)) = first.then_branch.stmts.get(1) else {
@@ -2497,10 +2508,11 @@ fn only_the_candidate_sequencer_calls_its_stages() {
     assert_eq!(
         stages.len(),
         3,
-        "try_controller must sequence its claim, admit and start stages: {stages:?}"
+        "try_controller must sequence its owner-moving claim, admit and start stages: {stages:?}"
     );
 
     let mut watched = stages;
+    watched.push("isolate_candidate".to_owned());
     watched.push("retire_candidate".to_owned());
     let mut references = StageReferences {
         watched: &watched,
@@ -2687,4 +2699,156 @@ fn nested_inherent_methods_cannot_hide_from_dma_authority_contracts() {
     )
     .expect("valid nested inherent-method witness");
     assert!(method(&syntax, "Boundary", "quiesce").is_some());
+}
+
+#[derive(Default)]
+struct CallNames(Vec<String>);
+
+impl Visit<'_> for CallNames {
+    fn visit_expr_call(&mut self, call: &ExprCall) {
+        if let Expr::Path(path) = &*call.func
+            && let Some(segment) = path.path.segments.last()
+        {
+            self.0.push(segment.ident.to_string());
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &ExprMethodCall) {
+        self.0.push(call.method.to_string());
+        syn::visit::visit_expr_method_call(self, call);
+    }
+}
+
+#[derive(Default)]
+struct DomainStatusGuard {
+    translation_checks: usize,
+    none_returns: usize,
+}
+
+impl Visit<'_> for DomainStatusGuard {
+    fn visit_expr_call(&mut self, call: &ExprCall) {
+        if path_expression_is(&call.func, &["translation_enabled"]) {
+            self.translation_checks += 1;
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_return(&mut self, returned: &syn::ExprReturn) {
+        if returned
+            .expr
+            .as_deref()
+            .is_some_and(|expression| path_expression_is(expression, &["None"]))
+        {
+            self.none_returns += 1;
+        }
+        syn::visit::visit_expr_return(self, returned);
+    }
+}
+
+fn call_position(calls: &CallNames, name: &str) -> usize {
+    calls
+        .0
+        .iter()
+        .position(|call| call == name)
+        .unwrap_or_else(|| panic!("missing `{name}` call from unit transition"))
+}
+
+#[test]
+fn unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving() {
+    let iommu = parse("kernel/src/iommu.rs");
+    let installed = iommu
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Struct(item) if item.ident == "InstalledUnit" => Some(item),
+            _ => None,
+        })
+        .expect("unit-wide installed owner");
+    let Fields::Named(installed_fields) = &installed.fields else {
+        panic!("InstalledUnit must name both inseparable owners");
+    };
+    let names = installed_fields
+        .named
+        .iter()
+        .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["isolation", "fences"]);
+
+    let mut establish_calls = CallNames::default();
+    establish_calls.visit_item_fn(function(&iommu, "establish"));
+    let fences = call_position(&establish_calls, "acquire_fences");
+    let mapping = call_position(&establish_calls, "map_device");
+    let transition = call_position(&establish_calls, "establish");
+    assert!(fences < mapping && mapping < transition);
+
+    let kernel = parse("kernel/src/main.rs");
+    let mut retirement_calls = CallNames::default();
+    retirement_calls.visit_item_fn(function(&kernel, "retire_candidate"));
+    let selected_fence = call_position(&retirement_calls, "settle_bus_master_fence_for_retirement");
+    let unit_release = call_position(&retirement_calls, "release_candidate");
+    let selected_release = call_position(&retirement_calls, "release");
+    assert!(selected_fence < unit_release && unit_release < selected_release);
+
+    let vtd = parse("wost/src/arch/x86_64/vtd.rs");
+    assert!(method(&vtd, "Vtd", "disable_translation_for_test").is_none());
+    assert!(method(&vtd, "Vtd", "enable_translation_for_test").is_none());
+
+    let mut preflight = CallNames::default();
+    preflight.visit_impl_item_fn(method(&vtd, "Plan", "read").expect("VT-d preflight"));
+    assert_eq!(
+        preflight
+            .0
+            .iter()
+            .filter(|call| call.as_str() == "dma_draining")
+            .count(),
+        1,
+        "read-only preflight must require the complete DMA drain capability"
+    );
+
+    let mut transition_calls = CallNames::default();
+    transition_calls
+        .visit_impl_item_fn(method(&vtd, "Vtd", "transition").expect("VT-d transition"));
+    assert!(
+        call_position(&transition_calls, "quiesce") < call_position(&transition_calls, "drain_dma")
+    );
+    assert!(
+        call_position(&transition_calls, "drain_dma")
+            < call_position(&transition_calls, "set_root_table")
+    );
+    assert!(
+        call_position(&transition_calls, "set_root_table")
+            < call_position(&transition_calls, "invalidate")
+    );
+    assert!(
+        call_position(&transition_calls, "invalidate")
+            < call_position(&transition_calls, "switch_translation")
+    );
+
+    let establishment = vtd
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Enum(item) if item.ident == "Establishment" => Some(item),
+            _ => None,
+        })
+        .expect("ownership-carrying establishment outcome");
+    let retained = establishment
+        .variants
+        .iter()
+        .find(|variant| variant.ident == "Retained")
+        .expect("post-write retention outcome");
+    let Fields::Named(retained_fields) = &retained.fields else {
+        panic!("retained establishment must name its whole owner");
+    };
+    assert!(retained_fields.named.iter().any(|field| {
+        field.ident.as_ref().is_some_and(|name| name == "isolation")
+            && matches!(&field.ty, Type::Path(path)
+                if path.path.segments.last().is_some_and(|segment| segment.ident == "Vtd"))
+    }));
+
+    let mut domain = DomainStatusGuard::default();
+    domain.visit_impl_item_fn(method(&vtd, "Vtd", "domain").expect("DMA-domain mint"));
+    assert_eq!(domain.translation_checks, 1);
+    assert_eq!(domain.none_returns, 2);
 }

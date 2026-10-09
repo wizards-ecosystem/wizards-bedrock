@@ -4385,10 +4385,7 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
                 ("finish_candidate_stack", 2),
             ],
         ),
-        (
-            "kernel/src/pci.rs",
-            &[("OBSERVED_BUS_MASTER_REFUSAL", 3), ("observed_address", 5)],
-        ),
+        ("kernel/src/pci.rs", &[("OBSERVED_BUS_MASTER_REFUSAL", 3)]),
         (
             "kernel/src/arch/x86_64/i8042.rs",
             &[("CONTROL_COMMAND_REFUSED", 5)],
@@ -4457,7 +4454,7 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
             .iter()
             .map(|(_, observers)| observers.len())
             .sum::<usize>(),
-        107,
+        106,
         "D-290's evidence-identifier inventory"
     );
     for &(relative, expected) in OBSERVERS {

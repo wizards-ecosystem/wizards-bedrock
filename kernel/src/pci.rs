@@ -40,7 +40,7 @@ use crate::thread::ThreadContext;
 pub(crate) const BARS: usize = pci_config::BARS;
 
 /// Function authorities the platform PCI registry can hold concurrently.
-pub(crate) const FUNCTION_AUTHORITY_LIMIT: usize = 8;
+pub(crate) const FUNCTION_AUTHORITY_LIMIT: usize = 12;
 
 /// Buses the walk will visit before giving up.
 ///
@@ -174,6 +174,15 @@ fn read_function(bus: u8, device: u8, function: u8) -> Option<Function> {
     })
 }
 
+/// Whether one exact requester ID currently answers configuration reads.
+///
+/// This deliberately makes no inference from function zero or the
+/// multifunction bit; VT-d hierarchy admission probes every possible
+/// function independently.
+pub(crate) fn function_is_present(bus: u8, device: u8, function: u8) -> bool {
+    read_function(bus, device, function).is_some()
+}
+
 /// The bus behind a bridge.
 fn secondary_of(entry: &Function) -> Option<u8> {
     let at = entry.at.at(header::BUS_NUMBERS)?;
@@ -235,6 +244,118 @@ pub(crate) enum ClaimError {
     ProbeRestore(ProbeRecovery),
     /// A restored, otherwise clean function remains quarantined in the registry.
     FunctionRetained,
+}
+
+/// A sibling requester held unable to bus-master for a unit-wide VT-d
+/// transition.
+#[derive(Debug)]
+pub(crate) struct DmaFence {
+    function: Option<pci::FunctionClaim>,
+    command_state: Option<CommandState>,
+}
+
+/// Why a sibling requester could not enter or leave the unit fence.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DmaFenceError {
+    Claim(pci::ClaimError),
+    Command(EnableError),
+    Function,
+}
+
+impl core::fmt::Display for DmaFenceError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Claim(reason) => write!(formatter, "function claim: {reason}"),
+            Self::Command(reason) => write!(formatter, "command fence: {reason}"),
+            Self::Function => {
+                core::fmt::Write::write_str(formatter, "function authority could not be returned")
+            }
+        }
+    }
+}
+
+/// The ownership-preserving results of acquiring a sibling DMA fence.
+#[derive(Debug)]
+pub(crate) enum DmaFenceOutcome {
+    Fenced(DmaFence),
+    Refused(DmaFenceError),
+    Retained {
+        reason: DmaFenceError,
+        fence: DmaFence,
+    },
+}
+
+/// A refused sibling-fence release with its complete retry owner.
+#[derive(Debug)]
+pub(crate) struct DmaFenceRelease {
+    pub(crate) reason: DmaFenceError,
+    pub(crate) fence: DmaFence,
+}
+
+impl DmaFence {
+    /// Restore the safe command word and return the exact function claim.
+    pub(crate) fn release(mut self) -> Result<(), DmaFenceRelease> {
+        if let Some(state) = self.command_state.take() {
+            let Some(function) = self.function.as_ref() else {
+                panic!("a DMA fence lost its function authority");
+            };
+            if let Err(failure) = pci::restore_command(function, state) {
+                let reason = DmaFenceError::Command(failure.reason());
+                self.command_state = Some(failure.into_state());
+                return Err(DmaFenceRelease {
+                    reason,
+                    fence: self,
+                });
+            }
+        }
+        let Some(function) = self.function.take() else {
+            panic!("a DMA fence lost its function authority");
+        };
+        if let Err(failure) = pci::release_function(function) {
+            self.function = Some(failure.into_function());
+            return Err(DmaFenceRelease {
+                reason: DmaFenceError::Function,
+                fence: self,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Claim one declared sibling requester and verify BME clear.
+pub(crate) fn fence_dma_requester(at: Address) -> DmaFenceOutcome {
+    let function = match pci::claim_function(at) {
+        Ok(function) => function,
+        Err(reason) => return DmaFenceOutcome::Refused(DmaFenceError::Claim(reason)),
+    };
+    match pci::fence_bus_master(&function) {
+        Ok(command_state) => DmaFenceOutcome::Fenced(DmaFence {
+            function: Some(function),
+            command_state: Some(command_state),
+        }),
+        Err(failure) => {
+            let reason = DmaFenceError::Command(failure.reason());
+            if let Some(command_state) = failure.into_state() {
+                return DmaFenceOutcome::Retained {
+                    reason,
+                    fence: DmaFence {
+                        function: Some(function),
+                        command_state: Some(command_state),
+                    },
+                };
+            }
+            match pci::release_function(function) {
+                Ok(()) => DmaFenceOutcome::Refused(reason),
+                Err(failure) => DmaFenceOutcome::Retained {
+                    reason: DmaFenceError::Function,
+                    fence: DmaFence {
+                        function: Some(failure.into_function()),
+                        command_state: None,
+                    },
+                },
+            }
+        }
+    }
 }
 
 /// One uncertain BAR restoration and the function authority it still owns.
@@ -468,8 +589,7 @@ impl ReleaseOutcome {
 /// boot; a selection lease has an explicit all-or-stop release (D-199).
 #[derive(Debug)]
 pub(crate) struct Device {
-    #[cfg(feature = "selftest")]
-    observed_address: Address,
+    address: Address,
     function: Option<pci::FunctionClaim>,
     vendor: u16,
     device: u16,
@@ -492,9 +612,8 @@ enum ClaimLifetime {
 
 impl Device {
     /// Where it lives.
-    #[cfg(feature = "selftest")]
     pub(crate) const fn at(&self) -> Address {
-        self.observed_address
+        self.address
     }
 
     /// Who made it, and which of theirs it is.
@@ -584,6 +703,41 @@ impl Device {
                 Err(reason)
             }
         }
+    }
+
+    /// Restore the now-safe command word while retaining function authority.
+    ///
+    /// Retirement calls this before a unit-wide VT-d disable. The command
+    /// lease is settled, but the enclosing [`Device`] continues to exclude
+    /// every other configuration writer until the unit transition finishes.
+    pub(crate) fn settle_bus_master_fence_for_retirement(&mut self) -> Result<(), EnableError> {
+        let Some(state) = self.command_state.take() else {
+            return if self.uncertain {
+                Err(EnableError::Stale)
+            } else {
+                Ok(())
+            };
+        };
+        if let Err(failure) = pci::restore_command(self.function(), state) {
+            let reason = failure.reason();
+            self.command_state = Some(failure.into_state());
+            self.uncertain = true;
+            return Err(reason);
+        }
+        self.uncertain = false;
+        Ok(())
+    }
+
+    /// Freshly prove that this exact command owner still has BME clear before
+    /// a unit-wide VT-d transition.
+    pub(crate) fn verify_bus_master_fence(&self) -> Result<(), EnableError> {
+        let Some(function) = self.function.as_ref() else {
+            return Err(EnableError::Stale);
+        };
+        let Some(state) = self.command_state.as_ref() else {
+            return Err(EnableError::Stale);
+        };
+        pci::verify_bus_master_fence(function, state)
     }
 
     /// Expose one mapped BAR only after its live identity enables memory decode.
@@ -699,7 +853,7 @@ pub(crate) fn retain_failed_probe(recovery: ProbeRecovery) {
 pub(crate) fn retain_failed_release(device: Device) {
     let mut retained = RETAINED_RELEASES.lock_leaf();
     let Some(slot) = retained.iter_mut().find(|slot| slot.is_none()) else {
-        panic!("retained device leases exceed the eight-function PCI registry");
+        panic!("retained device leases exceed the twelve-function PCI registry");
     };
     *slot = Some(device);
 }
@@ -707,7 +861,7 @@ pub(crate) fn retain_failed_release(device: Device) {
 fn retain_failed_function(function: pci::FunctionClaim) {
     let mut retained = RETAINED_FUNCTIONS.lock_leaf();
     let Some(slot) = retained.iter_mut().find(|slot| slot.is_none()) else {
-        panic!("retained function claims exceed the eight-function PCI registry");
+        panic!("retained function claims exceed the twelve-function PCI registry");
     };
     *slot = Some(function);
 }
@@ -723,11 +877,6 @@ fn retain_failed_function(function: pci::FunctionClaim) {
 ///
 /// See [`ClaimError`]. Clean refusals record nothing. An uncertain BAR restore
 /// returns its exclusive retry owner rather than releasing the function.
-#[cfg(feature = "selftest")]
-pub(crate) fn claim(at: Address) -> Result<Device, ClaimError> {
-    claim_as(at, ClaimLifetime::Permanent)
-}
-
 /// Lease one function while storage selection determines whether to keep it.
 pub(crate) fn lease(at: Address) -> Result<Device, ClaimError> {
     claim_as(at, ClaimLifetime::Selection)
@@ -742,8 +891,7 @@ fn claim_as(at: Address, lifetime: ClaimLifetime) -> Result<Device, ClaimError> 
         pci::ClaimError::Header(_) => ClaimError::InvalidWindow,
         _ => ClaimError::NoBus,
     })?;
-    #[cfg(feature = "selftest")]
-    let observed_address = function.address();
+    let address = function.address();
     let (vendor, device) = function.identity();
     let staged = match pci::probe_bars(&function) {
         Ok(staged) => staged,
@@ -785,8 +933,7 @@ fn claim_as(at: Address, lifetime: ClaimLifetime) -> Result<Device, ClaimError> 
     };
 
     Ok(Device {
-        #[cfg(feature = "selftest")]
-        observed_address,
+        address,
         function: Some(function),
         vendor,
         device,

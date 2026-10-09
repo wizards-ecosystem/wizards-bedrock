@@ -1113,14 +1113,26 @@ impl<'a> DeviceScope<'a> {
         let mut hops = self.path();
         let (mut device, mut function) = hops.next()?;
         let mut bus = self.start_bus();
+        let mut bridge_path = [None; Self::MAX_HOPS];
+        let mut bridge_count = 0usize;
         for (next_device, next_function) in hops {
-            let buses = behind(Bdf::new(segment, bus, device, function), bridge)?;
+            let at = Bdf::new(segment, bus, device, function);
+            bridge_path[bridge_count] = Some(at);
+            bridge_count += 1;
+            let buses = behind(at, bridge)?;
             bus = buses.secondary;
             (device, function) = (next_device, next_function);
         }
         let at = Bdf::new(segment, bus, device, function);
         if hierarchy {
-            Some(Named::Hierarchy(at, behind(at, bridge)?))
+            bridge_path[bridge_count] = Some(at);
+            bridge_count += 1;
+            Some(Named::Hierarchy(Hierarchy {
+                root: at,
+                buses: behind(at, bridge)?,
+                bridge_path,
+                bridge_count,
+            }))
         } else {
             Some(Named::Function(at))
         }
@@ -1241,12 +1253,21 @@ fn behind(at: Bdf, bridge: &impl Fn(Bdf) -> Option<BusRange>) -> Option<BusRange
 }
 
 /// What a PCI device scope names once its path is walked.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Named {
     /// Exactly one function.
     Function(Bdf),
     /// A bridge, and every function on the buses behind it.
-    Hierarchy(Bdf, BusRange),
+    Hierarchy(Hierarchy),
+}
+
+/// One resolved hierarchy and the exact live bridge path that reached it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Hierarchy {
+    root: Bdf,
+    buses: BusRange,
+    bridge_path: [Option<Bdf>; DeviceScope::MAX_HOPS],
+    bridge_count: usize,
 }
 
 impl Named {
@@ -1254,10 +1275,24 @@ impl Named {
     fn covers(self, bdf: Bdf) -> bool {
         match self {
             Self::Function(at) => at == bdf,
-            Self::Hierarchy(at, buses) => {
-                at == bdf || (buses.secondary..=buses.subordinate).contains(&bdf.bus())
+            Self::Hierarchy(hierarchy) => {
+                hierarchy.root == bdf
+                    || (hierarchy.buses.secondary..=hierarchy.buses.subordinate)
+                        .contains(&bdf.bus())
             }
         }
+    }
+
+    /// Whether this hierarchy strictly contains another through the live
+    /// bridge topology, rather than merely overlapping its numeric bus range.
+    fn strictly_contains(self, inner: Self) -> bool {
+        let (Self::Hierarchy(outer), Self::Hierarchy(inner)) = (self, inner) else {
+            return false;
+        };
+        outer.root != inner.root
+            && inner.bridge_path[..inner.bridge_count].contains(&Some(outer.root))
+            && outer.buses.secondary <= inner.buses.secondary
+            && inner.buses.subordinate <= outer.buses.subordinate
     }
 }
 
@@ -1281,6 +1316,122 @@ pub struct GoverningUnit {
     /// How the unit's scope reaches the function.
     pub coverage: Coverage,
 }
+
+/// Every live PCI requester proved to belong to one remapping unit.
+///
+/// The fixed storage is deliberate: callers must choose and enforce their
+/// ownership bound before a unit-wide hardware transition can begin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequesterInventory<const N: usize> {
+    unit: GoverningUnit,
+    requesters: [Option<Bdf>; N],
+    count: usize,
+}
+
+impl<const N: usize> RequesterInventory<N> {
+    /// The exact DRHD whose requester inventory was accepted.
+    pub const fn unit(&self) -> GoverningUnit {
+        self.unit
+    }
+
+    /// Number of distinct live requesters in the unit.
+    pub const fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Whether the inventory contains no requester.
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// The distinct requester BDFs in declaration order.
+    pub fn iter(&self) -> impl Iterator<Item = Bdf> + '_ {
+        self.requesters[..self.count].iter().flatten().copied()
+    }
+}
+
+/// Why one DRHD cannot become a complete fixed requester inventory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RequesterInventoryError {
+    /// No unambiguous unit governs the selected function.
+    Ungoverned,
+    /// The selected function is governed only by catch-all coverage.
+    SelectedUsesCatchAll,
+    /// The unit can govern functions not named by an endpoint scope.
+    IncludesAllPci,
+    /// A PCI scope could not be resolved through the supplied topology.
+    UnresolvedScope,
+    /// A declared endpoint resolves to another unit or ambiguously.
+    ForeignEndpoint,
+    /// A non-interrupt scope can name a requester the PCI inventory cannot fence.
+    UnsupportedScope,
+    /// A present requester within a hierarchy has ambiguous governance.
+    AmbiguousRequester,
+    /// The selected function was not among the unit's resolved requesters.
+    MissingSelected,
+    /// The unit has more distinct live requesters than the caller can own.
+    TooManyRequesters {
+        /// Fixed requester capacity supplied by the caller.
+        maximum: usize,
+    },
+    /// One unit declares more PCI requester scopes than a boot may probe.
+    TooManyRequesterScopes {
+        /// Fixed per-unit scope budget.
+        maximum: usize,
+    },
+}
+
+impl fmt::Display for RequesterInventoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ungoverned => core::fmt::Write::write_str(
+                f,
+                "no unambiguous remapping unit governs the selected function",
+            ),
+            Self::SelectedUsesCatchAll => core::fmt::Write::write_str(
+                f,
+                "the selected function is governed only by catch-all coverage",
+            ),
+            Self::IncludesAllPci => core::fmt::Write::write_str(
+                f,
+                "the remapping unit includes unlisted PCI requesters",
+            ),
+            Self::UnresolvedScope => core::fmt::Write::write_str(
+                f,
+                "a remapping-unit PCI scope does not resolve through the topology",
+            ),
+            Self::ForeignEndpoint => core::fmt::Write::write_str(
+                f,
+                "a declared endpoint is not governed by the same remapping unit",
+            ),
+            Self::UnsupportedScope => core::fmt::Write::write_str(
+                f,
+                "the remapping unit contains an unsupported requester scope",
+            ),
+            Self::AmbiguousRequester => core::fmt::Write::write_str(
+                f,
+                "a present hierarchy requester has ambiguous remapping-unit governance",
+            ),
+            Self::MissingSelected => core::fmt::Write::write_str(
+                f,
+                "the selected function is absent from the remapping-unit requester inventory",
+            ),
+            Self::TooManyRequesters { maximum } => {
+                write!(
+                    f,
+                    "the remapping unit has more than {maximum} live requesters"
+                )
+            }
+            Self::TooManyRequesterScopes { maximum } => write!(
+                f,
+                "the remapping unit has more than {maximum} PCI requester scopes"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for RequesterInventoryError {}
 
 /// Why a DMAR could not become a validated VT-d inventory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1336,9 +1487,49 @@ pub struct Dmar<'a> {
     body: &'a [u8],
 }
 
+fn push_requester<const N: usize>(
+    requesters: &mut [Option<Bdf>; N],
+    count: &mut usize,
+    requester: Bdf,
+) -> Result<(), RequesterInventoryError> {
+    if requesters[..*count].contains(&Some(requester)) {
+        return Ok(());
+    }
+    let Some(slot) = requesters.get_mut(*count) else {
+        return Err(RequesterInventoryError::TooManyRequesters { maximum: N });
+    };
+    *slot = Some(requester);
+    *count += 1;
+    Ok(())
+}
+
+fn add_live_requester<const N: usize>(
+    dmar: &Dmar<'_>,
+    bridge: &impl Fn(Bdf) -> Option<BusRange>,
+    register_base: u64,
+    requester: Bdf,
+    requesters: &mut [Option<Bdf>; N],
+    count: &mut usize,
+) -> Result<(), RequesterInventoryError> {
+    match dmar.unit_for(requester, bridge) {
+        Some(governing) if governing.register_base == register_base => {
+            push_requester(requesters, count, requester)
+        }
+        // A more-specific scope may validly remove one requester from a broad
+        // hierarchy and assign it to another unit.
+        Some(_) => Ok(()),
+        None => Err(RequesterInventoryError::AmbiguousRequester),
+    }
+}
+
 /// A platform needs only a handful of units. Bounding this allocation-free
 /// inventory also bounds the duplicate scan below on hostile firmware.
 const MAX_DRHD_UNITS: usize = 64;
+
+/// A requester inventory may perform a full bounded PCI scan for each
+/// hierarchy. Keep hostile duplicate scopes from amplifying that proof into an
+/// impractical number of configuration cycles.
+const MAX_REQUESTER_SCOPES: usize = 16;
 
 impl<'a> Dmar<'a> {
     /// Validate `table` as a DMAR, bound its unit inventory, and additionally
@@ -1425,7 +1616,7 @@ impl<'a> Dmar<'a> {
     ) -> Option<GoverningUnit> {
         let mut endpoint: Option<GoverningUnit> = None;
         let mut endpoint_ambiguous = false;
-        let mut enclosing: Option<(u8, GoverningUnit)> = None;
+        let mut enclosing: Option<(Named, GoverningUnit)> = None;
         let mut enclosing_ambiguous = false;
         let mut catch_all: Option<GoverningUnit> = None;
         let mut catch_all_ambiguous = false;
@@ -1455,24 +1646,25 @@ impl<'a> Dmar<'a> {
                             endpoint.get_or_insert(candidate);
                         }
                     }
-                    // Bridge ranges nest, so the innermost enclosing bridge
-                    // is the one with the highest secondary bus.
-                    Some(named @ Named::Hierarchy(at, buses)) if named.covers(bdf) => {
+                    Some(named @ Named::Hierarchy(hierarchy)) if named.covers(bdf) => {
                         let candidate = GoverningUnit {
                             register_base,
-                            coverage: Coverage::Bridge(at),
+                            coverage: Coverage::Bridge(hierarchy.root),
                         };
                         match enclosing {
-                            Some((innermost, _)) if buses.secondary < innermost => {}
-                            Some((innermost, unit)) if buses.secondary == innermost => {
-                                if unit.register_base != register_base {
-                                    enclosing_ambiguous = true;
+                            Some((current, unit)) if unit.register_base == register_base => {
+                                if current.strictly_contains(named) {
+                                    enclosing = Some((named, candidate));
                                 }
                             }
-                            _ => {
-                                enclosing = Some((buses.secondary, candidate));
-                                enclosing_ambiguous = false;
+                            Some((current, _)) if current.strictly_contains(named) => {
+                                enclosing = Some((named, candidate));
                             }
+                            Some((current, _)) if named.strictly_contains(current) => {}
+                            Some(_) => {
+                                enclosing_ambiguous = true;
+                            }
+                            None => enclosing = Some((named, candidate)),
                         }
                     }
                     _ => {}
@@ -1499,6 +1691,124 @@ impl<'a> Dmar<'a> {
                 .flatten();
         }
         (!catch_all_ambiguous).then_some(catch_all).flatten()
+    }
+
+    /// Inventory every live PCI requester governed by the selected function's
+    /// exact DRHD.
+    ///
+    /// Endpoint paths are resolved exactly. Sub-hierarchy scopes are expanded
+    /// across every bus, device and function number in their bounded range;
+    /// `present` must report whether that exact requester currently exists.
+    /// Each result is checked through [`Self::unit_for`] again so a scope
+    /// shadowed by a provably more-specific unit cannot enter the inventory.
+    /// Overlapping sibling hierarchies are ambiguous, and a fixed scope budget
+    /// bounds hostile duplicate scans. Catch-all coverage remains unsupported
+    /// because it has no fixed scope boundary.
+    pub fn requester_inventory<const N: usize>(
+        &self,
+        selected: Bdf,
+        bridge: impl Fn(Bdf) -> Option<BusRange>,
+        present: impl Fn(Bdf) -> bool,
+    ) -> Result<RequesterInventory<N>, RequesterInventoryError> {
+        let unit = self
+            .unit_for(selected, &bridge)
+            .ok_or(RequesterInventoryError::Ungoverned)?;
+        if unit.coverage == Coverage::CatchAll {
+            return Err(RequesterInventoryError::SelectedUsesCatchAll);
+        }
+
+        let mut requesters = [None; N];
+        let mut count = 0usize;
+        let mut requester_scopes = 0usize;
+        let mut found_unit = false;
+        for structure in self.entries() {
+            let DmarStructure::Drhd {
+                include_pci_all,
+                segment,
+                register_base,
+                scopes,
+            } = structure
+            else {
+                continue;
+            };
+            if register_base != unit.register_base {
+                continue;
+            }
+            found_unit = true;
+            if include_pci_all {
+                return Err(RequesterInventoryError::IncludesAllPci);
+            }
+            for scope in DeviceScopes::new(scopes) {
+                if matches!(
+                    scope.kind(),
+                    DeviceScopeKind::PciEndpoint | DeviceScopeKind::PciSubHierarchy
+                ) {
+                    requester_scopes += 1;
+                    if requester_scopes > MAX_REQUESTER_SCOPES {
+                        return Err(RequesterInventoryError::TooManyRequesterScopes {
+                            maximum: MAX_REQUESTER_SCOPES,
+                        });
+                    }
+                }
+                match scope.kind() {
+                    DeviceScopeKind::PciEndpoint => {
+                        let Some(Named::Function(endpoint)) = scope.walk(segment, &bridge) else {
+                            return Err(RequesterInventoryError::UnresolvedScope);
+                        };
+                        if self
+                            .unit_for(endpoint, &bridge)
+                            .is_none_or(|governing| governing.register_base != register_base)
+                        {
+                            return Err(RequesterInventoryError::ForeignEndpoint);
+                        }
+                        push_requester(&mut requesters, &mut count, endpoint)?;
+                    }
+                    DeviceScopeKind::PciSubHierarchy => {
+                        let Some(Named::Hierarchy(hierarchy)) = scope.walk(segment, &bridge) else {
+                            return Err(RequesterInventoryError::UnresolvedScope);
+                        };
+                        add_live_requester(
+                            self,
+                            &bridge,
+                            register_base,
+                            hierarchy.root,
+                            &mut requesters,
+                            &mut count,
+                        )?;
+                        for bus in hierarchy.buses.secondary..=hierarchy.buses.subordinate {
+                            for device in 0..32 {
+                                for function in 0..8 {
+                                    let requester = Bdf::new(segment, bus, device, function);
+                                    if present(requester) {
+                                        add_live_requester(
+                                            self,
+                                            &bridge,
+                                            register_base,
+                                            requester,
+                                            &mut requesters,
+                                            &mut count,
+                                        )?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    DeviceScopeKind::IoApic | DeviceScopeKind::Hpet => {}
+                    DeviceScopeKind::AcpiNamespaceDevice | DeviceScopeKind::Other { .. } => {
+                        return Err(RequesterInventoryError::UnsupportedScope);
+                    }
+                }
+            }
+        }
+        debug_assert!(found_unit, "a governing unit must name one DRHD");
+        if !requesters[..count].contains(&Some(selected)) {
+            return Err(RequesterInventoryError::MissingSelected);
+        }
+        Ok(RequesterInventory {
+            unit,
+            requesters,
+            count,
+        })
     }
 
     /// Every reserved memory region a device at `bdf` must have
@@ -2714,6 +3024,14 @@ mod tests {
         None
     }
 
+    fn no_requesters(_: Bdf) -> bool {
+        false
+    }
+
+    fn present(requesters: &[Bdf]) -> impl Fn(Bdf) -> bool + '_ {
+        move |at| requesters.contains(&at)
+    }
+
     fn dmar_of(structures: &[Vec<u8>]) -> Vec<u8> {
         table(&Sdt::DMAR, &dmar_body(&structures.concat()))
     }
@@ -2722,6 +3040,209 @@ mod tests {
         GoverningUnit {
             register_base: CATCH_ALL,
             coverage: Coverage::CatchAll,
+        }
+    }
+
+    #[test]
+    fn an_endpoint_inventory_owns_each_distinct_endpoint_on_the_unit() {
+        let first = Bdf::new(0, 0, 4, 0);
+        let second = Bdf::new(0, 0, 5, 0);
+        let first_scope = scope(ENDPOINT, 0, &[(4, 0)]);
+        let second_scope = scope(ENDPOINT, 0, &[(5, 0)]);
+        let scopes = [
+            first_scope.as_slice(),
+            second_scope.as_slice(),
+            first_scope.as_slice(),
+            scope(IO_APIC, 0, &[(0x1f, 0)]).as_slice(),
+        ]
+        .concat();
+        let bytes = dmar_of(&[drhd_bytes(false, 0, SCOPED, &scopes)]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+
+        let inventory = dmar
+            .requester_inventory::<2>(second, no_bridges, no_requesters)
+            .expect("bounded requester inventory");
+        assert_eq!(inventory.unit().register_base, SCOPED);
+        assert_eq!(inventory.len(), 2);
+        assert!(!inventory.is_empty());
+        assert_eq!(inventory.iter().collect::<Vec<_>>(), [first, second]);
+    }
+
+    #[test]
+    fn requester_inventory_expands_hierarchies_and_refuses_catch_all_and_overflow() {
+        let selected = Bdf::new(0, 0, 4, 0);
+        let endpoint = scope(ENDPOINT, 0, &[(4, 0)]);
+
+        let include_all = dmar_of(&[drhd_bytes(true, 0, SCOPED, &endpoint)]);
+        assert_eq!(
+            Dmar::new(&include_all)
+                .expect("valid dmar")
+                .requester_inventory::<2>(selected, no_bridges, no_requesters),
+            Err(RequesterInventoryError::IncludesAllPci)
+        );
+
+        let bridge = Bdf::new(0, 0, 0x1c, 0);
+        let bridges = [(bridge, buses(0x20, 0x20))];
+        let downstream = Bdf::new(0, 0x20, 3, 1);
+        let hierarchy = scope(SUB_HIERARCHY, 0, &[(0x1c, 0)]);
+        let shared = dmar_of(&[drhd_bytes(
+            false,
+            0,
+            SCOPED,
+            &[endpoint.as_slice(), hierarchy.as_slice()].concat(),
+        )]);
+        let inventory = Dmar::new(&shared)
+            .expect("valid dmar")
+            .requester_inventory::<3>(selected, topology(&bridges), present(&[downstream]))
+            .expect("bounded hierarchy inventory");
+        assert_eq!(
+            inventory.iter().collect::<Vec<_>>(),
+            [selected, bridge, downstream]
+        );
+
+        let crowded = dmar_of(&[drhd_bytes(
+            false,
+            0,
+            SCOPED,
+            &[
+                endpoint.as_slice(),
+                scope(ENDPOINT, 0, &[(5, 0)]).as_slice(),
+            ]
+            .concat(),
+        )]);
+        assert_eq!(
+            Dmar::new(&crowded)
+                .expect("valid dmar")
+                .requester_inventory::<1>(selected, no_bridges, no_requesters),
+            Err(RequesterInventoryError::TooManyRequesters { maximum: 1 })
+        );
+    }
+
+    #[test]
+    fn requester_inventory_refuses_unresolved_foreign_and_catch_all_selection() {
+        let selected = Bdf::new(0, 0, 4, 0);
+        let endpoint = scope(ENDPOINT, 0, &[(4, 0)]);
+        let unresolved = scope(ENDPOINT, 0, &[(0x1c, 0), (5, 0)]);
+        let bytes = dmar_of(&[drhd_bytes(
+            false,
+            0,
+            SCOPED,
+            &[endpoint.as_slice(), unresolved.as_slice()].concat(),
+        )]);
+        assert_eq!(
+            Dmar::new(&bytes)
+                .expect("valid dmar")
+                .requester_inventory::<2>(selected, no_bridges, no_requesters),
+            Err(RequesterInventoryError::UnresolvedScope)
+        );
+
+        let sibling = scope(ENDPOINT, 0, &[(5, 0)]);
+        let ambiguous = dmar_of(&[
+            drhd_bytes(
+                false,
+                0,
+                SCOPED,
+                &[endpoint.as_slice(), sibling.as_slice()].concat(),
+            ),
+            drhd_bytes(false, 0, EXACT, &sibling),
+        ]);
+        assert_eq!(
+            Dmar::new(&ambiguous)
+                .expect("valid dmar")
+                .requester_inventory::<2>(selected, no_bridges, no_requesters),
+            Err(RequesterInventoryError::ForeignEndpoint)
+        );
+
+        let catch_all = dmar_of(&[drhd_bytes(true, 0, CATCH_ALL, &[])]);
+        assert_eq!(
+            Dmar::new(&catch_all)
+                .expect("valid dmar")
+                .requester_inventory::<2>(selected, no_bridges, no_requesters),
+            Err(RequesterInventoryError::SelectedUsesCatchAll)
+        );
+        assert_eq!(
+            Dmar::new(&catch_all)
+                .expect("valid dmar")
+                .requester_inventory::<2>(Bdf::new(1, 0, 4, 0), no_bridges, no_requesters,),
+            Err(RequesterInventoryError::Ungoverned)
+        );
+    }
+
+    #[test]
+    fn a_selected_requester_under_a_hierarchy_is_inventoried_with_its_bridge() {
+        let bridge = Bdf::new(0, 0, 0x1c, 0);
+        let selected = Bdf::new(0, 0x20, 3, 0);
+        let bridges = [(bridge, buses(0x20, 0x20))];
+        let bytes = dmar_of(&[drhd_bytes(
+            false,
+            0,
+            SCOPED,
+            &scope(SUB_HIERARCHY, 0, &[(0x1c, 0)]),
+        )]);
+
+        let inventory = Dmar::new(&bytes)
+            .expect("valid dmar")
+            .requester_inventory::<2>(selected, topology(&bridges), present(&[selected]))
+            .expect("complete hierarchy inventory");
+        assert_eq!(inventory.unit().coverage, Coverage::Bridge(bridge));
+        assert_eq!(inventory.iter().collect::<Vec<_>>(), [bridge, selected]);
+    }
+
+    #[test]
+    fn overlapping_sibling_hierarchies_are_ambiguous_not_numerically_nested() {
+        let first = Bdf::new(0, 0, 0x1c, 0);
+        let second = Bdf::new(0, 0, 0x1d, 0);
+        let target = Bdf::new(0, 0x30, 3, 0);
+        let bridges = [(first, buses(0x20, 0x3f)), (second, buses(0x30, 0x4f))];
+        let bytes = dmar_of(&[
+            drhd_bytes(false, 0, SCOPED, &scope(SUB_HIERARCHY, 0, &[(0x1c, 0)])),
+            drhd_bytes(false, 0, INNER, &scope(SUB_HIERARCHY, 0, &[(0x1d, 0)])),
+        ]);
+        let dmar = Dmar::new(&bytes).expect("valid dmar");
+
+        assert_eq!(dmar.unit_for(target, topology(&bridges)), None);
+        assert_eq!(
+            dmar.requester_inventory::<4>(first, topology(&bridges), present(&[target])),
+            Err(RequesterInventoryError::AmbiguousRequester)
+        );
+    }
+
+    #[test]
+    fn requester_scope_work_is_bounded_before_duplicate_hierarchy_scans() {
+        let selected = Bdf::new(0, 0, 4, 0);
+        let bridge = Bdf::new(0, 0, 0x1c, 0);
+        let endpoint = scope(ENDPOINT, 0, &[(4, 0)]);
+        let hierarchy = scope(SUB_HIERARCHY, 0, &[(0x1c, 0)]);
+        let mut scopes = endpoint;
+        for _ in 0..MAX_REQUESTER_SCOPES {
+            scopes.extend_from_slice(&hierarchy);
+        }
+        let bytes = dmar_of(&[drhd_bytes(false, 0, SCOPED, &scopes)]);
+        let bridges = [(bridge, buses(0x20, 0x20))];
+
+        assert_eq!(
+            Dmar::new(&bytes)
+                .expect("valid dmar")
+                .requester_inventory::<4>(selected, topology(&bridges), no_requesters),
+            Err(RequesterInventoryError::TooManyRequesterScopes {
+                maximum: MAX_REQUESTER_SCOPES,
+            })
+        );
+    }
+
+    #[test]
+    fn requester_inventory_refuses_non_pci_and_unknown_requester_scopes() {
+        let selected = Bdf::new(0, 0, 4, 0);
+        let endpoint = scope(ENDPOINT, 0, &[(4, 0)]);
+        for kind in [NAMESPACE_DEVICE, 0x7f] {
+            let scopes = [endpoint.as_slice(), scope(kind, 0, &[(0x1f, 0)]).as_slice()].concat();
+            let bytes = dmar_of(&[drhd_bytes(false, 0, SCOPED, &scopes)]);
+            assert_eq!(
+                Dmar::new(&bytes)
+                    .expect("valid dmar")
+                    .requester_inventory::<2>(selected, no_bridges, no_requesters),
+                Err(RequesterInventoryError::UnsupportedScope)
+            );
         }
     }
 

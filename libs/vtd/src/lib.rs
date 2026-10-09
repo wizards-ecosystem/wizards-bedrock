@@ -112,6 +112,10 @@ impl Capability {
     const NFR_SHIFT: u32 = 40;
     /// Eight NFR bits.
     const NFR_MASK: u64 = 0xFF;
+    /// Write draining support, bit 54.
+    const DWD: u64 = 1 << 54;
+    /// Read draining support, bit 55.
+    const DRD: u64 = 1 << 55;
 
     /// Build a capability view over a raw register value.
     pub const fn from_bits(bits: u64) -> Self {
@@ -170,6 +174,21 @@ impl Capability {
     /// Fault-recording registers the unit has: the NFR field plus one.
     pub const fn number_of_fault_recording_registers(self) -> u16 {
         (((self.0 >> Self::NFR_SHIFT) & Self::NFR_MASK) as u16) + 1
+    }
+
+    /// Whether translation transitions drain in-flight DMA writes.
+    pub const fn write_draining(self) -> bool {
+        (self.0 & Self::DWD) != 0
+    }
+
+    /// Whether translation transitions drain in-flight DMA reads.
+    pub const fn read_draining(self) -> bool {
+        (self.0 & Self::DRD) != 0
+    }
+
+    /// Whether a completed translation transition drains both DMA directions.
+    pub const fn dma_draining(self) -> bool {
+        self.write_draining() && self.read_draining()
     }
 }
 
@@ -618,10 +637,22 @@ pub mod iotlb_command {
     const IIRG_SHIFT: u32 = 60;
     /// Global-granularity request (IIRG = 1).
     const GLOBAL: u64 = 1 << IIRG_SHIFT;
+    /// Drain reads before completing the invalidation, bit 49.
+    const DRAIN_READS: u64 = 1 << 49;
+    /// Drain writes before completing the invalidation, bit 48.
+    const DRAIN_WRITES: u64 = 1 << 48;
 
     /// A global IOTLB invalidation command word.
     pub const fn global() -> u64 {
         IVT | GLOBAL
+    }
+
+    /// A global invalidation that completes only after older DMA reads and
+    /// writes have drained.
+    ///
+    /// The caller must first require the matching DRD and DWD capability bits.
+    pub const fn global_with_drain() -> u64 {
+        global() | DRAIN_READS | DRAIN_WRITES
     }
 
     /// Whether a read-back value shows the invalidation complete (IVT clear).
@@ -792,13 +823,22 @@ mod tests {
         assert_eq!(Capability::FRO_MASK, 0x3FF, "FRO bits 33:24");
         assert_eq!(Capability::NFR_SHIFT, 40);
         assert_eq!(Capability::NFR_MASK, 0xFF, "NFR bits 47:40");
+        assert_eq!(Capability::DWD, 1 << 54);
+        assert_eq!(Capability::DRD, 1 << 55);
     }
 
     #[test]
     fn capability_decodes_each_field_from_its_own_bits() {
         // Pairwise-distinct field values placed with independent literal shifts.
         let cap = Capability::from_bits(
-            5 | (1 << 4) | (1 << 7) | (4 << 8) | (47 << 16) | (0x123u64 << 24) | (0x12u64 << 40),
+            5 | (1 << 4)
+                | (1 << 7)
+                | (4 << 8)
+                | (47 << 16)
+                | (0x123u64 << 24)
+                | (0x12u64 << 40)
+                | (1 << 54)
+                | (1 << 55),
         );
         assert_eq!(cap.number_of_domains(), 1 << (4 + 2 * 5)); // ND = 5
         assert!(cap.requires_write_buffer_flush());
@@ -810,6 +850,9 @@ mod tests {
         assert_eq!(cap.max_guest_address_width(), 48); // MGAW field 47
         assert_eq!(cap.fault_recording_offset_bytes(), 0x123 * 16);
         assert_eq!(cap.number_of_fault_recording_registers(), 0x12 + 1);
+        assert!(cap.write_draining());
+        assert!(cap.read_draining());
+        assert!(cap.dma_draining());
         assert_eq!(cap.bits() & 0x7, 5);
     }
 
@@ -827,6 +870,14 @@ mod tests {
         assert!(Capability::from_bits(1 << 7).caching_mode());
         assert!(Capability::from_bits(1 << 4).requires_write_buffer_flush());
         assert!(!Capability::from_bits(1 << 4).caching_mode());
+    }
+
+    #[test]
+    fn dma_draining_requires_both_independent_capability_bits() {
+        assert!(!Capability::from_bits(0).dma_draining());
+        assert!(!Capability::from_bits(1 << 54).dma_draining());
+        assert!(!Capability::from_bits(1 << 55).dma_draining());
+        assert!(Capability::from_bits((1 << 54) | (1 << 55)).dma_draining());
     }
 
     #[test]
@@ -1167,7 +1218,12 @@ mod tests {
     #[test]
     fn iotlb_command_words_and_readback() {
         assert_eq!(iotlb_command::global(), (1 << 63) | (1 << 60));
+        assert_eq!(
+            iotlb_command::global_with_drain(),
+            (1 << 63) | (1 << 60) | (1 << 49) | (1 << 48)
+        );
         assert!(!iotlb_command::completed(iotlb_command::global()));
+        assert!(!iotlb_command::completed(iotlb_command::global_with_drain()));
         assert!(iotlb_command::completed(0));
         assert!(
             iotlb_command::completed(1 << 60),
