@@ -164,7 +164,7 @@ mod tests {
             "wost/src/arch/x86_64/paging.rs",
             13,
             0,
-            "22cfca95570b779c6dcebbb0e7d3c9d0d906ec9378d05858fcdae0168d04ed51",
+            "840004fa16fdc0ed533542777399df4961fcdc6a0f001f9ea34c40dc4a0e43cb",
         ),
         (
             "wost/src/arch/x86_64/percpu.rs",

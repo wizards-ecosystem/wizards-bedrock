@@ -6352,6 +6352,97 @@ fn a_boot_mapping_cannot_claim_ownership() -> bool {
     })
 }
 
+fn writable_executable_mappings_leave_no_trace() -> bool {
+    /// Canonical user memory, far from every mapping a fresh space inherits.
+    const BOOT: u64 = 0x0000_0500_0000_0000;
+    const OWNED: u64 = 0x0000_0600_0000_0000;
+    const USER: u64 = 0x0000_0700_0000_0000;
+    const SHARED: u64 = 0x0000_0800_0000_0000;
+    const RING: u64 = 0x0000_0900_0000_0000;
+
+    let allocator_before = AllocatorSnapshot::capture();
+    let Ok(mut space) = AddressSpace::for_user() else {
+        return false;
+    };
+    let free_with_root = mm::free_frames();
+    let checked = (|| {
+        let hostile = Flags::WRITABLE;
+        let Some(region) = probe_page(0) else {
+            return false;
+        };
+        if space.map_boot(BOOT, region, hostile) != Err(MapError::WriteExecute(BOOT))
+            || space.lookup(BOOT).is_some()
+            || mm::free_frames() != free_with_root
+        {
+            return false;
+        }
+
+        let Some(owned) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if space.map_owned(OWNED, owned, hostile) != Err(MapError::WriteExecute(OWNED))
+            || space.lookup(OWNED).is_some()
+            || mm::free_frames() != free_with_root
+        {
+            return false;
+        }
+
+        let Some(mut user) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !user.zero() {
+            return false;
+        }
+        let user_result = space.map_user(USER, user.into(), hostile);
+        let user_refused = matches!(
+            &user_result,
+            Err(error) if error.reason() == MapError::WriteExecute(USER)
+        ) && space.lookup(USER).is_none();
+        drop(user_result);
+        if !user_refused || mm::free_frames() != free_with_root {
+            return false;
+        }
+
+        let Some(mut shared) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !shared.zero() {
+            return false;
+        }
+        let shared = mm::USegment::from(shared).share().into_bytes();
+        let shared_refused = space.map_shared(SHARED, &shared, hostile)
+            == Err(MapError::WriteExecute(SHARED))
+            && space.lookup(SHARED).is_none();
+        drop(shared);
+        if !shared_refused || mm::free_frames() != free_with_root {
+            return false;
+        }
+
+        let Some(mut ring) = mm::allocate_contiguous(1, 1) else {
+            return false;
+        };
+        if !ring.zero() {
+            return false;
+        }
+        let Ok(layout) = SharedLayout::<1>::new(PAGE_SIZE as usize, [0]) else {
+            return false;
+        };
+        let Ok(ring) = mm::USegment::from(ring).share().into_ring(layout) else {
+            return false;
+        };
+        let ring_refused = space.map_shared_ring(RING, &ring, hostile)
+            == Err(MapError::WriteExecute(RING))
+            && space.lookup(RING).is_none();
+        drop(ring);
+
+        ring_refused && mm::free_frames() == free_with_root
+    })();
+    let root_only = space.reclaim(None).is_ok_and(|tables| tables == 1);
+    drop(space);
+
+    checked && root_only && AllocatorSnapshot::capture().has_same_ownership(&allocator_before)
+}
+
 fn caller_global_is_removed_from_safe_mappings() -> bool {
     const USER: u64 = 0x0000_0100_0000_0000;
     const SHARED: u64 = 0x0000_0200_0000_0000;
@@ -6359,7 +6450,9 @@ fn caller_global_is_removed_from_safe_mappings() -> bool {
     const BOOT: u64 = 0x0000_0400_0000_0000;
 
     in_reclaimed_space(AddressSpace::for_user, |space| {
-        let hostile = Flags::GLOBAL.union(Flags::NO_EXECUTE);
+        let hostile = Flags::GLOBAL
+            .union(Flags::WRITABLE)
+            .union(Flags::NO_EXECUTE);
 
         let Some(mut user) = mm::allocate_contiguous(1, 1) else {
             return false;
@@ -7899,7 +7992,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 279;
+const EXPECTED_CHECKS: usize = 280;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -8597,6 +8690,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a boot mapping cannot claim ownership",
         a_boot_mapping_cannot_claim_ownership(),
+    );
+    report.check(
+        "writable executable mappings leave no trace",
+        writable_executable_mappings_leave_no_trace(),
     );
     report.check(
         "caller global is removed from safe mappings",

@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1766;
+pub const NEXT_MUTATION_ID: u16 = 1767;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -1908,8 +1908,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 162,
         file: "wost/src/arch/x86_64/paging.rs",
-        find: "        let flags = flags.union(Flags::PRESENT);\n\n        if let Some(stack) = protected_stack_overlap(self.root(), virtual_base, len) {",
-        replace: "        let flags = flags.union(Flags::PRESENT);\n\n        if let Some(stack) = protected_stack_overlap(self.root(), virtual_base, len).filter(|_| false) {",
+        find: "        if let Some(stack) = protected_stack_overlap(self.root(), virtual_base, len) {",
+        replace: "        if let Some(stack) = protected_stack_overlap(self.root(), virtual_base, len).filter(|_| false) {",
         breaks: "the safe map path can admit a mapping over a retained stack or guard",
         reddens: Caught::Check("protected stacks refuse overlapping maps"),
     },
@@ -19774,6 +19774,14 @@ fn mint_stopped<'controller>(
         replace: "    register::LOCAL_VECTOR_TABLE.get(..=maximum.min(register::LOCAL_VECTOR_TABLE.len() - 1))",
         breaks: "APIC takeover silently ignores a future source advertised beyond the known inventory",
         reddens: Caught::Check("unmaskable or unknown apic source inventories poison takeover"),
+    },
+    Mutation {
+        id: 1766,
+        file: "wost/src/arch/x86_64/paging.rs",
+        find: "        if flags.is_write_execute() {",
+        replace: "        if flags.difference(Flags::WRITABLE).is_write_execute() {",
+        breaks: "mapping admission erases write permission before testing W^X",
+        reddens: Caught::Check("writable executable mappings leave no trace"),
     },
 ];
 

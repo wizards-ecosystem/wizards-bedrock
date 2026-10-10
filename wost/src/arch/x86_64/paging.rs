@@ -95,6 +95,8 @@ pub enum MapError {
     /// A shared mapping requests a cache policy that would alias the direct
     /// map's write-back view of the same frames.
     CacheAlias(u64),
+    /// A present mapping would be both writable and executable.
+    WriteExecute(u64),
     /// A hardware-retained stack was requested in a space this CPU is not
     /// currently walking.
     Inactive(Paddr),
@@ -296,6 +298,9 @@ impl fmt::Display for MapError {
                 f,
                 "shared mapping at {address:#x} conflicts with the direct-map cache policy"
             ),
+            Self::WriteExecute(address) => {
+                write!(f, "mapping at {address:#x} is writable and executable")
+            }
             Self::Inactive(root) => {
                 write!(f, "the address space at {root:#x} is not active")
             }
@@ -684,8 +689,10 @@ impl AddressSpace {
     /// [`MapError::Misaligned`] unless both bases are page-aligned,
     /// [`MapError::NonCanonical`] if the virtual range leaves canonical space,
     /// [`MapError::Conflict`] if a larger page already covers part of the
-    /// range, [`MapError::Pinned`] if it overlaps a retained stack or guard,
-    /// and [`MapError::OutOfMemory`] if a table cannot be allocated.
+    /// range, [`MapError::WriteExecute`] if the resulting present mapping
+    /// would be writable and executable, [`MapError::Pinned`] if it overlaps a
+    /// retained stack or guard, and [`MapError::OutOfMemory`] if a table cannot
+    /// be allocated.
     fn map_range(
         &mut self,
         virtual_base: u64,
@@ -696,6 +703,10 @@ impl AddressSpace {
     ) -> Result<(), MapError> {
         let range = MappingRange::new(virtual_base, physical_base, len)?;
         let flags = flags.union(Flags::PRESENT);
+
+        if flags.is_write_execute() {
+            return Err(MapError::WriteExecute(virtual_base));
+        }
 
         if let Some(stack) = protected_stack_overlap(self.root(), virtual_base, len) {
             return Err(MapError::Pinned(stack));
@@ -950,8 +961,9 @@ impl AddressSpace {
     /// [`MapError::Misaligned`] unless `virtual_base` is page-aligned,
     /// [`MapError::NonCanonical`] if the range leaves canonical space,
     /// [`MapError::Conflict`] if any page of it is already mapped to something
-    /// else, [`MapError::Pinned`] if it overlaps a retained stack or guard, and
-    /// [`MapError::OutOfMemory`] if a table cannot be allocated.
+    /// else, [`MapError::WriteExecute`] if the mapping would be writable and
+    /// executable, [`MapError::Pinned`] if it overlaps a retained stack or
+    /// guard, and [`MapError::OutOfMemory`] if a table cannot be allocated.
     pub fn map_owned(
         &mut self,
         virtual_base: u64,
