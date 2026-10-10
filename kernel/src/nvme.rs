@@ -1996,7 +1996,7 @@ impl DisabledController {
     /// refusal builds a small value rather than a whole admission result: the
     /// debug build gives every such temporary its own stack slot (D-287).
     fn admit(&mut self, device: &mut crate::pci::Device) -> Result<(), BusMasterAdmissionError> {
-        let domain = {
+        let (domain, interrupts) = {
             let mut installed = crate::iommu::installed();
             let Some(isolation) = installed.as_mut() else {
                 return Err(BusMasterAdmissionError::Unisolated);
@@ -2004,9 +2004,13 @@ impl DisabledController {
             if !self.controller.admin.map_into(isolation) {
                 return Err(BusMasterAdmissionError::QueuesUnreachable);
             }
-            isolation
+            let domain = isolation
                 .domain()
-                .ok_or(BusMasterAdmissionError::Unisolated)?
+                .ok_or(BusMasterAdmissionError::Unisolated)?;
+            let interrupts = isolation
+                .interrupt_isolation()
+                .ok_or(BusMasterAdmissionError::Unisolated)?;
+            (domain, interrupts)
         };
         let Some(registers) = self.controller.registers.as_ref() else {
             return Err(BusMasterAdmissionError::NotMapped);
@@ -2022,7 +2026,7 @@ impl DisabledController {
             BME_PRECEDING_CC.store(observed.0 as usize, Ordering::Release);
             BME_PRECEDING_CSTS.store(observed.1 as usize, Ordering::Release);
         }
-        match device.admit_bus_master(authority, domain) {
+        match device.admit_bus_master(authority, domain, interrupts) {
             Ok(()) => Ok(()),
             Err(reason) => {
                 #[cfg(feature = "selftest")]

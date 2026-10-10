@@ -31,6 +31,19 @@ pub const IN_SERVICE: [Register; 8] = [
     Register::new(0x170),
 ];
 
+/// Interrupt requests accepted by the local APIC but not yet delivered, one
+/// word for each thirty-two-vector bank.
+pub const INTERRUPT_REQUEST: [Register; 8] = [
+    Register::new(0x200),
+    Register::new(0x210),
+    Register::new(0x220),
+    Register::new(0x230),
+    Register::new(0x240),
+    Register::new(0x250),
+    Register::new(0x260),
+    Register::new(0x270),
+];
+
 /// Written to dismiss the interrupt currently in service. Until it is, nothing
 /// of the same priority class or lower can be delivered.
 pub const END_OF_INTERRUPT: Register = Register::new(0x0B0);
@@ -85,6 +98,14 @@ mod tests {
         ("in service 5", IN_SERVICE[5]),
         ("in service 6", IN_SERVICE[6]),
         ("in service 7", IN_SERVICE[7]),
+        ("interrupt request 0", INTERRUPT_REQUEST[0]),
+        ("interrupt request 1", INTERRUPT_REQUEST[1]),
+        ("interrupt request 2", INTERRUPT_REQUEST[2]),
+        ("interrupt request 3", INTERRUPT_REQUEST[3]),
+        ("interrupt request 4", INTERRUPT_REQUEST[4]),
+        ("interrupt request 5", INTERRUPT_REQUEST[5]),
+        ("interrupt request 6", INTERRUPT_REQUEST[6]),
+        ("interrupt request 7", INTERRUPT_REQUEST[7]),
         ("end of interrupt", END_OF_INTERRUPT),
         ("spurious interrupt vector", SPURIOUS_INTERRUPT_VECTOR),
         ("error status", ERROR_STATUS),
@@ -187,6 +208,14 @@ mod tests {
             ("in service 5", IN_SERVICE[5], 0x815),
             ("in service 6", IN_SERVICE[6], 0x816),
             ("in service 7", IN_SERVICE[7], 0x817),
+            ("interrupt request 0", INTERRUPT_REQUEST[0], 0x820),
+            ("interrupt request 1", INTERRUPT_REQUEST[1], 0x821),
+            ("interrupt request 2", INTERRUPT_REQUEST[2], 0x822),
+            ("interrupt request 3", INTERRUPT_REQUEST[3], 0x823),
+            ("interrupt request 4", INTERRUPT_REQUEST[4], 0x824),
+            ("interrupt request 5", INTERRUPT_REQUEST[5], 0x825),
+            ("interrupt request 6", INTERRUPT_REQUEST[6], 0x826),
+            ("interrupt request 7", INTERRUPT_REQUEST[7], 0x827),
             ("end of interrupt", END_OF_INTERRUPT, 0x80B),
             ("spurious", SPURIOUS_INTERRUPT_VECTOR, 0x80F),
             ("error status", ERROR_STATUS, 0x828),

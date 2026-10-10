@@ -1549,6 +1549,16 @@ const MAX_DRHD_UNITS: usize = 64;
 const MAX_REQUESTER_SCOPES: usize = 16;
 
 impl<'a> Dmar<'a> {
+    /// Whether firmware reports platform interrupt-remapping support.
+    pub const fn interrupt_remapping(self) -> bool {
+        self.body[Sdt::LEN + 1] & 1 != 0
+    }
+
+    /// Whether firmware requires x2APIC to stay out of extended interrupt mode.
+    pub const fn x2apic_opt_out(self) -> bool {
+        self.body[Sdt::LEN + 1] & (1 << 1) != 0
+    }
+
     /// Validate `table` as a DMAR, bound its unit inventory, and additionally
     /// enforce the two rules bytes alone cannot express: an RMRR's limit must
     /// not precede its base, and no two DRHDs may claim the same register base.
@@ -1615,6 +1625,19 @@ impl<'a> Dmar<'a> {
         self.entries()
             .filter(|structure| matches!(structure, DmarStructure::Drhd { .. }))
             .count()
+    }
+
+    /// Segment of the one and only DRHD, or `None` for zero or multiple units.
+    ///
+    /// A consumer that can enumerate only one PCI segment must reject every
+    /// other shape before claiming complete requester coverage.
+    pub fn sole_unit_segment(&self) -> Option<u16> {
+        let mut units = self.entries().filter_map(|structure| match structure {
+            DmarStructure::Drhd { segment, .. } => Some(segment),
+            _ => None,
+        });
+        let segment = units.next()?;
+        units.next().is_none().then_some(segment)
     }
 
     /// The DRHD unit that governs `bdf`, and the scope that decided it.
@@ -2745,6 +2768,8 @@ mod tests {
 
         let dmar = Dmar::new(&bytes).expect("no duplicate units, no inverted regions");
         assert_eq!(dmar.unit_count(), 2);
+        assert!(!dmar.interrupt_remapping());
+        assert!(!dmar.x2apic_opt_out());
         let scoped_bdf = Bdf::new(0, 2, 3, 0);
         let unscoped_bdf = Bdf::new(0, 9, 0, 0);
         assert_eq!(
@@ -2770,6 +2795,53 @@ mod tests {
             dmar.reserved_regions_for(unscoped_bdf, no_bridges, no_hierarchies)
                 .collect::<Vec<_>>(),
             []
+        );
+    }
+
+    #[test]
+    fn dmar_platform_flags_decode_interrupt_remapping_and_x2apic_opt_out() {
+        for (flags, interrupt_remapping, x2apic_opt_out) in [
+            (0, false, false),
+            (1, true, false),
+            (2, false, true),
+            (3, true, true),
+        ] {
+            let mut body = dmar_body(&[]);
+            body[1] = flags;
+            let bytes = table(&Sdt::DMAR, &body);
+            let dmar = Dmar::new(&bytes).expect("flag bits do not alter structure validity");
+            assert_eq!(dmar.interrupt_remapping(), interrupt_remapping);
+            assert_eq!(dmar.x2apic_opt_out(), x2apic_opt_out);
+        }
+    }
+
+    #[test]
+    fn a_single_drhd_exposes_its_segment_and_every_other_count_refuses() {
+        let empty = table(&Sdt::DMAR, &dmar_body(&[]));
+        assert_eq!(
+            Dmar::new(&empty).expect("empty DMAR").sole_unit_segment(),
+            None
+        );
+
+        for segment in [0, 7, u16::MAX] {
+            let bytes = table(
+                &Sdt::DMAR,
+                &dmar_body(&drhd_bytes(true, segment, 0xfed9_0000, &[])),
+            );
+            assert_eq!(
+                Dmar::new(&bytes).expect("one DRHD").sole_unit_segment(),
+                Some(segment)
+            );
+        }
+
+        let mut multiple = drhd_bytes(true, 0, 0xfed9_0000, &[]);
+        multiple.extend_from_slice(&drhd_bytes(true, 9, 0xfed9_1000, &[]));
+        let bytes = table(&Sdt::DMAR, &dmar_body(&multiple));
+        assert_eq!(
+            Dmar::new(&bytes)
+                .expect("distinct DRHDs")
+                .sole_unit_segment(),
+            None
         );
     }
 

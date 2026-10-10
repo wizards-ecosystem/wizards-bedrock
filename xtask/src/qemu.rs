@@ -31,10 +31,10 @@ enum Remapping {
     Absent,
 }
 
-/// The remapping unit: interrupt remapping stays off because polled storage
-/// delivers none (PW-710), and caching mode makes the unit cache not-present
-/// entries so every mapping change has to be invalidated, as D-357 requires.
-const IOMMU_DEVICE: [&str; 2] = ["-device", "intel-iommu,intremap=off,caching-mode=on"];
+/// The remapping unit owns both DMA and interrupt delivery. Its empty IR table
+/// blocks every PCI interrupt while caching mode makes the unit cache
+/// not-present DMA entries, so every mapping change must be invalidated.
+const IOMMU_DEVICE: [&str; 2] = ["-device", "intel-iommu,intremap=on,eim=on,caching-mode=on"];
 
 /// The fixed machine profile, with or without the remapping unit.
 ///
@@ -805,7 +805,7 @@ const QEMU_TCG_ISOLATION_MARKER: &str = "cpu: user isolation shared kernel mappi
 /// Checks the self-test kernel must report, held independently of its own
 /// tally so a deleted or skipped one turns the verdict red.
 /// Changes require mutation evidence (D-28, D-119).
-const EXPECTED_SELFTEST_CHECKS: usize = 276;
+const EXPECTED_SELFTEST_CHECKS: usize = 277;
 
 /// Prefix of the strict performance/resource record emitted by self-test.
 const BASELINE_PREFIX: &str = "selftest: baseline ";
@@ -838,11 +838,16 @@ pub const NVME_FALLBACK_MARKER: &str = "nvme: candidate 1 retired cleanly; tryin
 const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[
     RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),
     RequiredLogRecord::info(NVME_FALLBACK_MARKER),
+    RequiredLogRecord::info(
+        "keyboard: PCI interrupt isolation keeps every io-apic line masked; polling",
+    ),
+    RequiredLogRecord::info("keyboard: polled every 10 ms"),
 ];
 
-/// A shipped kernel must take this interrupt after announcing its idle loop.
+/// A shipped kernel must accept this input without unmasking legacy IRQ1.
 const SHIPPED_CHALLENGE_QCODE: &str = "a";
 const SHIPPED_CHALLENGE_TIMEOUT: Duration = Duration::from_secs(5);
+const SHIPPED_CHALLENGE_WINDOW: Duration = Duration::from_millis(250);
 
 /// What a kernel that has given up says. Watched for rather than inferred
 /// from an exit code: a panicking kernel halts, it does not exit.
@@ -2125,31 +2130,6 @@ fn keyboard_irq_count(qmp: &mut Qmp) -> Result<u64> {
     irq_count(&report, 1).context("QEMU monitor returned no IRQ statistics")
 }
 
-fn await_keyboard_irq(
-    child: &mut Child,
-    panicked: &AtomicBool,
-    serial_failed: &AtomicBool,
-    qmp: &mut Qmp,
-    before: u64,
-) -> Result<u64> {
-    let deadline = Instant::now() + SHIPPED_CHALLENGE_TIMEOUT;
-    while Instant::now() < deadline {
-        watch(
-            child,
-            panicked,
-            serial_failed,
-            Duration::from_millis(1),
-            None,
-        )?;
-        let after = keyboard_irq_count(qmp)?;
-        if after > before {
-            return Ok(after);
-        }
-        std::thread::sleep(POLL_INTERVAL);
-    }
-    bail!("the shipped kernel did not take the injected keyboard interrupt")
-}
-
 /// Boot the image the kernel ships and require it to reach its steady state.
 ///
 /// The self-test build exits at the debug-exit device, so nothing it does
@@ -2223,8 +2203,19 @@ pub fn run_boot_check(paths: &Paths, image: &Path, settle: Duration) -> Result<(
             &NOT_CANCELLED,
         )
         .context("injecting the shipped-kernel liveness key")?;
-        let after = await_keyboard_irq(&mut child, &panicked, &serial_failed, &mut qmp, before)?;
-        println!("[xtask] shipped liveness: keyboard IRQ count {before} -> {after}");
+        watch(
+            &mut child,
+            &panicked,
+            &serial_failed,
+            SHIPPED_CHALLENGE_WINDOW,
+            None,
+        )?;
+        let after = keyboard_irq_count(&mut qmp)?;
+        ensure!(
+            after == before,
+            "the shipped kernel unmasked legacy keyboard IRQ1 ({before} -> {after})"
+        );
+        println!("[xtask] shipped liveness: keyboard input left IRQ1 masked at {after}");
         watch(&mut child, &panicked, &serial_failed, settle, None)
     });
 
@@ -3158,7 +3149,7 @@ mod tests {
         assert_eq!(
             devices,
             [
-                "intel-iommu,intremap=off,caching-mode=on",
+                "intel-iommu,intremap=on,eim=on,caching-mode=on",
                 "pci-bridge,id=behind,chassis_nr=1"
             ]
         );
@@ -3269,6 +3260,10 @@ mod tests {
             &[
                 RequiredLogRecord::info("cpu: user isolation shared kernel mappings: qemu_tcg"),
                 RequiredLogRecord::info("nvme: candidate 1 retired cleanly; trying next"),
+                RequiredLogRecord::info(
+                    "keyboard: PCI interrupt isolation keeps every io-apic line masked; polling",
+                ),
+                RequiredLogRecord::info("keyboard: polled every 10 ms"),
             ]
         );
         assert_eq!(
@@ -4993,7 +4988,7 @@ mod tests {
             .find("PrepareOutcome::Prepared(DisabledController {\n        controller,")
             .expect("the cleanup owner is not retained by the disabled controller");
         let admission = source
-            .find("match device.admit_bus_master(authority, domain) {")
+            .find("match device.admit_bus_master(authority, domain, interrupts) {")
             .expect("no verified bus-master transition");
         let mint = source
             .find("Ok(()) => BusMasterAdmission::Admitted(BusMasterAdmittedController(self))")

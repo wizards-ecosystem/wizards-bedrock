@@ -27,7 +27,7 @@ use pci_config::{
     Address, Bar, BarEnableError, Class, CommandState, EnableError, HeaderType, PciTopology,
     ProbeError, ProbeRetry, ProbedBars, TopologyError, Window, header,
 };
-use wost::arch::current::vtd::DmaDomain;
+use wost::arch::current::vtd::{DmaDomain, InterruptIsolation};
 use wost::arch::current::{paging, pci};
 use wost::sync::SpinLock;
 
@@ -216,6 +216,17 @@ pub(crate) fn topology_is_sealed() -> bool {
     TOPOLOGY.lock_leaf().is_sealed()
 }
 
+/// Whether the PCI requester inventory is unavailable, empty, or populated.
+///
+/// Security decisions must distinguish an empty sealed inventory from a probe
+/// that observed functions but failed before it could seal their topology.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TopologyPresence {
+    Unsealed,
+    Empty,
+    Present,
+}
+
 /// The sealed bus range behind one exact bridge function.
 pub(crate) fn topology_bridge_range(at: Address) -> Option<pci_config::BridgeRange> {
     TOPOLOGY.lock_leaf().bridge_range(at)
@@ -224,6 +235,36 @@ pub(crate) fn topology_bridge_range(at: Address) -> Option<pci_config::BridgeRan
 /// Whether one exact function answered the sealed independent probe.
 pub(crate) fn topology_contains_function(at: Address) -> bool {
     TOPOLOGY.lock_leaf().contains_function(at)
+}
+
+/// The first requester in the sealed snapshot, for an interrupt-only boundary.
+pub(crate) fn first_topology_function() -> Option<Address> {
+    if !topology_is_sealed() {
+        return None;
+    }
+    for bus in 0..=u8::MAX {
+        for device in 0..pci_config::DEVICES {
+            for function in 0..pci_config::FUNCTIONS {
+                let at = Address::new(bus, device, function, 0)?;
+                if topology_contains_function(at) {
+                    return Some(at);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Classify the complete segment-zero requester inventory.
+pub(crate) fn topology_presence() -> TopologyPresence {
+    if !topology_is_sealed() {
+        return TopologyPresence::Unsealed;
+    }
+    if first_topology_function().is_some() {
+        TopologyPresence::Present
+    } else {
+        TopologyPresence::Empty
+    }
 }
 
 /// Whether `target` lies below `root` in the sealed parent chain.
@@ -692,6 +733,7 @@ impl Device {
         &mut self,
         authority: pci::NvmeBusMasterAuthority<'_>,
         domain: DmaDomain,
+        interrupts: InterruptIsolation,
     ) -> Result<(), EnableError> {
         #[cfg(feature = "selftest")]
         {
@@ -709,7 +751,7 @@ impl Device {
         let Some(state) = self.command_state.as_mut() else {
             return Err(EnableError::Stale);
         };
-        let result = pci::admit_bus_master(authority, domain, state);
+        let result = pci::admit_bus_master(authority, domain, interrupts, state);
         if let Err(error) = result {
             self.uncertain |= matches!(error, EnableError::Restore);
             return Err(error);

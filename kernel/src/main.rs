@@ -223,6 +223,7 @@ extern "C" fn boot_continue(guarded: usize) -> ! {
     start_interrupts(routing.as_ref());
     input::init();
     route_keyboard(routing);
+    #[cfg(not(feature = "selftest"))]
     input::start_poller();
     queue::start_worker();
 
@@ -389,8 +390,15 @@ fn start_interrupts(external_controllers: Option<&mem::ExternalControllersMasked
         warn!("ioapic: complete mask proof missing; interrupts stay off");
         return;
     }
+    if !iommu::interrupt_boundary_active() {
+        warn!("iommu: complete PCI interrupt boundary missing; interrupts stay off");
+        return;
+    }
 
-    interrupt::enable();
+    if let Err(reason) = apic::enable_after_pending_audit() {
+        warn!("apic: pending interrupt audit refused sti: {reason}; interrupts stay off");
+        return;
+    }
     MASKABLE_INTERRUPTS_READY.store(true, Ordering::Release);
     info!("cpu: accepting interrupts");
 }
@@ -461,6 +469,12 @@ fn survey_the_bus() {
             warn!("pci: configuration space did not answer");
             return;
         }
+    }
+
+    let interrupt_boundary = thread::ThreadContext::claim()
+        .is_some_and(|mut context| iommu::ensure_interrupt_boundary(&mut context));
+    if !interrupt_boundary {
+        warn!("iommu: PCI interrupt isolation is incomplete; maskable interrupts stay off");
     }
 
     match selection {
@@ -886,6 +900,7 @@ struct CandidateBaseline {
     frames: usize,
     claims: usize,
     mappings: Option<usize>,
+    interrupt_owner: bool,
 }
 
 #[cfg(feature = "selftest")]
@@ -895,13 +910,20 @@ impl CandidateBaseline {
             frames: wost::mm::free_frames(),
             claims: pci::claims(),
             mappings: mem::device_mappings(_context),
+            interrupt_owner: iommu::interrupt_boundary_active(),
         }
     }
 
     fn is_restored(self, _context: &mut thread::ThreadContext) -> bool {
-        wost::mm::free_frames() == self.frames
-            && pci::claims() == self.claims
-            && mem::device_mappings(_context) == self.mappings
+        let frames = wost::mm::free_frames();
+        let mappings = mem::device_mappings(_context);
+        let exact = frames == self.frames && mappings == self.mappings;
+        let first_interrupt_owner = !self.interrupt_owner
+            && iommu::interrupt_boundary_active()
+            && frames.checked_add(wost::arch::current::vtd::OWNED_TABLE_FRAMES)
+                == Some(self.frames)
+            && self.mappings.and_then(|before| before.checked_add(1)) == mappings;
+        pci::claims() == self.claims && (exact || first_interrupt_owner)
     }
 }
 
@@ -1147,6 +1169,17 @@ fn route_keyboard(routing: Option<mem::ExternalControllersMasked>) {
             return;
         }
     };
+
+    if !matches!(pci::topology_presence(), pci::TopologyPresence::Empty) {
+        #[cfg(feature = "selftest")]
+        let routing = prove_keyboard_routing_rollback(routing);
+        if !rollback_keyboard_route(routing) {
+            warn!("keyboard: masked routing owner remains quarantined; staying polled");
+            return;
+        }
+        info!("keyboard: PCI interrupt isolation keeps every io-apic line masked; polling");
+        return;
+    }
 
     #[cfg(feature = "selftest")]
     let routing = prove_keyboard_routing_rollback(routing);

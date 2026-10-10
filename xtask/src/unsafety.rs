@@ -140,7 +140,7 @@ mod tests {
             "wost/src/arch/x86_64/apic.rs",
             3,
             0,
-            "4583b36741e18ebeb5b0a975ac115e447c2b0a6750016eaf1a227d76ab8bc91f",
+            "7586cf0607b8d08bf3ee3b8f0b81e275d399938a70f6378e09e3af9207cfd856",
         ),
         (
             "wost/src/arch/x86_64/cpu.rs",

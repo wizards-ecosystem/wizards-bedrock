@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1703;
+pub const NEXT_MUTATION_ID: u16 = 1743;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -762,8 +762,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 56,
         file: "kernel/src/nvme.rs",
-        find: "        match device.admit_bus_master(authority, domain) {",
-        replace: "        match device\n            .admit_bus_master(authority, domain)\n            .or(Ok::<(), pci_config::EnableError>(()))\n        {",
+        find: "        match device.admit_bus_master(authority, domain, interrupts) {",
+        replace: "        match device\n            .admit_bus_master(authority, domain, interrupts)\n            .or(Ok::<(), pci_config::EnableError>(()))\n        {",
         breaks: "a refused bus-master transition mints start authority",
         reddens: Caught::Check("a failed bus master admission stops before nvme start"),
     },
@@ -3981,7 +3981,9 @@ pub const MUTATIONS: &[Mutation] = &[
         )",
         replace: "        matches!(self, Self::Timer { .. } | Self::Read { .. })",
         breaks: "a running file read remains owned through teardown until its worker settles",
-        reddens: Caught::Check("a delayed read preserves interrupts and exact teardown"),
+        reddens: Caught::Check(
+            "a delayed read preserves interrupt admission and exact teardown",
+        ),
     },
     Mutation {
         id: 339,
@@ -7038,8 +7040,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 625,
         file: "xtask/src/qemu.rs",
-        find: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n];",
-        replace: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n];",
+        find: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(QEMU_TCG_ISOLATION_MARKER),\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];",
+        replace: "const SHIPPED_REQUIRED_MARKERS: &[RequiredLogRecord] = &[\n    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),\n    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];",
         breaks: "a shipped boot can pass without consuming the TCG isolation policy",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -8849,8 +8851,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 793,
         file: "wost/src/arch/x86_64/pci.rs",
-        find: "    let NvmeBusMasterAuthority { bar, _observed: _ } = authority;\n    let mut configuration = CONFIGURATION.lock_leaf();",
-        replace: "    let NvmeBusMasterAuthority { bar, _observed: _ } = authority;\n    let mut configuration = CONFIGURATION\n        .try_lock_leaf()\n        .expect(\"the configuration port pair is available\");",
+        find: "    let NvmeBusMasterAuthority { bar, _observed: _ } = authority;\n    if interrupts.function() != domain.function() {\n        return Err(EnableError::Stale);\n    }\n    let mut configuration = CONFIGURATION.lock_leaf();",
+        replace: "    let NvmeBusMasterAuthority { bar, _observed: _ } = authority;\n    if interrupts.function() != domain.function() {\n        return Err(EnableError::Stale);\n    }\n    let mut configuration = CONFIGURATION\n        .try_lock_leaf()\n        .expect(\"the configuration port pair is available\");",
         breaks: "one PCI command transaction does not hold the configuration port pair exactly once",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -11558,7 +11560,7 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1018,
         file: "xtask/src/contracts.rs",
-        find: "let _ = pci::admit_bus_master(at, domain, state);",
+        find: "let _ = pci::admit_bus_master(at, domain, interrupts, state);",
         replace: "let _ = pci::read(at);",
         breaks: "the raw-address compile probe stops exercising PCI bus-master upgrades",
         reddens: Caught::HostTest {
@@ -13185,8 +13187,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1545,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        while page <= last {\n            if let Err(reason) = self.map_page(page) {",
-        replace: "        while page <= last + PAGE {\n            if let Err(reason) = self.map_page(page) {",
+        find: "    fn map_range(&mut self, paddr: u64, len: u64) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {\n            return Err(SegmentChangeError::Refused(VtdError::OutsideAddressWidth));\n        }\n        let start = paddr & !(PAGE - 1);\n        let mut page = start;\n        while page <= last {",
+        replace: "    fn map_range(&mut self, paddr: u64, len: u64) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {\n            return Err(SegmentChangeError::Refused(VtdError::OutsideAddressWidth));\n        }\n        let start = paddr & !(PAGE - 1);\n        let mut page = start;\n        while page <= last + PAGE {",
         breaks: "every mapped segment reaches one frame past its end",
         reddens: Caught::Check("the dma domain reaches exactly the live queue frames"),
     },
@@ -13204,10 +13206,13 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1547,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        self.set_root_table()?;\n        self.invalidate(true)?;\n        self.switch_translation(true)\n    }",
-        replace: "        self.set_root_table()?;\n        self.invalidate(true)\n    }",
+        find: "        self.set_interrupt_table()?;\n        self.invalidate_interrupt_cache()?;\n        self.switch_interrupt_remapping(true)?;\n        self.switch_translation(true)\n    }",
+        replace: "        self.set_interrupt_table()?;\n        self.invalidate_interrupt_cache()?;\n        self.switch_interrupt_remapping(true)\n    }",
         breaks: "the unit is programmed but translation is never switched on",
-        reddens: Caught::Check("translation is active for the storage function"),
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
     },
     Mutation {
         id: 1548,
@@ -13250,23 +13255,23 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1552,
         file: "libs/vtd/src/lib.rs",
-        find: "    if status & gsts::CFIS != 0 {\n        command |= gcmd::CFI;\n    }\n",
-        replace: "",
-        breaks: "taking the unit over silently switches firmware's compatibility-format interrupts off",
+        find: "pub const fn takeover_command(_status: u32) -> u32 {\n    0\n}",
+        replace: "pub const fn takeover_command(_status: u32) -> u32 {\n    gcmd::IRE | gcmd::CFI\n}",
+        breaks: "taking the unit over inherits firmware interrupt and compatibility-bypass state",
         reddens: Caught::HostTest {
             package: "vtd",
-            name: "tests::the_inherited_command_keeps_only_interrupt_state",
+            name: "tests::the_takeover_command_clears_every_firmware_state",
         },
     },
     Mutation {
         id: 1553,
         file: "libs/vtd/src/lib.rs",
-        find: "    (status & (gsts::TES | gsts::QIES)) == 0",
-        replace: "    (status & gsts::TES) == 0",
+        find: "    (status & (gsts::TES | gsts::QIES | gsts::IRES | gsts::CFIS)) == 0",
+        replace: "    (status & (gsts::TES | gsts::IRES | gsts::CFIS)) == 0",
         breaks: "a unit with queued invalidation still enabled counts as quiesced",
         reddens: Caught::HostTest {
             package: "vtd",
-            name: "tests::quiescence_requires_translation_and_queued_invalidation_off",
+            name: "tests::quiescence_requires_every_translation_and_bypass_off",
         },
     },
     Mutation {
@@ -14008,8 +14013,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1194,
         file: "xtask/src/qemu.rs",
-        find: "    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n];",
-        replace: "];",
+        find: "    RequiredLogRecord::info(NVME_FALLBACK_MARKER),\n    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),",
+        replace: "    RequiredLogRecord::info(\n        \"keyboard: PCI interrupt isolation keeps every io-apic line masked; polling\",\n    ),",
         breaks: "the shipped boot can settle without proving first-candidate NVMe retirement",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -18232,8 +18237,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1623,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        if !self.width.covers_on(self.capability, last) {",
-        replace: "        if !self.width.covers(last) {",
+        find: "    fn map_range(&mut self, paddr: u64, len: u64) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {",
+        replace: "    fn map_range(&mut self, paddr: u64, len: u64) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers(last) {",
         breaks: "the production DMA mapping seam ignores the unit's MGAW",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -18952,8 +18957,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1690,
         file: "kernel/src/pci.rs",
-        find: "    for bus in 0..=u8::MAX {",
-        replace: "    for bus in 0..u8::MAX {",
+        find: "    TOPOLOGY.lock_leaf().reset();\n    for bus in 0..=u8::MAX {",
+        replace: "    TOPOLOGY.lock_leaf().reset();\n    for bus in 0..u8::MAX {",
         breaks: "the sealed PCI snapshot omits every function on bus 255",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -19090,6 +19095,443 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "pci-config",
             name: "tests::a_sealed_topology_binds_presence_ranges_and_ancestry",
+        },
+    },
+    Mutation {
+        id: 1703,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "        self.body[Sdt::LEN + 1] & 1 != 0",
+        replace: "        self.body[Sdt::LEN + 1] & (1 << 1) != 0",
+        breaks: "the DMAR interrupt-remapping flag is decoded from x2APIC opt-out",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::dmar_platform_flags_decode_interrupt_remapping_and_x2apic_opt_out",
+        },
+    },
+    Mutation {
+        id: 1704,
+        file: "libs/acpi-tables/src/lib.rs",
+        find: "        self.body[Sdt::LEN + 1] & (1 << 1) != 0",
+        replace: "        self.body[Sdt::LEN + 1] & 1 != 0",
+        breaks: "the DMAR x2APIC opt-out flag is decoded from interrupt-remapping support",
+        reddens: Caught::HostTest {
+            package: "acpi-tables",
+            name: "tests::dmar_platform_flags_decode_interrupt_remapping_and_x2apic_opt_out",
+        },
+    },
+    Mutation {
+        id: 1705,
+        file: "libs/vtd/src/lib.rs",
+        find: "    pub const fn interrupt_remapping(self) -> bool {\n        (self.0 & Self::IR) != 0\n    }",
+        replace: "    pub const fn interrupt_remapping(self) -> bool {\n        (self.0 & Self::EIM) != 0\n    }",
+        breaks: "VT-d interrupt-remapping support is decoded from the EIM bit",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::extended_capability_decodes_each_field",
+        },
+    },
+    Mutation {
+        id: 1706,
+        file: "libs/vtd/src/lib.rs",
+        find: "    pub const fn extended_interrupt_mode(self) -> bool {\n        (self.0 & Self::EIM) != 0\n    }",
+        replace: "    pub const fn extended_interrupt_mode(self) -> bool {\n        (self.0 & Self::IR) != 0\n    }",
+        breaks: "VT-d extended interrupt mode is decoded from basic IR support",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::extended_capability_decodes_each_field",
+        },
+    },
+    Mutation {
+        id: 1707,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if !platform_interrupt_remapping {\n            return Err(VtdError::NoPlatformInterruptRemapping);\n        }",
+        replace: "        if false && !platform_interrupt_remapping {\n            return Err(VtdError::NoPlatformInterruptRemapping);\n        }",
+        breaks: "VT-d takeover accepts firmware that reports no interrupt-remapping platform support",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1708,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if !extended.interrupt_remapping() || !extended.queued_invalidation() {",
+        replace: "        if !extended.interrupt_remapping() {",
+        breaks: "VT-d takeover accepts interrupt remapping without queued IEC invalidation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1709,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if !extended.extended_interrupt_mode() {\n            return Err(VtdError::NoExtendedInterruptMode);\n        }",
+        replace: "        if false && !extended.extended_interrupt_mode() {\n            return Err(VtdError::NoExtendedInterruptMode);\n        }",
+        breaks: "VT-d takeover accepts a unit that cannot isolate x2APIC interrupt destinations",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1710,
+        file: "libs/vtd/src/lib.rs",
+        find: "    Some((address & REMAPPING_ADDRESS_MASK) | (1 << 11))",
+        replace: "    Some(address & REMAPPING_ADDRESS_MASK)",
+        breaks: "the kernel interrupt-remapping table is published without extended interrupt mode",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::interrupt_table_and_queue_addresses_are_exact_and_aligned",
+        },
+    },
+    Mutation {
+        id: 1711,
+        file: "libs/vtd/src/lib.rs",
+        find: "    pub const fn global_interrupt_entry_cache() -> Self {\n        Self { lo: 4, hi: 0 }\n    }",
+        replace: "    pub const fn global_interrupt_entry_cache() -> Self {\n        Self {\n            lo: 4 | (1 << 4),\n            hi: 0,\n        }\n    }",
+        breaks: "interrupt-entry cache invalidation sets index-selective granularity instead of flushing every entry",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::queued_interrupt_cache_invalidation_descriptors_match_the_spec",
+        },
+    },
+    Mutation {
+        id: 1712,
+        file: "libs/vtd/src/lib.rs",
+        find: "            lo: 5 | (1 << 5) | ((data as u64) << 32),",
+        replace: "            lo: 5 | ((data as u64) << 32),",
+        breaks: "queued invalidation waits without writing the completion status",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::queued_interrupt_cache_invalidation_descriptors_match_the_spec",
+        },
+    },
+    Mutation {
+        id: 1713,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if observed == pointer\n            && interrupt_table_base(observed) == self.interrupts.address()",
+        replace: "        if interrupt_table_base(observed) == self.interrupts.address()",
+        breaks: "interrupt-table publication accepts a readback with unexpected mode or size bits",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1714,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        self.switch_queued_invalidation(true)?;\n        let observed_queue = read_u64(&self.registers, vtd::IQA as usize)?;",
+        replace: "        let observed_queue = read_u64(&self.registers, vtd::IQA as usize)?;\n        self.switch_queued_invalidation(true)?;",
+        breaks: "the invalidation queue is read back before the hardware enables queued invalidation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1715,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if !interrupt_remapping_enabled(status)\n            || compatibility_interrupts_enabled(status)",
+        replace: "        if false && !interrupt_remapping_enabled(status)\n            || compatibility_interrupts_enabled(status)",
+        breaks: "an interrupt-isolation proof is minted while interrupt remapping is off",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1716,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "            || compatibility_interrupts_enabled(status)\n            || status & gsts::QIES != 0",
+        replace: "            || false && compatibility_interrupts_enabled(status)\n            || status & gsts::QIES != 0",
+        breaks: "an interrupt-isolation proof is minted while compatibility-format interrupts bypass remapping",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1717,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "            || status & gsts::QIES != 0\n            || !fault_event_control::masked(fault_control)",
+        replace: "            || false && status & gsts::QIES != 0\n            || !fault_event_control::masked(fault_control)",
+        breaks: "an interrupt-isolation proof is minted while the private invalidation queue is still live",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1718,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "            if self.interrupts.read_u64(index)? != 0 {",
+        replace: "            if self.interrupts.read_u64(index)? == u64::MAX {",
+        breaks: "an interrupt-isolation proof accepts present or otherwise nonzero remapping entries",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1719,
+        file: "kernel/src/iommu.rs",
+        find: "    if !dmar.interrupt_remapping() || dmar.x2apic_opt_out() {",
+        replace: "    if false && (!dmar.interrupt_remapping() || dmar.x2apic_opt_out()) {",
+        breaks: "kernel VT-d lookup ignores firmware's missing IR support or x2APIC opt-out",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1720,
+        file: "kernel/src/iommu.rs",
+        find: "    if !covers_every_present_requester(&requesters) {",
+        replace: "    if false && !covers_every_present_requester(&requesters) {",
+        breaks: "interrupt authority is accepted for a VT-d unit that misses live PCI requesters",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1721,
+        file: "kernel/src/iommu.rs",
+        find: "fn covers_every_present_requester(\n    requesters: &RequesterInventory<{ pci::FUNCTION_AUTHORITY_LIMIT }>,\n) -> bool {\n    for bus in 0..=u8::MAX {",
+        replace: "fn covers_every_present_requester(\n    requesters: &RequesterInventory<{ pci::FUNCTION_AUTHORITY_LIMIT }>,\n) -> bool {\n    for bus in 0..u8::MAX {",
+        breaks: "the interrupt boundary never checks live requesters on PCI bus 255",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1722,
+        file: "wost/src/arch/x86_64/pci.rs",
+        find: "    if interrupts.function() != domain.function() {\n        return Err(EnableError::Stale);\n    }",
+        replace: "    if false && interrupts.function() != domain.function() {\n        return Err(EnableError::Stale);\n    }",
+        breaks: "bus mastering accepts interrupt isolation minted for a different function",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1723,
+        file: "kernel/src/main.rs",
+        find: "    if !iommu::interrupt_boundary_active() {\n        warn!(\"iommu: complete PCI interrupt boundary missing; interrupts stay off\");\n        return;\n    }",
+        replace: "    if false && !iommu::interrupt_boundary_active() {\n        warn!(\"iommu: complete PCI interrupt boundary missing; interrupts stay off\");\n        return;\n    }",
+        breaks: "the CPU enables maskable interrupts while live PCI requesters lack interrupt isolation",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1724,
+        file: "kernel/src/main.rs",
+        find: "    if !matches!(pci::topology_presence(), pci::TopologyPresence::Empty) {",
+        replace: "    if false && !matches!(pci::topology_presence(), pci::TopologyPresence::Empty) {",
+        breaks: "a PCI boot routes the legacy keyboard line outside the default-deny remapping table",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1725,
+        file: "kernel/src/input.rs",
+        find: "        if crate::time::is_calibrated() && interrupt::are_enabled() {\n            crate::thread::sleep_ms(&mut context, POLL_INTERVAL_MS);",
+        replace: "        if crate::time::is_calibrated() {\n            crate::thread::sleep_ms(&mut context, POLL_INTERVAL_MS);",
+        breaks: "the keyboard poller sleeps forever when timer state exists but interrupts stay off",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1726,
+        file: "xtask/src/qemu.rs",
+        find: "const IOMMU_DEVICE: [&str; 2] = [\"-device\", \"intel-iommu,intremap=on,eim=on,caching-mode=on\"];",
+        replace: "const IOMMU_DEVICE: [&str; 2] = [\"-device\", \"intel-iommu,intremap=off,caching-mode=on\"];",
+        breaks: "the qualified QEMU profile stops exercising VT-d interrupt remapping",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::every_qemu_runner_pins_the_exact_tcg_profile",
+        },
+    },
+    Mutation {
+        id: 1727,
+        file: "xtask/src/qemu.rs",
+        find: "    RequiredLogRecord::info(\"keyboard: polled every 10 ms\"),\n];\n\n/// A shipped kernel must accept this input without unmasking legacy IRQ1.",
+        replace: "];\n\n/// A shipped kernel must accept this input without unmasking legacy IRQ1.",
+        breaks: "the shipped boot can pass without observing its live keyboard poller",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::automated_boots_require_the_exact_producer_records",
+        },
+    },
+    Mutation {
+        id: 1728,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "pub struct InterruptIsolation {\n    function: Address,\n}",
+        replace: "pub struct InterruptIsolation {\n    pub function: Address,\n}",
+        breaks: "an interrupt-isolation proof can be forged without a live VT-d owner",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1729,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        for index in 0..4 {\n            if self.interrupts.read_u64(index)? != 0 {\n                return None;\n            }\n        }",
+        replace: "        let _unchecked_interrupt_entries = &self.interrupts;",
+        breaks: "interrupt isolation is minted without reading back the deny-all table entries",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1730,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        let disabled = self.switch_queued_invalidation(false);",
+        replace: "        let disabled = Ok(());",
+        breaks: "queued invalidation remains enabled after the private IEC flush completes",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1731,
+        file: "kernel/src/main.rs",
+        find: "        if !rollback_keyboard_route(routing) {\n            warn!(\"keyboard: masked routing owner remains quarantined; staying polled\");\n            return;\n        }",
+        replace: "        let _unchecked_masked_routing = routing;",
+        breaks: "the PCI keyboard path reports polling without returning its masked IOAPIC owner",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1732,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        self.set_interrupt_table()?;\n        self.invalidate_interrupt_cache()?;",
+        replace: "        self.set_interrupt_table()?;",
+        breaks: "interrupt remapping is enabled without globally invalidating the interrupt-entry cache",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1733,
+        file: "kernel/src/pci.rs",
+        find: "    if !topology_is_sealed() {\n        return TopologyPresence::Unsealed;\n    }",
+        replace: "    if !topology_is_sealed() {\n        return TopologyPresence::Empty;\n    }",
+        breaks: "a malformed unsealed PCI inventory is mistaken for a machine with no requesters",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1734,
+        file: "wost/src/arch/x86_64/apic.rs",
+        find: "    for (bits, register) in requests.iter_mut().zip(register::INTERRUPT_REQUEST) {",
+        replace: "    for (bits, register) in requests\n        .iter_mut()\n        .zip(register::INTERRUPT_REQUEST[..7].iter().copied())\n    {",
+        breaks: "the pre-sti audit ignores pending vectors in the highest local APIC IRR bank",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1735,
+        file: "wost/src/arch/x86_64/apic.rs",
+        find: "    if let Some(vector) = pending_vector(&access) {\n        return Err(PendingInterruptError::Pending(vector));\n    }",
+        replace: "    let _unchecked_pending = pending_vector(&access);",
+        breaks: "sti proceeds while an interrupt accepted before remapping remains pending",
+        reddens: Caught::Check("a pending local interrupt refuses the first sti"),
+    },
+    Mutation {
+        id: 1736,
+        file: "kernel/src/iommu.rs",
+        find: "    if dmar.sole_unit_segment() != Some(SEGMENT) {\n        return Err(LookupError::IncompleteInterruptBoundary);\n    }",
+        replace: "    let _unchecked_remapping_units = dmar.sole_unit_segment();",
+        breaks: "interrupt admission ignores a second or foreign-segment VT-d unit",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1737,
+        file: "libs/vtd/src/lib.rs",
+        find: "pub const FECTL: u64 = 0x38;",
+        replace: "pub const FECTL: u64 = 0x3C;",
+        breaks: "the fault-event interrupt mask is written through the wrong register offset",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::register_offsets_are_the_spec_byte_offsets",
+        },
+    },
+    Mutation {
+        id: 1738,
+        file: "libs/vtd/src/lib.rs",
+        find: "        control & MASK != 0",
+        replace: "        control & PENDING != 0",
+        breaks: "fault-event pending state is mistaken for the interrupt mask",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::fault_event_control_masks_the_non_remapped_message_source",
+        },
+    },
+    Mutation {
+        id: 1739,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        self.mask_fault_interrupt()?;\n        self.quiesce()?;",
+        replace: "        self.quiesce()?;",
+        breaks: "VT-d takeover leaves its non-remapped fault-event MSI armed",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1740,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "            || status & gsts::QIES != 0\n            || !fault_event_control::masked(fault_control)",
+        replace: "            || status & gsts::QIES != 0",
+        breaks: "interrupt isolation is minted while VT-d can inject its own fault-event vector",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1741,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "            prior | fault_event_control::MASK,",
+        replace: "            fault_event_control::MASK,",
+        breaks: "fault-event masking clears the register's preserved bits",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::pci_interrupts_are_default_deny_before_bus_mastering_or_sti",
+        },
+    },
+    Mutation {
+        id: 1742,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        self.switch_translation(false)?;\n        self.interrupt_isolation()",
+        replace: "        self.switch_translation(false)?;\n        self.switch_interrupt_remapping(false)?;\n        self.interrupt_isolation()",
+        breaks: "candidate retirement reopens compatibility-format vector delivery before fallback",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
         },
     },
 ];

@@ -1,4 +1,4 @@
-//! Intel VT-d (DMA remapping) register, table and invalidation encoding.
+//! Intel VT-d DMA and interrupt-remapping register, table and invalidation encoding.
 //!
 //! Pure arithmetic over the register window and the kernel-owned root, context
 //! and second-level tables. No hardware behind it: `wost`'s VT-d unit maps the
@@ -72,6 +72,33 @@ pub const RTADDR: u64 = 0x20;
 pub const CCMD: u64 = 0x28;
 /// Fault Status register (32-bit).
 pub const FSTS: u64 = 0x34;
+/// Fault Event Control register (32-bit).
+pub const FECTL: u64 = 0x38;
+/// Invalidation Queue Head register (64-bit).
+pub const IQH: u64 = 0x80;
+/// Invalidation Queue Tail register (64-bit).
+pub const IQT: u64 = 0x88;
+/// Invalidation Queue Address register (64-bit).
+pub const IQA: u64 = 0x90;
+/// Interrupt Remapping Table Address register (64-bit).
+pub const IRTA: u64 = 0xB8;
+
+/// Fault Event Control register bits.
+///
+/// VT-d fault events are compatibility-format messages that do not traverse
+/// interrupt remapping. The owner therefore keeps the event source masked for
+/// its complete lifetime and polls the fault records instead.
+pub mod fault_event_control {
+    /// A fault event is pending while delivery is masked (IP, read-only).
+    pub const PENDING: u32 = 1 << 30;
+    /// Prohibit the unit from generating its fault-event interrupt (IM).
+    pub const MASK: u32 = 1 << 31;
+
+    /// Whether hardware still reports fault-event delivery masked.
+    pub const fn masked(control: u32) -> bool {
+        control & MASK != 0
+    }
+}
 
 /// The root-table pointer the unit walks, read back from the register.
 ///
@@ -116,6 +143,8 @@ impl Capability {
     const DWD: u64 = 1 << 54;
     /// Read draining support, bit 55.
     const DRD: u64 = 1 << 55;
+    /// Enhanced Set Interrupt Remap Table Pointer support, bit 62.
+    const ESIRTPS: u64 = 1 << 62;
 
     /// Build a capability view over a raw register value.
     pub const fn from_bits(bits: u64) -> Self {
@@ -190,6 +219,11 @@ impl Capability {
     pub const fn dma_draining(self) -> bool {
         self.write_draining() && self.read_draining()
     }
+
+    /// Whether SIRTP itself globally invalidates interrupt-remapping caches.
+    pub const fn enhanced_set_interrupt_table_pointer(self) -> bool {
+        (self.0 & Self::ESIRTPS) != 0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +241,8 @@ impl ExtendedCapability {
     const QI: u64 = 1 << 1;
     /// Interrupt remapping support, bit 3.
     const IR: u64 = 1 << 3;
+    /// Extended interrupt mode support, bit 4.
+    const EIM: u64 = 1 << 4;
     /// IOTLB register offset, bits 17:8.
     const IRO_SHIFT: u32 = 8;
     /// Ten IRO bits.
@@ -241,6 +277,11 @@ impl ExtendedCapability {
         (self.0 & Self::IR) != 0
     }
 
+    /// Whether interrupt remapping can target full x2APIC identifiers (EIM).
+    pub const fn extended_interrupt_mode(self) -> bool {
+        (self.0 & Self::EIM) != 0
+    }
+
     /// Byte offset of the IOTLB register block: IRO times sixteen.
     ///
     /// Within that block the IOTLB Invalidate register (IOTLB_REG) sits at
@@ -257,9 +298,7 @@ impl ExtendedCapability {
 /// Global Command register bits.
 ///
 /// GCMD is driven from a software-preserved shadow: each write sets one command
-/// bit while leaving the other enable bits in their intended state, which is
-/// what [`set_root_table_pointer`], [`enable_translation`] and
-/// [`inherited_command`] do.
+/// bit while leaving the other enable bits in their intended state.
 pub mod gcmd {
     /// Translation Enable, bit 31.
     pub const TE: u32 = 1 << 31;
@@ -267,8 +306,12 @@ pub mod gcmd {
     pub const SRTP: u32 = 1 << 30;
     /// Write Buffer Flush, bit 27.
     pub const WBF: u32 = 1 << 27;
+    /// Queued Invalidation Enable, bit 26.
+    pub const QIE: u32 = 1 << 26;
     /// Interrupt Remapping Enable, bit 25.
     pub const IRE: u32 = 1 << 25;
+    /// Set Interrupt Remap Table Pointer, bit 24.
+    pub const SIRTP: u32 = 1 << 24;
     /// Compatibility Format Interrupt, bit 23.
     pub const CFI: u32 = 1 << 23;
 }
@@ -285,27 +328,19 @@ pub mod gsts {
     pub const QIES: u32 = 1 << 26;
     /// Interrupt Remapping Enable Status, bit 25.
     pub const IRES: u32 = 1 << 25;
+    /// Interrupt Remap Table Pointer Status, bit 24.
+    pub const IRTPS: u32 = 1 << 24;
     /// Compatibility Format Interrupt Status, bit 23.
     pub const CFIS: u32 = 1 << 23;
 }
 
-/// The command word that takes a unit over from firmware.
+/// The command shadow with every firmware-owned translation facility disabled.
 ///
-/// Every enable bit the unit does not drive keeps the state firmware left it in,
-/// so interrupt remapping and compatibility-format interrupts are neither
-/// switched on nor off here. Translation and queued invalidation are left clear
-/// on purpose: the kernel installs its own root before enabling translation,
-/// and the Context Command and IOTLB registers this crate encodes are reserved
-/// while queued invalidation is enabled.
-pub const fn inherited_command(status: u32) -> u32 {
-    let mut command = 0;
-    if status & gsts::IRES != 0 {
-        command |= gcmd::IRE;
-    }
-    if status & gsts::CFIS != 0 {
-        command |= gcmd::CFI;
-    }
-    command
+/// The kernel publishes both DMA and interrupt-remapping tables, so it inherits
+/// none of firmware's TE, QIE, IRE or CFI state. One-shot command bits are also
+/// clear. A later owner adds only the exact operation it is performing.
+pub const fn takeover_command(_status: u32) -> u32 {
+    0
 }
 
 /// OR the Set-Root-Table-Pointer bit into a preserved command word.
@@ -318,6 +353,16 @@ pub const fn enable_translation(cmd: u32) -> u32 {
     cmd | gcmd::TE
 }
 
+/// OR the Set-Interrupt-Remap-Table-Pointer bit into a command word.
+pub const fn set_interrupt_table_pointer(cmd: u32) -> u32 {
+    cmd | gcmd::SIRTP
+}
+
+/// Return a command word with remapping on and compatibility-format delivery off.
+pub const fn enable_interrupt_remapping(cmd: u32) -> u32 {
+    (cmd | gcmd::IRE) & !gcmd::CFI
+}
+
 /// Whether the root table pointer has been accepted (RTPS).
 pub const fn root_table_pointer_set(status: u32) -> bool {
     (status & gsts::RTPS) != 0
@@ -328,10 +373,93 @@ pub const fn translation_enabled(status: u32) -> bool {
     (status & gsts::TES) != 0
 }
 
-/// Whether neither translation nor queued invalidation is enabled, which is the
-/// state the kernel requires before it installs its own root table.
+/// Whether the interrupt-remapping table pointer was accepted (IRTPS).
+pub const fn interrupt_table_pointer_set(status: u32) -> bool {
+    (status & gsts::IRTPS) != 0
+}
+
+/// Whether interrupt remapping is enabled (IRES).
+pub const fn interrupt_remapping_enabled(status: u32) -> bool {
+    (status & gsts::IRES) != 0
+}
+
+/// Whether compatibility-format interrupts bypass remapping (CFIS).
+pub const fn compatibility_interrupts_enabled(status: u32) -> bool {
+    (status & gsts::CFIS) != 0
+}
+
+/// Whether every firmware-owned translation facility and compatibility bypass is off.
 pub const fn quiesced(status: u32) -> bool {
-    (status & (gsts::TES | gsts::QIES)) == 0
+    (status & (gsts::TES | gsts::QIES | gsts::IRES | gsts::CFIS)) == 0
+}
+
+// ---------------------------------------------------------------------------
+// Interrupt remapping and queued invalidation.
+// ---------------------------------------------------------------------------
+
+/// Address bits carried by IRTA and IQA.
+const REMAPPING_ADDRESS_MASK: u64 = 0xFFFF_FFFF_FFFF_F000;
+
+/// Encode a two-entry, 128-bit interrupt-remapping table at `address`.
+///
+/// Size zero means two entries. EIME is set because this kernel admits only
+/// x2APIC interrupt delivery; extended mode also blocks compatibility-format
+/// requests independently of CFI.
+pub const fn interrupt_table_address(address: u64) -> Option<u64> {
+    if address & !REMAPPING_ADDRESS_MASK != 0 {
+        return None;
+    }
+    Some((address & REMAPPING_ADDRESS_MASK) | (1 << 11))
+}
+
+/// Recover the table address from an IRTA register value.
+pub const fn interrupt_table_base(value: u64) -> u64 {
+    value & REMAPPING_ADDRESS_MASK
+}
+
+/// Whether IRTA selects extended interrupt mode (EIME).
+pub const fn extended_interrupt_mode_enabled(value: u64) -> bool {
+    value & (1 << 11) != 0
+}
+
+/// Whether IRTA selects exactly the two-entry table this kernel owns.
+pub const fn interrupt_table_has_two_entries(value: u64) -> bool {
+    value & 0xF == 0
+}
+
+/// Encode a one-page queue of 128-bit invalidation descriptors.
+pub const fn invalidation_queue_address(address: u64) -> Option<u64> {
+    if address & !REMAPPING_ADDRESS_MASK != 0 {
+        return None;
+    }
+    Some(address & REMAPPING_ADDRESS_MASK)
+}
+
+/// A 128-bit queued-invalidation descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidationDescriptor {
+    /// Lower 64 bits.
+    pub lo: u64,
+    /// Upper 64 bits.
+    pub hi: u64,
+}
+
+impl InvalidationDescriptor {
+    /// Globally invalidate the interrupt-entry cache.
+    pub const fn global_interrupt_entry_cache() -> Self {
+        Self { lo: 4, hi: 0 }
+    }
+
+    /// Wait for older descriptors, then write `data` to aligned `address`.
+    pub const fn wait_status(address: u64, data: u32) -> Option<Self> {
+        if address & 0b11 != 0 {
+            return None;
+        }
+        Some(Self {
+            lo: 5 | (1 << 5) | ((data as u64) << 32),
+            hi: address,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -788,6 +916,17 @@ mod tests {
         assert_eq!(RTADDR, 0x20);
         assert_eq!(CCMD, 0x28);
         assert_eq!(FSTS, 0x34);
+        assert_eq!(FECTL, 0x38);
+    }
+
+    #[test]
+    fn fault_event_control_masks_the_non_remapped_message_source() {
+        assert_eq!(fault_event_control::PENDING, 1 << 30);
+        assert_eq!(fault_event_control::MASK, 1 << 31);
+        assert!(!fault_event_control::masked(0));
+        assert!(!fault_event_control::masked(1 << 30));
+        assert!(fault_event_control::masked(1 << 31));
+        assert!(fault_event_control::masked((1 << 31) | (1 << 30)));
     }
 
     /// The address field is bits 63:12 (52 bits), independent of the constant.
@@ -878,6 +1017,8 @@ mod tests {
         assert!(!Capability::from_bits(1 << 54).dma_draining());
         assert!(!Capability::from_bits(1 << 55).dma_draining());
         assert!(Capability::from_bits((1 << 54) | (1 << 55)).dma_draining());
+        assert!(!Capability::from_bits(1 << 61).enhanced_set_interrupt_table_pointer());
+        assert!(Capability::from_bits(1 << 62).enhanced_set_interrupt_table_pointer());
     }
 
     #[test]
@@ -902,23 +1043,34 @@ mod tests {
         assert_eq!(ExtendedCapability::C, 1 << 0);
         assert_eq!(ExtendedCapability::QI, 1 << 1);
         assert_eq!(ExtendedCapability::IR, 1 << 3);
+        assert_eq!(ExtendedCapability::EIM, 1 << 4);
         assert_eq!(ExtendedCapability::IRO_SHIFT, 8);
         assert_eq!(ExtendedCapability::IRO_MASK, 0x3FF, "IRO bits 17:8");
     }
 
     #[test]
     fn extended_capability_decodes_each_field() {
-        let ecap = ExtendedCapability::from_bits(1 | (1 << 1) | (1 << 3) | (0x2Au64 << 8));
+        let ecap =
+            ExtendedCapability::from_bits(1 | (1 << 1) | (1 << 3) | (1 << 4) | (0x2Au64 << 8));
         assert!(ecap.page_walk_coherent());
         assert!(ecap.queued_invalidation());
         assert!(ecap.interrupt_remapping());
+        assert!(ecap.extended_interrupt_mode());
         assert_eq!(ecap.iotlb_register_offset_bytes(), 0x2A * 16);
+
+        let only_ir = ExtendedCapability::from_bits(1 << 3);
+        assert!(only_ir.interrupt_remapping());
+        assert!(!only_ir.extended_interrupt_mode());
+        let only_eim = ExtendedCapability::from_bits(1 << 4);
+        assert!(!only_eim.interrupt_remapping());
+        assert!(only_eim.extended_interrupt_mode());
 
         // Only IRO set: the three single-bit fields read false.
         let only_iro = ExtendedCapability::from_bits(0x2Au64 << 8);
         assert!(!only_iro.page_walk_coherent());
         assert!(!only_iro.queued_invalidation());
         assert!(!only_iro.interrupt_remapping());
+        assert!(!only_iro.extended_interrupt_mode());
         assert_eq!(only_iro.iotlb_register_offset_bytes(), 0x2A * 16);
         assert_eq!(only_iro.bits(), 0x2Au64 << 8);
     }
@@ -928,13 +1080,16 @@ mod tests {
         assert_eq!(gcmd::TE, 1 << 31);
         assert_eq!(gcmd::SRTP, 1 << 30);
         assert_eq!(gcmd::WBF, 1 << 27);
+        assert_eq!(gcmd::QIE, 1 << 26);
         assert_eq!(gcmd::IRE, 1 << 25);
+        assert_eq!(gcmd::SIRTP, 1 << 24);
         assert_eq!(gcmd::CFI, 1 << 23);
         assert_eq!(gsts::TES, 1 << 31);
         assert_eq!(gsts::RTPS, 1 << 30);
         assert_eq!(gsts::WBFS, 1 << 27);
         assert_eq!(gsts::QIES, 1 << 26);
         assert_eq!(gsts::IRES, 1 << 25);
+        assert_eq!(gsts::IRTPS, 1 << 24);
         assert_eq!(gsts::CFIS, 1 << 23);
     }
 
@@ -943,24 +1098,17 @@ mod tests {
         let preserved = gcmd::IRE | gcmd::TE;
         assert_eq!(set_root_table_pointer(preserved), preserved | gcmd::SRTP);
         assert_eq!(enable_translation(0), gcmd::TE);
+        assert_eq!(set_interrupt_table_pointer(0), 1 << 24);
+        assert_eq!(enable_interrupt_remapping(gcmd::CFI), 1 << 25);
         // The preserved bits survive.
         assert_eq!(enable_translation(gcmd::IRE) & gcmd::IRE, gcmd::IRE);
     }
 
-    /// The takeover word keeps exactly the two facilities the unit does not
-    /// drive, with each status bit mapped to its own command bit, and clears
-    /// translation, queued invalidation and every one-shot status.
+    /// The takeover word inherits no firmware translation or bypass state.
     #[test]
-    fn the_inherited_command_keeps_only_interrupt_state() {
-        assert_eq!(inherited_command(0), 0);
-        assert_eq!(inherited_command(1 << 25), 1 << 25, "IRES becomes IRE");
-        assert_eq!(inherited_command(1 << 23), 1 << 23, "CFIS becomes CFI");
-        assert_eq!(
-            inherited_command((1 << 31) | (1 << 30) | (1 << 27) | (1 << 26) | (1 << 25)),
-            1 << 25,
-            "translation, root-pointer, flush and queued-invalidation status are dropped"
-        );
-        assert_eq!(inherited_command(u32::MAX), (1 << 25) | (1 << 23));
+    fn the_takeover_command_clears_every_firmware_state() {
+        assert_eq!(takeover_command(0), 0);
+        assert_eq!(takeover_command(u32::MAX), 0);
     }
 
     #[test]
@@ -969,17 +1117,61 @@ mod tests {
         assert!(!root_table_pointer_set(gsts::TES));
         assert!(translation_enabled(gsts::TES));
         assert!(!translation_enabled(gsts::RTPS));
+        assert!(interrupt_table_pointer_set(gsts::IRTPS));
+        assert!(!interrupt_table_pointer_set(gsts::IRES));
+        assert!(interrupt_remapping_enabled(gsts::IRES));
+        assert!(!interrupt_remapping_enabled(gsts::IRTPS));
+        assert!(compatibility_interrupts_enabled(gsts::CFIS));
+        assert!(!compatibility_interrupts_enabled(gsts::IRES));
     }
 
-    /// Quiescence needs both translation and queued invalidation off, and no
-    /// other status bit disturbs it.
+    /// Quiescence needs DMA, QI, IR and the compatibility bypass all off.
     #[test]
-    fn quiescence_requires_translation_and_queued_invalidation_off() {
+    fn quiescence_requires_every_translation_and_bypass_off() {
         assert!(quiesced(0));
-        assert!(quiesced(gsts::RTPS | gsts::WBFS | gsts::IRES | gsts::CFIS));
+        assert!(quiesced(gsts::RTPS | gsts::WBFS | gsts::IRTPS));
         assert!(!quiesced(gsts::TES));
         assert!(!quiesced(gsts::QIES));
+        assert!(!quiesced(gsts::IRES));
+        assert!(!quiesced(gsts::CFIS));
         assert!(!quiesced(gsts::TES | gsts::QIES));
+    }
+
+    #[test]
+    fn interrupt_table_and_queue_addresses_are_exact_and_aligned() {
+        assert_eq!(IRTA, 0xB8);
+        assert_eq!(IQA, 0x90);
+        assert_eq!(IQH, 0x80);
+        assert_eq!(IQT, 0x88);
+        assert_eq!(interrupt_table_address(0x1234_5000), Some(0x1234_5800));
+        assert_eq!(interrupt_table_address(0x1234_5001), None);
+        assert_eq!(interrupt_table_base(0x1234_580f), 0x1234_5000);
+        assert!(extended_interrupt_mode_enabled(0x800));
+        assert!(interrupt_table_has_two_entries(0x1234_5800));
+        assert!(!interrupt_table_has_two_entries(0x1234_5801));
+        assert_eq!(invalidation_queue_address(0x2234_5000), Some(0x2234_5000));
+        assert_eq!(invalidation_queue_address(0x2234_5008), None);
+    }
+
+    #[test]
+    fn queued_interrupt_cache_invalidation_descriptors_match_the_spec() {
+        assert_eq!(
+            InvalidationDescriptor::global_interrupt_entry_cache(),
+            InvalidationDescriptor { lo: 4, hi: 0 }
+        );
+        assert_ne!(
+            InvalidationDescriptor::global_interrupt_entry_cache().lo,
+            4 | (1 << 4),
+            "IEC granularity bit 4 selects one index rather than the global cache"
+        );
+        assert_eq!(
+            InvalidationDescriptor::wait_status(0x4000, 0xa5a5_5a5a),
+            Some(InvalidationDescriptor {
+                lo: 5 | (1 << 5) | (0xa5a5_5a5au64 << 32),
+                hi: 0x4000,
+            })
+        );
+        assert_eq!(InvalidationDescriptor::wait_status(0x4002, 1), None);
     }
 
     #[test]

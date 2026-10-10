@@ -188,6 +188,35 @@ impl fmt::Display for ApicError {
 
 impl core::error::Error for ApicError {}
 
+/// Why the first global interrupt-enable transition was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PendingInterruptError {
+    /// The local APIC has not completed initialization.
+    Unavailable,
+    /// The audit was attempted after maskable interrupts were already live.
+    InterruptsEnabled,
+    /// A request accepted before the audit remains pending in the local APIC.
+    Pending(u8),
+}
+
+impl fmt::Display for PendingInterruptError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable => core::fmt::Write::write_str(f, "the local apic is unavailable"),
+            Self::InterruptsEnabled => {
+                core::fmt::Write::write_str(f, "maskable interrupts are already enabled")
+            }
+            Self::Pending(vector) => write!(
+                f,
+                "local apic vector {vector:#04x} was pending before interrupt admission"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for PendingInterruptError {}
+
 /// The vectors the local APIC delivers on its own behalf.
 ///
 /// The complete local-source assignment, frozen by [`init`].
@@ -478,6 +507,77 @@ pub fn init(vectors: Vectors) -> Result<Local, ApicError> {
         enter_extended_mode,
         &mut observer,
     )
+}
+
+/// Audit every local-APIC IRR bank and perform the first `sti` as one door.
+///
+/// A PCI function can have placed a compatibility-format MSI in IRR before
+/// VT-d interrupt remapping was taken over. Once IRE is live, new such writes
+/// are denied, but the already accepted request would survive until `sti`.
+/// This door therefore refuses any pending vector while interrupts are still
+/// excluded and enables them only after all eight banks read empty.
+///
+/// # Errors
+///
+/// Returns [`PendingInterruptError`] if the APIC is unavailable, interrupts
+/// were already enabled, or any vector is pending.
+pub fn enable_after_pending_audit() -> Result<(), PendingInterruptError> {
+    if interrupt::are_enabled() {
+        return Err(PendingInterruptError::InterruptsEnabled);
+    }
+    let Some(access) = ready_registers() else {
+        return Err(PendingInterruptError::Unavailable);
+    };
+    if let Some(vector) = pending_vector(&access) {
+        return Err(PendingInterruptError::Pending(vector));
+    }
+    interrupt::enable();
+    Ok(())
+}
+
+fn pending_vector(access: &impl InitializationRegisters) -> Option<u8> {
+    let mut requests = [0u32; 8];
+    for (bits, register) in requests.iter_mut().zip(register::INTERRUPT_REQUEST) {
+        *bits = InitializationRegisters::read(access, register) as u32;
+    }
+    x86_apic::pending::highest(&requests)
+}
+
+/// Exercise the production pending-vector audit with a real queued self-IPI.
+#[cfg(feature = "selftest")]
+pub fn pending_audit_refuses_queued_self_interrupt_for_test(
+    mut delivery_count: impl FnMut() -> usize,
+) -> bool {
+    const ATTEMPTS: usize = 1_000_000;
+
+    if !interrupt::are_enabled() {
+        return false;
+    }
+    let controller = controller();
+    let Some(expected) = controller.published_vector(controller.self_interrupt_vector) else {
+        return false;
+    };
+    let before = delivery_count();
+    let excluded = interrupt::disable();
+    excluded.commit_disabled();
+
+    let sent = controller.send_self_interrupt().is_ok();
+    let queued = (0..ATTEMPTS).any(|_| {
+        core::hint::spin_loop();
+        ready_registers().and_then(|access| pending_vector(&access)) == Some(expected.get())
+    });
+    let refusal =
+        enable_after_pending_audit() == Err(PendingInterruptError::Pending(expected.get()));
+    let stayed_excluded = !interrupt::are_enabled() && delivery_count() == before;
+
+    if !interrupt::are_enabled() {
+        interrupt::enable();
+    }
+    let arrived = (0..ATTEMPTS).any(|_| {
+        core::hint::spin_loop();
+        delivery_count() == before + 1
+    });
+    sent && queued && refusal && stayed_excluded && arrived && interrupt::are_enabled()
 }
 
 fn initialize_controller<R: InitializationRegisters>(

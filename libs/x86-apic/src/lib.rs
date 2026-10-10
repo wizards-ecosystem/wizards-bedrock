@@ -45,6 +45,7 @@ pub mod in_service;
 pub mod io;
 pub mod lifecycle;
 pub mod local_vector;
+pub mod pending;
 pub mod register;
 pub mod spurious;
 pub mod timer;

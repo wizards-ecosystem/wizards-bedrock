@@ -1062,7 +1062,7 @@ fn pci_configuration_writes_require_function_authority() {
         ("bus-master", "let _ = pci::enable_bus_master(at);", "E0425"),
         (
             "bus-master-upgrade",
-            "let _ = pci::admit_bus_master(at, domain, state);",
+            "let _ = pci::admit_bus_master(at, domain, interrupts, state);",
             "E0308",
         ),
         (
@@ -1081,7 +1081,7 @@ fn pci_configuration_writes_require_function_authority() {
     ] {
         let arguments = match label {
             "bus-master-upgrade" => {
-                ", domain: wost::arch::current::vtd::DmaDomain, state: &mut pci_config::CommandState"
+                ", domain: wost::arch::current::vtd::DmaDomain, interrupts: wost::arch::current::vtd::InterruptIsolation, state: &mut pci_config::CommandState"
             }
             "restore" | "commit" => ", state: pci_config::CommandState",
             "probe-retry" => ", retry: pci_config::ProbeRetry",
@@ -1102,8 +1102,8 @@ fn pci_configuration_writes_require_function_authority() {
     ] {
         let source = format!(
             "#![no_std]\nuse wost::arch::current::pci;\n\
-             fn probe(input: {input}, domain: wost::arch::current::vtd::DmaDomain, state: &mut pci_config::CommandState) {{\n\
-                 let _ = pci::admit_bus_master(input, domain, state);\n\
+             fn probe(input: {input}, domain: wost::arch::current::vtd::DmaDomain, interrupts: wost::arch::current::vtd::InterruptIsolation, state: &mut pci_config::CommandState) {{\n\
+                 let _ = pci::admit_bus_master(input, domain, interrupts, state);\n\
              }}\n"
         );
         require_error(
@@ -4287,9 +4287,10 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
             &[
                 ("evidence", 7),
                 ("dropped", 8),
-                ("POLLER_ROUNDS", 3),
-                ("FOREVER", 4),
+                ("POLLER_ROUNDS", 4),
+                ("FOREVER", 5),
                 ("POLLER_PASSES", 3),
+                ("POLLER_RUNNING", 6),
                 ("INTERRUPTS", 3),
                 ("WATCH", 4),
                 ("POLLER_STARTED", 4),
@@ -4454,7 +4455,7 @@ fn machine_evidence_writes_are_absent_from_shipped_paths() {
             .iter()
             .map(|(_, observers)| observers.len())
             .sum::<usize>(),
-        106,
+        107,
         "D-290's evidence-identifier inventory"
     );
     for &(relative, expected) in OBSERVERS {

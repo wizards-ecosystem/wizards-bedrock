@@ -16,7 +16,7 @@
 //! for its keyboard.
 
 #[cfg(feature = "selftest")]
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[cfg(feature = "selftest")]
 use ps2_keys::Key;
@@ -360,12 +360,26 @@ pub(crate) fn start_poller() {
     if is_interrupt_driven() {
         return;
     }
+    #[cfg(feature = "selftest")]
+    {
+        if POLLER_RUNNING
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        POLLER_ROUNDS.store(FOREVER, Ordering::Release);
+    }
     match crate::thread::spawn("keyboard-poll", poll_forever) {
-        Ok(_) if crate::time::is_calibrated() => {
+        Ok(_) if crate::time::is_calibrated() && interrupt::are_enabled() => {
             info!("keyboard: polled every {POLL_INTERVAL_MS} ms")
         }
         Ok(_) => info!("keyboard: clockless poller yields between bounded drains"),
-        Err(reason) => warn!("keyboard: no poller: {reason}; input is lost"),
+        Err(reason) => {
+            #[cfg(feature = "selftest")]
+            POLLER_RUNNING.store(false, Ordering::Release);
+            warn!("keyboard: no poller: {reason}; input is lost");
+        }
     }
 }
 
@@ -403,7 +417,7 @@ fn poll_forever() {
         POLLER_PASSES.fetch_add(1, Ordering::Relaxed);
         #[cfg(feature = "selftest")]
         POLLER_STARTED.store(true, Ordering::Release);
-        if crate::time::is_calibrated() {
+        if crate::time::is_calibrated() && interrupt::are_enabled() {
             crate::thread::sleep_ms(&mut context, POLL_INTERVAL_MS);
         } else {
             crate::thread::yield_now(&mut context);
@@ -413,11 +427,17 @@ fn poll_forever() {
             POLLER_SAW_PEER.store(true, Ordering::Release);
         }
     }
+    #[cfg(feature = "selftest")]
+    POLLER_RUNNING.store(false, Ordering::Release);
 }
 
 /// Times the poller has been round its loop.
 #[cfg(feature = "selftest")]
 static POLLER_PASSES: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether a bounded check or the permanent fallback currently owns polling.
+#[cfg(feature = "selftest")]
+static POLLER_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// Times the poller has been round its loop.
 #[cfg(feature = "selftest")]
@@ -429,16 +449,25 @@ pub(crate) fn poller_passes() -> usize {
 /// on a machine whose line is routed.
 #[cfg(feature = "selftest")]
 pub(crate) fn start_bounded_poller(rounds: usize) -> bool {
-    // Refuse alongside the shipped poller because both share the round counter;
+    // Refuse alongside any other poller because both share the round counter;
     // bounding one would terminate the other (D-105).
-    if !is_interrupt_driven() {
+    if POLLER_RUNNING
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
         return false;
     }
     POLLER_STARTED.store(false, Ordering::Release);
     POLLER_PEER_PROGRESS.store(false, Ordering::Release);
     POLLER_SAW_PEER.store(false, Ordering::Release);
     POLLER_ROUNDS.store(rounds, Ordering::Release);
-    crate::thread::spawn("keyboard-poll-check", poll_forever).is_ok()
+    match crate::thread::spawn("keyboard-poll-check", poll_forever) {
+        Ok(_) => true,
+        Err(_) => {
+            POLLER_RUNNING.store(false, Ordering::Release);
+            false
+        }
+    }
 }
 
 #[cfg(feature = "selftest")]
@@ -664,12 +693,18 @@ pub(crate) fn arm_key(key: Key) -> Option<ArmedKey> {
         .map(|generation| ArmedKey { key, generation })
 }
 
+/// Whether a complete press/release pair arrived after `watch` was armed.
+#[cfg(feature = "selftest")]
+pub(crate) fn armed_key_arrived(watch: ArmedKey) -> bool {
+    WATCH
+        .lock_leaf()
+        .completed_after(watch.key, watch.generation)
+}
+
 /// A clock deadline bounds an honest wait and an iteration cap bounds a dead
 /// clock. Each pass also bounds how much hostile controller input it drains.
 #[cfg(feature = "selftest")]
 pub(crate) fn await_armed_key(watch: ArmedKey) -> bool {
-    // Large enough for an honest burst and finite for a hostile controller.
-    const DRAIN_PER_PASS: usize = 2 * BATCH;
     /// The bound a dead clock falls back on, and only then.
     ///
     /// Attempts are spent only when the clock is unavailable; otherwise a fast
@@ -678,43 +713,24 @@ pub(crate) fn await_armed_key(watch: ArmedKey) -> bool {
     const WAIT_SPINS: u32 = 2_000_000;
 
     let mut patience = PollLimit::after_ms(clock_ns(), HUMAN_WAIT_MS, WAIT_SPINS);
-    let mut pressed = false;
     while patience.permit(clock_ns()) {
         // Where the line is routed the handler is the only reader; polling
         // here could claim a keystroke the interrupt path never saw.
         if is_interrupt_driven() {
-            if WATCH
-                .lock_leaf()
-                .completed_after(watch.key, watch.generation)
-            {
+            if armed_key_arrived(watch) {
                 return true;
             }
             core::hint::spin_loop();
             continue;
         }
 
-        let mut guard = KEYBOARD.lock_leaf();
-        let Some(keyboard) = guard.as_mut() else {
-            return false;
-        };
-        // Bounded: a controller with more to say gets the next pass, and one
-        // that never stops does not get the loop (D-145).
-        let mut drained = 0;
-        while drained < DRAIN_PER_PASS {
-            let Some(event) = keyboard.next_event() else {
-                break;
-            };
-            drained += 1;
-            if event.key != watch.key {
-                continue;
-            }
-            match event.state {
-                KeyState::Pressed => pressed = true,
-                KeyState::Released if pressed => return true,
-                KeyState::Released => {}
-            }
+        // Use the same bounded drain and delivery path as the permanent
+        // fallback. A waiter may run beside that thread; the controller lock
+        // serializes reads, and WATCH observes only events admitted to readers.
+        poll();
+        if armed_key_arrived(watch) {
+            return true;
         }
-        drop(guard);
         core::hint::spin_loop();
     }
     false

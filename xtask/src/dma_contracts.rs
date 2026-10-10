@@ -14,9 +14,13 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
+fn source(relative: &str) -> String {
+    std::fs::read_to_string(root().join(relative))
+        .unwrap_or_else(|error| panic!("reading {relative}: {error}"))
+}
+
 fn parse(relative: &str) -> syn::File {
-    let source = std::fs::read_to_string(root().join(relative))
-        .unwrap_or_else(|error| panic!("reading {relative}: {error}"));
+    let source = source(relative);
     syn::parse_file(&source).unwrap_or_else(|error| panic!("parsing {relative}: {error}"))
 }
 
@@ -1177,9 +1181,10 @@ impl<'ast> Visit<'ast> for BusMasterUses {
         }
         if call.method == "admit_bus_master"
             && path_expression_is(&call.receiver, &["device"])
-            && call.args.len() == 2
+            && call.args.len() == 3
             && path_expression_is(&call.args[0], &["authority"])
             && path_expression_is(&call.args[1], &["domain"])
+            && path_expression_is(&call.args[2], &["interrupts"])
         {
             self.device_admissions += 1;
         }
@@ -1208,10 +1213,11 @@ impl<'ast> Visit<'ast> for BusMasterUses {
             }
         }
         if path_expression_is(&call.func, &["pci", "admit_bus_master"])
-            && call.args.len() == 3
+            && call.args.len() == 4
             && path_expression_is(&call.args[0], &["authority"])
             && path_expression_is(&call.args[1], &["domain"])
-            && path_expression_is(&call.args[2], &["state"])
+            && path_expression_is(&call.args[2], &["interrupts"])
+            && path_expression_is(&call.args[3], &["state"])
         {
             self.hardware_admissions += 1;
         }
@@ -1290,6 +1296,10 @@ fn nvme_bus_master_authority_is_fresh_linear_and_mapping_bound() {
         by_value_named_input(admission.sig.inputs.iter().nth(1), "DmaDomain"),
         "the hardware door admits bus mastering without a DMA domain proof"
     );
+    assert!(
+        by_value_named_input(admission.sig.inputs.iter().nth(2), "InterruptIsolation"),
+        "the hardware door admits bus mastering without an interrupt-isolation proof"
+    );
     let mut admitted = BusMasterUses::default();
     admitted.visit_block(&admission.block);
     assert_eq!(admitted.mapped_admissions, 1);
@@ -1306,6 +1316,13 @@ fn nvme_bus_master_authority_is_fresh_linear_and_mapping_bound() {
     assert!(
         by_value_named_input(device_admission.sig.inputs.iter().nth(2), "DmaDomain"),
         "the device door admits bus mastering without a DMA domain proof"
+    );
+    assert!(
+        by_value_named_input(
+            device_admission.sig.inputs.iter().nth(3),
+            "InterruptIsolation"
+        ),
+        "the device door admits bus mastering without an interrupt-isolation proof"
     );
     let mut device = BusMasterUses::default();
     device.visit_block(&device_admission.block);
@@ -1333,6 +1350,215 @@ fn nvme_bus_master_authority_is_fresh_linear_and_mapping_bound() {
     assert_eq!(
         all_nvme.device_admissions, 1,
         "a second admission door appeared"
+    );
+}
+
+#[test]
+fn pci_interrupts_are_default_deny_before_bus_mastering_or_sti() {
+    let vtd_source = source("wost/src/arch/x86_64/vtd.rs");
+    let vtd = parse("wost/src/arch/x86_64/vtd.rs");
+    let proof = vtd
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Struct(item) if item.ident == "InterruptIsolation" => Some(item),
+            _ => None,
+        })
+        .expect("missing interrupt-isolation proof");
+    assert!(matches!(proof.vis, Visibility::Public(_)));
+    assert!(exact_derives(&proof.attrs, &["Debug"]));
+    let Fields::Named(fields) = &proof.fields else {
+        panic!("InterruptIsolation must name its exact function");
+    };
+    assert_eq!(fields.named.len(), 1);
+    let function = fields.named.first().expect("interrupt function field");
+    assert!(matches!(function.vis, Visibility::Inherited));
+    assert!(matches!(&function.ty, Type::Path(path)
+        if path.path.segments.last().is_some_and(|segment| segment.ident == "Address")));
+    assert_eq!(authority_alias_count(&vtd, &["InterruptIsolation"]), 0);
+
+    for requirement in [
+        "if !platform_interrupt_remapping {",
+        "if !extended.interrupt_remapping() || !extended.queued_invalidation() {",
+        "if !extended.extended_interrupt_mode() {",
+        "if !interrupt_remapping_enabled(status)",
+        "|| compatibility_interrupts_enabled(status)",
+        "|| status & gsts::QIES != 0",
+        "|| !fault_event_control::masked(fault_control)",
+        "observed != expected",
+        "|| !interrupt_table_has_two_entries(observed)",
+        "if self.interrupts.read_u64(index)? != 0 {",
+        "if observed == pointer",
+    ] {
+        assert!(
+            vtd_source.contains(requirement),
+            "VT-d interrupt boundary lost `{requirement}`"
+        );
+    }
+
+    let mut transition = CallNames::default();
+    transition.visit_impl_item_fn(method(&vtd, "Vtd", "transition").expect("VT-d transition"));
+    let fault_mask = call_position(&transition, "mask_fault_interrupt");
+    let quiesce = call_position(&transition, "quiesce");
+    let root = call_position(&transition, "set_root_table");
+    let interrupt_table = call_position(&transition, "set_interrupt_table");
+    let interrupt_cache = call_position(&transition, "invalidate_interrupt_cache");
+    let interrupt_enable = call_position(&transition, "switch_interrupt_remapping");
+    let translation_enable = call_position(&transition, "switch_translation");
+    assert!(
+        fault_mask < quiesce
+            && quiesce < root
+            && root < interrupt_table
+            && interrupt_table < interrupt_cache
+            && interrupt_cache < interrupt_enable
+            && interrupt_enable < translation_enable
+    );
+    let invalidation = vtd_source
+        .split_once("fn invalidate_interrupt_cache(")
+        .expect("interrupt-cache invalidation")
+        .1
+        .split_once("fn switch_queued_invalidation(")
+        .expect("interrupt-cache invalidation end")
+        .0;
+    let queue_enable = invalidation
+        .find("self.switch_queued_invalidation(true)?")
+        .expect("QI enable");
+    let queue_readback = invalidation
+        .find("let observed_queue = read_u64(&self.registers, vtd::IQA as usize)?;")
+        .expect("IQA readback");
+    let tail = invalidation
+        .find("write_u64(&mut self.registers, vtd::IQT as usize, INVALIDATION_TAIL)?;")
+        .expect("QI tail publication");
+    let queue_disable = invalidation
+        .find("let disabled = self.switch_queued_invalidation(false);")
+        .expect("QI disable");
+    assert!(queue_enable < queue_readback && queue_readback < tail && tail < queue_disable);
+    let fault_mask = vtd_source
+        .split_once("fn mask_fault_interrupt(")
+        .expect("fault-event interrupt mask")
+        .1
+        .split_once("fn switch_translation(")
+        .expect("fault-event interrupt mask end")
+        .0;
+    assert!(fault_mask.contains("let prior = read_u32(&self.registers, vtd::FECTL as usize)?;"));
+    assert!(fault_mask.contains("prior | fault_event_control::MASK"));
+    assert!(fault_mask.contains("fault_event_control::masked(observed)"));
+
+    let iommu = source("kernel/src/iommu.rs");
+    for requirement in [
+        "if !dmar.interrupt_remapping() || dmar.x2apic_opt_out() {",
+        "if dmar.sole_unit_segment() != Some(SEGMENT) {",
+        "if !covers_every_present_requester(&requesters) {",
+        "for bus in 0..=u8::MAX {",
+        "if !requesters.iter().any(|covered| covered == requester) {",
+        "pub(crate) fn ensure_interrupt_boundary(context: &mut ThreadContext) -> bool {",
+        "if isolation.interrupt_isolation().is_none() {",
+    ] {
+        assert!(
+            iommu.contains(requirement),
+            "kernel interrupt boundary lost `{requirement}`"
+        );
+    }
+    assert_eq!(
+        iommu.matches("Vtd::establish(registers,").count(),
+        2,
+        "both DMA and interrupt-only ownership must use the same VT-d takeover"
+    );
+    assert!(
+        iommu
+            .matches("pci::TopologyPresence::Unsealed => return false,")
+            .count()
+            >= 2,
+        "an unsealed PCI inventory must refuse both boundary establishment and observation"
+    );
+
+    let pci = source("wost/src/arch/x86_64/pci.rs");
+    assert!(pci.contains("if interrupts.function() != domain.function() {"));
+
+    let kernel_pci = source("kernel/src/pci.rs");
+    assert!(kernel_pci.contains(
+        "pub(crate) enum TopologyPresence {\n    Unsealed,\n    Empty,\n    Present,\n}"
+    ));
+    assert!(
+        kernel_pci.contains(
+            "if !topology_is_sealed() {\n        return TopologyPresence::Unsealed;\n    }"
+        )
+    );
+
+    let main = source("kernel/src/main.rs");
+    assert!(main.contains("if !iommu::interrupt_boundary_active() {"));
+    assert!(main.contains("pci::TopologyPresence::Empty"));
+    assert!(main.contains("if let Err(reason) = apic::enable_after_pending_audit() {"));
+    let start = main
+        .split_once("fn start_interrupts(")
+        .expect("initial interrupt admission")
+        .1
+        .split_once("const fn external_interrupts_are_admitted")
+        .expect("initial interrupt admission end")
+        .0;
+    let remapping = start
+        .find("if !iommu::interrupt_boundary_active() {")
+        .expect("PCI interrupt boundary before sti");
+    let pending = start
+        .find("apic::enable_after_pending_audit()")
+        .expect("pending-vector audit before sti");
+    let ready = start
+        .find("MASKABLE_INTERRUPTS_READY.store(true")
+        .expect("interrupt-ready publication");
+    assert!(remapping < pending && pending < ready);
+
+    let apic = source("wost/src/arch/x86_64/apic.rs");
+    assert!(apic.contains(
+        "for (bits, register) in requests.iter_mut().zip(register::INTERRUPT_REQUEST) {"
+    ));
+    assert!(apic.contains(
+        "if let Some(vector) = pending_vector(&access) {\n        return Err(PendingInterruptError::Pending(vector));\n    }"
+    ));
+    let audit = apic
+        .split_once("pub fn enable_after_pending_audit()")
+        .expect("local APIC pending audit")
+        .1
+        .split_once("fn initialize_controller")
+        .expect("local APIC pending audit end")
+        .0;
+    let irr = audit
+        .find("pending_vector(&access)")
+        .expect("all-bank IRR audit");
+    let refusal = audit
+        .find("PendingInterruptError::Pending")
+        .expect("pending-vector refusal");
+    let sti = audit.find("interrupt::enable()").expect("initial sti");
+    assert!(irr < refusal && refusal < sti);
+    let route = main
+        .split_once("fn route_keyboard(")
+        .expect("keyboard routing boundary")
+        .1
+        .split_once("enum KeyboardRouteError")
+        .expect("keyboard routing boundary end")
+        .0;
+    let boundary = route
+        .find("pci::topology_presence()")
+        .expect("PCI topology-state routing branch");
+    let rollback = route[boundary..]
+        .find("rollback_keyboard_route(routing)")
+        .map(|position| boundary + position)
+        .expect("PCI routing rollback");
+    let returned = route[rollback..]
+        .find("return;")
+        .map(|position| rollback + position)
+        .expect("PCI routing rollback return");
+    let commit = route
+        .rfind("commit_keyboard_route(routing)")
+        .expect("non-PCI keyboard routing commit");
+    assert!(boundary < rollback && rollback < returned && returned < commit);
+
+    let input = source("kernel/src/input.rs");
+    assert_eq!(
+        input
+            .matches("crate::time::is_calibrated() && interrupt::are_enabled()")
+            .count(),
+        2,
+        "a poller may sleep only while timer interrupts can wake it"
     );
 }
 
@@ -2787,7 +3013,7 @@ fn unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving() {
         .iter()
         .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
         .collect::<Vec<_>>();
-    assert_eq!(names, ["isolation", "fences"]);
+    assert_eq!(names, ["register_base", "isolation", "fences"]);
 
     let mut establish_calls = CallNames::default();
     establish_calls.visit_item_fn(function(&iommu, "establish"));
@@ -2807,6 +3033,35 @@ fn unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving() {
     let vtd = parse("wost/src/arch/x86_64/vtd.rs");
     assert!(method(&vtd, "Vtd", "disable_translation_for_test").is_none());
     assert!(method(&vtd, "Vtd", "enable_translation_for_test").is_none());
+
+    let mut park_calls = CallNames::default();
+    park_calls.visit_impl_item_fn(method(&vtd, "Vtd", "park").expect("VT-d parking"));
+    assert!(park_calls.0.iter().any(|call| call == "switch_translation"));
+    assert!(
+        !park_calls
+            .0
+            .iter()
+            .any(|call| call == "switch_interrupt_remapping")
+    );
+    let mut retarget_calls = CallNames::default();
+    retarget_calls.visit_impl_item_fn(method(&vtd, "Vtd", "retarget").expect("VT-d retargeting"));
+    assert!(
+        !retarget_calls
+            .0
+            .iter()
+            .any(|call| call == "switch_interrupt_remapping")
+    );
+
+    let iommu_source = source("kernel/src/iommu.rs");
+    let release = iommu_source
+        .split_once("pub(crate) fn release_candidate(")
+        .expect("candidate release")
+        .1
+        .split_once("/// Clear one inventory-bounded fault batch")
+        .expect("candidate release end")
+        .0;
+    assert!(release.contains("unit.isolation.park()"));
+    assert!(!release.contains("unmap_device_exact"));
 
     let mut preflight = CallNames::default();
     preflight.visit_impl_item_fn(method(&vtd, "Plan", "read").expect("VT-d preflight"));

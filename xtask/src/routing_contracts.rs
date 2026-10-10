@@ -482,6 +482,9 @@ struct CallCount {
     interrupt_enable: usize,
     interrupt_enable_references: usize,
     interrupt_enable_imports: usize,
+    pending_audit_enable: usize,
+    pending_audit_enable_references: usize,
+    pending_audit_enable_imports: usize,
     interrupts_enabled_query: usize,
 }
 
@@ -491,6 +494,11 @@ impl<'ast> Visit<'ast> for CallCount {
             if path_has_suffix(&path.path, &["interrupt", "enable"]))
         {
             self.interrupt_enable += 1;
+        }
+        if matches!(&*call.func, Expr::Path(path)
+            if path_has_suffix(&path.path, &["apic", "enable_after_pending_audit"]))
+        {
+            self.pending_audit_enable += 1;
         }
         if matches!(&*call.func, Expr::Path(path)
             if path_has_suffix(&path.path, &["interrupt", "are_enabled"]))
@@ -504,36 +512,46 @@ impl<'ast> Visit<'ast> for CallCount {
         if path_has_suffix(&expression.path, &["interrupt", "enable"]) {
             self.interrupt_enable_references += 1;
         }
+        if path_has_suffix(&expression.path, &["apic", "enable_after_pending_audit"]) {
+            self.pending_audit_enable_references += 1;
+        }
         visit::visit_expr_path(self, expression);
     }
 
     fn visit_item_use(&mut self, import: &'ast syn::ItemUse) {
-        fn count(tree: &syn::UseTree, prefix: &mut Vec<String>) -> usize {
+        fn count(tree: &syn::UseTree, prefix: &mut Vec<String>, module: &str, item: &str) -> usize {
             match tree {
                 syn::UseTree::Path(path) => {
                     prefix.push(path.ident.to_string());
-                    let found = count(&path.tree, prefix);
+                    let found = count(&path.tree, prefix, module, item);
                     prefix.pop();
                     found
                 }
                 syn::UseTree::Name(name) => usize::from(
-                    name.ident == "enable"
-                        && prefix.last().is_some_and(|segment| segment == "interrupt"),
+                    name.ident == item && prefix.last().is_some_and(|segment| segment == module),
                 ),
                 syn::UseTree::Rename(rename) => usize::from(
-                    rename.ident == "enable"
-                        && prefix.last().is_some_and(|segment| segment == "interrupt"),
+                    rename.ident == item && prefix.last().is_some_and(|segment| segment == module),
                 ),
                 syn::UseTree::Glob(_) => {
-                    usize::from(prefix.last().is_some_and(|segment| segment == "interrupt"))
+                    usize::from(prefix.last().is_some_and(|segment| segment == module))
                 }
-                syn::UseTree::Group(group) => {
-                    group.items.iter().map(|tree| count(tree, prefix)).sum()
-                }
+                syn::UseTree::Group(group) => group
+                    .items
+                    .iter()
+                    .map(|tree| count(tree, prefix, module, item))
+                    .sum(),
             }
         }
 
-        self.interrupt_enable_imports += count(&import.tree, &mut Vec::new());
+        self.interrupt_enable_imports +=
+            count(&import.tree, &mut Vec::new(), "interrupt", "enable");
+        self.pending_audit_enable_imports += count(
+            &import.tree,
+            &mut Vec::new(),
+            "apic",
+            "enable_after_pending_audit",
+        );
         visit::visit_item_use(self, import);
     }
 }
@@ -778,7 +796,8 @@ fn interrupt_enable_and_routing_require_the_mask_authority() {
         .expect("missing mask-authority refusal");
     let mut calls = CallCount::default();
     Visit::visit_item_fn(&mut calls, start);
-    assert_eq!(calls.interrupt_enable, 1);
+    assert_eq!(calls.interrupt_enable, 0);
+    assert_eq!(calls.pending_audit_enable, 1);
     let enable = start
         .block
         .stmts
@@ -786,7 +805,7 @@ fn interrupt_enable_and_routing_require_the_mask_authority() {
         .position(|statement| {
             let mut calls = CallCount::default();
             calls.visit_stmt(statement);
-            calls.interrupt_enable == 1
+            calls.pending_audit_enable == 1
         })
         .expect("missing interrupt enable");
     assert!(
@@ -818,6 +837,9 @@ fn interrupt_enable_and_routing_require_the_mask_authority() {
     let mut admission_sites = Vec::new();
     let mut admission_references = 0;
     let mut admission_imports = 0;
+    let mut pending_audit_sites = Vec::new();
+    let mut pending_audit_references = 0;
+    let mut pending_audit_imports = 0;
     for (path, syntax) in rust_sources_below("kernel/src")
         .into_iter()
         .chain(rust_sources_below("wost/src"))
@@ -826,6 +848,8 @@ fn interrupt_enable_and_routing_require_the_mask_authority() {
         calls.visit_file(&syntax);
         admission_references += calls.interrupt_enable_references;
         admission_imports += calls.interrupt_enable_imports;
+        pending_audit_references += calls.pending_audit_enable_references;
+        pending_audit_imports += calls.pending_audit_enable_imports;
         if calls.interrupt_enable != 0 {
             let relative = path
                 .strip_prefix(root())
@@ -834,21 +858,42 @@ fn interrupt_enable_and_routing_require_the_mask_authority() {
                 .replace('\\', "/");
             admission_sites.push((relative, calls.interrupt_enable));
         }
+        if calls.pending_audit_enable != 0 {
+            let relative = path
+                .strip_prefix(root())
+                .expect("source below repository root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            pending_audit_sites.push((relative, calls.pending_audit_enable));
+        }
     }
     assert_eq!(
         admission_sites,
         [
-            ("kernel/src/main.rs".to_owned(), 1),
+            ("wost/src/arch/x86_64/apic.rs".to_owned(), 2),
             ("wost/src/arch/x86_64/task.rs".to_owned(), 1)
         ],
         "interrupt admission escaped its two audited authority paths"
     );
     assert_eq!(
-        admission_references, 2,
+        admission_references, 3,
         "interrupt admission gained an indirect function reference"
     );
     assert_eq!(
         admission_imports, 0,
         "interrupt admission gained an import alias or glob"
+    );
+    assert_eq!(
+        pending_audit_sites,
+        [("kernel/src/main.rs".to_owned(), 1)],
+        "the pending-vector audit escaped the first global admission door"
+    );
+    assert_eq!(
+        pending_audit_references, 1,
+        "the pending-vector audit gained an indirect function reference"
+    );
+    assert_eq!(
+        pending_audit_imports, 0,
+        "the pending-vector audit gained an import alias or glob"
     );
 }

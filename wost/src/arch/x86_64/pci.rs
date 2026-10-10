@@ -14,7 +14,7 @@ use pci_config::{
 };
 
 use crate::arch::current::paging::{AdmittedDeviceRange, DeviceMapping, ReleasableDevice};
-use crate::arch::current::vtd::DmaDomain;
+use crate::arch::current::vtd::{DmaDomain, InterruptIsolation};
 use crate::mmio::MmioError;
 use crate::sync::SpinLock;
 
@@ -465,9 +465,13 @@ pub fn release_function(function: FunctionClaim) -> Result<(), ReleaseFailure> {
 pub fn admit_bus_master(
     authority: NvmeBusMasterAuthority<'_>,
     domain: DmaDomain,
+    interrupts: InterruptIsolation,
     state: &mut CommandState,
 ) -> Result<(), EnableError> {
     let NvmeBusMasterAuthority { bar, _observed: _ } = authority;
+    if interrupts.function() != domain.function() {
+        return Err(EnableError::Stale);
+    }
     let mut configuration = CONFIGURATION.lock_leaf();
     let Configuration { ports, functions } = &mut *configuration;
     pci_config::admit_mapped_bus_master(

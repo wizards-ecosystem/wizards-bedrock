@@ -1906,7 +1906,7 @@ fn file_work_pressure_is_bounded_at_admission() -> bool {
         && work.is_consistent()
 }
 
-fn a_delayed_read_preserves_interrupts_and_exact_teardown() -> bool {
+fn a_delayed_read_preserves_interrupt_admission_and_exact_teardown() -> bool {
     let Some((table, handle)) = small_file_authority() else {
         return false;
     };
@@ -1925,22 +1925,27 @@ fn a_delayed_read_preserves_interrupts_and_exact_teardown() -> bool {
     let reached_device = runs_until(2_000, nvme::command_is_held_for_test);
     let retained = ring.abandon() == 0 && !ring.is_quiet() && Arc::strong_count(&ring) > 1;
 
-    let expiries = time::expiries();
-    let interrupts = input::interrupt_count();
+    let interrupt_admission = interrupt::are_enabled();
+    let key = input::arm_key(ps2_keys::Key::C);
     // Kept in step with STORAGE_DELAY_MARKER in `xtask/src/qemu.rs`.
     awaiting(
         "selftest: awaiting storage-delay keystroke",
         "  PRESS  c   to continue the storage round",
     );
-    // The human's window, not a machine's: this samples for interrupt progress
-    // after the prompt, so a second was long enough only for QMP.
+    // This self-test runs before the permanent fallback starts so the scheduler
+    // checks below retain their tickless baseline. Drain explicitly while the
+    // storage worker is held, proving polling and unrelated IRQ admission can
+    // progress together.
     let progressed = runs_until(input::HUMAN_WAIT_MS, || {
-        time::expiries() > expiries && input::interrupt_count() > interrupts
+        input::poll();
+        key.is_some_and(input::armed_key_arrived)
     });
     let mut context = context();
     let pressed = input::read_key(&mut context);
     let released = input::read_key(&mut context);
-    let interrupt_progress = progressed
+    let input_progress = progressed
+        && interrupt_admission
+        && interrupt::are_enabled()
         && pressed.event.key == ps2_keys::Key::C
         && pressed.event.state == ps2_keys::KeyState::Pressed
         && released.event.key == ps2_keys::Key::C
@@ -1960,10 +1965,10 @@ fn a_delayed_read_preserves_interrupts_and_exact_teardown() -> bool {
         && ring.outstanding() == 0
         && ring.abandon() == 0;
     info!(
-        "selftest: delayed read evidence deferred={deferred} device={reached_device} retained={retained} interrupts={interrupt_progress} completed={completed} exact={exact}"
+        "selftest: delayed read evidence deferred={deferred} device={reached_device} retained={retained} polled={input_progress} completed={completed} exact={exact}"
     );
 
-    deferred && reached_device && retained && interrupt_progress && completed && exact
+    deferred && reached_device && retained && input_progress && completed && exact
 }
 
 fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
@@ -6844,39 +6849,23 @@ fn the_framebuffer_is_write_combining() -> bool {
             })
 }
 
-fn the_keyboard_line_is_routed() -> bool {
-    // The line the kernel routed, not the one a legacy IRQ number suggests:
-    // firmware may map any IRQ to any global system interrupt.
-    let gsi = dev::keyboard_gsi();
-
-    dev::routing_of(gsi).is_some_and(|routing| {
-        let destination = u8::try_from(apic::id()).ok().map(|id| u32::from(id) << 24);
-        let permitted_low = 0xFF | (1 << 13) | (1 << 15);
-        !routing.masked
-            && routing.vector == vector::KEYBOARD.get()
-            && routing.low & !permitted_low == 0
-            && Some(routing.high) == destination
-    })
+fn default_deny_interrupt_remapping_guards_pci() -> bool {
+    iommu::interrupt_boundary_is_deny_all_for_test()
+        && iommu::interrupt_boundary_active()
+        && !input::is_interrupt_driven()
 }
 
-fn the_io_apic_refuses_a_line_it_does_not_own() -> bool {
-    let Some(base) = dev::io_apic_base() else {
-        return false;
-    };
-    // Past the end, which every controller has.
-    let past_the_end = dev::routing_of(u32::MAX).is_none();
-    // Below the base exists only when a controller starts above zero; a
-    // base-zero controller has no representable lower GSI (D-105, D-121).
-    let below_the_base = base == 0 || dev::routing_of(base - 1).is_none();
-    // And the line it *does* own is routed, so this is not the answer "no" to
-    // every question.
-    let owns_its_own = dev::routing_of(dev::keyboard_gsi()).is_some();
-
-    past_the_end && below_the_base && owns_its_own
+fn the_io_apic_owner_was_returned_after_masked_rollback() -> bool {
+    crate::keyboard_routing_rollback_is_exact()
+        && dev::io_apic_base().is_none()
+        && dev::routing_of(dev::keyboard_gsi()).is_none()
 }
 
-fn keystrokes_arrive_as_interrupts() -> bool {
-    input::is_interrupt_driven() && input::interrupt_count() > 0
+fn keyboard_input_is_polled_without_legacy_interrupts() -> bool {
+    !input::is_interrupt_driven()
+        && input::interrupt_count() == 0
+        && input::poller_started_for_test()
+        && input::poller_passes() > 0
 }
 
 fn the_heap_reuses_a_freed_slot() -> bool {
@@ -7594,7 +7583,7 @@ fn read_one_key() {
     READER_SAW.store(keystroke.event.key as usize + 1, Ordering::Release);
 }
 
-fn a_blocked_reader_is_ready_to_wake() -> bool {
+fn a_blocked_reader_waits_while_the_poller_runs() -> bool {
     READER_SAW.store(0, Ordering::Release);
     READER_BLOCKED.store(0, Ordering::Release);
 
@@ -7606,20 +7595,20 @@ fn a_blocked_reader_is_ready_to_wake() -> bool {
     // everything between here and the injection.
     let blocked = runs_until(50, || thread::blocks() > blocks);
 
-    let quiet = time::expiries();
-    runs_until(100, || false);
-    let stayed_quiet = time::expiries() == quiet;
+    let passes = input::poller_passes();
+    let poller_progressed = runs_until(100, || input::poller_passes() > passes);
 
-    blocked && stayed_quiet && input::has_reader() && READER_SAW.load(Ordering::Acquire) == 0
+    blocked && poller_progressed && input::has_reader() && READER_SAW.load(Ordering::Acquire) == 0
 }
 
-fn the_blocked_reader_woke_with_the_key() -> bool {
+fn the_blocked_reader_woke_with_the_key(passes_before: usize) -> bool {
     let wanted = ps2_keys::Key::A as usize + 1;
 
     let woke = runs_until(1_000, || READER_SAW.load(Ordering::Acquire) != 0);
     woke && READER_SAW.load(Ordering::Acquire) == wanted
         && READER_BLOCKED.load(Ordering::Acquire) == 1
         && input::dropped_events() == 0
+        && input::poller_passes() > passes_before
 }
 
 static CLOCKLESS_READER_SAW: AtomicUsize = AtomicUsize::new(0);
@@ -7689,7 +7678,15 @@ fn the_polled_fallback_runs_its_rounds_and_sleeps() -> bool {
             && input::poller_saw_peer_progress_for_test()
     });
 
-    clockless && time::is_calibrated()
+    if !clockless || !time::is_calibrated() {
+        return false;
+    }
+
+    let before = input::poller_passes();
+    input::start_poller();
+    runs_until(100, || {
+        input::poller_started_for_test() && input::poller_passes() > before
+    })
 }
 
 /// Release every thread used to fill the table before the idle retry.
@@ -7902,7 +7899,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 276;
+const EXPECTED_CHECKS: usize = 277;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -8113,8 +8110,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         file_work_pressure_is_bounded_at_admission(),
     );
     report.check(
-        "a delayed read preserves interrupts and exact teardown",
-        a_delayed_read_preserves_interrupts_and_exact_teardown(),
+        "a delayed read preserves interrupt admission and exact teardown",
+        a_delayed_read_preserves_interrupt_admission_and_exact_teardown(),
     );
     report.check(
         "a ring operation cannot reach past its rights or its pages",
@@ -8839,7 +8836,7 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_busy_machine_reaps_a_program_without_another_spawn(),
     );
     report.check(
-        "the polled keyboard fallback runs its rounds, sleeps and stops",
+        "the polled keyboard fallback is bounded before it stays live",
         the_polled_fallback_runs_its_rounds_and_sleeps(),
     );
 
@@ -8902,14 +8899,15 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     // Set up before the marker: the reader must be blocked before the harness
     // presses, or an already-waiting keystroke proves nothing.
     report.check(
-        "a thread blocked on the keyboard is off the run queue, and quiet",
-        a_blocked_reader_is_ready_to_wake(),
+        "a blocked keyboard reader waits while the poller runs",
+        a_blocked_reader_waits_while_the_poller_runs(),
     );
 
     // Kept in step with READY_MARKER in `xtask/src/qemu.rs`; nothing may talk
     // to the keyboard between the marker and the wait.
     let first_key = input::arm_key(ps2_keys::Key::A);
     let last_key = input::arm_key(ps2_keys::Key::Enter);
+    let polling_before = input::poller_passes();
     awaiting(
         "selftest: awaiting injected keystroke",
         "  PRESS  a  then BACKSPACE  then ENTER",
@@ -8924,20 +8922,20 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         the_framebuffer_is_write_combining(),
     );
     report.check(
-        "the io apic routes the keyboard line to our vector",
-        the_keyboard_line_is_routed(),
+        "default-deny interrupt remapping guards every pci requester",
+        default_deny_interrupt_remapping_guards_pci(),
     );
     report.check(
-        "the io apic refuses a line it does not own",
-        the_io_apic_refuses_a_line_it_does_not_own(),
+        "the io apic owner returned after masked rollback",
+        the_io_apic_owner_was_returned_after_masked_rollback(),
     );
     report.check(
-        "keystrokes arrive as interrupts",
-        keystrokes_arrive_as_interrupts(),
+        "keyboard input is polled without legacy interrupts",
+        keyboard_input_is_polled_without_legacy_interrupts(),
     );
     report.check(
-        "the blocked reader woke with the injected key, without polling",
-        the_blocked_reader_woke_with_the_key(),
+        "the blocked reader woke with the injected key through polling",
+        the_blocked_reader_woke_with_the_key(polling_before),
     );
     // Before the editing check: Enter is the last injected key and only a
     // press echoes, so its release is when the console stops moving.
@@ -9071,6 +9069,11 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "an nvme timeout quiesces before dma memory returns",
         an_nvme_timeout_quiesces_before_dma_memory_returns(),
+    );
+
+    report.check(
+        "a pending local interrupt refuses the first sti",
+        apic::pending_audit_refuses_queued_self_interrupt_for_test(|| trap::last_ping().count),
     );
 
     // Last interrupt exercise: a broken EOI cannot starve later timed checks.

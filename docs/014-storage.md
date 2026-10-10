@@ -980,10 +980,10 @@ first, because a caller freezes the interface it uses.
 
 | | |
 |---|---|
-| Machine checks | 276 |
-| Mutations | 1695 registered; complete-sweep verdicts live in source-bound qualification records |
+| Machine checks | 277 |
+| Mutations | 1735 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-371 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-372 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but mutation registration is not a current full-sweep
@@ -1233,10 +1233,42 @@ takes only what no scope names. The snapshot independently probes every
 function number and admits DMA authority only after proving unique parents,
 bus-zero roots, contained child ranges and ancestor-related overlaps; malformed
 or odd scope paths and an unsealed topology refuse isolation (D-371). Bus
-mastering is gated on an active domain for that exact function:
-`admit_bus_master` requires a `DmaDomain` proof, so there is no path that reaches
-a doorbell without the fence in place. A degraded boot without the IOMMU device
-exists precisely to prove the refusal fires.
+mastering is gated on both active DMA and interrupt boundaries for that exact
+function: `admit_bus_master` consumes a `DmaDomain` and an
+`InterruptIsolation`, so there is no path that reaches a doorbell without both
+fences in place. A degraded boot without the IOMMU device exists precisely to
+prove the refusal fires.
+
+D-372 closes the interrupt side of the same admission. The DMAR must advertise
+interrupt remapping without x2APIC opt-out, every present requester in the
+sealed topology must resolve to the one supported live DRHD, and the unit must
+advertise IR, queued invalidation and extended interrupt mode. Takeover clears
+firmware TE, QIE, IRE and compatibility-format state, installs a kernel-owned
+two-entry IR table whose entries remain not present, sets EIME, globally
+invalidates the interrupt-entry cache through a private queued-invalidation
+ring and completion write, then enables IRE with CFI clear. Before that
+transition it masks and reads back FECTL while preserving its reserved bits,
+because VT-d's own fault-event MSI never traverses the remapping table. The
+exact IRTA, status, FECTL mask and zero entries are read back before the linear
+proof can exist.
+
+The installed unit and every requester fence remain owned while maskable
+interrupts are on. Candidate retirement parks DMA translation but never clears
+IRE or drops the register mapping and empty IR table; a fallback candidate
+retargets only the DMA tables through the same owner. `sti` refuses an unsealed
+topology, multiple or foreign-segment remapping units, a PCI machine without
+that owner, or a pending vector in any of the local APIC's eight IRR banks.
+Because the initial table deliberately admits no source, every I/O APIC line
+remains masked too; the keyboard is drained by a poller, and a clockless or
+interrupt-disabled poller yields rather than sleeping for a timer that cannot
+wake it.
+
+The IRR audit is defense in depth, not an architected fabric drain. Firmware,
+SMM, devices and remapping-hardware event sources are trusted to remain
+quiescent for compatibility-format interrupt traffic until the first successful
+kernel IRE establishment. After that boundary devices are hostile and fallback
+never disables IRE. Firmware/SMM is separately trusted not to reprogram VT-d or
+APIC state after the kernel's readbacks.
 
 If firmware handed the machine over with translation already enabled, which a
 VMware EFI can do, the kernel takes the unit over explicitly, quiescing it and
@@ -1251,13 +1283,11 @@ second-level tables, so the device cannot reach the structures that constrain it
 
 ### What is deferred, and why it is safe to defer
 
-DMA remapping is the whole reach guarantee for a polled storage device.
-Interrupt remapping (PW-710) governs a different surface, the interrupts a device
-delivers, and triggers when a device the kernel does not fully trust delivers
-one; the QEMU unit runs with `intremap=off`. AMD's IOMMU (PW-711) is a different
-encoding for the same idea and triggers on a qualified AMD host; the Intel unit
-is what the qualified hosts present. Each deferral is a named trigger row with
-the surface its arrival would open.
+AMD's IOMMU (PW-711) is a different encoding for the same DMA and interrupt
+boundaries and triggers on a qualified AMD host; the Intel unit is what the
+qualified hosts present. Non-identity IOVA allocation (PW-712) remains a
+separate confidentiality hardening trigger. Each deferral is a named trigger
+row with the surface its arrival would open.
 
 ### How it is checked
 
@@ -1267,24 +1297,30 @@ truncation, odd, empty or out-of-range PCI paths, a region whose base exceeds
 its limit, and a duplicate unit, and resolves scopes only through proved bridge
 ancestry; `libs/pci-config` seals complete fake topologies and refuses duplicate
 parents, unrooted functions, escaping children and unrelated overlaps;
-`libs/vtd` encodes the root, context and second-level entries and the
-register-based invalidation commands, its takeover word keeps only firmware's
-interrupt state, and its capability, coverage and width arithmetic is walked
-exhaustively. The programming and the fault behaviour need a real unit and are
+`libs/vtd` encodes the root, context, second-level and interrupt-remapping
+entries, the register and queued-invalidation commands, and a takeover word
+that inherits no firmware translation or interrupt state; its capability,
+coverage and width arithmetic is walked exhaustively. The programming and the fault behaviour need a real unit and are
 checked by booting: translation is active for the controller's function and the
 unit walks the kernel's root table, storage and the filesystem read through it,
 the second-level tables read back reach exactly the live queue frames, a domain
 proof is refused while translation is off, and a device write into a frame the
 domain does not map faults, changes nothing and shows that the unmap before it
-invalidated the unit's cache. The QEMU fixed profile presents
-`-device intel-iommu`, the degraded gate boots the shipped image without it and
+invalidated the unit's cache. The live checks also require deny-all interrupt
+remapping for every PCI requester, exact masked I/O APIC rollback, zero legacy
+keyboard interrupts and progress through the poller. The QEMU fixed profile
+presents `-device intel-iommu,intremap=on,eim=on,caching-mode=on`, the degraded gate boots the shipped image without it and
 requires the named refusal, and the VMware template enables its virtual unit.
 Each check is broken once and its mutation kept: a skipped invalidation, an
 extra mapped page, a proof minted with translation off, translation never
 switched on, a context programmed for a sibling function, the refusal text lost,
-a foreign domain admitted, a width that covers one bit too many, a takeover
-that drops firmware's interrupt state, a quiescence test that ignores the
-invalidation queue, and a forgeable proof.
+a foreign domain admitted, a width that covers one bit too many, inherited
+firmware interrupt state, incomplete quiescence, a missing IR/QI/EIM capability,
+an incomplete requester census, a second unit, a non-global IEC invalidation, a
+missing wait status, an unverified or nonempty interrupt table, an unmasked
+fault-event source, interrupt-owner teardown during fallback, a foreign
+interrupt proof, a pending-IRR or `sti` bypass, a routed legacy line, an
+unwakeable poller, and a forgeable proof.
 
 D-364 separates supported table depth from effective coverage: SAGAW chooses
 the walk and every mapped byte stays below both AGAW and MGAW. A supported
