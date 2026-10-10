@@ -7899,7 +7899,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 277;
+const EXPECTED_CHECKS: usize = 279;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -9127,6 +9127,14 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "apic refusal defers a live interrupt until exclusion unwinds",
         apic_failures.delivery_waited_for_unwind(),
+    );
+    report.check(
+        "apic takeover masks exactly every advertised local source",
+        apic_failures.advertised_sources_masked(),
+    );
+    report.check(
+        "unmaskable or unknown apic source inventories poison takeover",
+        apic_failures.source_mask_refusals_are_terminal(),
     );
 
     let activation = paging::activation_publication_for_test();

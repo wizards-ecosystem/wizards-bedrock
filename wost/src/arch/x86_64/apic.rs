@@ -125,6 +125,9 @@ static EOI_CLAIMED: AtomicBool = AtomicBool::new(false);
 /// express.
 const ACCEPT_EVERYTHING: u64 = 0;
 
+/// Error delivery is entry five and is required by this controller contract.
+const LAST_REQUIRED_LVT_ENTRY: u8 = 5;
+
 /// Why the local APIC could not be brought up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -639,6 +642,9 @@ fn initialize<R: InitializationRegisters>(
     if !version.is_integrated() {
         return Err(ApicError::NotResponding);
     }
+    let Some(local_sources) = advertised_local_sources(version) else {
+        return Err(ApicError::NotResponding);
+    };
     InitializationObserver::reached(
         observer,
         InitializationBoundary::Stage(InitStage::Version),
@@ -648,14 +654,11 @@ fn initialize<R: InitializationRegisters>(
     initialization.enter(InitStage::MaskSources)?;
     InitializationRegisters::write(&registers, register::TASK_PRIORITY, ACCEPT_EVERYTHING);
 
-    // Firmware programs LINT0 (the 8259 output) and LINT1 (NMI); masking them
-    // finishes silencing the 8259s, and a masked timer covers one left running.
-    for entry in [
-        register::LVT_LINT0,
-        register::LVT_LINT1,
-        register::LVT_TIMER,
-    ] {
+    for &entry in local_sources {
         InitializationRegisters::write(&registers, entry, Entry::MASKED.bits().into());
+        if !Entry::from_bits(InitializationRegisters::read(&registers, entry) as u32).is_masked() {
+            return Err(ApicError::NotResponding);
+        }
     }
     InitializationObserver::reached(
         observer,
@@ -713,6 +716,14 @@ fn initialize<R: InitializationRegisters>(
         initialization.controller,
     )?;
     Ok(configured)
+}
+
+fn advertised_local_sources(version: Version) -> Option<&'static [Register]> {
+    let maximum = usize::from(version.maximum_lvt_entry());
+    if maximum < usize::from(LAST_REQUIRED_LVT_ENTRY) {
+        return None;
+    }
+    register::LOCAL_VECTOR_TABLE.get(..=maximum)
 }
 
 /// Claim the exact APIC dismissal owned by the innermost live trap.
@@ -991,6 +1002,8 @@ pub struct InitializationFailureProbe {
     unavailable_and_terminal: bool,
     ignored_spurious_write_is_terminal: bool,
     delivery_waited_for_unwind: bool,
+    advertised_sources_masked: bool,
+    source_mask_refusals_are_terminal: bool,
 }
 
 #[cfg(feature = "selftest")]
@@ -1009,6 +1022,16 @@ impl InitializationFailureProbe {
     pub const fn delivery_waited_for_unwind(self) -> bool {
         self.delivery_waited_for_unwind
     }
+
+    /// Whether six-entry and CMCI-capable inventories mask exactly their sources.
+    pub const fn advertised_sources_masked(self) -> bool {
+        self.advertised_sources_masked
+    }
+
+    /// Whether incomplete, unknown and unverified source inventories poison setup.
+    pub const fn source_mask_refusals_are_terminal(self) -> bool {
+        self.source_mask_refusals_are_terminal
+    }
 }
 
 #[cfg(feature = "selftest")]
@@ -1019,11 +1042,23 @@ enum SpuriousWrite {
 }
 
 #[cfg(feature = "selftest")]
+#[derive(Clone, Copy)]
+enum LvtFault {
+    None,
+    IgnoreMask(usize),
+    ClearMaskReadback(usize),
+}
+
+#[cfg(feature = "selftest")]
 struct FixtureRegisters<'probe> {
     reads: &'probe AtomicUsize,
     writes: &'probe AtomicUsize,
     spurious: &'probe AtomicUsize,
     spurious_write: SpuriousWrite,
+    version: u32,
+    lvt_masked: &'probe AtomicU8,
+    lvt_covered: &'probe AtomicU8,
+    lvt_fault: LvtFault,
 }
 
 #[cfg(feature = "selftest")]
@@ -1031,11 +1066,18 @@ impl InitializationRegisters for FixtureRegisters<'_> {
     fn read(&self, register: Register) -> u64 {
         self.reads.fetch_add(1, Ordering::Relaxed);
         if register == register::VERSION {
-            0x10
+            u64::from(self.version)
         } else if register == register::ID {
             0xA5
         } else if register == register::SPURIOUS_INTERRUPT_VECTOR {
             self.spurious.load(Ordering::Relaxed) as u64
+        } else if let Some(index) = lvt_index(register) {
+            let masked = self.lvt_masked.load(Ordering::Relaxed) & (1 << index) != 0;
+            let corrupted = matches!(
+                self.lvt_fault,
+                LvtFault::ClearMaskReadback(fault) if fault == index
+            );
+            u64::from(Entry::from_bits(u32::from(masked && !corrupted) << 16).bits())
         } else {
             0
         }
@@ -1043,6 +1085,17 @@ impl InitializationRegisters for FixtureRegisters<'_> {
 
     fn write(&self, register: Register, value: u64) {
         self.writes.fetch_add(1, Ordering::Relaxed);
+        if let Some(index) = lvt_index(register) {
+            let bit = 1 << index;
+            if Entry::from_bits(value as u32).is_masked() {
+                if !matches!(self.lvt_fault, LvtFault::IgnoreMask(fault) if fault == index) {
+                    self.lvt_masked.fetch_or(bit, Ordering::Relaxed);
+                    self.lvt_covered.fetch_or(bit, Ordering::Relaxed);
+                }
+            } else {
+                self.lvt_masked.fetch_and(!bit, Ordering::Relaxed);
+            }
+        }
         if register == register::SPURIOUS_INTERRUPT_VECTOR
             && matches!(self.spurious_write, SpuriousWrite::Retain)
         {
@@ -1052,11 +1105,20 @@ impl InitializationRegisters for FixtureRegisters<'_> {
 }
 
 #[cfg(feature = "selftest")]
+fn lvt_index(wanted: Register) -> Option<usize> {
+    register::LOCAL_VECTOR_TABLE
+        .iter()
+        .position(|register| *register == wanted)
+}
+
+#[cfg(feature = "selftest")]
 struct FailureObserver<'probe, DeliveryCount> {
     target: InitializationBoundary,
     mode_entered: &'probe AtomicBool,
     reads: &'probe AtomicUsize,
     writes: &'probe AtomicUsize,
+    lvt_masked: &'probe AtomicU8,
+    lvt_covered: &'probe AtomicU8,
     delivery_count: &'probe mut DeliveryCount,
     reached: u8,
     body_completed: bool,
@@ -1078,18 +1140,20 @@ impl<DeliveryCount: FnMut() -> usize> InitializationObserver
             return Ok(());
         }
 
-        let (expected_reads, expected_writes) = match boundary {
-            InitializationBoundary::Stage(InitStage::Mode) => (0, 0),
-            InitializationBoundary::Stage(InitStage::Version) => (1, 0),
-            InitializationBoundary::Stage(InitStage::MaskSources) => (1, 4),
-            InitializationBoundary::Stage(InitStage::ConfigureSources) => (3, 7),
+        let (expected_reads, expected_writes, expected_masked, expected_coverage) = match boundary {
+            InitializationBoundary::Stage(InitStage::Mode) => (0, 0, 0, 0),
+            InitializationBoundary::Stage(InitStage::Version) => (1, 0, 0, 0),
+            InitializationBoundary::Stage(InitStage::MaskSources) => (7, 7, 0x3F, 0x3F),
+            InitializationBoundary::Stage(InitStage::ConfigureSources) => (9, 10, 0x1F, 0x3F),
             InitializationBoundary::Stage(InitStage::Identity)
-            | InitializationBoundary::Publication => (4, 7),
+            | InitializationBoundary::Publication => (10, 10, 0x1F, 0x3F),
         };
         self.reached |= boundary.bit();
         self.body_completed = self.mode_entered.load(Ordering::Acquire)
             && self.reads.load(Ordering::Acquire) == expected_reads
-            && self.writes.load(Ordering::Acquire) == expected_writes;
+            && self.writes.load(Ordering::Acquire) == expected_writes
+            && self.lvt_masked.load(Ordering::Acquire) == expected_masked
+            && self.lvt_covered.load(Ordering::Acquire) == expected_coverage;
 
         let delivered_before = (self.delivery_count)();
         let public_gates = !fixture.is_enabled()
@@ -1144,6 +1208,8 @@ pub fn initialization_failures_for_test(
         let reads = AtomicUsize::new(0);
         let writes = AtomicUsize::new(0);
         let spurious = AtomicUsize::new(0);
+        let lvt_masked = AtomicU8::new(0);
+        let lvt_covered = AtomicU8::new(0);
 
         let (outcome, body_completed, gates_held, delivery_excluded, queued_at, observed) = {
             let mut observer = FailureObserver {
@@ -1151,6 +1217,8 @@ pub fn initialization_failures_for_test(
                 mode_entered: &mode_entered,
                 reads: &reads,
                 writes: &writes,
+                lvt_masked: &lvt_masked,
+                lvt_covered: &lvt_covered,
                 delivery_count: &mut delivery_count,
                 reached: 0,
                 body_completed: false,
@@ -1172,6 +1240,10 @@ pub fn initialization_failures_for_test(
                             writes: &writes,
                             spurious: &spurious,
                             spurious_write: SpuriousWrite::Retain,
+                            version: 0x0005_0014,
+                            lvt_masked: &lvt_masked,
+                            lvt_covered: &lvt_covered,
+                            lvt_fault: LvtFault::None,
                         },
                     ))
                 },
@@ -1214,6 +1286,8 @@ pub fn initialization_failures_for_test(
         unavailable_and_terminal,
         ignored_spurious_write_is_terminal: ignored_spurious_write_is_terminal(vectors),
         delivery_waited_for_unwind,
+        advertised_sources_masked: advertised_sources_masked(vectors),
+        source_mask_refusals_are_terminal: source_mask_refusals_are_terminal(vectors),
     }
 }
 
@@ -1232,6 +1306,8 @@ fn ignored_spurious_write_is_terminal(vectors: Vectors) -> bool {
     let reads = AtomicUsize::new(0);
     let writes = AtomicUsize::new(0);
     let spurious = AtomicUsize::new(0);
+    let lvt_masked = AtomicU8::new(0);
+    let lvt_covered = AtomicU8::new(0);
     let entry_interrupts = interrupt::are_enabled();
     let mut observer = Unobserved;
     let outcome = initialize_controller(
@@ -1247,6 +1323,10 @@ fn ignored_spurious_write_is_terminal(vectors: Vectors) -> bool {
                     writes: &writes,
                     spurious: &spurious,
                     spurious_write: SpuriousWrite::Ignore,
+                    version: 0x0005_0014,
+                    lvt_masked: &lvt_masked,
+                    lvt_covered: &lvt_covered,
+                    lvt_fault: LvtFault::None,
                 },
             ))
         },
@@ -1254,13 +1334,132 @@ fn ignored_spurious_write_is_terminal(vectors: Vectors) -> bool {
     );
 
     outcome == Err(ApicError::NotResponding)
-        && reads.load(Ordering::Relaxed) == 3
-        && writes.load(Ordering::Relaxed) == 7
+        && reads.load(Ordering::Relaxed) == 9
+        && writes.load(Ordering::Relaxed) == 10
+        && lvt_covered.load(Ordering::Relaxed) == 0x3F
         && spurious.load(Ordering::Relaxed) == 0
         && fixture.lifecycle() == Lifecycle::Poisoned
         && self_interrupt_vector.load(Ordering::Relaxed) == 0
         && timer_vector.load(Ordering::Relaxed) == 0
         && spurious_vector.load(Ordering::Relaxed) == 0
+        && fixture.send_self_interrupt() == Err(DeliveryError::Unavailable)
+        && matches!(Initialization::begin(fixture), Err(ApicError::Poisoned))
+        && interrupt::are_enabled() == entry_interrupts
+}
+
+#[cfg(feature = "selftest")]
+fn advertised_sources_masked(vectors: Vectors) -> bool {
+    let mut complete = true;
+    for (maximum, expected) in [(5u8, 0x3Fu8), (6u8, 0x7Fu8)] {
+        let state = AtomicU8::new(Lifecycle::Cold.bits());
+        let self_interrupt_vector = AtomicU8::new(0);
+        let timer_vector = AtomicU8::new(0);
+        let spurious_vector = AtomicU8::new(0);
+        let fixture = Controller {
+            state: &state,
+            self_interrupt_vector: &self_interrupt_vector,
+            timer_vector: &timer_vector,
+            spurious_vector: &spurious_vector,
+        };
+        let reads = AtomicUsize::new(0);
+        let writes = AtomicUsize::new(0);
+        let spurious = AtomicUsize::new(0);
+        let lvt_masked = AtomicU8::new(0);
+        let lvt_covered = AtomicU8::new(0);
+        let mut observer = Unobserved;
+        let outcome = initialize_controller(
+            fixture,
+            vectors,
+            Entry::fixed(vectors.error),
+            Spurious::enabled(vectors.spurious),
+            || {
+                Ok((
+                    Base::from_bits(0),
+                    FixtureRegisters {
+                        reads: &reads,
+                        writes: &writes,
+                        spurious: &spurious,
+                        spurious_write: SpuriousWrite::Retain,
+                        version: (u32::from(maximum) << 16) | 0x14,
+                        lvt_masked: &lvt_masked,
+                        lvt_covered: &lvt_covered,
+                        lvt_fault: LvtFault::None,
+                    },
+                ))
+            },
+            &mut observer,
+        );
+
+        complete &= outcome.is_ok()
+            && fixture.lifecycle() == Lifecycle::Ready
+            && lvt_covered.load(Ordering::Relaxed) == expected
+            && lvt_masked.load(Ordering::Relaxed) == (expected & !(1 << 5))
+            && self_interrupt_vector.load(Ordering::Relaxed) == vectors.self_interrupt.get()
+            && timer_vector.load(Ordering::Relaxed) == vectors.timer.get()
+            && spurious_vector.load(Ordering::Relaxed) == vectors.spurious.get();
+    }
+    complete
+}
+
+#[cfg(feature = "selftest")]
+fn source_mask_refusals_are_terminal(vectors: Vectors) -> bool {
+    let mut terminal = source_fixture_refuses(vectors, 4, LvtFault::None)
+        & source_fixture_refuses(vectors, 7, LvtFault::None);
+    for index in 0..register::LOCAL_VECTOR_TABLE.len() {
+        terminal &= source_fixture_refuses(vectors, 6, LvtFault::IgnoreMask(index));
+        terminal &= source_fixture_refuses(vectors, 6, LvtFault::ClearMaskReadback(index));
+    }
+    terminal
+}
+
+#[cfg(feature = "selftest")]
+fn source_fixture_refuses(vectors: Vectors, maximum: u8, fault: LvtFault) -> bool {
+    let state = AtomicU8::new(Lifecycle::Cold.bits());
+    let self_interrupt_vector = AtomicU8::new(0);
+    let timer_vector = AtomicU8::new(0);
+    let spurious_vector = AtomicU8::new(0);
+    let fixture = Controller {
+        state: &state,
+        self_interrupt_vector: &self_interrupt_vector,
+        timer_vector: &timer_vector,
+        spurious_vector: &spurious_vector,
+    };
+    let reads = AtomicUsize::new(0);
+    let writes = AtomicUsize::new(0);
+    let spurious = AtomicUsize::new(0);
+    let lvt_masked = AtomicU8::new(0);
+    let lvt_covered = AtomicU8::new(0);
+    let entry_interrupts = interrupt::are_enabled();
+    let mut observer = Unobserved;
+    let outcome = initialize_controller(
+        fixture,
+        vectors,
+        Entry::fixed(vectors.error),
+        Spurious::enabled(vectors.spurious),
+        || {
+            Ok((
+                Base::from_bits(0),
+                FixtureRegisters {
+                    reads: &reads,
+                    writes: &writes,
+                    spurious: &spurious,
+                    spurious_write: SpuriousWrite::Retain,
+                    version: (u32::from(maximum) << 16) | 0x14,
+                    lvt_masked: &lvt_masked,
+                    lvt_covered: &lvt_covered,
+                    lvt_fault: fault,
+                },
+            ))
+        },
+        &mut observer,
+    );
+
+    outcome == Err(ApicError::NotResponding)
+        && fixture.lifecycle() == Lifecycle::Poisoned
+        && self_interrupt_vector.load(Ordering::Relaxed) == 0
+        && timer_vector.load(Ordering::Relaxed) == 0
+        && spurious_vector.load(Ordering::Relaxed) == 0
+        && spurious.load(Ordering::Relaxed) == 0
         && fixture.send_self_interrupt() == Err(DeliveryError::Unavailable)
         && matches!(Initialization::begin(fixture), Err(ApicError::Poisoned))
         && interrupt::are_enabled() == entry_interrupts

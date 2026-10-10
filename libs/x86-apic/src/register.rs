@@ -58,8 +58,17 @@ pub const ERROR_STATUS: Register = Register::new(0x280);
 /// The interrupt command register. Writing it sends the interrupt.
 pub const COMMAND: Register = Register::new(0x300);
 
+/// Local vector table entry for corrected machine-check interrupts.
+const LVT_CMCI: Register = Register::new(0x2F0);
+
 /// Local vector table entry for the APIC's own timer.
 pub const LVT_TIMER: Register = Register::new(0x320);
+
+/// Local vector table entry for the processor's thermal monitor.
+const LVT_THERMAL: Register = Register::new(0x330);
+
+/// Local vector table entry for performance-monitoring counter overflow.
+const LVT_PERFORMANCE: Register = Register::new(0x340);
 
 /// Local vector table entry for local interrupt pin 0, which firmware
 /// conventionally wires to the legacy controller.
@@ -71,6 +80,20 @@ pub const LVT_LINT1: Register = Register::new(0x360);
 
 /// Local vector table entry for the APIC's own error line.
 pub const LVT_ERROR: Register = Register::new(0x370);
+
+/// Local vector entries in the order used by the version register's maximum.
+///
+/// CMCI is entry six even though its register precedes the other entries in
+/// address order.
+pub const LOCAL_VECTOR_TABLE: [Register; 7] = [
+    LVT_TIMER,
+    LVT_THERMAL,
+    LVT_PERFORMANCE,
+    LVT_LINT0,
+    LVT_LINT1,
+    LVT_ERROR,
+    LVT_CMCI,
+];
 
 /// The value the timer's countdown restarts from. Writing it starts the timer.
 pub const INITIAL_COUNT: Register = Register::new(0x380);
@@ -110,7 +133,10 @@ mod tests {
         ("spurious interrupt vector", SPURIOUS_INTERRUPT_VECTOR),
         ("error status", ERROR_STATUS),
         ("command", COMMAND),
+        ("lvt cmci", LVT_CMCI),
         ("lvt timer", LVT_TIMER),
+        ("lvt thermal", LVT_THERMAL),
+        ("lvt performance", LVT_PERFORMANCE),
         ("lvt lint0", LVT_LINT0),
         ("lvt lint1", LVT_LINT1),
         ("lvt error", LVT_ERROR),
@@ -171,15 +197,29 @@ mod tests {
         }
     }
 
-    /// The four local vector table entries are consecutive sixteen-byte slots
-    /// bar the two this kernel does not touch — thermal at 0x330 and
-    /// performance at 0x340 — which is the shape that makes a typo obvious.
+    /// Entries zero through five are consecutive slots. CMCI was added later
+    /// at a lower address but remains entry six in the version-register order.
     #[test]
     fn the_local_vector_entries_sit_where_the_manual_puts_them() {
+        assert_eq!(LVT_CMCI.offset(), 0x2F0);
         assert_eq!(LVT_TIMER.offset(), 0x320);
-        assert_eq!(LVT_LINT0.offset(), LVT_TIMER.offset() + 3 * 16);
+        assert_eq!(LVT_THERMAL.offset(), LVT_TIMER.offset() + 16);
+        assert_eq!(LVT_PERFORMANCE.offset(), LVT_THERMAL.offset() + 16);
+        assert_eq!(LVT_LINT0.offset(), LVT_PERFORMANCE.offset() + 16);
         assert_eq!(LVT_LINT1.offset(), LVT_LINT0.offset() + 16);
         assert_eq!(LVT_ERROR.offset(), LVT_LINT1.offset() + 16);
+        assert_eq!(
+            LOCAL_VECTOR_TABLE,
+            [
+                LVT_TIMER,
+                LVT_THERMAL,
+                LVT_PERFORMANCE,
+                LVT_LINT0,
+                LVT_LINT1,
+                LVT_ERROR,
+                LVT_CMCI,
+            ]
+        );
     }
 
     /// The two count registers are adjacent slots; the divide configuration
@@ -220,7 +260,10 @@ mod tests {
             ("spurious", SPURIOUS_INTERRUPT_VECTOR, 0x80F),
             ("error status", ERROR_STATUS, 0x828),
             ("command", COMMAND, 0x830),
+            ("lvt cmci", LVT_CMCI, 0x82F),
             ("lvt timer", LVT_TIMER, 0x832),
+            ("lvt thermal", LVT_THERMAL, 0x833),
+            ("lvt performance", LVT_PERFORMANCE, 0x834),
             ("lvt lint0", LVT_LINT0, 0x835),
             ("lvt lint1", LVT_LINT1, 0x836),
             ("lvt error", LVT_ERROR, 0x837),

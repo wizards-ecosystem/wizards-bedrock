@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1760;
+pub const NEXT_MUTATION_ID: u16 = 1766;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -19720,6 +19720,60 @@ fn mint_stopped<'controller>(
             package: "x86-apic",
             name: "pending::tests::a_named_pending_vector_is_visible_beneath_higher_priority_work",
         },
+    },
+    Mutation {
+        id: 1760,
+        file: "libs/x86-apic/src/version.rs",
+        find: "        (self.0 >> MAXIMUM_LVT_ENTRY_SHIFT) as u8",
+        replace: "        self.number()",
+        breaks: "the APIC source inventory is decoded from the version byte instead of its independent maximum-LVT field",
+        reddens: Caught::HostTest {
+            package: "x86-apic",
+            name: "version::tests::the_lvt_limit_is_independent_of_the_version_number",
+        },
+    },
+    Mutation {
+        id: 1761,
+        file: "libs/x86-apic/src/register.rs",
+        find: "    LVT_TIMER,\n    LVT_THERMAL,\n    LVT_PERFORMANCE,",
+        replace: "    LVT_TIMER,\n    LVT_TIMER,\n    LVT_PERFORMANCE,",
+        breaks: "the thermal source is absent from the version-ordered local-vector inventory",
+        reddens: Caught::HostTest {
+            package: "x86-apic",
+            name: "register::tests::the_local_vector_entries_sit_where_the_manual_puts_them",
+        },
+    },
+    Mutation {
+        id: 1762,
+        file: "wost/src/arch/x86_64/apic.rs",
+        find: "    register::LOCAL_VECTOR_TABLE.get(..=maximum)",
+        replace: "    register::LOCAL_VECTOR_TABLE.get(..=usize::from(LAST_REQUIRED_LVT_ENTRY))",
+        breaks: "an advertised CMCI source can retain firmware ownership during APIC takeover",
+        reddens: Caught::Check("apic takeover masks exactly every advertised local source"),
+    },
+    Mutation {
+        id: 1763,
+        file: "wost/src/arch/x86_64/apic.rs",
+        find: "        if !Entry::from_bits(InitializationRegisters::read(&registers, entry) as u32).is_masked() {\n            return Err(ApicError::NotResponding);\n        }",
+        replace: "        let _ = InitializationRegisters::read(&registers, entry);",
+        breaks: "APIC takeover can publish after a local source refuses its mask write",
+        reddens: Caught::Check("unmaskable or unknown apic source inventories poison takeover"),
+    },
+    Mutation {
+        id: 1764,
+        file: "wost/src/arch/x86_64/apic.rs",
+        find: "    if maximum < usize::from(LAST_REQUIRED_LVT_ENTRY) {",
+        replace: "    if maximum < usize::from(LAST_REQUIRED_LVT_ENTRY) - 1 {",
+        breaks: "APIC takeover accepts an inventory missing the kernel-owned error source",
+        reddens: Caught::Check("unmaskable or unknown apic source inventories poison takeover"),
+    },
+    Mutation {
+        id: 1765,
+        file: "wost/src/arch/x86_64/apic.rs",
+        find: "    register::LOCAL_VECTOR_TABLE.get(..=maximum)",
+        replace: "    register::LOCAL_VECTOR_TABLE.get(..=maximum.min(register::LOCAL_VECTOR_TABLE.len() - 1))",
+        breaks: "APIC takeover silently ignores a future source advertised beyond the known inventory",
+        reddens: Caught::Check("unmaskable or unknown apic source inventories poison takeover"),
     },
 ];
 

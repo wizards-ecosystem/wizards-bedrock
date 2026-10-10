@@ -6,6 +6,9 @@
 /// the rest of this crate encodes.
 const FIRST_INTEGRATED: u8 = 0x10;
 
+/// First bit of the maximum local-vector-table entry number.
+const MAXIMUM_LVT_ENTRY_SHIFT: u32 = 16;
+
 /// The contents of [`crate::register::VERSION`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version(u32);
@@ -19,6 +22,14 @@ impl Version {
     /// The version number, in bits 0–7.
     pub const fn number(self) -> u8 {
         self.0 as u8
+    }
+
+    /// Highest local-vector-table entry number this APIC implements.
+    ///
+    /// The architectural value is an index rather than a count, so five means
+    /// the controller implements entries zero through five.
+    pub const fn maximum_lvt_entry(self) -> u8 {
+        (self.0 >> MAXIMUM_LVT_ENTRY_SHIFT) as u8
     }
 
     /// Whether this APIC is part of the processor rather than a separate chip.
@@ -41,7 +52,14 @@ mod tests {
         let version = Version::from_bits(0x0005_0014);
 
         assert_eq!(version.number(), 0x14);
+        assert_eq!(version.maximum_lvt_entry(), 5);
         assert!(version.is_integrated());
+    }
+
+    #[test]
+    fn the_lvt_limit_is_independent_of_the_version_number() {
+        assert_eq!(Version::from_bits(0x00A6_00F1).maximum_lvt_entry(), 0xA6);
+        assert_eq!(Version::from_bits(0x0005_FF14).maximum_lvt_entry(), 5);
     }
 
     #[test]
