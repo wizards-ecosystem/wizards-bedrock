@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1769;
+pub const NEXT_MUTATION_ID: u16 = 1770;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -19803,6 +19803,17 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+        },
+    },
+    Mutation {
+        id: 1769,
+        file: "xtask/src/image/esp.rs",
+        find: "    let data = crate::qualification::read_bounded_file(source, maximum, label)\n        .with_context(|| format!(\"reading {label} {}\", source.display()))?;",
+        replace: "    let data = std::fs::read(source)\n        .with_context(|| format!(\"reading {label} {}\", source.display()))?;",
+        breaks: "boot-image assembly follows and reads an unbounded repository source",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "image::esp::tests::redirected_image_sources_are_refused_before_copy",
         },
     },
 ];
