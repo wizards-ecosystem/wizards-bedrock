@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1770;
+pub const NEXT_MUTATION_ID: u16 = 1771;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -19808,12 +19808,23 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1769,
         file: "xtask/src/image/esp.rs",
-        find: "    let data = crate::qualification::read_bounded_file(source, maximum, label)\n        .with_context(|| format!(\"reading {label} {}\", source.display()))?;",
-        replace: "    let data = std::fs::read(source)\n        .with_context(|| format!(\"reading {label} {}\", source.display()))?;",
+        find: "    crate::qualification::read_bounded_file(source, maximum, label)\n        .with_context(|| format!(\"reading {label} {}\", source.display()))",
+        replace: "    std::fs::read(source)\n        .with_context(|| format!(\"reading {label} {}\", source.display()))",
         breaks: "boot-image assembly follows and reads an unbounded repository source",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "image::esp::tests::redirected_image_sources_are_refused_before_copy",
+        },
+    },
+    Mutation {
+        id: 1770,
+        file: "xtask/src/image/esp.rs",
+        find: "    crate::vendor::verify_payload_bytes(&paths.limine_checksums(), &source, &data)?;",
+        replace: "",
+        breaks: "boot-image assembly embeds a bootloader without its pinned digest",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "image::esp::tests::image_population_refuses_a_bootloader_that_misses_its_pinned_digest",
         },
     },
 ];

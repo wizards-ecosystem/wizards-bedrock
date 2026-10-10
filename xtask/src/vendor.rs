@@ -187,6 +187,61 @@ pub fn verify_listing(listing: &Path) -> Result<usize> {
     Ok(entries.len())
 }
 
+/// Verify one already-read vendored payload against its sole checksum entry.
+///
+/// The caller can write `bytes` after this returns without reopening `payload`,
+/// so authentication and consumption name the same snapshot.
+pub(crate) fn verify_payload_bytes(listing: &Path, payload: &Path, bytes: &[u8]) -> Result<()> {
+    let directory = listing
+        .parent()
+        .with_context(|| format!("{} has no vendor directory", listing.display()))?;
+    ensure!(
+        payload.parent() == Some(directory),
+        "vendored payload {} is not beside {}",
+        payload.display(),
+        listing.display()
+    );
+    let name = payload
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| {
+            format!(
+                "vendored payload has no UTF-8 file name: {}",
+                payload.display()
+            )
+        })?;
+    let text = read_listing(listing)?;
+    let entries = parse(&text).with_context(|| format!("parsing {}", listing.display()))?;
+    ensure!(
+        entries.len() == 1,
+        "{} must contain exactly one payload digest, found {}",
+        listing.display(),
+        entries.len()
+    );
+    let entry = &entries[0];
+    ensure!(
+        entry.name == name,
+        "{} pins `{}` instead of the consumed payload `{name}`",
+        listing.display(),
+        entry.name
+    );
+    ensure!(
+        bytes.len() as u64 <= MAX_PAYLOAD_BYTES,
+        "{} is {} bytes, exceeding the {MAX_PAYLOAD_BYTES}-byte vendored-payload limit",
+        payload.display(),
+        bytes.len()
+    );
+    let actual = sha256::hex(&sha256::digest(bytes));
+    ensure!(
+        actual == entry.digest,
+        "{} does not match its recorded digest\n  recorded: {}\n  actual:   {}",
+        payload.display(),
+        entry.digest,
+        actual
+    );
+    Ok(())
+}
+
 pub(crate) fn read_listing(path: &Path) -> Result<String> {
     read_listing_with(path, || Ok(()))
 }
@@ -261,6 +316,16 @@ mod tests {
 
     const DIGEST: &str = "91ef81c1f95c4ac8bf77c4393a0b2fcd2628550827d7abf89a43194400e17a85";
 
+    #[cfg(unix)]
+    fn create_file_symlink(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).expect("creating vendor listing symlink");
+    }
+
+    #[cfg(windows)]
+    fn create_file_symlink(target: &Path, link: &Path) {
+        std::os::windows::fs::symlink_file(target, link).expect("creating vendor listing symlink");
+    }
+
     #[test]
     fn parses_the_text_and_binary_forms() {
         let entries = parse(&format!(
@@ -305,6 +370,85 @@ mod tests {
             .collect();
         let error = parse(&listing).unwrap_err().to_string();
         assert!(error.contains("more than 256 entries"), "{error}");
+    }
+
+    #[test]
+    fn consumed_payload_authentication_requires_one_exact_adjacent_entry() {
+        let root =
+            std::env::temp_dir().join(format!("wizard-vendor-consumption-{}", std::process::id()));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir(&root).unwrap();
+        let payload = root.join("BOOTX64.EFI");
+        let listing = root.join("CHECKSUMS");
+        let bytes = b"reviewed bootloader";
+        std::fs::write(&payload, bytes).unwrap();
+        let digest = sha256::hex(&sha256::digest(bytes));
+
+        std::fs::write(&listing, format!("{digest} *BOOTX64.EFI\n")).unwrap();
+        verify_payload_bytes(&listing, &payload, bytes).unwrap();
+
+        std::fs::write(
+            &listing,
+            format!("{digest} *BOOTX64.EFI\n{digest} *BOOTIA32.EFI\n"),
+        )
+        .unwrap();
+        let error = verify_payload_bytes(&listing, &payload, bytes)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("exactly one payload digest"), "{error}");
+
+        std::fs::write(&listing, format!("{digest} *BOOTIA32.EFI\n")).unwrap();
+        let error = verify_payload_bytes(&listing, &payload, bytes)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("instead of the consumed payload"), "{error}");
+
+        let outside = root.parent().unwrap().join(format!(
+            "wizard-vendor-consumption-outside-{}",
+            std::process::id()
+        ));
+        let error = verify_payload_bytes(&listing, &outside, bytes)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("is not beside"), "{error}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn consumed_payload_authentication_refuses_a_redirected_listing() {
+        let root = std::env::temp_dir().join(format!(
+            "wizard-vendor-consumption-link-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        let vendor = root.join("vendor");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&vendor).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let bytes = b"substituted bootloader";
+        let payload = vendor.join("BOOTX64.EFI");
+        std::fs::write(&payload, bytes).unwrap();
+        let external_listing = outside.join("CHECKSUMS");
+        let digest = sha256::hex(&sha256::digest(bytes));
+        let external_bytes = format!("{digest} *BOOTX64.EFI\n");
+        std::fs::write(&external_listing, &external_bytes).unwrap();
+        let listing = vendor.join("CHECKSUMS");
+        create_file_symlink(&external_listing, &listing);
+
+        let result = verify_payload_bytes(&listing, &payload, bytes);
+        let retained = std::fs::read(&external_listing).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let error = result.expect_err("a redirected checksum listing must be refused");
+        assert!(
+            format!("{error:#}").contains("not a real file"),
+            "unexpected refusal: {error:#}"
+        );
+        assert_eq!(retained, external_bytes.as_bytes());
     }
 
     #[test]
