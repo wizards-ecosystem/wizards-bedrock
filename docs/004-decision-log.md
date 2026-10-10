@@ -22183,3 +22183,84 @@ policy in the raw `Entry` encoder would mix a kernel admission rule into the
 low-level representation used to inspect and construct exact hardware state.
 The shared private mapping boundary is the narrowest complete enforcement
 point.
+
+## D-377 CI reads its registry document through the bounded direct-file boundary — Status: Accepted (2026-10-10), amends D-212 and D-344; closes PW-586
+
+**Context.** Codex Security occurrence `occ_33f31e610855178e51859b01`
+found that `cargo xtask ci` read `README.md` with
+`std::fs::read_to_string` before its first registered gate stage. That read
+followed a final-component link and allocated until end of file. A hostile
+checkout could therefore redirect the preflight to an external object or make
+the operator process consume an attacker-selected amount of memory before any
+format, source, supply-chain or boot check ran.
+
+**Decision.** The CI registry preflight treats `README.md` as a hostile
+repository input. It uses the existing D-344 direct-file reader with a 64 KiB
+ceiling: every ancestor is a real directory, the README is one exact direct
+child, the opened handle cannot follow a final-component link, initial length
+is checked before allocation, one byte beyond the ceiling detects growth, and
+length plus direct-file shape are rechecked after the read. UTF-8 decoding and
+the existing registry-marker comparison happen only after those checks. A
+normal direct README retains exactly the same marker semantics.
+
+**Proof required.** A host witness must present an external sentinel through
+a `README.md` link and a direct sparse README one byte beyond the ceiling,
+require both to stop at the file boundary, and keep a normal bounded document
+with the one ordered registry region green. One retained mutation must restore
+the unbounded following read and fail that hostile witness.
+
+**Evidence.** Against the old reader, the redirected-sentinel witness failed
+because the external valid-looking README was accepted, while the oversized
+fixture failed because all 65,537 bytes were consumed before the parser noticed
+that no marker existed. With the shared bounded reader, the three focused gate
+tests accept the normal document and refuse both hostile inputs. Mutation 1,767
+restored the old whole-file read and failed exactly
+`ci_readme_refuses_a_redirected_file`; exact restoration returned the focused
+suite to green. The registry identity and every-mutation-applies checks pass.
+The shared reader's existing growth-after-measurement witness covers the same
+one-byte streaming ceiling. Final integrated-gate evidence is recorded by the
+closing commit.
+
+**Alternatives.** Parsing only the marker region while streaming would bound
+retained memory but still follow a redirected path and could scan an unbounded
+prefix. Checking metadata before the old open leaves a swap window. Copying the
+generic reader into `gate.rs` would create a second filesystem authority. The
+existing checked reader is the narrowest repository-native boundary and keeps
+the CI registry parser concerned only with registry semantics.
+
+## D-378 A polled-reader witness waits for both observed consequences — Status: Accepted (2026-10-10), closes PW-587
+
+**Context.** The exact-final-tree `cargo xtask ci` run reached release QEMU
+with 279 of 280 checks passing. The sole failure was `the blocked reader woke
+with the injected key through polling`; an earlier run of the same executable
+code passed 280 of 280. The witness took a background-poller pass count before
+injection, but its bounded wait ended as soon as the blocked reader produced a
+key. The foreground `await_armed_key` path is itself allowed to poll and wake
+that reader. When it did so before the permanent 10 ms poller completed its
+next round, the witness sampled the pass count once and failed correct behavior
+according to scheduler timing.
+
+**Decision.** Retain the existing one-second bound and every production
+predicate. The wait now ends only when both observations are true: the reader
+has produced a result and the background-poller pass count has advanced beyond
+the pre-injection snapshot. Only then does the witness require the exact `A`
+key, proof that the reader blocked, and zero dropped events. No production
+input, scheduling or polling behavior changes.
+
+**Proof required.** The host source contract must bind the conjunctive bounded
+wait so a later edit cannot restore the sequential sample. A retained mutation
+must restore the early-ending reader-only wait and fail that contract. Restored
+release and debug machine checks must each pass all 280 checks inside the full
+gate.
+
+**Evidence.** The old sequential witness produced the exact 279/280 failure
+above while its adjacent poller-live, injected-key, editing and translated-key
+checks all passed. The source contract and mutation 1,768 provide the retained
+structural red. Final restored machine and integrated-gate results are recorded
+by the closing commit.
+
+**Alternatives.** Retrying the gate would hide a known observation race.
+Removing the pass-count predicate would stop proving that the permanent poller
+advanced after the snapshot. Sleeping before the assertion would encode a
+schedule rather than an outcome. Waiting for the existing conjunction preserves
+the intended evidence without extending the deadline or production surface.

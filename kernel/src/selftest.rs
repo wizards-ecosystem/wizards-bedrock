@@ -7697,11 +7697,13 @@ fn a_blocked_reader_waits_while_the_poller_runs() -> bool {
 fn the_blocked_reader_woke_with_the_key(passes_before: usize) -> bool {
     let wanted = ps2_keys::Key::A as usize + 1;
 
-    let woke = runs_until(1_000, || READER_SAW.load(Ordering::Acquire) != 0);
-    woke && READER_SAW.load(Ordering::Acquire) == wanted
+    let woke_through_polling = runs_until(1_000, || {
+        READER_SAW.load(Ordering::Acquire) != 0 && input::poller_passes() > passes_before
+    });
+    woke_through_polling
+        && READER_SAW.load(Ordering::Acquire) == wanted
         && READER_BLOCKED.load(Ordering::Acquire) == 1
         && input::dropped_events() == 0
-        && input::poller_passes() > passes_before
 }
 
 static CLOCKLESS_READER_SAW: AtomicUsize = AtomicUsize::new(0);

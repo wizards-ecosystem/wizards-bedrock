@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1767;
+pub const NEXT_MUTATION_ID: u16 = 1769;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -19782,6 +19782,28 @@ fn mint_stopped<'controller>(
         replace: "        if flags.difference(Flags::WRITABLE).is_write_execute() {",
         breaks: "mapping admission erases write permission before testing W^X",
         reddens: Caught::Check("writable executable mappings leave no trace"),
+    },
+    Mutation {
+        id: 1767,
+        file: "xtask/src/gate.rs",
+        find: "    let readme = crate::qualification::read_bounded_text(&readme_path, README_BYTES, \"CI README\")?;",
+        replace: "    let readme = std::fs::read_to_string(&readme_path).context(\"reading README.md\")?;",
+        breaks: "CI registry preflight follows and reads an unbounded README",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "gate::tests::ci_readme_refuses_a_redirected_file",
+        },
+    },
+    Mutation {
+        id: 1768,
+        file: "kernel/src/selftest.rs",
+        find: "    let woke_through_polling = runs_until(1_000, || {\n        READER_SAW.load(Ordering::Acquire) != 0 && input::poller_passes() > passes_before\n    });",
+        replace: "    let woke_through_polling =\n        runs_until(1_000, || READER_SAW.load(Ordering::Acquire) != 0);",
+        breaks: "the polled-reader witness samples poller progress after an earlier condition ends its wait",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qemu::tests::the_serial_contract_matches_the_kernel_source",
+        },
     },
 ];
 

@@ -4747,6 +4747,12 @@ mod tests {
             "the exact interactive info records drifted from their producer"
         );
         assert!(
+            selftest.contains(
+                "let woke_through_polling = runs_until(1_000, || {\n        READER_SAW.load(Ordering::Acquire) != 0 && input::poller_passes() > passes_before\n    });"
+            ),
+            "the polled-reader witness does not await both consequences"
+        );
+        assert!(
             main.contains("\"kernel: reading the keyboard, uptime {} ms\"")
                 && SETTLED_MARKER == "kernel: reading the keyboard, uptime ",
             "the exact steady-state record drifted from its producer"
