@@ -1,5 +1,7 @@
 //! Selection of an interrupt accepted by the local APIC but not yet delivered.
 
+use crate::vector::InterruptVector;
+
 /// Return the highest-priority vector present in the eight IRR words.
 ///
 /// The local APIC can retain a fixed interrupt in this state while the CPU's
@@ -14,6 +16,13 @@ pub fn highest(registers: &[u32; 8]) -> Option<u8> {
         }
     }
     None
+}
+
+/// Whether the named vector is present, even when a higher-priority request is
+/// also pending.
+pub fn contains(registers: &[u32; 8], vector: InterruptVector) -> bool {
+    let raw = usize::from(vector.get());
+    registers[raw / 32] & (1 << (raw % 32)) != 0
 }
 
 #[cfg(test)]
@@ -37,5 +46,22 @@ mod tests {
             registers[usize::from(vector) / 32] |= 1 << (vector % 32);
         }
         assert_eq!(highest(&registers), Some(0xfe));
+    }
+
+    #[test]
+    fn a_named_pending_vector_is_visible_beneath_higher_priority_work() {
+        let named = InterruptVector::new(0x40).expect("named vector");
+        let higher = InterruptVector::new(0x80).expect("higher vector");
+        let absent = InterruptVector::new(0x41).expect("absent vector");
+        let mut registers = [0u32; 8];
+        for vector in [named, higher] {
+            let raw = usize::from(vector.get());
+            registers[raw / 32] |= 1 << (raw % 32);
+        }
+
+        assert_eq!(highest(&registers), Some(higher.get()));
+        assert!(contains(&registers, named));
+        assert!(contains(&registers, higher));
+        assert!(!contains(&registers, absent));
     }
 }

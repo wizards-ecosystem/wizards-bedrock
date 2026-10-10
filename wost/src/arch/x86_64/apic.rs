@@ -536,11 +536,22 @@ pub fn enable_after_pending_audit() -> Result<(), PendingInterruptError> {
 }
 
 fn pending_vector(access: &impl InitializationRegisters) -> Option<u8> {
+    let requests = pending_requests(access);
+    x86_apic::pending::highest(&requests)
+}
+
+fn pending_requests(access: &impl InitializationRegisters) -> [u32; 8] {
     let mut requests = [0u32; 8];
     for (bits, register) in requests.iter_mut().zip(register::INTERRUPT_REQUEST) {
         *bits = InitializationRegisters::read(access, register) as u32;
     }
-    x86_apic::pending::highest(&requests)
+    requests
+}
+
+#[cfg(feature = "selftest")]
+fn is_pending(access: &impl InitializationRegisters, vector: InterruptVector) -> bool {
+    let requests = pending_requests(access);
+    x86_apic::pending::contains(&requests, vector)
 }
 
 /// Exercise the production pending-vector audit with a real queued self-IPI.
@@ -564,10 +575,15 @@ pub fn pending_audit_refuses_queued_self_interrupt_for_test(
     let sent = controller.send_self_interrupt().is_ok();
     let queued = (0..ATTEMPTS).any(|_| {
         core::hint::spin_loop();
-        ready_registers().and_then(|access| pending_vector(&access)) == Some(expected.get())
+        ready_registers().is_some_and(|access| is_pending(&access, expected))
     });
-    let refusal =
-        enable_after_pending_audit() == Err(PendingInterruptError::Pending(expected.get()));
+    // A timer may become pending after exclusion. The production door must
+    // refuse whichever vector is highest, while `queued` above proves that
+    // the self-IPI this witness sent is independently present in IRR.
+    let refusal = matches!(
+        enable_after_pending_audit(),
+        Err(PendingInterruptError::Pending(_))
+    );
     let stayed_excluded = !interrupt::are_enabled() && delivery_count() == before;
 
     if !interrupt::are_enabled() {

@@ -80,12 +80,14 @@ caught in milliseconds even though each machine mutation still costs a boot.
 
 Nine supported tasks are deliberately **not** in ordinary `ci`: `debug`,
 `baseline`, `vmware`, `qualify-vmware`, `model-check`, `mutate` and
-`qualify-advisory`, plus the externally operated `qualify-mutants-grade` and
-`qualify-security-deep` begin/seal workflows. `vmware` generates each selected machine;
+`qualify-advisory`, plus the multi-day `qualify-mutants-grade --run` and the
+`qualify-security-deep` begin/diagnostic-verify workflow. `vmware` generates each selected machine;
 `qualify-vmware` validates its fresh serial transcript after the human boot.
-VMware, model checking, the complete mutation sweep, the independent mutation
-grade, the Deep security scan and the fresh RustSec review
-are phase-close qualifications whose records enter offline evidence. They need
+VMware, model checking, the complete mutation sweep, the independently owned
+mutation grade, an authenticated Deep security scan and the fresh RustSec review
+are phase-close qualifications whose records enter offline evidence. Deep's
+unsigned `--verify` action creates no record and intentionally leaves evidence
+blocked (D-373). These tasks need
 interactive/external tools, current network data or much longer machine runs,
 and putting them in the ordinary gate would make a missing tool look like a
 source failure.

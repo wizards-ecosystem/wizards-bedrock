@@ -144,8 +144,11 @@ needs VMware Workstation to boot the result, `qualify-vmware` validates the
 fresh transcript after that human boot, `mutate` needs one QEMU boot per known
 defect, `baseline` needs six QEMU boots for descriptive measurements, and
 `qualify-advisory` needs `cargo-audit` plus fresh RustSec data.
-`qualify-mutants-grade` and `qualify-security-deep` use explicit `--begin`
-and `--seal=RESULT_DIR` stages for externally operated, current-source campaigns.
+`qualify-mutants-grade --run` owns and contains the complete current-source
+campaign. `qualify-security-deep` uses `--begin` to publish its request and
+`--verify=RESULT_DIR` only to diagnose unsigned provider artifacts; it cannot
+create release qualification until the provider supplies an authenticated
+receipt (D-373).
 A gate step that
 fails for want of an exceptional tool or a long qualification teaches people
 to skip the gate.
@@ -187,7 +190,7 @@ deterministic bundle under `target/evidence/`; `cargo xtask verify-evidence`
 then rechecks its source identity, installed tool and firmware identities,
 vendored and machine inputs, artifact hashes, reproducibility result and boot
 result without network access. The QEMU hardware ABI is pinned to
-`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v8 requires
+`pc-q35-9.2`, not the moving `q35` alias. Evidence schema v9 requires
 source-bound records for the current mutation sweep, the independent
 `cargo-mutants` grade, the canonical Codex Security Deep artifacts, the fresh
 RustSec review, all model runs and both generated-and-booted VMware selectors,
@@ -196,18 +199,21 @@ source commit or a direct child which modifies only the five closure documents
 named by D-330 while retaining the locked newest passing parent mutation
 report. Verification therefore rejects an
 unavailable, stale, omitted or changed phase-close qualification rather than
-changing schema (D-218, D-244, D-330).
+changing schema (D-218, D-244, D-330, D-373). Qualification schema v5 also
+rejects every record from the retired unauthenticated external-seal format.
 
-`qualify-mutants-grade --begin` publishes the exact source, inventory, grade,
-doctest, tool and environment request; `--seal=GRADE_DIR` imports the bounded
-inventory, outcomes, adjudications and the complete UTF-8 output of the
-zero-doctest command as `doctest.transcript`. The external
-operator is the declared execution authority: the record checks internal
-consistency and exact tool bytes but does not claim that `xtask` spawned or
-contained the multi-day process tree. `qualify-security-deep` likewise retains
-the provider's sealed manifest, findings and coverage plus its opaque UTF-8 report;
-the canonical close requires complete repository coverage, no exclusions,
-deferrals or open questions, and zero reportable findings.
+`qualify-mutants-grade --run` resolves the pinned grader and nextest, publishes
+the exact source/tool/environment request, and starts the full campaign in an
+exclusive `xtask`-owned directory through the bounded process owner. It accepts
+only a successful run with unchanged source and tools, an identical independent
+inventory, and exact non-caught dispositions from the tracked
+`xtask/mutants-adjudications.json`; caller-supplied adjudications have no PASS
+authority. `qualify-security-deep --begin` publishes the source-bound request,
+and `--verify=RESULT_DIR` can validate the provider's manifest, findings,
+coverage and report for diagnosis. Those unsigned files never create PASS,
+and both evidence creation and offline verification remain fail-closed until
+an authenticated provider receipt or invocation/fetch channel binds the scan
+to that request (D-373).
 
 `test` runs the host suite; `test-boot` boots a kernel built with the
 `selftest` feature headless in QEMU, injects a keystroke over QMP when the

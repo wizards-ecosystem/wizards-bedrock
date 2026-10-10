@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1743;
+pub const NEXT_MUTATION_ID: u16 = 1760;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -92,12 +92,12 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1,
         file: "xtask/src/mutants_grade.rs",
-        find: "const COMMAND: &str = \"cargo mutants -p xtask --output <source-bound-directory> --jobs",
-        replace: "const COMMAND: &str = \"cargo mutants -p xtask --output <source-bound-directory>/mutants.out --jobs",
-        breaks: "the published cargo-mutants command writes one directory deeper than the sealer reads",
+        find: "const COMMAND: &str = \"cargo mutants -p xtask --output <xtask-owned-directory> --jobs",
+        replace: "const COMMAND: &str = \"cargo mutants -p xtask --output <xtask-owned-directory>/mutants.out --jobs",
+        breaks: "the owned cargo-mutants command writes one directory deeper than the recorder reads",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "mutants_grade::tests::the_published_output_directory_is_the_one_the_sealer_reads",
+            name: "mutants_grade::tests::the_owned_output_directory_is_the_one_the_recorder_reads",
         },
     },
     Mutation {
@@ -138,7 +138,7 @@ pub const MUTATIONS: &[Mutation] = &[
         file: "xtask/src/mutants_grade.rs",
         find: "        ensure!(\n            fields.remove(key) == Some(value),\n            \"cargo-mutants request `{key}` differs from D-324\"\n        );",
         replace: "        ensure!(fields.remove(key).is_some(), \"cargo-mutants request `{key}` is absent\");",
-        breaks: "the external grade request can weaken its exact command, environment, or pinned tools",
+        breaks: "the owned grade request can weaken its exact command, environment, or pinned tools",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "mutants_grade::tests::request_binds_source_command_concurrency_and_runner_provenance",
@@ -16603,8 +16603,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1413,
         file: "xtask/src/mutants_grade.rs",
-        find: "    command.current_dir(root).args([\"mutants\", \"--version\"]);",
-        replace: "    command.current_dir(root).arg(\"--version\");",
+        find: "    command\n        .current_dir(paths.root())\n        .args([\"mutants\", \"--version\"]);",
+        replace: "    command.current_dir(paths.root()).arg(\"--version\");",
         breaks: "the direct cargo-mutants version probe omits its subcommand entry point",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -16724,12 +16724,12 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1424,
         file: "xtask/src/mutants_grade.rs",
-        find: "        !grade.starts_with(records),",
-        replace: "        grade != records,",
-        breaks: "a grade directory inside the qualification records is sealed over its own raw evidence",
+        find: "const CAMPAIGN_ROOT: &str = \"qualification-runs/cargo-mutants\";",
+        replace: "const CAMPAIGN_ROOT: &str = \"qualification/cargo-mutants-grade\";",
+        breaks: "the owned campaign writes raw output inside authoritative qualification records",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "mutants_grade::tests::a_grade_directory_inside_the_records_cannot_be_sealed",
+            name: "mutants_grade::tests::campaign_scratch_is_exclusively_reserved_under_target_and_removed",
         },
     },
     Mutation {
@@ -16737,10 +16737,10 @@ fn mint_stopped<'controller>(
         file: "xtask/src/mutants_grade.rs",
         find: "        !bytes.starts_with(&[0xFF, 0xFE]) && !bytes.starts_with(&[0xFE, 0xFF]),",
         replace: "        true,",
-        breaks: "UTF-16 operator JSON reaches the grade parser undiagnosed",
+        breaks: "UTF-16 source-controlled policy reaches the grade parser undiagnosed",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "mutants_grade::tests::operator_json_is_utf8_without_a_byte_order_mark",
+            name: "mutants_grade::tests::source_controlled_policy_is_utf8_without_a_byte_order_mark",
         },
     },
     Mutation {
@@ -16748,10 +16748,10 @@ fn mint_stopped<'controller>(
         file: "xtask/src/mutants_grade.rs",
         find: "    grade.join(CARGO_MUTANTS_OUTPUT)",
         replace: "    grade.to_path_buf()",
-        breaks: "the sealer reads the grade directory instead of the cargo-mutants output inside it",
+        breaks: "the recorder reads the campaign directory instead of the cargo-mutants output inside it",
         reddens: Caught::HostTest {
             package: "xtask",
-            name: "mutants_grade::tests::the_published_output_directory_is_the_one_the_sealer_reads",
+            name: "mutants_grade::tests::the_owned_output_directory_is_the_one_the_recorder_reads",
         },
     },
     Mutation {
@@ -16834,8 +16834,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1434,
         file: "xtask/src/mutants_grade.rs",
-        find: "                .insert(name.to_string(), summary.to_string())\n                .is_none(),",
-        replace: "                .insert(name.to_string(), summary.to_string())\n                .is_none_or(|_| true),",
+        find: "                .is_none(),\n            \"cargo-mutants adjudication is duplicated\"",
+        replace: "                .is_none_or(|_| true),\n            \"cargo-mutants adjudication is duplicated\"",
         breaks: "one mutant may be adjudicated twice",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -16988,9 +16988,9 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1448,
         file: "xtask/src/cli.rs",
-        find: "            (true, None) => Ok(Task::QualifyMutantsGrade(MutantsGradeAction::Begin)),",
-        replace: "            (true, _) => Ok(Task::QualifyMutantsGrade(MutantsGradeAction::Begin)),",
-        breaks: "the grade task accepts both external actions at once",
+        find: "            (true, false, None) => Ok(Task::QualifyMutantsGrade(MutantsGradeAction::Run)),",
+        replace: "            (true, _, _) => Ok(Task::QualifyMutantsGrade(MutantsGradeAction::Run)),",
+        breaks: "the grade task accepts a second incompatible qualification action",
         reddens: Caught::HostTest {
             package: "xtask",
             name: "cli::tests::external_qualification_actions_are_typed_and_task_local",
@@ -16999,8 +16999,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1449,
         file: "xtask/src/cli.rs",
-        find: "            (true, None) => Ok(Task::QualifySecurityDeep(SecurityDeepAction::Begin)),",
-        replace: "            (_, None) => Ok(Task::QualifySecurityDeep(SecurityDeepAction::Begin)),",
+        find: "            (false, true, None) => Ok(Task::QualifySecurityDeep(SecurityDeepAction::Begin)),",
+        replace: "            (_, _, None) => Ok(Task::QualifySecurityDeep(SecurityDeepAction::Begin)),",
         breaks: "the Deep task begins when no action was requested",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -17010,8 +17010,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1450,
         file: "xtask/src/cli.rs",
-        find: "    ) && (begin || seal.is_some())",
-        replace: "    ) && (begin && seal.is_some())",
+        find: "    ) && (run || begin || verify.is_some())",
+        replace: "    ) && (run && begin && verify.is_some())",
         breaks: "external qualification options leak onto other tasks",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -19532,6 +19532,193 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "dma_contracts::unit_wide_vtd_transition_is_fenced_drained_and_owner_preserving",
+        },
+    },
+    Mutation {
+        id: 1743,
+        file: "xtask/src/cli.rs",
+        find: "                } else if let Some(value) = flag.strip_prefix(\"--verify=\") {",
+        replace: "                } else if let Some(value) = flag.strip_prefix(\"--seal=\").or_else(|| flag.strip_prefix(\"--verify=\")) {",
+        breaks: "the removed --seal spelling is silently accepted as diagnostic verification",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cli::tests::unsigned_external_result_directories_have_no_seal_action",
+        },
+    },
+    Mutation {
+        id: 1744,
+        file: "xtask/src/qualification.rs",
+        find: "    require_authenticated_deep_qualification()?;\n    operation()",
+        replace: "    operation()",
+        breaks: "unsigned Deep replay crosses the sole release-bundle authority boundary",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "qualification::tests::unsigned_deep_records_are_rejected_online_and_offline",
+        },
+    },
+    Mutation {
+        id: 1745,
+        file: "xtask/src/mutants_grade.rs",
+        find: "            || normalized.starts_with(\"RUST\")",
+        replace: "            || false",
+        breaks: "caller-controlled Rust compiler wrappers and flags reach the owned campaign",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::hostile_compiler_cargo_mutants_and_nextest_environment_is_removed",
+        },
+    },
+    Mutation {
+        id: 1746,
+        file: "xtask/src/mutants_grade.rs",
+        find: "        .env(\n            \"CARGO_ENCODED_RUSTFLAGS\",\n            format!(\n                \"-C\\u{1f}dlltool={}\",\n                crate::cargo::child_process_path(Path::new(&tools.dlltool.path)).display()\n            ),\n        )",
+        replace: "        .env(\"CARGO_ENCODED_RUSTFLAGS\", \"\")",
+        breaks: "the campaign loses its exact dlltool compiler contract",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::owned_commands_are_exactly_the_documented_ones",
+        },
+    },
+    Mutation {
+        id: 1747,
+        file: "xtask/src/mutants_grade.rs",
+        find: "fn execute_campaign(command: Command) -> Result<std::process::Output> {\n    crate::bounded_process::output_with_limit(\n        command,\n        CAMPAIGN_TIMEOUT,\n        \"complete cargo-mutants campaign\",\n        CAMPAIGN_CAPTURE_BYTES,\n    )\n}",
+        replace: "fn execute_campaign(mut command: Command) -> Result<std::process::Output> {\n    command.output().context(\"running uncontained cargo-mutants campaign\")\n}",
+        breaks: "the multi-day cargo-mutants process tree escapes xtask's bounded job owner",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::owned_commands_are_exactly_the_documented_ones",
+        },
+    },
+    Mutation {
+        id: 1748,
+        file: "xtask/src/mutants_grade.rs",
+        find: "        status.success(),\n        \"the complete cargo-mutants campaign exited {status}; scratch output is retained at {}\",",
+        replace: "        true,\n        \"the complete cargo-mutants campaign exited {status}; scratch output is retained at {}\",",
+        breaks: "a failed cargo-mutants campaign is accepted as qualification evidence",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::only_a_successful_unchanged_campaign_and_tracked_policy_can_pass",
+        },
+    },
+    Mutation {
+        id: 1749,
+        file: "xtask/src/mutants_grade.rs",
+        find: "        expected_source == observed_source,\n        \"the qualification source changed during the cargo-mutants campaign\"",
+        replace: "        true,\n        \"the qualification source changed during the cargo-mutants campaign\"",
+        breaks: "a cargo-mutants result is recorded after the qualification source changes",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::only_a_successful_unchanged_campaign_and_tracked_policy_can_pass",
+        },
+    },
+    Mutation {
+        id: 1750,
+        file: "xtask/src/mutants_grade.rs",
+        find: "        expected_tools == observed_tools,\n        \"cargo-mutants or cargo-nextest changed during the campaign\"",
+        replace: "        true,\n        \"cargo-mutants or cargo-nextest changed during the campaign\"",
+        breaks: "a cargo-mutants result is recorded after a campaign tool changes",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::only_a_successful_unchanged_campaign_and_tracked_policy_can_pass",
+        },
+    },
+    Mutation {
+        id: 1751,
+        file: "xtask/src/mutants_grade.rs",
+        find: "        sealed == source,\n        \"sealed cargo-mutants adjudications differ from the source-controlled policy\"",
+        replace: "        true,\n        \"sealed cargo-mutants adjudications differ from the source-controlled policy\"",
+        breaks: "caller-supplied cargo-mutants adjudications replace the tracked policy",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::only_a_successful_unchanged_campaign_and_tracked_policy_can_pass",
+        },
+    },
+    Mutation {
+        id: 1752,
+        file: "xtask/src/mutants_grade.rs",
+        find: "                        diff: diff.to_string(),",
+        replace: "                        diff: expected.get(name).map_or_else(|| diff.to_string(), |row| row.diff.clone()),",
+        breaks: "an adjudication can name the right mutant while silently replacing its exact diff",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::adjudications_name_exactly_the_noncaught_mutants_with_allowed_reasons",
+        },
+    },
+    Mutation {
+        id: 1753,
+        file: "xtask/src/mutants_grade.rs",
+        find: "        directory.parent() == Some(parent.as_path()) && directory.starts_with(&parent),",
+        replace: "        directory.starts_with(&parent),",
+        breaks: "successful campaign cleanup can recursively delete a nested caller-selected directory",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::campaign_scratch_is_exclusively_reserved_under_target_and_removed",
+        },
+    },
+    Mutation {
+        id: 1754,
+        file: "xtask/src/mutants_grade.rs",
+        find: "        fields.remove(\"adjudication.policy.sha256\")\n            == Some(sha256::hex(&sha256::digest(adjudications)).as_str()),",
+        replace: "        fields.remove(\"adjudication.policy.sha256\").is_some(),",
+        breaks: "the campaign request no longer binds the source-controlled adjudication policy bytes",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::request_binds_source_command_concurrency_and_runner_provenance",
+        },
+    },
+    Mutation {
+        id: 1755,
+        file: "xtask/src/mutants_grade.rs",
+        find: "    require_campaign_identity(\n        attempt.source(),\n        &qualification::source_identity(paths.root())?,\n        &tools,\n        &discover_tools(paths, &private_temp)?,\n    )?;",
+        replace: "",
+        breaks: "the final campaign tool use is not followed by source and executable remeasurement",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::final_identity_check_follows_every_authoritative_tool_use_and_precedes_pass",
+        },
+    },
+    Mutation {
+        id: 1756,
+        file: "xtask/src/mutants_grade.rs",
+        find: "        semantic == expected,\n        \"repository-parent Cargo configuration contains semantics outside the exact pinned dlltool compatibility setting: observed {semantic:?}, expected {expected:?}\"",
+        replace: "        true,\n        \"repository-parent Cargo configuration contains semantics outside the exact pinned dlltool compatibility setting: observed {semantic:?}, expected {expected:?}\"",
+        breaks: "repository-parent Cargo configuration can inject compiler or test semantics",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::parent_cargo_configuration_is_semantically_allowlisted",
+        },
+    },
+    Mutation {
+        id: 1757,
+        file: "xtask/src/mutants_grade.rs",
+        find: "    for name in [\"TEMP\", \"TMP\", \"TMPDIR\"] {\n        command.env(name, &private_temp);\n    }",
+        replace: "    for name in std::iter::empty::<&str>() {\n        command.env(name, &private_temp);\n    }",
+        breaks: "cargo-mutants can select an attacker-controlled OS temp tree and its parent Cargo configuration",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::owned_temp_root_controls_cargo_configuration_discovery",
+        },
+    },
+    Mutation {
+        id: 1758,
+        file: "xtask/src/mutants_grade.rs",
+        find: "        require_no_cargo_config(\n            &ancestor.join(\".cargo\"),\n            \"generated cargo-mutants temp discovery chain\",\n        )?;",
+        replace: "        let _ = ancestor;",
+        breaks: "a Cargo configuration above the owned scratch workspace can alter mutation results",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::owned_temp_root_controls_cargo_configuration_discovery",
+        },
+    },
+    Mutation {
+        id: 1759,
+        file: "libs/x86-apic/src/pending.rs",
+        find: "    registers[raw / 32] & (1 << (raw % 32)) != 0",
+        replace: "    highest(registers) == Some(vector.get())",
+        breaks: "a named pending vector is hidden by unrelated higher-priority work",
+        reddens: Caught::HostTest {
+            package: "x86-apic",
+            name: "pending::tests::a_named_pending_vector_is_visible_beneath_higher_priority_work",
         },
     },
 ];

@@ -21,10 +21,11 @@ use crate::mutation_workspace::{CurrentPass, PassEvidence};
 use crate::paths::Paths;
 use crate::sha256;
 
-const FORMAT: &str = "wizard-qualification-v4";
+const FORMAT: &str = "wizard-qualification-v5";
 const RECORD: &str = "record";
 const RECORD_TEMP: &str = "record.incomplete";
 const PASS: &str = "pass";
+const DEEP_AUTHORITY_ERROR: &str = "Codex Security Deep has no authenticated provider receipt; unsigned scan artifacts cannot satisfy release qualification";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const ADVISORY_TIMEOUT: Duration = Duration::from_secs(300);
 const WINDOWS_VMWARE: &str = r"C:\Program Files (x86)\VMware\VMware Workstation";
@@ -385,29 +386,30 @@ pub(crate) struct BundleFile {
 }
 
 #[derive(Debug)]
-pub(crate) enum ExternalArtifact {
-    MutantsRequest(Vec<u8>),
-    MutantsInventory(Vec<u8>),
-    MutantsCandidates(Vec<u8>),
-    MutantsOutcomes(Vec<u8>),
-    MutantsAdjudications(Vec<u8>),
-    MutantsDoctest(Vec<u8>),
-    SecurityRequest(Vec<u8>),
-    SecurityManifest(Vec<u8>),
-    SecurityFindings(Vec<u8>),
-    SecurityCoverage(Vec<u8>),
-    SecurityReport(Vec<u8>),
+pub(crate) struct ObservedMutantsArtifacts {
+    pub(crate) request: Vec<u8>,
+    pub(crate) inventory: Vec<u8>,
+    pub(crate) mutants: Vec<u8>,
+    pub(crate) outcomes: Vec<u8>,
+    pub(crate) adjudications: Vec<u8>,
+    pub(crate) doctest: Vec<u8>,
 }
 
 #[derive(Debug)]
-pub(crate) struct ExternalAttempt {
+pub(crate) struct DeepAttempt {
     paths: Paths,
-    kind: Kind,
     source: SourceIdentity,
     directory: PathBuf,
 }
 
-impl ExternalAttempt {
+#[derive(Debug)]
+pub(crate) struct MutantsAttempt {
+    paths: Paths,
+    source: SourceIdentity,
+    directory: PathBuf,
+}
+
+impl DeepAttempt {
     pub(crate) fn source(&self) -> &SourceIdentity {
         &self.source
     }
@@ -418,31 +420,29 @@ impl ExternalAttempt {
 
     pub(crate) fn write_security_request(&self, bytes: &[u8]) -> Result<()> {
         ensure!(
-            self.kind == Kind::CodexSecurityDeep,
-            "request belongs to another qualification kind"
-        );
-        ensure!(
             bytes.len() as u64 <= MAX_SECURITY_REQUEST_BYTES,
             "security request exceeds its size policy"
         );
-        let directory = kind_directory(&self.paths, self.kind)?;
+        let directory = kind_directory(&self.paths, Kind::CodexSecurityDeep)?;
         ensure!(
             directory == self.directory,
             "qualification directory changed during request publication"
         );
         write_new_file(&directory.join("request"), bytes)
+    }
+}
+
+impl MutantsAttempt {
+    pub(crate) fn source(&self) -> &SourceIdentity {
+        &self.source
     }
 
     pub(crate) fn write_mutants_request(&self, bytes: &[u8]) -> Result<()> {
         ensure!(
-            self.kind == Kind::CargoMutantsGrade,
-            "request belongs to another qualification kind"
-        );
-        ensure!(
             bytes.len() as u64 <= MAX_EXTERNAL_RECEIPT_BYTES,
             "cargo-mutants request exceeds its size policy"
         );
-        let directory = kind_directory(&self.paths, self.kind)?;
+        let directory = kind_directory(&self.paths, Kind::CargoMutantsGrade)?;
         ensure!(
             directory == self.directory,
             "qualification directory changed during request publication"
@@ -450,44 +450,55 @@ impl ExternalAttempt {
         write_new_file(&directory.join("request"), bytes)
     }
 
-    pub(crate) fn seal(
+    pub(crate) fn pass_observed_mutants(
         self,
         fields: &[(String, String)],
-        artifacts: Vec<ExternalArtifact>,
+        artifacts: ObservedMutantsArtifacts,
     ) -> Result<()> {
-        invalidate(&self.paths, self.kind)?;
-        let directory = kind_directory(&self.paths, self.kind)?;
-        let mut record = base_record_for_source(self.kind, &self.source)?;
+        invalidate(&self.paths, Kind::CargoMutantsGrade)?;
+        let directory = kind_directory(&self.paths, Kind::CargoMutantsGrade)?;
+        let mut record = base_record_for_source(Kind::CargoMutantsGrade, &self.source)?;
         for (key, value) in fields {
             record.insert(key, value)?;
         }
-        let expected = match self.kind {
-            Kind::CargoMutantsGrade => 6,
-            Kind::CodexSecurityDeep => 5,
-            _ => unreachable!("externally sealed kind checked when the attempt began"),
-        };
-        ensure!(
-            artifacts.len() == expected,
-            "external qualification artifact set is incomplete"
-        );
-        let mut names = BTreeSet::new();
-        for artifact in &artifacts {
-            let (artifact_kind, prefix, name, bytes) = artifact.spec();
-            ensure!(
-                artifact_kind == self.kind,
-                "external artifact belongs to another qualification kind"
-            );
-            ensure!(names.insert(name), "duplicate external artifact `{name}`");
-            let (maximum, exact) = artifact_size_policy(self.kind, name)?;
+        for (prefix, name, bytes) in [
+            ("artifact.request", "request", artifacts.request.as_slice()),
+            (
+                "artifact.inventory",
+                "inventory.json",
+                artifacts.inventory.as_slice(),
+            ),
+            (
+                "artifact.mutants",
+                "mutants.json",
+                artifacts.mutants.as_slice(),
+            ),
+            (
+                "artifact.outcomes",
+                "outcomes.json",
+                artifacts.outcomes.as_slice(),
+            ),
+            (
+                "artifact.adjudications",
+                "adjudications.json",
+                artifacts.adjudications.as_slice(),
+            ),
+            (
+                "artifact.doctest",
+                "doctest.transcript",
+                artifacts.doctest.as_slice(),
+            ),
+        ] {
+            let (maximum, exact) = artifact_size_policy(Kind::CargoMutantsGrade, name)?;
             ensure!(
                 (!exact && bytes.len() as u64 <= maximum)
                     || (exact && bytes.len() as u64 == maximum),
-                "external artifact `{name}` violates its size policy"
+                "observed cargo-mutants artifact `{name}` violates its size policy"
             );
             let path = directory.join(name);
             ensure!(
                 path.parent() == Some(directory.as_path()),
-                "external artifact escaped its qualification directory"
+                "observed cargo-mutants artifact escaped its qualification directory"
             );
             write_new_file(&path, bytes)?;
             add_artifact(&mut record, prefix, name, &path)?;
@@ -496,93 +507,12 @@ impl ExternalAttempt {
         verify_support(
             &self.paths,
             &record,
-            self.kind,
+            Kind::CargoMutantsGrade,
             &qualification_root(&self.paths),
         )?;
-        let derived = match self.kind {
-            Kind::CargoMutantsGrade => {
-                crate::mutants_grade::verify_sealed(&directory, &self.source)?
-            }
-            Kind::CodexSecurityDeep => {
-                crate::security_deep::verify_sealed(&directory, &self.source)?
-            }
-            _ => unreachable!("externally sealed kind checked when the attempt began"),
-        };
+        let derived = crate::mutants_grade::verify_sealed(&self.paths, &directory, &self.source)?;
         require_external_fields(&record, &derived)?;
-        commit_record(&self.paths, self.kind, &record)
-    }
-}
-
-impl ExternalArtifact {
-    fn spec(&self) -> (Kind, &'static str, &'static str, &[u8]) {
-        match self {
-            Self::MutantsRequest(bytes) => (
-                Kind::CargoMutantsGrade,
-                "artifact.request",
-                "request",
-                bytes,
-            ),
-            Self::MutantsInventory(bytes) => (
-                Kind::CargoMutantsGrade,
-                "artifact.inventory",
-                "inventory.json",
-                bytes,
-            ),
-            Self::MutantsCandidates(bytes) => (
-                Kind::CargoMutantsGrade,
-                "artifact.mutants",
-                "mutants.json",
-                bytes,
-            ),
-            Self::MutantsOutcomes(bytes) => (
-                Kind::CargoMutantsGrade,
-                "artifact.outcomes",
-                "outcomes.json",
-                bytes,
-            ),
-            Self::MutantsAdjudications(bytes) => (
-                Kind::CargoMutantsGrade,
-                "artifact.adjudications",
-                "adjudications.json",
-                bytes,
-            ),
-            Self::MutantsDoctest(bytes) => (
-                Kind::CargoMutantsGrade,
-                "artifact.doctest",
-                "doctest.transcript",
-                bytes,
-            ),
-            Self::SecurityRequest(bytes) => (
-                Kind::CodexSecurityDeep,
-                "artifact.request",
-                "request",
-                bytes,
-            ),
-            Self::SecurityManifest(bytes) => (
-                Kind::CodexSecurityDeep,
-                "artifact.manifest",
-                "scan-manifest.json",
-                bytes,
-            ),
-            Self::SecurityFindings(bytes) => (
-                Kind::CodexSecurityDeep,
-                "artifact.findings",
-                "findings.json",
-                bytes,
-            ),
-            Self::SecurityCoverage(bytes) => (
-                Kind::CodexSecurityDeep,
-                "artifact.coverage",
-                "coverage.json",
-                bytes,
-            ),
-            Self::SecurityReport(bytes) => (
-                Kind::CodexSecurityDeep,
-                "artifact.report",
-                "report.md",
-                bytes,
-            ),
-        }
+        commit_record(&self.paths, Kind::CargoMutantsGrade, &record)
     }
 }
 
@@ -851,25 +781,34 @@ pub(crate) fn begin_mutation(
     })
 }
 
-pub(crate) fn begin_external(
+fn begin_external(
     paths: &Paths,
     kind: Kind,
     preserve_artifacts: bool,
-) -> Result<ExternalAttempt> {
-    ensure!(
-        matches!(kind, Kind::CargoMutantsGrade | Kind::CodexSecurityDeep),
-        "qualification kind is not externally sealed"
-    );
+) -> Result<(SourceIdentity, PathBuf)> {
     if preserve_artifacts {
         invalidate_record(paths, kind)?;
     } else {
         invalidate(paths, kind)?;
     }
-    Ok(ExternalAttempt {
+    Ok((source_identity(paths.root())?, kind_directory(paths, kind)?))
+}
+
+pub(crate) fn begin_security_deep(paths: &Paths, preserve_artifacts: bool) -> Result<DeepAttempt> {
+    let (source, directory) = begin_external(paths, Kind::CodexSecurityDeep, preserve_artifacts)?;
+    Ok(DeepAttempt {
         paths: paths.clone(),
-        kind,
-        source: source_identity(paths.root())?,
-        directory: kind_directory(paths, kind)?,
+        source,
+        directory,
+    })
+}
+
+pub(crate) fn begin_mutants_grade(paths: &Paths) -> Result<MutantsAttempt> {
+    let (source, directory) = begin_external(paths, Kind::CargoMutantsGrade, false)?;
+    Ok(MutantsAttempt {
+        paths: paths.clone(),
+        source,
+        directory,
     })
 }
 
@@ -1316,6 +1255,10 @@ pub(crate) fn invalidate_vmware(paths: &Paths, kernel: Kernel) -> Result<()> {
 }
 
 pub(crate) fn recorded_source(paths: &Paths) -> Result<SourceIdentity> {
+    with_authenticated_release_bundle(|| recorded_source_after_authority(paths))
+}
+
+fn recorded_source_after_authority(paths: &Paths) -> Result<SourceIdentity> {
     let root = qualification_root(paths);
     require_real_root(&root, "qualification root")?;
     let mut source = None;
@@ -1417,6 +1360,19 @@ fn verify_records(
     mutation_count: usize,
     mutation: Option<&PassEvidence>,
 ) -> Result<()> {
+    with_authenticated_release_bundle(|| {
+        verify_records_after_authority(paths, root, source, registry, mutation_count, mutation)
+    })
+}
+
+fn verify_records_after_authority(
+    paths: &Paths,
+    root: &Path,
+    source: &SourceIdentity,
+    registry: &str,
+    mutation_count: usize,
+    mutation: Option<&PassEvidence>,
+) -> Result<()> {
     require_real_root(root, "qualification root")?;
     verify_advisory_qualification(paths, root, source)?;
     for kind in [
@@ -1447,15 +1403,10 @@ fn verify_records(
             Kind::CargoMutantsGrade => {
                 require_external_fields(
                     &record,
-                    &crate::mutants_grade::verify_sealed(&directory, source)?,
+                    &crate::mutants_grade::verify_sealed(paths, &directory, source)?,
                 )?;
             }
-            Kind::CodexSecurityDeep => {
-                require_external_fields(
-                    &record,
-                    &crate::security_deep::verify_sealed(&directory, source)?,
-                )?;
-            }
+            Kind::CodexSecurityDeep => {}
             Kind::Model => {
                 let expected = model_record_for_source(paths, source)?;
                 require_record_inputs(&record, &expected)?;
@@ -1487,6 +1438,15 @@ fn verify_records(
         }
     }
     Ok(())
+}
+
+fn require_authenticated_deep_qualification() -> Result<()> {
+    bail!("{DEEP_AUTHORITY_ERROR}")
+}
+
+fn with_authenticated_release_bundle<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    require_authenticated_deep_qualification()?;
+    operation()
 }
 
 fn verify_advisory_qualification(
@@ -4369,6 +4329,51 @@ mod tests {
             assert!(parse_record(&tampered).is_err());
             assert!(parse_record(rendered.trim_end()).is_err());
         }
+    }
+
+    #[test]
+    fn unsigned_deep_records_are_rejected_online_and_offline() {
+        let reached_acceptance = std::cell::Cell::new(false);
+        let boundary = with_authenticated_release_bundle(|| {
+            reached_acceptance.set(true);
+            Ok(())
+        })
+        .unwrap_err()
+        .to_string();
+        assert_eq!(boundary, DEEP_AUTHORITY_ERROR);
+        assert!(!reached_acceptance.get());
+
+        let paths = Paths::new(PathBuf::from("unsigned-deep-fixture"), None);
+        let source = SourceIdentity {
+            commit: "a".repeat(40),
+            tree: "b".repeat(40),
+        };
+        let online = recorded_source(&paths).unwrap_err().to_string();
+        assert_eq!(online, DEEP_AUTHORITY_ERROR);
+        let offline = verify_records(
+            &paths,
+            Path::new("unsigned-deep-bundle"),
+            &source,
+            &"c".repeat(64),
+            1,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(offline, DEEP_AUTHORITY_ERROR);
+    }
+
+    #[test]
+    fn deep_and_mutants_attempts_are_separate_capability_types() {
+        let implementation = include_str!("qualification.rs");
+        let deep = implementation.find("impl DeepAttempt {").unwrap();
+        let mutants = implementation.find("impl MutantsAttempt {").unwrap();
+        let constants = implementation[mutants..]
+            .find("pub(crate) const BUNDLE_FILES")
+            .unwrap()
+            + mutants;
+        assert!(!implementation[deep..mutants].contains("pass_observed_mutants"));
+        assert!(implementation[mutants..constants].contains("pass_observed_mutants"));
     }
 
     #[test]

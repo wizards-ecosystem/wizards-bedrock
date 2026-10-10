@@ -11,7 +11,7 @@ use crate::json::{
     require_json_fields,
 };
 use crate::paths::Paths;
-use crate::qualification::{self, ExternalArtifact, Kind, SourceIdentity};
+use crate::qualification::{self, SourceIdentity};
 use crate::sha256;
 
 const REQUEST: &str = "request";
@@ -40,39 +40,15 @@ struct Scan {
     informational: u64,
 }
 
-impl Scan {
-    fn fields(&self) -> Vec<(String, String)> {
-        [
-            ("findings.critical", self.critical.to_string()),
-            ("findings.high", self.high.to_string()),
-            ("findings.informational", self.informational.to_string()),
-            ("findings.low", self.low.to_string()),
-            ("findings.medium", self.medium.to_string()),
-            (
-                "findings.total",
-                (self.critical + self.high + self.medium + self.low + self.informational)
-                    .to_string(),
-            ),
-            ("scan.id", self.id.clone()),
-            ("scan.producer.name", self.producer_name.clone()),
-            ("scan.producer.version", self.producer_version.clone()),
-            ("scan.surfaces", self.surfaces.to_string()),
-        ]
-        .into_iter()
-        .map(|(key, value)| (key.to_string(), value))
-        .collect()
-    }
-}
-
 pub(crate) fn run(paths: &Paths, action: SecurityDeepAction) -> Result<()> {
     match action {
         SecurityDeepAction::Begin => begin(paths),
-        SecurityDeepAction::Seal(directory) => seal(paths, &directory),
+        SecurityDeepAction::Verify(directory) => verify(paths, &directory),
     }
 }
 
 fn begin(paths: &Paths) -> Result<()> {
-    let attempt = qualification::begin_external(paths, Kind::CodexSecurityDeep, false)?;
+    let attempt = qualification::begin_security_deep(paths, false)?;
     let request = render_request(attempt.source());
     attempt.write_security_request(&request)?;
     println!(
@@ -82,8 +58,11 @@ fn begin(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
-fn seal(paths: &Paths, scan_directory: &Path) -> Result<()> {
-    let attempt = qualification::begin_external(paths, Kind::CodexSecurityDeep, true)?;
+fn verify(paths: &Paths, scan_directory: &Path) -> Result<()> {
+    // D-373: this deliberately invalidates any legacy PASS record before
+    // inspecting unsigned provider output. Semantic consistency is useful to
+    // the operator, but caller-selected bytes have no release authority.
+    let attempt = qualification::begin_security_deep(paths, true)?;
     let request = read(
         &attempt.directory().join(REQUEST),
         MAX_REQUEST_BYTES,
@@ -112,46 +91,20 @@ fn seal(paths: &Paths, scan_directory: &Path) -> Result<()> {
         "Codex Security report",
     )?;
     let scan = verify_scan(&manifest, &findings, &coverage, &report, attempt.source())?;
-    let fields = scan.fields();
-    attempt.seal(
-        &fields,
-        vec![
-            ExternalArtifact::SecurityRequest(request),
-            ExternalArtifact::SecurityManifest(manifest),
-            ExternalArtifact::SecurityFindings(findings),
-            ExternalArtifact::SecurityCoverage(coverage),
-            ExternalArtifact::SecurityReport(report),
-        ],
-    )
-}
-
-pub(crate) fn verify_sealed(
-    directory: &Path,
-    source: &SourceIdentity,
-) -> Result<Vec<(String, String)>> {
-    let request = read(
-        &directory.join(REQUEST),
-        MAX_REQUEST_BYTES,
-        "sealed scan request",
-    )?;
-    let manifest = read(
-        &directory.join(MANIFEST),
-        MAX_MANIFEST_BYTES,
-        "sealed scan manifest",
-    )?;
-    let findings = read(
-        &directory.join(FINDINGS),
-        MAX_FINDINGS_BYTES,
-        "sealed findings",
-    )?;
-    let coverage = read(
-        &directory.join(COVERAGE),
-        MAX_COVERAGE_BYTES,
-        "sealed coverage",
-    )?;
-    let report = read(&directory.join(REPORT), MAX_REPORT_BYTES, "sealed report")?;
-    verify_request(&request, source)?;
-    Ok(verify_scan(&manifest, &findings, &coverage, &report, source)?.fields())
+    println!(
+        "[xtask] unsigned {} {} scan {} is structurally consistent \
+         (surfaces={}, findings={}/{}/{}/{}/{}); no qualification PASS was created",
+        scan.producer_name,
+        scan.producer_version,
+        scan.id,
+        scan.surfaces,
+        scan.critical,
+        scan.high,
+        scan.medium,
+        scan.low,
+        scan.informational,
+    );
+    Ok(())
 }
 
 fn verify_scan(
@@ -532,6 +485,21 @@ mod tests {
         let scan = verify_scan(&manifest, &findings, &coverage, &report, &source).unwrap();
         assert_eq!(scan.id, "scan-1");
         assert_eq!(scan.critical, 0);
+    }
+
+    #[test]
+    fn unsigned_zero_finding_artifacts_are_diagnostic_only() {
+        let source = source();
+        let (manifest, findings, coverage, report) = artifacts(None, "complete", &source.commit);
+        verify_scan(&manifest, &findings, &coverage, &report, &source).unwrap();
+
+        let implementation = include_str!("security_deep.rs");
+        let verify = implementation.find("fn verify(").unwrap();
+        let semantic_parser = implementation[verify..].find("fn verify_scan(").unwrap() + verify;
+        let authority_body = &implementation[verify..semantic_parser];
+        assert!(!authority_body.contains("pass_observed_mutants"));
+        assert!(!authority_body.contains("commit_record"));
+        assert!(authority_body.contains("no qualification PASS was created"));
     }
 
     #[test]
