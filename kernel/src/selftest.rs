@@ -2826,8 +2826,9 @@ fn a_domain_proof_is_refused_while_translation_is_off() -> bool {
 /// would let the unmapped write through; the fault proves the unmap
 /// invalidated the unit's cache and the device cannot reach the frame.
 fn a_device_write_into_an_unmapped_frame_faults_and_changes_nothing() -> bool {
-    nvme::unmapped_write_is_fenced_for_test()
-        .is_some_and(|witness| witness.completed && witness.unchanged && witness.faulted)
+    nvme::unmapped_write_is_fenced_for_test().is_some_and(|witness| {
+        witness.completed && witness.drained && witness.unchanged && witness.faulted
+    })
 }
 
 fn an_uncertain_vtd_mapping_never_recycles_its_frames() -> bool {

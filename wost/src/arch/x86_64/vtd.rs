@@ -27,7 +27,7 @@ use core::fmt;
 use pci_config::Address;
 use vtd::{
     AddressWidth, Capability, ContextEntry, ExtendedCapability, FaultRecording, FaultStatus,
-    InvalidationDescriptor, RootEntry, compatibility_interrupts_enabled, context_command,
+    InvalidationDescriptor, RootEntry, Version, compatibility_interrupts_enabled, context_command,
     enable_interrupt_remapping, enable_translation, fault_event_control, gcmd, gsts,
     interrupt_remapping_enabled, interrupt_table_address, interrupt_table_base,
     interrupt_table_has_two_entries, interrupt_table_pointer_set, invalidation_queue_address,
@@ -84,6 +84,11 @@ pub enum VtdError {
     OutsideAddressWidth,
     /// The register window refused a read or write at the named offset.
     Register(usize),
+    /// This architecture version ignores the register invalidation interface.
+    UnsupportedRegisterInvalidationVersion {
+        /// Raw Version register for the refused unit.
+        version: u32,
+    },
     /// The unit reports no modelled page-table depth.
     NoAddressWidth {
         /// Raw capability register for the refused unit.
@@ -150,6 +155,15 @@ impl fmt::Display for VtdError {
             }
             Self::Register(offset) => {
                 write!(f, "the register window refused offset {offset:#x}")
+            }
+            Self::UnsupportedRegisterInvalidationVersion { version } => {
+                let version = Version::from_bits(*version);
+                write!(
+                    f,
+                    "VT-d version {}.{} does not support register invalidation",
+                    version.major(),
+                    version.minor()
+                )
             }
             Self::NoAddressWidth { capability } => {
                 write!(
@@ -288,6 +302,8 @@ pub struct Vtd {
     table_count: usize,
     #[cfg(feature = "selftest")]
     forced_invalidation_failures: u8,
+    #[cfg(feature = "selftest")]
+    completed_dma_drains: u64,
 }
 
 /// Proof that a DMA-remapping domain is active for one exact function.
@@ -449,6 +465,8 @@ impl Vtd {
             table_count: 1,
             #[cfg(feature = "selftest")]
             forced_invalidation_failures: 0,
+            #[cfg(feature = "selftest")]
+            completed_dma_drains: 0,
         };
         if let Err(reason) = unit.prepare(reserved) {
             let Self { registers, .. } = unit;
@@ -611,7 +629,7 @@ impl Vtd {
         }
     }
 
-    /// Remove `segment` from the domain and invalidate the unit's cache before
+    /// Remove `segment` from the domain and drain every older DMA request before
     /// returning. Any uncertain failure retains the segment before returning.
     #[must_use = "a still-mapped segment is still reachable by the device"]
     pub fn unmap_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
@@ -629,7 +647,7 @@ impl Vtd {
             }
             page += PAGE;
         }
-        if let Err(reason) = self.invalidate(false) {
+        if let Err(reason) = self.drain_dma() {
             failure.get_or_insert(reason);
         }
         if let Some(reason) = failure {
@@ -640,8 +658,8 @@ impl Vtd {
         }
     }
 
-    /// Clear an inclusive page range and prove the unit can no longer use a
-    /// cached translation for it.
+    /// Clear an inclusive page range and drain every request that could still
+    /// use one of its cached translations.
     fn rollback_range(&mut self, start: u64, last: u64) -> Result<(), VtdError> {
         let mut page = start;
         let mut failure = None;
@@ -651,7 +669,7 @@ impl Vtd {
             }
             page += PAGE;
         }
-        if let Err(reason) = self.invalidate(false) {
+        if let Err(reason) = self.drain_dma() {
             failure.get_or_insert(reason);
         }
         failure.map_or(Ok(()), Err)
@@ -661,6 +679,13 @@ impl Vtd {
     #[cfg(feature = "selftest")]
     pub fn force_invalidation_failures_for_test(&mut self, count: u8) {
         self.forced_invalidation_failures = count;
+    }
+
+    /// Number of read-and-write-drained IOTLB invalidations completed by this
+    /// owner, including the takeover drain and every live revocation drain.
+    #[cfg(feature = "selftest")]
+    pub const fn completed_dma_drains_for_test(&self) -> u64 {
+        self.completed_dma_drains
     }
 
     /// Mint a proof that this domain isolates the function it was established
@@ -1093,25 +1118,56 @@ impl Vtd {
         self.poll_status(quiesced, VtdError::QuiescenceTimeout)
     }
 
-    /// Complete an architected read/write drain even when firmware already
-    /// left TES clear. With every requester BME-fenced, no later request can
-    /// enter behind this boundary before the new root is published.
+    /// Complete an architected read/write drain. During a unit transition every
+    /// requester is BME-fenced, so no later request can enter behind this
+    /// boundary before the new root is published. During live revocation the
+    /// affected leaves are already clear, so later requests fault instead of
+    /// reaching memory that the caller may recycle.
     fn drain_dma(&mut self) -> Result<(), VtdError> {
+        self.prepare_invalidation()?;
         let command_register = self.iotlb_base + iotlb_command::COMMAND_REGISTER as usize;
         write_u64(
             &mut self.registers,
             command_register,
             iotlb_command::global_with_drain(),
         )?;
-        self.poll_u64(command_register, iotlb_command::completed)
+        self.poll_u64(command_register, iotlb_command::global_completed)?;
+        #[cfg(feature = "selftest")]
+        {
+            self.completed_dma_drains = self.completed_dma_drains.saturating_add(1);
+        }
+        Ok(())
     }
 
     fn invalidate(&mut self, context: bool) -> Result<(), VtdError> {
+        self.prepare_invalidation()?;
+        if context {
+            write_u64(
+                &mut self.registers,
+                vtd::CCMD as usize,
+                context_command::global(),
+            )?;
+            self.poll_u64(vtd::CCMD as usize, context_command::global_completed)?;
+        }
+        let command_register = self.iotlb_base + iotlb_command::COMMAND_REGISTER as usize;
+        write_u64(
+            &mut self.registers,
+            command_register,
+            iotlb_command::global(),
+        )?;
+        self.poll_u64(command_register, iotlb_command::global_completed)
+    }
+
+    fn prepare_invalidation(&mut self) -> Result<(), VtdError> {
         #[cfg(feature = "selftest")]
         if self.forced_invalidation_failures > 0 {
             self.forced_invalidation_failures -= 1;
             return Err(VtdError::InvalidationTimeout);
         }
+        self.flush_write_buffer()
+    }
+
+    fn flush_write_buffer(&mut self) -> Result<(), VtdError> {
         if self.capability.requires_write_buffer_flush() {
             let command = self.gcmd | gcmd::WBF;
             write_u32(&mut self.registers, vtd::GCMD as usize, command)?;
@@ -1120,21 +1176,7 @@ impl Vtd {
                 VtdError::InvalidationTimeout,
             )?;
         }
-        if context {
-            write_u64(
-                &mut self.registers,
-                vtd::CCMD as usize,
-                context_command::global(),
-            )?;
-            self.poll_u64(vtd::CCMD as usize, context_command::completed)?;
-        }
-        let command_register = self.iotlb_base + iotlb_command::COMMAND_REGISTER as usize;
-        write_u64(
-            &mut self.registers,
-            command_register,
-            iotlb_command::global(),
-        )?;
-        self.poll_u64(command_register, iotlb_command::completed)
+        Ok(())
     }
 
     fn poll_status(&self, ready: impl Fn(u32) -> bool, timeout: VtdError) -> Result<(), VtdError> {
@@ -1168,6 +1210,12 @@ impl Plan {
         registers: &ReleasableDevice,
         platform_interrupt_remapping: bool,
     ) -> Result<Self, VtdError> {
+        let version = Version::from_bits(read_u32(registers, vtd::VERSION as usize)?);
+        if !version.register_invalidation_supported() {
+            return Err(VtdError::UnsupportedRegisterInvalidationVersion {
+                version: version.bits(),
+            });
+        }
         let capability = Capability::from_bits(read_u64(registers, vtd::CAP as usize)?);
         let extended = ExtendedCapability::from_bits(read_u64(registers, vtd::ECAP as usize)?);
         let width = AddressWidth::choose(capability).ok_or(VtdError::NoAddressWidth {

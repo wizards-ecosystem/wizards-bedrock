@@ -2335,6 +2335,8 @@ pub(crate) fn domain_proof_follows_translation_for_test() -> bool {
 pub(crate) struct FenceWitness {
     /// The command completed or was refused rather than hanging.
     pub(crate) completed: bool,
+    /// The priming read's live unmap completed a read-and-write DMA drain.
+    pub(crate) drained: bool,
     /// Every byte of the buffer still holds the pattern written before.
     pub(crate) unchanged: bool,
     /// The unit recorded a write from the storage function at the buffer's page.
@@ -2353,15 +2355,22 @@ pub(crate) fn unmapped_write_is_fenced_for_test() -> Option<FenceWitness> {
 
     let mut held = CONTROLLER.lock();
     let (controller, buffer) = held.as_mut()?;
+    let drains_before = crate::iommu::installed()
+        .as_ref()?
+        .completed_dma_drains_for_test();
     controller.read_blocks(0, 1, buffer).ok()?;
-    let source = {
+    let (source, drained) = {
         let mut installed = crate::iommu::installed();
         let isolation = installed.as_mut()?;
+        let drained = isolation.completed_dma_drains_for_test() > drains_before;
         isolation.drain_faults();
         let function = isolation.function();
-        (u16::from(function.bus()) << 8)
-            | (u16::from(function.device()) << 3)
-            | u16::from(function.function())
+        (
+            (u16::from(function.bus()) << 8)
+                | (u16::from(function.device()) << 3)
+                | u16::from(function.function()),
+            drained,
+        )
     };
     if !buffer.fill(PATTERN) {
         return None;
@@ -2383,6 +2392,7 @@ pub(crate) fn unmapped_write_is_fenced_for_test() -> Option<FenceWitness> {
     }
     Some(FenceWitness {
         completed: matches!(result, Ok(()) | Err(BringUpError::Command(_))),
+        drained,
         unchanged: bytes.iter().all(|byte| *byte == PATTERN),
         faulted,
     })

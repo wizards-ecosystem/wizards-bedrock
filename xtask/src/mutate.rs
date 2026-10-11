@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1776;
+pub const NEXT_MUTATION_ID: u16 = 1785;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -13188,7 +13188,7 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1544,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "        if let Err(reason) = self.invalidate(false) {\n            failure.get_or_insert(reason);\n        }\n        if let Some(reason) = failure {",
+        find: "        if let Err(reason) = self.drain_dma() {\n            failure.get_or_insert(reason);\n        }\n        if let Some(reason) = failure {",
         replace: "        if let Some(reason) = failure {",
         breaks: "an unmapped segment stays reachable through the unit's cache",
         reddens: Caught::Check("a device write into an unmapped frame faults and changes nothing"),
@@ -19888,6 +19888,102 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "tasks::tests::recursive_vm_cleanup_has_a_depth_bound_before_deleting",
+        },
+    },
+    Mutation {
+        id: 1776,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if let Err(reason) = self.drain_dma() {\n            failure.get_or_insert(reason);\n        }\n        if let Some(reason) = failure {",
+        replace: "        if let Err(reason) = self.invalidate(false) {\n            failure.get_or_insert(reason);\n        }\n        if let Some(reason) = failure {",
+        breaks: "live VT-d unmap recycles frames after invalidation without draining older DMA",
+        reddens: Caught::Check("a device write into an unmapped frame faults and changes nothing"),
+    },
+    Mutation {
+        id: 1777,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if let Err(reason) = self.drain_dma() {\n            failure.get_or_insert(reason);\n        }\n        failure.map_or(Ok(()), Err)",
+        replace: "        if let Err(reason) = self.invalidate(false) {\n            failure.get_or_insert(reason);\n        }\n        failure.map_or(Ok(()), Err)",
+        breaks: "partial VT-d mapping rollback recycles frames without draining older DMA",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+        },
+    },
+    Mutation {
+        id: 1778,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        self.flush_write_buffer()\n    }\n\n    fn flush_write_buffer",
+        replace: "        Ok(())\n    }\n\n    fn flush_write_buffer",
+        breaks: "drained VT-d invalidation skips the unit's required write-buffer flush",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+        },
+    },
+    Mutation {
+        id: 1779,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "            iotlb_command::global_with_drain(),",
+        replace: "            iotlb_command::global(),",
+        breaks: "the VT-d DMA drain command requests neither read nor write draining",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+        },
+    },
+    Mutation {
+        id: 1780,
+        file: "libs/vtd/src/lib.rs",
+        find: "        matches!(self.major(), 1..=5)",
+        replace: "        matches!(self.major(), 1..=6)",
+        breaks: "VT-d version six is incorrectly allowed to use ignored register invalidations",
+        reddens: Caught::HostTest {
+            package: "vtd",
+            name: "tests::version_bounds_the_register_invalidation_interface",
+        },
+    },
+    Mutation {
+        id: 1781,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if !version.register_invalidation_supported() {",
+        replace: "        if version.bits() == u32::MAX {",
+        breaks: "VT-d preflight accepts units whose register invalidations are architecturally ignored",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+        },
+    },
+    Mutation {
+        id: 1782,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        self.poll_u64(command_register, iotlb_command::global_completed)?;",
+        replace: "        self.poll_u64(command_register, iotlb_command::completed)?;",
+        breaks: "a drained VT-d invalidation treats an ignored global request as complete",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+        },
+    },
+    Mutation {
+        id: 1783,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "            self.poll_u64(vtd::CCMD as usize, context_command::global_completed)?;",
+        replace: "            self.poll_u64(vtd::CCMD as usize, context_command::completed)?;",
+        breaks: "VT-d context invalidation accepts an ignored global request",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+        },
+    },
+    Mutation {
+        id: 1784,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        self.poll_u64(command_register, iotlb_command::global_completed)\n    }",
+        replace: "        self.poll_u64(command_register, iotlb_command::completed)\n    }",
+        breaks: "ordinary VT-d IOTLB invalidation accepts an ignored global request",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
         },
     },
 ];

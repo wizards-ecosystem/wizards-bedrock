@@ -58,6 +58,8 @@ const ADDRESS_MASK: u64 = 0xFFFF_FFFF_FFFF_F000;
 // Register offsets, in bytes from the unit's register base.
 // ---------------------------------------------------------------------------
 
+/// Version register (32-bit).
+pub const VERSION: u64 = 0x00;
 /// Capability register (64-bit).
 pub const CAP: u64 = 0x08;
 /// Extended Capability register (64-bit).
@@ -82,6 +84,41 @@ pub const IQT: u64 = 0x88;
 pub const IQA: u64 = 0x90;
 /// Interrupt Remapping Table Address register (64-bit).
 pub const IRTA: u64 = 0xB8;
+
+/// The architecture version implemented by a remapping unit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Version(u32);
+
+impl Version {
+    /// Build a version view over the raw Version register.
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+
+    /// The raw Version register.
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// Major architecture version, bits 7:4.
+    pub const fn major(self) -> u8 {
+        ((self.0 >> 4) & 0xF) as u8
+    }
+
+    /// Minor architecture version, bits 3:0.
+    pub const fn minor(self) -> u8 {
+        (self.0 & 0xF) as u8
+    }
+
+    /// Whether this architecture version executes register-based invalidation.
+    ///
+    /// Major versions six and later require queued invalidation and treat the
+    /// register commands as invalid. Zero is not an implemented architecture
+    /// version, so rejecting it keeps malformed register windows fail-closed.
+    pub const fn register_invalidation_supported(self) -> bool {
+        matches!(self.major(), 1..=5)
+    }
+}
 
 /// Fault Event Control register bits.
 ///
@@ -738,6 +775,10 @@ pub mod context_command {
     const CIRG_SHIFT: u32 = 61;
     /// Global-granularity request (CIRG = 1).
     const GLOBAL: u64 = 1 << CIRG_SHIFT;
+    /// Context Actual Invalidation Granularity, bits 60:59.
+    const CAIG_SHIFT: u32 = 59;
+    const CAIG_MASK: u64 = 0b11;
+    const ACTUAL_GLOBAL: u64 = 0b01;
 
     /// A global context-cache invalidation command word.
     pub const fn global() -> u64 {
@@ -747,6 +788,12 @@ pub mod context_command {
     /// Whether a read-back value shows the invalidation complete (ICC clear).
     pub const fn completed(value: u64) -> bool {
         (value & ICC) == 0
+    }
+
+    /// Whether a global request completed and hardware reports actually
+    /// performing a global context-cache invalidation.
+    pub const fn global_completed(value: u64) -> bool {
+        completed(value) && ((value >> CAIG_SHIFT) & CAIG_MASK) == ACTUAL_GLOBAL
     }
 }
 
@@ -769,6 +816,10 @@ pub mod iotlb_command {
     const DRAIN_READS: u64 = 1 << 49;
     /// Drain writes before completing the invalidation, bit 48.
     const DRAIN_WRITES: u64 = 1 << 48;
+    /// IOTLB Actual Invalidation Granularity, bits 58:57.
+    const IAIG_SHIFT: u32 = 57;
+    const IAIG_MASK: u64 = 0b11;
+    const ACTUAL_GLOBAL: u64 = 0b01;
 
     /// A global IOTLB invalidation command word.
     pub const fn global() -> u64 {
@@ -786,6 +837,12 @@ pub mod iotlb_command {
     /// Whether a read-back value shows the invalidation complete (IVT clear).
     pub const fn completed(value: u64) -> bool {
         (value & IVT) == 0
+    }
+
+    /// Whether a global request completed and hardware reports actually
+    /// performing a global IOTLB invalidation.
+    pub const fn global_completed(value: u64) -> bool {
+        completed(value) && ((value >> IAIG_SHIFT) & IAIG_MASK) == ACTUAL_GLOBAL
     }
 }
 
@@ -906,6 +963,20 @@ impl FaultRecording {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_bounds_the_register_invalidation_interface() {
+        assert_eq!(VERSION, 0);
+        assert_eq!(Version::from_bits(0x51).bits(), 0x51);
+        assert_eq!(Version::from_bits(0x51).major(), 5);
+        assert_eq!(Version::from_bits(0x51).minor(), 1);
+        for major in 1..=5 {
+            assert!(Version::from_bits(major << 4).register_invalidation_supported());
+        }
+        assert!(!Version::from_bits(0).register_invalidation_supported());
+        assert!(!Version::from_bits(6 << 4).register_invalidation_supported());
+        assert!(!Version::from_bits(15 << 4).register_invalidation_supported());
+    }
 
     #[test]
     fn register_offsets_are_the_spec_byte_offsets() {
@@ -1405,6 +1476,10 @@ mod tests {
             context_command::completed(1 << 61),
             "a stale granularity is not a pending command"
         );
+        assert!(!context_command::global_completed(0));
+        assert!(context_command::global_completed(1 << 59));
+        assert!(!context_command::global_completed(2 << 59));
+        assert!(!context_command::global_completed((1 << 63) | (1 << 59)));
     }
 
     #[test]
@@ -1421,6 +1496,10 @@ mod tests {
             iotlb_command::completed(1 << 60),
             "a stale granularity is not a pending command"
         );
+        assert!(!iotlb_command::global_completed(0));
+        assert!(iotlb_command::global_completed(1 << 57));
+        assert!(!iotlb_command::global_completed(2 << 57));
+        assert!(!iotlb_command::global_completed((1 << 63) | (1 << 57)));
         assert_eq!(iotlb_command::COMMAND_REGISTER, 0x08);
     }
 

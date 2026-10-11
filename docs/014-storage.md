@@ -981,9 +981,9 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 281 |
-| Mutations | 1768 registered; complete-sweep verdicts live in source-bound qualification records |
+| Mutations | 1777 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-382 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-383 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but mutation registration is not a current full-sweep
@@ -1164,7 +1164,8 @@ found by breaking checks rather than by reading them.
 
 ## DMA isolation through the IOMMU (post-phase)
 
-**2026-09-29.** D-357; the programming choices are D-358 (2026-10-01).
+**2026-09-29.** D-357; the programming choices are D-358 (2026-10-01), with
+live-revocation ordering closed by D-383 (2026-10-10).
 
 The storage controller is a bus-mastering PCI device: it reads and writes
 physical memory directly, without the CPU, so the page tables that separate
@@ -1188,8 +1189,14 @@ The controller keeps naming physical addresses, and the IOMMU's second-level
 tables map only the frames a live `DmaSegment` currently owns, so IOVA equals
 host physical for a mapped frame and every other address faults. The queues and
 each in-flight read or write buffer are mapped before the frame is handed to the
-device and unmapped, with the IOMMU's cache invalidated, only after the existing
-lifecycle proves the frame device-quiescent. The set the device can reach is
+device and unmapped only after the existing lifecycle accepts its completion.
+Preflight admits this register-based invalidation path only for VT-d major
+versions 1 through 5. Unmap clears the leaves, performs any required write-buffer
+flush, then completes a global IOTLB invalidation with both read- and
+write-draining before the frame can return to the allocator. Completion is
+accepted only when the hardware's actual-granularity field reports global, not
+merely when its command bit clears. A hostile device's early completion therefore
+cannot leave an older DMA request racing a new frame owner. The set the device can reach is
 exactly the set the driver has published and not yet retired, which is the
 property the software lifecycle already maintains, now enforced by hardware
 rather than trusted of the device.
@@ -1213,7 +1220,7 @@ restored bus mastering off (D-358).
 D-369 makes rejection teardown independent of the endpoint's claimed stop
 state. The function-bound command owner first proves BME clear and excludes it
 from the rejected lease's restoration word. Every installed admin and I/O queue
-segment then leaves the domain with an invalidation before its frame can return
+segment then leaves the domain with a drained invalidation before its frame can return
 to the allocator; uncertainty retains the segment, controller, device and live
 domain together. Only after safe command restoration does the unit switch
 translation off. Fault diagnostics on this path drain one inventory-bounded
@@ -1306,13 +1313,17 @@ unit walks the kernel's root table, storage and the filesystem read through it,
 the second-level tables read back reach exactly the live queue frames, a domain
 proof is refused while translation is off, and a device write into a frame the
 domain does not map faults, changes nothing and shows that the unmap before it
-invalidated the unit's cache. The live checks also require deny-all interrupt
+completed a read-and-write drain as well as invalidating the unit's cache. The live checks also require deny-all interrupt
 remapping for every PCI requester, exact masked I/O APIC rollback, zero legacy
 keyboard interrupts and progress through the poller. The QEMU fixed profile
 presents `-device intel-iommu,intremap=on,eim=on,caching-mode=on`, the degraded gate boots the shipped image without it and
 requires the named refusal, and the VMware template enables its virtual unit.
-Each check is broken once and its mutation kept: a skipped invalidation, an
-extra mapped page, a proof minted with translation off, translation never
+Each check is broken once and its mutation kept: a skipped invalidation, a live
+unmap or partial-map rollback downgraded to non-draining invalidation, a skipped
+write-buffer flush, a drain command with neither drain bit, a widened or bypassed
+register-version boundary, an ignored invalidation accepted without its actual
+global-granularity readback, an extra mapped page,
+a proof minted with translation off, translation never
 switched on, a context programmed for a sibling function, the refusal text lost,
 a foreign domain admitted, a width that covers one bit too many, inherited
 firmware interrupt state, incomplete quiescence, a missing IR/QI/EIM capability,

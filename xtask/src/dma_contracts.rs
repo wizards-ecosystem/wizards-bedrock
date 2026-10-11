@@ -1821,6 +1821,115 @@ fn vtd_mapping_enforces_effective_coverage_before_the_walk() {
 }
 
 #[test]
+fn vtd_revocation_drains_older_dma_before_recycling_frames() {
+    let syntax = parse("wost/src/arch/x86_64/vtd.rs");
+
+    let mut preflight_calls = CallNames::default();
+    preflight_calls.visit_impl_item_fn(method(&syntax, "Plan", "read").expect("VT-d preflight"));
+    assert!(
+        preflight_calls
+            .0
+            .iter()
+            .any(|call| call == "register_invalidation_supported"),
+        "preflight must reject versions that cannot execute register invalidation"
+    );
+
+    for name in ["unmap_segment", "rollback_range"] {
+        let boundary = method(&syntax, "Vtd", name).expect("missing VT-d revocation boundary");
+        let mut calls = CallNames::default();
+        calls.visit_impl_item_fn(boundary);
+        assert_eq!(
+            calls
+                .0
+                .iter()
+                .filter(|call| call.as_str() == "drain_dma")
+                .count(),
+            1,
+            "{name} must issue one drained invalidation after clearing its leaves"
+        );
+        assert!(
+            !calls.0.iter().any(|call| call == "invalidate"),
+            "{name} must not recycle frames after a non-draining invalidation"
+        );
+    }
+
+    let drain = method(&syntax, "Vtd", "drain_dma").expect("VT-d DMA drain boundary");
+    let mut drain_calls = CallNames::default();
+    drain_calls.visit_impl_item_fn(drain);
+    let preparation = drain_calls
+        .0
+        .iter()
+        .position(|call| call == "prepare_invalidation")
+        .expect("a DMA drain must prepare the invalidation first");
+    let command = drain_calls
+        .0
+        .iter()
+        .position(|call| call == "global_with_drain")
+        .expect("a DMA drain must request both read and write draining");
+    let completion = drain_calls
+        .0
+        .iter()
+        .position(|call| call == "poll_u64")
+        .expect("a DMA drain must wait for invalidation completion");
+    assert!(preparation < command && command < completion);
+    assert!(
+        !drain_calls.0.iter().any(|call| call == "global"),
+        "the DMA drain command must not regress to a plain global invalidation"
+    );
+
+    #[derive(Default)]
+    struct AcceptedGlobalInvalidations {
+        context: usize,
+        iotlb: usize,
+    }
+    impl<'ast> Visit<'ast> for AcceptedGlobalInvalidations {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "poll_u64"
+                && let Some(Expr::Path(completion)) = call.args.last()
+            {
+                self.context += usize::from(path_ends(
+                    &completion.path,
+                    &["context_command", "global_completed"],
+                ));
+                self.iotlb += usize::from(path_ends(
+                    &completion.path,
+                    &["iotlb_command", "global_completed"],
+                ));
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+    let mut drain_completions = AcceptedGlobalInvalidations::default();
+    drain_completions.visit_impl_item_fn(drain);
+    assert_eq!(drain_completions.iotlb, 1);
+    assert_eq!(drain_completions.context, 0);
+
+    let ordinary = method(&syntax, "Vtd", "invalidate").expect("ordinary VT-d invalidation");
+    let mut ordinary_completions = AcceptedGlobalInvalidations::default();
+    ordinary_completions.visit_impl_item_fn(ordinary);
+    assert_eq!(ordinary_completions.iotlb, 1);
+    assert_eq!(ordinary_completions.context, 1);
+
+    let preparation =
+        method(&syntax, "Vtd", "prepare_invalidation").expect("invalidation preparation");
+    let mut preparation_calls = CallNames::default();
+    preparation_calls.visit_impl_item_fn(preparation);
+    assert!(
+        preparation_calls
+            .0
+            .iter()
+            .any(|call| call == "flush_write_buffer"),
+        "DMA draining must preserve the required write-buffer flush"
+    );
+
+    let mapping = method(&syntax, "Vtd", "map_range").expect("private VT-d range walk");
+    let mut mapping_calls = CallNames::default();
+    mapping_calls.visit_impl_item_fn(mapping);
+    assert!(mapping_calls.0.iter().any(|call| call == "invalidate"));
+    assert!(!mapping_calls.0.iter().any(|call| call == "drain_dma"));
+}
+
+#[test]
 fn a_partial_queue_mapping_rolls_back_the_submission_queue() {
     let syntax = parse("kernel/src/nvme.rs");
     let mapping = method(&syntax, "QueuePair", "map_into").expect("queue mapping boundary");
