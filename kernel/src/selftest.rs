@@ -1661,7 +1661,8 @@ fn open_the_small_file_in(
         ),
     );
     queue.publish_tail_for_test(slot as u32 + 1);
-    if queue.serve(table) != 1 {
+    let before = queue.served_count();
+    if queue.serve(table) != 0 || !runs_until(5_000, || queue.served_count() == before + 1) {
         return None;
     }
     let completion = queue.read_completion(2);
@@ -1701,7 +1702,8 @@ fn a_completion_carries_a_file_handle() -> bool {
     );
     queue.publish_tail_for_test(1);
 
-    if queue.serve(&table) != 1 {
+    let before = queue.served_count();
+    if queue.serve(&table) != 0 || !runs_until(5_000, || queue.served_count() == before + 1) {
         return false;
     }
     let completion = queue.read_completion(0);
@@ -1762,7 +1764,8 @@ fn opening_a_node_does_not_restore_universal_rights() -> bool {
         );
     }
     queue.publish_tail_for_test(2);
-    if queue.serve(&table) != 2 {
+    let before = queue.served_count();
+    if queue.serve(&table) != 0 || !runs_until(5_000, || queue.served_count() == before + 2) {
         return false;
     }
 
@@ -1844,6 +1847,129 @@ fn small_file_authority() -> Option<(Arc<HandleTable>, u32)> {
         )
         .ok()?;
     Some((table, handle))
+}
+
+fn a_cancelled_open_releases_its_reserved_handle_before_quiet() -> bool {
+    let Some(root) = vfs::root() else {
+        return false;
+    };
+    let table = shared_handle_table_or_false!(4);
+    let Ok(directory) = table.insert(
+        crate::object::directory(root),
+        Rights::UNIVERSAL.union(Rights::TRAVERSE),
+    ) else {
+        return false;
+    };
+    let Some(ring) = queue::Queue::new() else {
+        return false;
+    };
+    let Some(retry) = queue::Queue::new() else {
+        return false;
+    };
+    if !ring.write_data_for_test(0, SMALL_NAME) || !retry.write_data_for_test(0, SMALL_NAME) {
+        return false;
+    }
+
+    queue::pause_worker_for_test(true);
+    if !runs_until(2_000, queue::worker_is_paused_for_test) {
+        queue::pause_worker_for_test(false);
+        return false;
+    }
+    let queued = queue::queued_work_for_test();
+    let cancelled = {
+        ring.post_submission_for_test(
+            0,
+            queue::Queue::about_at(
+                queue::Opcode::OpenAt,
+                0x0A71,
+                directory,
+                0,
+                0,
+                SMALL_NAME.len() as u32,
+            ),
+        );
+        ring.publish_tail_for_test(1);
+        let admitted = ring.serve(&table) == 0
+            && ring.in_flight() == 1
+            && table.live() == 1
+            && table.promised() == 1
+            && queue::queued_work_for_test() == queued + 1;
+
+        ring.post_submission_for_test(
+            1,
+            queue::Submission::simple(queue::Opcode::Cancel, 0x0A72, 0x0A71),
+        );
+        ring.publish_tail_for_test(2);
+        let cancelled = ring.serve(&table) == 1;
+        let target = ring.read_completion(0);
+        let canceller = ring.read_completion(1);
+
+        admitted
+            && cancelled
+            && target.token == 0x0A71
+            && target.status == queue::STATUS_CANCELLED
+            && canceller.token == 0x0A72
+            && canceller.status == queue::STATUS_OK
+            && ring.is_quiet()
+            && ring.in_flight() == 0
+            && table.live() == 1
+            && table.promised() == 0
+            && queue::queued_work_for_test() == queued
+    };
+
+    retry.post_submission_for_test(
+        0,
+        queue::Queue::about_at(
+            queue::Opcode::OpenAt,
+            0x0A81,
+            directory,
+            0,
+            0,
+            SMALL_NAME.len() as u32,
+        ),
+    );
+    retry.publish_tail_for_test(1);
+    let admitted_for_retry = retry.serve(&table) == 0
+        && retry.in_flight() == 1
+        && table.live() == 1
+        && table.promised() == 1
+        && queue::queued_work_for_test() == queued + 1;
+    retry.refuse_next_post_for_test();
+    retry.post_submission_for_test(
+        1,
+        queue::Submission::simple(queue::Opcode::Cancel, 0x0A82, 0x0A81),
+    );
+    retry.publish_tail_for_test(2);
+    let cancellation_refused = retry.serve(&table) == 1
+        && retry.read_completion(0).token == 0x0A82
+        && retry.read_completion(0).status == queue::STATUS_NO_ROOM
+        && retry.in_flight() == 1
+        && table.live() == 1
+        && table.promised() == 1
+        && queue::queued_work_for_test() == queued + 1;
+
+    let served = retry.served_count();
+    queue::pause_worker_for_test(false);
+    let worker_finished = runs_until(5_000, || retry.served_count() == served + 1);
+    let completion = retry.read_completion(1);
+    let installed = completion.token == 0x0A81
+        && completion.status == queue::STATUS_OK
+        && table
+            .resolve(completion.value as u32)
+            .is_ok_and(|(object, rights)| {
+                object.as_file().is_some() && rights == Rights::UNIVERSAL.union(Rights::READ)
+            });
+
+    cancelled
+        && admitted_for_retry
+        && cancellation_refused
+        && worker_finished
+        && installed
+        && retry.is_quiet()
+        && retry.in_flight() == 0
+        && table.live() == 2
+        && table.promised() == 0
+        && queue::queued_work_for_test() == queued
 }
 
 fn file_work_pressure_is_bounded_at_admission() -> bool {
@@ -2013,6 +2139,7 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
         return false;
     };
 
+    let before = nvme::command_count_for_test();
     let asked = [
         // No TRAVERSE.
         (
@@ -2037,19 +2164,24 @@ fn a_ring_operation_cannot_reach_past_its_rights_or_its_pages() -> bool {
         );
     }
     queue.publish_tail_for_test(asked.len() as u32);
-    if queue.serve(&table) != asked.len() {
+    let served_before = queue.served_count();
+    if queue.serve(&table) != asked.len() - 1
+        || !runs_until(5_000, || {
+            queue.served_count() == served_before + asked.len()
+        })
+    {
         return false;
     }
 
-    let mut refused = true;
-    for (slot, token, _, _, _, status) in asked {
-        let completion = queue.read_completion(slot);
-        refused &= completion.token == token && completion.status == status;
-    }
+    let refused = asked.iter().all(|(_, token, _, _, _, status)| {
+        (0..asked.len()).any(|slot| {
+            let completion = queue.read_completion(slot);
+            completion.token == *token && completion.status == *status
+        })
+    });
 
     // Device-access counts distinguish preflight refusal from a late error
     // after I/O (D-173).
-    let before = nvme::command_count_for_test();
     queue.post_submission_for_test(
         4,
         queue::Queue::about_at(queue::Opcode::Read, 0xD5, unreadable, 0, 0, 16),
@@ -2101,7 +2233,8 @@ fn open_the_small_file(
         ),
     );
     queue.publish_tail_for_test(1);
-    if queue.serve(&table) != 1 {
+    let before = queue.served_count();
+    if queue.serve(&table) != 0 || !runs_until(5_000, || queue.served_count() == before + 1) {
         return None;
     }
     let completion = queue.read_completion(0);
@@ -7994,7 +8127,7 @@ const VERDICT_VERSION: usize = 1;
 
 /// Exact check count; mismatch catches deletion or bypass before the verdict.
 /// Changing it requires a retained mutation (D-119).
-const EXPECTED_CHECKS: usize = 280;
+const EXPECTED_CHECKS: usize = 281;
 
 #[cfg(feature = "selftest")]
 fn awaiting(marker: &str, press: &str) {
@@ -8199,6 +8332,10 @@ pub(crate) fn run(serial: Result<(), UartError>) {
     report.check(
         "a read is a submission with its own offset",
         a_read_is_a_submission_with_its_own_offset(),
+    );
+    report.check(
+        "a cancelled open releases its reserved handle before quiet",
+        a_cancelled_open_releases_its_reserved_handle_before_quiet(),
     );
     report.check(
         "file work pressure is bounded at admission",

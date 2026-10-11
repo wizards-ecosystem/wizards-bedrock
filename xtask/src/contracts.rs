@@ -2528,6 +2528,66 @@ fn inherent_method<'ast>(
     method
 }
 
+#[derive(Default)]
+struct OpenAtBoundary {
+    storage_resolves: usize,
+    file_work_submissions: usize,
+}
+
+impl<'ast> Visit<'ast> for OpenAtBoundary {
+    fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+        if matches!(call.func.as_ref(), Expr::Path(function)
+            if function.qself.is_none()
+                && path_ends_with(&function.path, &["crate", "vfs", "resolve"]))
+        {
+            self.storage_resolves += 1;
+        }
+        visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+        if call.method == "submit"
+            && matches!(call.receiver.as_ref(), Expr::Path(receiver)
+                if receiver.qself.is_none() && receiver.path.is_ident("FILE_WORK"))
+        {
+            self.file_work_submissions += 1;
+        }
+        visit::visit_expr_method_call(self, call);
+    }
+}
+
+#[test]
+fn open_at_storage_work_is_deferred_out_of_trap_context() {
+    const RELATIVE: &str = "kernel/src/queue.rs";
+    let paths = Paths::discover().expect("workspace paths");
+    let source = std::fs::read_to_string(paths.root().join(RELATIVE)).expect("read queue source");
+    let syntax = syn::parse_file(&source).expect("parse queue source");
+
+    let mut admission = OpenAtBoundary::default();
+    Visit::visit_impl_item_fn(
+        &mut admission,
+        inherent_method(&syntax, "Queue", "open_at", RELATIVE),
+    );
+    assert_eq!(
+        admission.storage_resolves, 0,
+        "OpenAt admission reached storage while RingEnter was in trap context"
+    );
+    assert_eq!(
+        admission.file_work_submissions, 1,
+        "OpenAt admission did not transfer exactly one request to the bounded file worker"
+    );
+
+    let mut service = OpenAtBoundary::default();
+    Visit::visit_item_fn(
+        &mut service,
+        top_level_function(&syntax, "service", RELATIVE),
+    );
+    assert_eq!(
+        service.storage_resolves, 1,
+        "the thread-context file worker does not own the one OpenAt storage resolution"
+    );
+}
+
 fn is_pub_super(visibility: &syn::Visibility) -> bool {
     matches!(
         visibility,

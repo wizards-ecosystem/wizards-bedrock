@@ -32,7 +32,7 @@ use wost::mm::{self, SharedRing, USegment};
 use wost::sync::SpinLock;
 use x86_paging::{Flags, PAGE_SIZE};
 
-use crate::handle::HandleTable;
+use crate::handle::{HandleTable, SlotReservation};
 use crate::wait::WaitQueue;
 
 /// Bytes of shared page: the header and indices, the entries, and a data area.
@@ -323,9 +323,11 @@ enum PendingKind {
     /// Waiting for the monotonic clock.
     Timer { deadline_ns: u64 },
     /// Waiting for, or already owned by, the one file worker.
+    OpenAt { phase: WorkPhase },
+    /// Waiting for, or already owned by, the one file worker.
     Read {
         request: ReadRequest,
-        state: ReadState,
+        phase: WorkPhase,
     },
 }
 
@@ -334,8 +336,11 @@ impl PendingKind {
         matches!(
             self,
             Self::Timer { .. }
+                | Self::OpenAt {
+                    phase: WorkPhase::Queued
+                }
                 | Self::Read {
-                    state: ReadState::Queued,
+                    phase: WorkPhase::Queued,
                     ..
                 }
         )
@@ -344,7 +349,7 @@ impl PendingKind {
     const fn deadline(self) -> Option<u64> {
         match self {
             Self::Timer { deadline_ns } => Some(deadline_ns),
-            Self::Read { .. } => None,
+            Self::OpenAt { .. } | Self::Read { .. } => None,
         }
     }
 }
@@ -358,9 +363,9 @@ struct ReadRequest {
     wanted: usize,
 }
 
-/// The cancellation boundary for a deferred read.
+/// The cancellation boundary for deferred file work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ReadState {
+enum WorkPhase {
     Queued,
     Running,
 }
@@ -429,10 +434,54 @@ struct Work {
     ring: Arc<Queue>,
     pending: usize,
     expected: Pending,
+    tag: WorkTag,
+    /// Present exactly for `OpenAt`. Keeping the bounded path inline avoids a
+    /// fallible heap allocation in trap-side admission while every queue slot
+    /// remains statically accounted (D-381).
+    open_at: Option<OpenRequest>,
 }
 
 #[derive(Debug)]
-struct RunningRead {
+struct OpenRequest {
+    directory: crate::vfs::Directory,
+    held: Rights,
+    path: [u8; MAX_PATH],
+    len: usize,
+    reservation: Option<SlotReservation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkTag {
+    OpenAt,
+    Read,
+}
+
+impl WorkTag {
+    const fn matches(self, kind: PendingKind) -> bool {
+        matches!(
+            (self, kind),
+            (Self::OpenAt, PendingKind::OpenAt { .. }) | (Self::Read, PendingKind::Read { .. })
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkClaim {
+    Claimed(Pending),
+    Retry,
+    Stale,
+}
+
+#[derive(Debug)]
+struct WorkKey {
+    ring: Arc<Queue>,
+    pending: usize,
+    expected: Pending,
+    tag: WorkTag,
+}
+
+#[derive(Debug)]
+struct RunningWork {
     work: Work,
 }
 
@@ -454,10 +503,11 @@ impl WorkState {
         }
     }
 
-    fn push(&mut self, work: Work) -> Result<(), Work> {
+    /// Return the unconsumed owner when the fixed queue is full.
+    fn push(&mut self, work: Work) -> Option<Work> {
         self.assert_invariants();
         if self.len == WORK_DEPTH {
-            return Err(work);
+            return Some(work);
         }
         assert!(
             self.slots[self.tail].is_none(),
@@ -467,9 +517,10 @@ impl WorkState {
         self.tail = (self.tail + 1) % WORK_DEPTH;
         self.len += 1;
         self.assert_invariants();
-        Ok(())
+        None
     }
 
+    #[cfg(feature = "selftest")]
     fn pop(&mut self) -> Option<Work> {
         self.assert_invariants();
         if self.len == 0 {
@@ -482,6 +533,30 @@ impl WorkState {
         self.len -= 1;
         self.assert_invariants();
         Some(work)
+    }
+
+    fn front(&self) -> Option<&Work> {
+        self.slots.get(self.head).and_then(Option::as_ref)
+    }
+
+    fn remove(&mut self, wanted: impl Fn(&Work) -> bool) -> Option<Work> {
+        self.assert_invariants();
+        let position = (0..self.len).find(|offset| {
+            self.slots[(self.head + offset) % WORK_DEPTH]
+                .as_ref()
+                .is_some_and(&wanted)
+        })?;
+        let index = (self.head + position) % WORK_DEPTH;
+        let removed = self.slots[index].take();
+        for offset in position..self.len - 1 {
+            let from = (self.head + offset + 1) % WORK_DEPTH;
+            let to = (self.head + offset) % WORK_DEPTH;
+            self.slots[to] = self.slots[from].take();
+        }
+        self.len -= 1;
+        self.tail = (self.head + self.len) % WORK_DEPTH;
+        self.assert_invariants();
+        removed
     }
 
     fn assert_invariants(&self) {
@@ -518,21 +593,61 @@ impl FileWorkQueue {
         }
     }
 
-    fn submit(&self, work: Work) -> Result<(), Work> {
+    /// Return the unconsumed owner when the fixed queue is full.
+    fn submit(&self, work: Work) -> Option<Work> {
         let mut state = self.state.lock_leaf();
-        state.push(work)?;
+        let refused = state.push(work);
+        if refused.is_some() {
+            return refused;
+        }
         self.queued.store(state.len, Ordering::Release);
         drop(state);
         self.waiters.wake_all();
-        Ok(())
+        None
     }
 
-    fn take(&self) -> Option<Work> {
+    fn take(&self) -> Option<RunningWork> {
+        loop {
+            // Copy only the key while holding the queue leaf. Claiming the
+            // pending entry takes the ring's distinct leaf and therefore must
+            // happen after this guard is gone (D-85).
+            let key = {
+                let state = self.state.lock_leaf();
+                state.front().map(Work::key)
+            }?;
+            match key.ring.begin_work(&key) {
+                WorkClaim::Retry => return None,
+                WorkClaim::Stale => {
+                    let mut state = self.state.lock_leaf();
+                    let work = state.remove(|work| work.matches(&key));
+                    self.queued.store(state.len, Ordering::Release);
+                    drop(state);
+                    drop(work);
+                }
+                WorkClaim::Claimed(expected) => {
+                    let mut state = self.state.lock_leaf();
+                    let work = state.remove(|work| work.matches(&key));
+                    self.queued.store(state.len, Ordering::Release);
+                    drop(state);
+                    let Some(mut work) = work else {
+                        panic!("claimed file work vanished from the bounded queue");
+                    };
+                    work.expected = expected;
+                    return Some(RunningWork { work });
+                }
+            }
+        }
+    }
+
+    fn remove(&self, ring: &Queue, pending: usize, id: u64) -> Option<Work> {
         let mut state = self.state.lock_leaf();
-        let work = state.pop()?;
+        let work = state.remove(|work| {
+            core::ptr::eq(work.ring.as_ref(), ring)
+                && work.pending == pending
+                && work.expected.id == id
+        });
         self.queued.store(state.len, Ordering::Release);
-        drop(state);
-        Some(work)
+        work
     }
 }
 
@@ -621,52 +736,76 @@ pub(crate) struct Queue {
 static LIVE_QUEUES: AtomicUsize = AtomicUsize::new(0);
 
 impl Work {
-    fn remove_queued_read(self) {
+    fn open_at(ring: Arc<Queue>, pending: usize, expected: Pending, request: OpenRequest) -> Self {
+        Self {
+            ring,
+            pending,
+            expected,
+            tag: WorkTag::OpenAt,
+            open_at: Some(request),
+        }
+    }
+
+    fn read(ring: Arc<Queue>, pending: usize, expected: Pending) -> Self {
+        Self {
+            ring,
+            pending,
+            expected,
+            tag: WorkTag::Read,
+            open_at: None,
+        }
+    }
+
+    fn key(&self) -> WorkKey {
+        WorkKey {
+            ring: Arc::clone(&self.ring),
+            pending: self.pending,
+            expected: self.expected,
+            tag: self.tag,
+        }
+    }
+
+    fn matches(&self, key: &WorkKey) -> bool {
+        Arc::ptr_eq(&self.ring, &key.ring)
+            && self.pending == key.pending
+            && self.expected == key.expected
+            && self.tag == key.tag
+    }
+
+    fn remove_queued(self) {
         let mut pending = self.ring.pending.lock_leaf();
         let Some(current) = pending.slots.get(self.pending).copied().flatten() else {
             panic!("refused file work lost its pending entry");
         };
         assert!(
             !self.expected.settling
-                && matches!(
-                    self.expected.kind,
-                    PendingKind::Read {
-                        state: ReadState::Queued,
-                        ..
-                    }
-                )
+                && self.expected.kind.is_queued_work()
                 && current == self.expected,
-            "refused file work no longer owns its queued read"
+            "refused file work no longer owns its queued operation"
         );
         pending.slots[self.pending] = None;
     }
+}
 
-    fn begin_read(mut self) -> Option<RunningRead> {
-        let expected = {
-            let mut pending = self.ring.pending.lock_leaf();
-            let entry = pending.slots.get_mut(self.pending)?.as_mut()?;
-            if *entry != self.expected {
-                return None;
+impl PendingKind {
+    const fn is_queued_work(self) -> bool {
+        matches!(
+            self,
+            Self::OpenAt {
+                phase: WorkPhase::Queued
+            } | Self::Read {
+                phase: WorkPhase::Queued,
+                ..
             }
-            let PendingKind::Read { state, .. } = &mut entry.kind else {
-                return None;
-            };
-            if *state != ReadState::Queued {
-                return None;
-            }
-            *state = ReadState::Running;
-            *entry
-        };
-        self.expected = expected;
-        Some(RunningRead { work: self })
+        )
     }
 }
 
-impl RunningRead {
-    fn request(&self) -> ReadRequest {
+impl RunningWork {
+    fn read_request(&self) -> ReadRequest {
         let PendingKind::Read {
             request,
-            state: ReadState::Running,
+            phase: WorkPhase::Running,
         } = self.work.expected.kind
         else {
             unreachable!("running file work was made without a running read");
@@ -674,7 +813,8 @@ impl RunningRead {
         request
     }
 
-    fn finish(self, status: u32, value: u64) -> Result<(), Self> {
+    /// Return the still-live owner when terminal publication is refused.
+    fn finish(self, status: u32, value: u64) -> Option<Self> {
         let entry = {
             let mut pending = self.work.ring.pending.lock_leaf();
             let Some(entry) = pending
@@ -686,7 +826,7 @@ impl RunningRead {
             };
             assert!(
                 !entry.settling && *entry == self.work.expected,
-                "running file work no longer owns its read"
+                "running file work no longer owns its operation"
             );
             entry.settling = true;
             *entry
@@ -697,11 +837,11 @@ impl RunningRead {
             .ring
             .settle_pending(self.work.pending, entry, status, value)
         {
-            return Err(self);
+            return Some(self);
         }
         self.work.ring.served.fetch_add(1, Ordering::Release);
         self.work.ring.waiters.wake_all();
-        Ok(())
+        None
     }
 }
 
@@ -876,7 +1016,7 @@ impl Queue {
                 refuse(token, STATUS_NO_ROOM)
             }
             Opcode::Cancel => self.cancel(submission),
-            Opcode::OpenAt => self.open_at(submission, table),
+            Opcode::OpenAt => return Self::open_at(self, submission, table),
             Opcode::Read => return Self::read(self, submission, table),
             Opcode::Unknown(_) => refuse(token, STATUS_UNKNOWN_OPCODE),
         })
@@ -926,50 +1066,54 @@ impl Queue {
 
     /// Resolve through a directory without widening its authority.
     /// The output slot is reserved before any work that would owe a result.
-    fn open_at(&self, submission: Submission, table: &Arc<HandleTable>) -> Completion {
+    fn open_at(
+        self: &Arc<Self>,
+        submission: Submission,
+        table: &Arc<HandleTable>,
+    ) -> Option<Completion> {
         let token = submission.token;
 
         let Ok(reservation) = table.reserve_slot() else {
-            return refuse(token, STATUS_NO_HANDLE_SLOT);
+            return Some(refuse(token, STATUS_NO_HANDLE_SLOT));
         };
         let mut path = [0u8; MAX_PATH];
         let Some(len) = self.read_data(submission.argument, submission.length, &mut path) else {
-            return refuse(token, STATUS_BAD_BUFFER);
+            return Some(refuse(token, STATUS_BAD_BUFFER));
         };
 
         let Ok((object, held)) = table.resolve(submission.handle) else {
-            return refuse(token, STATUS_BAD_HANDLE);
+            return Some(refuse(token, STATUS_BAD_HANDLE));
         };
         let Some(directory) = object.as_directory().copied() else {
-            return refuse(token, STATUS_BAD_HANDLE);
+            return Some(refuse(token, STATUS_BAD_HANDLE));
         };
         if !held.contains(Rights::TRAVERSE) {
-            return refuse(token, STATUS_DENIED);
+            return Some(refuse(token, STATUS_DENIED));
         }
 
-        let node = match crate::vfs::resolve(directory, &path[..len]) {
-            Ok(node) => node,
-            Err(crate::vfs::VfsError::Path(_)) => return refuse(token, STATUS_BAD_PATH),
-            Err(_) => return refuse(token, STATUS_NO_ENTRY),
+        if !worker_is_ready() {
+            return Some(refuse(token, STATUS_NO_ROOM));
+        }
+        let Some((pending, expected)) = self.defer_open_at(token) else {
+            return Some(refuse(token, STATUS_NO_ROOM));
         };
-
-        let (produced, offered) = match node {
-            crate::vfs::Node::File(file) => (
-                crate::object::file(file),
-                held.intersection(Rights::UNIVERSAL).union(Rights::READ),
-            ),
-            crate::vfs::Node::Directory(directory) => (crate::object::directory(directory), held),
-            crate::vfs::Node::Device(_) => return refuse(token, STATUS_DENIED),
-        };
-
-        match reservation.install(produced, offered, offered) {
-            Ok(handle) => Completion {
-                token,
-                status: STATUS_OK,
-                value: u64::from(handle),
+        let work = Work::open_at(
+            Arc::clone(self),
+            pending,
+            expected,
+            OpenRequest {
+                directory,
+                held,
+                path,
+                len,
+                reservation: Some(reservation),
             },
-            Err(_) => refuse(token, STATUS_DENIED),
+        );
+        if let Some(work) = FILE_WORK.submit(work) {
+            work.remove_queued();
+            return Some(refuse(token, STATUS_NO_ROOM));
         }
+        None
     }
 
     /// Read bytes of a file into the ring's data area.
@@ -1017,13 +1161,9 @@ impl Queue {
         let Some((pending, expected)) = self.defer_read(token, request) else {
             return Some(refuse(token, STATUS_NO_ROOM));
         };
-        let work = Work {
-            ring: Arc::clone(self),
-            pending,
-            expected,
-        };
-        if let Err(work) = FILE_WORK.submit(work) {
-            work.remove_queued_read();
+        let work = Work::read(Arc::clone(self), pending, expected);
+        if let Some(work) = FILE_WORK.submit(work) {
+            work.remove_queued();
             return Some(refuse(token, STATUS_NO_ROOM));
         }
         None
@@ -1062,6 +1202,16 @@ impl Queue {
             .map(|_| deadline_ns)
     }
 
+    /// Record an open before offering it to the global worker.
+    fn defer_open_at(&self, token: u32) -> Option<(usize, Pending)> {
+        self.pending.lock_leaf().insert(
+            token,
+            PendingKind::OpenAt {
+                phase: WorkPhase::Queued,
+            },
+        )
+    }
+
     /// Record a read before offering it to the global worker.
     fn defer_read(&self, token: u32, request: ReadRequest) -> Option<(usize, Pending)> {
         let mut pending = self.pending.lock_leaf();
@@ -1069,10 +1219,41 @@ impl Queue {
             token,
             PendingKind::Read {
                 request,
-                state: ReadState::Queued,
+                phase: WorkPhase::Queued,
             },
         )?;
         Some((index, expected))
+    }
+
+    /// Transfer one exact queued item to the thread-context worker.
+    fn begin_work(&self, key: &WorkKey) -> WorkClaim {
+        let mut pending = self.pending.lock_leaf();
+        let Some(entry) = pending.slots.get_mut(key.pending).and_then(Option::as_mut) else {
+            return WorkClaim::Stale;
+        };
+        if entry.settling {
+            let live = Pending {
+                settling: false,
+                ..*entry
+            };
+            return if live == key.expected {
+                WorkClaim::Retry
+            } else {
+                WorkClaim::Stale
+            };
+        }
+        if *entry != key.expected || !key.tag.matches(entry.kind) {
+            return WorkClaim::Stale;
+        }
+        let phase = match &mut entry.kind {
+            PendingKind::OpenAt { phase } | PendingKind::Read { phase, .. } => phase,
+            PendingKind::Timer { .. } => return WorkClaim::Stale,
+        };
+        if *phase != WorkPhase::Queued {
+            return WorkClaim::Stale;
+        }
+        *phase = WorkPhase::Running;
+        WorkClaim::Claimed(*entry)
     }
 
     /// Mark one matching operation as being terminally reported.
@@ -1143,6 +1324,10 @@ impl Queue {
             // it, while the target remains live and may be retried (D-192).
             return refuse(submission.token, STATUS_NO_ROOM);
         }
+        // If the worker has not claimed this operation, remove the payload
+        // now. For OpenAt that drops its handle-slot promise before reporting
+        // cancellation; for Read it avoids spending worker time on a tombstone.
+        drop(FILE_WORK.remove(self, index, entry.id));
         self.served.fetch_add(1, Ordering::Release);
         Completion {
             token: submission.token,
@@ -1197,6 +1382,7 @@ impl Queue {
             if !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
                 break;
             }
+            drop(FILE_WORK.remove(self, index, entry.id));
             ended += 1;
         }
 
@@ -1606,66 +1792,87 @@ fn work_state_round_trip_is_exact_for_test() -> bool {
     let Some(ring) = Queue::new() else {
         return false;
     };
-    let work = |id| Work {
-        ring: Arc::clone(&ring),
-        pending: 0,
-        expected: Pending {
-            id,
-            token: 0,
-            kind: PendingKind::Read {
-                request: ReadRequest {
-                    file: crate::vfs::File::Tmp { at: 0, len: 0 },
-                    offset: 0,
-                    at: 0,
-                    wanted: 0,
+    let work = |id| {
+        Work::read(
+            Arc::clone(&ring),
+            0,
+            Pending {
+                id,
+                token: 0,
+                kind: PendingKind::Read {
+                    request: ReadRequest {
+                        file: crate::vfs::File::Tmp { at: 0, len: 0 },
+                        offset: 0,
+                        at: 0,
+                        wanted: 0,
+                    },
+                    phase: WorkPhase::Queued,
                 },
-                state: ReadState::Queued,
+                settling: false,
             },
-            settling: false,
-        },
+        )
     };
     let mut state = WorkState::new();
 
     for id in 1..=WORK_DEPTH as u64 {
-        if state.push(work(id)).is_err() {
+        if state.push(work(id)).is_some() {
             return false;
         }
     }
-    let refused = match state.push(work(WORK_DEPTH as u64 + 1)) {
-        Ok(()) => false,
-        Err(work) => work.expected.id == WORK_DEPTH as u64 + 1,
-    };
+    let refused = state
+        .push(work(WORK_DEPTH as u64 + 1))
+        .is_some_and(|work| work.expected.id == WORK_DEPTH as u64 + 1);
     for id in 1..=WORK_DEPTH as u64 / 2 {
         if state.pop().is_none_or(|work| work.expected.id != id) {
             return false;
         }
     }
     for id in WORK_DEPTH as u64 + 1..=WORK_DEPTH as u64 + WORK_DEPTH as u64 / 2 {
-        if state.push(work(id)).is_err() {
+        if state.push(work(id)).is_some() {
             return false;
         }
     }
     let exact = (WORK_DEPTH as u64 / 2 + 1..=WORK_DEPTH as u64 + WORK_DEPTH as u64 / 2)
         .all(|id| state.pop().is_some_and(|work| work.expected.id == id));
 
-    let mut bad_bounds = WorkState::new();
-    bad_bounds.head = WORK_DEPTH;
-    let mut bad_tail = WorkState::new();
-    bad_tail.tail = WORK_DEPTH;
-    let mut bad_length = WorkState::new();
-    bad_length.len = WORK_DEPTH + 1;
-    let mut bad_window = WorkState::new();
-    bad_window.tail = 1;
-    bad_window.len = 1;
+    let empty = state.pop().is_none() && state.is_consistent();
+    state.head = WORK_DEPTH;
+    let bad_bounds = !state.is_consistent();
+    state.head = 0;
+    state.tail = WORK_DEPTH;
+    let bad_tail = !state.is_consistent();
+    state.tail = 0;
+    state.len = WORK_DEPTH + 1;
+    let bad_length = !state.is_consistent();
+    state.len = 1;
+    state.tail = 1;
+    let bad_window = !state.is_consistent();
+    state.len = 0;
+    state.tail = 0;
+
+    let removal_ready = (1..=3).all(|id| state.push(work(id)).is_none());
+    let middle_removed = state
+        .remove(|candidate| candidate.expected.id == 2)
+        .is_some_and(|removed| removed.expected.id == 2);
+    let removal_exact = state
+        .pop()
+        .is_some_and(|retained| retained.expected.id == 1)
+        && state
+            .pop()
+            .is_some_and(|retained| retained.expected.id == 3)
+        && state.pop().is_none()
+        && state.is_consistent();
 
     refused
         && exact
-        && state.pop().is_none()
-        && state.is_consistent()
-        && !bad_bounds.is_consistent()
-        && !bad_tail.is_consistent()
-        && !bad_length.is_consistent()
-        && !bad_window.is_consistent()
+        && empty
+        && removal_ready
+        && middle_removed
+        && removal_exact
+        && bad_bounds
+        && bad_tail
+        && bad_length
+        && bad_window
 }
 
 #[cfg(feature = "selftest")]
@@ -1694,7 +1901,7 @@ pub(crate) fn start_worker() {
             crate::info!("kernel: service worker ready; file queue has {WORK_DEPTH} slots");
         }
         Err(reason) => crate::warn!(
-            "kernel: no service worker: {reason}; reads and user launch are unavailable"
+            "kernel: no service worker: {reason}; file operations and user launch are unavailable"
         ),
     }
 }
@@ -1777,31 +1984,81 @@ fn work_forever() {
     }
 }
 
-/// Execute one read outside the syscall handler and every spin lock.
-fn service(work: Work) {
-    let Some(mut running) = work.begin_read() else {
-        return;
-    };
-    let request = running.request();
+/// Execute one file operation outside the syscall handler and every spin lock.
+fn service(mut running: RunningWork) {
     #[cfg(feature = "selftest")]
     WORK_RUNS.fetch_add(1, Ordering::AcqRel);
-    let mut scratch = [0u8; MAX_READ];
-    let (status, value) =
-        match crate::vfs::read(request.file, request.offset, &mut scratch[..request.wanted]) {
-            Ok(read) if running.work.ring.write_data(request.at, &scratch[..read]) => {
-                (STATUS_OK, read as u64)
+    let (status, value) = match running.work.tag {
+        WorkTag::Read => {
+            assert!(
+                running.work.open_at.is_none(),
+                "read file work carried an OpenAt payload"
+            );
+            let request = running.read_request();
+            let mut scratch = [0u8; MAX_READ];
+            match crate::vfs::read(request.file, request.offset, &mut scratch[..request.wanted]) {
+                Ok(read) if running.work.ring.write_data(request.at, &scratch[..read]) => {
+                    (STATUS_OK, read as u64)
+                }
+                Ok(_) => (STATUS_BAD_BUFFER, 0),
+                Err(crate::vfs::VfsError::Path(_)) => (STATUS_BAD_PATH, 0),
+                Err(_) => (STATUS_NO_ENTRY, 0),
             }
-            Ok(_) => (STATUS_BAD_BUFFER, 0),
-            Err(crate::vfs::VfsError::Path(_)) => (STATUS_BAD_PATH, 0),
-            Err(_) => (STATUS_NO_ENTRY, 0),
-        };
+        }
+        WorkTag::OpenAt => {
+            let mut request = running
+                .work
+                .open_at
+                .take()
+                .unwrap_or_else(|| panic!("OpenAt file work lost its request"));
+            let reservation = request
+                .reservation
+                .take()
+                .unwrap_or_else(|| panic!("OpenAt file work spent its reservation twice"));
+            let node = match crate::vfs::resolve(request.directory, &request.path[..request.len]) {
+                Ok(node) => node,
+                Err(crate::vfs::VfsError::Path(_)) => {
+                    drop(reservation);
+                    return finish_work(running, STATUS_BAD_PATH, 0);
+                }
+                Err(_) => {
+                    drop(reservation);
+                    return finish_work(running, STATUS_NO_ENTRY, 0);
+                }
+            };
+            let (produced, offered) = match node {
+                crate::vfs::Node::File(file) => (
+                    crate::object::file(file),
+                    request
+                        .held
+                        .intersection(Rights::UNIVERSAL)
+                        .union(Rights::READ),
+                ),
+                crate::vfs::Node::Directory(directory) => {
+                    (crate::object::directory(directory), request.held)
+                }
+                crate::vfs::Node::Device(_) => {
+                    drop(reservation);
+                    return finish_work(running, STATUS_DENIED, 0);
+                }
+            };
+            match reservation.install(produced, offered, offered) {
+                Ok(handle) => (STATUS_OK, u64::from(handle)),
+                Err(_) => (STATUS_DENIED, 0),
+            }
+        }
+    };
 
+    finish_work(running, status, value);
+}
+
+fn finish_work(mut running: RunningWork, status: u32, value: u64) {
     // Admission reserved the completion; the only refusal is D-192's
     // transient self-test injection, so keep ownership until it posts.
     loop {
         match running.finish(status, value) {
-            Ok(()) => break,
-            Err(retry) => {
+            None => break,
+            Some(retry) => {
                 running = retry;
                 core::hint::spin_loop();
             }

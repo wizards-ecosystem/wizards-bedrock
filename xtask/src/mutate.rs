@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1771;
+pub const NEXT_MUTATION_ID: u16 = 1773;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -2426,6 +2426,7 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "            if !self.settle_pending(index, entry, STATUS_CANCELLED, 0) {
                 break;
             }
+            drop(FILE_WORK.remove(self, index, entry.id));
             ended += 1;",
         replace: "            let _ = entry;
             self.pending.lock_leaf().slots[index] = None;
@@ -3268,10 +3269,10 @@ pub const MUTATIONS: &[Mutation] = &[
         id: 272,
         file: "kernel/src/queue.rs",
         find: "        if !held.contains(Rights::TRAVERSE) {
-            return refuse(token, STATUS_DENIED);
+            return Some(refuse(token, STATUS_DENIED));
         }",
         replace: "        if false {
-            return refuse(token, STATUS_DENIED);
+            return Some(refuse(token, STATUS_DENIED));
         }",
         breaks: "an open needs the right to traverse",
         reddens: Caught::Check("a ring operation cannot reach past its rights or its pages"),
@@ -3281,10 +3282,17 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 273,
         file: "kernel/src/queue.rs",
-        find: "                held.intersection(Rights::UNIVERSAL).union(Rights::READ),
-            ),",
-        replace: "                held.intersection(Rights::UNIVERSAL).union(Rights::READ).union(Rights::WRITE),
-            ),",
+        find: "                    request
+                        .held
+                        .intersection(Rights::UNIVERSAL)
+                        .union(Rights::READ),
+                ),",
+        replace: "                    request
+                        .held
+                        .intersection(Rights::UNIVERSAL)
+                        .union(Rights::READ)
+                        .union(Rights::WRITE),
+                ),",
         breaks: "an open grants only what it can honour",
         reddens: Caught::Check("a completion carries a file handle"),
     },
@@ -3293,10 +3301,13 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 274,
         file: "kernel/src/queue.rs",
-        find: "                held.intersection(Rights::UNIVERSAL).union(Rights::READ),
-            ),",
-        replace: "                Rights::UNIVERSAL.union(Rights::READ),
-            ),",
+        find: "                    request
+                        .held
+                        .intersection(Rights::UNIVERSAL)
+                        .union(Rights::READ),
+                ),",
+        replace: "                    Rights::UNIVERSAL.union(Rights::READ),
+                ),",
         breaks: "an open never restores a universal right",
         reddens: Caught::Check("opening a node does not restore universal rights"),
     },
@@ -3305,11 +3316,13 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 275,
         file: "kernel/src/queue.rs",
-        find: "            crate::vfs::Node::Directory(directory) => (crate::object::directory(directory), held),",
-        replace: "            crate::vfs::Node::Directory(directory) => (
-                crate::object::directory(directory),
-                Rights::UNIVERSAL.union(held),
-            ),",
+        find: "                crate::vfs::Node::Directory(directory) => {
+                    (crate::object::directory(directory), request.held)
+                }",
+        replace: "                crate::vfs::Node::Directory(directory) => (
+                    crate::object::directory(directory),
+                    Rights::UNIVERSAL.union(request.held),
+                ),",
         breaks: "an opened directory never restores a universal right",
         reddens: Caught::Check("opening a node does not restore universal rights"),
     },
@@ -3319,18 +3332,18 @@ pub const MUTATIONS: &[Mutation] = &[
         id: 276,
         file: "kernel/src/queue.rs",
         find: "        let Ok(reservation) = table.reserve_slot() else {
-            return refuse(token, STATUS_NO_HANDLE_SLOT);
+            return Some(refuse(token, STATUS_NO_HANDLE_SLOT));
         };
         let mut path = [0u8; MAX_PATH];
         let Some(len) = self.read_data(submission.argument, submission.length, &mut path) else {
-            return refuse(token, STATUS_BAD_BUFFER);
+            return Some(refuse(token, STATUS_BAD_BUFFER));
         };",
         replace: "        let mut path = [0u8; MAX_PATH];
         let Some(len) = self.read_data(submission.argument, submission.length, &mut path) else {
-            return refuse(token, STATUS_BAD_BUFFER);
+            return Some(refuse(token, STATUS_BAD_BUFFER));
         };
         let Ok(reservation) = table.reserve_slot() else {
-            return refuse(token, STATUS_NO_HANDLE_SLOT);
+            return Some(refuse(token, STATUS_NO_HANDLE_SLOT));
         };",
         breaks: "every handle-producing operation reserves its result before other admission work",
         reddens: Caught::Check("a full table refuses a handle operation at submission"),
@@ -3974,12 +3987,22 @@ pub const MUTATIONS: &[Mutation] = &[
         find: "        matches!(
             self,
             Self::Timer { .. }
+                | Self::OpenAt {
+                    phase: WorkPhase::Queued
+                }
                 | Self::Read {
-                    state: ReadState::Queued,
+                    phase: WorkPhase::Queued,
                     ..
                 }
         )",
-        replace: "        matches!(self, Self::Timer { .. } | Self::Read { .. })",
+        replace: "        matches!(
+            self,
+            Self::Timer { .. }
+                | Self::OpenAt {
+                    phase: WorkPhase::Queued
+                }
+                | Self::Read { .. }
+        )",
         breaks: "a running file read remains owned through teardown until its worker settles",
         reddens: Caught::Check(
             "a delayed read preserves interrupt admission and exact teardown",
@@ -7680,10 +7703,10 @@ pub const MUTATIONS: &[Mutation] = &[
         file: "kernel/src/queue.rs",
         find: "                && current == self.expected,",
         replace: "                && current != self.expected,",
-        breaks: "refused file work can roll back a queued read it no longer owns",
+        breaks: "refused file work can roll back a queued operation it no longer owns",
         reddens: Caught::Panic {
-            marker: "refused file work no longer owns its queued read",
-            why: "the refusal path has no authority to remove a different pending read, so an ownership mismatch must stop before mutating the queue",
+            marker: "refused file work no longer owns its queued operation",
+            why: "the refusal path has no authority to remove a different pending operation, so an ownership mismatch must stop before mutating the queue",
         },
     },
     Mutation {
@@ -7693,8 +7716,8 @@ pub const MUTATIONS: &[Mutation] = &[
         replace: "                entry.settling && *entry == self.work.expected,",
         breaks: "running file work can start after its pending entry began settling",
         reddens: Caught::Panic {
-            marker: "running file work no longer owns its read",
-            why: "a settling entry has already transferred terminal authority, so starting its read would let two paths consume the same queued operation",
+            marker: "running file work no longer owns its operation",
+            why: "a settling entry has already transferred terminal authority, so starting its operation would let two paths consume the same queued work",
         },
     },
     Mutation {
@@ -7711,8 +7734,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 1539,
         file: "kernel/src/queue.rs",
-        find: "            *state = ReadState::Running;",
-        replace: "            *state = ReadState::Queued;",
+        find: "        *phase = WorkPhase::Running;",
+        replace: "        *phase = WorkPhase::Queued;",
         breaks: "a read begins without advancing its pending entry into the running state",
         reddens: Caught::Panic {
             marker: "running file work was made without a running read",
@@ -19826,6 +19849,27 @@ fn mint_stopped<'controller>(
             package: "xtask",
             name: "image::esp::tests::image_population_refuses_a_bootloader_that_misses_its_pinned_digest",
         },
+    },
+    Mutation {
+        id: 1771,
+        file: "kernel/src/queue.rs",
+        find: "        if !held.contains(Rights::TRAVERSE) {\n            return Some(refuse(token, STATUS_DENIED));\n        }\n\n        if !worker_is_ready() {",
+        replace: "        if !held.contains(Rights::TRAVERSE) {\n            return Some(refuse(token, STATUS_DENIED));\n        }\n\n        if crate::vfs::resolve(directory, &path[..len]).is_err() {\n            return Some(refuse(token, STATUS_NO_ENTRY));\n        }\n        if !worker_is_ready() {",
+        breaks: "OpenAt reaches filesystem and controller locks from RingEnter trap context",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "contracts::open_at_storage_work_is_deferred_out_of_trap_context",
+        },
+    },
+    Mutation {
+        id: 1772,
+        file: "kernel/src/queue.rs",
+        find: "        // If the worker has not claimed this operation, remove the payload\n        // now. For OpenAt that drops its handle-slot promise before reporting\n        // cancellation; for Read it avoids spending worker time on a tombstone.\n        drop(FILE_WORK.remove(self, index, entry.id));",
+        replace: "        // Mutated: leave the cancelled payload and its handle promise queued.",
+        breaks: "a cancelled queued OpenAt keeps its reserved handle after the ring becomes quiet",
+        reddens: Caught::Check(
+            "a cancelled open releases its reserved handle before quiet",
+        ),
     },
 ];
 
