@@ -38,6 +38,12 @@ fn path_expression_is(expression: &Expr, names: &[&str]) -> bool {
     matches!(expression, Expr::Path(path) if path_ends(&path.path, names))
 }
 
+fn integer_literal_is(expression: &Expr, value: u64) -> bool {
+    matches!(expression, Expr::Lit(literal)
+        if matches!(&literal.lit, syn::Lit::Int(integer)
+            if integer.base10_parse::<u64>().is_ok_and(|parsed| parsed == value)))
+}
+
 fn member_is(member: &syn::Member, name: &str) -> bool {
     matches!(member, syn::Member::Named(identifier) if identifier == name)
 }
@@ -1763,7 +1769,7 @@ fn vtd_mapping_enforces_effective_coverage_before_the_walk() {
             syn::visit::visit_expr_method_call(self, call);
         }
     }
-    for name in ["map_segment", "unmap_segment"] {
+    for name in ["map_segment_with", "unmap_segment"] {
         let boundary = method(&syntax, "Vtd", name).expect("missing owned VT-d segment boundary");
         let Some(FnArg::Typed(segment)) = boundary.sig.inputs.iter().nth(1) else {
             panic!("{name} has no DMA-segment owner");
@@ -1927,6 +1933,334 @@ fn vtd_revocation_drains_older_dma_before_recycling_frames() {
     mapping_calls.visit_impl_item_fn(mapping);
     assert!(mapping_calls.0.iter().any(|call| call == "invalidate"));
     assert!(!mapping_calls.0.iter().any(|call| call == "drain_dma"));
+}
+
+#[test]
+fn vtd_publication_and_nvme_buffers_keep_exact_dma_authority() {
+    let memory = source("wost/src/mm/mod.rs");
+    let memory_syntax = parse("wost/src/mm/mod.rs");
+    let atomic = method(&memory_syntax, "DirectSpan", "write_u64_volatile_at")
+        .expect("typed volatile qword publication primitive");
+    let Some(FnArg::Typed(value)) = atomic.sig.inputs.iter().nth(2) else {
+        panic!("qword publication has no typed value");
+    };
+    assert!(matches!(&*value.ty, Type::Path(path) if path_ends(&path.path, &["u64"])));
+    let mut atomic_calls = CallNames::default();
+    atomic_calls.visit_impl_item_fn(atomic);
+    assert_eq!(
+        atomic_calls
+            .0
+            .iter()
+            .filter(|call| *call == "write_volatile")
+            .count(),
+        1,
+        "the qword publication primitive must issue exactly one volatile store"
+    );
+    for forbidden in ["write_byte_volatile", "write_volatile_at"] {
+        assert!(
+            !atomic_calls.0.iter().any(|call| call == forbidden),
+            "the qword publication primitive must not call {forbidden}"
+        );
+    }
+    assert!(
+        memory.contains("destination.cast::<u64>().write_volatile(value.to_le())"),
+        "live VT-d entries must use one aligned qword publication"
+    );
+    let table_writer =
+        method(&memory_syntax, "IommuTable", "write_u64").expect("IOMMU-table qword writer");
+    assert_eq!(
+        table_writer.block.stmts.len(),
+        5,
+        "the IOMMU-table writer gained an alternate publication step"
+    );
+    #[derive(Default)]
+    struct TablePublications {
+        span_writes: usize,
+        exact_qword_writes: usize,
+        free_writes: usize,
+        assignments: usize,
+        unsafe_blocks: usize,
+    }
+    impl<'ast> Visit<'ast> for TablePublications {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if path_expression_is(&call.receiver, &["span"])
+                && call.method.to_string().contains("write")
+            {
+                self.span_writes += 1;
+                self.exact_qword_writes += usize::from(
+                    call.method == "write_u64_volatile_at"
+                        && call.args.len() == 2
+                        && path_expression_is(&call.args[0], &["offset"])
+                        && path_expression_is(&call.args[1], &["value"]),
+                );
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+
+        fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+            if matches!(&*call.func, Expr::Path(path)
+                if path.path.segments.last().is_some_and(|segment|
+                    segment.ident.to_string().contains("write")))
+            {
+                self.free_writes += 1;
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+
+        fn visit_expr_assign(&mut self, assignment: &'ast ExprAssign) {
+            self.assignments += 1;
+            syn::visit::visit_expr_assign(self, assignment);
+        }
+
+        fn visit_expr_unsafe(&mut self, block: &'ast syn::ExprUnsafe) {
+            self.unsafe_blocks += 1;
+            syn::visit::visit_expr_unsafe(self, block);
+        }
+    }
+    let mut publications = TablePublications::default();
+    publications.visit_impl_item_fn(table_writer);
+    assert_eq!(
+        (
+            publications.span_writes,
+            publications.exact_qword_writes,
+            publications.free_writes,
+            publications.assignments,
+            publications.unsafe_blocks,
+        ),
+        (1, 1, 0, 0, 0),
+        "the IOMMU-table writer must have one exact span qword publication and no alternate write"
+    );
+
+    let vtd = source("wost/src/arch/x86_64/vtd.rs");
+    let vtd_syntax = parse("wost/src/arch/x86_64/vtd.rs");
+    for (name, direction) in [
+        (
+            "map_segment",
+            "self.map_segment_with::<true, true>(segment)",
+        ),
+        (
+            "map_segment_for_device_read",
+            "self.map_segment_with::<true, false>(segment)",
+        ),
+        (
+            "map_segment_for_device_write",
+            "self.map_segment_with::<false, true>(segment)",
+        ),
+    ] {
+        assert!(
+            vtd.contains(direction),
+            "{name} lost its exact DMA direction"
+        );
+    }
+    exact_self_method_call(
+        method(&vtd_syntax, "Vtd", "map_segment_with").expect("directional mapping boundary"),
+        "map_range",
+        &["paddr", "len"],
+    );
+    exact_self_method_call(
+        method(&vtd_syntax, "Vtd", "map_range").expect("directional mapping walk"),
+        "map_page",
+        &["page"],
+    );
+    assert!(vtd.contains("self.map_range::<DEVICE_READS, DEVICE_WRITES>(paddr, len)"));
+    assert!(vtd.contains("self.map_page::<DEVICE_READS, DEVICE_WRITES>(page)"));
+    let map_page = method(&vtd_syntax, "Vtd", "map_page").expect("leaf mapping boundary");
+    struct LeafPublications<'ast>(Vec<&'ast ExprMethodCall>);
+    impl<'ast> Visit<'ast> for LeafPublications<'ast> {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "write_u64" {
+                self.0.push(call);
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+    let mut leaf_publications = LeafPublications(Vec::new());
+    leaf_publications.visit_impl_item_fn(map_page);
+    let [pointer, leaf] = leaf_publications.0.as_slice() else {
+        panic!("map_page must have exactly one pointer and one leaf publication site");
+    };
+    assert!(
+        field_chain_is(&pointer.receiver, "self", &["tables"])
+            && pointer.args.len() == 2
+            && path_expression_is(&pointer.args[0], &["slot"])
+            && path_expression_is(&pointer.args[1], &["pointer"]),
+        "map_page's intermediate pointer publication is not exact"
+    );
+    let Some(pte) = leaf.args.get(1).and_then(|entry| call_is(entry, "pte")) else {
+        panic!("map_page's leaf publication does not derive one PTE");
+    };
+    assert!(
+        field_chain_is(&leaf.receiver, "self", &["tables"])
+            && leaf.args.len() == 2
+            && path_expression_is(&leaf.args[0], &["slot"])
+            && pte.args.len() == 3
+            && path_expression_is(&pte.args[0], &["page"])
+            && path_expression_is(&pte.args[1], &["DEVICE_READS"])
+            && path_expression_is(&pte.args[2], &["DEVICE_WRITES"]),
+        "map_page's leaf publication widened or changed identity"
+    );
+    let nvme = source("kernel/src/nvme.rs");
+    for mapping in [
+        "map_segment_for_device_read(&mut self.submission)",
+        "map_segment_for_device_write(&mut self.completion)",
+        "map_segment_for_device_write(buffer)",
+    ] {
+        assert!(
+            nvme.contains(mapping),
+            "NVMe mapping lost its exact DMA direction: {mapping}"
+        );
+    }
+
+    let main = source("kernel/src/main.rs");
+    let main_syntax = parse("kernel/src/main.rs");
+    assert!(main.contains("#[inline(never)]\nfn allocate_cleared_startup_buffer()"));
+    let preparation = function(&main_syntax, "allocate_cleared_startup_buffer");
+    #[derive(Default)]
+    struct StartupPreparation {
+        events: Vec<&'static str>,
+        exact_allocations: usize,
+        exact_clears: usize,
+        exact_wraps: usize,
+    }
+    impl<'ast> Visit<'ast> for StartupPreparation {
+        fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+            if path_expression_is(&call.func, &["allocate_contiguous"]) {
+                self.events.push("allocate");
+                self.exact_allocations += usize::from(
+                    call.args.len() == 2
+                        && integer_literal_is(&call.args[0], 1)
+                        && integer_literal_is(&call.args[1], 1),
+                );
+            } else if matches!(&*call.func, Expr::Path(path)
+                if path_ends(&path.path, &["DmaSegment", "from"]))
+            {
+                self.events.push("wrap");
+                self.exact_wraps += usize::from(
+                    call.args.len() == 1 && path_expression_is(&call.args[0], &["segment"]),
+                );
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "zero" {
+                self.events.push("zero");
+                self.exact_clears += usize::from(
+                    call.args.is_empty() && path_expression_is(&call.receiver, &["segment"]),
+                );
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+    let mut preparation_trace = StartupPreparation::default();
+    preparation_trace.visit_item_fn(preparation);
+    assert!(
+        preparation_trace.events == ["allocate", "zero", "wrap"]
+            && preparation_trace.exact_allocations == 1
+            && preparation_trace.exact_clears == 1
+            && preparation_trace.exact_wraps == 1,
+        "one exact startup Segment must be cleared before that same Segment gains DMA authority"
+    );
+
+    #[derive(Default)]
+    struct StartupUses {
+        helper_calls: usize,
+        exact_reads: usize,
+        reads: usize,
+    }
+    impl<'ast> Visit<'ast> for StartupUses {
+        fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+            if path_expression_is(&call.func, &["allocate_cleared_startup_buffer"]) {
+                self.helper_calls += 1;
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "read_blocks" {
+                self.reads += 1;
+                self.exact_reads += usize::from(
+                    path_expression_is(&call.receiver, &["controller"])
+                        && call.args.len() == 3
+                        && integer_literal_is(&call.args[0], 0)
+                        && integer_literal_is(&call.args[1], 1)
+                        && matches!(&call.args[2], Expr::Reference(reference)
+                            if reference.mutability.is_some()
+                                && path_expression_is(&reference.expr, &["buffer"])),
+                );
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+    let mut all_startup_uses = StartupUses::default();
+    all_startup_uses.visit_file(&main_syntax);
+    assert_eq!(all_startup_uses.helper_calls, 1);
+    let start = function(&main_syntax, "start_candidate");
+    let mut start_uses = StartupUses::default();
+    start_uses.visit_item_fn(start);
+    assert_eq!(
+        (
+            start_uses.helper_calls,
+            start_uses.reads,
+            start_uses.exact_reads
+        ),
+        (1, 1, 1)
+    );
+    assert!(
+        matches!(start.block.stmts.iter().find_map(|statement| match statement {
+        Stmt::Local(local)
+            if matches!(&local.pat, Pat::TupleStruct(some)
+                if path_ends(&some.path, &["Some"])
+                    && matches!(some.elems.first(), Some(Pat::Ident(binding))
+                        if binding.ident == "buffer" && binding.mutability.is_some()))
+                && local.init.as_ref().is_some_and(|initializer|
+                    call_is(&initializer.expr, "allocate_cleared_startup_buffer").is_some()) =>
+        {
+            Some(local)
+        }
+        _ => None,
+    }), Some(local) if local.init.as_ref().is_some_and(|initializer| initializer.diverge.is_some()))
+    );
+}
+
+fn exact_self_method_call(boundary: &syn::ImplItemFn, called: &str, arguments: &[&str]) {
+    struct Calls<'a> {
+        called: &'a str,
+        arguments: &'a [&'a str],
+        total: usize,
+        exact: usize,
+    }
+
+    impl<'ast> Visit<'ast> for Calls<'_> {
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == self.called {
+                self.total += 1;
+                self.exact += usize::from(
+                    path_expression_is(&call.receiver, &["self"])
+                        && call.args.len() == self.arguments.len()
+                        && call
+                            .args
+                            .iter()
+                            .zip(self.arguments)
+                            .all(|(argument, expected)| path_expression_is(argument, &[*expected])),
+                );
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+
+    let mut calls = Calls {
+        called,
+        arguments,
+        total: 0,
+        exact: 0,
+    };
+    calls.visit_impl_item_fn(boundary);
+    assert_eq!(calls.total, 1, "{called} must have one forwarding call");
+    assert_eq!(
+        calls.exact, 1,
+        "{called} does not forward the exact DMA authority arguments"
+    );
 }
 
 #[test]

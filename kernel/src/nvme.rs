@@ -334,7 +334,7 @@ impl QueuePair {
         if self.has_mappings() {
             return false;
         }
-        match isolation.map_segment(&mut self.submission) {
+        match isolation.map_segment_for_device_read(&mut self.submission) {
             Ok(()) => self.submission_mapped = true,
             Err(SegmentChangeError::Refused(_)) => return false,
             Err(_) => {
@@ -343,7 +343,7 @@ impl QueuePair {
                 return false;
             }
         }
-        let completion_mapped = match isolation.map_segment(&mut self.completion) {
+        let completion_mapped = match isolation.map_segment_for_device_write(&mut self.completion) {
             Ok(()) => {
                 self.completion_mapped = true;
                 true
@@ -1497,7 +1497,7 @@ impl Controller {
         let data_mapped = true;
         if data_mapped
             && let Some(buffer) = data.as_deref_mut()
-            && isolation.map_segment(buffer).is_err()
+            && isolation.map_segment_for_device_write(buffer).is_err()
         {
             return Err(BringUpError::Isolation);
         }

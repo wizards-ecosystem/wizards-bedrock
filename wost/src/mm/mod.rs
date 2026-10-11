@@ -566,6 +566,20 @@ impl<'authority> DirectSpan<'authority> {
             .all(|(offset, byte)| self.write_byte_volatile(offset, byte))
     }
 
+    fn write_u64_volatile_at(&self, offset: usize, value: u64) -> bool {
+        let Some(end) = offset.checked_add(core::mem::size_of::<u64>()) else {
+            return false;
+        };
+        let destination = self.base.wrapping_add(offset);
+        if end > self.len || !(destination as usize).is_multiple_of(core::mem::align_of::<u64>()) {
+            return false;
+        }
+        // SAFETY: the span's authority keeps all eight checked bytes live, and
+        // the alignment check makes this one indivisible x86-64 qword store.
+        unsafe { destination.cast::<u64>().write_volatile(value.to_le()) };
+        true
+    }
+
     fn read_volatile_at(&self, offset: usize, into: &mut [u8]) -> bool {
         let Ok(range) = AccessRange::repeated(offset, into.len(), 1, self.len) else {
             return false;
@@ -793,8 +807,10 @@ impl IommuTable {
         let Some(span) = DirectSpan::from_segment(&self.frames) else {
             return false;
         };
-        let offset = index * 8;
-        if !span.write_volatile_at(offset, &value.to_le_bytes()) {
+        let Some(offset) = index.checked_mul(core::mem::size_of::<u64>()) else {
+            return false;
+        };
+        if !span.write_u64_volatile_at(offset, value) {
             return false;
         }
         match walks {

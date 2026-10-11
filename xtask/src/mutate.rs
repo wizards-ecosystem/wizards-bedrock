@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1791;
+pub const NEXT_MUTATION_ID: u16 = 1803;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -13196,8 +13196,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1545,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "    fn map_range(&mut self, paddr: u64, len: u64) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {\n            return Err(SegmentChangeError::Refused(VtdError::OutsideAddressWidth));\n        }\n        let start = paddr & !(PAGE - 1);\n        let mut page = start;\n        while page <= last {",
-        replace: "    fn map_range(&mut self, paddr: u64, len: u64) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {\n            return Err(SegmentChangeError::Refused(VtdError::OutsideAddressWidth));\n        }\n        let start = paddr & !(PAGE - 1);\n        let mut page = start;\n        while page <= last + PAGE {",
+        find: "    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(\n        &mut self,\n        paddr: u64,\n        len: u64,\n    ) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {\n            return Err(SegmentChangeError::Refused(VtdError::OutsideAddressWidth));\n        }\n        let start = paddr & !(PAGE - 1);\n        let mut page = start;\n        while page <= last {",
+        replace: "    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(\n        &mut self,\n        paddr: u64,\n        len: u64,\n    ) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {\n            return Err(SegmentChangeError::Refused(VtdError::OutsideAddressWidth));\n        }\n        let start = paddr & !(PAGE - 1);\n        let mut page = start;\n        while page <= last + PAGE {",
         breaks: "every mapped segment reaches one frame past its end",
         reddens: Caught::Check("the dma domain reaches exactly the live queue frames"),
     },
@@ -18246,8 +18246,8 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1623,
         file: "wost/src/arch/x86_64/vtd.rs",
-        find: "    fn map_range(&mut self, paddr: u64, len: u64) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {",
-        replace: "    fn map_range(&mut self, paddr: u64, len: u64) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers(last) {",
+        find: "    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(\n        &mut self,\n        paddr: u64,\n        len: u64,\n    ) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers_on(self.capability, last) {",
+        replace: "    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(\n        &mut self,\n        paddr: u64,\n        len: u64,\n    ) -> Result<(), SegmentChangeError> {\n        let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {\n            return Err(SegmentChangeError::Refused(VtdError::InvalidRange));\n        };\n        if !self.width.covers(last) {",
         breaks: "the production DMA mapping seam ignores the unit's MGAW",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -20050,6 +20050,138 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "api::tests::virtual_source_diagnostics_accept_native_separators_without_traversal",
+        },
+    },
+    Mutation {
+        id: 1791,
+        file: "wost/src/mm/mod.rs",
+        find: "        if !span.write_u64_volatile_at(offset, value) {",
+        replace: "        if !span.write_volatile_at(offset, &value.to_le_bytes()) {",
+        breaks: "a live VT-d entry is published through eight byte stores",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+        },
+    },
+    Mutation {
+        id: 1792,
+        file: "kernel/src/nvme.rs",
+        find: "            && isolation.map_segment_for_device_write(buffer).is_err()",
+        replace: "            && isolation.map_segment(buffer).is_err()",
+        breaks: "an NVMe read buffer gives the device read access to host residue",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+        },
+    },
+    Mutation {
+        id: 1793,
+        file: "kernel/src/main.rs",
+        find: "    if !segment.zero() {",
+        replace: "    if false {",
+        breaks: "the startup read maps an uncleared allocator page for device DMA",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+        },
+    },
+    Mutation {
+        id: 1794,
+        file: "wost/src/mm/mod.rs",
+        find: "        unsafe { destination.cast::<u64>().write_volatile(value.to_le()) };",
+        replace: "        let _ = self.write_byte_volatile(offset, value.to_le_bytes()[0]);\n        unsafe { destination.cast::<u64>().write_volatile(value.to_le()) };",
+        breaks: "a permission byte becomes visible before the atomic VT-d entry publication",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+        },
+    },
+    Mutation {
+        id: 1795,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        self.map_segment_with::<true, false>(segment)",
+        replace: "        self.map_segment_with::<true, true>(segment)",
+        breaks: "device-read-only DMA authority also grants device writes",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+        },
+    },
+    Mutation {
+        id: 1796,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "            if let Err(reason) = self.map_page::<DEVICE_READS, DEVICE_WRITES>(page) {",
+        replace: "            if let Err(reason) = self.map_page::<true, true>(page) {",
+        breaks: "the range walk silently widens every leaf mapping",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+        },
+    },
+    Mutation {
+        id: 1797,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        self.map_segment_with::<false, true>(segment)",
+        replace: "        self.map_segment_with::<true, true>(segment)",
+        breaks: "device-write-only DMA authority also grants device reads",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+        },
+    },
+    Mutation {
+        id: 1798,
+        file: "kernel/src/nvme.rs",
+        find: "map_segment_for_device_read(&mut self.submission)",
+        replace: "map_segment(&mut self.submission)",
+        breaks: "the NVMe submission queue grants the device write access",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+        },
+    },
+    Mutation {
+        id: 1799,
+        file: "kernel/src/nvme.rs",
+        find: "map_segment_for_device_write(&mut self.completion)",
+        replace: "map_segment(&mut self.completion)",
+        breaks: "the NVMe completion queue grants the device read access",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+        },
+    },
+    Mutation {
+        id: 1800,
+        file: "kernel/src/main.rs",
+        find: "    Some(wost::mm::DmaSegment::from(segment))",
+        replace: "    let segment = wost::mm::allocate_contiguous(1, 1)?;\n    Some(wost::mm::DmaSegment::from(segment))",
+        breaks: "startup clears one allocation but grants DMA authority over a second uncleared one",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+        },
+    },
+    Mutation {
+        id: 1801,
+        file: "wost/src/mm/mod.rs",
+        find: "        if !span.write_u64_volatile_at(offset, value) {",
+        replace: "        let _ = span.write_byte_volatile(offset, value.to_le_bytes()[0]);\n        if !span.write_u64_volatile_at(offset, value) {",
+        breaks: "the table writer exposes a permission byte before its atomic qword publication",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
+        },
+    },
+    Mutation {
+        id: 1802,
+        file: "wost/src/arch/x86_64/vtd.rs",
+        find: "        if self\n            .tables\n            .write_u64(slot, second_level::pte(page, DEVICE_READS, DEVICE_WRITES))",
+        replace: "        let _ = self.tables.write_u64(slot, second_level::pte(page, true, true));\n        if self\n            .tables\n            .write_u64(slot, second_level::pte(page, DEVICE_READS, DEVICE_WRITES))",
+        breaks: "a leaf is transiently published with bidirectional DMA authority",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::vtd_publication_and_nvme_buffers_keep_exact_dma_authority",
         },
     },
 ];

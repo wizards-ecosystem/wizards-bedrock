@@ -78,12 +78,12 @@ impl<'ast> Visit<'ast> for UnsafeFacts {
 ///
 /// The measurement and per-file audit records below are executable evidence;
 /// change history belongs in the decision log (D-124).
-pub const BUDGET: usize = 381;
+pub const BUDGET: usize = 382;
 
 /// What the crate measured when [`BUDGET`] was last reviewed.
 ///
 /// Kept separately because a ceiling cannot reveal drift below it.
-pub const MEASURED: usize = 381;
+pub const MEASURED: usize = 382;
 
 /// Lines inside `unsafe` blocks under `directory`, and how many blocks.
 ///
@@ -234,9 +234,9 @@ mod tests {
         ),
         (
             "wost/src/mm/mod.rs",
-            16,
+            17,
             3,
-            "dd4b59420480a8b30101415b02642ca1930d3b7de4d429a1ed6f05890b3a8a3e",
+            "2b7934f364578eb6519774be506efff8d839c2bf8beecb07d8d4ffb1f2c19d9e",
         ),
         (
             "wost/src/mmio.rs",

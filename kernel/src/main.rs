@@ -763,6 +763,16 @@ fn admit_candidate(
     CandidateStage::Admitted(device, admitted)
 }
 
+/// Allocate and clear the one-page startup transfer before it gains DMA authority.
+#[inline(never)]
+fn allocate_cleared_startup_buffer() -> Option<wost::mm::DmaSegment> {
+    let mut segment = wost::mm::allocate_contiguous(1, 1)?;
+    if !segment.zero() {
+        return None;
+    }
+    Some(wost::mm::DmaSegment::from(segment))
+}
+
 /// Start an admitted controller, read block 0 through it, and keep it.
 fn start_candidate(
     stage: &mut CandidateStage,
@@ -792,8 +802,8 @@ fn start_candidate(
 
     // One block, to prove the whole path: queue built, command submitted,
     // doorbell rung, phase tag recognised, completion matched by identifier.
-    let Some(segment) = wost::mm::allocate_contiguous(1, 1) else {
-        warn!("nvme: no memory for a read buffer");
+    let Some(mut buffer) = allocate_cleared_startup_buffer() else {
+        warn!("nvme: no cleared memory for a read buffer");
         match controller.retire(&mut device, context) {
             nvme::ControllerRetirement::Retired => {}
             nvme::ControllerRetirement::Quarantined(quarantine) => {
@@ -803,7 +813,6 @@ fn start_candidate(
         }
         return CandidateStage::Retire(device);
     };
-    let mut buffer = wost::mm::DmaSegment::from(segment);
     match controller.read_blocks(0, 1, &mut buffer) {
         Ok(()) => info!("nvme: read block 0"),
         Err(reason) => {

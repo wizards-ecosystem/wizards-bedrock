@@ -531,7 +531,7 @@ impl Vtd {
         let start = paddr & !(PAGE - 1);
         let mut page = start;
         while page <= last {
-            if let Err(reason) = self.map_page(page) {
+            if let Err(reason) = self.map_page::<true, true>(page) {
                 let mut rollback = start;
                 while rollback < page {
                     self.unmap_page(rollback)?;
@@ -587,10 +587,35 @@ impl Vtd {
     /// before a caller can accidentally recycle device-reachable frames.
     #[must_use = "an unmapped segment cannot be reached by the device"]
     pub fn map_segment(&mut self, segment: &mut DmaSegment) -> Result<(), SegmentChangeError> {
+        self.map_segment_with::<true, true>(segment)
+    }
+
+    /// Identity-map `segment` so the requester may read but not write it.
+    #[must_use = "an unmapped segment cannot be reached by the device"]
+    pub fn map_segment_for_device_read(
+        &mut self,
+        segment: &mut DmaSegment,
+    ) -> Result<(), SegmentChangeError> {
+        self.map_segment_with::<true, false>(segment)
+    }
+
+    /// Identity-map `segment` so the requester may write but not read it.
+    #[must_use = "an unmapped segment cannot be reached by the device"]
+    pub fn map_segment_for_device_write(
+        &mut self,
+        segment: &mut DmaSegment,
+    ) -> Result<(), SegmentChangeError> {
+        self.map_segment_with::<false, true>(segment)
+    }
+
+    fn map_segment_with<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(
+        &mut self,
+        segment: &mut DmaSegment,
+    ) -> Result<(), SegmentChangeError> {
         let Some((paddr, len)) = segment.address().zip(segment.len()) else {
             return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
         };
-        match self.map_range(paddr, len) {
+        match self.map_range::<DEVICE_READS, DEVICE_WRITES>(paddr, len) {
             Err(error @ SegmentChangeError::Retained(_)) => {
                 segment.retain();
                 Err(error)
@@ -599,7 +624,11 @@ impl Vtd {
         }
     }
 
-    fn map_range(&mut self, paddr: u64, len: u64) -> Result<(), SegmentChangeError> {
+    fn map_range<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(
+        &mut self,
+        paddr: u64,
+        len: u64,
+    ) -> Result<(), SegmentChangeError> {
         let Some(last) = len.checked_sub(1).and_then(|last| paddr.checked_add(last)) else {
             return Err(SegmentChangeError::Refused(VtdError::InvalidRange));
         };
@@ -609,7 +638,7 @@ impl Vtd {
         let start = paddr & !(PAGE - 1);
         let mut page = start;
         while page <= last {
-            if let Err(reason) = self.map_page(page) {
+            if let Err(reason) = self.map_page::<DEVICE_READS, DEVICE_WRITES>(page) {
                 if page == start {
                     return Err(SegmentChangeError::Refused(reason));
                 }
@@ -898,7 +927,10 @@ impl Vtd {
         Some(())
     }
 
-    fn map_page(&mut self, page: u64) -> Result<(), VtdError> {
+    fn map_page<const DEVICE_READS: bool, const DEVICE_WRITES: bool>(
+        &mut self,
+        page: u64,
+    ) -> Result<(), VtdError> {
         let mut table = 0usize;
         let top = self.width.levels() - 1;
         for level in (1..=top).rev() {
@@ -924,7 +956,7 @@ impl Vtd {
         let slot = table * ENTRIES + usize::from(self.width.index(page, 0));
         if self
             .tables
-            .write_u64(slot, second_level::pte(page, true, true))
+            .write_u64(slot, second_level::pte(page, DEVICE_READS, DEVICE_WRITES))
         {
             Ok(())
         } else {

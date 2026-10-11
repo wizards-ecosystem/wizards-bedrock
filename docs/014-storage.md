@@ -981,9 +981,9 @@ first, because a caller freezes the interface it uses.
 | | |
 |---|---|
 | Machine checks | 281 |
-| Mutations | 1783 registered; complete-sweep verdicts live in source-bound qualification records |
+| Mutations | 1795 registered; complete-sweep verdicts live in source-bound qualification records |
 | New `libs/` crates | `nvme`, `pci-config`, `fat32`, `path-walk` |
-| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-386 |
+| Decisions | Phase decisions D-163 ... D-179; post-phase corrections D-181, D-182 and D-185 ... D-387 |
 
 The two counts are **checked against the source at every commit**
 (`xtask/src/prose.rs`), but mutation registration is not a current full-sweep
@@ -1287,6 +1287,14 @@ the second-level page tables) are ordinary kernel-owned frames written through
 the existing memory abstractions, and their physical addresses are programmed
 into the unit's registers. They are never themselves mapped into any device's
 second-level tables, so the device cannot reach the structures that constrain it.
+Every live table entry is published by one checked, naturally aligned volatile
+qword store. Permission bits occupy the first little-endian byte, so publishing
+that byte before the address would transiently authorize a page walk to an
+incomplete physical frame. The NVMe mapping boundary also carries direction:
+the device may read submission queues, write completion queues and read-command
+payloads, and receives both permissions only for firmware-reserved mappings.
+Every device-written payload is cleared before publication, including the first
+sector buffer used during controller selection.
 
 ### What is deferred, and why it is safe to defer
 
