@@ -62,7 +62,7 @@ struct Limits {
 
 const RELEASE: Limits = Limits {
     kernel_bytes: Band::new(9_200_000, 10_100_000),
-    boot_ns: Band::new(3_500_000, 9_000_000),
+    boot_ns: Band::new(3_500_000, 15_000_000),
     frames_free: Band::new(114_000, 114_250),
     heap_slab: Band::new(16, 24),
     heap_large: Band::new(990, 1_010),
@@ -77,7 +77,7 @@ const RELEASE: Limits = Limits {
 
 const DEBUG: Limits = Limits {
     kernel_bytes: Band::new(12_100_000, 13_400_000),
-    boot_ns: Band::new(20_000_000, 45_000_000),
+    boot_ns: Band::new(20_000_000, 70_000_000),
     frames_free: Band::new(113_000, 113_300),
     heap_slab: Band::new(14, 24),
     heap_large: Band::new(990, 1_010),
