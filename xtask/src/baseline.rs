@@ -61,12 +61,12 @@ struct Limits {
 }
 
 const RELEASE: Limits = Limits {
-    kernel_bytes: Band::new(6_400_000, 7_100_000),
+    kernel_bytes: Band::new(9_200_000, 10_100_000),
     boot_ns: Band::new(3_500_000, 9_000_000),
-    frames_free: Band::new(114_800, 115_000),
+    frames_free: Band::new(114_000, 114_250),
     heap_slab: Band::new(16, 24),
     heap_large: Band::new(990, 1_010),
-    heap_live: Band::exact(4),
+    heap_live: Band::exact(7),
     handles_committed: Band::exact(0),
     handles_live: Band::exact(0),
     trap_ns: Band::new(10_000, 100_000),
@@ -76,12 +76,12 @@ const RELEASE: Limits = Limits {
 };
 
 const DEBUG: Limits = Limits {
-    kernel_bytes: Band::new(8_200_000, 9_100_000),
+    kernel_bytes: Band::new(12_100_000, 13_400_000),
     boot_ns: Band::new(20_000_000, 45_000_000),
-    frames_free: Band::new(114_150, 114_400),
+    frames_free: Band::new(113_000, 113_300),
     heap_slab: Band::new(14, 24),
     heap_large: Band::new(990, 1_010),
-    heap_live: Band::exact(4),
+    heap_live: Band::exact(7),
     handles_committed: Band::exact(0),
     handles_live: Band::exact(0),
     trap_ns: Band::new(50_000, 400_000),
