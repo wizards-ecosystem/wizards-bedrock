@@ -209,43 +209,130 @@ pub fn clean(paths: &Paths, scope: CleanScope) -> Result<()> {
     if scope == CleanScope::Everything {
         let vm_dir = paths.vm_dir();
         if remove_vm_directory(paths.root(), &vm_dir)? {
-            println!("[xtask] removed {}", vm_dir.display());
+            println!("[xtask] emptied {}", vm_dir.display());
         }
     }
     Ok(())
 }
 
 fn remove_vm_directory(root: &std::path::Path, directory: &std::path::Path) -> Result<bool> {
-    match std::fs::symlink_metadata(directory) {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(error).with_context(|| format!("inspecting {}", directory.display()));
-        }
-    }
-    let canonical_directory = validated_vm_cleanup_directory(root, directory)?;
-    ensure!(
-        validated_vm_cleanup_directory(root, directory)? == canonical_directory,
-        "VMware cleanup path changed before recursive deletion"
-    );
-    std::fs::remove_dir_all(&canonical_directory)
-        .with_context(|| format!("removing {}", canonical_directory.display()))?;
-    Ok(true)
+    remove_vm_directory_with(root, directory, || {})
 }
 
-fn validated_vm_cleanup_directory(
+fn remove_vm_directory_with(
     root: &std::path::Path,
     directory: &std::path::Path,
-) -> Result<std::path::PathBuf> {
+    before_remove: impl FnOnce(),
+) -> Result<bool> {
     ensure!(
         directory == root.join("vm"),
         "VMware cleanup target is not the exact allowlisted repository child"
     );
-    let canonical_directory = crate::mutation_workspace::canonical_existing_real_directory(
-        directory,
-        "VMware cleanup directory",
-    )?;
-    Ok(canonical_directory)
+    let repository =
+        crate::mutation_workspace::open_real_directory(root, "VMware cleanup repository root")?;
+    let mut options = fs_at::OpenOptions::default();
+    options.read(true).follow(false);
+    let mut directory_handle = match options.open_dir_at(&repository, "vm") {
+        Ok(directory_handle) => directory_handle,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("opening VMware cleanup directory {}", directory.display())
+            });
+        }
+    };
+    before_remove();
+    let mut remaining = MAX_VM_CLEANUP_ENTRIES;
+    empty_open_directory(&mut directory_handle, directory, 0, &mut remaining)?;
+    Ok(true)
+}
+
+const MAX_VM_CLEANUP_ENTRIES: usize = 100_000;
+const MAX_VM_CLEANUP_DEPTH: usize = 256;
+
+fn empty_open_directory(
+    directory: &mut std::fs::File,
+    display_path: &std::path::Path,
+    depth: usize,
+    remaining: &mut usize,
+) -> Result<()> {
+    ensure!(
+        depth <= MAX_VM_CLEANUP_DEPTH,
+        "VMware cleanup exceeded its {MAX_VM_CLEANUP_DEPTH}-directory depth limit below {}",
+        display_path.display()
+    );
+    let mut options = fs_at::OpenOptions::default();
+    options.read(true).follow(false);
+    while let Some(name) = next_directory_entry(directory, display_path)? {
+        ensure!(
+            *remaining != 0,
+            "VMware cleanup exceeded its {MAX_VM_CLEANUP_ENTRIES}-entry limit below {}",
+            display_path.display()
+        );
+        *remaining -= 1;
+        let child_path = display_path.join(&name);
+        match options.open_dir_at(directory, &name) {
+            Ok(mut child) => {
+                let metadata = child
+                    .metadata()
+                    .with_context(|| format!("inspecting opened {}", child_path.display()))?;
+                if crate::mutation_workspace::metadata_is_real_directory(&metadata) {
+                    empty_open_directory(&mut child, &child_path, depth + 1, remaining)?;
+                    drop(child);
+                    match options.rmdir_at(directory, &name) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            return Err(error)
+                                .with_context(|| format!("removing {}", child_path.display()));
+                        }
+                    }
+                } else {
+                    drop(child);
+                    unlink_directory_entry(&options, directory, &name, &child_path, None)?;
+                }
+            }
+            Err(open_error) => {
+                unlink_directory_entry(&options, directory, &name, &child_path, Some(&open_error))?
+            }
+        }
+    }
+    Ok(())
+}
+
+fn unlink_directory_entry(
+    options: &fs_at::OpenOptions,
+    directory: &std::fs::File,
+    name: &std::ffi::OsStr,
+    child_path: &std::path::Path,
+    open_error: Option<&std::io::Error>,
+) -> Result<()> {
+    match options.unlink_at(directory, name) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(unlink_error) => Err(unlink_error).with_context(|| match open_error {
+            Some(error) => format!(
+                "removing non-directory {} after directory open failed: {error}",
+                child_path.display()
+            ),
+            None => format!("removing non-directory {}", child_path.display()),
+        }),
+    }
+}
+
+fn next_directory_entry(
+    directory: &mut std::fs::File,
+    display_path: &std::path::Path,
+) -> Result<Option<std::ffi::OsString>> {
+    let entries = fs_at::read_dir(directory)
+        .with_context(|| format!("reading {}", display_path.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("reading {}", display_path.display()))?;
+        if entry.name() != "." && entry.name() != ".." {
+            return Ok(Some(entry.name().to_os_string()));
+        }
+    }
+    Ok(None)
 }
 
 /// Run `subcommand` over every registered Cargo graph.
@@ -485,7 +572,13 @@ mod tests {
     fn recursive_vm_cleanup_is_confined_to_one_real_repository_child() {
         let fixture = clean_fixture("confined");
         let repository = fixture.join("repository");
-        std::fs::create_dir_all(repository.join("vm")).unwrap();
+        std::fs::create_dir_all(repository.join("vm/nested/deeper")).unwrap();
+        std::fs::write(repository.join("vm/root-file"), b"generated root state").unwrap();
+        std::fs::write(
+            repository.join("vm/nested/deeper/generated"),
+            b"generated nested state",
+        )
+        .unwrap();
         let outside = repository.join("outside");
         std::fs::create_dir(&outside).unwrap();
         let sentinel = outside.join("sentinel");
@@ -494,7 +587,8 @@ mod tests {
         assert!(remove_vm_directory(&repository, &outside).is_err());
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
         assert!(remove_vm_directory(&repository, &repository.join("vm")).unwrap());
-        assert!(!repository.join("vm").exists());
+        assert!(repository.join("vm").is_dir());
+        assert_eq!(std::fs::read_dir(repository.join("vm")).unwrap().count(), 0);
         std::fs::remove_dir_all(fixture).unwrap();
     }
 
@@ -512,12 +606,102 @@ mod tests {
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
         remove_directory_symlink(&repository.join("vm"));
         std::fs::create_dir(repository.join("vm")).unwrap();
+        create_directory_symlink(&redirected, &repository.join("vm/redirected"));
+
+        assert!(remove_vm_directory(&repository, &repository.join("vm")).unwrap());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
+        assert_eq!(std::fs::read_dir(repository.join("vm")).unwrap().count(), 0);
 
         let linked_repository = fixture.join("repository-link");
         create_directory_symlink(&repository, &linked_repository);
         assert!(remove_vm_directory(&linked_repository, &linked_repository.join("vm")).is_err());
         assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
         remove_directory_symlink(&linked_repository);
+
+        let linked_parent = fixture.join("repository-parent-link");
+        create_directory_symlink(&fixture, &linked_parent);
+        let repository_below_link = linked_parent.join("repository");
+        assert!(
+            remove_vm_directory(&repository_below_link, &repository_below_link.join("vm")).is_err()
+        );
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside authority");
+        remove_directory_symlink(&linked_parent);
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn recursive_vm_cleanup_stays_bound_when_a_validated_ancestor_is_replaced() {
+        let fixture = clean_fixture("ancestor-race");
+        let repository = fixture.join("repository");
+        let moved_repository = fixture.join("repository-before-swap");
+        let outside = fixture.join("outside");
+        std::fs::create_dir_all(repository.join("vm/nested")).unwrap();
+        std::fs::write(repository.join("vm/nested/generated"), b"generated state").unwrap();
+        std::fs::create_dir_all(outside.join("vm")).unwrap();
+        let sentinel = outside.join("vm/sentinel");
+        std::fs::write(&sentinel, b"outside authority").unwrap();
+        let mut swapped = false;
+
+        let result = remove_vm_directory_with(&repository, &repository.join("vm"), || {
+            if std::fs::rename(&repository, &moved_repository).is_ok() {
+                std::fs::rename(&outside, &repository).unwrap();
+                swapped = true;
+            }
+        });
+
+        if swapped {
+            std::fs::rename(&repository, &outside).unwrap();
+            std::fs::rename(&moved_repository, &repository).unwrap();
+        }
+        let sentinel_after = std::fs::read(&sentinel);
+        std::fs::remove_dir_all(&fixture).unwrap();
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(sentinel_after.unwrap(), b"outside authority");
+    }
+
+    #[test]
+    fn recursive_vm_cleanup_has_an_entry_budget_before_deleting() {
+        let fixture = clean_fixture("entry-budget");
+        let directory = fixture.join("vm");
+        std::fs::create_dir(&directory).unwrap();
+        let sentinel = directory.join("sentinel");
+        std::fs::write(&sentinel, b"generated state").unwrap();
+        let mut handle =
+            crate::mutation_workspace::open_real_directory(&directory, "cleanup fixture").unwrap();
+        let mut remaining = 0;
+
+        let error = empty_open_directory(&mut handle, &directory, 0, &mut remaining)
+            .expect_err("an exhausted cleanup budget was accepted");
+        assert!(error.to_string().contains("entry limit"));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"generated state");
+
+        drop(handle);
+        std::fs::remove_dir_all(fixture).unwrap();
+    }
+
+    #[test]
+    fn recursive_vm_cleanup_has_a_depth_bound_before_deleting() {
+        let fixture = clean_fixture("depth-bound");
+        let directory = fixture.join("vm");
+        std::fs::create_dir(&directory).unwrap();
+        let sentinel = directory.join("sentinel");
+        std::fs::write(&sentinel, b"generated state").unwrap();
+        let mut handle =
+            crate::mutation_workspace::open_real_directory(&directory, "cleanup fixture").unwrap();
+        let mut remaining = MAX_VM_CLEANUP_ENTRIES;
+
+        let error = empty_open_directory(
+            &mut handle,
+            &directory,
+            MAX_VM_CLEANUP_DEPTH + 1,
+            &mut remaining,
+        )
+        .expect_err("an over-depth cleanup was accepted");
+        assert!(error.to_string().contains("depth limit"));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"generated state");
+
+        drop(handle);
         std::fs::remove_dir_all(fixture).unwrap();
     }
 }

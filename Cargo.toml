@@ -122,6 +122,8 @@ noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = 
 anyhow = "1"
 fatfs = { version = "0.3", default-features = false, features = ["std", "alloc"] }
 fscommon = "0.1"
+fs_at = "=0.2.1"
+libc = "=0.2.189"
 proc-macro2 = { version = "1", features = ["span-locations"] }
 syn = { version = "2", features = ["full", "visit"] }
 # Windows job objects hold every process a bounded command starts (D-347). Its

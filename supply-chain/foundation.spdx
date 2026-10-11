@@ -2,7 +2,7 @@ SPDXVersion: SPDX-2.3
 DataLicense: CC0-1.0
 SPDXID: SPDXRef-DOCUMENT
 DocumentName: wizards-bedrock-foundation
-DocumentNamespace: https://github.com/wizards-ecosystem/wizards-bedrock/sbom/80227c38513b63b367fadfa68e93ffb2c2c43b2979131390bf6f139af0aeef9d
+DocumentNamespace: https://github.com/wizards-ecosystem/wizards-bedrock/sbom/782777a9bcb68d539262cdf449b41a45468d7ba7411c49cdbf6965000a4b540e
 Creator: Organization: The Wizard's Bedrock
 Created: 2026-08-29T00:00:00Z
 
@@ -53,6 +53,18 @@ PackageCopyrightText: NOASSERTION
 PackageComment: development; TLA+ tools and TLC
 Relationship: SPDXRef-Package-wizards-bedrock CONTAINS SPDXRef-Artifact-tools-tla-tla2tools.jar-1.8.0
 
+PackageName: aligned
+SPDXID: SPDXRef-Crate-aligned-0.4.3
+PackageVersion: 0.4.3
+PackageDownloadLocation: https://crates.io/api/v1/crates/aligned/0.4.3/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: ee4508988c62edf04abd8d92897fca0c2995d907ce1dfeaf369dac3716a40685
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-aligned-0.4.3
+
 PackageName: anyhow
 SPDXID: SPDXRef-Crate-anyhow-1.0.104
 PackageVersion: 1.0.104
@@ -64,6 +76,18 @@ PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
 Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-anyhow-1.0.104
+
+PackageName: as-slice
+SPDXID: SPDXRef-Crate-as-slice-0.2.1
+PackageVersion: 0.2.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/as-slice/0.2.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 516b6b4f0e40d50dcda9365d53964ec74560ad4284da2e7fc97122cd83174516
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-as-slice-0.2.1
 
 PackageName: assoc
 SPDXID: SPDXRef-Crate-assoc-0.1.3
@@ -149,6 +173,18 @@ PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
 Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-cfg-if-1.0.4
 
+PackageName: cfg_aliases
+SPDXID: SPDXRef-Crate-cfg-aliases-0.2.2
+PackageVersion: 0.2.2
+PackageDownloadLocation: https://crates.io/api/v1/crates/cfg_aliases/0.2.2/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-cfg-aliases-0.2.2
+
 PackageName: command-group
 SPDXID: SPDXRef-Crate-command-group-5.0.1
 PackageVersion: 5.0.1
@@ -185,6 +221,18 @@ PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
 Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-corosensei-0.3.4
 
+PackageName: cvt
+SPDXID: SPDXRef-Crate-cvt-0.1.2
+PackageVersion: 0.1.2
+PackageDownloadLocation: https://crates.io/api/v1/crates/cvt/0.1.2/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: d2ae9bf77fbf2d39ef573205d554d87e86c12f1994e9ea335b0651b9b278bcf1
+PackageLicenseConcluded: Apache-2.0
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared Apache-2.0
+Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-cvt-0.1.2
+
 PackageName: fatfs
 SPDXID: SPDXRef-Crate-fatfs-0.3.6
 PackageVersion: 0.3.6
@@ -196,6 +244,18 @@ PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
 Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-fatfs-0.3.6
+
+PackageName: fs_at
+SPDXID: SPDXRef-Crate-fs-at-0.2.1
+PackageVersion: 0.2.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/fs_at/0.2.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 14af6c9694ea25db25baa2a1788703b9e7c6648dcaeeebeb98f7561b5384c036
+PackageLicenseConcluded: Apache-2.0
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared Apache-2.0
+Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-fs-at-0.2.1
 
 PackageName: fscommon
 SPDXID: SPDXRef-Crate-fscommon-0.1.1
@@ -304,6 +364,18 @@ PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; declared MIT
 Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-nix-0.27.1
+
+PackageName: nix
+SPDXID: SPDXRef-Crate-nix-0.29.0
+PackageVersion: 0.29.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/nix/0.29.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; declared MIT
+Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-nix-0.29.0
 
 PackageName: noto-sans-mono-bitmap
 SPDXID: SPDXRef-Crate-noto-sans-mono-bitmap-0.3.2
@@ -617,6 +689,18 @@ PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
 Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-smallvec-1.15.2
 
+PackageName: stable_deref_trait
+SPDXID: SPDXRef-Crate-stable-deref-trait-1.2.1
+PackageVersion: 1.2.1
+PackageDownloadLocation: https://crates.io/api/v1/crates/stable_deref_trait/1.2.1/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-stable-deref-trait-1.2.1
+
 PackageName: syn
 SPDXID: SPDXRef-Crate-syn-2.0.119
 PackageVersion: 2.0.119
@@ -844,6 +928,18 @@ PackageLicenseDeclared: NOASSERTION
 PackageCopyrightText: NOASSERTION
 PackageComment: development; selected from MIT OR Apache-2.0
 Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-windows-x86-64-msvc-0.52.6
+
+PackageName: windows-sys
+SPDXID: SPDXRef-Crate-windows-sys-0.52.0
+PackageVersion: 0.52.0
+PackageDownloadLocation: https://crates.io/api/v1/crates/windows-sys/0.52.0/download
+FilesAnalyzed: false
+PackageChecksum: SHA256: 282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d
+PackageLicenseConcluded: MIT
+PackageLicenseDeclared: NOASSERTION
+PackageCopyrightText: NOASSERTION
+PackageComment: development; selected from MIT OR Apache-2.0
+Relationship: SPDXRef-Package-wizards-bedrock DEPENDS_ON SPDXRef-Crate-windows-sys-0.52.0
 
 PackageName: windows-sys
 SPDXID: SPDXRef-Crate-windows-sys-0.59.0

@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1773;
+pub const NEXT_MUTATION_ID: u16 = 1776;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -8899,12 +8899,8 @@ pub const MUTATIONS: &[Mutation] = &[
     Mutation {
         id: 795,
         file: "xtask/src/tasks.rs",
-        find: r#"    let canonical_directory = crate::mutation_workspace::canonical_existing_real_directory(
-        directory,
-        "VMware cleanup directory",
-    )?;"#,
-        replace: r#"    let canonical_directory = std::fs::canonicalize(directory)
-        .with_context(|| format!("canonicalizing {}", directory.display()))?;"#,
+        find: "    let mut options = fs_at::OpenOptions::default();\n    options.read(true).follow(false);\n    let mut directory_handle = match options.open_dir_at(&repository, \"vm\") {",
+        replace: "    let mut options = fs_at::OpenOptions::default();\n    options.read(true).follow(true);\n    let mut directory_handle = match options.open_dir_at(&repository, \"vm\") {",
         breaks: "recursive cleanup follows a redirected VMware directory",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -8913,19 +8909,9 @@ pub const MUTATIONS: &[Mutation] = &[
     },
     Mutation {
         id: 796,
-        file: "xtask/src/tasks.rs",
-        find: r#"    let canonical_directory = crate::mutation_workspace::canonical_existing_real_directory(
-        directory,
-        "VMware cleanup directory",
-    )?;"#,
-        replace: r#"    let metadata = std::fs::symlink_metadata(directory)
-        .with_context(|| format!("inspecting {}", directory.display()))?;
-    ensure!(
-        metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
-        "VMware cleanup directory is not a real directory"
-    );
-    let canonical_directory = std::fs::canonicalize(directory)
-        .with_context(|| format!("canonicalizing {}", directory.display()))?;"#,
+        file: "xtask/src/mutation_workspace.rs",
+        find: "    let mut options = fs_at::OpenOptions::default();\n    options.read(true).follow(false);\n    for component in components {",
+        replace: "    let mut options = fs_at::OpenOptions::default();\n    options.read(true).follow(true);\n    for component in components {",
         breaks: "recursive cleanup accepts a real final directory behind a redirected repository ancestor",
         reddens: Caught::HostTest {
             package: "xtask",
@@ -19870,6 +19856,39 @@ fn mint_stopped<'controller>(
         reddens: Caught::Check(
             "a cancelled open releases its reserved handle before quiet",
         ),
+    },
+    Mutation {
+        id: 1773,
+        file: "xtask/src/tasks.rs",
+        find: "    before_remove();\n    let mut remaining = MAX_VM_CLEANUP_ENTRIES;\n    empty_open_directory(&mut directory_handle, directory, 0, &mut remaining)?;",
+        replace: "    drop(directory_handle);\n    drop(repository);\n    before_remove();\n    std::fs::remove_dir_all(directory)\n        .with_context(|| format!(\"removing {}\", directory.display()))?;",
+        breaks: "recursive cleanup discards its directory capabilities before destructive path resolution",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "tasks::tests::recursive_vm_cleanup_stays_bound_when_a_validated_ancestor_is_replaced",
+        },
+    },
+    Mutation {
+        id: 1774,
+        file: "xtask/src/tasks.rs",
+        find: "        ensure!(\n            *remaining != 0,\n            \"VMware cleanup exceeded its {MAX_VM_CLEANUP_ENTRIES}-entry limit below {}\",\n            display_path.display()\n        );\n        *remaining -= 1;",
+        replace: "        let _unbounded_cleanup = *remaining;",
+        breaks: "recursive cleanup has no bound on attacker-created directory entries",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "tasks::tests::recursive_vm_cleanup_has_an_entry_budget_before_deleting",
+        },
+    },
+    Mutation {
+        id: 1775,
+        file: "xtask/src/tasks.rs",
+        find: "    ensure!(\n        depth <= MAX_VM_CLEANUP_DEPTH,\n        \"VMware cleanup exceeded its {MAX_VM_CLEANUP_DEPTH}-directory depth limit below {}\",\n        display_path.display()\n    );",
+        replace: "    let _unbounded_depth = depth;",
+        breaks: "recursive cleanup has no bound on attacker-controlled directory depth",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "tasks::tests::recursive_vm_cleanup_has_a_depth_bound_before_deleting",
+        },
     },
 ];
 

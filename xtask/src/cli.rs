@@ -210,7 +210,7 @@ pub enum CleanScope {
     /// Cargo's build output only.
     #[default]
     Build,
-    /// Build output and the generated `vm/` directory, VMware state included.
+    /// Build output and the generated contents below `vm/`, VMware state included.
     Everything,
 }
 

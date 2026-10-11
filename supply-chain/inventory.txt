@@ -4,7 +4,9 @@ kind|name|version|scope|sha256|license|note
 artifact|boot/limine/BOOTX64.EFI|v10.x-binary-2026-07-18|runtime|91ef81c1f95c4ac8bf77c4393a0b2fcd2628550827d7abf89a43194400e17a85|BSD-2-Clause|Limine UEFI binary
 artifact|tools/fat32-corpus/foreign-fat32.sparse|2026-08-28|development|e04e90ecc72c323a8e5c19ab401502c5967ec5347492cf9be6b5cefbfeeab72d|MIT|project-authored generated filesystem corpus
 artifact|tools/tla/tla2tools.jar|1.8.0|development|eabd140a70f49eb9305a3bd3f3df944eddf87e5a90d329789085f8953a80533a|MIT|TLA+ tools and TLC
+crate|aligned|0.4.3|development|ee4508988c62edf04abd8d92897fca0c2995d907ce1dfeaf369dac3716a40685|MIT|selected from MIT OR Apache-2.0
 crate|anyhow|1.0.104|development|330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470|MIT|selected from MIT OR Apache-2.0
+crate|as-slice|0.2.1|development|516b6b4f0e40d50dcda9365d53964ec74560ad4284da2e7fc97122cd83174516|MIT|selected from MIT OR Apache-2.0
 crate|assoc|0.1.3|development|bfdc70193dadb9d7287fa4b633f15f90c876915b31f6af17da307fc59c9859a8|MIT|declared MIT
 crate|autocfg|1.5.1|development|f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53|MIT|selected from Apache-2.0 OR MIT
 crate|bitflags|1.3.2|development|bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a|MIT|selected from MIT OR Apache-2.0
@@ -12,10 +14,13 @@ crate|bitflags|2.13.1|runtime|b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a
 crate|bitvec|1.1.1|development|ddcec3d12c579d40898fe0a9a358a803c23e9c52ca3c425707f81c9436211837|MIT|declared MIT
 crate|byteorder|1.5.0|development|1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b|MIT|selected from Unlicense OR MIT
 crate|cfg-if|1.0.4|development|9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801|MIT|selected from MIT OR Apache-2.0
+crate|cfg_aliases|0.2.2|development|f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527|MIT|declared MIT
 crate|command-group|5.0.1|development|a68fa787550392a9d58f44c21a3022cfb3ea3e2458b7f85d3b399d0ceeccf409|MIT|selected from Apache-2.0 OR MIT
 crate|const-siphasher|1.0.2|development|03efed02df0504d71e44bfd51d3329f401b8303a2fd14254acf05c95a0af0153|MIT|selected from MIT OR Apache-2.0
 crate|corosensei|0.3.4|development|6886a0c0f263965933c438626e7179139a62b978a33aa18281cbf0cd5a975f34|MIT|selected from MIT OR Apache-2.0
+crate|cvt|0.1.2|development|d2ae9bf77fbf2d39ef573205d554d87e86c12f1994e9ea335b0651b9b278bcf1|Apache-2.0|declared Apache-2.0
 crate|fatfs|0.3.6|development|05669f8e7e2d7badc545c513710f0eba09c2fbef683eb859fd79c46c355048e0|MIT|declared MIT
+crate|fs_at|0.2.1|development|14af6c9694ea25db25baa2a1788703b9e7c6648dcaeeebeb98f7561b5384c036|Apache-2.0|declared Apache-2.0
 crate|fscommon|0.1.1|development|315ce685aca5ddcc5a3e7e436ef47d4a5d0064462849b6f0f628c28140103531|MIT|declared MIT
 crate|funty|2.0.0|development|e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c|MIT|declared MIT
 crate|getrandom|0.2.17|development|ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0|MIT|selected from MIT OR Apache-2.0
@@ -25,6 +30,7 @@ crate|libc|0.2.189|development|3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07
 crate|limine|0.5.0|runtime|af6d2ee42712e7bd2c787365cd1dab06ef59a61becbf87bec7b32b970bd2594b|MIT|selected from MIT OR Apache-2.0
 crate|log|0.4.33|development|0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad|MIT|selected from MIT OR Apache-2.0
 crate|nix|0.27.1|development|2eb04e9c688eff1c89d72b407f168cf79bb9e867a9d3323ed6c01519eb9cc053|MIT|declared MIT
+crate|nix|0.29.0|development|71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46|MIT|declared MIT
 crate|noto-sans-mono-bitmap|0.3.2|runtime|f102c477fd4ec864c149803bf606ecc23bc9329602ec0f99073a728abf454abc|MIT AND OFL-1.1|MIT crate code and OFL-1.1 Noto glyph data
 crate|num-traits|0.2.19|development|071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841|MIT|selected from MIT OR Apache-2.0
 crate|once_cell|1.21.4|development|9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50|MIT|selected from MIT OR Apache-2.0
@@ -51,6 +57,7 @@ crate|shuttle-engine|0.1.1|development|bb03d6daa3cf319f53bef382ee4431203c7709122
 crate|shuttle-schedulers|0.1.1|development|d7673a579e1660404067f5aa1344d6530f15b59f53b0fe98767d7ab117d14067|Apache-2.0|declared Apache-2.0
 crate|shuttle-std|0.1.1|development|bf4a3088fd2d19e5ebc24bc3779bc85a68228fafde2d87d138e475b8591dc721|Apache-2.0|declared Apache-2.0
 crate|smallvec|1.15.2|development|8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90|MIT|selected from MIT OR Apache-2.0
+crate|stable_deref_trait|1.2.1|development|6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596|MIT|selected from MIT OR Apache-2.0
 crate|syn|2.0.119|development|872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297|MIT|selected from MIT OR Apache-2.0
 crate|tap|1.0.1|development|55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369|MIT|declared MIT
 crate|tracing|0.1.44|development|63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100|MIT|declared MIT
@@ -70,6 +77,7 @@ crate|windows_i686_msvc|0.52.6|development|240948bc05c5e7c6dabba28bf89d89ffce3e3
 crate|windows_x86_64_gnu|0.52.6|development|147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78|MIT|selected from MIT OR Apache-2.0
 crate|windows_x86_64_gnullvm|0.52.6|development|24d5b23dc417412679681396f2b49f3de8c1473deb516bd34410872eff51ed0d|MIT|selected from MIT OR Apache-2.0
 crate|windows_x86_64_msvc|0.52.6|development|589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec|MIT|selected from MIT OR Apache-2.0
+crate|windows-sys|0.52.0|development|282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d|MIT|selected from MIT OR Apache-2.0
 crate|windows-sys|0.59.0|development|1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b|MIT|selected from MIT OR Apache-2.0
 crate|windows-targets|0.52.6|development|9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973|MIT|selected from MIT OR Apache-2.0
 crate|wit-bindgen-rt|0.33.0|development|3268f3d866458b787f390cf61f4bbb563b922d091359f9608842999eaee3943c|MIT|selected from Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT

@@ -552,6 +552,81 @@ pub(crate) fn canonical_existing_real_directory(path: &Path, label: &str) -> Res
         .with_context(|| format!("canonicalizing {}", absolute.display()))
 }
 
+/// Open one real directory without following any path component and retain
+/// the handle as the authority for later relative operations.
+pub(crate) fn open_real_directory(path: &Path, label: &str) -> Result<File> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("reading the current directory")?
+            .join(path)
+    };
+    let mut components = absolute.components().peekable();
+    let mut traversed = PathBuf::new();
+    while let Some(component @ (Component::Prefix(_) | Component::RootDir)) = components.peek() {
+        traversed.push(component.as_os_str());
+        components.next();
+    }
+    ensure!(
+        traversed.has_root(),
+        "{label} has no absolute filesystem root: {}",
+        path.display()
+    );
+    let mut directory = open_directory_without_following(&traversed)
+        .with_context(|| format!("opening directory root {}", traversed.display()))?;
+    let root_metadata = directory
+        .metadata()
+        .with_context(|| format!("inspecting opened directory {}", traversed.display()))?;
+    require_real_directory_metadata(&traversed, &root_metadata, label)?;
+    let mut options = fs_at::OpenOptions::default();
+    options.read(true).follow(false);
+    for component in components {
+        let Component::Normal(name) = component else {
+            bail!(
+                "{label} contains a non-normal directory component: {}",
+                path.display()
+            );
+        };
+        let child = options
+            .open_dir_at(&directory, name)
+            .with_context(|| format!("opening directory component {}", name.to_string_lossy()))?;
+        traversed.push(name);
+        let metadata = child
+            .metadata()
+            .with_context(|| format!("inspecting opened directory {}", traversed.display()))?;
+        require_real_directory_metadata(&traversed, &metadata, label)?;
+        directory = child;
+    }
+    Ok(directory)
+}
+
+#[cfg(windows)]
+fn open_directory_without_following(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(unix)]
+fn open_directory_without_following(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+}
+
 pub(crate) fn prepare_real_child(parent: &Path, child: &Path, label: &str) -> Result<PathBuf> {
     ensure!(
         child.parent() == Some(parent),
@@ -602,13 +677,17 @@ fn require_real_directory_metadata(
     label: &str,
 ) -> Result<()> {
     ensure!(
-        metadata.file_type().is_dir()
-            && !metadata.file_type().is_symlink()
-            && !is_reparse_point(metadata),
+        metadata_is_real_directory(metadata),
         "{label} is not a real directory: {}",
         path.display()
     );
     Ok(())
+}
+
+pub(crate) fn metadata_is_real_directory(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_dir()
+        && !metadata.file_type().is_symlink()
+        && !is_reparse_point(metadata)
 }
 
 #[cfg(windows)]
