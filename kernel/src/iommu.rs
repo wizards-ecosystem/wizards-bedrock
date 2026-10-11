@@ -7,9 +7,9 @@
 //! exclusively claimed and fenced BME-off before `wost` takes over the
 //! unit-wide registers. The installed owner keeps those fences together with
 //! every table and register mapping until observed release, and uncertain
-//! transition or owner return retains the whole boundary. Only firmware's
-//! eligible reserved regions begin mapped, each refused first if it reaches
-//! memory the kernel owns. Queue frames, transfer buffers and bus-master
+//! transition or owner return retains the whole boundary. Firmware-reserved
+//! DMA regions are unsupported until a trusted physical ledger can distinguish
+//! device buffers from critical MMIO. Queue frames, transfer buffers and bus-master
 //! admission all go through the installed domain, while candidate retirement
 //! still restores every ordinary frame and mapping it took (D-199, D-370).
 //! When no complete unit can be established, the candidate is refused and the
@@ -26,7 +26,6 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use pci_config::Address;
 use wost::arch::current::paging::{DeviceMapping, ReleasableDevice};
 use wost::arch::current::vtd::{Establishment, Retargeting, Vtd};
-use wost::mm;
 use wost::sync::{SpinLock, ThreadLock, ThreadLockGuard};
 
 use crate::mem::{self, DeviceRetirement};
@@ -38,9 +37,6 @@ const REGISTER_WINDOW: u64 = 4096;
 
 /// The PCI segment group the legacy configuration ports reach.
 const SEGMENT: u16 = 0;
-
-/// Reserved regions one function may need identity-mapped; more refuses it.
-const RESERVED_LIMIT: usize = 8;
 
 /// Firmware's validated DMAR, read once before any candidate exists and kept
 /// for the rest of the boot.
@@ -108,8 +104,6 @@ pub(crate) fn discover(rsdp: u64) {
 /// The remapping unit firmware says governs one function.
 struct Unit {
     register_base: u64,
-    reserved: [(u64, u64); RESERVED_LIMIT],
-    reserved_count: usize,
     requesters: RequesterInventory<{ pci::FUNCTION_AUTHORITY_LIMIT }>,
 }
 
@@ -209,7 +203,7 @@ enum LookupError {
     UnsafeInventory(RequesterInventoryError),
     NoInterruptRemapping,
     IncompleteInterruptBoundary,
-    TooManyReserved,
+    UnsupportedReservedRegion,
 }
 
 fn look_up(bdf: Bdf) -> Result<Unit, LookupError> {
@@ -242,22 +236,23 @@ fn look_up(bdf: Bdf) -> Result<Unit, LookupError> {
     if !covers_every_present_requester(&requesters) {
         return Err(LookupError::IncompleteInterruptBoundary);
     }
-    let governing = requesters.unit();
-    let mut reserved = [(0, 0); RESERVED_LIMIT];
-    let mut reserved_count = 0;
-    for region in dmar.reserved_regions_for(bdf, bridge_buses, hierarchy_contains) {
-        let Some(slot) = reserved.get_mut(reserved_count) else {
-            return Err(LookupError::TooManyReserved);
-        };
-        *slot = region;
-        reserved_count += 1;
+    if !reserved_regions_are_supported(dmar.reserved_regions_for(
+        bdf,
+        bridge_buses,
+        hierarchy_contains,
+    )) {
+        return Err(LookupError::UnsupportedReservedRegion);
     }
+    let governing = requesters.unit();
     Ok(Unit {
         register_base: governing.register_base,
-        reserved,
-        reserved_count,
         requesters,
     })
+}
+
+/// Whether firmware supplied no reserved DMA mapping authority for the device.
+fn reserved_regions_are_supported(mut reserved: impl Iterator<Item = (u64, u64)>) -> bool {
+    reserved.next().is_none()
 }
 
 /// Whether this one unit covers every requester in the sealed live topology.
@@ -367,33 +362,19 @@ fn unit_for(at: Address) -> Option<Unit> {
             warn!("iommu: one remapping unit does not cover every present PCI requester");
             None
         }
-        Err(LookupError::TooManyReserved) => {
-            warn!("iommu: more than {RESERVED_LIMIT} reserved regions name the function");
+        Err(LookupError::UnsupportedReservedRegion) => {
+            warn!(
+                "iommu: firmware-reserved DMA regions are unsupported without a trusted physical classification"
+            );
             None
         }
     }
 }
 
-/// Whether every region firmware reserves for the function stays clear of the
-/// kernel's memory, which the domain would otherwise hand the device; the first
-/// that does not is logged.
-fn reserved_regions_are_clear(reserved: &[(u64, u64)]) -> bool {
-    match reserved
-        .iter()
-        .find(|&&(base, limit)| !mm::reserved_region_is_eligible(base, limit))
-    {
-        Some(&(base, limit)) => {
-            warn!("iommu: reserved region [{base:#x}, {limit:#x}] reaches memory the kernel owns");
-            false
-        }
-        None => true,
-    }
-}
-
-/// The screen `establish` applies, for the machine check that feeds it regions.
+/// The exact lookup policy, for the machine check that feeds it regions.
 #[cfg(feature = "selftest")]
-pub(crate) fn reserved_regions_are_clear_for_test(reserved: &[(u64, u64)]) -> bool {
-    reserved_regions_are_clear(reserved)
+pub(crate) fn reserved_regions_are_supported_for_test(reserved: &[(u64, u64)]) -> bool {
+    reserved_regions_are_supported(reserved.iter().copied())
 }
 
 /// Whether the candidate acquired a complete unit-wide DMA boundary.
@@ -480,14 +461,8 @@ pub(crate) fn establish(context: &mut ThreadContext, device: &pci::Device) -> Es
     };
     let Unit {
         register_base,
-        reserved,
-        reserved_count,
         requesters,
     } = unit;
-    let reserved = &reserved[..reserved_count];
-    if !reserved_regions_are_clear(reserved) {
-        return EstablishOutcome::Unavailable;
-    }
     let fences = match acquire_fences(&requesters, Some(device)) {
         FenceAcquisition::Ready(fences) => fences,
         FenceAcquisition::Refused => return EstablishOutcome::Unavailable,
@@ -507,12 +482,9 @@ pub(crate) fn establish(context: &mut ThreadContext, device: &pci::Device) -> Es
                 owner.fences = fences;
                 return EstablishOutcome::Quarantined;
             }
-            match owner.isolation.retarget(at, reserved) {
+            match owner.isolation.retarget(at, &[]) {
                 Retargeting::Retargeted => {
                     owner.fences = fences;
-                    for &(base, limit) in reserved {
-                        info!("iommu: reserved region [{base:#x}, {limit:#x}] stays reachable");
-                    }
                     let stray = owner.isolation.drain_faults();
                     if stray != 0 {
                         warn!(
@@ -569,7 +541,7 @@ pub(crate) fn establish(context: &mut ThreadContext, device: &pci::Device) -> Es
             return EstablishOutcome::Quarantined;
         }
     };
-    let mut isolation = match Vtd::establish(registers, at, reserved, true) {
+    let mut isolation = match Vtd::establish(registers, at, &[], true) {
         Establishment::Established(isolation) => isolation,
         Establishment::Refused { reason, registers } => {
             warn!("iommu: the unit at {register_base:#x} refused takeover: {reason}");
@@ -597,9 +569,6 @@ pub(crate) fn establish(context: &mut ThreadContext, device: &pci::Device) -> Es
             return EstablishOutcome::Quarantined;
         }
     };
-    for &(base, limit) in reserved {
-        info!("iommu: reserved region [{base:#x}, {limit:#x}] stays reachable");
-    }
     let stray = isolation.drain_faults();
     if stray != 0 {
         warn!("iommu: {stray} fault(s) were recorded before any segment was mapped");
@@ -669,8 +638,6 @@ pub(crate) fn ensure_interrupt_boundary(context: &mut ThreadContext) -> bool {
     };
     let Unit {
         register_base,
-        reserved: _,
-        reserved_count: _,
         requesters,
     } = unit;
     let requester_count = requesters.len();

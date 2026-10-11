@@ -207,11 +207,11 @@ structure or device scope is truncated or overruns its container, a reserved
 region is inverted, or two units share a register base; the duplicate-unit and
 inverted-region checks carry mutations 1,540 and 1,541. A unit's register base
 is trusted to name the governing unit and passes device-range admission, which
-needs the runtime physical width and excludes every boot-map byte. Up to eight
-regions the DMAR reserves for the function are identity-mapped read and write
-for the domain's life, and the candidate is refused before takeover when a
-page one of them reaches is RAM or firmware storage (D-360, mutations 1,573
-through 1,578 and 1,589). A hostile monitor can spoof CPUID,
+needs the runtime physical width and excludes every boot-map byte. The release
+kernel refuses a storage candidate when any DMAR reserved region applies to
+it: the boot map cannot distinguish benign device memory from security-critical
+MMIO, so firmware bytes never become DMA mapping authority (D-388, mutation
+1,589). A hostile monitor can spoof CPUID,
 so the QEMU TCG mapping reason is trusted development configuration and attests
 nothing (D-250).
 
@@ -229,8 +229,8 @@ readback, the architecture is trusted (limit 2).
 
 **Device DMA.** The kernel admits the storage controller to bus mastering only
 behind an Intel VT-d domain that identity-maps the frames a live `DmaSegment`
-owns and the function's reserved regions, so while translation is on every
-other address faults (D-357, D-358). Queue frames enter the domain before the
+owns and rejects every firmware-reserved DMA region, so while translation is
+on every other address faults (D-357, D-358, D-388). Queue frames enter the
 controller learns them; a transfer buffer is mapped before its doorbell and
 unmapped, with an invalidation, after its completion or a proven stop.
 Admission needs a `DmaDomain` for the exact function, minted only while

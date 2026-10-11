@@ -44,6 +44,16 @@ fn integer_literal_is(expression: &Expr, value: u64) -> bool {
             if integer.base10_parse::<u64>().is_ok_and(|parsed| parsed == value)))
 }
 
+fn bool_literal_is(expression: &Expr, value: bool) -> bool {
+    matches!(expression, Expr::Lit(literal)
+        if matches!(&literal.lit, syn::Lit::Bool(boolean) if boolean.value == value))
+}
+
+fn empty_slice_expression_is(expression: &Expr) -> bool {
+    matches!(expression, Expr::Reference(reference)
+        if matches!(&*reference.expr, Expr::Array(array) if array.elems.is_empty()))
+}
+
 fn member_is(member: &syn::Member, name: &str) -> bool {
     matches!(member, syn::Member::Named(identifier) if identifier == name)
 }
@@ -3734,4 +3744,145 @@ fn dmar_authority_uses_one_complete_sealed_pci_topology() {
             "{boundary} must not mix live configuration reads into the sealed snapshot"
         );
     }
+}
+
+#[test]
+fn firmware_reserved_dma_regions_never_become_mapping_authority() {
+    let iommu = parse("kernel/src/iommu.rs");
+    let unit = iommu
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Struct(item) if item.ident == "Unit" => Some(item),
+            _ => None,
+        })
+        .expect("looked-up VT-d unit authority");
+    let Fields::Named(fields) = &unit.fields else {
+        panic!("Unit must name its bounded authority");
+    };
+    let names = fields
+        .named
+        .iter()
+        .filter_map(|field| field.ident.as_ref().map(ToString::to_string))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        ["register_base", "requesters"],
+        "firmware-reserved regions must not survive lookup as mapping authority"
+    );
+
+    let policy = function(&iommu, "reserved_regions_are_supported");
+    let [Stmt::Expr(Expr::MethodCall(is_none), None)] = policy.block.stmts.as_slice() else {
+        panic!("reserved-region policy must be one exact emptiness predicate");
+    };
+    let Expr::MethodCall(next) = &*is_none.receiver else {
+        panic!("reserved-region policy must inspect the first entry");
+    };
+    assert!(
+        is_none.method == "is_none"
+            && is_none.args.is_empty()
+            && next.method == "next"
+            && next.args.is_empty()
+            && path_expression_is(&next.receiver, &["reserved"]),
+        "any firmware-reserved region must be refused"
+    );
+
+    let source = source("kernel/src/iommu.rs");
+    let lookup = source
+        .split_once("fn look_up(")
+        .expect("DMAR lookup")
+        .1
+        .split_once("/// Whether this one unit covers")
+        .expect("DMAR lookup end")
+        .0;
+    let coverage = lookup
+        .find("covers_every_present_requester(&requesters)")
+        .expect("complete requester coverage");
+    let refusal = lookup
+        .find("reserved_regions_are_supported(dmar.reserved_regions_for(")
+        .expect("reserved-region refusal");
+    let construction = lookup
+        .find("Ok(Unit {")
+        .expect("unit authority construction");
+    assert!(coverage < refusal && refusal < construction);
+    assert!(lookup.contains("return Err(LookupError::UnsupportedReservedRegion);"));
+
+    struct EmptyReservedMappings<'name> {
+        target: &'name str,
+        vtd_calls: usize,
+        exact_vtd_calls: usize,
+        retarget_calls: usize,
+        exact_retarget_calls: usize,
+    }
+
+    impl<'ast> Visit<'ast> for EmptyReservedMappings<'_> {
+        fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+            if matches!(&*call.func, Expr::Path(path)
+                if path_ends(&path.path, &["Vtd", "establish"]))
+            {
+                self.vtd_calls += 1;
+                self.exact_vtd_calls += usize::from(matches!(
+                    call.args.iter().collect::<Vec<_>>().as_slice(),
+                    [registers, target, reserved, interrupts]
+                        if path_expression_is(registers, &["registers"])
+                            && path_expression_is(target, &[self.target])
+                            && empty_slice_expression_is(reserved)
+                            && bool_literal_is(interrupts, true)
+                ));
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+
+        fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+            if call.method == "retarget" {
+                self.retarget_calls += 1;
+                self.exact_retarget_calls += usize::from(
+                    field_chain_is(&call.receiver, "owner", &["isolation"])
+                        && matches!(call.args.iter().collect::<Vec<_>>().as_slice(),
+                            [target, reserved]
+                                if path_expression_is(target, &[self.target])
+                                    && empty_slice_expression_is(reserved)),
+                );
+            }
+            syn::visit::visit_expr_method_call(self, call);
+        }
+    }
+
+    let mut storage = EmptyReservedMappings {
+        target: "at",
+        vtd_calls: 0,
+        exact_vtd_calls: 0,
+        retarget_calls: 0,
+        exact_retarget_calls: 0,
+    };
+    storage.visit_item_fn(function(&iommu, "establish"));
+    assert_eq!(
+        (
+            storage.vtd_calls,
+            storage.exact_vtd_calls,
+            storage.retarget_calls,
+            storage.exact_retarget_calls,
+        ),
+        (1, 1, 1, 1),
+        "fresh and parked storage owners must receive no firmware mappings"
+    );
+
+    let mut interrupt_only = EmptyReservedMappings {
+        target: "anchor",
+        vtd_calls: 0,
+        exact_vtd_calls: 0,
+        retarget_calls: 0,
+        exact_retarget_calls: 0,
+    };
+    interrupt_only.visit_item_fn(function(&iommu, "ensure_interrupt_boundary"));
+    assert_eq!(
+        (
+            interrupt_only.vtd_calls,
+            interrupt_only.exact_vtd_calls,
+            interrupt_only.retarget_calls,
+            interrupt_only.exact_retarget_calls,
+        ),
+        (1, 1, 0, 0),
+        "the interrupt-only owner must receive no firmware mappings"
+    );
 }

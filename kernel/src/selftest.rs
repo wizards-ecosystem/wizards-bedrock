@@ -2883,9 +2883,9 @@ fn an_uncertain_vtd_unmap_never_recycles_its_frames() -> bool {
     reserved && retained && mm::free_frames() == before - 1
 }
 
-/// The screen `iommu::establish` applies admits a page wholly inside a device
-/// hole and refuses a page of usable RAM; QEMU's DMAR names no region to try.
-fn a_reserved_dma_region_over_kernel_memory_refuses_isolation() -> bool {
+/// Firmware-reserved DMA regions carry no authority without a typed physical
+/// classification: neither a device hole nor usable RAM is admitted.
+fn firmware_reserved_dma_regions_never_become_mapping_authority() -> bool {
     let Some(map) = mm::memory_map_for_test() else {
         return false;
     };
@@ -2932,8 +2932,9 @@ fn a_reserved_dma_region_over_kernel_memory_refuses_isolation() -> bool {
     let (Some(hole), Some(usable)) = (hole, usable) else {
         return false;
     };
-    iommu::reserved_regions_are_clear_for_test(&[(hole, hole + PAGE_SIZE - 1)])
-        && !iommu::reserved_regions_are_clear_for_test(&[(usable, usable + PAGE_SIZE - 1)])
+    iommu::reserved_regions_are_supported_for_test(&[])
+        && !iommu::reserved_regions_are_supported_for_test(&[(hole, hole + PAGE_SIZE - 1)])
+        && !iommu::reserved_regions_are_supported_for_test(&[(usable, usable + PAGE_SIZE - 1)])
 }
 
 /// The first eight bytes of block `lba` on the check machine's namespace.
@@ -9298,8 +9299,8 @@ pub(crate) fn run(serial: Result<(), UartError>) {
         a_domain_proof_is_refused_while_translation_is_off(),
     );
     report.check(
-        "a reserved dma region over kernel memory refuses isolation",
-        a_reserved_dma_region_over_kernel_memory_refuses_isolation(),
+        "firmware reserved dma regions never become mapping authority",
+        firmware_reserved_dma_regions_never_become_mapping_authority(),
     );
 
     // Last of all: the timeout proof resets the only storage controller.

@@ -13657,10 +13657,13 @@ fn mint_stopped<'controller>(
     Mutation {
         id: 1589,
         file: "kernel/src/iommu.rs",
-        find: "        .find(|&&(base, limit)| !mm::reserved_region_is_eligible(base, limit))",
-        replace: "        .find(|&&(base, limit)| base > limit)",
-        breaks: "a storage candidate's reserved-region screen admits a region over kernel memory",
-        reddens: Caught::Check("a reserved dma region over kernel memory refuses isolation"),
+        find: "    reserved.next().is_none()",
+        replace: "    let _ = reserved.next();\n    true",
+        breaks: "a storage candidate turns a firmware RMRR into DMA mapping authority",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "dma_contracts::firmware_reserved_dma_regions_never_become_mapping_authority",
+        },
     },
     Mutation {
         id: 1161,
