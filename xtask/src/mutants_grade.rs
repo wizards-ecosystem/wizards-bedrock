@@ -1653,11 +1653,25 @@ fn verify_doctest(bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn fixture_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .to_path_buf()
+    fn with_fixture_root<T>(operation: impl FnOnce(&Path) -> T) -> T {
+        let parent = std::env::temp_dir();
+        let parent = crate::mutation_workspace::canonical_existing_real_directory(
+            &parent,
+            "cargo-mutants test fixture parent",
+        )
+        .unwrap();
+        let root = parent.join(format!(
+            "wizard-mutants-grade-fixture-{}-{}",
+            std::process::id(),
+            NEXT_CAMPAIGN.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).expect("creating exclusive cargo-mutants test fixture");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(&root)));
+        std::fs::remove_dir_all(&root).expect("removing cargo-mutants test fixture");
+        match outcome {
+            Ok(value) => value,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 
     fn fixture_executable(root: &Path, name: &str) -> ExecutableIdentity {
@@ -1720,15 +1734,16 @@ mod tests {
 
     #[test]
     fn direct_cargo_mutants_probe_names_its_subcommand() {
-        let root = fixture_root();
-        let paths = Paths::new(root.clone(), Some(&root.join("target")));
-        let tools = fixture_tools(&root);
-        let private_temp = fixture_private_temp(&paths);
-        let command = cargo_mutants_version_command(&tools, &paths, &private_temp).unwrap();
-        assert_eq!(
-            command.get_args().collect::<Vec<_>>(),
-            ["mutants", "--version"]
-        );
+        with_fixture_root(|root| {
+            let paths = Paths::new(root.to_path_buf(), Some(&root.join("target")));
+            let tools = fixture_tools(root);
+            let private_temp = fixture_private_temp(&paths);
+            let command = cargo_mutants_version_command(&tools, &paths, &private_temp).unwrap();
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                ["mutants", "--version"]
+            );
+        });
     }
 
     fn candidate(name: &str) -> String {
@@ -1803,8 +1818,8 @@ mod tests {
             commit: "a".repeat(40),
             tree: "b".repeat(40),
         };
-        let fixture_root = fixture_root();
-        let tools = fixture_tools(&fixture_root);
+        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tools = fixture_tools(fixture_root);
         let adjudications = br#"{"format":"wizard-cargo-mutants-adjudications-v1","outcomes":[]}"#;
         let request = render_request(&source, &tools, adjudications).unwrap();
         assert!(
@@ -2006,90 +2021,104 @@ mod tests {
 
     #[test]
     fn owned_commands_are_exactly_the_documented_ones() {
-        let fixture_root = fixture_root();
-        let paths = Paths::new(fixture_root.clone(), Some(&fixture_root.join("target")));
-        let tools = fixture_tools(&fixture_root);
-        let private_temp = fixture_private_temp(&paths);
-        assert_eq!(
-            format!("cargo {}", INVENTORY_ARGUMENTS.join(" ")),
-            INVENTORY_COMMAND
-        );
-        assert_eq!(
-            format!("cargo {}", DOCTEST_ARGUMENTS.join(" ")),
-            DOCTEST_COMMAND
-        );
-        let inventory = inventory_command(&tools, &paths, &private_temp).unwrap();
-        assert_eq!(
-            inventory.get_program(),
-            Path::new(&tools.cargo_mutants_path)
-        );
-        assert_eq!(
-            inventory.get_args().collect::<Vec<_>>(),
-            INVENTORY_ARGUMENTS
-        );
-        let doctest = doctest_command(&tools, &paths, &private_temp).unwrap();
-        assert_eq!(doctest.get_program(), Path::new(&tools.cargo.path));
-        assert_eq!(doctest.get_args().collect::<Vec<_>>(), DOCTEST_ARGUMENTS);
-        let output = fixture_root.join("owned-output");
-        let campaign = campaign_command(&tools, &paths, &output, &private_temp).unwrap();
-        assert_eq!(campaign.get_program(), Path::new(&tools.cargo_mutants_path));
-        let expected: Vec<_> = CAMPAIGN_ARGUMENTS_BEFORE_OUTPUT
-            .iter()
-            .map(std::ffi::OsStr::new)
-            .chain(std::iter::once(output.as_os_str()))
-            .chain(
-                CAMPAIGN_ARGUMENTS_AFTER_OUTPUT
-                    .iter()
-                    .map(std::ffi::OsStr::new),
-            )
-            .chain(std::iter::once(std::ffi::OsStr::new(
-                CAMPAIGN_FINAL_ARGUMENT,
-            )))
-            .collect();
-        assert_eq!(campaign.get_args().collect::<Vec<_>>(), expected);
-        for command in [&campaign, &inventory, &doctest] {
-            for (name, value) in [
-                ("CARGO_BUILD_JOBS", "1"),
-                ("NEXTEST_TEST_THREADS", "1"),
-                ("RUSTC", tools.rustc.path.as_str()),
-                ("RUSTDOC", tools.rustdoc.path.as_str()),
-            ] {
-                assert!(command.get_envs().any(|(observed, observed_value)| {
-                    observed == name && observed_value == Some(std::ffi::OsStr::new(value))
-                }));
-            }
-            let encoded = format!(
-                "-C\u{1f}dlltool={}",
-                crate::cargo::child_process_path(Path::new(&tools.dlltool.path)).display()
+        with_fixture_root(|root| {
+            let paths = Paths::new(root.to_path_buf(), Some(&root.join("target")));
+            let tools = fixture_tools(root);
+            let private_temp = fixture_private_temp(&paths);
+            assert_eq!(
+                format!("cargo {}", INVENTORY_ARGUMENTS.join(" ")),
+                INVENTORY_COMMAND
             );
-            assert!(command.get_envs().any(|(observed, observed_value)| {
-                observed == "CARGO_ENCODED_RUSTFLAGS"
-                    && observed_value == Some(std::ffi::OsStr::new(&encoded))
-            }));
-            let private_temp = crate::cargo::child_process_path(&private_temp);
-            for name in ["TEMP", "TMP", "TMPDIR"] {
+            assert_eq!(
+                format!("cargo {}", DOCTEST_ARGUMENTS.join(" ")),
+                DOCTEST_COMMAND
+            );
+            let inventory = inventory_command(&tools, &paths, &private_temp).unwrap();
+            assert_eq!(
+                inventory.get_program(),
+                Path::new(&tools.cargo_mutants_path)
+            );
+            assert_eq!(
+                inventory.get_args().collect::<Vec<_>>(),
+                INVENTORY_ARGUMENTS
+            );
+            let doctest = doctest_command(&tools, &paths, &private_temp).unwrap();
+            assert_eq!(doctest.get_program(), Path::new(&tools.cargo.path));
+            assert_eq!(doctest.get_args().collect::<Vec<_>>(), DOCTEST_ARGUMENTS);
+            let output = root.join("owned-output");
+            let campaign = campaign_command(&tools, &paths, &output, &private_temp).unwrap();
+            assert_eq!(campaign.get_program(), Path::new(&tools.cargo_mutants_path));
+            let output_argument = crate::cargo::child_process_path(&output);
+            let expected: Vec<_> = CAMPAIGN_ARGUMENTS_BEFORE_OUTPUT
+                .iter()
+                .map(std::ffi::OsStr::new)
+                .chain(std::iter::once(output_argument.as_os_str()))
+                .chain(
+                    CAMPAIGN_ARGUMENTS_AFTER_OUTPUT
+                        .iter()
+                        .map(std::ffi::OsStr::new),
+                )
+                .chain(std::iter::once(std::ffi::OsStr::new(
+                    CAMPAIGN_FINAL_ARGUMENT,
+                )))
+                .collect();
+            assert_eq!(campaign.get_args().collect::<Vec<_>>(), expected);
+            for command in [&campaign, &inventory, &doctest] {
+                for (name, value) in [
+                    ("CARGO_BUILD_JOBS", "1"),
+                    ("NEXTEST_TEST_THREADS", "1"),
+                    ("RUSTC", tools.rustc.path.as_str()),
+                    ("RUSTDOC", tools.rustdoc.path.as_str()),
+                ] {
+                    assert!(command.get_envs().any(|(observed, observed_value)| {
+                        observed == name && observed_value == Some(std::ffi::OsStr::new(value))
+                    }));
+                }
+                let encoded = format!(
+                    "-C\u{1f}dlltool={}",
+                    crate::cargo::child_process_path(Path::new(&tools.dlltool.path)).display()
+                );
                 assert!(command.get_envs().any(|(observed, observed_value)| {
-                    observed == name && observed_value == Some(private_temp.as_os_str())
+                    observed == "CARGO_ENCODED_RUSTFLAGS"
+                        && observed_value == Some(std::ffi::OsStr::new(&encoded))
                 }));
+                let private_temp = crate::cargo::child_process_path(&private_temp);
+                for name in ["TEMP", "TMP", "TMPDIR"] {
+                    assert!(command.get_envs().any(|(observed, observed_value)| {
+                        observed == name && observed_value == Some(private_temp.as_os_str())
+                    }));
+                }
             }
-        }
-        let campaign_path = campaign
-            .get_envs()
-            .find_map(|(name, value)| (name == "PATH").then_some(value).flatten())
-            .unwrap();
-        assert_eq!(
-            std::env::split_paths(campaign_path).next().as_deref(),
-            Path::new(&tools.nextest_path).parent()
-        );
-        let implementation = include_str!("mutants_grade.rs");
-        let execute = implementation.find("fn execute_campaign(").unwrap();
-        let success = implementation[execute..]
-            .find("fn require_campaign_success(")
-            .unwrap()
-            + execute;
-        let body = &implementation[execute..success];
-        assert!(body.contains("crate::bounded_process::output_with_limit("));
-        assert!(!body.contains("command.output()"));
+            let campaign_path = campaign
+                .get_envs()
+                .find_map(|(name, value)| (name == "PATH").then_some(value).flatten())
+                .unwrap();
+            assert_eq!(
+                std::env::split_paths(campaign_path).next().as_deref(),
+                Path::new(&tools.nextest_path).parent()
+            );
+            let implementation = include_str!("mutants_grade.rs");
+            let execute = implementation.find("fn execute_campaign(").unwrap();
+            let success = implementation[execute..]
+                .find("fn require_campaign_success(")
+                .unwrap()
+                + execute;
+            let body = &implementation[execute..success];
+            assert!(body.contains("crate::bounded_process::output_with_limit("));
+            assert!(!body.contains("command.output()"));
+        });
+    }
+
+    #[test]
+    fn command_fixtures_do_not_inherit_the_compiling_checkout() {
+        with_fixture_root(|root| {
+            let checkout = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+            assert!(!root.starts_with(checkout));
+            let paths = Paths::new(root.to_path_buf(), Some(&root.join("target")));
+            let tools = fixture_tools(root);
+            let private_temp = fixture_private_temp(&paths);
+            cargo_mutants_version_command(&tools, &paths, &private_temp).unwrap();
+        });
     }
 
     #[test]
@@ -2227,8 +2256,8 @@ mod tests {
             commit: "c".repeat(40),
             tree: source.tree.clone(),
         };
-        let fixture_root = fixture_root();
-        let tools = fixture_tools(&fixture_root);
+        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let tools = fixture_tools(fixture_root);
         let changed_tools = ToolIdentity {
             nextest_bytes: 2,
             ..tools.clone()

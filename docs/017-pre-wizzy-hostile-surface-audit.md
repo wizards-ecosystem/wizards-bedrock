@@ -264,6 +264,7 @@ closing evidence.
 | `PW-006` | Re-attack the final P0/P1 source after the admitted fixes and bind every disposition, break-test and evidence artifact in the phase-close ADR. |
 | `PW-026` | Run the authorized repository-wide multi-pass Codex Security scan on the frozen qualification source, retain a completed canonical rerun with full scope, no exclusions/deferrals/open questions and zero findings at every severity, and obtain an authenticated provider receipt or invocation/fetch channel that binds it to the source-bound request before allowing PASS. |
 | `PW-543` | Re-prove live kernel `SS` independently from the saved user frame across privilege entry and a trap-side context switch. |
+| `PW-592` | Run cargo-mutants from its nested tracked workspace with command fixtures whose Cargo-discovery ancestry is independent of the checkout, then prove the pristine baseline advances without weakening the production parent-configuration refusal. |
 
 ## Stopped surfaces and audit limits
 

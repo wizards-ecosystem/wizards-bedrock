@@ -33,11 +33,21 @@ const MAX_TOOLCHAIN_FILE_BYTES: u64 = 64 * 1024;
 const MAX_TOOL_BINARY_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_FIRMWARE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_KERNEL_BYTES: u64 = 64 * 1024 * 1024;
+const ALTERNATE_BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const ALTERNATE_BUILD_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+const MIRROR_ENTRY_LIMIT: usize = 100_000;
+const MIRROR_DEPTH_LIMIT: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Digest {
     bytes: u64,
     sha256: String,
+}
+
+struct ReproducedRelease {
+    image: PathBuf,
+    kernel: PathBuf,
+    host_roots: [PathBuf; 3],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -213,25 +223,50 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
         "source, tools, firmware or boot inputs changed during qualification"
     );
 
-    for child in ["work-a", "work-b", "path-a", "path-b", "qualification"] {
+    for child in [
+        "work-a",
+        "work-b",
+        "path-a",
+        "path-b",
+        "qualification",
+        "toolchain-b",
+        "cargo-home-b",
+    ] {
         reset_child(&root, child)?;
     }
 
-    let work_a = root.join("work-a");
-    let work_b = root.join("work-b");
-    let paths_a = Paths::new(paths.root().to_path_buf(), Some(&work_a));
-    let paths_b = Paths::new(paths.root().to_path_buf(), Some(&work_b));
-    let image_a = image::build(&paths_a, Profile::Release, image::Kernel::Shipped)
-        .context("building clean release path A")?;
-    let image_b = image::build(&paths_b, Profile::Release, image::Kernel::Shipped)
-        .context("building clean release path B")?;
-    let kernel_a = paths_a.kernel_elf(Profile::Release);
-    let kernel_b = paths_b.kernel_elf(Profile::Release);
+    let release_a = reproduce_release(paths, &root.join("work-a"), "A")?;
+    let release_b = reproduce_release_alternate(paths, &root, &root.join("work-b"))?;
+    ensure!(
+        release_a
+            .host_roots
+            .iter()
+            .zip(&release_b.host_roots)
+            .all(|(left, right)| left != right),
+        "release reproductions reused a source, toolchain or Cargo root"
+    );
+    let original_roots = crate::cargo::active_kernel_remap_roots(paths)?;
+    let host_roots = original_roots
+        .iter()
+        .chain(release_a.host_roots.iter())
+        .chain(release_b.host_roots.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    for (path, maximum, label) in [
+        (&release_a.kernel, MAX_KERNEL_BYTES, "release kernel A"),
+        (&release_a.image, boot_image_bytes(), "release image A"),
+        (&release_b.kernel, MAX_KERNEL_BYTES, "release kernel B"),
+        (&release_b.image, boot_image_bytes(), "release image B"),
+    ] {
+        require_no_host_paths(path, maximum, label, &host_roots)?;
+    }
 
-    let built_kernel_a = digest_file_bounded(&kernel_a, MAX_KERNEL_BYTES, "release kernel A")?;
-    let built_kernel_b = digest_file_bounded(&kernel_b, MAX_KERNEL_BYTES, "release kernel B")?;
-    let built_image_a = digest_file_exact(&image_a, boot_image_bytes(), "release image A")?;
-    let built_image_b = digest_file_exact(&image_b, boot_image_bytes(), "release image B")?;
+    let built_kernel_a =
+        digest_file_bounded(&release_a.kernel, MAX_KERNEL_BYTES, "release kernel A")?;
+    let built_kernel_b =
+        digest_file_bounded(&release_b.kernel, MAX_KERNEL_BYTES, "release kernel B")?;
+    let built_image_a = digest_file_exact(&release_a.image, boot_image_bytes(), "release image A")?;
+    let built_image_b = digest_file_exact(&release_b.image, boot_image_bytes(), "release image B")?;
     ensure!(
         byte_identical(&built_kernel_a, &built_kernel_b),
         "clean release paths produced different kernel ELFs"
@@ -245,12 +280,12 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
     let bundled_image_a = root.join(ARTIFACTS[1].relative);
     let bundled_kernel_b = root.join(ARTIFACTS[2].relative);
     let bundled_image_b = root.join(ARTIFACTS[3].relative);
-    copy_exact(&kernel_a, &bundled_kernel_a, &built_kernel_a)?;
-    copy_exact(&image_a, &bundled_image_a, &built_image_a)?;
-    copy_exact(&kernel_b, &bundled_kernel_b, &built_kernel_b)?;
-    copy_exact(&image_b, &bundled_image_b, &built_image_b)?;
+    copy_exact(&release_a.kernel, &bundled_kernel_a, &built_kernel_a)?;
+    copy_exact(&release_a.image, &bundled_image_a, &built_image_a)?;
+    copy_exact(&release_b.kernel, &bundled_kernel_b, &built_kernel_b)?;
+    copy_exact(&release_b.image, &bundled_image_b, &built_image_b)?;
 
-    tasks::boot_shipped_image(&paths_a, &bundled_image_a)
+    tasks::boot_shipped_image(paths, &bundled_image_a)
         .context("booting the exact path-A evidence image")?;
     ensure!(
         digest_file_exact(&bundled_image_a, boot_image_bytes(), "booted release image",)?
@@ -281,6 +316,278 @@ pub(crate) fn create(paths: &Paths) -> Result<()> {
     let manifest = root.join(MANIFEST_NAME);
     write_manifest(&root, &manifest, &record.render())?;
     println!("[xtask] release evidence ready at {}", manifest.display());
+    Ok(())
+}
+
+fn reproduce_release(paths: &Paths, target: &Path, label: &str) -> Result<ReproducedRelease> {
+    let build = |source: &Path| {
+        let copied = Paths::new(source.to_path_buf(), Some(target));
+        let image = image::build(&copied, Profile::Release, image::Kernel::Shipped)
+            .with_context(|| format!("building clean release path {label}"))?;
+        Ok(ReproducedRelease {
+            image,
+            kernel: copied.kernel_elf(Profile::Release),
+            host_roots: crate::cargo::active_kernel_remap_roots(&copied)?,
+        })
+    };
+    crate::mutation_workspace::with_clean_source_copy(paths, build)
+}
+
+fn reproduce_release_alternate(
+    paths: &Paths,
+    evidence: &Path,
+    target: &Path,
+) -> Result<ReproducedRelease> {
+    let original = crate::cargo::active_kernel_remap_roots(paths)?;
+    let toolchain = evidence.join("toolchain-b");
+    let cargo_home = evidence.join("cargo-home-b");
+    let result = (|| {
+        let mut entries = 0usize;
+        for child in ["bin", "lib"] {
+            mirror_directory(
+                &original[1].join(child),
+                &toolchain.join(child),
+                0,
+                &mut entries,
+            )?;
+        }
+        mirror_directory(
+            &original[2].join("registry"),
+            &cargo_home.join("registry"),
+            0,
+            &mut entries,
+        )?;
+        for name in ["config", "config.toml"] {
+            let source = original[2].join(name);
+            match std::fs::symlink_metadata(&source) {
+                Ok(metadata) => {
+                    entries = entries
+                        .checked_add(1)
+                        .context("alternate build mirror entry count overflowed")?;
+                    ensure!(
+                        entries <= MIRROR_ENTRY_LIMIT,
+                        "alternate build mirror exceeds its entry limit"
+                    );
+                    mirror_file(&source, &cargo_home.join(name), &metadata)?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| format!("inspecting {}", source.display()));
+                }
+            }
+        }
+
+        crate::mutation_workspace::with_clean_source_copy(paths, |source| {
+            run_alternate_release_build(source, target, &toolchain, &cargo_home)?;
+            let copied = Paths::new(source.to_path_buf(), Some(target));
+            let image = copied.image();
+            let kernel = copied.kernel_elf(Profile::Release);
+            crate::elf::verify_file(&kernel)?;
+            ensure!(image.is_file(), "alternate release build produced no image");
+            Ok(ReproducedRelease {
+                image,
+                kernel,
+                host_roots: [
+                    crate::mutation_workspace::canonical_existing_real_directory(
+                        source,
+                        "alternate release source root",
+                    )?,
+                    crate::mutation_workspace::canonical_existing_real_directory(
+                        &toolchain,
+                        "alternate release toolchain root",
+                    )?,
+                    crate::mutation_workspace::canonical_existing_real_directory(
+                        &cargo_home,
+                        "alternate release Cargo home",
+                    )?,
+                ],
+            })
+        })
+    })();
+    let toolchain_cleanup = remove_child(evidence, "toolchain-b");
+    let cargo_cleanup = remove_child(evidence, "cargo-home-b");
+    match (result, toolchain_cleanup, cargo_cleanup) {
+        (Ok(release), Ok(()), Ok(())) => Ok(release),
+        (Err(error), Ok(()), Ok(())) => Err(error),
+        (result, toolchain_cleanup, cargo_cleanup) => {
+            let primary = match result {
+                Ok(_) => "alternate release build passed".to_string(),
+                Err(error) => format!("{error:#}"),
+            };
+            Err(anyhow::anyhow!(
+                "{primary}; alternate-root cleanup failed: toolchain={}; cargo-home={}",
+                cleanup_outcome(toolchain_cleanup),
+                cleanup_outcome(cargo_cleanup)
+            ))
+        }
+    }
+}
+
+fn cleanup_outcome(result: Result<()>) -> String {
+    result.map_or_else(|error| format!("{error:#}"), |()| "ok".to_string())
+}
+
+fn run_alternate_release_build(
+    source: &Path,
+    target: &Path,
+    toolchain: &Path,
+    cargo_home: &Path,
+) -> Result<()> {
+    let executable = |name: &str| {
+        toolchain.join("bin").join(if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        })
+    };
+    let inherited = std::env::var_os("PATH").context("PATH is unavailable")?;
+    let path = std::env::join_paths(
+        std::iter::once(toolchain.join("bin")).chain(std::env::split_paths(&inherited)),
+    )
+    .context("constructing alternate release PATH")?;
+    let mut command = Command::new(executable("cargo"));
+    for (name, _) in std::env::vars_os() {
+        let normalized = name.to_string_lossy().to_ascii_uppercase();
+        if normalized == "CARGO"
+            || normalized.starts_with("CARGO_")
+            || normalized.starts_with("RUST")
+        {
+            command.env_remove(name);
+        }
+    }
+    command
+        .current_dir(source)
+        .env("CARGO_HOME", crate::cargo::child_process_path(cargo_home))
+        .env("CARGO_TARGET_DIR", crate::cargo::child_process_path(target))
+        .env("CARGO_NET_OFFLINE", "true")
+        .env("RUSTC", executable("rustc"))
+        .env("RUSTDOC", executable("rustdoc"))
+        .env("RUSTC_WRAPPER", "")
+        .env("RUSTC_WORKSPACE_WRAPPER", "")
+        .env("PATH", path)
+        .args([
+            "run",
+            "--offline",
+            "--locked",
+            "--profile",
+            "xtask",
+            "--package",
+            "xtask",
+            "--",
+            "image",
+        ]);
+    let output = bounded_process::output_with_limit(
+        command,
+        ALTERNATE_BUILD_TIMEOUT,
+        "alternate-root release build",
+        ALTERNATE_BUILD_OUTPUT_BYTES,
+    )?;
+    std::io::stdout()
+        .write_all(&output.stdout)
+        .context("forwarding alternate release output")?;
+    std::io::stderr()
+        .write_all(&output.stderr)
+        .context("forwarding alternate release diagnostics")?;
+    ensure!(
+        output.status.success(),
+        "alternate-root release build failed ({})",
+        output.status
+    );
+    Ok(())
+}
+
+fn mirror_directory(
+    source: &Path,
+    destination: &Path,
+    depth: usize,
+    entries: &mut usize,
+) -> Result<()> {
+    ensure!(
+        depth <= MIRROR_DEPTH_LIMIT,
+        "alternate build mirror exceeds its directory-depth limit"
+    );
+    let metadata = std::fs::symlink_metadata(source)
+        .with_context(|| format!("inspecting mirror source {}", source.display()))?;
+    ensure!(
+        metadata.file_type().is_dir()
+            && !metadata.file_type().is_symlink()
+            && !is_reparse(&metadata),
+        "alternate build mirror source is not a real directory: {}",
+        source.display()
+    );
+    std::fs::create_dir(destination)
+        .with_context(|| format!("creating mirror directory {}", destination.display()))?;
+    for entry in
+        std::fs::read_dir(source).with_context(|| format!("reading {}", source.display()))?
+    {
+        let entry = entry.with_context(|| format!("reading an entry in {}", source.display()))?;
+        *entries = entries
+            .checked_add(1)
+            .context("alternate build mirror entry count overflowed")?;
+        ensure!(
+            *entries <= MIRROR_ENTRY_LIMIT,
+            "alternate build mirror exceeds its entry limit"
+        );
+        let metadata = std::fs::symlink_metadata(entry.path())
+            .with_context(|| format!("inspecting {}", entry.path().display()))?;
+        let target = destination.join(entry.file_name());
+        if metadata.file_type().is_dir()
+            && !metadata.file_type().is_symlink()
+            && !is_reparse(&metadata)
+        {
+            mirror_directory(&entry.path(), &target, depth + 1, entries)?;
+        } else {
+            mirror_file(&entry.path(), &target, &metadata)?;
+        }
+    }
+    Ok(())
+}
+
+fn mirror_file(source: &Path, destination: &Path, metadata: &std::fs::Metadata) -> Result<()> {
+    ensure!(
+        metadata.file_type().is_file()
+            && !metadata.file_type().is_symlink()
+            && !is_reparse(metadata),
+        "alternate build mirror source is not a real file: {}",
+        source.display()
+    );
+    std::fs::hard_link(source, destination).with_context(|| {
+        format!(
+            "hard-linking alternate build input {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })
+}
+
+#[cfg(windows)]
+fn is_reparse(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    metadata.file_attributes() & 0x400 != 0
+}
+
+#[cfg(not(windows))]
+const fn is_reparse(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
+fn require_no_host_paths(path: &Path, maximum: u64, label: &str, roots: &[PathBuf]) -> Result<()> {
+    let bytes = qualification::read_bounded_file(path, maximum, label)?;
+    for root in roots {
+        let root = crate::cargo::child_process_path(root);
+        let text = root
+            .to_str()
+            .with_context(|| format!("{label} host root is not UTF-8: {}", root.display()))?;
+        for spelling in [text.to_string(), text.replace('\\', "/")] {
+            ensure!(
+                !spelling.is_empty()
+                    && !bytes
+                        .windows(spelling.len())
+                        .any(|window| window == spelling.as_bytes()),
+                "{label} retains host path {spelling:?}"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1323,7 +1630,13 @@ fn checked_child(root: &Path, name: &str) -> Result<PathBuf> {
     ensure!(
         matches!(
             name,
-            "work-a" | "work-b" | "path-a" | "path-b" | "qualification"
+            "work-a"
+                | "work-b"
+                | "path-a"
+                | "path-b"
+                | "qualification"
+                | "toolchain-b"
+                | "cargo-home-b"
         ),
         "refusing to modify unexpected evidence child `{name}`"
     );
@@ -1419,6 +1732,60 @@ mod tests {
         assert!(
             require_stable_clean_source("", &current, "?? transient-input\n", &current).is_err()
         );
+    }
+
+    #[test]
+    fn release_reproduction_uses_copied_sources_and_rejects_host_paths() {
+        let implementation = include_str!("evidence.rs");
+        let create = implementation.find("pub(crate) fn create(").unwrap();
+        let verify = implementation[create..]
+            .find("pub(crate) fn verify(")
+            .unwrap()
+            + create;
+        let body = &implementation[create..verify];
+        assert_eq!(body.matches("reproduce_release(paths,").count(), 1);
+        assert_eq!(
+            body.matches("reproduce_release_alternate(paths,").count(),
+            1
+        );
+        assert!(body.contains(".zip(&release_b.host_roots)"));
+        assert!(body.contains(".all(|(left, right)| left != right)"));
+        assert!(body.contains("require_no_host_paths(path, maximum, label, &host_roots)?"));
+
+        let reproduce = implementation.find("fn reproduce_release(").unwrap();
+        let absent = implementation[reproduce..]
+            .find("fn require_no_host_paths(")
+            .unwrap()
+            + reproduce;
+        assert!(
+            implementation[reproduce..absent]
+                .contains("mutation_workspace::with_clean_source_copy(paths, build)")
+        );
+        assert_eq!(
+            implementation[reproduce..absent]
+                .matches("mutation_workspace::with_clean_source_copy(paths")
+                .count(),
+            2
+        );
+        assert!(implementation[reproduce..absent].contains("CARGO_NET_OFFLINE"));
+        assert!(implementation[reproduce..absent].contains("std::fs::hard_link"));
+        assert!(!implementation[reproduce..absent].contains("credentials.toml"));
+
+        let root =
+            std::env::temp_dir().join(format!("wizard-host-path-evidence-{}", std::process::id()));
+        if root.exists() {
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+        std::fs::create_dir(&root).unwrap();
+        let artifact = root.join("artifact");
+        let host = PathBuf::from(r"C:\private host");
+        std::fs::write(&artifact, b"prefix C:\\private host suffix").unwrap();
+        assert!(
+            require_no_host_paths(&artifact, 1024, "fixture", std::slice::from_ref(&host)).is_err()
+        );
+        std::fs::write(&artifact, b"prefix /wizard/source suffix").unwrap();
+        require_no_host_paths(&artifact, 1024, "fixture", &[host]).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

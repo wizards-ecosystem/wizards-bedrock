@@ -77,7 +77,7 @@ pub enum Caught {
 }
 
 /// The identity the next registered mutation takes, wherever it is placed.
-pub const NEXT_MUTATION_ID: u16 = 1785;
+pub const NEXT_MUTATION_ID: u16 = 1791;
 
 /// Identities of deleted mutations, which no later entry may take.
 pub const RETIRED_MUTATION_IDS: &[u16] = &[116, 514, 515, 517, 1005, 1521, 1563];
@@ -19984,6 +19984,72 @@ fn mint_stopped<'controller>(
         reddens: Caught::HostTest {
             package: "xtask",
             name: "dma_contracts::vtd_revocation_drains_older_dma_before_recycling_frames",
+        },
+    },
+    Mutation {
+        id: 1785,
+        file: "xtask/src/mutants_grade.rs",
+        find: "        let parent = std::env::temp_dir();",
+        replace: "        let parent = Path::new(env!(\"CARGO_MANIFEST_DIR\"))\n            .parent()\n            .unwrap()\n            .to_path_buf();",
+        breaks: "cargo-mutants command fixtures inherit Cargo configuration from the compiling checkout",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "mutants_grade::tests::command_fixtures_do_not_inherit_the_compiling_checkout",
+        },
+    },
+    Mutation {
+        id: 1786,
+        file: "xtask/src/cargo.rs",
+        find: "        (source_root, VIRTUAL_SOURCE_ROOT),\n",
+        replace: "",
+        breaks: "release DWARF retains the checkout's absolute source path",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cargo::tests::kernel_builds_use_the_exact_codegen_and_virtual_path_contract",
+        },
+    },
+    Mutation {
+        id: 1787,
+        file: "xtask/src/evidence.rs",
+        find: "    crate::mutation_workspace::with_clean_source_copy(paths, build)",
+        replace: "    build(paths.root())",
+        breaks: "one release reproduction reuses the checkout that invoked evidence",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "evidence::tests::release_reproduction_uses_copied_sources_and_rejects_host_paths",
+        },
+    },
+    Mutation {
+        id: 1788,
+        file: "xtask/src/debugger.rs",
+        find: "        source_substitution(source_root)?,\n",
+        replace: "",
+        breaks: "GDB cannot resolve source paths remapped out of the release ELF",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "debugger::tests::the_debugger_commands_are_entry_first_and_the_proof_is_bounded",
+        },
+    },
+    Mutation {
+        id: 1789,
+        file: "xtask/src/cargo.rs",
+        find: "    .env(\"RUSTC\", executable(\"rustc\"))\n",
+        replace: "",
+        breaks: "a dependency-local toolchain file can select another compiler for a kernel graph",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "cargo::tests::kernel_builds_use_the_exact_codegen_and_virtual_path_contract",
+        },
+    },
+    Mutation {
+        id: 1790,
+        file: "xtask/src/api.rs",
+        find: "    let portable = reported.replace('\\\\', \"/\");\n",
+        replace: "    let portable = reported.to_string();\n",
+        breaks: "Windows compiler diagnostics cannot resolve the virtual source root",
+        reddens: Caught::HostTest {
+            package: "xtask",
+            name: "api::tests::virtual_source_diagnostics_accept_native_separators_without_traversal",
         },
     },
 ];

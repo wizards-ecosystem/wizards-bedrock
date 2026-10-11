@@ -8,7 +8,7 @@ use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 
 use crate::cargo::Profile;
 use crate::cli::DebugMode;
@@ -37,8 +37,8 @@ pub(crate) fn run(paths: &Paths, mode: DebugMode) -> Result<()> {
     );
 
     let result = match mode {
-        DebugMode::Interactive => gdb.interactive(&elf, machine.endpoint()),
-        DebugMode::Check => gdb.check(&elf, machine.endpoint()),
+        DebugMode::Interactive => gdb.interactive(&elf, machine.endpoint(), paths.root()),
+        DebugMode::Check => gdb.check(&elf, machine.endpoint(), paths.root()),
     };
     let cleanup = machine.stop();
     combine_with_cleanup(result, cleanup)
@@ -106,10 +106,15 @@ impl Debugger {
         })
     }
 
-    fn interactive(&self, elf: &Path, endpoint: &str) -> Result<()> {
+    fn interactive(&self, elf: &Path, endpoint: &str, source_root: &Path) -> Result<()> {
         println!("[xtask] GDB will stop at {ENTRY_SYMBOL}; use `quit` to end the VM");
         let status = Command::new(&self.executable)
-            .args(gdb_arguments(elf, endpoint, DebugMode::Interactive))
+            .args(gdb_arguments(
+                elf,
+                endpoint,
+                source_root,
+                DebugMode::Interactive,
+            )?)
             .status()
             .with_context(|| format!("launching {}", self.executable.display()))?;
         if !status.success() {
@@ -118,9 +123,9 @@ impl Debugger {
         Ok(())
     }
 
-    fn check(&self, elf: &Path, endpoint: &str) -> Result<()> {
+    fn check(&self, elf: &Path, endpoint: &str, source_root: &Path) -> Result<()> {
         let mut command = Command::new(&self.executable);
-        command.args(gdb_arguments(elf, endpoint, DebugMode::Check));
+        command.args(gdb_arguments(elf, endpoint, source_root, DebugMode::Check)?);
         let output = bounded_output(command, PROOF_TIMEOUT)?;
         std::io::stdout()
             .write_all(&output.stdout)
@@ -188,7 +193,12 @@ fn winget_candidates() -> Result<Vec<PathBuf>> {
     Ok(candidates)
 }
 
-fn gdb_arguments(elf: &Path, endpoint: &str, mode: DebugMode) -> Vec<OsString> {
+fn gdb_arguments(
+    elf: &Path,
+    endpoint: &str,
+    source_root: &Path,
+    mode: DebugMode,
+) -> Result<Vec<OsString>> {
     let mut arguments = ["--quiet", "--nx", "--nh"]
         .into_iter()
         .map(OsString::from)
@@ -200,6 +210,7 @@ fn gdb_arguments(elf: &Path, endpoint: &str, mode: DebugMode) -> Vec<OsString> {
     for command in [
         "set pagination off".to_string(),
         "set confirm off".to_string(),
+        source_substitution(source_root)?,
         format!("target remote {endpoint}"),
         format!("hbreak {ENTRY_SYMBOL}"),
         "continue".to_string(),
@@ -216,7 +227,30 @@ fn gdb_arguments(elf: &Path, endpoint: &str, mode: DebugMode) -> Vec<OsString> {
             arguments.extend([OsString::from("--ex"), OsString::from(command)]);
         }
     }
-    arguments
+    Ok(arguments)
+}
+
+fn source_substitution(source_root: &Path) -> Result<String> {
+    let source_root = crate::cargo::child_process_path(source_root);
+    let source_root = source_root
+        .to_str()
+        .with_context(|| {
+            format!(
+                "debugger source root is not UTF-8: {}",
+                source_root.display()
+            )
+        })?
+        .replace('\\', "/");
+    ensure!(
+        !source_root.is_empty()
+            && !source_root.contains('"')
+            && !source_root.chars().any(char::is_control),
+        "debugger source root cannot be quoted safely: {source_root:?}"
+    );
+    Ok(format!(
+        "set substitute-path {} \"{source_root}\"",
+        crate::cargo::VIRTUAL_SOURCE_ROOT
+    ))
 }
 
 fn bounded_output(command: Command, timeout: Duration) -> Result<Output> {
@@ -258,8 +292,10 @@ mod tests {
     #[test]
     fn the_debugger_commands_are_entry_first_and_the_proof_is_bounded() {
         let elf = Path::new("kernel symbols.elf");
-        let interactive = gdb_arguments(elf, "127.0.0.1:1234", DebugMode::Interactive);
-        let check = gdb_arguments(elf, "127.0.0.1:1234", DebugMode::Check);
+        let source = Path::new(r"C:\source checkout");
+        let interactive =
+            gdb_arguments(elf, "127.0.0.1:1234", source, DebugMode::Interactive).unwrap();
+        let check = gdb_arguments(elf, "127.0.0.1:1234", source, DebugMode::Check).unwrap();
         let render = |arguments: &[OsString]| {
             arguments
                 .iter()
@@ -272,6 +308,7 @@ mod tests {
 
         for commands in [&interactive, &check] {
             assert!(commands.contains("--se|kernel symbols.elf"));
+            assert!(commands.contains("set substitute-path /wizard/source \"C:/source checkout\""));
             assert!(commands.contains("target remote 127.0.0.1:1234"));
             assert!(commands.contains("hbreak kmain|--ex|continue"));
         }

@@ -33,6 +33,7 @@ const MAX_TRACKED_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TRACKED_TREE_BYTES: u64 = 64 * 1024 * 1024;
 static NEXT_STORE_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static NEXT_SOURCE_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static NEXT_SOURCE_COPY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// One completed mutation's exact outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -550,6 +551,44 @@ pub(crate) fn canonical_existing_real_directory(path: &Path, label: &str) -> Res
     }
     std::fs::canonicalize(&absolute)
         .with_context(|| format!("canonicalizing {}", absolute.display()))
+}
+
+/// Run one operation against an exact clean tracked copy outside the checkout.
+pub(crate) fn with_clean_source_copy<T>(
+    paths: &Paths,
+    operation: impl FnOnce(&Path) -> Result<T>,
+) -> Result<T> {
+    let baseline = Baseline::discover(paths.root())?;
+    let parent = canonical_existing_real_directory(
+        &std::env::temp_dir(),
+        "clean source-copy temporary parent",
+    )?;
+    let root = parent.join(format!(
+        "wizard-clean-source-{}-{}",
+        std::process::id(),
+        NEXT_SOURCE_COPY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&root)
+        .with_context(|| format!("creating clean source copy {}", root.display()))?;
+    let result = (|| {
+        copy_tracked(paths.root(), &root, &baseline.tracked)?;
+        ensure!(
+            digest_tracked(&root, &baseline.tracked)? == baseline.source_digest,
+            "the clean source copy differs from the checkout"
+        );
+        operation(&root)
+    })();
+    let cleanup = std::fs::symlink_metadata(&root)
+        .with_context(|| format!("inspecting clean source copy {}", root.display()))
+        .and_then(|metadata| remove_workspace_entry(&root, &metadata));
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup)) => Err(cleanup.context("removing clean source copy")),
+        (Err(error), Err(cleanup)) => Err(anyhow::anyhow!(
+            "{error:#}; source-copy cleanup also failed: {cleanup:#}"
+        )),
+    }
 }
 
 /// Open one real directory without following any path component and retain

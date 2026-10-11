@@ -629,7 +629,12 @@ impl CargoCatalog {
             .env("CARGO_BUILD_WARNINGS", "warn")
             .env(
                 "CARGO_ENCODED_RUSTFLAGS",
-                cargo_encoded_rustflags(pass.target)?,
+                cargo_encoded_rustflags(
+                    pass.target,
+                    &workspace.root,
+                    &compiler.input_authority.sysroot,
+                    &workspace.registry_source,
+                )?,
             )
             .args([
                 "metadata",
@@ -1874,6 +1879,9 @@ impl Inventory {
     }
 
     fn file_index(&self, root: &Path, reported: &str) -> Option<usize> {
+        if let Some(relative) = virtual_source_relative(reported) {
+            return self.files.iter().position(|file| file.relative == relative);
+        }
         let reported = Path::new(reported);
         let reported = if reported.is_absolute() {
             reported.to_path_buf()
@@ -1889,6 +1897,17 @@ impl Inventory {
     fn report_count(&self) -> usize {
         self.nodes.iter().filter(|node| node.report).count()
     }
+}
+
+fn virtual_source_relative(reported: &str) -> Option<PathBuf> {
+    let portable = reported.replace('\\', "/");
+    let prefix = format!("{}/", crate::cargo::VIRTUAL_SOURCE_ROOT);
+    let relative = PathBuf::from(portable.strip_prefix(&prefix)?);
+    let mut components = relative.components();
+    let first = components.next()?;
+    (matches!(first, std::path::Component::Normal(_))
+        && components.all(|component| matches!(component, std::path::Component::Normal(_))))
+    .then_some(relative)
 }
 
 fn resolve_entry_link(
@@ -8050,11 +8069,16 @@ impl CompilerIdentity {
     }
 }
 
-fn cargo_encoded_rustflags(target: Option<&str>) -> Result<&'static str> {
+fn cargo_encoded_rustflags(
+    target: Option<&str>,
+    source_root: &Path,
+    toolchain_root: &Path,
+    cargo_source_root: &Path,
+) -> Result<std::ffi::OsString> {
     match target {
-        None => Ok(""),
+        None => Ok(std::ffi::OsString::new()),
         Some(crate::paths::KERNEL_TARGET) => {
-            Ok("-C\u{1f}code-model=kernel\u{1f}-C\u{1f}relocation-model=static")
+            crate::cargo::kernel_encoded_rustflags(source_root, toolchain_root, cargo_source_root)
         }
         Some(target) => bail!("API audit has no exact rustflags contract for target `{target}`"),
     }
@@ -8153,7 +8177,12 @@ fn compile_graph(
         .env("CARGO_TARGET_DIR", build)
         .env(
             "CARGO_ENCODED_RUSTFLAGS",
-            cargo_encoded_rustflags(plan.pass.target)?,
+            cargo_encoded_rustflags(
+                plan.pass.target,
+                &workspace.root,
+                &compiler.input_authority.sysroot,
+                &workspace.registry_source,
+            )?,
         )
         .env("CARGO_BUILD_WARNINGS", "warn")
         .args(&args)
@@ -8654,6 +8683,26 @@ mod tests {
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
 
+    #[test]
+    fn virtual_source_diagnostics_accept_native_separators_without_traversal() {
+        let expected = PathBuf::from("libs/timebase/src/lib.rs");
+        assert_eq!(
+            virtual_source_relative("/wizard/source\\libs\\timebase\\src\\lib.rs"),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            virtual_source_relative("/wizard/source/libs/timebase/src/lib.rs"),
+            Some(expected)
+        );
+        for refused in [
+            "/wizard/source",
+            "/wizard/source-other/libs/timebase/src/lib.rs",
+            "/wizard/source/../outside.rs",
+        ] {
+            assert_eq!(virtual_source_relative(refused), None, "{refused}");
+        }
+    }
+
     fn isolated_test_cargo_command(root: &Path, compiler: &CompilerIdentity) -> Command {
         let cargo = root.join("audit-cargo");
         let home = cargo.join("home");
@@ -8886,10 +8935,24 @@ macro_rules! entry {
         let mut command =
             audited_cargo_command(repository, &private_home, &private_registry, &compiler)
                 .expect("audited Cargo command");
-        let kernel_rustflags = cargo_encoded_rustflags(Some(crate::paths::KERNEL_TARGET))
-            .expect("kernel rustflags contract");
-        assert_eq!(cargo_encoded_rustflags(None).unwrap(), "");
-        command.env("CARGO_ENCODED_RUSTFLAGS", kernel_rustflags);
+        let kernel_rustflags = cargo_encoded_rustflags(
+            Some(crate::paths::KERNEL_TARGET),
+            repository,
+            &compiler.input_authority.sysroot,
+            &private_registry,
+        )
+        .expect("kernel rustflags contract");
+        assert_eq!(
+            cargo_encoded_rustflags(
+                None,
+                repository,
+                &compiler.input_authority.sysroot,
+                &private_registry,
+            )
+            .unwrap(),
+            std::ffi::OsString::new()
+        );
+        command.env("CARGO_ENCODED_RUSTFLAGS", &kernel_rustflags);
         let environment = command
             .get_envs()
             .map(|(name, value)| (name.to_os_string(), value.map(ToOwned::to_owned)))
@@ -8918,7 +8981,7 @@ macro_rules! entry {
         }));
         assert_eq!(
             environment.get(std::ffi::OsStr::new("CARGO_ENCODED_RUSTFLAGS")),
-            Some(&Some(std::ffi::OsString::from(kernel_rustflags)))
+            Some(&Some(kernel_rustflags))
         );
         assert!(command.get_args().any(|argument| {
             argument

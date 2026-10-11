@@ -1,12 +1,17 @@
 //! Driving cargo.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 
 use crate::paths::{self, Paths};
+
+pub(crate) const VIRTUAL_SOURCE_ROOT: &str = "/wizard/source";
+const VIRTUAL_TOOLCHAIN_ROOT: &str = "/wizard/toolchain";
+const VIRTUAL_CARGO_ROOT: &str = "/wizard/cargo";
+const ENCODED_FLAG_SEPARATOR: char = '\u{1f}';
 
 /// Which cargo profile to build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -60,6 +65,134 @@ fn command(paths: &Paths) -> Command {
     command
 }
 
+fn kernel_command(paths: &Paths) -> Result<Command> {
+    kernel_command_with_roots(paths, active_kernel_remap_roots(paths)?)
+}
+
+fn kernel_command_with_roots(paths: &Paths, roots: [PathBuf; 3]) -> Result<Command> {
+    let [source_root, toolchain_root, cargo_root] = roots;
+    let tool_bin = toolchain_root.join("bin");
+    let executable = |name: &str| {
+        tool_bin.join(if cfg!(windows) {
+            format!("{name}.exe")
+        } else {
+            name.to_string()
+        })
+    };
+    let inherited = std::env::var_os("PATH").context("PATH is unavailable")?;
+    let path = std::env::join_paths(
+        std::iter::once(tool_bin.clone()).chain(std::env::split_paths(&inherited)),
+    )
+    .context("constructing pinned kernel compiler PATH")?;
+    let mut command = command(paths);
+    command
+        .env(
+            "CARGO_ENCODED_RUSTFLAGS",
+            kernel_encoded_rustflags(&source_root, &toolchain_root, &cargo_root)?,
+        )
+        .env("RUSTC", executable("rustc"))
+        .env("RUSTDOC", executable("rustdoc"))
+        .env("RUSTC_WRAPPER", "")
+        .env("RUSTC_WORKSPACE_WRAPPER", "")
+        .env("PATH", path);
+    Ok(command)
+}
+
+pub(crate) fn active_kernel_remap_roots(paths: &Paths) -> Result<[PathBuf; 3]> {
+    Ok([
+        crate::mutation_workspace::canonical_existing_real_directory(
+            paths.root(),
+            "kernel source root",
+        )?,
+        active_toolchain_root()?,
+        active_cargo_home()?,
+    ])
+}
+
+pub(crate) fn kernel_encoded_rustflags(
+    source_root: &Path,
+    toolchain_root: &Path,
+    cargo_root: &Path,
+) -> Result<OsString> {
+    let mappings = [
+        (source_root, VIRTUAL_SOURCE_ROOT),
+        (toolchain_root, VIRTUAL_TOOLCHAIN_ROOT),
+        (cargo_root, VIRTUAL_CARGO_ROOT),
+    ];
+    let mut distinct = std::collections::BTreeSet::new();
+    let mut flags = vec![
+        "-C".to_string(),
+        "code-model=kernel".to_string(),
+        "-C".to_string(),
+        "relocation-model=static".to_string(),
+    ];
+    for (root, virtual_root) in mappings {
+        let root = child_process_path(root);
+        let root = root
+            .to_str()
+            .with_context(|| format!("kernel remap root is not UTF-8: {}", root.display()))?;
+        ensure!(
+            !root.is_empty()
+                && !root.contains('=')
+                && !root.contains(ENCODED_FLAG_SEPARATOR)
+                && !root.chars().any(char::is_control),
+            "kernel remap root cannot be encoded safely: {root:?}"
+        );
+        let folded = if cfg!(windows) {
+            root.to_ascii_lowercase()
+        } else {
+            root.to_string()
+        };
+        ensure!(
+            distinct.insert(folded),
+            "kernel remap roots must be distinct"
+        );
+        flags.push("--remap-path-prefix".to_string());
+        flags.push(format!("{root}={virtual_root}"));
+    }
+    Ok(OsString::from(
+        flags.join(&ENCODED_FLAG_SEPARATOR.to_string()),
+    ))
+}
+
+fn active_toolchain_root() -> Result<PathBuf> {
+    let cargo = std::fs::canonicalize(env!("CARGO"))
+        .with_context(|| format!("canonicalizing Cargo executable {}", env!("CARGO")))?;
+    let root = cargo
+        .parent()
+        .and_then(Path::parent)
+        .context("Cargo executable is outside a toolchain root")?;
+    crate::mutation_workspace::canonical_existing_real_directory(
+        root,
+        "kernel compiler toolchain root",
+    )
+}
+
+fn active_cargo_home() -> Result<PathBuf> {
+    let configured = std::env::var_os("CARGO_HOME").filter(|value| !value.is_empty());
+    let home = match configured {
+        Some(home) => PathBuf::from(home),
+        None => platform_home()?.join(".cargo"),
+    };
+    crate::mutation_workspace::canonical_existing_real_directory(&home, "kernel Cargo home")
+}
+
+#[cfg(windows)]
+fn platform_home() -> Result<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .context("USERPROFILE is unavailable")
+}
+
+#[cfg(not(windows))]
+fn platform_home() -> Result<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .context("HOME is unavailable")
+}
+
 /// Return an equivalent path that command-line toolchains can consume.
 pub(crate) fn child_process_path(path: &Path) -> PathBuf {
     #[cfg(windows)]
@@ -108,7 +241,13 @@ pub fn build_kernel(paths: &Paths, profile: Profile, features: &[&str]) -> Resul
     println!("[xtask] building kernel ({})", profile.directory());
 
     let args = kernel_build_args(profile, features);
-    run(paths, "kernel build", &args)?;
+    let status = kernel_command(paths)?
+        .args(&args)
+        .status()
+        .context("could not spawn cargo to kernel build")?;
+    if !status.success() {
+        bail!("kernel build failed ({status})");
+    }
 
     let elf = paths.kernel_elf(profile);
     if !elf.exists() {
@@ -175,6 +314,60 @@ mod tests {
         assert!(command.get_envs().any(|(name, value)| {
             name == "CARGO_TARGET_DIR" && value == Some(paths.target_dir().as_os_str())
         }));
+    }
+
+    #[test]
+    fn kernel_builds_use_the_exact_codegen_and_virtual_path_contract() {
+        let source = Path::new(r"C:\source checkout");
+        let toolchain = Path::new(r"C:\rust toolchain");
+        let cargo_home = Path::new(r"C:\cargo home");
+        let encoded = kernel_encoded_rustflags(source, toolchain, cargo_home).unwrap();
+        assert_eq!(
+            encoded,
+            OsString::from(
+                "-C\u{1f}code-model=kernel\u{1f}-C\u{1f}relocation-model=static\u{1f}\
+                 --remap-path-prefix\u{1f}C:\\source checkout=/wizard/source\u{1f}\
+                 --remap-path-prefix\u{1f}C:\\rust toolchain=/wizard/toolchain\u{1f}\
+                 --remap-path-prefix\u{1f}C:\\cargo home=/wizard/cargo"
+            )
+        );
+        assert!(kernel_encoded_rustflags(source, source, cargo_home).is_err());
+        assert!(kernel_encoded_rustflags(Path::new("bad=root"), toolchain, cargo_home).is_err());
+
+        let paths = Paths::new(source.to_path_buf(), Some(Path::new(r"C:\target")));
+        let command = kernel_command_with_roots(
+            &paths,
+            [
+                source.to_path_buf(),
+                toolchain.to_path_buf(),
+                cargo_home.to_path_buf(),
+            ],
+        )
+        .unwrap();
+        for (name, suffix) in [("RUSTC", "rustc"), ("RUSTDOC", "rustdoc")] {
+            assert!(command.get_envs().any(|(observed, value)| {
+                observed == name
+                    && value.is_some_and(|value| {
+                        value.to_string_lossy().contains("rust toolchain")
+                            && value.to_string_lossy().contains(suffix)
+                    })
+            }));
+        }
+        for wrapper in ["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER"] {
+            assert!(
+                command.get_envs().any(|(observed, value)| {
+                    observed == wrapper && value == Some(OsStr::new(""))
+                })
+            );
+        }
+        let path = command
+            .get_envs()
+            .find_map(|(name, value)| (name == "PATH").then_some(value).flatten())
+            .unwrap();
+        assert_eq!(
+            std::env::split_paths(path).next().as_deref(),
+            Some(Path::new(r"C:\rust toolchain\bin"))
+        );
     }
 
     #[cfg(windows)]
